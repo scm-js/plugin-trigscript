@@ -1,0 +1,4 @@
+node_modules/
+*.tsbuildinfo
+# Blizzard's maps, copied in for the round-trip test; never committed.
+fixtures/
