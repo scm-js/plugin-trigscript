@@ -15,5 +15,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["*.ts", "compiler/*.ts", "vendor/*.ts", "tests", "plugin-api"]
+  "include": ["*.ts", "compiler/*.ts", "vendor/*.ts", "tests"]
 }

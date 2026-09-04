@@ -184,7 +184,7 @@ The AI plugin's *Write Triggers…* is built on these.
 
 ```sh
 npm install
-npm run typecheck   # tsc over the plugin, its tests and the vendored plugin-api/
+npm run typecheck   # tsc over the plugin and its tests, against @scm-js/plugin-api
 npm test            # vitest: the compiler, the lowering, the simulator, the block logic
 ```
 
@@ -201,7 +201,7 @@ The layout:
 | `script.ts` | The block and its manifest: hashing, finding the block by content, staleness, planning a build. Pure over a trigger list and a map of the two members. |
 | `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `compiler.ts` walks the script's AST against a real `ts.createProgram`; `structured.ts` walks statements into `lower.ts`'s state machine; `simulate.ts` is the interpreter; `print.ts` is the inverse for raw records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
 | `vendor/` | The tables the compiler reads, copied from the editor: the trigger record layout and its codec, the condition and action definitions, the unit names, the flag names. The editor is the source of truth; copy them again when it changes. |
-| `plugin-api/` | The editor's API typings, vendored (`npm run build:plugin-types` in scm-js). |
+| `dist/plugin.js` | The bundle the editor loads; `npm run build` writes it, CI commits it. |
 | `tests/` | vitest. `script.test.ts` pins the names, the declarations, the compiler's argument handling, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and compile back to the same record. |
 
 ### How the compiler is built

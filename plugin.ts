@@ -5,7 +5,7 @@
  * badged and locked, and the commands other plugins call (`trigger-script.compile`,
  * `.build`, …). The language and the compiler are documented in the README.
  */
-import type { PluginApi } from "./plugin-api/plugins/api";
+import type { PluginApi } from "@scm-js/plugin-api";
 import type { TriggerRecord } from "./vendor/triggers";
 import { openScriptEditor } from "./editor";
 import { ScriptService } from "./service";

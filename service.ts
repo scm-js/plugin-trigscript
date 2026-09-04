@@ -6,7 +6,7 @@
  * `document.update` — a settings-style transaction, outside the undo model, exactly as
  * the editor's own trigger dialogs write.
  */
-import type { PluginApi, TriggerClaimHandle } from "./plugin-api/plugins/api";
+import type { PluginApi, TriggerClaimHandle } from "@scm-js/plugin-api";
 import type { TriggerRecord } from "./vendor/triggers";
 import { compileInBackground } from "./compile";
 import type { CompileOptions, CompileResult } from "./compiler/compiler";

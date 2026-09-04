@@ -8,7 +8,7 @@
  * in the .scx, like a WAV), so closing the dialog loses nothing — only Build changes
  * triggers. Monaco and TypeScript come from the CDN on first open.
  */
-import type { DialogHandle } from "./plugin-api/plugins/api";
+import type { DialogHandle } from "@scm-js/plugin-api";
 import { compileInBackground, CompileSuperseded, retainCompileWorker } from "./compile";
 import type { CompileResult, ScriptDiagnostic } from "./compiler/compiler";
 import { printScript, SCRIPT_HEADER } from "./compiler/print";
