@@ -14,7 +14,7 @@
     "bundle": "node bundle/build.mjs"
   },
   "devDependencies": {
-    "@scm-js/plugin-api": "github:scm-js/plugin-api",
+    "@scm-js/plugin-api": "^1",
     "@types/node": "^24.13.3",
     "esbuild": "^0.28.2",
     "monaco-editor": "^0.56.0",
