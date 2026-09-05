@@ -3363,9 +3363,6 @@ var STYLE = `
 .tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
 .tsd .tsd-variables .internal { color: var(--text-faint); }
 .tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
-.tsd .tsd-status { flex: none; font-size: var(--fs-sm); color: var(--text-dim); min-height: 1.2em; }
-.tsd .tsd-status.is-error { color: var(--danger); }
-.tsd .tsd-status.is-ok { color: var(--text); }
 `;
 function describeEvent(e) {
   const name = actionDef(e.action.type)?.name ?? `Action ${e.action.type}`;
@@ -3394,6 +3391,7 @@ function openScriptEditor(svc, options = {}) {
   let timer = null;
   let ready = false;
   let building = false;
+  let importing = false;
   let diagnostics = [];
   let result = null;
   let simulation = null;
@@ -3416,13 +3414,13 @@ function openScriptEditor(svc, options = {}) {
     showVariables = !showVariables;
     render();
   } });
-  const problemsCount = el("span", { className: "hint" }, "Loading editor\u2026");
+  const problemsCount = el("span", { className: "hint" }, "");
   const variables = el("div", { className: "tsd-variables", hidden: true });
   const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block.");
   const hostEl = el("div", { className: "tsd-host" });
   host = hostEl;
   const problems = el("ul", { className: "tsd-problems", hidden: true });
-  const statusLine = el("div", { className: "tsd-status" });
+  const statusLine = w.statusLine();
   const root = el(
     "div",
     { className: "tsd" },
@@ -3446,9 +3444,12 @@ function openScriptEditor(svc, options = {}) {
   };
   const render = () => {
     const errors = diagnostics.length;
+    buildButton.setBusy(building && !importing);
+    importButton.setBusy(importing);
     buildButton.disabled = importButton.disabled = !ready || building;
     simulateButton.disabled = !ready || building || errors > 0;
-    problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : ready ? "No problems" : "Loading editor\u2026";
+    if (ready) problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : "No problems";
+    else problemsCount.replaceChildren(w.spinner({ size: "sm", label: "Loading the editor\u2026" }));
     const program = result?.program ?? null;
     const userVariables = result?.variables.filter((v) => !v.name.startsWith("(")) ?? [];
     programButton.hidden = !program;
@@ -3478,15 +3479,15 @@ function openScriptEditor(svc, options = {}) {
       const { sim, result: r } = simulation;
       if (sim.events.length === 0) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_CYCLES} cycles.`)));
       for (const e of sim.events) {
-        const line = r.lines[e.trigger];
+        const line2 = r.lines[e.trigger];
         problems.append(el(
           "li",
           { title: `Trigger #${e.trigger + 1}`, onClick: () => {
-            if (line) goTo(line);
+            if (line2) goTo(line2);
           } },
           el("span", { className: "where" }, `cycle ${e.cycle + 1}`),
           el("span", { className: "msg" }, describeEvent(e)),
-          el("span", { className: "src" }, `L${line ?? "?"}`)
+          el("span", { className: "src" }, `L${line2 ?? "?"}`)
         ));
       }
       for (const v of r.variables.filter((x) => !x.name.startsWith("("))) {
@@ -3501,8 +3502,9 @@ function openScriptEditor(svc, options = {}) {
     } else {
       problems.hidden = true;
     }
-    statusLine.className = `tsd-status${status.kind === "error" ? " is-error" : status.kind === "ok" ? " is-ok" : ""}`;
-    statusLine.textContent = status.text || (block2 ? `Block: ${block2.count} generated trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}${state?.unbuilt ? " \xB7 unbuilt changes" : ""}` : stale ? "The last build's triggers were edited outside the script" : "Not built yet");
+    const line = status.text || (block2 ? `Block: ${block2.count} generated trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}${state?.unbuilt ? " \xB7 unbuilt changes" : ""}` : stale ? "The last build's triggers were edited outside the script" : "Not built yet");
+    if (status.kind === "busy") statusLine.busy(line);
+    else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : void 0);
   };
   const applyResult = (r) => {
     diagnostics = r.diagnostics;
@@ -3544,7 +3546,7 @@ function openScriptEditor(svc, options = {}) {
   const build = async (takeOver = false) => {
     if (building || !ready) return false;
     building = true;
-    render();
+    setStatus("busy", "Compiling\u2026");
     try {
       const r = await compileNow();
       if (!r) return false;
@@ -3554,6 +3556,7 @@ function openScriptEditor(svc, options = {}) {
         return false;
       }
       const wasStale = svc.state()?.stale ?? false;
+      setStatus("busy", "Installing the triggers\u2026");
       const out = await svc.build(source, { takeOver });
       if (!out.block) {
         setStatus("error", "Not built: the map closed.");
@@ -3583,7 +3586,13 @@ function openScriptEditor(svc, options = {}) {
     ].filter((s) => s !== "").join("\n");
     editor.model.setValue(text);
     source = text;
-    const ok = await build(true);
+    importing = true;
+    let ok = false;
+    try {
+      ok = await build(true);
+    } finally {
+      importing = false;
+    }
     const n = before.length + after.length;
     if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
   };
@@ -3621,6 +3630,7 @@ function openScriptEditor(svc, options = {}) {
     mount(body, dialog) {
       body.append(root);
       render();
+      const loadingCover = w.busy(hostEl, "Loading the editor\u2026");
       const releaseWorker = retainCompileWorker();
       const subs = [
         api.events.on("settings", refreshNames),
@@ -3634,6 +3644,7 @@ function openScriptEditor(svc, options = {}) {
           if (cancelled) return;
           monaco = m;
           if (generated) setDeclarations(m, generated.decls);
+          loadingCover.done();
           editor = createScriptEditor(m, hostEl, source, (text) => {
             source = text;
             svc.writeSource(text);
@@ -3646,11 +3657,16 @@ function openScriptEditor(svc, options = {}) {
           check();
         },
         (err) => {
-          if (!cancelled) setStatus("error", `The editor failed to load: ${err.message}`);
+          if (!cancelled) {
+            loadingCover.done();
+            problemsCount.textContent = "";
+            setStatus("error", `The editor failed to load: ${err.message}`);
+          }
         }
       );
       return () => {
         cancelled = true;
+        loadingCover.done();
         if (timer !== null) clearTimeout(timer);
         editor?.dispose();
         editor = null;
@@ -3663,8 +3679,9 @@ function openScriptEditor(svc, options = {}) {
     buttons: [
       { label: "Build & Close", primary: true, run: async () => await build() ? void 0 : false },
       { label: "Close" },
-      { label: "Build", closes: false, run: () => {
-        void build();
+      // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
+      { label: "Build", closes: false, run: async () => {
+        await build();
       } }
     ]
   });

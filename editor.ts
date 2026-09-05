@@ -61,9 +61,6 @@ const STYLE = `
 .tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
 .tsd .tsd-variables .internal { color: var(--text-faint); }
 .tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
-.tsd .tsd-status { flex: none; font-size: var(--fs-sm); color: var(--text-dim); min-height: 1.2em; }
-.tsd .tsd-status.is-error { color: var(--danger); }
-.tsd .tsd-status.is-ok { color: var(--text); }
 `;
 
 /** One line of the simulation log: "Display Text — hello". */
@@ -97,6 +94,8 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
   let timer: ReturnType<typeof setTimeout> | null = null;
   let ready = false;
   let building = false;
+  /** The build under way was started by Import map triggers, so that is the button wearing the ring. */
+  let importing = false;
   let diagnostics: ScriptDiagnostic[] = [];
   let result: CompileResult | null = null;
   let simulation: { sim: Simulation; result: CompileResult } | null = null;
@@ -112,13 +111,13 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
   const simulateButton = w.button("Simulate", { onClick: () => { void simulateNow(); } });
   simulateButton.title = `Run the compiled triggers for ${SIMULATE_CYCLES} trigger cycles in a built-in interpreter and list what happened`;
   const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "Where the program's variables are stored (death counters and switches)", onClick: () => { showVariables = !showVariables; render(); } });
-  const problemsCount = el("span", { className: "hint" }, "Loading editor…");
+  const problemsCount = el("span", { className: "hint" }, "");
   const variables = el("div", { className: "tsd-variables", hidden: true });
   const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block.");
   const hostEl = el("div", { className: "tsd-host" });
   host = hostEl;
   const problems = el("ul", { className: "tsd-problems", hidden: true });
-  const statusLine = el("div", { className: "tsd-status" });
+  const statusLine = w.statusLine();
   const root = el("div", { className: "tsd" },
     style,
     el("div", { className: "row" }, buildButton, importButton, simulateButton, el("span", { className: "grow" }), programButton, problemsCount),
@@ -128,8 +127,8 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
     statusLine,
   );
 
-  let status: { kind: "info" | "ok" | "error"; text: string } = { kind: "info", text: "" };
-  const setStatus = (kind: "info" | "ok" | "error", text: string) => { status = { kind, text }; render(); };
+  let status: { kind: "info" | "ok" | "error" | "busy"; text: string } = { kind: "info", text: "" };
+  const setStatus = (kind: "info" | "ok" | "error" | "busy", text: string) => { status = { kind, text }; render(); };
 
   const goTo = (line: number, column = 1) => {
     if (!editor) return;
@@ -140,9 +139,12 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
 
   const render = () => {
     const errors = diagnostics.length;
+    buildButton.setBusy(building && !importing);
+    importButton.setBusy(importing);
     buildButton.disabled = importButton.disabled = !ready || building;
     simulateButton.disabled = !ready || building || errors > 0;
-    problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : ready ? "No problems" : "Loading editor…";
+    if (ready) problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : "No problems";
+    else problemsCount.replaceChildren(w.spinner({ size: "sm", label: "Loading the editor…" }));
     const program = result?.program ?? null;
     const userVariables = result?.variables.filter((v) => !v.name.startsWith("(")) ?? [];
     programButton.hidden = !program;
@@ -190,10 +192,11 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
       problems.hidden = true;
     }
 
-    statusLine.className = `tsd-status${status.kind === "error" ? " is-error" : status.kind === "ok" ? " is-ok" : ""}`;
-    statusLine.textContent = status.text || (block
+    const line = status.text || (block
       ? `Block: ${block.count} generated trigger${block.count === 1 ? "" : "s"} at #${block.start + 1}${state?.unbuilt ? " · unbuilt changes" : ""}`
       : stale ? "The last build's triggers were edited outside the script" : "Not built yet");
+    if (status.kind === "busy") statusLine.busy(line);
+    else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : undefined);
   };
 
   const applyResult = (r: CompileResult) => {
@@ -233,7 +236,7 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
   const build = async (takeOver = false): Promise<boolean> => {
     if (building || !ready) return false;
     building = true;
-    render();
+    setStatus("busy", "Compiling…");
     try {
       const r = await compileNow();
       if (!r) return false;
@@ -243,6 +246,7 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
         return false;
       }
       const wasStale = svc.state()?.stale ?? false;
+      setStatus("busy", "Installing the triggers…");
       const out = await svc.build(source, { takeOver });
       if (!out.block) { setStatus("error", "Not built: the map closed."); return false; }
       const b = out.block;
@@ -273,7 +277,9 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
         ].filter((s) => s !== "").join("\n");
     editor.model.setValue(text);
     source = text;
-    const ok = await build(true);
+    importing = true;
+    let ok = false;
+    try { ok = await build(true); } finally { importing = false; }
     const n = before.length + after.length;
     if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
   };
@@ -312,6 +318,8 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
     mount(body, dialog) {
       body.append(root);
       render();
+      // Monaco comes from the CDN on first open, which can take a while: the editor's box says so.
+      const loadingCover = w.busy(hostEl, "Loading the editor…");
       // Checks run on every keystroke (debounced), so the compile worker stays up while the editor is open.
       const releaseWorker = retainCompileWorker();
       const subs = [
@@ -326,6 +334,8 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
           if (cancelled) return;
           monaco = m;
           if (generated) setDeclarations(m, generated.decls);
+          // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
+          loadingCover.done();
           editor = createScriptEditor(m, hostEl, source, (text) => {
             source = text;
             svc.writeSource(text);
@@ -337,10 +347,11 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
           render();
           check();
         },
-        (err: Error) => { if (!cancelled) setStatus("error", `The editor failed to load: ${err.message}`); },
+        (err: Error) => { if (!cancelled) { loadingCover.done(); problemsCount.textContent = ""; setStatus("error", `The editor failed to load: ${err.message}`); } },
       );
       return () => {
         cancelled = true;
+        loadingCover.done();
         if (timer !== null) clearTimeout(timer);
         editor?.dispose();
         editor = null;
@@ -353,7 +364,8 @@ export function openScriptEditor(svc: ScriptService, options: { line?: number } 
     buttons: [
       { label: "Build & Close", primary: true, run: async () => ((await build()) ? undefined : false) },
       { label: "Close" },
-      { label: "Build", closes: false, run: () => { void build(); } },
+      // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
+      { label: "Build", closes: false, run: async () => { await build(); } },
     ],
   });
   current = { handle, reveal };

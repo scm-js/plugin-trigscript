@@ -1,7 +1,7 @@
 {
   "name": "Trigger Script",
   "id": "trigger-script",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A TypeScript file per map that generates triggers: one trigger() call per trigger, and structured code (variables, if, loops, functions) compiled into a state machine of death counters. Checked as you type against the map's own names; a built-in simulator shows what the result does.",
   "author": "Jeany",
   "homepage": "https://github.com/scm-js/plugin-trigger-script",
