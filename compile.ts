@@ -4,8 +4,9 @@
  * on the main thread while the user types — so the compiler runs in a worker: a classic
  * worker built from a blob that `importScripts` TypeScript from the CDN, fetches the
  * standard library's declarations once from the plugin's `dist/`, and `import()`s this
- * plugin's own compiler module by the `blob:` URL the editor's loader gave it
- * (`compiler/entry.ts`). Requests are numbered; a result for anything but the newest
+ * plugin's own compiler module — by the `blob:` URL the editor's loader gave it
+ * (`compiler/entry.ts`), or, for a copy compiled into the editor, the release's own
+ * `dist/compiler.js` from the CDN (`workerModuleUrl`). Requests are numbered; a result for anything but the newest
  * request is dropped, so a burst of keystrokes settles on the last one.
  *
  * A script that never finishes (an endless loop outside `program()`) would hang the
@@ -20,12 +21,31 @@ import { compileScript, type CompileResult, type ScriptFiles } from "./compiler/
 import { ENTRY_URL } from "./compiler/entry";
 import type { ScriptNames } from "./compiler/names";
 import { DEFAULT_DIST } from "./monaco";
+import { VERSION } from "./version";
 
 /** The same TypeScript the compiler is written against; `lib/typescript.js` defines a global `ts`. */
 export const TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
 
 /** The standard library, concatenated by `bundle/build.mjs`, next to the Monaco build. */
 export const libUrl = (dist: string = DEFAULT_DIST) => `${dist.replace(/\/+$/, "")}/lib.d.ts`;
+
+/**
+ * The compiler as one module, for the worker, when the plugin was not loaded through
+ * `blob:` URLs: `dist/compiler.js` (`npm run build` bundles `compiler/entry.ts` into it)
+ * at this release's own tag, so the worker runs the same compiler as the plugin. A
+ * `monacoDist` override (development) serves it from the same directory as Monaco.
+ */
+export const compilerUrl = (dist: string = DEFAULT_DIST) =>
+  dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/compiler.js` : `${dist.replace(/\/+$/, "")}/compiler.js`;
+
+/**
+ * What the worker is told to import. The editor's loader turns a fetched plugin into
+ * `blob:` modules, and the compiler's own blob URL is the compiler the main thread would
+ * run. A plugin compiled into the editor (a default) has no such URL — its module is a
+ * chunk of the editor's bundle, which imports the editor's own chunks and cannot load
+ * outside a page — so the worker fetches this release's compiler bundle instead.
+ */
+export const workerModuleUrl = (dist: string = DEFAULT_DIST) => (ENTRY_URL.startsWith("blob:") ? ENTRY_URL : compilerUrl(dist));
 
 export const COMPILE_TIMEOUT_MS = 15_000;
 
@@ -149,7 +169,7 @@ function timeOut(id: number) {
 }
 
 function getWorker(): Worker | null {
-  if (workerBroken || typeof Worker === "undefined" || !ENTRY_URL.startsWith("blob:")) return null;
+  if (workerBroken || typeof Worker === "undefined") return null;
   busy();
   if (worker) return worker;
   try {
@@ -225,7 +245,7 @@ export function compileInBackground(input: CompileInput, dist: string = DEFAULT_
   }
   return new Promise<CompileResult>((resolve, reject) => {
     pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
-    const req: CompileRequest = { id, moduleUrl: ENTRY_URL, libUrl: lib, files: input.files, names: input.names, reservedDeaths: input.reservedDeaths, reservedSwitches: input.reservedSwitches };
+    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: lib, files: input.files, names: input.names, reservedDeaths: input.reservedDeaths, reservedSwitches: input.reservedSwitches };
     w.postMessage(req);
   }).catch((err: Error) => {
     if (err.message === "worker unavailable") return compileHere(input, lib);

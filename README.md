@@ -17,22 +17,26 @@ location passed where a unit belongs is a type error before you build.
 
 ## Install
 
-It is in scmJS's plugin list: open **Plugins ▸ Browse Plugins…** and install it. To add
-it by hand, paste
+It ships with scmJS as a default plugin, on from the start: **Triggers ▸ TrigScript…** is
+there as soon as a map is open, and Plugins ▸ Manage Plugins… turns it off. To run a
+different version than the editor's, or a fork, paste
 
 ```
 https://github.com/scm-js/plugin-trigscript
 ```
 
 into **Manage Plugins…** and press **Add**. To pin a version, add a ref:
-`github:scm-js/plugin-trigscript@v2.0.0`.
+`github:scm-js/plugin-trigscript@v2.5.1`. The map maker's guide to the language is
+scmJS's own [user guide](https://docs.scmjs.dev/guide/trigscript/); the reference below
+is the full one.
 
 Monaco, the TypeScript compiler and the standard library's declarations are not loaded
 with the plugin's own files: the first time the editor opens they are fetched from
 jsDelivr — Monaco and the library from this repository's own build of them (`dist/`),
 TypeScript from the npm package's `lib/typescript.js` — so that first open needs a
-connection. The browser keeps them in its cache afterwards, which is also what the
-desktop build relies on when it is offline.
+connection. The copy compiled into the editor also fetches the release's own
+`dist/compiler.js` for its compile worker. The browser keeps them all in its cache
+afterwards, which is also what the desktop build relies on when it is offline.
 
 ## Use
 
@@ -421,7 +425,7 @@ The layout:
 | `script.ts` | The files, the block and its manifest: hashing (the block, and every record on its own), finding the block by content, staleness and what a stale block can still be taken apart into, planning a build. Pure over a trigger list and a map of the members. |
 | `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, collects the map references, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and lowers each `program()` — and the `game()` functions it calls — through `structured.ts` into `lower.ts`'s state machine; `simulate.ts` is the interpreter; `reserve.ts` scans records for the cells they touch, for the allocator to avoid; `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
 | `vendor/` | The tables the compiler reads, copied from the editor: the trigger record layout and its codec, the condition and action definitions, the unit names, the flag names. The editor is the source of truth; copy them again when it changes. |
-| `dist/plugin.js` | The bundle the editor loads; `npm run build` writes it, CI commits it. |
+| `dist/plugin.js`, `dist/compiler.js` | The bundle the editor loads, and the compiler alone (`compiler/entry.ts`) for the compile worker of a copy compiled into the editor, which has no `blob:` module to hand it; `npm run build` writes both — commit both before tagging (CI commits and checks `plugin.js` on its own). |
 | `tests/` | vitest. `script.test.ts` pins the names, the declarations, the runtime's argument handling, files and imports, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation; `refs.test.ts` the references and renames. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and run back to the same record. |
 
 ### How the compiler is built

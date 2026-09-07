@@ -1,7 +1,8 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { VERSION } from "../version";
 import {
   ActionFlag, ActionType, cloneTrigger, Comparison, ConditionFlag, ConditionType, emptyAction, emptyCondition, emptyTrigger, encodeTriggers,
   PlayerGroup, SetModifier, SwitchAction, SwitchState, TriggerFlag, UnitClass, type TriggerRecord,
@@ -470,4 +471,13 @@ describe.skipIf(mapFiles.length === 0)("fixture maps", () => {
       expect(norm(back, strings)).toEqual(norm(map.triggers, map.strings));
     });
   }
+});
+
+describe("the version", () => {
+  it("is written once in code and matches the manifest and the package", () => {
+    const manifest = JSON.parse(readFileSync(join(import.meta.dirname, "..", "plugin.json"), "utf8"));
+    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8"));
+    expect(manifest.version).toBe(VERSION);
+    expect(pkg.version).toBe(VERSION);
+  });
 });
