@@ -3971,6 +3971,65 @@ function checkValuesAsBooleans(ts, checker, sf, programs, error) {
 // compiler/entry.ts
 var ENTRY_URL = import.meta.url;
 
+// refs.ts
+var IDENT = "[A-Za-z_$][\\w$]*";
+function findReferences(text, object) {
+  const out = [];
+  const re = new RegExp(`(^|[^\\w$.])(${object.replace(/[$]/g, "\\$&")})\\.(${IDENT})`, "g");
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
+  const lineOf = (offset) => {
+    let lo = 0, hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = lo + hi + 1 >> 1;
+      if (starts[mid] <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+  for (const m of text.matchAll(re)) {
+    const start = m.index + m[1].length;
+    const keyStart = start + m[2].length + 1;
+    const line = lineOf(start);
+    out.push({ key: m[3], line: line + 1, column: keyStart - starts[line] + 1, endColumn: keyStart - starts[line] + 1 + m[3].length });
+  }
+  return out;
+}
+function renamedKeys(before, after) {
+  const out = [];
+  const was = new Map(before.entries.map((e) => [e.value, e.keys[0]]));
+  for (const e of after.entries) {
+    const from = was.get(e.value);
+    if (from !== void 0 && from !== e.keys[0]) out.push({ value: e.value, from, to: e.keys[0] });
+  }
+  return out;
+}
+function renamesInUse(files, object, renames) {
+  const used = /* @__PURE__ */ new Set();
+  for (const text of Object.values(files)) for (const r of findReferences(text, object)) used.add(r.key);
+  return renames.filter((r) => used.has(r.from));
+}
+function replaceReferences(files, object, renames) {
+  const to = new Map(renames.map((r) => [r.from, r.to]));
+  let count = 0;
+  const out = {};
+  for (const [path, text] of Object.entries(files)) {
+    const refs = findReferences(text, object).filter((r) => to.has(r.key));
+    if (refs.length === 0) {
+      out[normalizePath(path)] = text;
+      continue;
+    }
+    const lines = text.split("\n");
+    for (const r of [...refs].sort((a2, b) => b.line - a2.line || b.column - a2.column)) {
+      const l = lines[r.line - 1];
+      lines[r.line - 1] = l.slice(0, r.column - 1) + to.get(r.key) + l.slice(r.endColumn - 1);
+      count++;
+    }
+    out[normalizePath(path)] = lines.join("\n");
+  }
+  return { files: out, count };
+}
+
 // monaco.ts
 var DIST_TAG = "monaco-0.56.0-2";
 var DEFAULT_DIST = `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@${DIST_TAG}/dist`;
@@ -4132,6 +4191,54 @@ function setCostHints(monaco, costs) {
 function refreshCostHints() {
   costChanged?.fire();
 }
+var mapRefs = () => null;
+var mapRefsRegistered = false;
+var LINK_SCHEME = "trigscript";
+function setMapRefs(monaco, refs) {
+  mapRefs = refs;
+  if (mapRefsRegistered) return;
+  mapRefsRegistered = true;
+  monaco.languages.registerLinkProvider("typescript", {
+    provideLinks(model) {
+      const r = mapRefs();
+      if (!r || model.uri.scheme !== "file") return { links: [] };
+      const links = findReferences(model.getValue(), r.object).filter((x) => r.byKey.has(x.key)).map((x) => ({
+        range: new monaco.Range(x.line, x.column, x.line, x.endColumn),
+        url: monaco.Uri.from({ scheme: LINK_SCHEME, path: `/location/${r.byKey.get(x.key).index}` }),
+        tooltip: "Show on the map"
+      }));
+      return { links };
+    }
+  });
+  monaco.editor.registerLinkOpener({
+    open(resource) {
+      if (resource.scheme !== LINK_SCHEME) return false;
+      const m = /^\/location\/(\d+)$/.exec(resource.path);
+      const r = mapRefs();
+      if (!m || !r) return true;
+      const index = Number(m[1]);
+      const ref2 = [...r.byKey.values()].find((x) => x.index === index);
+      if (ref2) r.open(ref2);
+      return true;
+    }
+  });
+  monaco.languages.registerHoverProvider("typescript", {
+    provideHover(model, position) {
+      const r = mapRefs();
+      if (!r || model.uri.scheme !== "file") return null;
+      const word = model.getWordAtPosition(position);
+      if (!word) return null;
+      const before = model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1);
+      if (!before.endsWith(`${r.object}.`)) return null;
+      const ref2 = r.byKey.get(word.word);
+      if (!ref2) return null;
+      return {
+        range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+        contents: [{ value: `**${ref2.name}** \u2014 location ${ref2.index + 1}: ${ref2.w} \xD7 ${ref2.h} tiles at ${ref2.x}, ${ref2.y}. Ctrl+click to show it on the map.` }]
+      };
+    }
+  });
+}
 function setCompilerMarkers(monaco, files, diagnostics) {
   for (const path of Object.keys(files)) {
     const model = monaco.editor.getModel(fileUri(monaco, path));
@@ -4254,6 +4361,14 @@ function createScriptEditor(monaco, host, files, active, onChange) {
     set(path, text) {
       const model = models.get(normalizePath(path));
       if (model && model.getValue() !== text) model.setValue(text);
+    },
+    insert(text) {
+      const sel = editor.getSelection() ?? new monaco.Selection(1, 1, 1, 1);
+      editor.executeEdits("trigscript", [{ range: sel, text, forceMoveMarkers: true }]);
+      editor.focus();
+    },
+    cursor() {
+      return { file: current2, line: editor.getPosition()?.lineNumber ?? 1 };
     },
     decorate(ranges) {
       for (const [p, model] of models) {
@@ -4867,10 +4982,13 @@ var FILE_TEMPLATE = `import { trigger, units, locations, P1 } from "trigscript";
 `;
 var SIMULATE_CYCLES = 30;
 var CHECK_DELAY_MS = 350;
+var PANEL_WIDTH = 760;
+var PANEL_HEIGHT = 540;
 var STYLE = `
 .tsd { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
 .tsd .tsd-editor { flex: 1; min-height: 0; display: flex; border: 1px solid var(--border); box-shadow: var(--bevel-sunken); border-radius: var(--radius); overflow: hidden; background: var(--bg-0); }
 .tsd .tsd-side { flex: none; width: 168px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg-1); }
+.tsd.tsd-panel .tsd-side { width: 132px; }
 .tsd .tsd-files { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 4px 0; list-style: none; font-family: var(--font-mono); font-size: var(--fs-sm); }
 .tsd .tsd-files li { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; cursor: pointer; color: var(--text-dim); white-space: nowrap; }
 .tsd .tsd-files li:hover { background: var(--bg-3); }
@@ -4884,6 +5002,7 @@ var STYLE = `
 .tsd .tsd-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .tsd .tsd-host { flex: 1; min-height: 0; }
 .tsd .tsd-problems { flex: none; max-height: 132px; overflow: auto; margin: 0; padding: 2px 0; list-style: none; border-top: 1px solid var(--border); background: var(--bg-1); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.tsd.tsd-panel .tsd-problems { max-height: 96px; }
 .tsd .tsd-problems li { display: flex; gap: 10px; padding: 2px 10px; cursor: pointer; align-items: baseline; }
 .tsd .tsd-problems li:hover { background: var(--bg-3); }
 .tsd .tsd-problems .where { flex: none; min-width: 48px; color: var(--text-faint); }
@@ -4896,6 +5015,8 @@ var STYLE = `
 .tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
 .tsd .tsd-variables .internal { color: var(--text-faint); }
 .tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
+.tsd .tsd-notice .grow { flex: 1; }
+.tsd .tsd-mode { margin-left: 4px; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 function ownerLabel(p) {
@@ -4907,34 +5028,82 @@ function describeEvent(e) {
 }
 var current = null;
 function openScriptEditor(svc, options = {}) {
-  if (current?.handle.isOpen()) {
-    current.reveal(options.file, options.line);
-    return;
-  }
-  current = null;
   const api = svc.api;
+  if (current?.isOpen()) {
+    const wanted = options.dock === void 0 ? null : options.dock ? "panel" : "dialog";
+    if ((!wanted || wanted === current.mode) && !options.pick) {
+      current.reveal(options.file, options.line);
+      return;
+    }
+    const at = current.cursor();
+    const modeNow = current.mode;
+    current.close();
+    current = null;
+    if (options.file === void 0 && at) options = { ...options, file: at.file, line: at.line };
+    if (options.dock === void 0) options = { ...options, dock: modeNow === "panel" };
+  }
   if (!api.document.isOpen()) {
     api.ui.toast({ kind: "info", title: "Open or create a map first." });
     return;
   }
+  const mode = options.dock ? "panel" : "dialog";
+  const ws = createWorkspace(svc, options, mode);
+  if (mode === "dialog") {
+    const handle = api.ui.dialog({
+      title: "TrigScript",
+      size: "full",
+      tall: true,
+      // Escape inside the editor dismisses its own popups (suggestions, parameter hints); it must not close the dialog.
+      keepOpenOnEscape: (target) => target instanceof Node && ws.host.contains(target),
+      mount(body2, dialog) {
+        body2.append(ws.root);
+        return ws.attach(() => dialog.close());
+      },
+      buttons: [
+        { label: "Build & Close", primary: true, run: async () => await ws.build() ? void 0 : false },
+        { label: "Close" },
+        // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
+        { label: "Build", closes: false, run: async () => {
+          await ws.build();
+        } }
+      ]
+    });
+    current = { mode, isOpen: () => handle.isOpen(), close: () => handle.close(), reveal: ws.reveal, cursor: ws.cursor };
+  } else {
+    const handle = api.ui.panel({
+      title: "TrigScript",
+      width: PANEL_WIDTH,
+      height: PANEL_HEIGHT,
+      resizable: true,
+      mount(body2, panel) {
+        body2.append(ws.root);
+        return ws.attach(() => panel.close());
+      }
+    });
+    current = { mode, isOpen: () => handle.isOpen(), close: () => handle.close(), reveal: ws.reveal, cursor: ws.cursor };
+  }
+}
+function createWorkspace(svc, options, mode) {
+  const api = svc.api;
   const el = api.ui.el;
   const w = api.ui.widgets;
   const initial = svc.state();
   let files = initial?.files ?? { [ENTRY_FILE]: TEMPLATE };
   const fresh = !initial?.files;
   let generated = svc.names();
-  let host = null;
   let editor = null;
   let monaco = null;
   let timer = null;
   let ready = false;
   let building = false;
   let importing = false;
+  let picking = false;
   let diagnostics = [];
   let result = null;
   let simulation = null;
   let showVariables = false;
   let cancelled = false;
+  let renames = [];
   const style = el("style", void 0, STYLE);
   const buildButton = w.button("Build", { onClick: () => {
     void build();
@@ -4948,6 +5117,13 @@ function openScriptEditor(svc, options = {}) {
     void simulateNow();
   } });
   simulateButton.title = `Run the compiled triggers for ${SIMULATE_CYCLES} trigger cycles in a built-in interpreter and list what happened`;
+  const pickButton = w.button("Pick from map", { ghost: true, onClick: () => {
+    void pickFromMap();
+  } });
+  pickButton.title = "Click a location or a unit on the map to put its name at the cursor";
+  const modeButton = w.button(mode === "dialog" ? "Beside the map" : "In a window", { ghost: true, onClick: () => switchMode() });
+  modeButton.className += " tsd-mode";
+  modeButton.title = mode === "dialog" ? "Open the script as a panel beside the map, so the map stays in reach" : "Open the script in a full-screen window";
   const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "Where the programs' variables are stored (death counters and switches)", onClick: () => {
     showVariables = !showVariables;
     render();
@@ -4955,8 +5131,8 @@ function openScriptEditor(svc, options = {}) {
   const problemsCount = el("span", { className: "hint" }, "");
   const variables = el("div", { className: "tsd-variables", hidden: true });
   const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block.");
+  const renameNotice = el("div", { className: "tsd-notice tsd-renames", hidden: true });
   const hostEl = el("div", { className: "tsd-host" });
-  host = hostEl;
   const problems = el("ul", { className: "tsd-problems", hidden: true });
   const fileList = el("ul", { className: "tsd-files" });
   const newButton = w.button("New file", { ghost: true, onClick: () => {
@@ -4967,11 +5143,12 @@ function openScriptEditor(svc, options = {}) {
   const statusLine = w.statusLine();
   const root = el(
     "div",
-    { className: "tsd" },
+    { className: mode === "panel" ? "tsd tsd-panel" : "tsd" },
     style,
-    el("div", { className: "row" }, buildButton, importButton, simulateButton, el("span", { className: "grow" }), programButton, problemsCount),
+    el("div", { className: "row" }, buildButton, importButton, simulateButton, pickButton, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
     variables,
     notice,
+    renameNotice,
     el(
       "div",
       { className: "tsd-editor" },
@@ -5025,12 +5202,27 @@ function openScriptEditor(svc, options = {}) {
       return row;
     }));
   };
+  const renderRenames = () => {
+    const all = renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} \u2192 ${r.object}.${x.to}`));
+    renameNotice.hidden = all.length === 0;
+    if (all.length === 0) return;
+    renameNotice.replaceChildren(
+      el("span", { className: "grow" }, `The map renamed ${all.length === 1 ? "something the script names" : `${all.length} things the script names`}: ${all.join(", ")}.`),
+      w.button("Update references", { onClick: () => applyRenames() }),
+      w.button("Leave", { ghost: true, onClick: () => {
+        renames = [];
+        renderRenames();
+      } })
+    );
+  };
   const render = () => {
     const errors = diagnostics.length;
     buildButton.setBusy(building && !importing);
     importButton.setBusy(importing);
+    pickButton.setBusy(picking);
     buildButton.disabled = importButton.disabled = !ready || building;
     simulateButton.disabled = !ready || building || errors > 0;
+    pickButton.disabled = !ready || picking;
     newButton.disabled = !ready;
     if (!ready) problemsCount.replaceChildren(w.spinner({ size: "sm", label: "Loading the editor\u2026" }));
     else if (!result) problemsCount.textContent = "Checking\u2026";
@@ -5050,6 +5242,7 @@ function openScriptEditor(svc, options = {}) {
     const stale = state?.stale ?? false;
     notice.hidden = !stale;
     renderFiles();
+    renderRenames();
     problems.replaceChildren();
     problems.className = "tsd-problems";
     if (errors > 0) {
@@ -5113,6 +5306,23 @@ function openScriptEditor(svc, options = {}) {
     const out = result.costs.filter((c2) => c2.triggers >= 2);
     for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as ${ownerLabel(p)}.` });
     return out;
+  };
+  const mapRefs2 = () => {
+    if (!generated) return null;
+    const scn = api.document.scenario();
+    if (!scn) return null;
+    const byKey = /* @__PURE__ */ new Map();
+    for (const e of generated.names.locations.entries) {
+      const index = e.value - 1;
+      const l = scn.locations[index];
+      if (!l) continue;
+      const x0 = Math.min(l.left, l.right), x1 = Math.max(l.left, l.right), y0 = Math.min(l.top, l.bottom), y1 = Math.max(l.top, l.bottom);
+      byKey.set(e.keys[0], { index, name: e.keys[1] ?? e.keys[0], x: Math.floor(x0 / 32), y: Math.floor(y0 / 32), w: Math.max(1, Math.round((x1 - x0) / 32)), h: Math.max(1, Math.round((y1 - y0) / 32)) });
+    }
+    return { object: generated.names.locations.object, byKey, open: (ref2) => {
+      api.view.goTo({ kind: "location", index: ref2.index });
+      api.view.flash({ locations: [ref2.index], kind: "attention" });
+    } };
   };
   const check = () => {
     if (timer !== null) clearTimeout(timer);
@@ -5236,6 +5446,53 @@ function openScriptEditor(svc, options = {}) {
       setStatus("error", `Simulation stopped: ${err.message}`);
     }
   };
+  const switchMode = () => {
+    const at = editor?.cursor();
+    openScriptEditor(svc, { dock: mode === "dialog", file: at?.file, line: at?.line });
+  };
+  const pickFromMap = async () => {
+    if (!editor || !generated || picking) return;
+    if (mode === "dialog") {
+      const at = editor.cursor();
+      openScriptEditor(svc, { dock: true, file: at.file, line: at.line, pick: true });
+      return;
+    }
+    picking = true;
+    render();
+    try {
+      const picked = await api.ui.pickObject({ prompt: "Click a location or a unit for the script" });
+      if (cancelled || !picked || !editor) return;
+      const scn = api.document.scenario();
+      const table2 = picked.kind === "unit" ? generated.names.units : generated.names.locations;
+      const value = picked.kind === "unit" ? scn?.units[picked.index]?.unitId : picked.index + 1;
+      const entry = value === void 0 ? void 0 : entryFor(table2, value);
+      if (!entry) {
+        setStatus("info", picked.kind === "unit" ? "That unit's type has no name in the script's tables." : "That location is not in the script's tables yet; build again after the map's names refresh.");
+        return;
+      }
+      editor.insert(`${table2.object}.${entry.keys[0]}`);
+      setStatus("ok", `Inserted ${table2.object}.${entry.keys[0]}.`);
+    } finally {
+      picking = false;
+      render();
+    }
+  };
+  const applyRenames = () => {
+    if (!editor) return;
+    let next = files;
+    let count = 0;
+    for (const r of renames) {
+      const done = replaceReferences(next, r.object, r.list);
+      next = done.files;
+      count += done.count;
+    }
+    for (const [path, text] of Object.entries(next)) if (text !== files[path]) editor.set(path, text);
+    files = next;
+    renames = [];
+    svc.writeFiles(files);
+    setStatus("ok", `Updated ${count} reference${count === 1 ? "" : "s"}.`);
+    check();
+  };
   const askName = async (message, value) => {
     for (; ; ) {
       const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: "helpers.ts" });
@@ -5289,7 +5546,18 @@ function openScriptEditor(svc, options = {}) {
   };
   const refreshNames = () => {
     if (cancelled) return;
+    const before = generated;
     generated = svc.names();
+    if (before && generated) {
+      for (const table2 of ["locations", "switches"]) {
+        const object = generated.names[table2].object;
+        const list = renamesInUse(files, object, renamedKeys(before.names[table2], generated.names[table2]));
+        if (list.length === 0) continue;
+        const slot = renames.find((r) => r.object === object);
+        if (slot) slot.list = [...slot.list.filter((x) => !list.some((y) => y.value === x.value)), ...list];
+        else renames.push({ object, list });
+      }
+    }
     if (monaco && generated) setDeclarations(monaco, generated.decls);
     render();
     check();
@@ -5301,74 +5569,67 @@ function openScriptEditor(svc, options = {}) {
       renderFiles();
     }
   };
-  const handle = api.ui.dialog({
-    title: "TrigScript",
-    size: "full",
-    tall: true,
-    // Escape inside the editor dismisses its own popups (suggestions, parameter hints); it must not close the dialog.
-    keepOpenOnEscape: (target) => !!host && target instanceof Node && host.contains(target),
-    mount(body2, dialog) {
-      body2.append(root);
-      render();
-      const loadingCover = w.busy(hostEl, "Loading the editor\u2026");
-      const releaseWorker = retainCompileWorker();
-      const subs = [
-        api.events.on("settings", refreshNames),
-        api.events.on("locations", refreshNames),
-        api.events.on("triggers", refreshNames),
-        // The script belongs to the map: another map, or none, closes the editor.
-        api.events.on("document", () => dialog.close())
-      ];
-      loadMonaco(svc.dist()).then(
-        (m) => {
-          if (cancelled) return;
-          monaco = m;
-          if (generated) setDeclarations(m, generated.decls);
-          setHoverVariables(m, () => result?.variables ?? []);
-          setCostHints(m, costHints2);
-          loadingCover.done();
-          editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
-            files = { ...files, [path]: text };
-            svc.writeFiles(files);
-            check();
-          });
-          if (fresh) svc.writeFiles(files);
-          reveal(options.file, options.line);
-          editor.editor.focus();
-          ready = true;
-          render();
-          check();
-        },
-        (err) => {
-          if (!cancelled) {
-            loadingCover.done();
-            problemsCount.textContent = "";
-            setStatus("error", `The editor failed to load: ${err.message}`);
-          }
-        }
-      );
-      return () => {
-        cancelled = true;
+  const attach = (close) => {
+    render();
+    const loadingCover = w.busy(hostEl, "Loading the editor\u2026");
+    const releaseWorker = retainCompileWorker();
+    const subs = [
+      api.events.on("settings", refreshNames),
+      api.events.on("locations", refreshNames),
+      api.events.on("triggers", refreshNames),
+      // The script belongs to the map: another map, or none, closes the workspace.
+      api.events.on("document", () => close())
+    ];
+    loadMonaco(svc.dist()).then(
+      (m) => {
+        if (cancelled) return;
+        monaco = m;
+        if (generated) setDeclarations(m, generated.decls);
+        setHoverVariables(m, () => result?.variables ?? []);
+        setCostHints(m, costHints2);
+        setMapRefs(m, mapRefs2);
         loadingCover.done();
-        if (timer !== null) clearTimeout(timer);
-        editor?.dispose();
-        editor = null;
-        if (monaco) releaseScriptEditor(monaco);
-        releaseWorker();
-        for (const s of subs) s.dispose();
-        if (current?.handle === handle) current = null;
-      };
-    },
-    buttons: [
-      { label: "Build & Close", primary: true, run: async () => await build() ? void 0 : false },
-      { label: "Close" },
-      // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
-      { label: "Build", closes: false, run: async () => {
-        await build();
-      } }
-    ]
-  });
-  current = { handle, reveal };
+        editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
+          files = { ...files, [path]: text };
+          svc.writeFiles(files);
+          check();
+        });
+        if (fresh) svc.writeFiles(files);
+        reveal(options.file, options.line);
+        editor.editor.focus();
+        ready = true;
+        render();
+        check();
+        if (options.pick) void pickFromMap();
+      },
+      (err) => {
+        if (!cancelled) {
+          loadingCover.done();
+          problemsCount.textContent = "";
+          setStatus("error", `The editor failed to load: ${err.message}`);
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+      loadingCover.done();
+      if (timer !== null) clearTimeout(timer);
+      editor?.dispose();
+      editor = null;
+      if (monaco) releaseScriptEditor(monaco);
+      releaseWorker();
+      for (const s of subs) s.dispose();
+      if (current && !current.isOpen()) current = null;
+    };
+  };
+  return {
+    root,
+    host: hostEl,
+    attach,
+    build: () => build(),
+    reveal,
+    cursor: () => editor?.cursor() ?? null
+  };
 }
 
 // service.ts
@@ -5587,8 +5848,10 @@ function activate(api) {
     svc.manifestChanged();
     svc.claim.refresh();
   });
-  api.commands.register({ id: "open", title: "TrigScript\u2026", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num(options.line) } : {}) });
+  api.commands.register({ id: "open", title: "TrigScript\u2026", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num(options.line), dock: options.dock === true ? true : options.dock === false ? false : void 0 } : {}) });
+  api.commands.register({ id: "dock", title: "TrigScript beside the map", enabled: () => api.document.isOpen(), run: () => openScriptEditor(svc, { dock: true }) });
   api.menu.add("Triggers", { label: "TrigScript\u2026", after: "Text Trigger Editor\u2026", enabled: () => api.document.isOpen(), command: "open" });
+  api.menu.add("Triggers", { label: "TrigScript beside the map", after: "TrigScript\u2026", enabled: () => api.document.isOpen(), command: "dock" });
   api.commands.register({ id: "state", title: "TrigScript: state", run: () => svc.state() });
   api.commands.register({ id: "declarations", title: "TrigScript: declarations", run: (options) => svc.declarations({ compact: isRecord(options) && options.compact === true }) });
   api.commands.register({ id: "compile", title: "TrigScript: compile", run: (input) => svc.compile(scriptInput(input)) });

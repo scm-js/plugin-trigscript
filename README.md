@@ -134,6 +134,21 @@ out-of-range unit ids. Types the tables do not know can be written as `condition
 or `action(type, …)`, and `memory(address, comparison, value)` / `setMemory(address,
 modifier, value)` are the standard `deaths`-at-`EPD(address)` forms.
 
+### Beside the map
+
+The editor opens two ways: Triggers ▸ TrigScript… is a full-screen window, and
+*Beside the map* (a button on its toolbar, or Triggers ▸ TrigScript beside the map) is a
+panel over the map that blocks nothing — drag it by its title, resize it by its corner,
+and keep placing units while the code sits next to them. Beside the map:
+
+- **Ctrl+click** on `locations.Beacon` scrolls the map to the location and flashes it;
+  hovering the name says where it is and how big.
+- **Pick from map** on the toolbar: click a location or a unit on the map, and its name
+  (`locations.Beacon`, `units.TerranMarine`) lands at the cursor. From the window, the
+  button first moves the editor beside the map.
+- When the map renames a location or a switch the script mentions, a notice offers to
+  **update the references** in every file.
+
 ### Programs
 
 ```ts

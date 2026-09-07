@@ -18,8 +18,10 @@ export default function activate(api: PluginApi) {
   api.events.on("file", () => { if (svc.manifestChanged()) svc.claim.refresh(); });
   api.events.on("document", () => { svc.manifestChanged(); svc.claim.refresh(); });
 
-  api.commands.register({ id: "open", title: "TrigScript…", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num(options.line) } : {}) });
+  api.commands.register({ id: "open", title: "TrigScript…", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num(options.line), dock: options.dock === true ? true : options.dock === false ? false : undefined } : {}) });
+  api.commands.register({ id: "dock", title: "TrigScript beside the map", enabled: () => api.document.isOpen(), run: () => openScriptEditor(svc, { dock: true }) });
   api.menu.add("Triggers", { label: "TrigScript…", after: "Text Trigger Editor…", enabled: () => api.document.isOpen(), command: "open" });
+  api.menu.add("Triggers", { label: "TrigScript beside the map", after: "TrigScript…", enabled: () => api.document.isOpen(), command: "dock" });
 
   // What other plugins reach: the script without the editor.
   api.commands.register({ id: "state", title: "TrigScript: state", run: () => svc.state() });

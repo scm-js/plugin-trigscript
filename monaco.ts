@@ -18,6 +18,7 @@ import type * as Monaco from "monaco-editor";
 import { DECLARATIONS_FILE } from "./compiler/declarations";
 import type { LineCost, ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
 import { normalizePath } from "./compiler/compiler";
+import { findReferences } from "./refs";
 
 export const MONACO_VERSION = "0.56.0";
 /** The tag `dist/` is served from; move it when the bundle changes (`git tag monaco-<version>-<n>`). */
@@ -212,6 +213,84 @@ export function refreshCostHints() {
   costChanged?.fire();
 }
 
+/** A location the script can name, for the editor's links and hovers. */
+export interface LocationRef {
+  /** The slot, 0-based. */
+  index: number;
+  name: string;
+  /** In tiles. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface MapRefs {
+  /** The object the script reads locations from (`locations`). */
+  object: string;
+  /** By the key the script uses. */
+  byKey: Map<string, LocationRef>;
+  /** Ctrl+click: show the location on the map. */
+  open(ref: LocationRef): void;
+}
+
+let mapRefs: () => MapRefs | null = () => null;
+let mapRefsRegistered = false;
+const LINK_SCHEME = "trigscript";
+
+/**
+ * `locations.Beacon` in the script is a link to the location: Ctrl+click shows it on the
+ * map, and hovering it says where it is and how big. The link provider marks every
+ * reference the compiler's names know; the opener answers the link's own scheme and
+ * leaves every other link to Monaco. Registered once per Monaco; `refs` is the open
+ * dialog's.
+ */
+export function setMapRefs(monaco: MonacoApi, refs: () => MapRefs | null) {
+  mapRefs = refs;
+  if (mapRefsRegistered) return;
+  mapRefsRegistered = true;
+  monaco.languages.registerLinkProvider("typescript", {
+    provideLinks(model) {
+      const r = mapRefs();
+      if (!r || model.uri.scheme !== "file") return { links: [] };
+      const links = findReferences(model.getValue(), r.object).filter((x) => r.byKey.has(x.key)).map((x) => ({
+        range: new monaco.Range(x.line, x.column, x.line, x.endColumn),
+        url: monaco.Uri.from({ scheme: LINK_SCHEME, path: `/location/${r.byKey.get(x.key)!.index}` }),
+        tooltip: "Show on the map",
+      }));
+      return { links };
+    },
+  });
+  monaco.editor.registerLinkOpener({
+    open(resource) {
+      if (resource.scheme !== LINK_SCHEME) return false;
+      const m = /^\/location\/(\d+)$/.exec(resource.path);
+      const r = mapRefs();
+      if (!m || !r) return true;
+      const index = Number(m[1]);
+      const ref = [...r.byKey.values()].find((x) => x.index === index);
+      if (ref) r.open(ref);
+      return true;
+    },
+  });
+  monaco.languages.registerHoverProvider("typescript", {
+    provideHover(model, position) {
+      const r = mapRefs();
+      if (!r || model.uri.scheme !== "file") return null;
+      const word = model.getWordAtPosition(position);
+      if (!word) return null;
+      const before = model.getLineContent(position.lineNumber).slice(0, word.startColumn - 1);
+      if (!before.endsWith(`${r.object}.`)) return null;
+      const ref = r.byKey.get(word.word);
+      if (!ref) return null;
+      return {
+        range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+        contents: [{ value: `**${ref.name}** — location ${ref.index + 1}: ${ref.w} × ${ref.h} tiles at ${ref.x}, ${ref.y}. Ctrl+click to show it on the map.` }],
+      };
+    },
+  });
+}
+
 /** The compiler's own diagnostics, drawn under the TypeScript ones, per file. */
 export function setCompilerMarkers(monaco: MonacoApi, files: ScriptFiles, diagnostics: ScriptDiagnostic[]) {
   for (const path of Object.keys(files)) {
@@ -245,6 +324,10 @@ export interface ScriptEditor {
   set(path: string, text: string): void;
   /** Underline the parts of the programs computed when the script is built (`CompileResult.buildTime`). */
   decorate(ranges: SourceRange[]): void;
+  /** Put text at the cursor (over the selection), as typing it would, and focus the editor. */
+  insert(text: string): void;
+  /** The file and line the cursor is on. */
+  cursor(): { file: string; line: number };
   dispose(): void;
 }
 
@@ -357,6 +440,14 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     set(path, text) {
       const model = models.get(normalizePath(path));
       if (model && model.getValue() !== text) model.setValue(text);
+    },
+    insert(text) {
+      const sel = editor.getSelection() ?? new monaco.Selection(1, 1, 1, 1);
+      editor.executeEdits("trigscript", [{ range: sel, text, forceMoveMarkers: true }]);
+      editor.focus();
+    },
+    cursor() {
+      return { file: current, line: editor.getPosition()?.lineNumber ?? 1 };
     },
     decorate(ranges) {
       for (const [p, model] of models) {
