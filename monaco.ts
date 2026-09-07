@@ -3,9 +3,12 @@
  * the editor with the TypeScript language and its styles, and the two workers), served
  * by jsDelivr's GitHub mirror at a tag of this repository — a CDN's on-the-fly bundler
  * breaks Monaco's lazy language chunks, see the build script. The workers start from
- * blob module workers, since a cross-origin script cannot be a worker directly. The
- * language service is configured `noLib` with the generated declarations as its one
- * extra lib, and the theme is the editor's own palette (tokens.css) rather than VS Code's.
+ * blob module workers, since a cross-origin script cannot be a worker directly.
+ *
+ * The script's files are one model each under `file:///`, so `import { x } from
+ * "./bases"` resolves between them in Monaco's own TypeScript worker; the generated
+ * declarations are the one extra lib, and the standard library is the worker's own.
+ * The theme is the editor's own palette (tokens.css) rather than VS Code's.
  *
  * The URL is not a static import on purpose: the editor's plugin loader follows every
  * literal import specifier and would try to fetch and transpile the bundle. A dynamic
@@ -13,19 +16,19 @@
  */
 import type * as Monaco from "monaco-editor";
 import { DECLARATIONS_FILE } from "./compiler/declarations";
-import type { ScriptDiagnostic } from "./compiler/compiler";
+import type { ScriptDiagnostic, ScriptFiles } from "./compiler/compiler";
+import { normalizePath } from "./compiler/compiler";
 
 export const MONACO_VERSION = "0.56.0";
 /** The tag `dist/` is served from; move it when the bundle changes (`git tag monaco-<version>-<n>`). */
-export const DIST_TAG = "monaco-0.56.0-1";
-export const DEFAULT_DIST = `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigger-script@${DIST_TAG}/dist`;
+export const DIST_TAG = "monaco-0.56.0-2";
+export const DEFAULT_DIST = `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@${DIST_TAG}/dist`;
 /** The plugin storage key that overrides where the bundle is fetched from (development: a local server). */
 export const DIST_STORAGE_KEY = "monacoDist";
 
 export type MonacoApi = typeof Monaco;
 
 export const THEME = "scm";
-export const SCRIPT_URI_TEXT = "file:///triggers.ts";
 
 let loading: Promise<MonacoApi> | null = null;
 let loadedFrom: string | null = null;
@@ -42,13 +45,17 @@ function tsLanguage(monaco: MonacoApi): typeof Monaco.typescript {
   return found;
 }
 
+/** TypeScript's `ModuleResolutionKind.Bundler`; Monaco's copy of the enum predates it. */
+const BUNDLER_RESOLUTION = 100;
+
 function configure(monaco: MonacoApi) {
   const ts = tsLanguage(monaco);
   ts.typescriptDefaults.setCompilerOptions({
-    noLib: true,
     strict: true,
     target: ts.ScriptTarget.ESNext,
-    allowNonTsExtensions: true,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: BUNDLER_RESOLUTION as unknown as Monaco.typescript.ModuleResolutionKind,
+    lib: ["lib.es2022.d.ts"],
     noEmit: true,
     types: [],
   });
@@ -95,7 +102,6 @@ function configure(monaco: MonacoApi) {
       "minimap.background": "#0a0c10",
     },
   });
-
 }
 
 /** Monaco, loaded once from `base` (`DEFAULT_DIST` unless overridden); a failed load can be retried. */
@@ -124,47 +130,77 @@ export function setDeclarations(monaco: MonacoApi, content: string) {
   tsLanguage(monaco).typescriptDefaults.setExtraLibs([{ content, filePath: `file:///${DECLARATIONS_FILE}` }]);
 }
 
-/** The compiler's own diagnostics, drawn under the TypeScript ones. */
-export function setCompilerMarkers(monaco: MonacoApi, model: Monaco.editor.ITextModel, diagnostics: ScriptDiagnostic[]) {
-  monaco.editor.setModelMarkers(
-    model,
-    "scm-compiler",
-    diagnostics.filter((d) => d.source === "compiler").map((d) => ({
-      severity: monaco.MarkerSeverity.Error,
-      message: d.message,
-      startLineNumber: d.line,
-      startColumn: d.column,
-      endLineNumber: d.endLine,
-      endColumn: d.endColumn,
-    })),
-  );
+export const fileUri = (monaco: MonacoApi, path: string) => monaco.Uri.parse(`file:///${normalizePath(path)}`);
+
+/** The compiler's own diagnostics, drawn under the TypeScript ones, per file. */
+export function setCompilerMarkers(monaco: MonacoApi, files: ScriptFiles, diagnostics: ScriptDiagnostic[]) {
+  for (const path of Object.keys(files)) {
+    const model = monaco.editor.getModel(fileUri(monaco, path));
+    if (!model) continue;
+    monaco.editor.setModelMarkers(
+      model,
+      "trigscript",
+      diagnostics.filter((d) => d.source !== "typescript" && normalizePath(d.file) === normalizePath(path)).map((d) => ({
+        severity: monaco.MarkerSeverity.Error,
+        message: d.message,
+        startLineNumber: d.line,
+        startColumn: d.column,
+        endLineNumber: d.endLine,
+        endColumn: d.endColumn,
+      })),
+    );
+  }
 }
 
 export interface ScriptEditor {
   editor: Monaco.editor.IStandaloneCodeEditor;
-  model: Monaco.editor.ITextModel;
+  /** The file the editor shows. */
+  active(): string;
+  show(path: string): void;
+  files(): ScriptFiles;
+  add(path: string, text: string): void;
+  remove(path: string): void;
+  rename(from: string, to: string): void;
+  /** Replace a file's text (an import), keeping the model. */
+  set(path: string, text: string): void;
   dispose(): void;
 }
 
+/** Every model under `file:///`, disposed: the editor closed. Monaco's TypeScript worker is stopped too (see `releaseScriptEditor`). */
+function disposeModels(monaco: MonacoApi) {
+  for (const m of monaco.editor.getModels()) if (m.uri.scheme === "file" && m.uri.path.endsWith(".ts")) m.dispose();
+}
+
 /**
- * The Script Editor closed: drop the model and stop Monaco's TypeScript worker. Monaco
- * never idles that worker out on its own, and it is a second TypeScript instance next to
- * the compile worker; re-setting the compiler options is the one public way to make its
- * `WorkerManager` stop it — it starts again on the next `createScriptEditor`. The source
- * itself lives in the archive, so only the closed session's undo history goes with the model.
+ * The editor closed: drop the models and stop Monaco's TypeScript worker. Monaco never
+ * idles that worker out on its own, and it is a second TypeScript instance next to the
+ * compile worker; re-setting the compiler options is the one public way to make its
+ * `WorkerManager` stop it — it starts again on the next `createScriptEditor`. The files
+ * themselves live in the archive, so only the closed session's undo history goes with the models.
  */
 export function releaseScriptEditor(monaco: MonacoApi): void {
-  monaco.editor.getModel(monaco.Uri.parse(SCRIPT_URI_TEXT))?.dispose();
+  disposeModels(monaco);
   const defaults = tsLanguage(monaco).typescriptDefaults;
   defaults.setCompilerOptions(defaults.getCompilerOptions());
 }
 
-export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, source: string, onChange: (text: string) => void): ScriptEditor {
-  const uri = monaco.Uri.parse(SCRIPT_URI_TEXT);
-  const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(source, "typescript", uri);
-  if (model.getValue() !== source) model.setValue(source);
+export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: ScriptFiles, active: string, onChange: (path: string, text: string) => void): ScriptEditor {
+  disposeModels(monaco);
+  const models = new Map<string, Monaco.editor.ITextModel>();
+  const subs = new Map<string, Monaco.IDisposable>();
+  /** Per file, the view state (cursor, scroll) to restore when it is shown again. */
+  const views = new Map<string, Monaco.editor.ICodeEditorViewState | null>();
+  const make = (path: string, text: string) => {
+    const model = monaco.editor.createModel(text, "typescript", fileUri(monaco, path));
+    models.set(path, model);
+    subs.set(path, model.onDidChangeContent(() => onChange(path, model.getValue())));
+    return model;
+  };
+  for (const [path, text] of Object.entries(files)) make(normalizePath(path), text);
+  let current = normalizePath(active);
+  if (!models.has(current)) current = [...models.keys()][0];
   const editor = monaco.editor.create(host, {
-    model,
+    model: models.get(current) ?? null,
     theme: THEME,
     automaticLayout: true,
     fontFamily: '"Cascadia Mono", "JetBrains Mono", ui-monospace, Consolas, Menlo, monospace',
@@ -181,12 +217,63 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, source:
     quickSuggestions: { other: true, strings: true, comments: false },
     suggest: { showWords: false },
   });
-  const sub = model.onDidChangeContent(() => onChange(model.getValue()));
+  const show = (path: string) => {
+    const p = normalizePath(path);
+    const model = models.get(p);
+    if (!model || p === current) return;
+    views.set(current, editor.saveViewState());
+    current = p;
+    editor.setModel(model);
+    const view = views.get(p);
+    if (view) editor.restoreViewState(view);
+  };
   return {
     editor,
-    model,
+    active: () => current,
+    show,
+    files: () => Object.fromEntries([...models].map(([p, m]) => [p, m.getValue()])),
+    add(path, text) {
+      const p = normalizePath(path);
+      if (models.has(p)) return;
+      make(p, text);
+      onChange(p, text);
+      show(p);
+    },
+    remove(path) {
+      const p = normalizePath(path);
+      const model = models.get(p);
+      if (!model) return;
+      if (p === current) { const other = [...models.keys()].find((k) => k !== p); if (other) show(other); }
+      subs.get(p)?.dispose();
+      subs.delete(p);
+      models.delete(p);
+      views.delete(p);
+      model.dispose();
+    },
+    rename(from, to) {
+      const a = normalizePath(from);
+      const b = normalizePath(to);
+      const model = models.get(a);
+      if (!model || models.has(b)) return;
+      const text = model.getValue();
+      const wasCurrent = a === current;
+      const view = wasCurrent ? editor.saveViewState() : views.get(a) ?? null;
+      subs.get(a)?.dispose();
+      subs.delete(a);
+      models.delete(a);
+      views.delete(a);
+      if (wasCurrent) editor.setModel(null);
+      model.dispose();
+      const next = make(b, text);
+      views.set(b, view);
+      if (wasCurrent) { current = b; editor.setModel(next); if (view) editor.restoreViewState(view); }
+    },
+    set(path, text) {
+      const model = models.get(normalizePath(path));
+      if (model && model.getValue() !== text) model.setValue(text);
+    },
     dispose() {
-      sub.dispose();
+      for (const s of subs.values()) s.dispose();
       editor.dispose();
     },
   };

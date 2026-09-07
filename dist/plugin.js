@@ -507,19 +507,6 @@ var CHOICES = {
     { value: 4, label: "Always Display" }
   ]
 };
-function choiceLabel(kind, value) {
-  return CHOICES[kind]?.find((c2) => c2.value === value)?.label;
-}
-function choiceValue(kind, text) {
-  const key = text.trim().toLowerCase();
-  const list = CHOICES[kind];
-  if (!list) return void 0;
-  for (const c2 of list) {
-    if (c2.label.toLowerCase() === key) return c2.value;
-    if (c2.aliases?.some((al) => al.toLowerCase() === key)) return c2.value;
-  }
-  return void 0;
-}
 function aiScriptCode(id) {
   if (id.length !== 4) throw new Error(`AI script codes are four characters: "${id}"`);
   return (id.charCodeAt(0) | id.charCodeAt(1) << 8 | id.charCodeAt(2) << 16 | id.charCodeAt(3) << 24) >>> 0;
@@ -612,27 +599,23 @@ function aiScriptByName(text) {
   return hit ? aiScriptCode(hit.id) : void 0;
 }
 
-// vendor/flags.ts
-var TRIGGER_FLAG_NAMES = [
-  [TriggerFlag.Preserve, "Preserve"],
-  [TriggerFlag.Disabled, "Disabled"],
-  [TriggerFlag.IgnoreGameEnd, "Ignore Game End"],
-  [TriggerFlag.IgnoreDisplay, "Ignore Display"],
-  [TriggerFlag.ConditionsMet, "Conditions Met"],
-  [TriggerFlag.Paused, "Paused"],
-  [TriggerFlag.WaitSkipDisabled, "Wait Skip Disabled"]
-];
-
 // compiler/api.ts
 function keyOf(table2, value) {
   for (const [k, v] of Object.entries(table2)) if (v === value) return k;
   return void 0;
 }
+var RESERVED = new Set("break case catch class const continue debugger default delete do else enum export extends false finally for function if import in instanceof new null return super switch this throw true try typeof var void while with implements interface let package private protected public static yield".split(" "));
+function camel(key) {
+  const id = key[0].toLowerCase() + key.slice(1);
+  return RESERVED.has(id) ? `${id}Is` : id;
+}
 function conditionIdent(type) {
-  return keyOf(ConditionType, type);
+  const key = keyOf(ConditionType, type);
+  return key === void 0 ? void 0 : camel(key);
 }
 function actionIdent(type) {
-  return keyOf(ActionType, type);
+  const key = keyOf(ActionType, type);
+  return key === void 0 ? void 0 : camel(key);
 }
 var CONDITION_IDENTS = new Map(
   CONDITION_DEFS.filter((d) => d.type !== ConditionType.Briefing).map((d) => [conditionIdent(d.type), d])
@@ -647,34 +630,67 @@ var CHOICE_TYPES = {
   order: "OrderKind",
   alliance: "Alliance",
   resource: "ResourceKind",
-  score: "ScoreKind",
-  textFlags: "TextDisplay"
+  score: "ScoreKind"
 };
-function choiceSpellings(kind) {
-  const out = [];
-  for (const c2 of CHOICES[kind] ?? []) {
-    out.push(c2.label);
-    for (const al of c2.aliases ?? []) out.push(al);
+var CANONICAL = {
+  comparison: [[Comparison.AtLeast, ">="], [Comparison.AtMost, "<="], [Comparison.Exactly, "=="]],
+  switchState: [[SwitchState.Set, "set"], [SwitchState.Cleared, "cleared"]],
+  switchAction: [[SwitchAction.Set, "set"], [SwitchAction.Clear, "clear"], [SwitchAction.Toggle, "toggle"], [SwitchAction.Randomize, "randomize"]],
+  modifier: [[SetModifier.SetTo, "set"], [SetModifier.Add, "add"], [SetModifier.Subtract, "subtract"]],
+  unitState: [[UnitState.Enable, "enable"], [UnitState.Disable, "disable"], [UnitState.Toggle, "toggle"]],
+  order: [[Order.Move, "move"], [Order.Patrol, "patrol"], [Order.Attack, "attack"]],
+  alliance: [[AllianceStatus.Enemy, "enemy"], [AllianceStatus.Ally, "ally"], [AllianceStatus.AlliedVictory, "alliedVictory"]],
+  resource: [[ResourceType.Ore, "ore"], [ResourceType.Gas, "gas"], [ResourceType.OreAndGas, "oreAndGas"]],
+  score: [
+    [ScoreType.Total, "total"],
+    [ScoreType.Units, "units"],
+    [ScoreType.Buildings, "buildings"],
+    [ScoreType.UnitsAndBuildings, "unitsAndBuildings"],
+    [ScoreType.Kills, "kills"],
+    [ScoreType.Razings, "razings"],
+    [ScoreType.KillsAndRazings, "killsAndRazings"],
+    [ScoreType.Custom, "custom"]
+  ]
+};
+function choiceWord(kind, value) {
+  const hit = CANONICAL[kind]?.find(([v]) => v === value);
+  if (hit) return hit[1];
+  return CHOICES[kind]?.find((c2) => c2.value === value)?.label;
+}
+function choiceOf(kind, text) {
+  const key = text.trim().toLowerCase();
+  const hit = CANONICAL[kind]?.find(([, w]) => w.toLowerCase() === key);
+  if (hit) return hit[0];
+  const list = CHOICES[kind];
+  if (!list) return void 0;
+  for (const c2 of list) {
+    if (c2.label.toLowerCase() === key) return c2.value;
+    if (c2.aliases?.some((al) => al.toLowerCase() === key)) return c2.value;
   }
-  return out;
+  return void 0;
+}
+function choiceWords(kind) {
+  return (CANONICAL[kind] ?? []).map(([, w]) => w);
 }
 function argType(kind) {
   switch (kind) {
     case "player":
-      return "PlayerId";
+      return "Player";
     case "unit":
-      return "UnitId";
+      return "Unit";
     case "location":
-      return "LocationId";
+      return "Location";
     case "switch":
-      return "SwitchId";
+      return "Switch";
     case "text":
     case "wav":
       return "string";
     case "aiScript":
-      return "AiScriptId | string";
+      return "AiScript | string";
     case "count":
       return "Count";
+    case "textFlags":
+      return "boolean";
     case "number":
     case "amount":
     case "duration":
@@ -686,12 +702,23 @@ function argType(kind) {
       return `${CHOICE_TYPES[kind] ?? "number"} | number`;
   }
 }
-var RESERVED = new Set("break case catch class const continue debugger default delete do else enum export extends false finally for function if import in instanceof new null return super switch this throw true try typeof var void while with implements interface let package private protected public static yield".split(" "));
 function paramName(label) {
   const words = label.split(/[^A-Za-z0-9]+/).filter(Boolean);
   const id = words.map((w, i) => i === 0 ? w[0].toLowerCase() + w.slice(1) : w[0].toUpperCase() + w.slice(1)).join("");
   if (/^\d/.test(id) || id === "") return `_${id}`;
   return RESERVED.has(id) ? `${id}_` : id;
+}
+function scriptParams(def) {
+  const used = /* @__PURE__ */ new Set();
+  const name = (label) => {
+    let p = paramName(label);
+    while (used.has(p)) p = `${p}_`;
+    used.add(p);
+    return p;
+  };
+  const main = def.args.filter((a2) => a2.kind !== "textFlags").map((arg) => ({ arg, name: name(arg.label), optional: false }));
+  const flag = def.args.find((a2) => a2.kind === "textFlags");
+  return flag ? [...main, { arg: flag, name: "always", optional: true }] : main;
 }
 var IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 function propertyKey(key) {
@@ -700,6 +727,16 @@ function propertyKey(key) {
 function memberAccess(object, key) {
   return IDENTIFIER.test(key) ? `${object}.${key}` : `${object}[${JSON.stringify(key)}]`;
 }
+var TRIGGER_OPTION_NAMES = [
+  [TriggerFlag.Preserve, "preserve"],
+  [TriggerFlag.Disabled, "disabled"],
+  [TriggerFlag.IgnoreGameEnd, "ignoreGameEnd"],
+  [TriggerFlag.IgnoreDisplay, "ignoreDisplay"],
+  [TriggerFlag.ConditionsMet, "conditionsMet"],
+  [TriggerFlag.Paused, "paused"],
+  [TriggerFlag.WaitSkipDisabled, "waitSkipDisabled"]
+];
+var MODULE_NAME = "trigscript";
 
 // compiler/record.ts
 var CONDITION_FIELDS = ["type", "location", "player", "amount", "unitId", "comparison", "resource"];
@@ -1021,11 +1058,11 @@ function scriptNames(src = {}) {
     return { value: i, keys };
   });
   return {
-    players: table("Players", "PlayerId", withMap ? "Players, player groups and the map's forces." : "Players and player groups.", playerEntries(src.forceNames ?? [])),
-    units: table("Units", "UnitId", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
-    locations: table("Locations", "LocationId", "The map's locations.", locations),
-    switches: table("Switches", "SwitchId", withMap ? "The 256 switches, by number and by the map's names." : "The 256 switches.", switches),
-    aiScripts: table("AiScripts", "AiScriptId", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries())
+    players: table("players", "Player", withMap ? "Players, player groups and the map's forces." : "Players and player groups.", playerEntries(src.forceNames ?? [])),
+    units: table("units", "Unit", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
+    locations: table("locations", "Location", "The map's locations.", locations),
+    switches: table("switches", "Switch", withMap ? "The 256 switches, by number and by the map's names." : "The 256 switches.", switches),
+    aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries())
   };
 }
 function defaultScriptNames() {
@@ -1033,146 +1070,6 @@ function defaultScriptNames() {
 }
 function entryFor(t, value) {
   return t.entries.find((e) => e.value === value);
-}
-
-// compiler/declarations.ts
-var DECLARATIONS_FILE = "scm-triggers.d.ts";
-var RUNTIME = `// \u2500\u2500 scm-js trigger script runtime \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-// Generated for the open map. Do not edit: it is rebuilt whenever the map's names change.
-
-interface Array<T> { readonly length: number; readonly [n: number]: T; }
-interface ReadonlyArray<T> { readonly length: number; readonly [n: number]: T; }
-interface Boolean {}
-interface Number {}
-interface String { readonly length: number; }
-interface Object {}
-interface Function {}
-interface CallableFunction extends Function {}
-interface NewableFunction extends Function {}
-interface IArguments {}
-interface RegExp {}
-
-type Brand<K extends string> = { readonly __kind?: K };
-/** A player or player group (a \`Players.*\` constant, or a raw group number). */
-type PlayerId<N extends number = number> = N & Brand<"player">;
-/** A unit type (a \`Units.*\` constant, or a raw units.dat id). */
-type UnitId<N extends number = number> = N & Brand<"unit">;
-/** A location (a \`Locations.*\` constant, or a raw 1-based location number; 0 = none). */
-type LocationId<N extends number = number> = N & Brand<"location">;
-/** A switch (a \`Switches.*\` constant, or a raw 0-based switch number). */
-type SwitchId<N extends number = number> = N & Brand<"switch">;
-/** An AI script (an \`AiScripts.*\` constant; a four-character code or StarEdit name as a string also works). */
-type AiScriptId<N extends number = number> = N & Brand<"aiScript">;
-/** A unit count: a number, or "All". */
-type Count = number | "All";
-
-/** A condition, as returned by Bring(...), Deaths(...), \u2026; only trigger() consumes it. */
-interface Condition { readonly __condition: true; }
-/** An action, as returned by DisplayText(...), SetDeaths(...), \u2026; only trigger() consumes it. */
-interface Action { readonly __action: true; }
-
-/**
- * Define one trigger. The script's triggers become a contiguous, generated block of the
- * map's trigger list in source order; hand-made triggers around it are left alone.
- * @param players The player groups the trigger runs for.
- * @param conditions Up to 16 conditions; a trigger with none never fires.
- * @param actions Up to 64 actions.
- * @param flags Trigger flags: "Preserve" (same as a Preserve Trigger action), "Disabled", "Ignore Game End", \u2026
- */
-declare function trigger(players: PlayerId | readonly PlayerId[], conditions: readonly Condition[], actions: readonly Action[], flags?: readonly (TriggerFlag | number)[]): void;
-/** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
-declare function disabled<T extends Condition | Action>(item: T): T;
-/** A condition by raw type number and record fields, for types the editor does not know. */
-declare function Condition(${CONDITION_FIELDS.map((f) => `${f}?: number`).join(", ")}): Condition;
-/** An action by raw type number and record fields, for types the editor does not know. */
-declare function Action(${ACTION_FIELDS.map((f) => `${f}?: number`).join(", ")}): Action;
-/** EUD: compare the 32-bit value at a memory address (1.16.1 layout; Remastered emulates it). Deaths at player EPD(address). */
-declare function Memory(address: number, comparison: Comparison | number, value: number): Condition;
-/** EUD: set / add to / subtract from the 32-bit value at a memory address (1.16.1 layout; Remastered emulates it). */
-declare function SetMemory(address: number, modifier: Modifier | number, value: number): Action;
-
-// \u2500\u2500 Structured code \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-// Statements other than trigger() calls form one program: \`let\` variables (numbers are
-// death counters, booleans are switches), assignments, if / while / do / for, functions
-// (inlined at each call), and action calls as statements. Statements run in order within
-// one trigger cycle; a loop's back edge waits for the next cycle, so
-// \`while (true) { \u2026 }\` runs its body once per cycle (every frame with hyper triggers).
-
-interface ProgramOptions {
-  /** The single player the program's triggers run as (default P1). It must be in the game for the program to run. */
-  owner?: PlayerId;
-  /** Emit hyper triggers so the trigger loop runs every frame: true (owned by \`owner\`) or the player to own them. */
-  hyperTriggers?: boolean | PlayerId;
-  /** Put a Comment action naming the source line on every generated trigger (default true). */
-  comments?: boolean;
-  /** Unit types whose death counters hold the variables (default: the "(Unused)" units, Cantina first). */
-  variableUnits?: readonly UnitId[];
-}
-/** Configure the structured program. Optional; call it once, anywhere at the top level. */
-declare function program(options: ProgramOptions): void;
-/** A coin toss (Randomize Switch): \`flag = random()\`, \`if (random() && \u2026)\`. */
-declare function random(): boolean;
-`;
-function union(values) {
-  return values.map((v) => JSON.stringify(v)).join(" | ");
-}
-function choiceTypes() {
-  const out = [];
-  for (const [kind, name] of Object.entries(CHOICE_TYPES)) {
-    out.push(`type ${name} = ${union(choiceSpellings(kind))};`);
-  }
-  out.push(`type TriggerFlag = ${union(TRIGGER_FLAG_NAMES.map(([, n]) => n))};`);
-  return out.join("\n");
-}
-function tableDecl(t) {
-  const lines = [`/** ${t.doc} */`, `declare const ${t.object}: {`];
-  for (const e of t.entries) for (const k of e.keys) lines.push(`  readonly ${propertyKey(k)}: ${t.type}<${e.value}>;`);
-  lines.push("};");
-  return lines.join("\n");
-}
-function playerAliases(names) {
-  const lines = [];
-  for (const e of names.players.entries) {
-    if (e.value < 12) lines.push(`/** ${e.keys[1]} */
-declare const ${e.keys[0]}: PlayerId<${e.value}>;`);
-  }
-  lines.push("/** The player the trigger is running for. */\ndeclare const CurrentPlayer: PlayerId<13>;");
-  lines.push("/** Every player. */\ndeclare const AllPlayers: PlayerId<17>;");
-  return lines.join("\n");
-}
-function signature(ident, def, returns) {
-  const used = /* @__PURE__ */ new Set();
-  const params = def.args.map((a2) => {
-    let p = paramName(a2.label);
-    while (used.has(p)) p = `${p}_`;
-    used.add(p);
-    return `${p}: ${argType(a2.kind)}`;
-  });
-  const doc = def.args.length ? `${def.name} \u2014 ${def.args.map((a2) => a2.label).join(", ")}` : def.name;
-  return `/** ${doc} */
-declare function ${ident}(${params.join(", ")}): ${returns};`;
-}
-function generateDeclarations(names = defaultScriptNames()) {
-  const parts = [
-    RUNTIME,
-    choiceTypes(),
-    "",
-    "// \u2500\u2500 Conditions \u2500\u2500",
-    ...[...CONDITION_IDENTS].map(([ident, def]) => signature(ident, def, "Condition")),
-    "",
-    "// \u2500\u2500 Actions \u2500\u2500",
-    ...[...ACTION_IDENTS].map(([ident, def]) => signature(ident, def, "Action")),
-    "",
-    "// \u2500\u2500 The map \u2500\u2500",
-    playerAliases(names),
-    tableDecl(names.players),
-    tableDecl(names.units),
-    tableDecl(names.locations),
-    tableDecl(names.switches),
-    tableDecl(names.aiScripts),
-    ""
-  ];
-  return parts.join("\n");
 }
 
 // compiler/lower.ts
@@ -1226,8 +1123,8 @@ function setDeaths(v, modifier, amount) {
 function switchCondition(v, set) {
   return { ...emptyCondition(), type: ConditionType.Switch, resource: v.index, comparison: set ? SwitchState.Set : SwitchState.Cleared };
 }
-function setSwitch(v, action) {
-  return { ...emptyAction(), type: ActionType.SetSwitch, target: v.index, modifier: action };
+function setSwitch(v, action2) {
+  return { ...emptyAction(), type: ActionType.SetSwitch, target: v.index, modifier: action2 };
 }
 var U32_MAX = 4294967295;
 var TRUE = { kind: "const", value: true };
@@ -1616,6 +1513,840 @@ function hyperTriggers(owner, comment) {
   });
 }
 
+// compiler/declarations.ts
+var DECLARATIONS_FILE = "trigscript.d.ts";
+var HEADER = `// \u2500\u2500 TrigScript \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Generated for the open map; rebuilt whenever the map's names change. Do not edit.
+//
+// A script is ordinary TypeScript that runs when you build: every trigger() it calls
+// becomes one trigger of the map, in order. Code inside program(() => { \u2026 }) runs in
+// the game instead, as a state machine of death counters.
+`;
+function types(kw) {
+  return `
+${kw}type Brand<K extends string> = { readonly __kind?: K };
+/** A player or player group (P1 \u2026 P12, CurrentPlayer, AllPlayers, players.*, or a raw group number). */
+${kw}type Player<N extends number = number> = N & Brand<"player">;
+/** A unit type (units.*, or a raw units.dat id). */
+${kw}type Unit<N extends number = number> = N & Brand<"unit">;
+/** A location (locations.*, or a raw 1-based location number; 0 = none). */
+${kw}type Location<N extends number = number> = N & Brand<"location">;
+/** A switch (switches.*, or a raw 0-based switch number). */
+${kw}type Switch<N extends number = number> = N & Brand<"switch">;
+/** An AI script (aiScripts.*; a four-character code or StarEdit name as a string also works). */
+${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
+/** A unit count: a number, or "All". */
+${kw}type Count = number | "All";
+
+/** A condition, as returned by bring(...), deaths(...), \u2026: give it to trigger(), or test it in an if inside program(). */
+${kw}interface Condition { readonly __condition: true; }
+/** An action, as returned by displayText(...), setDeaths(...), \u2026: give it to trigger(), or call it as a statement inside program(). */
+${kw}interface Action { readonly __action: true; }
+/** A trigger, as returned by trigger(). */
+${kw}interface Trigger { readonly __trigger: true; }
+/** Conditions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
+${kw}type Conditions = readonly (Condition | Conditions | false | null | undefined)[];
+/** Actions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
+${kw}type Actions = readonly (Action | Actions | false | null | undefined)[];
+
+${kw}interface TriggerOptions {
+${TRIGGER_OPTION_NAMES.map(([, name]) => `  ${name}?: boolean;`).join("\n")}
+  /** Raw execution flags, ORed in. */
+  flags?: number;
+}
+
+${kw}interface ProgramOptions {
+  /** The single player the program's triggers run as (default P1). It must be in the game for the program to run. */
+  owner?: Player;
+  /** Put a Comment action naming the source line on every generated trigger (default true). */
+  comments?: boolean;
+  /** Unit types whose death counters hold the variables (default: the "(Unused)" units, Cantina first). */
+  variableUnits?: readonly Unit[];
+}
+`;
+}
+function choiceTypes(kw) {
+  const out = [];
+  for (const [kind, name] of Object.entries(CHOICE_TYPES)) {
+    out.push(`${kw}type ${name} = ${choiceWords(kind).map((w) => JSON.stringify(w)).join(" | ")};`);
+  }
+  return out.join("\n");
+}
+function functions(kw) {
+  return `
+/**
+ * Define one trigger. The script's triggers become a contiguous, generated block of the
+ * map's trigger list in the order they are defined; hand-made triggers around it are left alone.
+ * @param players The player or players the trigger runs for.
+ * @param conditions Up to 16 conditions; a trigger with none never fires.
+ * @param actions Up to 64 actions.
+ * @param options Execution flags: { preserve: true } is the same as a preserveTrigger() action.
+ */
+${kw}function trigger(players: Player | readonly Player[], conditions: Conditions, actions: Actions, options?: TriggerOptions): Trigger;
+/**
+ * Code that runs in the game: a state machine built from death counters. Inside the arrow,
+ * let variables holding numbers are death counters and booleans are switches; if / else,
+ * while, do, for, break, continue and functions (inlined per call) all work; conditions go in
+ * an if or while and actions stand as statements. One iteration of a loop per trigger cycle.
+ * Everything the body reads from outside (constants, helpers, conditions, actions) is
+ * computed when you build, so it must not depend on the variables.
+ */
+${kw}function program(body: () => void, options?: ProgramOptions): void;
+/** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
+${kw}function hyperTriggers(owner?: Player): void;
+/** A coin toss (Randomize Switch), inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
+${kw}function random(): boolean;
+/** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
+${kw}function disabled<T extends Condition | Action>(item: T): T;
+/** A condition by raw type number and record fields, for types the editor does not know. */
+${kw}function condition(${CONDITION_FIELDS.map((f) => `${f}?: number`).join(", ")}): Condition;
+/** An action by raw type number and record fields, for types the editor does not know. */
+${kw}function action(${ACTION_FIELDS.map((f) => `${f}?: number`).join(", ")}): Action;
+/** EUD: compare the 32-bit value at a memory address (1.16.1 layout; Remastered emulates it). deaths at player EPD(address). */
+${kw}function memory(address: number, comparison: Comparison | number, value: number): Condition;
+/** EUD: set / add to / subtract from the 32-bit value at a memory address (1.16.1 layout; Remastered emulates it). */
+${kw}function setMemory(address: number, modifier: Modifier | number, value: number): Action;
+/** Preserve Trigger: the trigger runs again next cycle instead of once. */
+${kw}function preserve(): Action;
+`;
+}
+function signature(kw, ident, def, returns) {
+  const params = scriptParams(def).map((p) => `${p.name}${p.optional ? "?" : ""}: ${argType(p.arg.kind)}`);
+  const doc = def.args.length ? `${def.name} \u2014 ${def.args.map((a2) => a2.label).join(", ")}` : def.name;
+  return `/** ${doc} */
+${kw}function ${ident}(${params.join(", ")}): ${returns};`;
+}
+function tableDecl(kw, t, keep = () => true, note) {
+  const lines = [`/** ${t.doc} */`, `${kw}const ${t.object}: {`];
+  if (note) lines.push(`  // ${note}`);
+  for (const e of t.entries) e.keys.forEach((k, i) => {
+    if (keep(k, i)) lines.push(`  readonly ${propertyKey(k)}: ${t.type}<${e.value}>;`);
+  });
+  lines.push("};");
+  return lines.join("\n");
+}
+function playerAliases(kw, names) {
+  const lines = [];
+  for (const e of names.players.entries) {
+    if (e.value < PLAYER_SLOTS) lines.push(`/** ${e.keys[1]} */
+${kw}const ${e.keys[0]}: Player<${e.value}>;`);
+  }
+  lines.push(`/** The player the trigger is running for. */
+${kw}const CurrentPlayer: Player<13>;`);
+  lines.push(`/** Every player. */
+${kw}const AllPlayers: Player<17>;`);
+  return lines.join("\n");
+}
+function tables(kw, names, compact) {
+  if (!compact) {
+    return [names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => tableDecl(kw, t)).join("\n");
+  }
+  const isDefaultSwitch = (k) => /^Switch ?(\d+)$/.test(k);
+  return [
+    tableDecl(kw, names.players),
+    tableDecl(kw, names.units, (k) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k), `Every unit is also indexable by its StarEdit name: ${names.units.object}["Terran Marine"].`),
+    tableDecl(kw, names.locations),
+    tableDecl(kw, names.switches, (k) => {
+      const m = /^Switch(\d+)$/.exec(k);
+      return m ? Number(m[1]) <= 16 : !isDefaultSwitch(k);
+    }, "Switch1 \u2026 Switch256 exist; the first sixteen are listed. A switch given a name in the map is listed by that name."),
+    `/** AI scripts, by StarEdit name ("Terran Custom Level") or four-character code. */
+${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`
+  ].join("\n");
+}
+function body(kw, typeKw, names, compact) {
+  return [
+    types(typeKw),
+    choiceTypes(typeKw),
+    functions(kw),
+    "// \u2500\u2500 Conditions \u2500\u2500",
+    ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
+    "",
+    "// \u2500\u2500 Actions \u2500\u2500",
+    ...[...ACTION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Action")),
+    "",
+    "// \u2500\u2500 The map \u2500\u2500",
+    playerAliases(kw, names),
+    tables(kw, names, compact)
+  ].join("\n");
+}
+function generateDeclarations(names = defaultScriptNames(), options = {}) {
+  const compact = options.compact === true;
+  const globals = body("declare ", "", names, compact);
+  if (compact) return `${HEADER}${globals}
+`;
+  const module = body("export ", "export ", names, false).split("\n").map((l) => l ? `  ${l}` : l).join("\n");
+  return `${HEADER}${globals}
+
+// \u2500\u2500 The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; \u2500\u2500
+declare module "${MODULE_NAME}" {
+${module}
+}
+`;
+}
+
+// compiler/hoist.ts
+function declarationOf(ts, checker, id) {
+  let sym = ts.isShorthandPropertyAssignment(id.parent) && id.parent.name === id ? checker.getShorthandAssignmentValueSymbol(id.parent) : checker.getSymbolAtLocation(id);
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+  return sym?.valueDeclaration ?? sym?.declarations?.[0];
+}
+function libraryName(ts, checker, id) {
+  let sym = checker.getSymbolAtLocation(id);
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+  const decl = sym?.valueDeclaration ?? sym?.declarations?.[0];
+  if (!decl || decl.getSourceFile().fileName !== DECLARATIONS_FILE) return null;
+  return sym.name;
+}
+function owningDeclaration(ts, decl) {
+  let d = decl;
+  while (ts.isBindingElement(d) || ts.isArrayBindingPattern(d) || ts.isObjectBindingPattern(d)) d = d.parent;
+  return d;
+}
+var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers"]);
+function planProgram(ts, checker, arrow) {
+  const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Set(), tree: [], errors: [] };
+  const error = (node, message) => plan.errors.push({ node, message });
+  if (!ts.isBlock(arrow.body)) {
+    error(arrow.body, "program() takes an arrow with a block body: program(() => { \u2026 }).");
+    plan.body = ts.factory.createBlock([]);
+    return plan;
+  }
+  if (arrow.parameters.length) error(arrow.parameters[0], "The program's arrow takes no parameters.");
+  if (arrow.asteriskToken || arrow.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) error(arrow, "The program cannot be async or a generator.");
+  const declare = (node) => plan.game.add(node);
+  const isFunctionValue = (n) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isClassExpression(n) || ts.isClassDeclaration(n);
+  const collect = (node) => {
+    if (isFunctionValue(node)) return;
+    if (ts.isVariableDeclarationList(node) && !(node.flags & ts.NodeFlags.Const)) for (const d of node.declarations) declare(d);
+    if (ts.isFunctionDeclaration(node)) {
+      declare(node);
+      for (const p of node.parameters) declare(p);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(arrow.body);
+  const memo = /* @__PURE__ */ new Map();
+  const isGameDecl = (decl) => plan.game.has(owningDeclaration(ts, decl));
+  const hoistable = (e) => {
+    const hit = memo.get(e);
+    if (hit !== void 0) return hit;
+    let ok = true;
+    const scan = (n) => {
+      if (!ok) return;
+      if (ts.isIdentifier(n)) {
+        identifier2(n, n.parent);
+        return;
+      }
+      ts.forEachChild(n, scan);
+    };
+    const identifier2 = (n, p) => {
+      if (ts.isPropertyAccessExpression(p) && p.name === n || ts.isPropertyAssignment(p) && p.name === n || ts.isMethodDeclaration(p) && p.name === n || ts.isQualifiedName(p)) return;
+      const lib = libraryName(ts, checker, n);
+      if (lib === "random") {
+        ok = false;
+        return;
+      }
+      if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p) && p.expression === n) {
+        ok = false;
+        return;
+      }
+      const decl = declarationOf(ts, checker, n);
+      if (decl && isGameDecl(decl)) {
+        ok = false;
+        return;
+      }
+    };
+    const check = (n) => {
+      if (!ok) return;
+      if (isFunctionValue(n)) {
+        scan(n);
+        return;
+      }
+      if (ts.isIdentifier(n)) {
+        identifier2(n, n.parent);
+        return;
+      }
+      if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword || ts.isAwaitExpression(n) || ts.isYieldExpression(n)) {
+        ok = false;
+        return;
+      }
+      if (ts.isBinaryExpression(n)) {
+        const k = n.operatorToken.kind;
+        if (k === ts.SyntaxKind.AmpersandAmpersandToken || k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.CommaToken || k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment) {
+          ok = false;
+          return;
+        }
+      }
+      if (ts.isPrefixUnaryExpression(n) && (n.operator === ts.SyntaxKind.ExclamationToken || n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) {
+        ok = false;
+        return;
+      }
+      if (ts.isPostfixUnaryExpression(n)) {
+        ok = false;
+        return;
+      }
+      ts.forEachChild(n, check);
+    };
+    check(e);
+    memo.set(e, ok);
+    return ok;
+  };
+  const hoist = (e, items) => {
+    const index = plan.hoisted.length;
+    plan.hoisted.push(e);
+    plan.index.set(e, index);
+    items.push({ kind: "hoist", index, expr: e });
+  };
+  const value = (e, items) => {
+    if (!e) return;
+    if (hoistable(e)) {
+      hoist(e, items);
+      return;
+    }
+    descend(e, items);
+  };
+  const descend = (e, items) => {
+    if (isFunctionValue(e)) {
+      error(e, "A function written inside program() cannot use the program's variables; declare it with function so it is inlined, or move it outside.");
+      return;
+    }
+    if (ts.isIdentifier(e)) return;
+    if (ts.isPropertyAccessExpression(e)) {
+      value(e.expression, items);
+      return;
+    }
+    if (ts.isElementAccessExpression(e)) {
+      value(e.expression, items);
+      value(e.argumentExpression, items);
+      return;
+    }
+    if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
+      const lib = ts.isCallExpression(e) && ts.isIdentifier(e.expression) ? libraryName(ts, checker, e.expression) : null;
+      if (lib && FORBIDDEN_INSIDE.has(lib)) error(e, `${lib}() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements.`);
+      value(e.expression, items);
+      for (const a2 of e.arguments ?? []) value(a2, items);
+      return;
+    }
+    if (ts.isBinaryExpression(e)) {
+      value(e.left, items);
+      value(e.right, items);
+      return;
+    }
+    if (ts.isPrefixUnaryExpression(e) || ts.isPostfixUnaryExpression(e)) {
+      value(e.operand, items);
+      return;
+    }
+    if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e) || ts.isTypeAssertionExpression(e) || ts.isSpreadElement(e) || ts.isAwaitExpression(e) || ts.isTypeOfExpression(e) || ts.isVoidExpression(e) || ts.isDeleteExpression(e)) {
+      value(e.expression, items);
+      return;
+    }
+    if (ts.isConditionalExpression(e)) {
+      value(e.condition, items);
+      value(e.whenTrue, items);
+      value(e.whenFalse, items);
+      return;
+    }
+    if (ts.isTemplateExpression(e)) {
+      for (const s of e.templateSpans) value(s.expression, items);
+      return;
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      for (const el of e.elements) value(el, items);
+      return;
+    }
+    if (ts.isObjectLiteralExpression(e)) {
+      for (const p of e.properties) {
+        if (ts.isPropertyAssignment(p)) value(p.initializer, items);
+        else if (ts.isShorthandPropertyAssignment(p)) value(p.name, items);
+        else if (ts.isSpreadAssignment(p)) value(p.expression, items);
+      }
+      return;
+    }
+    ts.forEachChild(e, (c2) => {
+      if (ts.isExpression(c2)) value(c2, items);
+    });
+  };
+  const statement = (s, items, deferred) => {
+    if (ts.isVariableStatement(s)) {
+      declarations(s.declarationList, items);
+      return;
+    }
+    if (ts.isExpressionStatement(s)) {
+      value(s.expression, items);
+      return;
+    }
+    if (ts.isBlock(s)) {
+      items.push({ kind: "block", items: block2(s.statements) });
+      return;
+    }
+    if (ts.isIfStatement(s)) {
+      value(s.expression, items);
+      items.push({ kind: "block", items: block2([s.thenStatement]) });
+      if (s.elseStatement) items.push({ kind: "block", items: block2([s.elseStatement]) });
+      return;
+    }
+    if (ts.isWhileStatement(s)) {
+      value(s.expression, items);
+      items.push({ kind: "block", items: block2([s.statement]) });
+      return;
+    }
+    if (ts.isDoStatement(s)) {
+      items.push({ kind: "block", items: block2([s.statement]) });
+      value(s.expression, items);
+      return;
+    }
+    if (ts.isForStatement(s)) {
+      const inner = [];
+      if (s.initializer) {
+        if (ts.isVariableDeclarationList(s.initializer)) declarations(s.initializer, inner);
+        else value(s.initializer, inner);
+      }
+      value(s.condition, inner);
+      inner.push({ kind: "block", items: block2([s.statement]) });
+      value(s.incrementor, inner);
+      items.push({ kind: "block", items: inner });
+      return;
+    }
+    if (ts.isFunctionDeclaration(s)) {
+      if (s.body) deferred.push({ kind: "block", items: block2(s.body.statements) });
+      return;
+    }
+    if (ts.isReturnStatement(s)) {
+      value(s.expression, items);
+      return;
+    }
+    if (ts.isSwitchStatement(s)) {
+      value(s.expression, items);
+      for (const c2 of s.caseBlock.clauses) {
+        if (ts.isCaseClause(c2)) value(c2.expression, items);
+        items.push({ kind: "block", items: block2(c2.statements) });
+      }
+      return;
+    }
+    if (ts.isForOfStatement(s) || ts.isForInStatement(s)) {
+      value(s.expression, items);
+      items.push({ kind: "block", items: block2([s.statement]) });
+      return;
+    }
+    if (ts.isLabeledStatement(s)) {
+      statement(s.statement, items, deferred);
+      return;
+    }
+    if (ts.isThrowStatement(s)) {
+      value(s.expression, items);
+      return;
+    }
+  };
+  const declarations = (list, items) => {
+    const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
+    for (const d of list.declarations) {
+      if (isConst) {
+        if (!d.initializer) {
+          error(d, "A constant needs a value.");
+          continue;
+        }
+        if (hoistable(d.initializer)) {
+          plan.consts.add(d);
+          items.push({ kind: "const", decl: d });
+          continue;
+        }
+        const name = ts.isIdentifier(d.name) ? d.name.text : "This constant";
+        if (isFunctionValue(d.initializer)) {
+          error(d, `${name} is a function that uses the program's variables; declare it with function so it is inlined at each call.`);
+          continue;
+        }
+        error(d, `${name} depends on the program's variables: declare it with let.`);
+        plan.game.add(d);
+        memo.clear();
+        descend(d.initializer, items);
+        continue;
+      }
+      value(d.initializer, items);
+    }
+  };
+  const block2 = (statements) => {
+    const items = [];
+    const deferred = [];
+    for (const s of statements) statement(s, items, deferred);
+    items.push(...deferred);
+    return items;
+  };
+  plan.tree = block2(arrow.body.statements);
+  return plan;
+}
+function hoistedFunction(ts, plan) {
+  const f = ts.factory;
+  const h = f.createIdentifier("__h");
+  const emit = (items) => items.map((item) => {
+    switch (item.kind) {
+      case "const":
+        return f.createVariableStatement(void 0, f.createVariableDeclarationList([item.decl], ts.NodeFlags.Const));
+      case "hoist":
+        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), item.expr));
+      case "block":
+        return f.createBlock(emit(item.items), true);
+    }
+  });
+  const body2 = f.createBlock([
+    f.createVariableStatement(void 0, f.createVariableDeclarationList([f.createVariableDeclaration(h, void 0, void 0, f.createArrayLiteralExpression([]))], ts.NodeFlags.Const)),
+    ...emit(plan.tree),
+    f.createReturnStatement(h)
+  ], true);
+  return f.createArrowFunction(void 0, void 0, [], void 0, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), body2);
+}
+function transformer(ts, checker, ctx) {
+  return (context) => (sf) => {
+    const f = ts.factory;
+    const at = (node) => f.createArrayLiteralExpression([f.createNumericLiteral(ctx.fileIndex(sf)), f.createNumericLiteral(sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1)]);
+    const pad = (args, upTo) => {
+      const out = [...args];
+      while (out.length < upTo) out.push(f.createIdentifier("undefined"));
+      return out;
+    };
+    const visit = (node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        const lib = libraryName(ts, checker, node.expression);
+        if (lib === "trigger" && node.arguments.length >= 3 && node.arguments.length <= 4) {
+          const args = pad(node.arguments.map((a2) => ts.visitNode(a2, visit)), 4);
+          return f.updateCallExpression(node, node.expression, node.typeArguments, [...args, at(node)]);
+        }
+        if (lib === "program" && node.arguments.length >= 1 && node.arguments.length <= 2) {
+          const arrow = node.arguments[0];
+          const plan = ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow) ? ctx.planFor(arrow) : void 0;
+          if (plan) {
+            const descriptor = f.createObjectLiteralExpression([
+              f.createPropertyAssignment("__trigscript", f.createStringLiteral("program")),
+              f.createPropertyAssignment("at", at(node)),
+              f.createPropertyAssignment("pos", f.createNumericLiteral(arrow.getStart(sf))),
+              f.createPropertyAssignment("hoisted", hoistedFunction(ts, plan))
+            ], true);
+            const rest = pad(node.arguments.slice(1).map((a2) => ts.visitNode(a2, visit)), 1);
+            return f.updateCallExpression(node, node.expression, node.typeArguments, [descriptor, ...rest, at(node)]);
+          }
+        }
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    return ts.visitNode(sf, visit);
+  };
+}
+
+// compiler/link.ts
+function resolvePath(from, spec) {
+  const base = from.split("/").slice(0, -1);
+  for (const part of spec.split("/")) {
+    if (part === "." || part === "") continue;
+    if (part === "..") base.pop();
+    else base.push(part);
+  }
+  return base.join("/");
+}
+function resolveModule(files, from, spec) {
+  if (!spec.startsWith("./") && !spec.startsWith("../")) return null;
+  const path = resolvePath(from, spec);
+  for (const candidate of [path, `${path}.ts`, path.replace(/\.js$/, ".ts"), `${path}/index.ts`]) if (files.has(candidate)) return candidate;
+  return null;
+}
+var SOURCE_URL_PREFIX = "trigscript://";
+function runModules(files, entry, library, moduleName) {
+  const names = new Set(files.keys());
+  const cache = /* @__PURE__ */ new Map();
+  const globals = Object.keys(library);
+  const load = (file) => {
+    const hit = cache.get(file);
+    if (hit) return hit.exports;
+    const linked = files.get(file);
+    const module = { exports: {} };
+    cache.set(file, module);
+    const require2 = (spec) => {
+      if (spec === moduleName) return library;
+      const target = resolveModule(names, file, spec);
+      if (!target) {
+        throw new Error(spec.startsWith(".") ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.` : `Cannot import "${spec}": a script imports its own files (./name) and "${moduleName}" only.`);
+      }
+      return load(target);
+    };
+    const body2 = `${linked.js}
+//# sourceURL=${SOURCE_URL_PREFIX}${file}`;
+    const fn = new Function("exports", "require", "module", "__filename", ...globals, body2);
+    fn(module.exports, require2, module, file, ...globals.map((g) => library[g]));
+    return module.exports;
+  };
+  try {
+    load(entry);
+    return null;
+  } catch (err) {
+    return locate(err, files);
+  }
+}
+function locate(err, files) {
+  const message = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack ?? "" : "";
+  for (const m of stack.matchAll(/trigscript:\/\/([^\s:)]+):(\d+):(\d+)/g)) {
+    const file = m[1];
+    const linked = files.get(file);
+    if (!linked) continue;
+    const line = Number(m[2]) - 2;
+    const column = Number(m[3]);
+    const original = linked.map ? mapPosition(linked.map, line, column) : null;
+    return original ? { message, file, line: original.line, column: original.column } : { message, file, line: Math.max(1, line), column };
+  }
+  return { message };
+}
+var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function decodeVlq(s, at) {
+  let result = 0;
+  let shift = 0;
+  for (; ; ) {
+    const digit = B64.indexOf(s[at.i++]);
+    if (digit < 0) throw new Error("bad VLQ");
+    result += (digit & 31) << shift;
+    shift += 5;
+    if ((digit & 32) === 0) break;
+  }
+  const negative = result & 1;
+  result >>= 1;
+  return negative ? -result : result;
+}
+function mapPosition(mapJson, line, column) {
+  let mappings;
+  try {
+    mappings = JSON.parse(mapJson).mappings;
+  } catch {
+    return null;
+  }
+  const lines = mappings.split(";");
+  if (line < 1 || line > lines.length) return null;
+  let origLine = 0;
+  let origCol = 0;
+  let best = null;
+  try {
+    for (let l = 0; l < line; l++) {
+      let genCol = 0;
+      for (const seg of lines[l].split(",")) {
+        if (!seg) continue;
+        const at = { i: 0 };
+        genCol += decodeVlq(seg, at);
+        if (at.i >= seg.length) continue;
+        decodeVlq(seg, at);
+        origLine += decodeVlq(seg, at);
+        origCol += decodeVlq(seg, at);
+        if (l === line - 1 && genCol + 1 <= column) best = { line: origLine + 1, column: origCol + 1 };
+        if (l === line - 1 && best === null) best = { line: origLine + 1, column: origCol + 1 };
+      }
+    }
+  } catch {
+    return null;
+  }
+  return best;
+}
+
+// compiler/runtime.ts
+var DEATHS_TABLE_ADDRESS = 5808996;
+var ScriptError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ScriptError";
+  }
+};
+var Collector = class {
+  entries = [];
+  strings = [];
+  localString(s) {
+    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
+    if (at >= 0) return at + 1;
+    this.strings.push(s);
+    return this.strings.length;
+  }
+};
+var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript === "condition";
+var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
+var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
+var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
+var condition = (record) => ({ __trigscript: "condition", record });
+var action = (record) => ({ __trigscript: "action", record });
+function describe(v) {
+  if (typeof v === "string") return JSON.stringify(v.length > 40 ? `${v.slice(0, 39)}\u2026` : v);
+  if (typeof v === "number" || typeof v === "boolean" || v === null || v === void 0) return String(v);
+  if (isCondition(v)) return "a condition";
+  if (isAction(v)) return "an action";
+  if (Array.isArray(v)) return "an array";
+  if (typeof v === "function") return "a function";
+  return "an object";
+}
+function integer(v, what) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+}
+function flatten(v, out = []) {
+  if (Array.isArray(v)) for (const x of v) flatten(x, out);
+  else if (v !== void 0 && v !== null && v !== false) out.push(v);
+  return out;
+}
+function createRuntime(names, collector, options = {}) {
+  const rt = {};
+  const comment = options.comments === false ? void 0 : (text) => collector.localString({ text });
+  for (const t of [names.players, names.units, names.locations, names.switches, names.aiScripts]) {
+    const table2 = {};
+    for (const e of t.entries) for (const k of e.keys) table2[k] = e.value;
+    rt[t.object] = Object.freeze(table2);
+  }
+  for (let i = 0; i < PLAYER_SLOTS; i++) rt[`P${i + 1}`] = i;
+  rt.CurrentPlayer = PlayerGroup.CurrentPlayer;
+  rt.AllPlayers = PlayerGroup.AllPlayers;
+  const argValue = (kind, v, what) => {
+    switch (kind) {
+      case "text":
+      case "wav":
+        if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
+        if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
+        throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
+      case "count":
+        if (typeof v === "string") {
+          if (v.trim().toLowerCase() === "all") return 0;
+          throw new ScriptError(`${what}: expected a count or "All", got ${describe(v)}.`);
+        }
+        return integer(v, what);
+      case "aiScript":
+        if (typeof v === "string") {
+          const code = aiScriptByName(v);
+          if (code === void 0) throw new ScriptError(`${what}: unknown AI script ${describe(v)}.`);
+          return code;
+        }
+        return integer(v, what);
+      case "textFlags":
+        return v === void 0 || v === true ? ActionFlag.AlwaysDisplay : v === false ? 0 : integer(v, what) & ActionFlag.AlwaysDisplay;
+      default:
+        if (typeof v === "string") {
+          if (!CANONICAL[kind]) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+          const n = choiceOf(kind, v);
+          if (n === void 0) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
+          return n;
+        }
+        return integer(v, what);
+    }
+  };
+  const fromDef = (ident, def, kind) => (...args) => {
+    const params = scriptParams(def);
+    const required = params.filter((p) => !p.optional).length;
+    if (args.length < required || args.length > params.length) {
+      throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
+    }
+    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
+    params.forEach((p, i) => {
+      const v = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
+      if (p.arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v;
+      else record[p.arg.field] = v;
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
+    return kind === "condition" ? condition(record) : action(record);
+  };
+  for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
+  for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
+  rt.preserve = rt.preserveTrigger;
+  const raw = (kind) => (...args) => {
+    const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
+    const record = kind === "condition" ? emptyCondition() : emptyAction();
+    args.forEach((a2, i) => {
+      if (i < fields.length) record[fields[i]] = integer(a2, `${kind}(): ${fields[i]}`);
+    });
+    if (kind === "action") {
+      for (const f of ["text", "wav"]) if (record[f]) record[f] = collector.localString({ index: record[f] });
+    }
+    return kind === "condition" ? condition(record) : action(record);
+  };
+  rt.condition = raw("condition");
+  rt.action = raw("action");
+  const epd = (address, what) => {
+    const n = integer(address, what);
+    if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
+    return (n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
+  };
+  rt.memory = (address, comparison, value) => condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
+  rt.setMemory = (address, modifier, value) => action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
+  rt.disabled = (item) => {
+    if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
+    if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
+    throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
+  };
+  const playersOf = (v, what) => {
+    if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
+    return flatten(v).map((p) => {
+      const n = integer(p, what);
+      if (n >= PLAYER_GROUP_COUNT) throw new ScriptError(`${what}: player group ${n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
+      return n;
+    });
+  };
+  const items = (v, test, what, wrong, wrongName) => flatten(v).map((x) => {
+    if (test(x)) return x;
+    if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
+    throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
+  });
+  rt.trigger = (players, conditions, actions, options2, at) => {
+    const t = emptyTrigger();
+    for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
+    t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c2) => ({ ...c2.record }));
+    t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a2) => ({ ...a2.record }));
+    if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
+    if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`trigger: options is an object such as { preserve: true }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "flags") {
+          t.flags |= integer(value, "trigger: flags");
+          continue;
+        }
+        const hit = TRIGGER_OPTION_NAMES.find(([, name]) => name === key);
+        if (!hit) throw new ScriptError(`trigger: unknown option "${key}".`);
+        if (value) t.flags |= hit[0];
+      }
+    }
+    collector.entries.push({ kind: "trigger", record: t, at: isAt(at) ? at : null });
+    return { __trigscript: "trigger", record: t };
+  };
+  rt.hyperTriggers = (owner = 0) => {
+    const p = integer(owner, "hyperTriggers: owner");
+    if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
+    for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
+  };
+  rt.program = (body2, options2, at) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const out = { owner: 0, comments: comment !== void 0, variableUnits: [] };
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        switch (key) {
+          case "owner": {
+            const p = integer(value, "program: owner");
+            if (p >= PLAYER_SLOTS) throw new ScriptError(`program: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}: the program is one thread running as that player.`);
+            out.owner = p;
+            break;
+          }
+          case "comments":
+            if (typeof value !== "boolean") throw new ScriptError("program: comments is true or false.");
+            out.comments = value;
+            break;
+          case "variableUnits":
+            out.variableUnits = flatten(value).map((u) => integer(u, "program: variableUnits"));
+            break;
+          default:
+            throw new ScriptError(`program: unknown option "${key}".`);
+        }
+      }
+    }
+    collector.entries.push({ kind: "program", descriptor: body2, options: out, at: isAt(at) ? at : null });
+  };
+  rt.random = () => {
+    throw new ScriptError("random() is a coin toss the game makes: use it inside program(), in an if, a while or an assignment.");
+  };
+  return rt;
+}
+var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
+
 // compiler/scope.ts
 var Scope = class {
   map = /* @__PURE__ */ new Map();
@@ -1634,6 +2365,16 @@ var Scope = class {
 // compiler/structured.ts
 var MAX_INLINE_DEPTH = 16;
 var LABEL_LENGTH = 48;
+function describe2(v) {
+  if (isCondition(v)) return "a condition";
+  if (isAction(v)) return "an action";
+  if (isTrigger(v)) return "a trigger";
+  if (Array.isArray(v)) return "an array";
+  if (typeof v === "string") return "text";
+  if (typeof v === "function") return "a function";
+  if (v === null || v === void 0) return String(v);
+  return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
+}
 var Structured = class {
   c;
   m;
@@ -1642,27 +2383,30 @@ var Structured = class {
   dead = false;
   inlineDepth = 0;
   scratchUsed = 0;
-  /** The program's outermost scope: what a function body closes over. */
-  topScope = null;
-  constructor(c2, m) {
+  scope = new Scope(null);
+  /** The program's outermost scope: what an inlined function body closes over. */
+  topScope = this.scope;
+  constructor(c2) {
     this.c = c2;
-    this.m = m;
+    this.m = c2.machine;
     this.ts = c2.ts;
   }
-  run(statements) {
-    this.topScope = new Scope(null);
+  run() {
+    const statements = this.c.plan.body.statements;
     try {
       this.block(statements, {}, this.topScope);
       if (!this.dead) this.m.jump(this.m.halt, this.lastLine(statements), "end of program");
     } catch (err) {
       if (!(err instanceof LowerError)) throw err;
-      this.c.error(statements[statements.length - 1] ?? this.c.sf, err.message);
+      this.c.error(statements[statements.length - 1] ?? this.c.plan.body, err.message);
     }
-    this.c.scope = null;
+  }
+  lineOf(node) {
+    return this.c.sf.getLineAndCharacterOfPosition(node.getStart(this.c.sf)).line + 1;
   }
   lastLine(statements) {
     const last = statements[statements.length - 1];
-    return last ? this.c.sf.getLineAndCharacterOfPosition(last.getEnd()).line + 1 : 1;
+    return last ? this.c.sf.getLineAndCharacterOfPosition(last.getEnd()).line + 1 : this.lineOf(this.c.plan.body);
   }
   /** "L12: while (x < 3)" — the comment a generated trigger carries. */
   label(node) {
@@ -1670,10 +2414,10 @@ var Structured = class {
     const brace = text.indexOf("{");
     if (brace > 0) text = text.slice(0, brace).trim();
     if (text.length > LABEL_LENGTH) text = `${text.slice(0, LABEL_LENGTH - 1)}\u2026`;
-    return `L${this.c.lineOf(node)}: ${text}`;
+    return `L${this.lineOf(node)}: ${text}`;
   }
   line(node) {
-    return this.c.lineOf(node);
+    return this.lineOf(node);
   }
   live() {
     if (this.dead) {
@@ -1681,9 +2425,203 @@ var Structured = class {
       this.dead = false;
     }
   }
-  block(statements, ctx, scope = new Scope(this.c.scope)) {
-    const outer = this.c.scope;
-    this.c.scope = scope;
+  /* ── Values and bindings ── */
+  /** Strip parentheses, `as`, `satisfies`, `!` — the wrappers that change nothing. */
+  unwrap(expr) {
+    const { ts } = this;
+    for (; ; ) {
+      if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr)) expr = expr.expression;
+      else return expr;
+    }
+  }
+  /** The declaration of an identifier when it is one of the program's own (a let, a parameter, a function). */
+  gameDeclaration(id) {
+    const { ts } = this;
+    let decl = declarationOf(ts, this.c.checker, id);
+    while (decl && (ts.isBindingElement(decl) || ts.isArrayBindingPattern(decl) || ts.isObjectBindingPattern(decl))) decl = decl.parent;
+    return decl && this.c.plan.game.has(decl) ? decl : void 0;
+  }
+  binding(expr) {
+    const e = this.unwrap(expr);
+    if (!this.ts.isIdentifier(e)) return void 0;
+    const decl = this.gameDeclaration(e);
+    return decl ? this.scope.lookup(decl) : void 0;
+  }
+  varOf(expr) {
+    const b = this.binding(expr);
+    return b?.kind === "var" ? b.v : void 0;
+  }
+  /**
+   * The build-time value of an expression, when it has one: a hoisted expression's, a
+   * parameter's bound to one, or — so that `createUnit(p, units.Zergling, count, at)`
+   * works inside a function whose `p` and `count` were bound at the call — a call,
+   * member access, arithmetic or template over such values, evaluated now. Undefined
+   * when a variable of the program is involved.
+   */
+  evaluate(expr, depth = 0) {
+    const { ts } = this;
+    let e = expr;
+    for (; ; ) {
+      const k = this.c.plan.index.get(e);
+      if (k !== void 0) return { value: this.c.values[k] };
+      if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
+      else break;
+    }
+    if (depth > 32) return void 0;
+    const sub = (x) => this.evaluate(x, depth + 1);
+    if (ts.isIdentifier(e)) {
+      const b = this.binding(e);
+      return b?.kind === "value" ? { value: b.value } : void 0;
+    }
+    if (e.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
+    if (e.kind === ts.SyntaxKind.FalseKeyword) return { value: false };
+    if (e.kind === ts.SyntaxKind.NullKeyword) return { value: null };
+    if (ts.isNumericLiteral(e)) return { value: Number(e.text) };
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return { value: e.text };
+    if (ts.isPropertyAccessExpression(e)) {
+      const obj = sub(e.expression);
+      if (!obj || obj.value === null || obj.value === void 0) return void 0;
+      return { value: obj.value[e.name.text] };
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const obj = sub(e.expression);
+      const key = sub(e.argumentExpression);
+      if (!obj || !key || obj.value === null || obj.value === void 0) return void 0;
+      return { value: obj.value[String(key.value)] };
+    }
+    if (ts.isCallExpression(e)) {
+      const callee = sub(e.expression);
+      if (!callee || typeof callee.value !== "function") return void 0;
+      const self = ts.isPropertyAccessExpression(e.expression) ? sub(e.expression.expression)?.value : void 0;
+      const args = [];
+      for (const a2 of e.arguments) {
+        if (ts.isSpreadElement(a2)) {
+          const v2 = sub(a2.expression);
+          if (!v2 || !Array.isArray(v2.value)) return void 0;
+          args.push(...v2.value);
+          continue;
+        }
+        const v = sub(a2);
+        if (!v) return void 0;
+        args.push(v.value);
+      }
+      try {
+        return { value: callee.value.apply(self, args) };
+      } catch (err) {
+        throw new LowerError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    if (ts.isTemplateExpression(e)) {
+      let out = e.head.text;
+      for (const span of e.templateSpans) {
+        const v = sub(span.expression);
+        if (!v) return void 0;
+        out += String(v.value) + span.literal.text;
+      }
+      return { value: out };
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      const out = [];
+      for (const el of e.elements) {
+        if (ts.isSpreadElement(el)) {
+          const v2 = sub(el.expression);
+          if (!v2 || !Array.isArray(v2.value)) return void 0;
+          out.push(...v2.value);
+          continue;
+        }
+        if (ts.isOmittedExpression(el)) {
+          out.push(void 0);
+          continue;
+        }
+        const v = sub(el);
+        if (!v) return void 0;
+        out.push(v.value);
+      }
+      return { value: out };
+    }
+    if (ts.isPrefixUnaryExpression(e)) {
+      const v = sub(e.operand);
+      if (!v) return void 0;
+      switch (e.operator) {
+        case ts.SyntaxKind.MinusToken:
+          return { value: -v.value };
+        case ts.SyntaxKind.PlusToken:
+          return { value: +v.value };
+        case ts.SyntaxKind.TildeToken:
+          return { value: ~v.value };
+        default:
+          return void 0;
+      }
+    }
+    if (ts.isBinaryExpression(e)) {
+      const l = sub(e.left);
+      const r = sub(e.right);
+      if (!l || !r) return void 0;
+      const a2 = l.value;
+      const b = r.value;
+      switch (e.operatorToken.kind) {
+        case ts.SyntaxKind.PlusToken:
+          return { value: a2 + b };
+        case ts.SyntaxKind.MinusToken:
+          return { value: a2 - b };
+        case ts.SyntaxKind.AsteriskToken:
+          return { value: a2 * b };
+        case ts.SyntaxKind.SlashToken:
+          return { value: a2 / b };
+        case ts.SyntaxKind.PercentToken:
+          return { value: a2 % b };
+        case ts.SyntaxKind.AsteriskAsteriskToken:
+          return { value: a2 ** b };
+        case ts.SyntaxKind.LessThanLessThanToken:
+          return { value: a2 << b };
+        case ts.SyntaxKind.GreaterThanGreaterThanToken:
+          return { value: a2 >> b };
+        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+          return { value: a2 >>> b };
+        case ts.SyntaxKind.AmpersandToken:
+          return { value: a2 & b };
+        case ts.SyntaxKind.BarToken:
+          return { value: a2 | b };
+        case ts.SyntaxKind.CaretToken:
+          return { value: a2 ^ b };
+        default:
+          return void 0;
+      }
+    }
+    if (ts.isConditionalExpression(e)) {
+      const c2 = sub(e.condition);
+      if (!c2) return void 0;
+      return c2.value ? sub(e.whenTrue) : sub(e.whenFalse);
+    }
+    return void 0;
+  }
+  isLibraryCall(e, name) {
+    const { ts } = this;
+    return ts.isCallExpression(e) && ts.isIdentifier(e.expression) && libraryName(ts, this.c.checker, e.expression) === name;
+  }
+  /** The variable an expression that could not be hoisted depends on — for the message. */
+  blamedVariable(expr) {
+    const { ts } = this;
+    let found = null;
+    const walk = (n) => {
+      if (found) return;
+      if (ts.isIdentifier(n) && this.gameDeclaration(n) && this.binding(n)?.kind !== "value") {
+        found = n.text;
+        return;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(expr);
+    return found;
+  }
+  notConstant(expr, what) {
+    const v = this.blamedVariable(expr);
+    this.c.error(expr, v ? `${what} must be known when the script is built, but ${v} is a variable of the program. Compare or assign variables in the program's own statements instead.` : `${what} must be known when the script is built.`);
+  }
+  /* ── Statements ── */
+  block(statements, ctx, scope = new Scope(this.scope)) {
+    const outer = this.scope;
+    this.scope = scope;
     for (const s of statements) {
       try {
         this.statement(s, ctx);
@@ -1692,16 +2630,11 @@ var Structured = class {
         this.c.error(s, err.message);
       }
     }
-    this.c.scope = outer;
+    this.scope = outer;
   }
-  /* ── Statements ── */
   statement(s, ctx) {
     const { ts } = this;
-    if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) return;
-    if (ts.isFunctionDeclaration(s)) {
-      if (s.parent !== this.c.sf) this.c.error(s, "Declare functions at the top level of the script.");
-      return;
-    }
+    if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s) || ts.isFunctionDeclaration(s)) return;
     this.live();
     if (ts.isVariableStatement(s)) {
       this.declare(s.declarationList);
@@ -1751,7 +2684,7 @@ var Structured = class {
         return;
       }
       if (s.expression) {
-        this.c.error(s.expression, "Functions cannot return values; write the result into a variable instead.");
+        this.c.error(s.expression, "Functions in a program cannot return values; write the result into a variable instead.");
         return;
       }
       this.m.jump(ctx.fn.end(), this.line(s), this.label(s));
@@ -1759,25 +2692,25 @@ var Structured = class {
       return;
     }
     if (ts.isSwitchStatement(s)) {
-      this.c.error(s, "switch is not supported; use if / else if.");
+      this.c.error(s, "switch is not supported in a program; use if / else if.");
       return;
     }
     if (ts.isForOfStatement(s) || ts.isForInStatement(s)) {
-      this.c.error(s, "for\u2026of / for\u2026in are not supported; count with a for (let i = 0; \u2026) loop.");
+      this.c.error(s, "for\u2026of / for\u2026in are not supported in a program; count with a for (let i = 0; \u2026) loop.");
       return;
     }
-    this.c.error(s, "This statement is not supported in a trigger script.");
+    if (ts.isThrowStatement(s) || ts.isTryStatement(s)) {
+      this.c.error(s, "The game has no exceptions.");
+      return;
+    }
+    this.c.error(s, "This statement is not supported in a program.");
   }
   declare(list) {
     const { ts } = this;
-    const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     for (const d of list.declarations) {
+      if (this.c.plan.consts.has(d)) continue;
       if (!ts.isIdentifier(d.name)) {
-        this.c.error(d.name, "Destructuring is not supported.");
-        continue;
-      }
-      if (isConst) {
-        if (!d.initializer) this.c.error(d, "A constant needs a value.");
+        this.c.error(d.name, "Destructuring is not supported in a program.");
         continue;
       }
       if (!d.initializer) {
@@ -1797,7 +2730,7 @@ var Structured = class {
       }
       if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
       else this.assignBool(v, d.initializer, d);
-      this.c.scope.bind(d, { kind: "var", v });
+      this.scope.bind(d, { kind: "var", v });
     }
   }
   kindOf(type) {
@@ -1807,15 +2740,43 @@ var Structured = class {
     if (isNumber(type)) return "number";
     return null;
   }
+  /** An expression statement whose value was computed at build time: actions run, nothing else does anything. */
+  hoistedStatement(expr, h) {
+    const v = h.value;
+    if (v === void 0 || v === null) return;
+    if (isAction(v)) {
+      this.emitAction(v.record, expr);
+      return;
+    }
+    if (Array.isArray(v) && v.length > 0 && v.every(isAction)) {
+      for (const a2 of v) this.emitAction(a2.record, expr);
+      return;
+    }
+    if (Array.isArray(v) && v.length === 0) return;
+    if (isCondition(v)) {
+      this.c.error(expr, "This is a condition; test it in an if or a while.");
+      return;
+    }
+    this.c.error(expr, `This statement produces ${describe2(v)}, which does nothing in the game. A statement here is an action, an assignment or a call.`);
+  }
+  emitAction(a2, at) {
+    if (a2.type === ActionType.PreserveTrigger) return;
+    this.m.action({ ...a2 }, this.line(at), this.label(at));
+  }
   expressionStatement(expr) {
     const { ts } = this;
-    const e = this.c.unwrap(expr);
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      this.hoistedStatement(e, h);
+      return;
+    }
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
-      const target = this.c.varOf(e.left);
+      const target = this.varOf(e.left);
       if (op === ts.SyntaxKind.EqualsToken || op === ts.SyntaxKind.PlusEqualsToken || op === ts.SyntaxKind.MinusEqualsToken) {
         if (!target) {
-          this.c.error(e.left, "Only let variables can be assigned.");
+          this.c.error(e.left, "Only the program's let variables can be assigned.");
           return;
         }
         if (target.kind === "switch") {
@@ -1844,7 +2805,7 @@ var Structured = class {
       return;
     }
     if ((ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)) {
-      const target = this.c.varOf(e.operand);
+      const target = this.varOf(e.operand);
       if (!target || target.kind !== "dc") {
         this.c.error(e, "++ / -- apply to number variables.");
         return;
@@ -1852,40 +2813,24 @@ var Structured = class {
       this.m.addConst(target, e.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1, this.line(e), this.label(e));
       return;
     }
-    if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
-      const name = e.expression.text;
-      const decl = this.c.scriptDeclaration(e.expression);
-      if (decl) {
-        if (ts.isFunctionDeclaration(decl)) {
-          this.inline(e, decl);
+    if (ts.isCallExpression(e)) {
+      if (ts.isIdentifier(e.expression)) {
+        const decl = this.gameDeclaration(e.expression);
+        if (decl) {
+          if (ts.isFunctionDeclaration(decl)) {
+            this.inline(e, decl);
+            return;
+          }
+          this.c.error(e, `${e.expression.text} is not a function.`);
           return;
         }
-        this.c.error(e, `${name} is not a function.`);
-        return;
+        const lib = libraryName(ts, this.c.checker, e.expression);
+        if (lib === "random") {
+          this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean.");
+          return;
+        }
       }
-      if (name === "trigger") {
-        this.c.error(e, "trigger() is a top-level declaration; it cannot run inside structured code.");
-        return;
-      }
-      if (name === "program") {
-        this.c.error(e, "program() belongs at the top level.");
-        return;
-      }
-      if (name === "PreserveTrigger") return;
-      if (ACTION_IDENTS.has(name) || name === "Action" || name === "SetMemory") {
-        const a2 = this.c.item(e, "action");
-        if (a2) this.m.action(a2, this.line(e), this.label(e));
-        return;
-      }
-      if (CONDITION_IDENTS.has(name) || name === "Condition" || name === "Memory") {
-        this.c.error(e, `${name} is a condition; test it in an if or while.`);
-        return;
-      }
-      if (name === "random" || name === "disabled") {
-        this.c.error(e, `${name}() does nothing on its own.`);
-        return;
-      }
-      this.c.error(e, `Unknown function "${name}".`);
+      this.notConstant(e, "A call's arguments");
       return;
     }
     this.c.error(e, "Only assignments and calls can stand as statements.");
@@ -1917,12 +2862,12 @@ var Structured = class {
     let broke = false;
     const held = this.m.tempsHeld;
     const b = this.bool(s.expression);
-    let body;
-    if (b.kind === "const" && b.value) body = header;
+    let body2;
+    if (b.kind === "const" && b.value) body2 = header;
     else {
-      body = this.m.fresh();
-      this.m.branch(b, body, exit, this.line(s), this.label(s));
-      this.m.enter(body);
+      body2 = this.m.fresh();
+      this.m.branch(b, body2, exit, this.line(s), this.label(s));
+      this.m.enter(body2);
     }
     this.m.releaseTo(held);
     this.dead = false;
@@ -1931,7 +2876,7 @@ var Structured = class {
       return exit;
     }, continueTo: () => header });
     if (!this.dead) this.m.jump(header, this.line(s), `L${this.line(s)}: loop`);
-    if (body === header && !broke) {
+    if (body2 === header && !broke) {
       this.dead = true;
       return;
     }
@@ -1939,7 +2884,7 @@ var Structured = class {
     this.dead = false;
   }
   doStatement(s, ctx) {
-    const body = this.m.loopHeader(this.line(s), this.label(s));
+    const body2 = this.m.loopHeader(this.line(s), this.label(s));
     const check = this.m.fresh();
     const exit = this.m.fresh();
     this.dead = false;
@@ -1949,14 +2894,14 @@ var Structured = class {
     this.dead = false;
     const held = this.m.tempsHeld;
     const b = this.bool(s.expression);
-    this.m.branch(b, body, exit, this.line(s), `L${this.line(s)}: while (${s.expression.getText(this.c.sf).replace(/\s+/g, " ")})`);
+    this.m.branch(b, body2, exit, this.line(s), `L${this.line(s)}: while (${s.expression.getText(this.c.sf).replace(/\s+/g, " ")})`);
     this.m.releaseTo(held);
     this.m.enter(exit);
   }
   forStatement(s, ctx) {
     const { ts } = this;
-    const outer = this.c.scope;
-    this.c.scope = new Scope(outer);
+    const outer = this.scope;
+    this.scope = new Scope(outer);
     if (s.initializer) {
       if (ts.isVariableDeclarationList(s.initializer)) this.declare(s.initializer);
       else this.expressionStatement(s.initializer);
@@ -1967,12 +2912,12 @@ var Structured = class {
     let incr = null;
     const held = this.m.tempsHeld;
     const b = s.condition ? this.bool(s.condition) : TRUE;
-    let body;
-    if (b.kind === "const" && b.value) body = header;
+    let body2;
+    if (b.kind === "const" && b.value) body2 = header;
     else {
-      body = this.m.fresh();
-      this.m.branch(b, body, exit, this.line(s), this.label(s));
-      this.m.enter(body);
+      body2 = this.m.fresh();
+      this.m.branch(b, body2, exit, this.line(s), this.label(s));
+      this.m.enter(body2);
     }
     this.m.releaseTo(held);
     this.dead = false;
@@ -1989,8 +2934,8 @@ var Structured = class {
       if (s.incrementor) this.expressionStatement(s.incrementor);
       this.m.jump(header, this.line(s), `L${this.line(s)}: loop`);
     }
-    this.c.scope = outer;
-    if (body === header && !broke) {
+    this.scope = outer;
+    if (body2 === header && !broke) {
       this.dead = true;
       return;
     }
@@ -2009,19 +2954,19 @@ var Structured = class {
       return;
     }
     if (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
-      this.c.error(decl, "Generators and async functions are not supported.");
+      this.c.error(decl, "Generators and async functions are not supported in a program.");
       return;
     }
     const scope = new Scope(this.topScope);
     let ok = true;
     decl.parameters.forEach((p, i) => {
       if (!ts.isIdentifier(p.name)) {
-        this.c.error(p, "Destructured parameters are not supported.");
+        this.c.error(p, "Destructured parameters are not supported in a program.");
         ok = false;
         return;
       }
       if (p.dotDotDotToken) {
-        this.c.error(p, "Rest parameters are not supported.");
+        this.c.error(p, "Rest parameters are not supported in a program.");
         ok = false;
         return;
       }
@@ -2032,32 +2977,26 @@ var Structured = class {
           ok = false;
           return;
         }
-        const v2 = this.c.value(p.initializer);
-        if (!v2) {
-          this.c.error(p.initializer, "A default value must be a constant.");
+        const h2 = this.evaluate(p.initializer);
+        if (!h2) {
+          this.notConstant(p.initializer, "A default value");
           ok = false;
           return;
         }
-        scope.bind(p, { kind: "const", value: v2 });
+        scope.bind(p, { kind: "value", value: h2.value });
         return;
       }
-      const v = this.c.value(arg);
-      if (v) {
-        scope.bind(p, { kind: "const", value: v });
+      const h = this.evaluate(arg);
+      if (h) {
+        scope.bind(p, { kind: "value", value: h.value });
         return;
       }
-      const variable = this.c.varOf(arg);
+      const variable = this.varOf(arg);
       if (variable) {
         scope.bind(p, { kind: "var", v: variable });
         return;
       }
-      const literal = this.c.unwrap(arg);
-      const bool = literal.kind === ts.SyntaxKind.TrueKeyword ? 1 : literal.kind === ts.SyntaxKind.FalseKeyword ? 0 : null;
-      if (bool !== null) {
-        scope.bind(p, { kind: "const", value: { n: bool } });
-        return;
-      }
-      this.c.error(arg, "Arguments are constants or variables (a variable is passed by reference).");
+      this.notConstant(arg, "An argument");
       ok = false;
     });
     if (!ok) return;
@@ -2065,13 +3004,13 @@ var Structured = class {
       this.c.error(call, `${decl.name?.text ?? "The function"} takes ${decl.parameters.length} argument${decl.parameters.length === 1 ? "" : "s"}.`);
       return;
     }
-    const saved = this.c.scope;
-    this.c.scope = scope;
+    const saved = this.scope;
+    this.scope = scope;
     this.inlineDepth++;
     let end = null;
     this.block(decl.body.statements, { fn: { end: () => end ??= this.m.fresh() } });
     this.inlineDepth--;
-    this.c.scope = saved;
+    this.scope = saved;
     if (end !== null) {
       if (!this.dead) this.m.jump(end, this.line(call), `L${this.line(call)}: end of ${decl.name?.text ?? "function"}`);
       this.m.enter(end);
@@ -2083,24 +3022,30 @@ var Structured = class {
     const rhs = this.linear(expr);
     if (rhs) this.m.assign(v, rhs, this.line(at), this.label(at));
   }
+  asInteger(h, at) {
+    const v = h.value;
+    if (typeof v === "boolean") return v ? 1 : 0;
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      this.c.error(at, `Expected a number, got ${describe2(v)}.`);
+      return null;
+    }
+    if (!Number.isInteger(v)) {
+      this.c.error(at, `Only whole numbers exist in the game (got ${v}).`);
+      return null;
+    }
+    return v;
+  }
   /** `c + Σ ±v` over death counters, or null (with a diagnostic). */
   linear(expr) {
     const { ts } = this;
-    const e = this.c.unwrap(expr);
-    const k = this.c.value(e);
-    if (k) {
-      if ("s" in k) {
-        this.c.error(e, "Expected a number, got text.");
-        return null;
-      }
-      if (!Number.isInteger(k.n)) {
-        this.c.error(e, "Only whole numbers exist in the game.");
-        return null;
-      }
-      return { c: k.n, terms: [] };
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      const n = this.asInteger(h, e);
+      return n === null ? null : { c: n, terms: [] };
     }
     if (ts.isIdentifier(e)) {
-      const b = this.c.binding(e);
+      const b = this.binding(e);
       if (b?.kind === "var") {
         if (b.v.kind === "switch") {
           this.c.error(e, `${b.v.name} is a boolean.`);
@@ -2108,9 +3053,7 @@ var Structured = class {
         }
         return { c: 0, terms: [{ v: b.v, sign: 1 }] };
       }
-      const init = this.c.initializer(e);
-      if (init) return this.linear(init);
-      this.c.error(e, `${e.text} is not a variable or a constant.`);
+      this.c.error(e, `${e.text} is not a variable of the program.`);
       return null;
     }
     if (ts.isPrefixUnaryExpression(e)) {
@@ -2130,35 +3073,32 @@ var Structured = class {
         const sign = op === ts.SyntaxKind.PlusToken ? 1 : -1;
         return { c: l.c + sign * r.c, terms: [...l.terms, ...r.terms.map((t) => ({ v: t.v, sign: t.sign * sign }))] };
       }
-      this.c.error(e, "The game can only add and subtract variables; use * / % on constants only.");
+      this.c.error(e, "The game can only add and subtract variables; * / % work on values known when the script is built.");
       return null;
     }
     if (ts.isCallExpression(e)) {
-      this.c.error(e, "Functions have no return value; write the result into a variable.");
+      this.notConstant(e, "A call's arguments");
       return null;
     }
-    this.c.error(e, "Expected a number: a constant, a variable, or a sum of them.");
+    this.c.error(e, "Expected a number: a value, a variable, or a sum of them.");
     return null;
   }
   /* ── Booleans ── */
   assignBool(v, expr, at) {
     const { ts } = this;
-    const e = this.c.unwrap(expr);
+    const e = this.unwrap(expr);
     const line = this.line(at);
     const label = this.label(at);
-    if (e.kind === ts.SyntaxKind.TrueKeyword) {
-      this.m.action(setSwitch(v, SwitchAction.Set), line, label);
+    const h = this.evaluate(expr);
+    if (h && typeof h.value === "boolean") {
+      this.m.action(setSwitch(v, h.value ? SwitchAction.Set : SwitchAction.Clear), line, label);
       return;
     }
-    if (e.kind === ts.SyntaxKind.FalseKeyword) {
-      this.m.action(setSwitch(v, SwitchAction.Clear), line, label);
-      return;
-    }
-    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.c.varOf(e.operand) === v) {
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v) {
       this.m.action(setSwitch(v, SwitchAction.Toggle), line, label);
       return;
     }
-    if (this.c.isRuntimeCall(e, "random")) {
+    if (this.isLibraryCall(e, "random")) {
       this.m.action(setSwitch(v, SwitchAction.Randomize), line, label);
       return;
     }
@@ -2182,6 +3122,21 @@ var Structured = class {
     this.m.jump(join, line, label);
     this.m.enter(join);
   }
+  /** A hoisted value as a condition tree. */
+  hoistedBool(h, at) {
+    const v = h.value;
+    if (typeof v === "boolean") return v ? TRUE : FALSE;
+    if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
+    if (typeof v === "string") return v !== "" ? TRUE : FALSE;
+    if (isCondition(v)) return cond(v.record);
+    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return and(v.map((c2) => cond(c2.record)));
+    if (isAction(v)) {
+      this.c.error(at, "This is an action, not a condition.");
+      return FALSE;
+    }
+    this.c.error(at, `Expected a condition, got ${describe2(v)}.`);
+    return FALSE;
+  }
   /** A condition as a `Bool` tree; may emit steps (temps for variable comparisons, a randomize). */
   bool(expr) {
     this.scratchUsed = 0;
@@ -2189,13 +3144,13 @@ var Structured = class {
   }
   boolInner(expr, depth) {
     const { ts } = this;
-    const e = this.c.unwrap(expr);
+    const e = this.unwrap(expr);
     if (depth > 64) {
       this.c.error(e, "The condition nests too deeply.");
       return FALSE;
     }
-    if (e.kind === ts.SyntaxKind.TrueKeyword) return TRUE;
-    if (e.kind === ts.SyntaxKind.FalseKeyword) return FALSE;
+    const h = this.evaluate(expr);
+    if (h) return this.hoistedBool(h, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return not(this.boolInner(e.operand, depth + 1));
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
@@ -2207,44 +3162,32 @@ var Structured = class {
       return FALSE;
     }
     if (ts.isIdentifier(e)) {
-      const b = this.c.binding(e);
+      const b = this.binding(e);
       if (b?.kind === "var") return b.v.kind === "switch" ? cond(switchCondition(b.v, true)) : compareConst(b.v, ">=", 1);
-      if (b?.kind === "const") return "n" in b.value ? b.value.n !== 0 ? TRUE : FALSE : b.value.s !== "" ? TRUE : FALSE;
-      const init = this.c.initializer(e);
-      if (init) return this.boolInner(init, depth + 1);
-      this.c.error(e, `${e.text} is not a variable, a constant or a condition.`);
+      this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       return FALSE;
     }
-    if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
-      const name = e.expression.text;
-      if (this.c.scriptDeclaration(e.expression)) {
-        this.c.error(e, "Functions have no return value; test a variable the function sets instead.");
+    if (ts.isCallExpression(e)) {
+      if (ts.isIdentifier(e.expression) && this.gameDeclaration(e.expression)) {
+        this.c.error(e, "Functions in a program have no return value; test a variable the function sets instead.");
         return FALSE;
       }
-      if (name === "random") {
+      if (this.isLibraryCall(e, "random")) {
         const s = this.m.scratch(this.scratchUsed++);
         this.m.action(setSwitch(s, SwitchAction.Randomize), this.line(e), `L${this.line(e)}: random()`);
         return cond(switchCondition(s, true));
       }
-      if (ACTION_IDENTS.has(name) || name === "Action" || name === "SetMemory") {
-        this.c.error(e, `${name} is an action, not a condition.`);
-        return FALSE;
-      }
-      const r = this.c.item(e, "condition");
-      return r ? cond(r) : FALSE;
+      this.notConstant(e, "A condition's arguments");
+      return FALSE;
     }
-    const k = this.c.value(e);
-    if (k) return ("n" in k ? k.n !== 0 : k.s !== "") ? TRUE : FALSE;
     this.c.error(e, "Expected a condition: a trigger condition, a comparison, a boolean variable, or a combination with && || !.");
     return FALSE;
   }
   comparison(e, op, depth) {
-    const { ts } = this;
     const isBool = (x) => {
-      const u = this.c.unwrap(x);
-      if (u.kind === ts.SyntaxKind.TrueKeyword || u.kind === ts.SyntaxKind.FalseKeyword) return true;
-      const v = this.c.varOf(u);
-      return v?.kind === "switch";
+      const h = this.evaluate(x);
+      if (h) return typeof h.value === "boolean" || isCondition(h.value);
+      return this.varOf(this.unwrap(x))?.kind === "switch";
     };
     if (isBool(e.left) || isBool(e.right)) {
       if (op !== "==" && op !== "!=") {
@@ -2326,515 +3269,413 @@ function compareNumbers(a2, op, b) {
 }
 
 // compiler/compiler.ts
-var SCRIPT_FILE = "triggers.ts";
-var DEATHS_TABLE_ADDRESS = 5808996;
-var MAX_DEPTH = 32;
-var Compiler = class {
-  ts;
-  checker;
-  sf;
-  diagnostics = [];
-  strings = [];
-  triggers = [];
-  lines = [];
-  variables = [];
-  program = null;
-  options;
-  /** The structured program's innermost scope while it is being lowered; null in raw code. */
-  scope = null;
-  constructor(ts, program, sf, options) {
-    this.ts = ts;
-    this.checker = program.getTypeChecker();
-    this.sf = sf;
-    this.options = options;
-  }
-  error(node, message) {
-    const start = this.sf.getLineAndCharacterOfPosition(node.getStart(this.sf));
-    const end = this.sf.getLineAndCharacterOfPosition(node.getEnd());
-    this.diagnostics.push({ line: start.line + 1, column: start.character + 1, endLine: end.line + 1, endColumn: end.character + 1, message, source: "compiler" });
-  }
-  lineOf(node) {
-    return this.sf.getLineAndCharacterOfPosition(node.getStart(this.sf)).line + 1;
-  }
-  localString(s) {
-    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
-    if (at >= 0) return at + 1;
-    this.strings.push(s);
-    return this.strings.length;
-  }
-  /** Is this call to one of the runtime's functions (declared in the generated file), by name? */
-  isRuntimeCall(e, name) {
-    const { ts } = this;
-    return ts.isCallExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === name && !this.scriptDeclaration(e.expression);
-  }
-  /** The script's own declaration an identifier refers to (a `let`, a parameter, a function), if any. */
-  scriptDeclaration(id) {
-    const decl = this.checker.getSymbolAtLocation(id)?.valueDeclaration;
-    return decl && decl.getSourceFile() === this.sf ? decl : void 0;
-  }
-  /** The structured binding of an identifier, if it has one. */
-  binding(expr) {
-    const e = this.unwrap(expr);
-    if (!this.ts.isIdentifier(e) || !this.scope) return void 0;
-    const decl = this.scriptDeclaration(e);
-    return decl ? this.scope.lookup(decl) : void 0;
-  }
-  varOf(expr) {
-    const b = this.binding(expr);
-    return b?.kind === "var" ? b.v : void 0;
-  }
-  run() {
-    const { ts } = this;
-    const structured = [];
-    let programCall = null;
-    for (const stmt of this.sf.statements) {
-      if (ts.isVariableStatement(stmt)) {
-        if (stmt.declarationList.flags & ts.NodeFlags.Const) {
-          for (const d of stmt.declarationList.declarations) if (!d.initializer) this.error(d, "A constant needs a value.");
-        } else structured.push(stmt);
-        continue;
-      }
-      if (ts.isEmptyStatement(stmt) || ts.isFunctionDeclaration(stmt)) continue;
-      if (ts.isExpressionStatement(stmt) && this.isRuntimeCall(stmt.expression, "trigger")) {
-        this.trigger(stmt.expression);
-        continue;
-      }
-      if (ts.isExpressionStatement(stmt) && this.isRuntimeCall(stmt.expression, "program")) {
-        if (programCall) this.error(stmt, "program() may be called once.");
-        programCall = stmt.expression;
-        continue;
-      }
-      if (ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) continue;
-      if (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt) || ts.isExportAssignment(stmt) || ts.isClassDeclaration(stmt) || ts.isEnumDeclaration(stmt) || ts.isModuleDeclaration(stmt)) {
-        this.error(stmt, "Imports, exports, classes, enums and namespaces are not part of the trigger script.");
-        continue;
-      }
-      structured.push(stmt);
-    }
-    if (structured.length === 0 && !programCall) return;
-    const options = this.programOptions(programCall);
-    const allocator = new Allocator({ units: options.variableUnits, reservedDeaths: this.options.reservedDeaths, reservedSwitches: this.options.reservedSwitches });
-    const comment = options.comments ? (text) => this.localString({ text }) : void 0;
-    let machine;
-    try {
-      machine = new Machine({ owner: options.owner, allocator, comment });
-    } catch (err) {
-      this.error(programCall ?? structured[0], err.message);
-      return;
-    }
-    const start = this.triggers.length;
-    new Structured(this, machine).run(structured);
-    this.triggers.push(...machine.triggers);
-    this.lines.push(...machine.lines);
-    this.program = { owner: options.owner, start, count: machine.triggers.length, hyperTriggers: options.hyperTriggers !== null };
-    if (options.hyperTriggers !== null) {
-      const line = programCall ? this.lineOf(programCall) : 1;
-      for (const t of hyperTriggers(options.hyperTriggers, comment)) {
-        this.triggers.push(t);
-        this.lines.push(line);
-      }
-    }
-    for (const v of allocator.variables) {
-      this.variables.push(v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit } : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index });
-    }
-  }
-  /** `program({ owner, hyperTriggers, comments, variableUnits })`, defaults filled in. */
-  programOptions(call) {
-    const { ts } = this;
-    const out = { owner: 0, hyperTriggers: null, comments: true, variableUnits: [] };
-    if (!call) return out;
-    const arg = call.arguments[0] ? this.resolve(call.arguments[0]) : void 0;
-    if (!arg || !ts.isObjectLiteralExpression(arg)) {
-      if (arg) this.error(arg, "program() takes an options object literal.");
-      return out;
-    }
-    let hyper = false;
-    for (const p of arg.properties) {
-      if (!ts.isPropertyAssignment(p) || !(ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) {
-        this.error(p, "Write program options as name: value.");
-        continue;
-      }
-      const name = p.name.text;
-      const init = this.unwrap(p.initializer);
-      const bool = init.kind === ts.SyntaxKind.TrueKeyword ? true : init.kind === ts.SyntaxKind.FalseKeyword ? false : void 0;
-      const v = this.value(init);
-      const player = v && "n" in v && Number.isInteger(v.n) && v.n >= 0 && v.n < PLAYER_SLOTS ? v.n : void 0;
-      switch (name) {
-        case "owner":
-          if (player !== void 0) out.owner = player;
-          else this.error(init, `The owner must be a single player, P1 \u2026 P${PLAYER_SLOTS}: the program is one thread running as that player.`);
-          break;
-        case "hyperTriggers":
-          if (bool !== void 0) hyper = bool;
-          else if (player !== void 0) hyper = player;
-          else this.error(init, "hyperTriggers is true, false, or the player to own them.");
-          break;
-        case "comments":
-          if (bool !== void 0) out.comments = bool;
-          else this.error(init, "comments is true or false.");
-          break;
-        case "variableUnits": {
-          const list = this.list(init);
-          if (!list) {
-            this.error(init, "variableUnits is an array of unit types.");
-            break;
-          }
-          for (const el of list) {
-            const u = this.value(el);
-            if (u && "n" in u && Number.isInteger(u.n) && u.n >= 0) out.variableUnits.push(u.n);
-            else this.error(el, "Expected a unit type.");
-          }
-          break;
-        }
-        default:
-          this.error(p, `Unknown program option "${name}".`);
-      }
-    }
-    out.hyperTriggers = hyper === true ? out.owner : hyper === false ? null : hyper;
-    return out;
-  }
-  trigger(call) {
-    const [playersArg, condArg, actArg, flagsArg] = call.arguments;
-    if (!playersArg || !condArg || !actArg) {
-      this.error(call, "trigger() takes players, conditions and actions.");
-      return;
-    }
-    const t = emptyTrigger();
-    const players = this.list(playersArg) ?? [playersArg];
-    for (const p of players) {
-      const v = this.value(p);
-      if (!v || !("n" in v)) {
-        this.error(p, "Expected a player group.");
-        continue;
-      }
-      if (v.n < 0 || v.n >= PLAYER_GROUP_COUNT || !Number.isInteger(v.n)) {
-        this.error(p, `Player group ${v.n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
-        continue;
-      }
-      t.players[v.n] = 1;
-    }
-    t.conditions = this.items(condArg, "condition");
-    t.actions = this.items(actArg, "action");
-    if (t.conditions.length > MAX_CONDITIONS) this.error(condArg, `A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
-    if (t.actions.length > MAX_ACTIONS) this.error(actArg, `A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
-    if (flagsArg) {
-      for (const f of this.list(flagsArg) ?? [flagsArg]) {
-        const v = this.value(f);
-        if (v && "n" in v) {
-          t.flags |= v.n >>> 0;
-          continue;
-        }
-        const hit = v && "s" in v ? TRIGGER_FLAG_NAMES.find(([, name]) => name.toLowerCase() === v.s.trim().toLowerCase()) : void 0;
-        if (hit) t.flags |= hit[0];
-        else this.error(f, `Unknown trigger flag${v && "s" in v ? ` "${v.s}"` : ""}.`);
-      }
-    }
-    this.triggers.push(t);
-    this.lines.push(this.lineOf(call));
-  }
-  /** Strip parentheses, `as`, `satisfies`, `!` — the wrappers that change nothing at compile time. */
-  unwrap(expr) {
-    const { ts } = this;
-    for (; ; ) {
-      if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr)) expr = expr.expression;
-      else return expr;
-    }
-  }
-  /** The `const` initialiser an identifier refers to, if it is one. */
-  initializer(expr) {
-    const { ts } = this;
-    if (!ts.isIdentifier(expr)) return void 0;
-    const sym = this.checker.getSymbolAtLocation(expr);
-    const decl = sym?.valueDeclaration;
-    if (!decl || !ts.isVariableDeclaration(decl) || !decl.initializer) return void 0;
-    return ts.isVariableDeclarationList(decl.parent) && decl.parent.flags & ts.NodeFlags.Const ? decl.initializer : void 0;
-  }
-  /** Follow wrappers and `const` references down to the expression that carries the value. */
-  resolve(expr, depth = 0) {
-    const e = this.unwrap(expr);
-    if (this.binding(e)) return e;
-    const init = depth < MAX_DEPTH ? this.initializer(e) : void 0;
-    return init ? this.resolve(init, depth + 1) : e;
-  }
-  /** The elements of an array expression (spreads flattened), or null when it is not an array. */
-  list(expr, depth = 0) {
-    const { ts } = this;
-    const e = this.resolve(expr);
-    if (!ts.isArrayLiteralExpression(e)) return null;
-    const out = [];
-    for (const el of e.elements) {
-      if (ts.isSpreadElement(el)) {
-        const inner = depth < MAX_DEPTH ? this.list(el.expression, depth + 1) : null;
-        if (inner) out.push(...inner);
-        else this.error(el, "Only arrays can be spread here.");
-      } else if (!ts.isOmittedExpression(el)) out.push(el);
-    }
-    return out;
-  }
-  items(expr, kind) {
-    const elements = this.list(expr);
-    if (!elements) {
-      this.error(expr, `Expected an array of ${kind}s.`);
-      return [];
-    }
-    const out = [];
-    for (const el of elements) {
-      const r = this.item(el, kind);
-      if (r) out.push(r);
-    }
-    return out;
-  }
-  item(expr, kind, depth = 0) {
-    const { ts } = this;
-    const e = this.resolve(expr);
-    if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression)) {
-      this.error(expr, `Expected a ${kind} such as ${kind === "condition" ? "Bring(...)" : "DisplayText(...)"}.`);
-      return null;
-    }
-    const name = e.expression.text;
-    const args = e.arguments;
-    if (name === "disabled") {
-      if (args.length !== 1) {
-        this.error(e, "disabled() takes one condition or action.");
-        return null;
-      }
-      const r = depth < MAX_DEPTH ? this.item(args[0], kind, depth + 1) : null;
-      if (r) r.flags |= kind === "condition" ? ConditionFlag.Disabled : ActionFlag.Disabled;
-      return r;
-    }
-    if (name === "Condition" || name === "Action") {
-      if (name === "Condition" !== (kind === "condition")) {
-        this.error(e, `${name}(...) is ${name === "Condition" ? "a condition" : "an action"}; it belongs in the ${name === "Condition" ? "conditions" : "actions"} list.`);
-        return null;
-      }
-      const record2 = kind === "condition" ? emptyCondition() : emptyAction();
-      const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
-      args.forEach((a2, i) => {
-        const v = this.value(a2);
-        if (!v || !("n" in v)) this.error(a2, "Expected a number.");
-        else if (i < fields.length) record2[fields[i]] = v.n >>> 0;
-      });
-      if (kind === "action") {
-        for (const f of ["text", "wav"]) if (record2[f]) record2[f] = this.localString({ index: record2[f] });
-      }
-      return record2;
-    }
-    if (name === "Memory" || name === "SetMemory") {
-      if (name === "Memory" !== (kind === "condition")) {
-        this.error(e, `${name}(...) is ${name === "Memory" ? "a condition" : "an action"}; it belongs in the ${name === "Memory" ? "conditions" : "actions"} list.`);
-        return null;
-      }
-      if (args.length !== 3) {
-        this.error(e, `${name} takes an address, a ${kind === "condition" ? "comparison" : "modifier"} and a value.`);
-        return null;
-      }
-      const addr = this.value(args[0]);
-      if (!addr || !("n" in addr) || !Number.isInteger(addr.n) || addr.n % 4 !== 0) {
-        this.error(args[0], "Expected a 4-byte-aligned memory address.");
-        return null;
-      }
-      const epd = (addr.n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
-      const op = this.arg(kind === "condition" ? "comparison" : "modifier", args[1]);
-      const value = this.arg("amount", args[2]);
-      if (op === void 0 || value === void 0) return null;
-      if (kind === "condition") return { ...emptyCondition(), type: ConditionType.Deaths, player: epd, unitId: 0, comparison: op, amount: value };
-      return { ...emptyAction(), type: ActionType.SetDeaths, player: epd, unitId: 0, modifier: op, target: value };
-    }
-    const table2 = kind === "condition" ? CONDITION_IDENTS : ACTION_IDENTS;
-    const other = kind === "condition" ? ACTION_IDENTS : CONDITION_IDENTS;
-    const def = table2.get(name);
-    if (!def) {
-      if (other.has(name)) this.error(e, `${name} is ${kind === "condition" ? "an action" : "a condition"}; it belongs in the ${kind === "condition" ? "actions" : "conditions"} list.`);
-      else this.error(e.expression, `Unknown ${kind} "${name}".`);
-      return null;
-    }
-    if (args.length !== def.args.length) {
-      this.error(e, `${name} takes ${def.args.length} argument${def.args.length === 1 ? "" : "s"}, got ${args.length}.`);
-      return null;
-    }
-    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
-    def.args.forEach((arg, i) => {
-      const v = this.arg(arg.kind, args[i]);
-      if (v === void 0) return;
-      if (arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v & ActionFlag.AlwaysDisplay;
-      else record[arg.field] = v;
-    });
-    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
-    return record;
-  }
-  /** One argument's record value, by kind; undefined (with a diagnostic) when it is not a usable constant. */
-  arg(kind, expr) {
-    const v = this.value(expr);
-    const fail = (what) => {
-      this.error(expr, what);
-      return void 0;
-    };
-    if (!v) {
-      const variable = this.varOf(expr);
-      return fail(variable ? `${variable.name} is a variable; this argument must be a constant. Compare or assign it in structured code instead.` : "Expected a compile-time constant.");
-    }
-    switch (kind) {
-      case "text":
-      case "wav":
-        return "s" in v ? v.s === "" ? 0 : this.localString({ text: v.s }) : fail("Expected text.");
-      case "count":
-        return "s" in v ? v.s.trim().toLowerCase() === "all" ? 0 : fail(`Expected a count or "All", got "${v.s}".`) : v.n >>> 0;
-      case "aiScript":
-        return "s" in v ? aiScriptByName(v.s) ?? fail(`Unknown AI script "${v.s}".`) : v.n >>> 0;
-      default:
-        if ("n" in v) return v.n >>> 0;
-        if (CHOICES[kind]) return choiceValue(kind, v.s) ?? fail(`Unknown ${kind} "${v.s}".`);
-        return fail(`Expected a ${kind}, got text.`);
-    }
-  }
-  /** The constant an expression evaluates to, or undefined. */
-  value(expr, depth = 0) {
-    const { ts } = this;
-    const e = this.unwrap(expr);
-    if (ts.isNumericLiteral(e)) return { n: Number(e.text) };
-    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return { s: e.text };
-    if (ts.isPrefixUnaryExpression(e)) {
-      const v = this.value(e.operand, depth + 1);
-      if (!v || !("n" in v)) return void 0;
-      switch (e.operator) {
-        case ts.SyntaxKind.MinusToken:
-          return { n: -v.n };
-        case ts.SyntaxKind.PlusToken:
-          return { n: v.n };
-        case ts.SyntaxKind.TildeToken:
-          return { n: ~v.n };
-        default:
-          return void 0;
-      }
-    }
-    if (ts.isBinaryExpression(e)) {
-      const l = this.value(e.left, depth + 1);
-      const r = this.value(e.right, depth + 1);
-      if (!l || !r) return void 0;
-      const op = e.operatorToken.kind;
-      if (op === ts.SyntaxKind.PlusToken && ("s" in l || "s" in r)) return { s: `${"s" in l ? l.s : l.n}${"s" in r ? r.s : r.n}` };
-      if (!("n" in l) || !("n" in r)) return void 0;
-      switch (op) {
-        case ts.SyntaxKind.PlusToken:
-          return { n: l.n + r.n };
-        case ts.SyntaxKind.MinusToken:
-          return { n: l.n - r.n };
-        case ts.SyntaxKind.AsteriskToken:
-          return { n: l.n * r.n };
-        case ts.SyntaxKind.SlashToken:
-          return { n: r.n === 0 ? 0 : Math.trunc(l.n / r.n) };
-        case ts.SyntaxKind.PercentToken:
-          return { n: r.n === 0 ? 0 : l.n % r.n };
-        case ts.SyntaxKind.AsteriskAsteriskToken:
-          return { n: l.n ** r.n };
-        case ts.SyntaxKind.LessThanLessThanToken:
-          return { n: l.n << r.n };
-        case ts.SyntaxKind.GreaterThanGreaterThanToken:
-          return { n: l.n >> r.n };
-        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
-          return { n: l.n >>> r.n };
-        case ts.SyntaxKind.AmpersandToken:
-          return { n: l.n & r.n };
-        case ts.SyntaxKind.BarToken:
-          return { n: l.n | r.n };
-        case ts.SyntaxKind.CaretToken:
-          return { n: l.n ^ r.n };
-        default:
-          return void 0;
-      }
-    }
-    if (ts.isTemplateExpression(e)) {
-      let s = e.head.text;
-      for (const span of e.templateSpans) {
-        const v = this.value(span.expression, depth + 1);
-        if (!v) return void 0;
-        s += ("s" in v ? v.s : String(v.n)) + span.literal.text;
-      }
-      return { s };
-    }
-    const b = this.binding(e);
-    if (b) return b.kind === "const" ? b.value : void 0;
-    const lit = literalOf(this.checker.getTypeAtLocation(e));
-    if (lit) return lit;
-    const init = depth < MAX_DEPTH ? this.initializer(e) : void 0;
-    return init ? this.value(init, depth + 1) : void 0;
-  }
-};
-function literalOf(type) {
-  if (type.isNumberLiteral()) return { n: type.value };
-  if (type.isStringLiteral()) return { s: type.value };
-  if (type.isIntersection()) {
-    for (const t of type.types) {
-      const v = literalOf(t);
-      if (v) return v;
-    }
-  }
-  return void 0;
+var ENTRY_FILE = "main.ts";
+var LIB_FILE = "lib.d.ts";
+function normalizePath(path) {
+  return path.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
 }
-function compileScript(ts, source, declarations, options = {}) {
-  const files = /* @__PURE__ */ new Map([[DECLARATIONS_FILE, declarations], [SCRIPT_FILE, source]]);
-  const compilerOptions = {
-    noLib: true,
-    strict: true,
-    target: ts.ScriptTarget.ESNext,
-    module: ts.ModuleKind.ESNext,
-    noEmit: true,
-    types: [],
-    allowNonTsExtensions: true
+function compileScript(ts, files, names, options) {
+  const diagnostics = [];
+  const result = (extra = {}) => {
+    diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
+  const scripts = /* @__PURE__ */ new Map();
+  for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
+  if (!scripts.has(ENTRY_FILE)) {
+    diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: `The script has no ${ENTRY_FILE}; that is the file a build starts from.`, source: "compiler" });
+    return result();
+  }
+  const fileNames = [...scripts.keys()];
+  const texts = new Map([...scripts, [DECLARATIONS_FILE, generateDeclarations(names)], [LIB_FILE, options.lib]]);
+  const compilerOptions = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.CommonJS,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    types: [],
+    sourceMap: true,
+    noLib: false
+  };
+  const outputs = /* @__PURE__ */ new Map();
   const host = {
     getSourceFile: (name) => {
-      const text = files.get(name);
-      return text === void 0 ? void 0 : ts.createSourceFile(name, text, ts.ScriptTarget.ESNext, true);
+      const text = texts.get(name);
+      return text === void 0 ? void 0 : ts.createSourceFile(name, text, ts.ScriptTarget.ES2022, true);
     },
-    getDefaultLibFileName: () => "lib.d.ts",
-    writeFile: () => {
+    getDefaultLibFileName: () => LIB_FILE,
+    writeFile: (name, text) => {
+      outputs.set(name, text);
     },
     getCurrentDirectory: () => "",
     getCanonicalFileName: (f) => f,
     useCaseSensitiveFileNames: () => true,
     getNewLine: () => "\n",
-    fileExists: (f) => files.has(f),
-    readFile: (f) => files.get(f)
+    fileExists: (f) => texts.has(f),
+    readFile: (f) => texts.get(f)
   };
-  const program = ts.createProgram([DECLARATIONS_FILE, SCRIPT_FILE], compilerOptions, host);
-  const sf = program.getSourceFile(SCRIPT_FILE);
-  const c2 = new Compiler(ts, program, sf, options);
+  const program = ts.createProgram([...fileNames, DECLARATIONS_FILE], compilerOptions, host);
+  const checker = program.getTypeChecker();
+  const position = (sf, start, end) => {
+    const a2 = sf.getLineAndCharacterOfPosition(start);
+    const b = sf.getLineAndCharacterOfPosition(end);
+    return { line: a2.line + 1, column: a2.character + 1, endLine: b.line + 1, endColumn: b.character + 1 };
+  };
+  const nodeError = (node, message, source = "compiler") => {
+    const sf = node.getSourceFile();
+    const pos = position(sf, node.getStart(sf), node.getEnd());
+    if (planned.has(`${sf.fileName}:${pos.line}`) && source === "compiler") return;
+    diagnostics.push({ file: sf.fileName, ...pos, message, source });
+  };
+  const planned = /* @__PURE__ */ new Set();
   for (const d of ts.getPreEmitDiagnostics(program)) {
     if (d.category !== ts.DiagnosticCategory.Error) continue;
-    const file = d.file;
-    const at = file && d.start !== void 0 ? file.getLineAndCharacterOfPosition(d.start) : { line: 0, character: 0 };
-    const end = file && d.start !== void 0 ? file.getLineAndCharacterOfPosition(d.start + (d.length ?? 0)) : at;
-    const where = file && file.fileName !== SCRIPT_FILE ? `${file.fileName}: ` : "";
-    c2.diagnostics.push({
-      line: at.line + 1,
-      column: at.character + 1,
-      endLine: end.line + 1,
-      endColumn: end.character + 1,
-      message: where + ts.flattenDiagnosticMessageText(d.messageText, "\n"),
-      source: "typescript"
-    });
+    const sf = d.file;
+    const pos = sf && d.start !== void 0 ? position(sf, d.start, d.start + (d.length ?? 0)) : { line: 1, column: 1, endLine: 1, endColumn: 1 };
+    const file = sf ? sf.fileName : ENTRY_FILE;
+    const where = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
+    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
   }
-  c2.run();
-  c2.diagnostics.sort((a2, b) => a2.line - b.line || a2.column - b.column);
-  return { triggers: c2.triggers, lines: c2.lines, strings: c2.strings, diagnostics: c2.diagnostics, variables: c2.variables, program: c2.program, ok: c2.diagnostics.length === 0 };
+  if (diagnostics.length) return result();
+  const plans = /* @__PURE__ */ new Map();
+  const byPosition = /* @__PURE__ */ new Map();
+  const fileIndex = (sf) => fileNames.indexOf(sf.fileName);
+  for (const name of fileNames) {
+    const sf = program.getSourceFile(name);
+    const visit = (node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && libraryName(ts, checker, node.expression) === "program") {
+        const arrow = node.arguments[0];
+        if (arrow && (ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow))) {
+          const plan = planProgram(ts, checker, arrow);
+          plans.set(arrow, plan);
+          byPosition.set(`${fileIndex(sf)}:${arrow.getStart(sf)}`, plan);
+          for (const e of plan.errors) nodeError(e.node, e.message);
+          return;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  for (const d of diagnostics) planned.add(`${d.file}:${d.line}`);
+  const emitted = program.emit(void 0, void 0, void 0, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow) })] });
+  for (const d of emitted.diagnostics) {
+    if (d.category === ts.DiagnosticCategory.Error) diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
+  }
+  if (diagnostics.length > planned.size) return result();
+  const linked = /* @__PURE__ */ new Map();
+  for (const name of fileNames) {
+    const base = name.replace(/\.ts$/, "");
+    const js = outputs.get(`${base}.js`);
+    if (js === void 0) {
+      diagnostics.push({ file: name, line: 1, column: 1, endLine: 1, endColumn: 1, message: "The file produced no JavaScript.", source: "compiler" });
+      continue;
+    }
+    linked.set(name, { js, map: outputs.get(`${base}.js.map`) });
+  }
+  if (diagnostics.length > planned.size) return result();
+  const collector = new Collector();
+  const runtime = createRuntime(names, collector);
+  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME);
+  if (failure) {
+    const line = failure.line ?? 1;
+    diagnostics.push({ file: failure.file ?? ENTRY_FILE, line, column: failure.column ?? 1, endLine: line, endColumn: (failure.column ?? 1) + 1, message: failure.message, source: "script" });
+    return result();
+  }
+  const triggers = [];
+  const sources = [];
+  const programs = [];
+  const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
+  const sourceOf = (at) => at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null;
+  for (const entry of collector.entries) {
+    if (entry.kind === "trigger") {
+      triggers.push(entry.record);
+      sources.push(sourceOf(entry.at));
+      continue;
+    }
+    const plan = byPosition.get(`${entry.descriptor.at[0]}:${entry.descriptor.pos}`);
+    const file = fileNames[entry.descriptor.at[0]];
+    const sf = program.getSourceFile(file);
+    const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
+    if (!plan) {
+      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
+      continue;
+    }
+    let values;
+    try {
+      values = entry.descriptor.hoisted();
+    } catch (err) {
+      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: `program(): ${err.message}`, source: "script" });
+      continue;
+    }
+    let machine;
+    try {
+      const comment = entry.options.comments ? (text) => collector.localString({ text }) : void 0;
+      const units = entry.options.variableUnits.length ? new Allocator({ units: entry.options.variableUnits, reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches }) : allocator;
+      machine = new Machine({ owner: entry.options.owner, allocator: units, comment });
+    } catch (err) {
+      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: err.message, source: "compiler" });
+      continue;
+    }
+    const start = triggers.length;
+    new Structured({ ts, checker, sf, plan, values, machine, error: (node, message) => nodeError(node, message) }).run();
+    triggers.push(...machine.triggers);
+    for (const line of machine.lines) sources.push({ file, line });
+    programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
+    if (machine.allocator !== allocator) for (const v of machine.allocator.variables) allocator.variables.push(v);
+  }
+  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit } : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index });
+  return result({ triggers, sources, strings: collector.strings, variables, programs });
 }
 
 // compiler/entry.ts
 var ENTRY_URL = import.meta.url;
 
+// monaco.ts
+var DIST_TAG = "monaco-0.56.0-2";
+var DEFAULT_DIST = `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@${DIST_TAG}/dist`;
+var DIST_STORAGE_KEY = "monacoDist";
+var THEME = "scm";
+var loading = null;
+var loadedFrom = null;
+function moduleWorker(url) {
+  const blob = new Blob([`import ${JSON.stringify(url)};
+`], { type: "text/javascript" });
+  return new Worker(URL.createObjectURL(blob), { type: "module" });
+}
+function tsLanguage(monaco) {
+  const found = monaco.typescript ?? monaco.languages.typescript;
+  if (!found?.typescriptDefaults) throw new Error("Monaco loaded without its TypeScript language service.");
+  return found;
+}
+var BUNDLER_RESOLUTION = 100;
+function configure(monaco) {
+  const ts = tsLanguage(monaco);
+  ts.typescriptDefaults.setCompilerOptions({
+    strict: true,
+    target: ts.ScriptTarget.ESNext,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: BUNDLER_RESOLUTION,
+    lib: ["lib.es2022.d.ts"],
+    noEmit: true,
+    types: []
+  });
+  ts.typescriptDefaults.setEagerModelSync(true);
+  ts.typescriptDefaults.setDiagnosticsOptions({ noSemanticValidation: false, noSyntaxValidation: false });
+  monaco.editor.defineTheme(THEME, {
+    base: "vs-dark",
+    inherit: true,
+    rules: [
+      { token: "comment", foreground: "5d6675", fontStyle: "italic" },
+      { token: "keyword", foreground: "e6b95c" },
+      { token: "string", foreground: "4fd1c5" },
+      { token: "number", foreground: "f4d08a" },
+      { token: "type.identifier", foreground: "8fd3ff" },
+      { token: "identifier", foreground: "dde2ea" },
+      { token: "delimiter", foreground: "99a2b3" },
+      { token: "operator", foreground: "99a2b3" }
+    ],
+    colors: {
+      "editor.background": "#0a0c10",
+      "editor.foreground": "#dde2ea",
+      "editor.lineHighlightBackground": "#12151b",
+      "editor.lineHighlightBorder": "#12151b",
+      "editorLineNumber.foreground": "#5d6675",
+      "editorLineNumber.activeForeground": "#99a2b3",
+      "editor.selectionBackground": "#2b4f80",
+      "editor.inactiveSelectionBackground": "#222732",
+      "editorCursor.foreground": "#e6b95c",
+      "editorIndentGuide.background1": "#222732",
+      "editorIndentGuide.activeBackground1": "#353c4b",
+      "editorWidget.background": "#191d25",
+      "editorWidget.border": "#2c3341",
+      "editorSuggestWidget.background": "#191d25",
+      "editorSuggestWidget.border": "#2c3341",
+      "editorSuggestWidget.selectedBackground": "#2b4f80",
+      "editorHoverWidget.background": "#191d25",
+      "editorHoverWidget.border": "#2c3341",
+      "editorError.foreground": "#d9534f",
+      "editorWarning.foreground": "#e0a545",
+      "scrollbarSlider.background": "#353c4b80",
+      "scrollbarSlider.hoverBackground": "#3b4453a0",
+      "editorGutter.background": "#0a0c10",
+      "minimap.background": "#0a0c10"
+    }
+  });
+}
+function loadMonaco(base = DEFAULT_DIST) {
+  const dist = base.replace(/\/+$/, "");
+  if (loading && loadedFrom !== dist) return loading;
+  loading ??= (async () => {
+    loadedFrom = dist;
+    globalThis.MonacoEnvironment = {
+      getWorker: (_id, label) => moduleWorker(`${dist}/${label === "typescript" || label === "javascript" ? "ts.worker.js" : "editor.worker.js"}`)
+    };
+    const url = `${dist}/monaco.js`;
+    const monaco = await import(
+      /* @vite-ignore */
+      url
+    );
+    configure(monaco);
+    return monaco;
+  })().catch((err) => {
+    loading = null;
+    loadedFrom = null;
+    throw err;
+  });
+  return loading;
+}
+function setDeclarations(monaco, content) {
+  tsLanguage(monaco).typescriptDefaults.setExtraLibs([{ content, filePath: `file:///${DECLARATIONS_FILE}` }]);
+}
+var fileUri = (monaco, path) => monaco.Uri.parse(`file:///${normalizePath(path)}`);
+function setCompilerMarkers(monaco, files, diagnostics) {
+  for (const path of Object.keys(files)) {
+    const model = monaco.editor.getModel(fileUri(monaco, path));
+    if (!model) continue;
+    monaco.editor.setModelMarkers(
+      model,
+      "trigscript",
+      diagnostics.filter((d) => d.source !== "typescript" && normalizePath(d.file) === normalizePath(path)).map((d) => ({
+        severity: monaco.MarkerSeverity.Error,
+        message: d.message,
+        startLineNumber: d.line,
+        startColumn: d.column,
+        endLineNumber: d.endLine,
+        endColumn: d.endColumn
+      }))
+    );
+  }
+}
+function disposeModels(monaco) {
+  for (const m of monaco.editor.getModels()) if (m.uri.scheme === "file" && m.uri.path.endsWith(".ts")) m.dispose();
+}
+function releaseScriptEditor(monaco) {
+  disposeModels(monaco);
+  const defaults = tsLanguage(monaco).typescriptDefaults;
+  defaults.setCompilerOptions(defaults.getCompilerOptions());
+}
+function createScriptEditor(monaco, host, files, active, onChange) {
+  disposeModels(monaco);
+  const models = /* @__PURE__ */ new Map();
+  const subs = /* @__PURE__ */ new Map();
+  const views = /* @__PURE__ */ new Map();
+  const make = (path, text) => {
+    const model = monaco.editor.createModel(text, "typescript", fileUri(monaco, path));
+    models.set(path, model);
+    subs.set(path, model.onDidChangeContent(() => onChange(path, model.getValue())));
+    return model;
+  };
+  for (const [path, text] of Object.entries(files)) make(normalizePath(path), text);
+  let current2 = normalizePath(active);
+  if (!models.has(current2)) current2 = [...models.keys()][0];
+  const editor = monaco.editor.create(host, {
+    model: models.get(current2) ?? null,
+    theme: THEME,
+    automaticLayout: true,
+    fontFamily: '"Cascadia Mono", "JetBrains Mono", ui-monospace, Consolas, Menlo, monospace',
+    fontSize: 12.5,
+    lineHeight: 18,
+    minimap: { enabled: false },
+    scrollBeyondLastLine: false,
+    renderLineHighlight: "line",
+    tabSize: 2,
+    insertSpaces: true,
+    wordWrap: "off",
+    fixedOverflowWidgets: true,
+    padding: { top: 8, bottom: 8 },
+    quickSuggestions: { other: true, strings: true, comments: false },
+    suggest: { showWords: false }
+  });
+  const show = (path) => {
+    const p = normalizePath(path);
+    const model = models.get(p);
+    if (!model || p === current2) return;
+    views.set(current2, editor.saveViewState());
+    current2 = p;
+    editor.setModel(model);
+    const view = views.get(p);
+    if (view) editor.restoreViewState(view);
+  };
+  return {
+    editor,
+    active: () => current2,
+    show,
+    files: () => Object.fromEntries([...models].map(([p, m]) => [p, m.getValue()])),
+    add(path, text) {
+      const p = normalizePath(path);
+      if (models.has(p)) return;
+      make(p, text);
+      onChange(p, text);
+      show(p);
+    },
+    remove(path) {
+      const p = normalizePath(path);
+      const model = models.get(p);
+      if (!model) return;
+      if (p === current2) {
+        const other = [...models.keys()].find((k) => k !== p);
+        if (other) show(other);
+      }
+      subs.get(p)?.dispose();
+      subs.delete(p);
+      models.delete(p);
+      views.delete(p);
+      model.dispose();
+    },
+    rename(from, to) {
+      const a2 = normalizePath(from);
+      const b = normalizePath(to);
+      const model = models.get(a2);
+      if (!model || models.has(b)) return;
+      const text = model.getValue();
+      const wasCurrent = a2 === current2;
+      const view = wasCurrent ? editor.saveViewState() : views.get(a2) ?? null;
+      subs.get(a2)?.dispose();
+      subs.delete(a2);
+      models.delete(a2);
+      views.delete(a2);
+      if (wasCurrent) editor.setModel(null);
+      model.dispose();
+      const next = make(b, text);
+      views.set(b, view);
+      if (wasCurrent) {
+        current2 = b;
+        editor.setModel(next);
+        if (view) editor.restoreViewState(view);
+      }
+    },
+    set(path, text) {
+      const model = models.get(normalizePath(path));
+      if (model && model.getValue() !== text) model.setValue(text);
+    },
+    dispose() {
+      for (const s of subs.values()) s.dispose();
+      editor.dispose();
+    }
+  };
+}
+
 // compile.ts
-var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.2/lib/typescript.js";
+var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
+var libUrl = (dist = DEFAULT_DIST) => `${dist.replace(/\/+$/, "")}/lib.d.ts`;
+var COMPILE_TIMEOUT_MS = 15e3;
 var WORKER_SOURCE = `
 importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
+let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, source, declarations, options } = e.data;
+  const { id, moduleUrl, libUrl, files, names, reservedDeaths, reservedSwitches } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
     try { mod = await loading; } catch (err) { loading = null; postMessage({ id, error: String((err && err.message) || err), fatal: true }); return; }
-    postMessage({ id, result: mod.compileScript(self.ts, source, declarations, options) });
+    if (lib === null) {
+      const r = await fetch(libUrl);
+      if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
+      lib = await r.text();
+    }
+    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib, reservedDeaths, reservedSwitches }) });
   } catch (err) {
     postMessage({ id, error: String((err && err.message) || err) });
   }
@@ -2873,14 +3714,27 @@ function retainCompileWorker() {
     settle();
   };
 }
+function rejectAll(reason) {
+  for (const [id, p] of pending) {
+    pending.delete(id);
+    clearTimeout(p.timer);
+    p.reject(new Error(reason));
+  }
+}
 function breakWorker(reason) {
   workerBroken = true;
   worker?.terminate();
   worker = null;
-  for (const [id, p] of pending) {
-    pending.delete(id);
-    p.reject(new Error(reason));
-  }
+  rejectAll(reason);
+}
+function timeOut(id) {
+  const p = pending.get(id);
+  if (!p) return;
+  pending.delete(id);
+  worker?.terminate();
+  worker = null;
+  rejectAll("The compile was stopped.");
+  p.reject(new Error(`The script did not finish in ${COMPILE_TIMEOUT_MS / 1e3} seconds. Is there an endless loop outside program()?`));
 }
 function getWorker() {
   if (workerBroken || typeof Worker === "undefined" || !ENTRY_URL.startsWith("blob:")) return null;
@@ -2901,6 +3755,7 @@ function getWorker() {
     const p = pending.get(data.id);
     if (!p) return;
     pending.delete(data.id);
+    clearTimeout(p.timer);
     if (data.result) p.resolve(data.result);
     else p.reject(new Error(data.error ?? "Compile failed."));
     settle();
@@ -2909,6 +3764,7 @@ function getWorker() {
   return worker;
 }
 var tsHere = null;
+var libHere = null;
 function loadTypeScript() {
   const g = globalThis;
   if (g.ts) return Promise.resolve(g.ts);
@@ -2926,8 +3782,19 @@ function loadTypeScript() {
   });
   return tsHere;
 }
-async function compileHere(source, declarations, options) {
-  return compileScript(await loadTypeScript(), source, declarations, options);
+function loadLib(url) {
+  libHere ??= fetch(url).then((r) => {
+    if (!r.ok) throw new Error(`Could not load the standard library from ${url} (${r.status}).`);
+    return r.text();
+  }).catch((err) => {
+    libHere = null;
+    throw err;
+  });
+  return libHere;
+}
+async function compileHere(input, lib) {
+  const [ts, text] = await Promise.all([loadTypeScript(), loadLib(lib)]);
+  return compileScript(ts, input.files, input.names, { lib: text, reservedDeaths: input.reservedDeaths, reservedSwitches: input.reservedSwitches });
 }
 var CompileSuperseded = class extends Error {
   constructor() {
@@ -2935,48 +3802,54 @@ var CompileSuperseded = class extends Error {
     this.name = "CompileSuperseded";
   }
 };
-function compileInBackground(source, declarations, options) {
+function compileInBackground(input, dist = DEFAULT_DIST) {
+  const lib = libUrl(dist);
   const w = getWorker();
-  if (!w) return compileHere(source, declarations, options);
+  if (!w) return compileHere(input, lib);
   const id = ++seq;
   for (const [old, p] of pending) {
     pending.delete(old);
+    clearTimeout(p.timer);
     p.reject(new CompileSuperseded());
   }
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    const req = { id, moduleUrl: ENTRY_URL, source, declarations, options };
+    pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
+    const req = { id, moduleUrl: ENTRY_URL, libUrl: lib, files: input.files, names: input.names, reservedDeaths: input.reservedDeaths, reservedSwitches: input.reservedSwitches };
     w.postMessage(req);
   }).catch((err) => {
-    if (err.message === "worker unavailable") return compileHere(source, declarations, options);
+    if (err.message === "worker unavailable") return compileHere(input, lib);
     throw err;
   });
 }
 
 // compiler/print.ts
-function ref(table2, value) {
-  const e = entryFor(table2, value);
-  return e ? memberAccess(table2.object, e.keys[0]) : String(value);
+function use(ctx, name) {
+  ctx.used?.add(name);
+  return name;
 }
-function playerRef(names, value) {
-  if (value >= 0 && value < 12) return `P${value + 1}`;
-  if (value === PlayerGroup.CurrentPlayer) return "CurrentPlayer";
-  if (value === PlayerGroup.AllPlayers) return "AllPlayers";
-  return ref(names.players, value);
+function ref(table2, value, ctx) {
+  const e = entryFor(table2, value);
+  return e ? memberAccess(use(ctx, table2.object), e.keys[0]) : String(value);
+}
+function playerRef(ctx, value) {
+  if (value >= 0 && value < 12) return use(ctx, `P${value + 1}`);
+  if (value === PlayerGroup.CurrentPlayer) return use(ctx, "CurrentPlayer");
+  if (value === PlayerGroup.AllPlayers) return use(ctx, "AllPlayers");
+  return ref(ctx.names.players, value, ctx);
 }
 function formatValue(kind, value, ctx) {
   switch (kind) {
     case "player":
-      return playerRef(ctx.names, value);
+      return playerRef(ctx, value);
     case "unit":
-      return ref(ctx.names.units, value);
+      return ref(ctx.names.units, value, ctx);
     case "location":
-      return ref(ctx.names.locations, value);
+      return ref(ctx.names.locations, value, ctx);
     case "switch":
-      return ref(ctx.names.switches, value);
+      return ref(ctx.names.switches, value, ctx);
     case "aiScript": {
       const e = entryFor(ctx.names.aiScripts, value);
-      return e ? memberAccess(ctx.names.aiScripts.object, e.keys[0]) : JSON.stringify(aiScriptName(value));
+      return e ? memberAccess(use(ctx, ctx.names.aiScripts.object), e.keys[0]) : JSON.stringify(aiScriptName(value));
     }
     case "text":
     case "wav":
@@ -2991,33 +3864,40 @@ function formatValue(kind, value, ctx) {
     case "slot":
       return String(value);
     default: {
-      const label = choiceLabel(kind, value);
-      return label ? JSON.stringify(label) : String(value);
+      const word = choiceWord(kind, value);
+      return word ? JSON.stringify(word) : String(value);
     }
   }
 }
-function wrapDisabled(text, off) {
-  return off ? `disabled(${text})` : text;
+function wrapDisabled(text, off, ctx) {
+  return off ? `${use(ctx, "disabled")}(${text})` : text;
 }
 function printCondition(c2, ctx) {
   const def = conditionDef(c2.type);
   const ident = conditionIdent(c2.type);
   const off = (c2.flags & ConditionFlag.Disabled) !== 0;
-  if (!def || !ident || ident === "Briefing") {
+  if (!def || !ident || ident === "briefing") {
     const r = c2;
-    return wrapDisabled(`Condition(${CONDITION_FIELDS.map((f) => r[f]).join(", ")})`, off);
+    return wrapDisabled(`${use(ctx, "condition")}(${CONDITION_FIELDS.map((f) => r[f]).join(", ")})`, off, ctx);
   }
-  const args = def.args.map((a2) => formatValue(a2.kind, c2[a2.field], ctx));
-  return wrapDisabled(`${ident}(${args.join(", ")})`, off);
+  const args = scriptParams(def).map((p) => formatValue(p.arg.kind, c2[p.arg.field], ctx));
+  return wrapDisabled(`${use(ctx, ident)}(${args.join(", ")})`, off, ctx);
 }
 function printAction(a2, ctx) {
   const def = actionDef(a2.type);
   const ident = actionIdent(a2.type);
   const off = (a2.flags & ActionFlag.Disabled) !== 0;
   const r = a2;
-  if (!def || !ident) return wrapDisabled(`Action(${ACTION_FIELDS.map((f) => r[f]).join(", ")})`, off);
-  const args = def.args.map((arg) => formatValue(arg.kind, arg.kind === "textFlags" ? r.flags & ActionFlag.AlwaysDisplay : r[arg.field], ctx));
-  return wrapDisabled(`${ident}(${args.join(", ")})`, off);
+  if (!def || !ident) return wrapDisabled(`${use(ctx, "action")}(${ACTION_FIELDS.map((f) => r[f]).join(", ")})`, off, ctx);
+  const args = [];
+  for (const p of scriptParams(def)) {
+    if (p.arg.kind === "textFlags") {
+      if (!(r.flags & ActionFlag.AlwaysDisplay)) args.push("false");
+      continue;
+    }
+    args.push(formatValue(p.arg.kind, r[p.arg.field], ctx));
+  }
+  return wrapDisabled(`${use(ctx, ident)}(${args.join(", ")})`, off, ctx);
 }
 function block(items) {
   return items.length ? `[
@@ -3027,24 +3907,29 @@ ${items.map((s) => `  ${s},`).join("\n")}
 function printTrigger(t, ctx) {
   const players = [];
   t.players.forEach((v, i) => {
-    if (v) players.push(playerRef(ctx.names, i));
+    if (v) players.push(playerRef(ctx, i));
   });
-  const known = TRIGGER_FLAG_NAMES.reduce((m, [bit]) => m | bit, 0);
-  const flags = TRIGGER_FLAG_NAMES.filter(([bit]) => t.flags & bit).map(([, name]) => JSON.stringify(name));
-  if (t.flags & ~known) flags.push(`0x${(t.flags & ~known).toString(16)}`);
+  const known = TRIGGER_OPTION_NAMES.reduce((m, [bit]) => m | bit, 0);
+  const options = TRIGGER_OPTION_NAMES.filter(([bit]) => t.flags & bit).map(([, name]) => `${name}: true`);
+  if (t.flags & ~known) options.push(`flags: 0x${(t.flags & ~known).toString(16)}`);
   const parts = [
     players.length === 1 ? players[0] : `[${players.join(", ")}]`,
     block(t.conditions.map((c2) => printCondition(c2, ctx))),
     block(t.actions.map((a2) => printAction(a2, ctx)))
   ];
-  if (flags.length) parts.push(`[${flags.join(", ")}]`);
-  return `trigger(${parts.join(", ")});`;
+  if (options.length) parts.push(`{ ${options.join(", ")} }`);
+  return `${use(ctx, "trigger")}(${parts.join(", ")});`;
 }
-var SCRIPT_HEADER = `// Trigger script \u2014 compiled into a block of the map's trigger list on Build.
-// Each trigger(players, conditions, actions, flags?) call becomes one trigger, in order.
+var SCRIPT_HEADER = `// TrigScript \u2014 built into a block of the map's trigger list.
+// Each trigger(players, conditions, actions, options?) call becomes one trigger, in order.
 `;
-function printScript(triggers, ctx, header = SCRIPT_HEADER) {
-  return header + (triggers.length ? "\n" + triggers.map((t) => printTrigger(t, ctx)).join("\n\n") + "\n" : "");
+function printScript(triggers, ctx, options = {}) {
+  const header = options.header ?? SCRIPT_HEADER;
+  const used = /* @__PURE__ */ new Set();
+  const body2 = triggers.length ? triggers.map((t) => printTrigger(t, { ...ctx, used })).join("\n\n") + "\n" : "";
+  const imports = options.imports && used.size ? `import { ${[...used].sort().join(", ")} } from "${MODULE_NAME}";
+` : "";
+  return [header, imports, body2].filter((s) => s !== "").join("\n");
 }
 
 // compiler/simulate.ts
@@ -3174,530 +4059,25 @@ function simulate(triggers, cycles, options = {}) {
   return new Simulation(triggers, options).run(cycles);
 }
 
-// monaco.ts
-var DIST_TAG = "monaco-0.56.0-1";
-var DEFAULT_DIST = `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigger-script@${DIST_TAG}/dist`;
-var DIST_STORAGE_KEY = "monacoDist";
-var THEME = "scm";
-var SCRIPT_URI_TEXT = "file:///triggers.ts";
-var loading = null;
-var loadedFrom = null;
-function moduleWorker(url) {
-  const blob = new Blob([`import ${JSON.stringify(url)};
-`], { type: "text/javascript" });
-  return new Worker(URL.createObjectURL(blob), { type: "module" });
-}
-function tsLanguage(monaco) {
-  const found = monaco.typescript ?? monaco.languages.typescript;
-  if (!found?.typescriptDefaults) throw new Error("Monaco loaded without its TypeScript language service.");
-  return found;
-}
-function configure(monaco) {
-  const ts = tsLanguage(monaco);
-  ts.typescriptDefaults.setCompilerOptions({
-    noLib: true,
-    strict: true,
-    target: ts.ScriptTarget.ESNext,
-    allowNonTsExtensions: true,
-    noEmit: true,
-    types: []
-  });
-  ts.typescriptDefaults.setEagerModelSync(true);
-  ts.typescriptDefaults.setDiagnosticsOptions({ noSemanticValidation: false, noSyntaxValidation: false });
-  monaco.editor.defineTheme(THEME, {
-    base: "vs-dark",
-    inherit: true,
-    rules: [
-      { token: "comment", foreground: "5d6675", fontStyle: "italic" },
-      { token: "keyword", foreground: "e6b95c" },
-      { token: "string", foreground: "4fd1c5" },
-      { token: "number", foreground: "f4d08a" },
-      { token: "type.identifier", foreground: "8fd3ff" },
-      { token: "identifier", foreground: "dde2ea" },
-      { token: "delimiter", foreground: "99a2b3" },
-      { token: "operator", foreground: "99a2b3" }
-    ],
-    colors: {
-      "editor.background": "#0a0c10",
-      "editor.foreground": "#dde2ea",
-      "editor.lineHighlightBackground": "#12151b",
-      "editor.lineHighlightBorder": "#12151b",
-      "editorLineNumber.foreground": "#5d6675",
-      "editorLineNumber.activeForeground": "#99a2b3",
-      "editor.selectionBackground": "#2b4f80",
-      "editor.inactiveSelectionBackground": "#222732",
-      "editorCursor.foreground": "#e6b95c",
-      "editorIndentGuide.background1": "#222732",
-      "editorIndentGuide.activeBackground1": "#353c4b",
-      "editorWidget.background": "#191d25",
-      "editorWidget.border": "#2c3341",
-      "editorSuggestWidget.background": "#191d25",
-      "editorSuggestWidget.border": "#2c3341",
-      "editorSuggestWidget.selectedBackground": "#2b4f80",
-      "editorHoverWidget.background": "#191d25",
-      "editorHoverWidget.border": "#2c3341",
-      "editorError.foreground": "#d9534f",
-      "editorWarning.foreground": "#e0a545",
-      "scrollbarSlider.background": "#353c4b80",
-      "scrollbarSlider.hoverBackground": "#3b4453a0",
-      "editorGutter.background": "#0a0c10",
-      "minimap.background": "#0a0c10"
-    }
-  });
-}
-function loadMonaco(base = DEFAULT_DIST) {
-  const dist = base.replace(/\/+$/, "");
-  if (loading && loadedFrom !== dist) return loading;
-  loading ??= (async () => {
-    loadedFrom = dist;
-    globalThis.MonacoEnvironment = {
-      getWorker: (_id, label) => moduleWorker(`${dist}/${label === "typescript" || label === "javascript" ? "ts.worker.js" : "editor.worker.js"}`)
-    };
-    const url = `${dist}/monaco.js`;
-    const monaco = await import(
-      /* @vite-ignore */
-      url
-    );
-    configure(monaco);
-    return monaco;
-  })().catch((err) => {
-    loading = null;
-    loadedFrom = null;
-    throw err;
-  });
-  return loading;
-}
-function setDeclarations(monaco, content) {
-  tsLanguage(monaco).typescriptDefaults.setExtraLibs([{ content, filePath: `file:///${DECLARATIONS_FILE}` }]);
-}
-function setCompilerMarkers(monaco, model, diagnostics) {
-  monaco.editor.setModelMarkers(
-    model,
-    "scm-compiler",
-    diagnostics.filter((d) => d.source === "compiler").map((d) => ({
-      severity: monaco.MarkerSeverity.Error,
-      message: d.message,
-      startLineNumber: d.line,
-      startColumn: d.column,
-      endLineNumber: d.endLine,
-      endColumn: d.endColumn
-    }))
-  );
-}
-function releaseScriptEditor(monaco) {
-  monaco.editor.getModel(monaco.Uri.parse(SCRIPT_URI_TEXT))?.dispose();
-  const defaults = tsLanguage(monaco).typescriptDefaults;
-  defaults.setCompilerOptions(defaults.getCompilerOptions());
-}
-function createScriptEditor(monaco, host, source, onChange) {
-  const uri = monaco.Uri.parse(SCRIPT_URI_TEXT);
-  const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(source, "typescript", uri);
-  if (model.getValue() !== source) model.setValue(source);
-  const editor = monaco.editor.create(host, {
-    model,
-    theme: THEME,
-    automaticLayout: true,
-    fontFamily: '"Cascadia Mono", "JetBrains Mono", ui-monospace, Consolas, Menlo, monospace',
-    fontSize: 12.5,
-    lineHeight: 18,
-    minimap: { enabled: false },
-    scrollBeyondLastLine: false,
-    renderLineHighlight: "line",
-    tabSize: 2,
-    insertSpaces: true,
-    wordWrap: "off",
-    fixedOverflowWidgets: true,
-    padding: { top: 8, bottom: 8 },
-    quickSuggestions: { other: true, strings: true, comments: false },
-    suggest: { showWords: false }
-  });
-  const sub = model.onDidChangeContent(() => onChange(model.getValue()));
-  return {
-    editor,
-    model,
-    dispose() {
-      sub.dispose();
-      editor.dispose();
-    }
-  };
-}
-
-// editor.ts
-var TEMPLATE = `${SCRIPT_HEADER}
-// Names come from the map: Locations.*, Switches.*, Units.*, Players.* (or P1 \u2026 P12, CurrentPlayer, AllPlayers).
-
-trigger(AllPlayers, [
-  Bring(CurrentPlayer, Units.AnyUnit, Locations.Anywhere, "At least", 1),
-], [
-  DisplayText("Always Display", "Hello from the trigger script."),
-  PreserveTrigger(),
-]);
-
-// Everything else is a program: let variables (death counters / switches), if, while,
-// for, functions. It runs as one player, one loop iteration per trigger cycle.
-program({ owner: P1 });
-let cycles = 0;
-while (true) {
-  cycles++;
-  if (cycles == 10) {
-    DisplayText("Always Display", "Ten trigger cycles have passed.");
-  }
-}
-`;
-var SIMULATE_CYCLES = 30;
-var CHECK_DELAY_MS = 350;
-var STYLE = `
-.tsd { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
-.tsd .tsd-editor { flex: 1; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border); box-shadow: var(--bevel-sunken); border-radius: var(--radius); overflow: hidden; background: var(--bg-0); }
-.tsd .tsd-host { flex: 1; min-height: 0; }
-.tsd .tsd-problems { flex: none; max-height: 132px; overflow: auto; margin: 0; padding: 2px 0; list-style: none; border-top: 1px solid var(--border); background: var(--bg-1); font-family: var(--font-mono); font-size: var(--fs-sm); }
-.tsd .tsd-problems li { display: flex; gap: 10px; padding: 2px 10px; cursor: pointer; align-items: baseline; }
-.tsd .tsd-problems li:hover { background: var(--bg-3); }
-.tsd .tsd-problems .where { flex: none; min-width: 48px; color: var(--text-faint); }
-.tsd .tsd-problems .msg { flex: 1; color: var(--danger); white-space: pre-wrap; }
-.tsd .tsd-problems .src { flex: none; color: var(--text-faint); font-size: var(--fs-xs); text-transform: uppercase; }
-.tsd .tsd-run .msg { color: var(--text); }
-.tsd .tsd-run li { cursor: default; }
-.tsd .tsd-program { border: none; background: none; padding: 0; font: inherit; font-size: var(--fs-sm); color: var(--gold); cursor: pointer; }
-.tsd .tsd-program:hover { text-decoration: underline; }
-.tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
-.tsd .tsd-variables .internal { color: var(--text-faint); }
-.tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
-`;
-function describeEvent(e) {
-  const name = actionDef(e.action.type)?.name ?? `Action ${e.action.type}`;
-  return e.text !== void 0 ? `${name} \u2014 ${e.text}` : name;
-}
-var current = null;
-function openScriptEditor(svc, options = {}) {
-  if (current?.handle.isOpen()) {
-    current.reveal(options.line);
-    return;
-  }
-  current = null;
-  const api = svc.api;
-  if (!api.document.isOpen()) {
-    api.ui.toast({ kind: "info", title: "Open or create a map first." });
-    return;
-  }
-  const el = api.ui.el;
-  const w = api.ui.widgets;
-  const initial = svc.state();
-  let source = initial?.source ?? TEMPLATE;
-  let generated = svc.names();
-  let host = null;
-  let editor = null;
-  let monaco = null;
-  let timer = null;
-  let ready = false;
-  let building = false;
-  let importing = false;
-  let diagnostics = [];
-  let result = null;
-  let simulation = null;
-  let showVariables = false;
-  let cancelled = false;
-  const style = el("style", void 0, STYLE);
-  const buildButton = w.button("Build", { onClick: () => {
-    void build();
-  } });
-  buildButton.title = "Compile the script and install its triggers as the map's generated block";
-  const importButton = w.button("Import map triggers", { onClick: () => {
-    void importHand();
-  } });
-  importButton.title = "Rewrite the map's hand-made triggers as script, appended around the block, and rebuild";
-  const simulateButton = w.button("Simulate", { onClick: () => {
-    void simulateNow();
-  } });
-  simulateButton.title = `Run the compiled triggers for ${SIMULATE_CYCLES} trigger cycles in a built-in interpreter and list what happened`;
-  const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "Where the program's variables are stored (death counters and switches)", onClick: () => {
-    showVariables = !showVariables;
-    render();
-  } });
-  const problemsCount = el("span", { className: "hint" }, "");
-  const variables = el("div", { className: "tsd-variables", hidden: true });
-  const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block.");
-  const hostEl = el("div", { className: "tsd-host" });
-  host = hostEl;
-  const problems = el("ul", { className: "tsd-problems", hidden: true });
-  const statusLine = w.statusLine();
-  const root = el(
-    "div",
-    { className: "tsd" },
-    style,
-    el("div", { className: "row" }, buildButton, importButton, simulateButton, el("span", { className: "grow" }), programButton, problemsCount),
-    variables,
-    notice,
-    el("div", { className: "tsd-editor" }, hostEl, problems),
-    statusLine
-  );
-  let status = { kind: "info", text: "" };
-  const setStatus = (kind, text) => {
-    status = { kind, text };
-    render();
-  };
-  const goTo = (line, column = 1) => {
-    if (!editor) return;
-    editor.editor.revealLineInCenter(line);
-    editor.editor.setPosition({ lineNumber: line, column });
-    editor.editor.focus();
-  };
-  const render = () => {
-    const errors = diagnostics.length;
-    buildButton.setBusy(building && !importing);
-    importButton.setBusy(importing);
-    buildButton.disabled = importButton.disabled = !ready || building;
-    simulateButton.disabled = !ready || building || errors > 0;
-    if (ready) problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : "No problems";
-    else problemsCount.replaceChildren(w.spinner({ size: "sm", label: "Loading the editor\u2026" }));
-    const program = result?.program ?? null;
-    const userVariables = result?.variables.filter((v) => !v.name.startsWith("(")) ?? [];
-    programButton.hidden = !program;
-    if (program) programButton.textContent = `Program: ${program.count} trigger${program.count === 1 ? "" : "s"} as P${program.owner + 1}${program.hyperTriggers ? " + hyper triggers" : ""} \xB7 ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"}`;
-    variables.hidden = !(showVariables && result && result.variables.length > 0);
-    variables.replaceChildren(...(result?.variables ?? []).map((v) => el("span", { className: v.name.startsWith("(") ? "internal" : void 0 }, el("b", void 0, v.name), ` ${v.kind === "number" ? "number" : "boolean"} \u2192 ${v.storage}`)));
-    const state = svc.state();
-    const block2 = state?.block ?? null;
-    const stale = state?.stale ?? false;
-    notice.hidden = !stale;
-    problems.replaceChildren();
-    problems.className = "tsd-problems";
-    if (errors > 0) {
-      problems.hidden = false;
-      for (const d of diagnostics) {
-        problems.append(el(
-          "li",
-          { title: d.message, onClick: () => goTo(d.line, d.column) },
-          el("span", { className: "where" }, `${d.line}:${d.column}`),
-          el("span", { className: "msg" }, d.message.split("\n")[0]),
-          el("span", { className: "src" }, d.source === "typescript" ? "types" : "compiler")
-        ));
-      }
-    } else if (simulation) {
-      problems.hidden = false;
-      problems.className = "tsd-problems tsd-run";
-      const { sim, result: r } = simulation;
-      if (sim.events.length === 0) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_CYCLES} cycles.`)));
-      for (const e of sim.events) {
-        const line2 = r.lines[e.trigger];
-        problems.append(el(
-          "li",
-          { title: `Trigger #${e.trigger + 1}`, onClick: () => {
-            if (line2) goTo(line2);
-          } },
-          el("span", { className: "where" }, `cycle ${e.cycle + 1}`),
-          el("span", { className: "msg" }, describeEvent(e)),
-          el("span", { className: "src" }, `L${line2 ?? "?"}`)
-        ));
-      }
-      for (const v of r.variables.filter((x) => !x.name.startsWith("("))) {
-        problems.append(el(
-          "li",
-          void 0,
-          el("span", { className: "where" }, "after"),
-          el("span", { className: "msg" }, `${v.name} = ${v.kind === "number" ? sim.death(v.player, v.unit) : sim.switches[v.switch] ? "true" : "false"}`),
-          el("span", { className: "src" }, v.storage)
-        ));
-      }
-    } else {
-      problems.hidden = true;
-    }
-    const line = status.text || (block2 ? `Block: ${block2.count} generated trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}${state?.unbuilt ? " \xB7 unbuilt changes" : ""}` : stale ? "The last build's triggers were edited outside the script" : "Not built yet");
-    if (status.kind === "busy") statusLine.busy(line);
-    else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : void 0);
-  };
-  const applyResult = (r) => {
-    diagnostics = r.diagnostics;
-    result = r;
-    simulation = null;
-    if (editor && monaco) setCompilerMarkers(monaco, editor.model, r.diagnostics);
-    render();
-  };
-  const check = () => {
-    if (timer !== null) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = null;
-      if (cancelled || !generated) return;
-      compileInBackground(source, generated.decls, generated.options).then(
-        (r) => {
-          if (!cancelled) applyResult(r);
-        },
-        (err) => {
-          if (!cancelled && !(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`);
-        }
-      );
-    }, CHECK_DELAY_MS);
-  };
-  const compileNow = async () => {
-    if (timer !== null) {
-      clearTimeout(timer);
-      timer = null;
-    }
-    if (!generated) return null;
-    try {
-      const r = await compileInBackground(source, generated.decls, generated.options);
-      applyResult(r);
-      return r;
-    } catch (err) {
-      if (!(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`);
-      return null;
-    }
-  };
-  const build = async (takeOver = false) => {
-    if (building || !ready) return false;
-    building = true;
-    setStatus("busy", "Compiling\u2026");
-    try {
-      const r = await compileNow();
-      if (!r) return false;
-      if (!r.ok) {
-        const n = r.diagnostics.length;
-        setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
-        return false;
-      }
-      const wasStale = svc.state()?.stale ?? false;
-      setStatus("busy", "Installing the triggers\u2026");
-      const out = await svc.build(source, { takeOver });
-      if (!out.block) {
-        setStatus("error", "Not built: the map closed.");
-        return false;
-      }
-      const b = out.block;
-      setStatus("ok", b.count === 0 ? "Built: the script defines no triggers; the block is empty." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${wasStale ? " (appended: the previous block had been edited outside the script)" : ""}.`);
-      return true;
-    } finally {
-      building = false;
-      render();
-    }
-  };
-  const importHand = async () => {
-    if (!editor || !generated) return;
-    const { before, after } = svc.handTriggers();
-    if (before.length + after.length === 0) {
-      setStatus("info", "There are no hand-made triggers to import.");
-      return;
-    }
-    const ctx = { names: generated.names, string: (i) => api.names.string(i) };
-    const blank = source.trim() === "" || source === TEMPLATE;
-    const text = blank ? printScript([...before, ...after], ctx) : [
-      before.length ? printScript(before, ctx, "").trimStart() : "",
-      source.replace(/\s+$/, "") + "\n",
-      after.length ? printScript(after, ctx, "").trimStart() : ""
-    ].filter((s) => s !== "").join("\n");
-    editor.model.setValue(text);
-    source = text;
-    importing = true;
-    let ok = false;
-    try {
-      ok = await build(true);
-    } finally {
-      importing = false;
-    }
-    const n = before.length + after.length;
-    if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
-  };
-  const simulateNow = async () => {
-    const r = await compileNow();
-    if (!r) return;
-    if (!r.ok) {
-      setStatus("error", `Not simulated: ${r.diagnostics.length} error${r.diagnostics.length === 1 ? "" : "s"}.`);
-      return;
-    }
-    try {
-      const sim = new Simulation(r.triggers, { strings: r.strings, player: r.program?.owner }).run(SIMULATE_CYCLES);
-      simulation = { sim, result: r };
-      setStatus("ok", `Simulated ${SIMULATE_CYCLES} trigger cycles as P${sim.player + 1}: ${sim.events.length} action${sim.events.length === 1 ? "" : "s"} ran. Unit conditions (Bring, Command, \u2026) count as false; Wait takes no time.`);
-    } catch (err) {
-      setStatus("error", `Simulation stopped: ${err.message}`);
-    }
-  };
-  const refreshNames = () => {
-    if (cancelled) return;
-    generated = svc.names();
-    if (monaco && generated) setDeclarations(monaco, generated.decls);
-    render();
-    check();
-  };
-  const reveal = (line) => {
-    if (line) goTo(line);
-  };
-  const handle = api.ui.dialog({
-    title: "Script Editor",
-    size: "full",
-    tall: true,
-    // Escape inside the editor dismisses its own popups (suggestions, parameter hints); it must not close the dialog.
-    keepOpenOnEscape: (target) => !!host && target instanceof Node && host.contains(target),
-    mount(body, dialog) {
-      body.append(root);
-      render();
-      const loadingCover = w.busy(hostEl, "Loading the editor\u2026");
-      const releaseWorker = retainCompileWorker();
-      const subs = [
-        api.events.on("settings", refreshNames),
-        api.events.on("locations", refreshNames),
-        api.events.on("triggers", refreshNames),
-        // The script belongs to the map: another map, or none, closes the editor.
-        api.events.on("document", () => dialog.close())
-      ];
-      loadMonaco(api.storage.get(DIST_STORAGE_KEY, DEFAULT_DIST)).then(
-        (m) => {
-          if (cancelled) return;
-          monaco = m;
-          if (generated) setDeclarations(m, generated.decls);
-          loadingCover.done();
-          editor = createScriptEditor(m, hostEl, source, (text) => {
-            source = text;
-            svc.writeSource(text);
-            check();
-          });
-          reveal(options.line);
-          editor.editor.focus();
-          ready = true;
-          render();
-          check();
-        },
-        (err) => {
-          if (!cancelled) {
-            loadingCover.done();
-            problemsCount.textContent = "";
-            setStatus("error", `The editor failed to load: ${err.message}`);
-          }
-        }
-      );
-      return () => {
-        cancelled = true;
-        loadingCover.done();
-        if (timer !== null) clearTimeout(timer);
-        editor?.dispose();
-        editor = null;
-        if (monaco) releaseScriptEditor(monaco);
-        releaseWorker();
-        for (const s of subs) s.dispose();
-        if (current?.handle === handle) current = null;
-      };
-    },
-    buttons: [
-      { label: "Build & Close", primary: true, run: async () => await build() ? void 0 : false },
-      { label: "Close" },
-      // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
-      { label: "Build", closes: false, run: async () => {
-        await build();
-      } }
-    ]
-  });
-  current = { handle, reveal };
-}
-
 // script.ts
-var SCRIPT_MEMBER = "scmjs\\triggers.ts";
-var MANIFEST_MEMBER = "scmjs\\triggers.json";
+var SCRIPT_FOLDER = "trigscript\\";
+var MANIFEST_MEMBER = `${SCRIPT_FOLDER}build.json`;
+var ENTRY_MEMBER = `${SCRIPT_FOLDER}${ENTRY_FILE}`;
 var decoder = new TextDecoder();
 var encoder = new TextEncoder();
 var memberKey = (name) => name.replace(/\//g, "\\").toLowerCase();
 function isScriptMember(name) {
-  const key = memberKey(name);
-  return key === memberKey(SCRIPT_MEMBER) || key === memberKey(MANIFEST_MEMBER);
+  return memberKey(name).startsWith(memberKey(SCRIPT_FOLDER));
 }
+function memberOf(path) {
+  return `${SCRIPT_FOLDER}${normalizePath(path).replace(/\//g, "\\")}`;
+}
+function pathOf(member2) {
+  if (!isScriptMember(member2)) return null;
+  const rest = member2.replace(/\//g, "\\").slice(SCRIPT_FOLDER.length);
+  return /\.ts$/i.test(rest) ? rest.replace(/\\/g, "/") : null;
+}
+var FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.ts$/;
 function member(extras, name) {
   const key = memberKey(name);
   for (const [k, v] of extras) if (memberKey(k) === key) return v;
@@ -3710,20 +4090,29 @@ function withMember(extras, name, data) {
   if (data) next.set(name, data);
   return next;
 }
-function readScript(extras) {
-  const bytes = member(extras, SCRIPT_MEMBER);
-  return bytes ? decoder.decode(bytes) : null;
+function readFiles(extras) {
+  const out = {};
+  for (const [name, bytes] of extras) {
+    const path = pathOf(name);
+    if (path) out[path] = decoder.decode(bytes);
+  }
+  return out;
 }
-function withScript(extras, source) {
-  return withMember(extras, SCRIPT_MEMBER, source === null ? null : encoder.encode(source));
+function withFiles(extras, files) {
+  const next = /* @__PURE__ */ new Map();
+  for (const [name, bytes] of extras) if (!pathOf(name)) next.set(name, bytes);
+  for (const [path, text] of Object.entries(files)) next.set(memberOf(path), encoder.encode(text));
+  return next;
 }
 function readManifest(extras) {
   const bytes = member(extras, MANIFEST_MEMBER);
   if (!bytes) return null;
   try {
     const m = JSON.parse(decoder.decode(bytes));
-    if (m.version !== 1 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
-    return { version: 1, start: m.start, count: m.count, hash: m.hash, lines: Array.isArray(m.lines) ? m.lines : [], sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : void 0 };
+    if (m.version !== 2 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
+    const sources = Array.isArray(m.sources) ? m.sources.map((s) => s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null) : [];
+    const files = Array.isArray(m.files) ? m.files.filter((f) => typeof f === "string") : [];
+    return { version: 2, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "" };
   } catch {
     return null;
   }
@@ -3745,20 +4134,25 @@ function hashTriggers(list) {
 function hashText(text) {
   return fnv1a(encoder.encode(text));
 }
+function hashFiles(files) {
+  const paths = Object.keys(files).map(normalizePath).sort();
+  return hashText(paths.map((p) => `${p}\0${files[p] ?? ""}\0`).join(""));
+}
 function findBlock(list, manifest) {
   const { start, count } = manifest;
   const at = (s) => s >= 0 && s + count <= list.length && hashTriggers(list.slice(s, s + count)) === manifest.hash;
-  if (at(start)) return { start, count, lines: manifest.lines };
-  if (count === 0) return { start: Math.min(start, list.length), count, lines: manifest.lines };
-  for (let s = 0; s + count <= list.length; s++) if (s !== start && at(s)) return { start: s, count, lines: manifest.lines };
+  if (at(start)) return { start, count, sources: manifest.sources };
+  if (count === 0) return { start: Math.min(start, list.length), count, sources: manifest.sources };
+  for (let s = 0; s + count <= list.length; s++) if (s !== start && at(s)) return { start: s, count, sources: manifest.sources };
   return null;
 }
 function scriptState(triggers, extras) {
-  const source = readScript(extras);
+  const read = readFiles(extras);
+  const files = Object.keys(read).length ? read : null;
   const manifest = readManifest(extras);
   const block2 = triggers && manifest ? findBlock(triggers, manifest) : null;
-  const unbuilt = source !== null && (!manifest || manifest.sourceHash !== hashText(source));
-  return { source, manifest, block: block2, stale: !!manifest && !block2, unbuilt };
+  const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale: !!manifest && !block2, unbuilt };
 }
 function relocateManifest(triggers, extras) {
   const manifest = readManifest(extras);
@@ -3806,7 +4200,7 @@ function resolveStrings(compiled, intern) {
     return next;
   });
 }
-function buildScript(triggers, extras, source, compiled, intern, options = {}) {
+function buildScript(triggers, extras, files, compiled, intern, options = {}) {
   const records2 = resolveStrings(compiled, intern);
   const state = scriptState(triggers, extras);
   let start;
@@ -3825,15 +4219,513 @@ function buildScript(triggers, extras, source, compiled, intern, options = {}) {
     before = triggers.slice();
     after = [];
   }
-  const manifest = { version: 1, start, count: records2.length, hash: hashTriggers(records2), lines: compiled.lines, sourceHash: hashText(source) };
-  return { list: [...before, ...records2, ...after], extras: withManifest(withScript(extras, source), manifest), block: { start, count: records2.length, lines: manifest.lines } };
+  const manifest = { version: 2, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files) };
+  return { list: [...before, ...records2, ...after], extras: withManifest(withFiles(extras, files), manifest), block: { start, count: records2.length, sources: manifest.sources } };
 }
-function triggerAtLine(block2, line) {
+function triggerAtLine(block2, file, line) {
   let hit = null;
-  block2.lines.forEach((l, i) => {
-    if (l <= line) hit = block2.start + i;
+  const path = normalizePath(file);
+  block2.sources.forEach((s, i) => {
+    if (s && normalizePath(s.file) === path && s.line <= line) hit = block2.start + i;
   });
   return hit;
+}
+
+// editor.ts
+var TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
+// one trigger of the map, in order; code inside program(() => { \u2026 }) runs in the game.
+// Names come from the map: units.*, locations.*, switches.*, players.*, P1 \u2026 P12.
+import { trigger, program, bring, displayText, preserve, units, locations, P1, AllPlayers, CurrentPlayer } from "trigscript";
+
+trigger(AllPlayers, [
+  bring(CurrentPlayer, units.AnyUnit, locations.Anywhere, ">=", 1),
+], [
+  displayText("Hello from TrigScript."),
+  preserve(),
+]);
+
+// A program: let variables are death counters and switches; if, while, for and
+// functions work. It runs as one player, one loop iteration per trigger cycle.
+program(() => {
+  let cycles = 0;
+  while (true) {
+    cycles++;
+    if (cycles == 10) displayText("Ten trigger cycles have passed.");
+  }
+}, { owner: P1 });
+`;
+var FILE_TEMPLATE = `import { trigger, units, locations, P1 } from "trigscript";
+
+// Helpers this file exports are imported by main.ts: import { \u2026 } from "./name";
+`;
+var SIMULATE_CYCLES = 30;
+var CHECK_DELAY_MS = 350;
+var STYLE = `
+.tsd { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.tsd .tsd-editor { flex: 1; min-height: 0; display: flex; border: 1px solid var(--border); box-shadow: var(--bevel-sunken); border-radius: var(--radius); overflow: hidden; background: var(--bg-0); }
+.tsd .tsd-side { flex: none; width: 168px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg-1); }
+.tsd .tsd-files { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 4px 0; list-style: none; font-family: var(--font-mono); font-size: var(--fs-sm); }
+.tsd .tsd-files li { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; cursor: pointer; color: var(--text-dim); white-space: nowrap; }
+.tsd .tsd-files li:hover { background: var(--bg-3); }
+.tsd .tsd-files li.active { background: var(--bg-0); color: var(--text); }
+.tsd .tsd-files li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.tsd .tsd-files li .name.problem { color: var(--danger); }
+.tsd .tsd-files li button { flex: none; border: none; background: none; padding: 0 3px; font: inherit; color: var(--text-faint); cursor: pointer; visibility: hidden; }
+.tsd .tsd-files li.active button { visibility: visible; }
+.tsd .tsd-files li button:hover { color: var(--text); }
+.tsd .tsd-side .tsd-new { margin: 4px 6px 6px; }
+.tsd .tsd-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tsd .tsd-host { flex: 1; min-height: 0; }
+.tsd .tsd-problems { flex: none; max-height: 132px; overflow: auto; margin: 0; padding: 2px 0; list-style: none; border-top: 1px solid var(--border); background: var(--bg-1); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.tsd .tsd-problems li { display: flex; gap: 10px; padding: 2px 10px; cursor: pointer; align-items: baseline; }
+.tsd .tsd-problems li:hover { background: var(--bg-3); }
+.tsd .tsd-problems .where { flex: none; min-width: 48px; color: var(--text-faint); }
+.tsd .tsd-problems .msg { flex: 1; color: var(--danger); white-space: pre-wrap; }
+.tsd .tsd-problems .src { flex: none; color: var(--text-faint); font-size: var(--fs-xs); text-transform: uppercase; }
+.tsd .tsd-run .msg { color: var(--text); }
+.tsd .tsd-run li { cursor: default; }
+.tsd .tsd-program { border: none; background: none; padding: 0; font: inherit; font-size: var(--fs-sm); color: var(--gold); cursor: pointer; }
+.tsd .tsd-program:hover { text-decoration: underline; }
+.tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
+.tsd .tsd-variables .internal { color: var(--text-faint); }
+.tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
+`;
+function describeEvent(e) {
+  const name = actionDef(e.action.type)?.name ?? `Action ${e.action.type}`;
+  return e.text !== void 0 ? `${name} \u2014 ${e.text}` : name;
+}
+var current = null;
+function openScriptEditor(svc, options = {}) {
+  if (current?.handle.isOpen()) {
+    current.reveal(options.file, options.line);
+    return;
+  }
+  current = null;
+  const api = svc.api;
+  if (!api.document.isOpen()) {
+    api.ui.toast({ kind: "info", title: "Open or create a map first." });
+    return;
+  }
+  const el = api.ui.el;
+  const w = api.ui.widgets;
+  const initial = svc.state();
+  let files = initial?.files ?? { [ENTRY_FILE]: TEMPLATE };
+  const fresh = !initial?.files;
+  let generated = svc.names();
+  let host = null;
+  let editor = null;
+  let monaco = null;
+  let timer = null;
+  let ready = false;
+  let building = false;
+  let importing = false;
+  let diagnostics = [];
+  let result = null;
+  let simulation = null;
+  let showVariables = false;
+  let cancelled = false;
+  const style = el("style", void 0, STYLE);
+  const buildButton = w.button("Build", { onClick: () => {
+    void build();
+  } });
+  buildButton.title = "Run the script and install its triggers as the map's generated block";
+  const importButton = w.button("Import map triggers", { onClick: () => {
+    void importHand();
+  } });
+  importButton.title = "Rewrite the map's hand-made triggers as script, appended around the block, and rebuild";
+  const simulateButton = w.button("Simulate", { onClick: () => {
+    void simulateNow();
+  } });
+  simulateButton.title = `Run the compiled triggers for ${SIMULATE_CYCLES} trigger cycles in a built-in interpreter and list what happened`;
+  const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "Where the programs' variables are stored (death counters and switches)", onClick: () => {
+    showVariables = !showVariables;
+    render();
+  } });
+  const problemsCount = el("span", { className: "hint" }, "");
+  const variables = el("div", { className: "tsd-variables", hidden: true });
+  const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block.");
+  const hostEl = el("div", { className: "tsd-host" });
+  host = hostEl;
+  const problems = el("ul", { className: "tsd-problems", hidden: true });
+  const fileList = el("ul", { className: "tsd-files" });
+  const newButton = w.button("New file", { ghost: true, onClick: () => {
+    void newFile();
+  } });
+  newButton.className += " tsd-new";
+  newButton.title = 'Add a file to the script; main.ts imports it with import { \u2026 } from "./name"';
+  const statusLine = w.statusLine();
+  const root = el(
+    "div",
+    { className: "tsd" },
+    style,
+    el("div", { className: "row" }, buildButton, importButton, simulateButton, el("span", { className: "grow" }), programButton, problemsCount),
+    variables,
+    notice,
+    el(
+      "div",
+      { className: "tsd-editor" },
+      el("div", { className: "tsd-side" }, fileList, newButton),
+      el("div", { className: "tsd-main" }, hostEl, problems)
+    ),
+    statusLine
+  );
+  let status = { kind: "info", text: "" };
+  const setStatus = (kind, text) => {
+    status = { kind, text };
+    render();
+  };
+  const goTo = (file, line, column = 1) => {
+    if (!editor) return;
+    editor.show(file);
+    editor.editor.revealLineInCenter(line);
+    editor.editor.setPosition({ lineNumber: line, column });
+    editor.editor.focus();
+    renderFiles();
+  };
+  const where = (s) => s ? Object.keys(files).length > 1 ? `${s.file}:${s.line}` : `L${s.line}` : "?";
+  const renderFiles = () => {
+    const active = editor?.active() ?? ENTRY_FILE;
+    const paths = Object.keys(files).sort((a2, b) => a2 === ENTRY_FILE ? -1 : b === ENTRY_FILE ? 1 : a2.localeCompare(b));
+    const broken = new Set(diagnostics.map((d) => normalizePath(d.file)));
+    fileList.replaceChildren(...paths.map((path) => {
+      const row = el(
+        "li",
+        { className: path === active ? "active" : void 0, title: path, onClick: () => {
+          if (editor) {
+            editor.show(path);
+            renderFiles();
+            editor.editor.focus();
+          }
+        } },
+        el("span", { className: broken.has(path) ? "name problem" : "name" }, path)
+      );
+      if (path !== ENTRY_FILE) {
+        row.append(
+          el("button", { type: "button", title: "Rename", onClick: (e) => {
+            e.stopPropagation();
+            void renameFile(path);
+          } }, "\u270E"),
+          el("button", { type: "button", title: "Remove", onClick: (e) => {
+            e.stopPropagation();
+            void removeFile(path);
+          } }, "\xD7")
+        );
+      }
+      return row;
+    }));
+  };
+  const render = () => {
+    const errors = diagnostics.length;
+    buildButton.setBusy(building && !importing);
+    importButton.setBusy(importing);
+    buildButton.disabled = importButton.disabled = !ready || building;
+    simulateButton.disabled = !ready || building || errors > 0;
+    newButton.disabled = !ready;
+    if (!ready) problemsCount.replaceChildren(w.spinner({ size: "sm", label: "Loading the editor\u2026" }));
+    else if (!result) problemsCount.textContent = "Checking\u2026";
+    else problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : "No problems";
+    const programs = result?.programs ?? [];
+    const userVariables = result?.variables.filter((v) => !v.name.startsWith("(")) ?? [];
+    programButton.hidden = programs.length === 0;
+    if (programs.length) {
+      const count = programs.reduce((n, p) => n + p.count, 0);
+      const owners = [...new Set(programs.map((p) => `P${p.owner + 1}`))].join(", ");
+      programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`}: ${count} trigger${count === 1 ? "" : "s"} as ${owners} \xB7 ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"}`;
+    }
+    variables.hidden = !(showVariables && result && result.variables.length > 0);
+    variables.replaceChildren(...(result?.variables ?? []).map((v) => el("span", { className: v.name.startsWith("(") ? "internal" : void 0 }, el("b", void 0, v.name), ` ${v.kind === "number" ? "number" : "boolean"} \u2192 ${v.storage}`)));
+    const state = svc.state();
+    const block2 = state?.block ?? null;
+    const stale = state?.stale ?? false;
+    notice.hidden = !stale;
+    renderFiles();
+    problems.replaceChildren();
+    problems.className = "tsd-problems";
+    if (errors > 0) {
+      problems.hidden = false;
+      for (const d of diagnostics) {
+        problems.append(el(
+          "li",
+          { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
+          el("span", { className: "where" }, `${Object.keys(files).length > 1 ? `${d.file}:` : ""}${d.line}:${d.column}`),
+          el("span", { className: "msg" }, d.message.split("\n")[0]),
+          el("span", { className: "src" }, d.source === "typescript" ? "types" : d.source === "script" ? "script" : "compiler")
+        ));
+      }
+    } else if (simulation) {
+      problems.hidden = false;
+      problems.className = "tsd-problems tsd-run";
+      const { sim, result: r } = simulation;
+      if (sim.events.length === 0) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_CYCLES} cycles.`)));
+      for (const e of sim.events) {
+        const at = r.sources[e.trigger];
+        problems.append(el(
+          "li",
+          { title: `Trigger #${e.trigger + 1}`, onClick: () => {
+            if (at) goTo(at.file, at.line);
+          } },
+          el("span", { className: "where" }, `cycle ${e.cycle + 1}`),
+          el("span", { className: "msg" }, describeEvent(e)),
+          el("span", { className: "src" }, where(at))
+        ));
+      }
+      for (const v of r.variables.filter((x) => !x.name.startsWith("("))) {
+        problems.append(el(
+          "li",
+          void 0,
+          el("span", { className: "where" }, "after"),
+          el("span", { className: "msg" }, `${v.name} = ${v.kind === "number" ? sim.death(v.player, v.unit) : sim.switches[v.switch] ? "true" : "false"}`),
+          el("span", { className: "src" }, v.storage)
+        ));
+      }
+    } else {
+      problems.hidden = true;
+    }
+    const line = status.text || (block2 ? `Block: ${block2.count} generated trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}${state?.unbuilt ? " \xB7 unbuilt changes" : ""}` : stale ? "The last build's triggers were edited outside the script" : "Not built yet");
+    if (status.kind === "busy") statusLine.busy(line);
+    else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : void 0);
+  };
+  const applyResult = (r) => {
+    diagnostics = r.diagnostics;
+    result = r;
+    simulation = null;
+    if (editor && monaco) setCompilerMarkers(monaco, files, r.diagnostics);
+    render();
+  };
+  const input = () => generated ? { files, names: generated.names, reservedDeaths: generated.reservedDeaths, reservedSwitches: generated.reservedSwitches } : null;
+  const check = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      const req = input();
+      if (cancelled || !req) return;
+      compileInBackground(req, svc.dist()).then(
+        (r) => {
+          if (!cancelled) applyResult(r);
+        },
+        (err) => {
+          if (!cancelled && !(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`);
+        }
+      );
+    }, CHECK_DELAY_MS);
+  };
+  const compileNow = async () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    const req = input();
+    if (!req) return null;
+    try {
+      const r = await compileInBackground(req, svc.dist());
+      applyResult(r);
+      return r;
+    } catch (err) {
+      if (!(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`);
+      return null;
+    }
+  };
+  const build = async (takeOver = false) => {
+    if (building || !ready) return false;
+    building = true;
+    setStatus("busy", "Running the script\u2026");
+    try {
+      const r = await compileNow();
+      if (!r) return false;
+      if (!r.ok) {
+        const n = r.diagnostics.length;
+        setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
+        return false;
+      }
+      const wasStale = svc.state()?.stale ?? false;
+      setStatus("busy", "Installing the triggers\u2026");
+      const out = await svc.build(files, { takeOver });
+      if (!out.block) {
+        setStatus("error", "Not built: the map closed.");
+        return false;
+      }
+      const b = out.block;
+      setStatus("ok", b.count === 0 ? "Built: the script defines no triggers; the block is empty." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${wasStale ? " (appended: the previous block had been edited outside the script)" : ""}.`);
+      return true;
+    } finally {
+      building = false;
+      render();
+    }
+  };
+  const importHand = async () => {
+    if (!editor || !generated) return;
+    const { before, after } = svc.handTriggers();
+    if (before.length + after.length === 0) {
+      setStatus("info", "There are no hand-made triggers to import.");
+      return;
+    }
+    const ctx = { names: generated.names, string: (i) => api.names.string(i) };
+    const main = files[ENTRY_FILE] ?? "";
+    const blank = main.trim() === "" || main === TEMPLATE;
+    const text = blank ? printScript([...before, ...after], ctx, { imports: true }) : [
+      before.length ? printScript(before, ctx, { header: "" }).trimStart() : "",
+      main.replace(/\s+$/, "") + "\n",
+      after.length ? printScript(after, ctx, { header: "" }).trimStart() : ""
+    ].filter((s) => s !== "").join("\n");
+    editor.set(ENTRY_FILE, text);
+    editor.show(ENTRY_FILE);
+    files = { ...files, [ENTRY_FILE]: text };
+    importing = true;
+    let ok = false;
+    try {
+      ok = await build(true);
+    } finally {
+      importing = false;
+    }
+    const n = before.length + after.length;
+    if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
+  };
+  const simulateNow = async () => {
+    const r = await compileNow();
+    if (!r) return;
+    if (!r.ok) {
+      setStatus("error", `Not simulated: ${r.diagnostics.length} error${r.diagnostics.length === 1 ? "" : "s"}.`);
+      return;
+    }
+    try {
+      const sim = new Simulation(r.triggers, { strings: r.strings, player: r.programs[0]?.owner }).run(SIMULATE_CYCLES);
+      simulation = { sim, result: r };
+      setStatus("ok", `Simulated ${SIMULATE_CYCLES} trigger cycles as P${sim.player + 1}: ${sim.events.length} action${sim.events.length === 1 ? "" : "s"} ran. Unit conditions (bring, command, \u2026) count as false; wait takes no time.`);
+    } catch (err) {
+      setStatus("error", `Simulation stopped: ${err.message}`);
+    }
+  };
+  const askName = async (message, value) => {
+    for (; ; ) {
+      const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: "helpers.ts" });
+      if (answer === null) return null;
+      let name = normalizePath(answer.trim());
+      if (name && !/\.ts$/i.test(name)) name += ".ts";
+      if (!FILE_NAME.test(name)) {
+        value = answer;
+        message = "A file name is letters, digits, _ - and ., folders with /, ending in .ts.";
+        continue;
+      }
+      if (files[name] !== void 0) {
+        value = answer;
+        message = `There is already a ${name}.`;
+        continue;
+      }
+      return name;
+    }
+  };
+  const newFile = async () => {
+    if (!editor) return;
+    const name = await askName("Name of the new file:", "helpers.ts");
+    if (!name) return;
+    editor.add(name, FILE_TEMPLATE);
+    renderFiles();
+    editor.editor.focus();
+  };
+  const renameFile = async (path) => {
+    if (!editor || path === ENTRY_FILE) return;
+    const name = await askName(`Rename ${path} to:`, path);
+    if (!name) return;
+    editor.rename(path, name);
+    const next = { ...files };
+    next[name] = next[path];
+    delete next[path];
+    files = next;
+    svc.writeFiles(files);
+    renderFiles();
+    check();
+  };
+  const removeFile = async (path) => {
+    if (!editor || path === ENTRY_FILE) return;
+    if (!await api.ui.confirm(`Remove ${path} from the script? Its text is not kept anywhere else.`, { title: "TrigScript", confirmLabel: "Remove", danger: true })) return;
+    editor.remove(path);
+    const next = { ...files };
+    delete next[path];
+    files = next;
+    svc.writeFiles(files);
+    renderFiles();
+    check();
+  };
+  const refreshNames = () => {
+    if (cancelled) return;
+    generated = svc.names();
+    if (monaco && generated) setDeclarations(monaco, generated.decls);
+    render();
+    check();
+  };
+  const reveal = (file, line) => {
+    if (line) goTo(file ?? ENTRY_FILE, line);
+    else if (file) {
+      editor?.show(file);
+      renderFiles();
+    }
+  };
+  const handle = api.ui.dialog({
+    title: "TrigScript",
+    size: "full",
+    tall: true,
+    // Escape inside the editor dismisses its own popups (suggestions, parameter hints); it must not close the dialog.
+    keepOpenOnEscape: (target) => !!host && target instanceof Node && host.contains(target),
+    mount(body2, dialog) {
+      body2.append(root);
+      render();
+      const loadingCover = w.busy(hostEl, "Loading the editor\u2026");
+      const releaseWorker = retainCompileWorker();
+      const subs = [
+        api.events.on("settings", refreshNames),
+        api.events.on("locations", refreshNames),
+        api.events.on("triggers", refreshNames),
+        // The script belongs to the map: another map, or none, closes the editor.
+        api.events.on("document", () => dialog.close())
+      ];
+      loadMonaco(svc.dist()).then(
+        (m) => {
+          if (cancelled) return;
+          monaco = m;
+          if (generated) setDeclarations(m, generated.decls);
+          loadingCover.done();
+          editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
+            files = { ...files, [path]: text };
+            svc.writeFiles(files);
+            check();
+          });
+          if (fresh) svc.writeFiles(files);
+          reveal(options.file, options.line);
+          editor.editor.focus();
+          ready = true;
+          render();
+          check();
+        },
+        (err) => {
+          if (!cancelled) {
+            loadingCover.done();
+            problemsCount.textContent = "";
+            setStatus("error", `The editor failed to load: ${err.message}`);
+          }
+        }
+      );
+      return () => {
+        cancelled = true;
+        loadingCover.done();
+        if (timer !== null) clearTimeout(timer);
+        editor?.dispose();
+        editor = null;
+        if (monaco) releaseScriptEditor(monaco);
+        releaseWorker();
+        for (const s of subs) s.dispose();
+        if (current?.handle === handle) current = null;
+      };
+    },
+    buttons: [
+      { label: "Build & Close", primary: true, run: async () => await build() ? void 0 : false },
+      { label: "Close" },
+      // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
+      { label: "Build", closes: false, run: async () => {
+        await build();
+      } }
+    ]
+  });
+  current = { handle, reveal };
 }
 
 // service.ts
@@ -3857,26 +4749,33 @@ var ScriptService = class {
   constructor(api, open) {
     this.api = api;
     this.claim = api.triggers.claim({
-      label: "the trigger script",
+      label: "the TrigScript block",
       badge: "script",
       locate: (list) => {
         const manifest = readManifest(snapshotExtras(api));
         return manifest ? findBlock(list, manifest) : null;
       },
       describe: (index, list) => {
-        const line = this.lineOf(index, list);
-        return `This trigger is generated by the map's trigger script${line ? ` (line ${line})` : ""}. Edit the source instead; a Build replaces the whole block.`;
+        const at = this.sourceOf(index, list);
+        return `This trigger is generated by the map's TrigScript${at ? ` (${at.file}, line ${at.line})` : ""}. Edit the source instead; a Build replaces the whole block.`;
       },
-      open: (index, list) => open(this.lineOf(index, list) ?? void 0),
-      openLabel: "Open Script Editor"
+      open: (index, list) => {
+        const at = this.sourceOf(index, list);
+        open(at?.file, at?.line);
+      },
+      openLabel: "Open TrigScript"
     });
   }
-  lineOf(index, list) {
+  sourceOf(index, list) {
     const manifest = readManifest(snapshotExtras(this.api));
     const block2 = manifest ? findBlock(list, manifest) : null;
-    return block2 ? block2.lines[index - block2.start] : void 0;
+    return block2 ? block2.sources[index - block2.start] ?? null : null;
   }
-  /** The map's script source, its manifest, and whether the built block is still intact. Null with no map. */
+  /** The Monaco build's base URL — the standard library is fetched from there too. */
+  dist() {
+    return this.api.storage.get(DIST_STORAGE_KEY, DEFAULT_DIST);
+  }
+  /** The map's script files, its manifest, and whether the built block is still intact. Null with no map. */
   state() {
     if (!this.api.document.isOpen()) return null;
     return scriptState(this.api.triggers.list(), snapshotExtras(this.api));
@@ -3897,29 +4796,39 @@ var ScriptService = class {
     });
     const triggers = api.triggers.list();
     const state = scriptState(triggers, snapshotExtras(api));
-    return { names, decls: generateDeclarations(names), options: reservedStorage(triggers, switchNames, state.block) };
+    const reserved = reservedStorage(triggers, switchNames, state.block);
+    return { names, decls: generateDeclarations(names), reservedDeaths: reserved.reservedDeaths ?? [], reservedSwitches: reserved.reservedSwitches ?? [] };
   }
-  declarations() {
-    return this.names()?.decls ?? "";
+  /** The declarations for the open map; `compact` is the shorter variant for a language model. */
+  declarations(options = {}) {
+    const map = this.names();
+    if (!map) return "";
+    return options.compact ? generateDeclarations(map.names, { compact: true }) : map.decls;
+  }
+  /** A command's input as files: a string is the entry file, over the map's other files. */
+  filesOf(input) {
+    if (typeof input !== "string") return { ...input };
+    return { ...this.state()?.files ?? {}, [ENTRY_FILE]: input };
   }
   /** Compile against the open map's names; rejects with `CompileSuperseded` when a newer compile started first. */
-  compile(source) {
+  compile(input) {
     const map = this.names();
     if (!map) return Promise.reject(new Error("No map is open."));
-    return compileInBackground(source, map.decls, map.options);
+    return compileInBackground({ files: this.filesOf(input), names: map.names, reservedDeaths: map.reservedDeaths, reservedSwitches: map.reservedSwitches }, this.dist());
   }
   /**
    * Compile and, when there are no errors, install the block — replacing the previous
-   * one, or appending when the previous was edited by hand — and store the source with
+   * one, or appending when the previous was edited by hand — and store the files with
    * the map. `takeOver` replaces the whole trigger list with the script's.
    */
-  async build(source, options = {}) {
-    const compiled = await this.compile(source);
+  async build(input, options = {}) {
+    const files = this.filesOf(input);
+    const compiled = await this.compile(files);
     if (!compiled.ok || !this.api.document.isOpen()) return { compiled, block: null };
     let block2 = null;
-    this.api.document.update("Build trigger script", (tx) => {
+    this.api.document.update("Build TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
-      const plan = buildScript(tx.triggers.list(), before, source, compiled, (text) => tx.strings.intern(text), options);
+      const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), options);
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block2 = plan.block;
@@ -3932,9 +4841,9 @@ var ScriptService = class {
     return { compiled, block: block2 };
   }
   /** Records as raw `trigger()` calls in the script language — what Import map triggers writes. */
-  print(triggers, header) {
+  print(triggers, options) {
     const names = this.names()?.names ?? scriptNames();
-    return printScript(triggers, { names, string: (i) => this.api.names.string(i) }, header);
+    return printScript(triggers, { names, string: (i) => this.api.names.string(i) }, options);
   }
   /** The trigger-cycle interpreter over records: Deaths, Switch, Always and Never modelled, other conditions false, other actions logged. */
   simulate(triggers, cycles, options = {}) {
@@ -3945,16 +4854,16 @@ var ScriptService = class {
     });
     return { cycles: sim.cycle, events: sim.events, switches };
   }
-  /** The index of the trigger a 1-based source line generated, per the build manifest; null when none did or the block is stale. */
-  triggerAtLine(line) {
+  /** The index of the trigger a 1-based line of a file generated, per the build manifest; null when none did or the block is stale. */
+  triggerAt(file, line) {
     const state = this.state();
-    return state?.block && !state.stale ? triggerAtLine(state.block, line) : null;
+    return state?.block && !state.stale ? triggerAtLine(state.block, file, line) : null;
   }
-  /** The source as typed, straight into the archive (the map is modified; only Build changes triggers). */
-  writeSource(text) {
+  /** The files as typed, straight into the archive (the map is modified; only Build changes triggers). */
+  writeFiles(files) {
     if (!this.api.document.isOpen()) return;
     const before = snapshotExtras(this.api);
-    commitExtras(this.api, before, withScript(before, text));
+    commitExtras(this.api, before, withFiles(before, files));
   }
   /** The hand-made triggers around the block, in list order: what Import map triggers rewrites as script. */
   handTriggers() {
@@ -3978,13 +4887,13 @@ var ScriptService = class {
   }
 };
 function readManifestBytes(api) {
-  for (const [name, bytes] of snapshotExtras(api)) if (name.toLowerCase().endsWith(".json")) return bytes;
+  for (const [name, bytes] of snapshotExtras(api)) if (name.toLowerCase().endsWith("build.json")) return bytes;
   return null;
 }
 
 // plugin.ts
 function activate(api) {
-  const svc = new ScriptService(api, (line) => openScriptEditor(svc, { line }));
+  const svc = new ScriptService(api, (file, line) => openScriptEditor(svc, { file, line }));
   api.events.on("triggers", () => {
     svc.relocate();
     if (svc.manifestChanged()) svc.claim.refresh();
@@ -3996,19 +4905,21 @@ function activate(api) {
     svc.manifestChanged();
     svc.claim.refresh();
   });
-  api.commands.register({ id: "open", title: "Script Editor\u2026", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isOptions(options) ? options : {}) });
-  api.menu.add("Triggers", { label: "Script Editor\u2026", after: "Text Trigger Editor\u2026", enabled: () => api.document.isOpen(), command: "open" });
-  api.commands.register({ id: "state", title: "Trigger script: state", run: () => svc.state() });
-  api.commands.register({ id: "declarations", title: "Trigger script: declarations", run: () => svc.declarations() });
-  api.commands.register({ id: "compile", title: "Trigger script: compile", run: (source) => svc.compile(String(source ?? "")) });
-  api.commands.register({ id: "build", title: "Trigger script: build", run: (source, options) => svc.build(String(source ?? ""), { takeOver: isRecord(options) && options.takeOver === true }) });
-  api.commands.register({ id: "print", title: "Trigger script: print records as script", run: (triggers) => svc.print(records(triggers)) });
-  api.commands.register({ id: "simulate", title: "Trigger script: simulate records", run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
-  api.commands.register({ id: "triggerAtLine", title: "Trigger script: trigger at a source line", run: (line) => svc.triggerAtLine(Number(line) || 0) });
+  api.commands.register({ id: "open", title: "TrigScript\u2026", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num(options.line) } : {}) });
+  api.menu.add("Triggers", { label: "TrigScript\u2026", after: "Text Trigger Editor\u2026", enabled: () => api.document.isOpen(), command: "open" });
+  api.commands.register({ id: "state", title: "TrigScript: state", run: () => svc.state() });
+  api.commands.register({ id: "declarations", title: "TrigScript: declarations", run: (options) => svc.declarations({ compact: isRecord(options) && options.compact === true }) });
+  api.commands.register({ id: "compile", title: "TrigScript: compile", run: (input) => svc.compile(scriptInput(input)) });
+  api.commands.register({ id: "build", title: "TrigScript: build", run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true }) });
+  api.commands.register({ id: "print", title: "TrigScript: print records as script", run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : void 0) });
+  api.commands.register({ id: "simulate", title: "TrigScript: simulate records", run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
+  api.commands.register({ id: "triggerAt", title: "TrigScript: trigger at a source line", run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
 }
 var isRecord = (v) => typeof v === "object" && v !== null;
-var isOptions = (v) => isRecord(v);
+var str = (v) => typeof v === "string" ? v : void 0;
+var num = (v) => typeof v === "number" ? v : void 0;
 var records = (v) => Array.isArray(v) ? v : [];
+var scriptInput = (v) => isRecord(v) ? Object.fromEntries(Object.entries(v).filter(([, t]) => typeof t === "string")) : String(v ?? "");
 export {
   activate as default
 };

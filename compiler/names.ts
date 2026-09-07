@@ -2,7 +2,7 @@
  * The identifiers a script uses for the map's things. `scriptNames(sources)` builds five
  * tables — players, units, locations, switches, AI scripts — each entry being a value and
  * the keys it goes by: an identifier derived from the display name (`TerranMarine`,
- * `BeaconAlpha`) first, the display name itself second (usable as `Units["Terran Marine"]`),
+ * `BeaconAlpha`) first, the display name itself second (usable as `units["Terran Marine"]`),
  * then any custom name the map gives it. The declarations are generated from these tables
  * and the printer chooses the first key, so the two agree by construction; keys are unique
  * within a table (a duplicate name gets `_2`, `_3`).
@@ -15,7 +15,7 @@ import { PlayerGroup, SWITCH_COUNT } from "../vendor/triggers";
 import { AI_SCRIPT_CHOICES, aiScriptCode, PLAYER_GROUP_CHOICES, UNIT_CLASS_CHOICES } from "../vendor/triggerDefs";
 import { UNIT_NAMES } from "../vendor/units";
 
-/** The location slot the game calls Anywhere (0-based); a script names it `Locations.Anywhere`, value 64. */
+/** The location slot the game calls Anywhere (0-based); a script names it `locations.Anywhere`, value 64. */
 export const ANYWHERE_INDEX = 63;
 
 export interface NameEntry {
@@ -25,9 +25,9 @@ export interface NameEntry {
 }
 
 export interface NameTable {
-  /** The object the script reads the entries from (`Units`). */
+  /** The object the script reads the entries from (`units`). */
   object: string;
-  /** The branded type of its values (`UnitId`). */
+  /** The branded type of its values (`Unit`). */
   type: string;
   doc: string;
   entries: NameEntry[];
@@ -134,11 +134,11 @@ export function scriptNames(src: NameSources = {}): ScriptNames {
     return { value: i, keys };
   });
   return {
-    players: table("Players", "PlayerId", withMap ? "Players, player groups and the map's forces." : "Players and player groups.", playerEntries(src.forceNames ?? [])),
-    units: table("Units", "UnitId", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
-    locations: table("Locations", "LocationId", "The map's locations.", locations),
-    switches: table("Switches", "SwitchId", withMap ? "The 256 switches, by number and by the map's names." : "The 256 switches.", switches),
-    aiScripts: table("AiScripts", "AiScriptId", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries()),
+    players: table("players", "Player", withMap ? "Players, player groups and the map's forces." : "Players and player groups.", playerEntries(src.forceNames ?? [])),
+    units: table("units", "Unit", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
+    locations: table("locations", "Location", "The map's locations.", locations),
+    switches: table("switches", "Switch", withMap ? "The 256 switches, by number and by the map's names." : "The 256 switches.", switches),
+    aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries()),
   };
 }
 

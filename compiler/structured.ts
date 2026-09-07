@@ -1,37 +1,51 @@
 /**
- * The structured level's front end: walks the top-level statements that are not
- * `trigger()` calls — `let` variables, assignments, `if` / `while` / `do` / `for`,
- * `break` / `continue`, action calls, calls to the script's own functions — and drives
- * the trigger machine in `lower.ts`.
+ * The structured level's front end: walks a `program(() => { … })` body — `let`
+ * variables, assignments, `if` / `while` / `do` / `for`, `break` / `continue`, action
+ * statements, calls to functions declared in the body — and drives the trigger machine
+ * in `lower.ts`.
  *
  * What the language means, in the game's terms:
  *
  * - A `let` holding a number is a death counter (unsigned 32-bit, `-=` stops at 0); a
- *   `let` holding a boolean is a switch. `const`s stay compile-time constants.
+ *   `let` holding a boolean is a switch. A `const` is computed when the script is built.
  * - Statements run in order within one trigger cycle; a loop's back edge waits for the
  *   next cycle, so `while (true) { … }` is a game loop running once per cycle.
- * - `if (Bring(…) && x >= 3 || !flag)`: conditions are trigger conditions, comparisons
+ * - `if (bring(…) && x >= 3 || !flag)`: conditions are trigger conditions, comparisons
  *   of variables with constants, comparisons between variables (costly — see `lower.ts`),
  *   `&&`, `||`, `!`, and `random()`.
  * - `x = y + 3`, `x += y`, `x++`: linear arithmetic only; there is no multiplication
  *   between variables because the game has no instruction for it.
- * - Functions are inlined at each call — parameters bind to constants or, when an
- *   argument is a variable, to that variable (by reference). No recursion, no return
- *   values.
+ * - Functions declared in the body are inlined at each call — parameters bind to values
+ *   or, when an argument is a variable, to that variable (by reference). No recursion,
+ *   no return values.
  *
- * Every trigger argument inside structured code is still a compile-time constant: the
- * point of variables is that *conditions and assignments* can read them.
+ * Everything the body reads from outside — the library's conditions and actions, the
+ * script's constants and helpers — arrives as *hoisted values* (`hoist.ts`): the plan
+ * numbers those expressions and the run evaluated them, so where the source says
+ * `bring(P1, units.Marine, base, ">=", 1)` this walker sees a condition record.
  */
 import type * as TS from "typescript";
-import { SwitchAction } from "../vendor/triggers";
+import { ActionType, SwitchAction } from "../vendor/triggers";
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { ACTION_IDENTS, CONDITION_IDENTS } from "./api";
-import type { Compiler } from "./compiler";
-import { Scope } from "./scope";
+import type { ProgramPlan } from "./hoist";
+import { declarationOf, libraryName } from "./hoist";
+import { isAction, isCondition, isTrigger } from "./runtime";
+import { Scope, type Binding } from "./scope";
 import {
   and, compareConst, cond, FALSE, flipOp, LowerError, Machine, not, or, setSwitch, switchCondition, TRUE,
   type Bool, type CompareOp, type DcVar, type Linear, type SwVar,
 } from "./lower";
+
+export interface StructuredContext {
+  ts: typeof TS;
+  checker: TS.TypeChecker;
+  sf: TS.SourceFile;
+  plan: ProgramPlan;
+  /** The hoisted expressions' values, by the plan's index. */
+  values: unknown[];
+  machine: Machine;
+  error(node: TS.Node, message: string): void;
+}
 
 interface Ctx {
   breakTo?: () => number;
@@ -43,38 +57,56 @@ interface Ctx {
 const MAX_INLINE_DEPTH = 16;
 const LABEL_LENGTH = 48;
 
+/** A value the run computed for a hoisted expression (or a parameter bound to one). */
+interface Hoisted { value: unknown }
+
+function describe(v: unknown): string {
+  if (isCondition(v)) return "a condition";
+  if (isAction(v)) return "an action";
+  if (isTrigger(v)) return "a trigger";
+  if (Array.isArray(v)) return "an array";
+  if (typeof v === "string") return "text";
+  if (typeof v === "function") return "a function";
+  if (v === null || v === undefined) return String(v);
+  return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
+}
+
 export class Structured {
-  private readonly c: Compiler;
+  private readonly c: StructuredContext;
   private readonly m: Machine;
   private readonly ts: typeof TS;
   /** After `break` / `continue` / `return` / an endless loop: the next statement needs a state of its own. */
   private dead = false;
   private inlineDepth = 0;
   private scratchUsed = 0;
-  /** The program's outermost scope: what a function body closes over. */
-  private topScope: Scope | null = null;
+  private scope: Scope = new Scope(null);
+  /** The program's outermost scope: what an inlined function body closes over. */
+  private readonly topScope = this.scope;
 
-  constructor(c: Compiler, m: Machine) {
+  constructor(c: StructuredContext) {
     this.c = c;
-    this.m = m;
+    this.m = c.machine;
     this.ts = c.ts;
   }
 
-  run(statements: TS.Statement[]) {
-    this.topScope = new Scope(null);
+  run() {
+    const statements = this.c.plan.body.statements;
     try {
       this.block(statements, {}, this.topScope);
       if (!this.dead) this.m.jump(this.m.halt, this.lastLine(statements), "end of program");
     } catch (err) {
       if (!(err instanceof LowerError)) throw err;
-      this.c.error(statements[statements.length - 1] ?? this.c.sf, err.message);
+      this.c.error(statements[statements.length - 1] ?? this.c.plan.body, err.message);
     }
-    this.c.scope = null;
   }
 
-  private lastLine(statements: TS.Statement[]): number {
+  private lineOf(node: TS.Node): number {
+    return this.c.sf.getLineAndCharacterOfPosition(node.getStart(this.c.sf)).line + 1;
+  }
+
+  private lastLine(statements: readonly TS.Statement[]): number {
     const last = statements[statements.length - 1];
-    return last ? this.c.sf.getLineAndCharacterOfPosition(last.getEnd()).line + 1 : 1;
+    return last ? this.c.sf.getLineAndCharacterOfPosition(last.getEnd()).line + 1 : this.lineOf(this.c.plan.body);
   }
 
   /** "L12: while (x < 3)" — the comment a generated trigger carries. */
@@ -83,20 +115,193 @@ export class Structured {
     const brace = text.indexOf("{");
     if (brace > 0) text = text.slice(0, brace).trim();
     if (text.length > LABEL_LENGTH) text = `${text.slice(0, LABEL_LENGTH - 1)}…`;
-    return `L${this.c.lineOf(node)}: ${text}`;
+    return `L${this.lineOf(node)}: ${text}`;
   }
 
   private line(node: TS.Node): number {
-    return this.c.lineOf(node);
+    return this.lineOf(node);
   }
 
   private live() {
     if (this.dead) { this.m.enter(this.m.fresh()); this.dead = false; }
   }
 
-  private block(statements: readonly TS.Statement[], ctx: Ctx, scope = new Scope(this.c.scope)) {
-    const outer = this.c.scope;
-    this.c.scope = scope;
+  /* ── Values and bindings ── */
+
+  /** Strip parentheses, `as`, `satisfies`, `!` — the wrappers that change nothing. */
+  private unwrap(expr: TS.Expression): TS.Expression {
+    const { ts } = this;
+    for (;;) {
+      if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr)) expr = expr.expression;
+      else return expr;
+    }
+  }
+
+  /** The declaration of an identifier when it is one of the program's own (a let, a parameter, a function). */
+  private gameDeclaration(id: TS.Identifier): TS.Node | undefined {
+    const { ts } = this;
+    let decl: TS.Node | undefined = declarationOf(ts, this.c.checker, id);
+    while (decl && (ts.isBindingElement(decl) || ts.isArrayBindingPattern(decl) || ts.isObjectBindingPattern(decl))) decl = decl.parent;
+    return decl && this.c.plan.game.has(decl) ? decl : undefined;
+  }
+
+  private binding(expr: TS.Expression): Binding | undefined {
+    const e = this.unwrap(expr);
+    if (!this.ts.isIdentifier(e)) return undefined;
+    const decl = this.gameDeclaration(e);
+    return decl ? this.scope.lookup(decl) : undefined;
+  }
+
+  private varOf(expr: TS.Expression): DcVar | SwVar | undefined {
+    const b = this.binding(expr);
+    return b?.kind === "var" ? b.v : undefined;
+  }
+
+  /**
+   * The build-time value of an expression, when it has one: a hoisted expression's, a
+   * parameter's bound to one, or — so that `createUnit(p, units.Zergling, count, at)`
+   * works inside a function whose `p` and `count` were bound at the call — a call,
+   * member access, arithmetic or template over such values, evaluated now. Undefined
+   * when a variable of the program is involved.
+   */
+  private evaluate(expr: TS.Expression, depth = 0): Hoisted | undefined {
+    const { ts } = this;
+    let e = expr;
+    for (;;) {
+      const k = this.c.plan.index.get(e);
+      if (k !== undefined) return { value: this.c.values[k] };
+      if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
+      else break;
+    }
+    if (depth > 32) return undefined;
+    const sub = (x: TS.Expression) => this.evaluate(x, depth + 1);
+    if (ts.isIdentifier(e)) {
+      const b = this.binding(e);
+      return b?.kind === "value" ? { value: b.value } : undefined;
+    }
+    if (e.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
+    if (e.kind === ts.SyntaxKind.FalseKeyword) return { value: false };
+    if (e.kind === ts.SyntaxKind.NullKeyword) return { value: null };
+    if (ts.isNumericLiteral(e)) return { value: Number(e.text) };
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return { value: e.text };
+    if (ts.isPropertyAccessExpression(e)) {
+      const obj = sub(e.expression);
+      if (!obj || obj.value === null || obj.value === undefined) return undefined;
+      return { value: (obj.value as Record<string, unknown>)[e.name.text] };
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const obj = sub(e.expression);
+      const key = sub(e.argumentExpression);
+      if (!obj || !key || obj.value === null || obj.value === undefined) return undefined;
+      return { value: (obj.value as Record<string, unknown>)[String(key.value)] };
+    }
+    if (ts.isCallExpression(e)) {
+      const callee = sub(e.expression);
+      if (!callee || typeof callee.value !== "function") return undefined;
+      const self = ts.isPropertyAccessExpression(e.expression) ? sub(e.expression.expression)?.value : undefined;
+      const args: unknown[] = [];
+      for (const a of e.arguments) {
+        if (ts.isSpreadElement(a)) { const v = sub(a.expression); if (!v || !Array.isArray(v.value)) return undefined; args.push(...(v.value as unknown[])); continue; }
+        const v = sub(a);
+        if (!v) return undefined;
+        args.push(v.value);
+      }
+      try {
+        return { value: (callee.value as (...a: unknown[]) => unknown).apply(self, args) };
+      } catch (err) {
+        throw new LowerError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    if (ts.isTemplateExpression(e)) {
+      let out = e.head.text;
+      for (const span of e.templateSpans) {
+        const v = sub(span.expression);
+        if (!v) return undefined;
+        out += String(v.value) + span.literal.text;
+      }
+      return { value: out };
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      const out: unknown[] = [];
+      for (const el of e.elements) {
+        if (ts.isSpreadElement(el)) { const v = sub(el.expression); if (!v || !Array.isArray(v.value)) return undefined; out.push(...(v.value as unknown[])); continue; }
+        if (ts.isOmittedExpression(el)) { out.push(undefined); continue; }
+        const v = sub(el);
+        if (!v) return undefined;
+        out.push(v.value);
+      }
+      return { value: out };
+    }
+    if (ts.isPrefixUnaryExpression(e)) {
+      const v = sub(e.operand);
+      if (!v) return undefined;
+      switch (e.operator) {
+        case ts.SyntaxKind.MinusToken: return { value: -(v.value as number) };
+        case ts.SyntaxKind.PlusToken: return { value: +(v.value as number) };
+        case ts.SyntaxKind.TildeToken: return { value: ~(v.value as number) };
+        default: return undefined;
+      }
+    }
+    if (ts.isBinaryExpression(e)) {
+      const l = sub(e.left);
+      const r = sub(e.right);
+      if (!l || !r) return undefined;
+      const a = l.value as number;
+      const b = r.value as number;
+      switch (e.operatorToken.kind) {
+        case ts.SyntaxKind.PlusToken: return { value: (a as unknown as string) + (b as unknown as string) };
+        case ts.SyntaxKind.MinusToken: return { value: a - b };
+        case ts.SyntaxKind.AsteriskToken: return { value: a * b };
+        case ts.SyntaxKind.SlashToken: return { value: a / b };
+        case ts.SyntaxKind.PercentToken: return { value: a % b };
+        case ts.SyntaxKind.AsteriskAsteriskToken: return { value: a ** b };
+        case ts.SyntaxKind.LessThanLessThanToken: return { value: a << b };
+        case ts.SyntaxKind.GreaterThanGreaterThanToken: return { value: a >> b };
+        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: return { value: a >>> b };
+        case ts.SyntaxKind.AmpersandToken: return { value: a & b };
+        case ts.SyntaxKind.BarToken: return { value: a | b };
+        case ts.SyntaxKind.CaretToken: return { value: a ^ b };
+        default: return undefined;
+      }
+    }
+    if (ts.isConditionalExpression(e)) {
+      const c = sub(e.condition);
+      if (!c) return undefined;
+      return c.value ? sub(e.whenTrue) : sub(e.whenFalse);
+    }
+    return undefined;
+  }
+
+  private isLibraryCall(e: TS.Expression, name: string): e is TS.CallExpression {
+    const { ts } = this;
+    return ts.isCallExpression(e) && ts.isIdentifier(e.expression) && libraryName(ts, this.c.checker, e.expression) === name;
+  }
+
+  /** The variable an expression that could not be hoisted depends on — for the message. */
+  private blamedVariable(expr: TS.Node): string | null {
+    const { ts } = this;
+    let found: string | null = null;
+    const walk = (n: TS.Node) => {
+      if (found) return;
+      if (ts.isIdentifier(n) && this.gameDeclaration(n) && this.binding(n)?.kind !== "value") { found = n.text; return; }
+      ts.forEachChild(n, walk);
+    };
+    walk(expr);
+    return found;
+  }
+
+  private notConstant(expr: TS.Expression, what: string) {
+    const v = this.blamedVariable(expr);
+    this.c.error(expr, v
+      ? `${what} must be known when the script is built, but ${v} is a variable of the program. Compare or assign variables in the program's own statements instead.`
+      : `${what} must be known when the script is built.`);
+  }
+
+  /* ── Statements ── */
+
+  private block(statements: readonly TS.Statement[], ctx: Ctx, scope = new Scope(this.scope)) {
+    const outer = this.scope;
+    this.scope = scope;
     for (const s of statements) {
       try {
         this.statement(s, ctx);
@@ -105,18 +310,12 @@ export class Structured {
         this.c.error(s, err.message);
       }
     }
-    this.c.scope = outer;
+    this.scope = outer;
   }
-
-  /* ── Statements ── */
 
   private statement(s: TS.Statement, ctx: Ctx) {
     const { ts } = this;
-    if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s)) return;
-    if (ts.isFunctionDeclaration(s)) {
-      if (s.parent !== this.c.sf) this.c.error(s, "Declare functions at the top level of the script.");
-      return;
-    }
+    if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s) || ts.isFunctionDeclaration(s)) return;
     this.live();
     if (ts.isVariableStatement(s)) { this.declare(s.declarationList); return; }
     if (ts.isBlock(s)) { this.block(s.statements, ctx); return; }
@@ -135,26 +334,22 @@ export class Structured {
     }
     if (ts.isReturnStatement(s)) {
       if (!ctx.fn) { this.c.error(s, "return outside a function."); return; }
-      if (s.expression) { this.c.error(s.expression, "Functions cannot return values; write the result into a variable instead."); return; }
+      if (s.expression) { this.c.error(s.expression, "Functions in a program cannot return values; write the result into a variable instead."); return; }
       this.m.jump(ctx.fn.end(), this.line(s), this.label(s));
       this.dead = true;
       return;
     }
-    if (ts.isSwitchStatement(s)) { this.c.error(s, "switch is not supported; use if / else if."); return; }
-    if (ts.isForOfStatement(s) || ts.isForInStatement(s)) { this.c.error(s, "for…of / for…in are not supported; count with a for (let i = 0; …) loop."); return; }
-    this.c.error(s, "This statement is not supported in a trigger script.");
+    if (ts.isSwitchStatement(s)) { this.c.error(s, "switch is not supported in a program; use if / else if."); return; }
+    if (ts.isForOfStatement(s) || ts.isForInStatement(s)) { this.c.error(s, "for…of / for…in are not supported in a program; count with a for (let i = 0; …) loop."); return; }
+    if (ts.isThrowStatement(s) || ts.isTryStatement(s)) { this.c.error(s, "The game has no exceptions."); return; }
+    this.c.error(s, "This statement is not supported in a program.");
   }
 
   private declare(list: TS.VariableDeclarationList) {
     const { ts } = this;
-    const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     for (const d of list.declarations) {
-      if (!ts.isIdentifier(d.name)) { this.c.error(d.name, "Destructuring is not supported."); continue; }
-      if (isConst) {
-        // Constants resolve through their initialiser at every use (with this scope active); nothing to lower.
-        if (!d.initializer) this.c.error(d, "A constant needs a value.");
-        continue;
-      }
+      if (this.c.plan.consts.has(d)) continue; // Computed when the script is built; its uses are hoisted expressions.
+      if (!ts.isIdentifier(d.name)) { this.c.error(d.name, "Destructuring is not supported in a program."); continue; }
       if (!d.initializer) { this.c.error(d, `Give ${d.name.text} an initial value: let ${d.name.text} = 0 or = false.`); continue; }
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
@@ -164,7 +359,7 @@ export class Structured {
       if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
       else this.assignBool(v, d.initializer, d);
       // Bound after the initialiser: `let x = x` is the checker's error, not a self-reference here.
-      this.c.scope!.bind(d, { kind: "var", v });
+      this.scope.bind(d, { kind: "var", v });
     }
   }
 
@@ -176,14 +371,32 @@ export class Structured {
     return null;
   }
 
+  /** An expression statement whose value was computed at build time: actions run, nothing else does anything. */
+  private hoistedStatement(expr: TS.Expression, h: Hoisted) {
+    const v = h.value;
+    if (v === undefined || v === null) return;
+    if (isAction(v)) { this.emitAction(v.record, expr); return; }
+    if (Array.isArray(v) && v.length > 0 && v.every(isAction)) { for (const a of v) this.emitAction(a.record, expr); return; }
+    if (Array.isArray(v) && v.length === 0) return;
+    if (isCondition(v)) { this.c.error(expr, "This is a condition; test it in an if or a while."); return; }
+    this.c.error(expr, `This statement produces ${describe(v)}, which does nothing in the game. A statement here is an action, an assignment or a call.`);
+  }
+
+  private emitAction(a: ActionRecord, at: TS.Node) {
+    if (a.type === ActionType.PreserveTrigger) return; // Every generated trigger is preserved already.
+    this.m.action({ ...a }, this.line(at), this.label(at));
+  }
+
   private expressionStatement(expr: TS.Expression) {
     const { ts } = this;
-    const e = this.c.unwrap(expr);
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) { this.hoistedStatement(e, h); return; }
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
-      const target = this.c.varOf(e.left);
+      const target = this.varOf(e.left);
       if (op === ts.SyntaxKind.EqualsToken || op === ts.SyntaxKind.PlusEqualsToken || op === ts.SyntaxKind.MinusEqualsToken) {
-        if (!target) { this.c.error(e.left, "Only let variables can be assigned."); return; }
+        if (!target) { this.c.error(e.left, "Only the program's let variables can be assigned."); return; }
         if (target.kind === "switch") {
           if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "Booleans take = only."); return; }
           this.assignBool(target, e.right, e);
@@ -204,30 +417,23 @@ export class Structured {
       return;
     }
     if ((ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)) {
-      const target = this.c.varOf(e.operand);
+      const target = this.varOf(e.operand);
       if (!target || target.kind !== "dc") { this.c.error(e, "++ / -- apply to number variables."); return; }
       this.m.addConst(target, e.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1, this.line(e), this.label(e));
       return;
     }
-    if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
-      const name = e.expression.text;
-      const decl = this.c.scriptDeclaration(e.expression);
-      if (decl) {
-        if (ts.isFunctionDeclaration(decl)) { this.inline(e, decl); return; }
-        this.c.error(e, `${name} is not a function.`);
-        return;
+    if (ts.isCallExpression(e)) {
+      if (ts.isIdentifier(e.expression)) {
+        const decl = this.gameDeclaration(e.expression);
+        if (decl) {
+          if (ts.isFunctionDeclaration(decl)) { this.inline(e, decl); return; }
+          this.c.error(e, `${e.expression.text} is not a function.`);
+          return;
+        }
+        const lib = libraryName(ts, this.c.checker, e.expression);
+        if (lib === "random") { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean."); return; }
       }
-      if (name === "trigger") { this.c.error(e, "trigger() is a top-level declaration; it cannot run inside structured code."); return; }
-      if (name === "program") { this.c.error(e, "program() belongs at the top level."); return; }
-      if (name === "PreserveTrigger") return; // Every generated trigger is preserved already.
-      if (ACTION_IDENTS.has(name) || name === "Action" || name === "SetMemory") {
-        const a = this.c.item(e, "action") as ActionRecord | null;
-        if (a) this.m.action(a, this.line(e), this.label(e));
-        return;
-      }
-      if (CONDITION_IDENTS.has(name) || name === "Condition" || name === "Memory") { this.c.error(e, `${name} is a condition; test it in an if or while.`); return; }
-      if (name === "random" || name === "disabled") { this.c.error(e, `${name}() does nothing on its own.`); return; }
-      this.c.error(e, `Unknown function "${name}".`);
+      this.notConstant(e, "A call's arguments");
       return;
     }
     this.c.error(e, "Only assignments and calls can stand as statements.");
@@ -296,8 +502,8 @@ export class Structured {
 
   private forStatement(s: TS.ForStatement, ctx: Ctx) {
     const { ts } = this;
-    const outer = this.c.scope;
-    this.c.scope = new Scope(outer);
+    const outer = this.scope;
+    this.scope = new Scope(outer);
     if (s.initializer) {
       if (ts.isVariableDeclarationList(s.initializer)) this.declare(s.initializer);
       else this.expressionStatement(s.initializer);
@@ -327,7 +533,7 @@ export class Structured {
       if (s.incrementor) this.expressionStatement(s.incrementor);
       this.m.jump(header, this.line(s), `L${this.line(s)}: loop`);
     }
-    this.c.scope = outer;
+    this.scope = outer;
     if (body === header && !broke) { this.dead = true; return; }
     this.m.enter(exit);
     this.dead = false;
@@ -339,39 +545,36 @@ export class Structured {
     const { ts } = this;
     if (!decl.body) { this.c.error(call, "The function has no body."); return; }
     if (this.inlineDepth >= MAX_INLINE_DEPTH) { this.c.error(call, "Functions nest too deeply (recursion is not possible: a call is inlined)."); return; }
-    if (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) { this.c.error(decl, "Generators and async functions are not supported."); return; }
+    if (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) { this.c.error(decl, "Generators and async functions are not supported in a program."); return; }
     const scope = new Scope(this.topScope);
     let ok = true;
     decl.parameters.forEach((p, i) => {
-      if (!ts.isIdentifier(p.name)) { this.c.error(p, "Destructured parameters are not supported."); ok = false; return; }
-      if (p.dotDotDotToken) { this.c.error(p, "Rest parameters are not supported."); ok = false; return; }
+      if (!ts.isIdentifier(p.name)) { this.c.error(p, "Destructured parameters are not supported in a program."); ok = false; return; }
+      if (p.dotDotDotToken) { this.c.error(p, "Rest parameters are not supported in a program."); ok = false; return; }
       const arg = call.arguments[i];
       if (!arg) {
         if (!p.initializer) { this.c.error(call, `Missing argument ${p.name.text}.`); ok = false; return; }
-        const v = this.c.value(p.initializer);
-        if (!v) { this.c.error(p.initializer, "A default value must be a constant."); ok = false; return; }
-        scope.bind(p, { kind: "const", value: v });
+        const h = this.evaluate(p.initializer);
+        if (!h) { this.notConstant(p.initializer, "A default value"); ok = false; return; }
+        scope.bind(p, { kind: "value", value: h.value });
         return;
       }
-      const v = this.c.value(arg);
-      if (v) { scope.bind(p, { kind: "const", value: v }); return; }
-      const variable = this.c.varOf(arg);
+      const h = this.evaluate(arg);
+      if (h) { scope.bind(p, { kind: "value", value: h.value }); return; }
+      const variable = this.varOf(arg);
       if (variable) { scope.bind(p, { kind: "var", v: variable }); return; }
-      const literal = this.c.unwrap(arg);
-      const bool = literal.kind === ts.SyntaxKind.TrueKeyword ? 1 : literal.kind === ts.SyntaxKind.FalseKeyword ? 0 : null;
-      if (bool !== null) { scope.bind(p, { kind: "const", value: { n: bool } }); return; }
-      this.c.error(arg, "Arguments are constants or variables (a variable is passed by reference).");
+      this.notConstant(arg, "An argument");
       ok = false;
     });
     if (!ok) return;
     if (call.arguments.length > decl.parameters.length) { this.c.error(call, `${decl.name?.text ?? "The function"} takes ${decl.parameters.length} argument${decl.parameters.length === 1 ? "" : "s"}.`); return; }
-    const saved = this.c.scope;
-    this.c.scope = scope;
+    const saved = this.scope;
+    this.scope = scope;
     this.inlineDepth++;
     let end: number | null = null;
     this.block(decl.body.statements, { fn: { end: () => (end ??= this.m.fresh()) } });
     this.inlineDepth--;
-    this.c.scope = saved;
+    this.scope = saved;
     if (end !== null) {
       if (!this.dead) this.m.jump(end, this.line(call), `L${this.line(call)}: end of ${decl.name?.text ?? "function"}`);
       this.m.enter(end);
@@ -386,25 +589,30 @@ export class Structured {
     if (rhs) this.m.assign(v, rhs, this.line(at), this.label(at));
   }
 
+  private asInteger(h: Hoisted, at: TS.Node): number | null {
+    const v = h.value;
+    if (typeof v === "boolean") return v ? 1 : 0;
+    if (typeof v !== "number" || !Number.isFinite(v)) { this.c.error(at, `Expected a number, got ${describe(v)}.`); return null; }
+    if (!Number.isInteger(v)) { this.c.error(at, `Only whole numbers exist in the game (got ${v}).`); return null; }
+    return v;
+  }
+
   /** `c + Σ ±v` over death counters, or null (with a diagnostic). */
   private linear(expr: TS.Expression): Linear | null {
     const { ts } = this;
-    const e = this.c.unwrap(expr);
-    const k = this.c.value(e);
-    if (k) {
-      if ("s" in k) { this.c.error(e, "Expected a number, got text."); return null; }
-      if (!Number.isInteger(k.n)) { this.c.error(e, "Only whole numbers exist in the game."); return null; }
-      return { c: k.n, terms: [] };
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      const n = this.asInteger(h, e);
+      return n === null ? null : { c: n, terms: [] };
     }
     if (ts.isIdentifier(e)) {
-      const b = this.c.binding(e);
+      const b = this.binding(e);
       if (b?.kind === "var") {
         if (b.v.kind === "switch") { this.c.error(e, `${b.v.name} is a boolean.`); return null; }
         return { c: 0, terms: [{ v: b.v, sign: 1 }] };
       }
-      const init = this.c.initializer(e);
-      if (init) return this.linear(init);
-      this.c.error(e, `${e.text} is not a variable or a constant.`);
+      this.c.error(e, `${e.text} is not a variable of the program.`);
       return null;
     }
     if (ts.isPrefixUnaryExpression(e)) {
@@ -424,11 +632,11 @@ export class Structured {
         const sign = op === ts.SyntaxKind.PlusToken ? 1 : -1;
         return { c: l.c + sign * r.c, terms: [...l.terms, ...r.terms.map((t) => ({ v: t.v, sign: (t.sign * sign) as 1 | -1 }))] };
       }
-      this.c.error(e, "The game can only add and subtract variables; use * / % on constants only.");
+      this.c.error(e, "The game can only add and subtract variables; * / % work on values known when the script is built.");
       return null;
     }
-    if (ts.isCallExpression(e)) { this.c.error(e, "Functions have no return value; write the result into a variable."); return null; }
-    this.c.error(e, "Expected a number: a constant, a variable, or a sum of them.");
+    if (ts.isCallExpression(e)) { this.notConstant(e, "A call's arguments"); return null; }
+    this.c.error(e, "Expected a number: a value, a variable, or a sum of them.");
     return null;
   }
 
@@ -436,13 +644,13 @@ export class Structured {
 
   private assignBool(v: SwVar, expr: TS.Expression, at: TS.Node) {
     const { ts } = this;
-    const e = this.c.unwrap(expr);
+    const e = this.unwrap(expr);
     const line = this.line(at);
     const label = this.label(at);
-    if (e.kind === ts.SyntaxKind.TrueKeyword) { this.m.action(setSwitch(v, SwitchAction.Set), line, label); return; }
-    if (e.kind === ts.SyntaxKind.FalseKeyword) { this.m.action(setSwitch(v, SwitchAction.Clear), line, label); return; }
-    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.c.varOf(e.operand) === v) { this.m.action(setSwitch(v, SwitchAction.Toggle), line, label); return; }
-    if (this.c.isRuntimeCall(e, "random")) { this.m.action(setSwitch(v, SwitchAction.Randomize), line, label); return; }
+    const h = this.evaluate(expr);
+    if (h && typeof h.value === "boolean") { this.m.action(setSwitch(v, h.value ? SwitchAction.Set : SwitchAction.Clear), line, label); return; }
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v) { this.m.action(setSwitch(v, SwitchAction.Toggle), line, label); return; }
+    if (this.isLibraryCall(e, "random")) { this.m.action(setSwitch(v, SwitchAction.Randomize), line, label); return; }
     const held = this.m.tempsHeld;
     const b = this.bool(e);
     if (b.kind === "const") { this.m.action(setSwitch(v, b.value ? SwitchAction.Set : SwitchAction.Clear), line, label); this.m.releaseTo(held); return; }
@@ -460,6 +668,19 @@ export class Structured {
     this.m.enter(join);
   }
 
+  /** A hoisted value as a condition tree. */
+  private hoistedBool(h: Hoisted, at: TS.Node): Bool {
+    const v = h.value;
+    if (typeof v === "boolean") return v ? TRUE : FALSE;
+    if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
+    if (typeof v === "string") return v !== "" ? TRUE : FALSE;
+    if (isCondition(v)) return cond(v.record as ConditionRecord);
+    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return and(v.map((c) => cond(c.record)));
+    if (isAction(v)) { this.c.error(at, "This is an action, not a condition."); return FALSE; }
+    this.c.error(at, `Expected a condition, got ${describe(v)}.`);
+    return FALSE;
+  }
+
   /** A condition as a `Bool` tree; may emit steps (temps for variable comparisons, a randomize). */
   private bool(expr: TS.Expression): Bool {
     this.scratchUsed = 0;
@@ -468,10 +689,10 @@ export class Structured {
 
   private boolInner(expr: TS.Expression, depth: number): Bool {
     const { ts } = this;
-    const e = this.c.unwrap(expr);
+    const e = this.unwrap(expr);
     if (depth > 64) { this.c.error(e, "The condition nests too deeply."); return FALSE; }
-    if (e.kind === ts.SyntaxKind.TrueKeyword) return TRUE;
-    if (e.kind === ts.SyntaxKind.FalseKeyword) return FALSE;
+    const h = this.evaluate(expr);
+    if (h) return this.hoistedBool(h, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return not(this.boolInner(e.operand, depth + 1));
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
@@ -483,40 +704,31 @@ export class Structured {
       return FALSE;
     }
     if (ts.isIdentifier(e)) {
-      const b = this.c.binding(e);
+      const b = this.binding(e);
       if (b?.kind === "var") return b.v.kind === "switch" ? cond(switchCondition(b.v, true)) : compareConst(b.v, ">=", 1);
-      if (b?.kind === "const") return "n" in b.value ? (b.value.n !== 0 ? TRUE : FALSE) : b.value.s !== "" ? TRUE : FALSE;
-      const init = this.c.initializer(e);
-      if (init) return this.boolInner(init, depth + 1);
-      this.c.error(e, `${e.text} is not a variable, a constant or a condition.`);
+      this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       return FALSE;
     }
-    if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
-      const name = e.expression.text;
-      if (this.c.scriptDeclaration(e.expression)) { this.c.error(e, "Functions have no return value; test a variable the function sets instead."); return FALSE; }
-      if (name === "random") {
+    if (ts.isCallExpression(e)) {
+      if (ts.isIdentifier(e.expression) && this.gameDeclaration(e.expression)) { this.c.error(e, "Functions in a program have no return value; test a variable the function sets instead."); return FALSE; }
+      if (this.isLibraryCall(e, "random")) {
         const s = this.m.scratch(this.scratchUsed++);
         this.m.action(setSwitch(s, SwitchAction.Randomize), this.line(e), `L${this.line(e)}: random()`);
         return cond(switchCondition(s, true));
       }
-      if (ACTION_IDENTS.has(name) || name === "Action" || name === "SetMemory") { this.c.error(e, `${name} is an action, not a condition.`); return FALSE; }
-      const r = this.c.item(e, "condition") as ConditionRecord | null;
-      return r ? cond(r) : FALSE;
+      this.notConstant(e, "A condition's arguments");
+      return FALSE;
     }
-    const k = this.c.value(e);
-    if (k) return ("n" in k ? k.n !== 0 : k.s !== "") ? TRUE : FALSE;
     this.c.error(e, "Expected a condition: a trigger condition, a comparison, a boolean variable, or a combination with && || !.");
     return FALSE;
   }
 
   private comparison(e: TS.BinaryExpression, op: CompareOp, depth: number): Bool {
-    const { ts } = this;
     // Boolean equality: `flag == true`, `a != b` over switches.
     const isBool = (x: TS.Expression) => {
-      const u = this.c.unwrap(x);
-      if (u.kind === ts.SyntaxKind.TrueKeyword || u.kind === ts.SyntaxKind.FalseKeyword) return true;
-      const v = this.c.varOf(u);
-      return v?.kind === "switch";
+      const h = this.evaluate(x);
+      if (h) return typeof h.value === "boolean" || isCondition(h.value);
+      return this.varOf(this.unwrap(x))?.kind === "switch";
     };
     if (isBool(e.left) || isBool(e.right)) {
       if (op !== "==" && op !== "!=") { this.c.error(e, "Booleans compare with == and != only."); return FALSE; }

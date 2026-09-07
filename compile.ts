@@ -1,29 +1,45 @@
 /**
- * Compiling off the main thread. TypeScript is nine megabytes of JavaScript and a program
- * check takes tens of milliseconds, neither of which belongs on the main thread while the
- * user types — so the compiler runs in a worker: a classic worker built from a blob that
- * `importScripts` TypeScript from the CDN and then `import()`s this plugin's own compiler
- * module by the `blob:` URL the editor's loader gave it (`compiler/entry.ts`). Requests are
- * numbered; a result for anything but the newest request is dropped, so a burst of
- * keystrokes settles on the last one.
+ * Compiling off the main thread. TypeScript is nine megabytes of JavaScript, a program
+ * check takes tens of milliseconds, and the script then *runs* — none of which belongs
+ * on the main thread while the user types — so the compiler runs in a worker: a classic
+ * worker built from a blob that `importScripts` TypeScript from the CDN, fetches the
+ * standard library's declarations once from the plugin's `dist/`, and `import()`s this
+ * plugin's own compiler module by the `blob:` URL the editor's loader gave it
+ * (`compiler/entry.ts`). Requests are numbered; a result for anything but the newest
+ * request is dropped, so a burst of keystrokes settles on the last one.
  *
- * If the worker cannot start, or cannot import the module (a browser that keeps a
- * window's blob URLs from its workers), the compiler runs on the main thread instead,
- * with TypeScript loaded once through a `<script>` tag — slower, never silent.
+ * A script that never finishes (an endless loop outside `program()`) would hang the
+ * worker, so a request that is not answered in `COMPILE_TIMEOUT_MS` terminates it and
+ * rejects; the next request starts a fresh worker. If the worker cannot start, or cannot
+ * import the module (a browser that keeps a window's blob URLs from its workers), the
+ * compiler runs on the main thread instead, with TypeScript loaded once through a
+ * `<script>` tag — slower, never silent, and without the timeout's protection.
  */
 import type * as TS from "typescript";
-import { compileScript, type CompileOptions, type CompileResult } from "./compiler/compiler";
+import { compileScript, type CompileResult, type ScriptFiles } from "./compiler/compiler";
 import { ENTRY_URL } from "./compiler/entry";
+import type { ScriptNames } from "./compiler/names";
+import { DEFAULT_DIST } from "./monaco";
 
 /** The same TypeScript the compiler is written against; `lib/typescript.js` defines a global `ts`. */
-export const TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.2/lib/typescript.js";
+export const TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
 
-interface CompileRequest {
+/** The standard library, concatenated by `bundle/build.mjs`, next to the Monaco build. */
+export const libUrl = (dist: string = DEFAULT_DIST) => `${dist.replace(/\/+$/, "")}/lib.d.ts`;
+
+export const COMPILE_TIMEOUT_MS = 15_000;
+
+export interface CompileInput {
+  files: ScriptFiles;
+  names: ScriptNames;
+  reservedDeaths?: readonly (readonly [number, number])[];
+  reservedSwitches?: readonly number[];
+}
+
+interface CompileRequest extends CompileInput {
   id: number;
   moduleUrl: string;
-  source: string;
-  declarations: string;
-  options?: CompileOptions;
+  libUrl: string;
 }
 
 interface CompileResponse {
@@ -37,13 +53,19 @@ interface CompileResponse {
 const WORKER_SOURCE = `
 importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
+let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, source, declarations, options } = e.data;
+  const { id, moduleUrl, libUrl, files, names, reservedDeaths, reservedSwitches } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
     try { mod = await loading; } catch (err) { loading = null; postMessage({ id, error: String((err && err.message) || err), fatal: true }); return; }
-    postMessage({ id, result: mod.compileScript(self.ts, source, declarations, options) });
+    if (lib === null) {
+      const r = await fetch(libUrl);
+      if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
+      lib = await r.text();
+    }
+    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib, reservedDeaths, reservedSwitches }) });
   } catch (err) {
     postMessage({ id, error: String((err && err.message) || err) });
   }
@@ -53,13 +75,13 @@ self.onmessage = async (e) => {
 let worker: Worker | null = null;
 let workerBroken = false;
 let seq = 0;
-const pending = new Map<number, { resolve: (r: CompileResult) => void; reject: (e: Error) => void }>();
+const pending = new Map<number, { resolve: (r: CompileResult) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
 /**
  * The worker is a whole TypeScript instance (tens of MB of heap) and it is only busy while
- * the Script Editor is checking as you type. It goes away this long after its last answer
- * — unless a `retainCompileWorker` lease is held, which the open Script Editor does — and
- * is started again on the next request.
+ * the editor is checking as you type. It goes away this long after its last answer —
+ * unless a `retainCompileWorker` lease is held, which the open editor does — and is
+ * started again on the next request.
  */
 export const WORKER_IDLE_MS = 30_000;
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -100,14 +122,30 @@ export function compileWorkerAlive(): boolean {
   return worker !== null;
 }
 
+function rejectAll(reason: string) {
+  for (const [id, p] of pending) {
+    pending.delete(id);
+    clearTimeout(p.timer);
+    p.reject(new Error(reason));
+  }
+}
+
 function breakWorker(reason: string) {
   workerBroken = true;
   worker?.terminate();
   worker = null;
-  for (const [id, p] of pending) {
-    pending.delete(id);
-    p.reject(new Error(reason));
-  }
+  rejectAll(reason);
+}
+
+/** The script ran too long: drop this worker (the next request starts another) and say so. */
+function timeOut(id: number) {
+  const p = pending.get(id);
+  if (!p) return;
+  pending.delete(id);
+  worker?.terminate();
+  worker = null;
+  rejectAll("The compile was stopped.");
+  p.reject(new Error(`The script did not finish in ${COMPILE_TIMEOUT_MS / 1000} seconds. Is there an endless loop outside program()?`));
 }
 
 function getWorker(): Worker | null {
@@ -126,6 +164,7 @@ function getWorker(): Worker | null {
     const p = pending.get(data.id);
     if (!p) return;
     pending.delete(data.id);
+    clearTimeout(p.timer);
     if (data.result) p.resolve(data.result);
     else p.reject(new Error(data.error ?? "Compile failed."));
     settle();
@@ -135,6 +174,7 @@ function getWorker(): Worker | null {
 }
 
 let tsHere: Promise<typeof TS> | null = null;
+let libHere: Promise<string> | null = null;
 
 /** TypeScript on the main thread, loaded once from the CDN as a plain script (it defines `ts`). */
 export function loadTypeScript(): Promise<typeof TS> {
@@ -151,8 +191,17 @@ export function loadTypeScript(): Promise<typeof TS> {
   return tsHere;
 }
 
-async function compileHere(source: string, declarations: string, options?: CompileOptions): Promise<CompileResult> {
-  return compileScript(await loadTypeScript(), source, declarations, options);
+function loadLib(url: string): Promise<string> {
+  libHere ??= fetch(url).then((r) => {
+    if (!r.ok) throw new Error(`Could not load the standard library from ${url} (${r.status}).`);
+    return r.text();
+  }).catch((err: Error) => { libHere = null; throw err; });
+  return libHere;
+}
+
+async function compileHere(input: CompileInput, lib: string): Promise<CompileResult> {
+  const [ts, text] = await Promise.all([loadTypeScript(), loadLib(lib)]);
+  return compileScript(ts, input.files, input.names, { lib: text, reservedDeaths: input.reservedDeaths, reservedSwitches: input.reservedSwitches });
 }
 
 export class CompileSuperseded extends Error {
@@ -163,21 +212,23 @@ export class CompileSuperseded extends Error {
 }
 
 /** Compile in the background. Rejects with `CompileSuperseded` when a newer request arrived first. */
-export function compileInBackground(source: string, declarations: string, options?: CompileOptions): Promise<CompileResult> {
+export function compileInBackground(input: CompileInput, dist: string = DEFAULT_DIST): Promise<CompileResult> {
+  const lib = libUrl(dist);
   const w = getWorker();
-  if (!w) return compileHere(source, declarations, options);
+  if (!w) return compileHere(input, lib);
   const id = ++seq;
   // Anything still in flight is stale now.
   for (const [old, p] of pending) {
     pending.delete(old);
+    clearTimeout(p.timer);
     p.reject(new CompileSuperseded());
   }
   return new Promise<CompileResult>((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    const req: CompileRequest = { id, moduleUrl: ENTRY_URL, source, declarations, options };
+    pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
+    const req: CompileRequest = { id, moduleUrl: ENTRY_URL, libUrl: lib, files: input.files, names: input.names, reservedDeaths: input.reservedDeaths, reservedSwitches: input.reservedSwitches };
     w.postMessage(req);
   }).catch((err: Error) => {
-    if (err.message === "worker unavailable") return compileHere(source, declarations, options);
+    if (err.message === "worker unavailable") return compileHere(input, lib);
     throw err;
   });
 }

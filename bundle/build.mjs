@@ -7,12 +7,14 @@
  * language service register with the wrong instance and the editor ends up with no
  * highlighting and no IntelliSense. So the plugin carries its own build, three files
  * under `dist/`: the editor with the TypeScript language (CSS injected by the module
- * itself, the codicon font inlined), and the two workers. They are served by jsDelivr's
- * GitHub mirror at the tag `monaco.ts` names; bump the tag when this changes.
+ * itself, the codicon font inlined), and the two workers — plus `lib.d.ts`, the standard
+ * library the compile worker checks scripts against (`lib.mjs`). They are served by
+ * jsDelivr's GitHub mirror at the tag `monaco.ts` names; bump the tag when this changes.
  */
 import { build } from "esbuild";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { defaultLib } from "./lib.mjs";
 
 const mime = (p) => (p.endsWith(".ttf") ? "font/ttf" : p.endsWith(".svg") ? "image/svg+xml" : p.endsWith(".png") ? "image/png" : "application/octet-stream");
 
@@ -60,3 +62,6 @@ await build({
   loader: { ".ttf": "dataurl" },
   logLevel: "info",
 });
+
+await writeFile("dist/lib.d.ts", defaultLib());
+console.log("dist/lib.d.ts written");

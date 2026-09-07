@@ -1,8 +1,8 @@
 {
-  "name": "scmjs-plugin-trigger-script",
-  "version": "1.0.1",
+  "name": "scmjs-plugin-trigscript",
+  "version": "2.0.0",
   "private": true,
-  "description": "Trigger Script — a plugin for the scmJS StarCraft map editor.",
+  "description": "TrigScript — TypeScript that builds into triggers; a plugin for the scmJS StarCraft map editor.",
   "author": "Jeany",
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,7 @@
     "esbuild": "^0.28.2",
     "monaco-editor": "^0.56.0",
     "mopaq": "^1.3.0",
-    "typescript": "~6.0.2",
+    "typescript": "~6.0.3",
     "vitest": "^4.1.11"
   }
 }

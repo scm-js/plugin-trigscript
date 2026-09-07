@@ -18,7 +18,7 @@ import {
   ActionFlag, ActionType, Comparison, ConditionFlag, ConditionType, PlayerGroup, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, TriggerFlag,
   type ActionRecord, type ConditionRecord, type TriggerRecord,
 } from "../vendor/triggers";
-import type { ScriptString } from "./compiler";
+import type { ScriptString } from "./runtime";
 
 export interface SimulationEvent {
   /** 0-based cycle. */

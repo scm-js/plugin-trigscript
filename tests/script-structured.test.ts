@@ -1,21 +1,24 @@
 /**
- * The structured level: programs compile to death-counter state machines, and the
- * simulator (a trigger-cycle interpreter) proves they behave — one loop iteration per
- * cycle, straight-line code within a cycle, saturating counters, switches as booleans.
+ * The structured level: `program(() => { … })` bodies compile to death-counter state
+ * machines, and the simulator (a trigger-cycle interpreter) proves they behave — one loop
+ * iteration per cycle, straight-line code within a cycle, saturating counters, switches
+ * as booleans.
  */
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import {
   ActionType, Comparison, ConditionType, emptyTrigger, PlayerGroup, SetModifier, SwitchState, TriggerFlag, type ConditionRecord, type TriggerRecord,
 } from "../vendor/triggers";
-import { generateDeclarations } from "../compiler/declarations";
 import { compileScript, DEATHS_TABLE_ADDRESS, type CompileOptions, type CompileResult } from "../compiler/compiler";
 import { negateCondition, toDnf, cond, not, and, or, TRUE, FALSE, VARIABLE_UNITS } from "../compiler/lower";
+import { defaultScriptNames } from "../compiler/names";
 import { Simulation } from "../compiler/simulate";
 import { buildScript, reservedStorage, resolveStrings } from "../script";
 import { unitName } from "../vendor/units";
+import { defaultLib } from "../bundle/lib.mjs";
 
-const DECLS = generateDeclarations();
+const LIB = defaultLib();
+const NAMES = defaultScriptNames();
 
 /** A trigger owned by the given player groups. */
 function newTrigger(players: number[]): TriggerRecord {
@@ -23,13 +26,18 @@ function newTrigger(players: number[]): TriggerRecord {
   for (const p of players) t.players[p] = 1;
   return t;
 }
-const compile = (src: string, options?: CompileOptions) => compileScript(ts, src, DECLS, options);
+type Reserved = Pick<CompileOptions, "reservedDeaths" | "reservedSwitches">;
+const compile = (src: string, options: Reserved = {}) => compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB, ...options });
+/** A body as the whole script's one program (the wrapper takes line 1, so the body's first line is 2). */
+const program = (body: string, options = "") => `program(() => {${body}}${options ? `, ${options}` : ""});`;
 
-function ok(src: string, options?: CompileOptions): CompileResult {
+function ok(src: string, options?: Reserved): CompileResult {
   const r = compile(src, options);
   expect(r.diagnostics).toEqual([]);
   return r;
 }
+
+const okProgram = (body: string, options?: Reserved) => ok(program(body), options);
 
 function run(r: CompileResult, cycles: number, extra: ConstructorParameters<typeof Simulation>[1] = {}): Simulation {
   return new Simulation(r.triggers, { strings: r.strings, ...extra }).run(cycles);
@@ -45,14 +53,14 @@ const texts = (sim: Simulation) => sim.events.filter((e) => e.action.type === Ac
 
 describe("structured: loops and branches", () => {
   it("a game loop runs once per cycle", () => {
-    const r = ok(`
+    const r = okProgram(`
       let n = 0;
       while (true) {
         n += 1;
-        if (n == 3) { Victory(); }
+        if (n == 3) { victory(); }
       }
     `);
-    expect(r.program).toMatchObject({ owner: 0, start: 0, hyperTriggers: false });
+    expect(r.programs).toMatchObject([{ owner: 0, start: 0, source: { file: "main.ts", line: 1 } }]);
     expect(r.variables.map((v) => v.name)).toEqual(["(program counter)", "n"]);
     expect(r.variables[0]).toMatchObject({ kind: "number", player: 0, unit: 181, storage: "P1 · Cantina (Unused)" });
     expect(r.variables[1]).toMatchObject({ player: 1, unit: 181 });
@@ -64,20 +72,21 @@ describe("structured: loops and branches", () => {
       expect(t.actions[0].type).toBe(ActionType.Comment);
     }
     expect(r.strings.map((s) => "text" in s && s.text)).toContain("L4: n += 1");
+    expect(r.sources.every((s) => s?.file === "main.ts")).toBe(true);
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, r, "n")).toBe(6);
   });
 
   it("if / else if / else, nested", () => {
-    const r = ok(`
+    const r = okProgram(`
       let n = 0;
       let out = 0;
       while (true) {
         if (n == 0) { out = 10; }
         else if (n == 1) { out = 20; if (out >= 20) { out += 1; } }
         else { out = 30; }
-        DisplayText("Always Display", "tick");
+        displayText("tick");
         n++;
       }
     `);
@@ -89,14 +98,14 @@ describe("structured: loops and branches", () => {
   });
 
   it("for with break and continue; the code after the loop runs the cycle it exits", () => {
-    const r = ok(`
+    const r = okProgram(`
       let sum = 0;
       for (let i = 0; i < 10; i++) {
         if (i == 2) continue;
         if (i == 5) break;
         sum += i;
       }
-      DisplayText("Always Display", "done");
+      displayText("done");
     `);
     const sim = run(r, 8);
     expect(texts(sim)).toEqual(["5:done"]);
@@ -107,12 +116,12 @@ describe("structured: loops and branches", () => {
   });
 
   it("do … while and while (cond) with a variable condition", () => {
-    const r = ok(`
+    const r = okProgram(`
       let n = 0;
       do { n++; } while (n < 3);
       let m = 10;
       while (m > 7) { m--; }
-      Victory();
+      victory();
     `);
     const sim = run(r, 10);
     expect(sim.events.map((e) => e.cycle)).toEqual([5]);
@@ -121,7 +130,7 @@ describe("structured: loops and branches", () => {
   });
 
   it("an endless loop needs no halt and the first loop needs no jump", () => {
-    const r = ok(`while (true) { Wait(100); }`);
+    const r = okProgram(`while (true) { wait(100); }`);
     expect(r.triggers.length).toBe(1);
     expect(r.triggers[0].conditions).toEqual([expect.objectContaining({ amount: 0 })]);
     expect(r.triggers[0].actions.map((a) => a.type)).toEqual([ActionType.Comment, ActionType.Wait, ActionType.SetDeaths]);
@@ -131,7 +140,7 @@ describe("structured: loops and branches", () => {
 
 describe("structured: arithmetic", () => {
   it("copies, adds and subtracts between variables within one cycle", () => {
-    const r = ok(`
+    const r = okProgram(`
       let a = 5;
       let b = 0;
       b = a;
@@ -141,7 +150,7 @@ describe("structured: arithmetic", () => {
       let c = b - a;
       let d = a;
       d = 100 - d;
-      if (a == 7 && b == 12 && c == 5 && d == 93) { Victory(); }
+      if (a == 7 && b == 12 && c == 5 && d == 93) { victory(); }
     `);
     const sim = run(r, 1);
     expect([value(sim, r, "a"), value(sim, r, "b"), value(sim, r, "c"), value(sim, r, "d")]).toEqual([7, 12, 5, 93]);
@@ -151,7 +160,7 @@ describe("structured: arithmetic", () => {
   });
 
   it("x += x, x -= x, ++ / --, saturation and wrap", () => {
-    const r = ok(`
+    const r = okProgram(`
       let x = 6;
       x += x;
       let y = x;
@@ -168,12 +177,16 @@ describe("structured: arithmetic", () => {
     expect([value(sim, r, "x"), value(sim, r, "y"), value(sim, r, "z"), value(sim, r, "w")]).toEqual([11, 0, 0, 0]);
   });
 
-  it("constant folding still works and consts stay constants", () => {
+  it("build-time values fold: consts inside and outside the program, arithmetic, the standard library", () => {
     const r = ok(`
-      const k = 2 * 3;
+      const outer = 3;
+      const table = { bonus: 4 };
+      ${program(`
+      const k = outer * 2;
       let x = k + 1;
-      x += k * 2;
-      if (x >= k * 3) { Victory(); }
+      x += Math.max(k * 2, table.bonus);
+      if (x >= k * 3) { victory(); }
+      `)}
     `);
     const sim = run(r, 1);
     expect(value(sim, r, "x")).toBe(19);
@@ -185,18 +198,18 @@ describe("structured: arithmetic", () => {
 
 describe("structured: conditions", () => {
   it("compares variables with constants through one Deaths condition each", () => {
-    const r = ok(`
+    const r = okProgram(`
       let x = 4;
-      if (x >= 4) DisplayText("Always Display", "ge");
-      if (x > 4) DisplayText("Always Display", "gt");
-      if (x <= 4) DisplayText("Always Display", "le");
-      if (x < 4) DisplayText("Always Display", "lt");
-      if (x == 4) DisplayText("Always Display", "eq");
-      if (x != 4) DisplayText("Always Display", "ne");
-      if (5 > x) DisplayText("Always Display", "flip");
-      if (x + 1 == 5) DisplayText("Always Display", "shift");
-      if (x >= -1) DisplayText("Always Display", "unsigned");
-      if (!(x < 4)) DisplayText("Always Display", "neg");
+      if (x >= 4) displayText("ge");
+      if (x > 4) displayText("gt");
+      if (x <= 4) displayText("le");
+      if (x < 4) displayText("lt");
+      if (x == 4) displayText("eq");
+      if (x != 4) displayText("ne");
+      if (5 > x) displayText("flip");
+      if (x + 1 == 5) displayText("shift");
+      if (x >= -1) displayText("unsigned");
+      if (!(x < 4)) displayText("neg");
     `);
     expect(r.variables.map((v) => v.name)).toEqual(["(program counter)", "x"]);
     expect(texts(run(r, 1))).toEqual(["0:ge", "0:le", "0:eq", "0:flip", "0:shift", "0:unsigned", "0:neg"]);
@@ -205,17 +218,17 @@ describe("structured: conditions", () => {
   });
 
   it("compares variables with variables through saturating differences", () => {
-    const r = ok(`
+    const r = okProgram(`
       let a = 3;
       let b = 5;
-      if (a < b) DisplayText("Always Display", "lt");
-      if (a >= b) DisplayText("Always Display", "ge");
-      if (a == b) DisplayText("Always Display", "eq");
-      if (a != b) DisplayText("Always Display", "ne");
-      if (a + 2 == b) DisplayText("Always Display", "eq2");
-      if (b - a > 1) DisplayText("Always Display", "gt");
-      if (a <= b && b >= a) DisplayText("Always Display", "both");
-      if (a - b == 0) DisplayText("Always Display", "never");
+      if (a < b) displayText("lt");
+      if (a >= b) displayText("ge");
+      if (a == b) displayText("eq");
+      if (a != b) displayText("ne");
+      if (a + 2 == b) displayText("eq2");
+      if (b - a > 1) displayText("gt");
+      if (a <= b && b >= a) displayText("both");
+      if (a - b == 0) displayText("never");
     `);
     const sim = run(r, 1);
     expect(texts(sim)).toEqual(["0:lt", "0:ne", "0:eq2", "0:gt", "0:both"]);
@@ -223,21 +236,21 @@ describe("structured: conditions", () => {
   });
 
   it("booleans are switches; random() is a randomized switch", () => {
-    const r = ok(`
+    const r = okProgram(`
       let x = 2;
       let f = false;
       let g = true;
       f = !f;
-      if (f && g) DisplayText("Always Display", "both");
-      if (f == g) DisplayText("Always Display", "same");
+      if (f && g) displayText("both");
+      if (f == g) displayText("same");
       g = x < 2;
-      if (f != g) DisplayText("Always Display", "differ");
-      if (!(f || g)) DisplayText("Always Display", "neither");
+      if (f != g) displayText("differ");
+      if (!(f || g)) displayText("neither");
       g = x >= 2 || f;
-      if (g) DisplayText("Always Display", "computed");
+      if (g) displayText("computed");
       let r = random();
-      if (r) DisplayText("Always Display", "heads");
-      if (random() && random()) DisplayText("Always Display", "twice");
+      if (r) displayText("heads");
+      if (random() && random()) displayText("twice");
       f = random();
     `);
     const f = r.variables.find((v) => v.name === "f")!;
@@ -251,12 +264,15 @@ describe("structured: conditions", () => {
 
   it("trigger conditions, negated where the game can and skipped where it cannot", () => {
     const r = ok(`
-      const marines = Bring(P1, Units.TerranMarine, Locations.Anywhere, ">=", 1);
-      if (!marines) DisplayText("Always Display", "none");
-      if (marines) DisplayText("Always Display", "some");
-      if (!CommandTheMost(Units.TerranMarine) && Always()) DisplayText("Always Display", "skip");
-      if (CommandTheMost(Units.TerranMarine) || Switch(Switches.Switch1, "set")) DisplayText("Always Display", "or");
-      if (!(Bring(P1, Units.AnyUnit, Locations.Anywhere, "Exactly", 3))) DisplayText("Always Display", "notExactly");
+      const marines = bring(P1, units.TerranMarine, locations.Anywhere, ">=", 1);
+      ${program(`
+      const most = commandTheMost(units.TerranMarine);
+      if (!marines) displayText("none");
+      if (marines) displayText("some");
+      if (!most && always()) displayText("skip");
+      if (commandTheMost(units.TerranMarine) || switchIs(switches.Switch1, "set")) displayText("or");
+      if (!(bring(P1, units.AnyUnit, locations.Anywhere, "==", 3))) displayText("notExactly");
+      `)}
     `);
     const flipped = r.triggers.flatMap((t) => t.conditions).find((c) => c.type === ConditionType.Bring && c.comparison === Comparison.AtMost);
     expect(flipped).toMatchObject({ amount: 0, unitId: 0 });
@@ -271,6 +287,21 @@ describe("structured: conditions", () => {
     sim2.switches[0] = 1;
     sim2.run(1);
     expect(texts(sim2)).toEqual(["0:some", "0:skip", "0:or", "0:notExactly"]);
+  });
+
+  it("a list of conditions is all of them; arrays of actions run in order", () => {
+    const r = ok(`
+      const guard = [always(), switchIs(switches.Switch2, "set")];
+      const burst = (n: number) => [createUnit(P1, units.ZergZergling, n, locations.Anywhere), displayText(\`burst \${n}\`)];
+      ${program(`
+      if (guard) burst(2);
+      [displayText("a"), displayText("b")];
+      `)}
+    `);
+    const sim = new Simulation(r.triggers, { strings: r.strings });
+    sim.switches[1] = 1;
+    sim.run(1);
+    expect(sim.events.map((e) => e.text ?? e.action.type)).toEqual([ActionType.CreateUnit, "burst 2", "a", "b"]);
   });
 
   it("DNF: negation pushes to leaves, and/or distribute", () => {
@@ -289,30 +320,31 @@ describe("structured: conditions", () => {
 });
 
 describe("structured: functions", () => {
-  it("inline with constant and by-reference parameters, defaults and return", () => {
-    const r = ok(`
+  it("inline with value and by-reference parameters, defaults and return; values reach library calls", () => {
+    const r = okProgram(`
       let total = 0;
       function add(v: number, n: number = 2) {
         if (n == 0) return;
         v += n;
       }
-      function spawn(p: PlayerId, count: number) {
-        CreateUnit(p, Units.ZergZergling, count, Locations.Anywhere);
+      function spawn(p: Player, count: number) {
+        createUnit(p, units.ZergZergling, count + 1, locations.Anywhere);
+        displayText(\`spawned \${count} for \${p}\`);
         add(total, count);
       }
       add(total, 5);
       add(total);
       spawn(P2, 4);
-      if (total == 11) Victory();
+      if (total == 11) victory();
     `);
     const sim = run(r, 1);
     expect(value(sim, r, "total")).toBe(11);
-    expect(sim.events.map((e) => e.action.type)).toEqual([ActionType.CreateUnit, ActionType.Victory]);
-    expect(sim.events[0].action).toMatchObject({ player: 1, unitId: 37, modifier: 4 });
+    expect(sim.events.map((e) => e.text ?? e.action.type)).toEqual([ActionType.CreateUnit, "spawned 4 for 1", ActionType.Victory]);
+    expect(sim.events[0].action).toMatchObject({ player: 1, unitId: 37, modifier: 5 });
   });
 
   it("locals inside functions get their own storage per call", () => {
-    const r = ok(`
+    const r = okProgram(`
       let out = 0;
       function twice(n: number) {
         let t = n;
@@ -325,43 +357,66 @@ describe("structured: functions", () => {
     expect(value(run(r, 1), r, "out")).toBe(14);
     expect(r.variables.filter((v) => v.name === "t").length).toBe(2);
   });
+
+  it("helpers outside the program run when the script is built", () => {
+    const r = ok(`
+      function waves(n: number) { return Array.from({ length: n }, (_, i) => createUnit(P1, units.ZergZergling, i + 1, locations.Anywhere)); }
+      const level = { size: 2 };
+      ${program(`
+      let go = 0;
+      while (true) {
+        if (go >= 1) { waves(level.size); break; }
+        go++;
+      }
+      `)}
+    `);
+    const sim = run(r, 3);
+    expect(sim.events.map((e) => e.action.modifier)).toEqual([1, 2]);
+  });
 });
 
 describe("structured: program options and layout", () => {
-  it("owner, hyper triggers, comments off; raw triggers come first", () => {
+  it("owner, comments off, hyper triggers; triggers keep the order they were defined in", () => {
     const r = ok(`
-      program({ owner: P8, hyperTriggers: true, comments: false });
-      trigger(AllPlayers, [Always()], [Defeat()]);
+      trigger(AllPlayers, [always()], [defeat()]);
+      ${program(`
       let n = 0;
-      while (true) { n++; if (n == 2) Victory(); }
+      while (true) { n++; if (n == 2) victory(); }
+      `, "{ owner: P8, comments: false }")}
+      hyperTriggers(P8);
     `);
-    expect(r.program).toMatchObject({ owner: 7, start: 1, hyperTriggers: true });
+    expect(r.programs).toMatchObject([{ owner: 7, start: 1 }]);
     expect(r.triggers[0].actions[0].type).toBe(ActionType.Defeat);
     const hyper = r.triggers.slice(-3);
     for (const t of hyper) {
       expect(t.players[7]).toBe(1);
       expect(t.actions.length).toBe(64);
-      expect(t.actions.filter((a) => a.type === ActionType.Wait && a.time === 0).length).toBe(63);
+      expect(t.actions.filter((a) => a.type === ActionType.Wait && a.time === 0).length).toBe(62);
+      expect(t.actions[0].type).toBe(ActionType.Comment);
       expect(t.actions[63].type).toBe(ActionType.PreserveTrigger);
     }
     for (const t of r.triggers.slice(1, -3)) {
       expect(t.players[7]).toBe(1);
       expect(t.actions.some((a) => a.type === ActionType.Comment)).toBe(false);
     }
-    expect(r.strings).toEqual([]);
-    expect(r.lines.length).toBe(r.triggers.length);
+    expect(r.strings).toEqual([{ text: "Hyper trigger" }]);
+    expect(r.sources.length).toBe(r.triggers.length);
+    expect(r.sources.slice(-3)).toEqual([null, null, null]);
     const sim = run(r, 3, { player: 7 });
     expect(sim.events.filter((e) => e.action.type === ActionType.Victory).map((e) => e.cycle)).toEqual([1]);
   });
 
-  it("hyper triggers on another player, variableUnits override", () => {
+  it("two programs are two threads with their own counters; variableUnits override per program", () => {
     const r = ok(`
-      program({ hyperTriggers: P4, variableUnits: [Units.ZergBeacon, Units.TerranBeacon] });
-      let a = 0;
+      ${program(`let a = 0; while (true) { a++; }`, "{ owner: P1 }")}
+      ${program(`let b = 0; while (true) { b += 2; }`, "{ owner: P2, variableUnits: [units.ZergBeacon, units.TerranBeacon] }")}
     `);
-    expect(r.triggers.slice(-3).every((t) => t.players[3] === 1)).toBe(true);
-    expect(r.variables[0]).toMatchObject({ unit: 194, player: 0 });
-    expect(r.variables[1]).toMatchObject({ unit: 194, player: 1 });
+    expect(r.programs.map((p) => [p.owner, p.start])).toEqual([[0, 0], [1, 2]]);
+    expect(r.variables.map((v) => [v.name, v.unit, v.player])).toEqual([["(program counter)", 181, 0], ["a", 181, 1], ["(program counter)", 194, 0], ["b", 194, 1]]);
+    const one = run(r, 3, { player: 0 });
+    const two = run(r, 3, { player: 1 });
+    expect(one.death(1, 181)).toBe(3);
+    expect(two.death(1, 194)).toBe(6);
   });
 
   it("variables avoid the death counters and switches hand triggers use", () => {
@@ -375,13 +430,14 @@ describe("structured: program options and layout", () => {
     // A switch the map names counts as used too; the block's own records do not.
     switchNames[7] = "Door";
     expect(reservedStorage([hand], switchNames, null).reservedSwitches).toEqual([7, 255]);
-    expect(reservedStorage([hand], switchNames, { start: 0, count: 1, lines: [] }).reservedDeaths).toEqual([]);
-    const r = ok("let n = 0;\nlet f = true;", reserved);
+    expect(reservedStorage([hand], switchNames, { start: 0, count: 1, sources: [] }).reservedDeaths).toEqual([]);
+    const src = program("let n = 0;\nlet f = true;");
+    const r = ok(src, reserved);
     expect(r.variables.map((v) => [v.player, v.unit, v.switch])).toEqual([[1, 181, undefined], [2, 181, undefined], [undefined, undefined, 254]]);
     // The whole thing builds into the map: comments intern, the block is the program.
     const strings: string[] = [""];
     const intern = (t: string) => { strings.push(t); return strings.length - 1; };
-    const { list, block } = buildScript([hand], new Map(), "let n = 0;\nlet f = true;", r, intern);
+    const { list, block } = buildScript([hand], new Map(), { "main.ts": src }, r, intern);
     expect(block).toMatchObject({ start: 1, count: r.triggers.length });
     expect(list[1].actions[0].type).toBe(ActionType.Comment);
     expect(resolveStrings(r, intern)[0].actions[0].text).toBeGreaterThan(0);
@@ -391,55 +447,62 @@ describe("structured: program options and layout", () => {
     for (const u of VARIABLE_UNITS) expect(unitName(u)).toMatch(/Unused/);
   });
 
-  it("Memory / SetMemory are Deaths at the EPD player", () => {
-    const r = ok(`trigger(P1, [Memory(${DEATHS_TABLE_ADDRESS} + 8, ">=", 1)], [SetMemory(0x6509B0, "Set To", 5)]);`);
+  it("memory / setMemory are Deaths at the EPD player", () => {
+    const r = ok(`trigger(P1, [memory(${DEATHS_TABLE_ADDRESS} + 8, ">=", 1)], [setMemory(0x6509B0, "set", 5)]);`);
     expect(r.triggers[0].conditions[0]).toMatchObject({ type: ConditionType.Deaths, player: 2, unitId: 0, comparison: Comparison.AtLeast, amount: 1 });
     expect(r.triggers[0].actions[0]).toMatchObject({ type: ActionType.SetDeaths, player: (0x6509b0 - DEATHS_TABLE_ADDRESS) / 4, unitId: 0, modifier: SetModifier.SetTo, target: 5 });
-    const bad = compile("trigger(P1, [Memory(3, \">=\", 1)], []);");
-    expect(bad.diagnostics.map((d) => d.message)).toContain("Expected a 4-byte-aligned memory address.");
+    const bad = compile("trigger(P1, [memory(3, \">=\", 1)], []);");
+    expect(bad.diagnostics.map((d) => d.message)).toEqual(["memory: address: expected a 4-byte-aligned memory address."]);
   });
 });
 
 describe("structured: diagnostics", () => {
-  const messages = (src: string) => compile(src).diagnostics.filter((d) => d.source === "compiler").map((d) => `${d.line}:${d.message}`);
+  const messages = (src: string) => compile(src).diagnostics.filter((d) => d.source !== "typescript").map((d) => `${d.line}:${d.message}`);
 
   it("what the game cannot do", () => {
-    const msgs = messages(`
+    const msgs = messages(`program(() => {
       let x = 1;
       let y = 2;
       x *= 2;
       x = x * y;
-      Wait(x);
+      wait(x);
       let s = "text";
       function f() { f(); }
       f();
       function g() { return 1; }
       g();
-      break;
-      if (x) { trigger(P1, [], []); }
-      program({ owner: AllPlayers });
+      while (true) { break; }
       switch (x) { default: }
-    `);
+      const z = y + 1;
+    });`);
     expect(msgs).toContain("4:The game can only add and subtract: there is no multiplication or division between variables.");
-    expect(msgs).toContain("5:The game can only add and subtract variables; use * / % on constants only.");
-    expect(msgs).toContain("6:x is a variable; this argument must be a constant. Compare or assign it in structured code instead.");
+    expect(msgs).toContain("5:The game can only add and subtract variables; * / % work on values known when the script is built.");
+    expect(msgs).toContain("6:A call's arguments must be known when the script is built, but x is a variable of the program. Compare or assign variables in the program's own statements instead.");
     expect(msgs.some((m) => m.startsWith("7:Variables hold numbers (death counters) or booleans (switches); s is string"))).toBe(true);
     expect(msgs).toContain("8:Functions nest too deeply (recursion is not possible: a call is inlined).");
-    expect(msgs).toContain("10:Functions cannot return values; write the result into a variable instead.");
-    expect(msgs).toContain("12:break outside a loop.");
-    expect(msgs).toContain("13:trigger() is a top-level declaration; it cannot run inside structured code.");
-    expect(msgs).toContain("14:The owner must be a single player, P1 … P12: the program is one thread running as that player.");
-    expect(msgs).toContain("15:switch is not supported; use if / else if.");
+    expect(msgs).toContain("10:Functions in a program cannot return values; write the result into a variable instead.");
+    expect(msgs).toContain("13:switch is not supported in a program; use if / else if.");
+    expect(msgs).toContain("14:z depends on the program's variables: declare it with let.");
+  });
+
+  it("what belongs outside a program, and options the run rejects", () => {
+    expect(messages(`program(() => {\n  let x = 1;\n  if (x) { trigger(P1, [], []); }\n});`)).toEqual(["3:trigger() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements."]);
+    expect(messages(`program(() => {\n  program(() => {});\n});`)).toEqual(["2:program() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements."]);
+    expect(messages(`program(() => {}, { owner: AllPlayers });`)).toEqual(["1:program: the owner is a single player, P1 … P12: the program is one thread running as that player."]);
+    expect(messages(`const body = () => {};\nprogram(body);`)).toEqual(["2:program() takes an arrow function written directly in the call: program(() => { … })."]);
+    expect(messages(`program(() => {\n  const f = () => { let n = 0; n++; };\n  let m = 0;\n  const g = () => m;\n  [1].forEach(() => m++);\n});`)).toEqual(["4:g is a function that uses the program's variables; declare it with function so it is inlined at each call.", "5:A function written inside program() cannot use the program's variables; declare it with function so it is inlined, or move it outside."]);
+    expect(messages(`program(() => {\n  displayText("x");\n  random();\n});`)).toEqual(["3:random() does nothing on its own; test it in an if, or assign it to a boolean."]);
+    expect(messages(`trigger(P1, [random() as any], []);`)).toEqual(["1:random() is a coin toss the game makes: use it inside program(), in an if, a while or an assignment."]);
   });
 
   it("type errors still come from TypeScript", () => {
-    const r = compile("let n = 0;\nn = true;\nif (n == \"3\") Victory();");
-    expect(r.diagnostics.filter((d) => d.source === "typescript").map((d) => d.line)).toEqual([2, 3]);
+    const r = compile("program(() => {\nlet n = 0;\nn = true;\nif (n == \"3\") victory();\n});");
+    expect(r.diagnostics.filter((d) => d.source === "typescript").map((d) => d.line)).toEqual([3, 4]);
   });
 
   it("a script with only raw triggers has no program", () => {
-    const r = ok("trigger(P1, [Always()], [Victory()]);");
-    expect(r.program).toBe(null);
+    const r = ok("trigger(P1, [always()], [victory()]);");
+    expect(r.programs).toEqual([]);
     expect(r.variables).toEqual([]);
     expect(r.triggers.length).toBe(1);
   });
