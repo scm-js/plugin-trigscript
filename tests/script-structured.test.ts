@@ -320,27 +320,46 @@ describe("structured: conditions", () => {
 });
 
 describe("structured: functions", () => {
-  it("inline with value and by-reference parameters, defaults and return; values reach library calls", () => {
+  it("inline with parameters by value, defaults and return; values reach library calls", () => {
     const r = okProgram(`
       let total = 0;
       function add(v: number, n: number = 2) {
         if (n == 0) return;
-        v += n;
+        v += n;      // v is a copy of the argument: total is not changed by this line
+        total += v;  // the program's own variable is
       }
       function spawn(p: Player, count: number) {
         createUnit(p, units.ZergZergling, count + 1, locations.Anywhere);
         displayText(\`spawned \${count} for \${p}\`);
         add(total, count);
       }
+      function show(x: number) {
+        if (x >= 1) displayText("some");
+      }
       add(total, 5);
       add(total);
       spawn(P2, 4);
-      if (total == 11) victory();
+      show(total);
+      if (total == 28) victory();
     `);
     const sim = run(r, 1);
-    expect(value(sim, r, "total")).toBe(11);
-    expect(sim.events.map((e) => e.text ?? e.action.type)).toEqual([ActionType.CreateUnit, "spawned 4 for 1", ActionType.Victory]);
+    expect(value(sim, r, "total")).toBe(28);
+    expect(sim.events.map((e) => e.text ?? e.action.type)).toEqual([ActionType.CreateUnit, "spawned 4 for 1", "some", ActionType.Victory]);
     expect(sim.events[0].action).toMatchObject({ player: 1, unitId: 37, modifier: 5 });
+    // `v` is assigned, so each call copies its argument; `x` only reads, so it is the caller's variable itself.
+    expect(r.variables.filter((v) => v.name === "v")).toHaveLength(3);
+    expect(r.variables.filter((v) => v.name === "x")).toHaveLength(0);
+  });
+
+  it("a boolean parameter that is assigned is a copy too", () => {
+    const r = okProgram(`
+      let f = false;
+      function flip(b: boolean) { b = !b; if (b) displayText("in"); }
+      flip(f);
+      if (!f) displayText("still false");
+    `);
+    expect(texts(run(r, 1))).toEqual(["0:in", "0:still false"]);
+    expect(r.variables.find((v) => v.name === "b")).toMatchObject({ kind: "boolean" });
   });
 
   it("locals inside functions get their own storage per call", () => {
@@ -473,7 +492,6 @@ describe("structured: diagnostics", () => {
       g();
       while (true) { break; }
       switch (x) { default: }
-      const z = y + 1;
     });`);
     expect(msgs).toContain("4:The game can only add and subtract: there is no multiplication or division between variables.");
     expect(msgs).toContain("5:The game can only add and subtract variables; * / % work on values known when the script is built.");
@@ -482,7 +500,85 @@ describe("structured: diagnostics", () => {
     expect(msgs).toContain("8:Functions nest too deeply (recursion is not possible: a call is inlined).");
     expect(msgs).toContain("10:Functions in a program cannot return values; write the result into a variable instead.");
     expect(msgs).toContain("13:switch is not supported in a program; use if / else if.");
-    expect(msgs).toContain("14:z depends on the program's variables: declare it with let.");
+  });
+
+  it("a const computed from the variables is a variable the checker keeps constant", () => {
+    const r = okProgram(`
+      let n = 3;
+      const next = n + 1;
+      const twice = next + next;
+      if (next == 4) displayText("four");
+      if (twice == 8) displayText("eight");
+      const label = "fixed";
+      displayText(label);
+    `);
+    expect(texts(run(r, 1))).toEqual(["0:four", "0:eight", "0:fixed"]);
+    expect(r.variables.map((v) => v.name).filter((n) => !n.startsWith("(temporary"))).toEqual(["(program counter)", "n", "next", "twice"]);
+    const bad = compile(program("let n = 3;\nconst next = n + 1;\nnext = 5;"));
+    expect(bad.diagnostics.map((d) => [d.line, d.source])).toEqual([[3, "typescript"]]);
+  });
+
+  it("a branch known false when the script is built is pruned, and what is inside never runs", () => {
+    const r = ok(`
+      function bad(): Action { throw new Error("unreachable"); }
+      program(() => {
+        if (false) bad();
+        while (false) { bad(); }
+        for (let i = 0; false; i++) bad();
+        if (true) displayText("yes"); else bad();
+        let n = 0;
+        if (n == 0) displayText("live");
+      });
+    `);
+    expect(texts(run(r, 1))).toEqual(["0:yes", "0:live"]);
+    const live = compile(`function bad(): Action { throw new Error("unreachable"); }\nprogram(() => {\n  let n = 0;\n  if (n == 0) bad();\n});`);
+    expect(live.diagnostics).toEqual([expect.objectContaining({ line: 4, column: 15, source: "script", message: "unreachable — this expression is computed when the script is built, not in the game." })]);
+  });
+
+  it("a condition or an action tested as a boolean outside a program is an error", () => {
+    const msgs = messages(`
+      const c = bring(P1, units.AnyUnit, locations.Anywhere, ">=", 1);
+      if (c) victory();
+      trigger(P1, [c && deaths(P1, units.AnyUnit, ">=", 1)], [!displayText("x") ? victory() : defeat()]);
+      program(() => { if (c && !c) victory(); });
+    `);
+    expect(msgs).toEqual([
+      "3:c is a condition — a value the game tests, not a boolean. Put it in a trigger's conditions list (several conditions there must all hold), or test it in an if inside program().",
+      "4:c is a condition — a value the game tests, not a boolean. Put it in a trigger's conditions list (several conditions there must all hold), or test it in an if inside program().",
+      "4:deaths(…) is a condition — a value the game tests, not a boolean. Put it in a trigger's conditions list (several conditions there must all hold), or test it in an if inside program().",
+      "4:displayText(…) is an action, not a boolean: nothing happens until a trigger runs it. Put it in a trigger's actions list, or write it as a statement inside program().",
+    ]);
+  });
+
+  it("the library through a namespace import", () => {
+    const r = ok(`
+      import * as t from "trigscript";
+      t.trigger(t.P1, [t.always()], [t.displayText("raw")]);
+      t.program(() => { let n = 0; if (t.random()) t.displayText("x"); n++; if (n >= 1) t.victory(); });
+    `);
+    expect(r.sources[0]).toEqual({ file: "main.ts", line: 3 });
+    expect(r.variables.map((v) => v.name)).toEqual(["(program counter)", "n", "(scratch switch 1)"]);
+    expect(run(r, 1).events.some((e) => e.action.type === ActionType.Victory)).toBe(true);
+    expect(messages(`import * as t from "trigscript";\nt.program(() => { t.trigger(t.P1, [], []); });`)).toEqual(["2:trigger() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements."]);
+  });
+
+  it("not() flips a condition where one condition can say it", () => {
+    const r = ok(`trigger(P1, [not(bring(P1, units.AnyUnit, locations.Anywhere, ">=", 1)), not(switchIs(switches.Switch1, "set")), not(always())], [victory()]);`);
+    expect(r.triggers[0].conditions.map((c) => [c.type, c.comparison, c.amount])).toEqual([[ConditionType.Bring, Comparison.AtMost, 0], [ConditionType.Switch, SwitchState.Cleared, 0], [ConditionType.Never, 0, 0]]);
+    expect(messages(`trigger(P1, [not(deaths(P1, units.AnyUnit, "==", 3))], []);`)).toEqual(["1:The game has no single condition for the opposite of this one; inside program(), if (!…) can test it."]);
+  });
+
+  it("reports what is computed when the script is built, and where each variable is declared", () => {
+    const src = `program(() => {\n  let n = 0;\n  if (n == 3) displayText("x");\n});`;
+    const r = ok(src);
+    const col = (needle: string) => src.split("\n")[2].indexOf(needle) + 1;
+    expect(r.buildTime).toEqual([
+      { file: "main.ts", line: 2, column: 11, endLine: 2, endColumn: 12 },
+      { file: "main.ts", line: 3, column: col("3)"), endLine: 3, endColumn: col("3)") + 1 },
+      { file: "main.ts", line: 3, column: col("displayText"), endLine: 3, endColumn: col("displayText") + 'displayText("x")'.length },
+    ]);
+    expect(r.variables.find((v) => v.name === "n")?.at).toEqual({ file: "main.ts", line: 2, column: 7 });
+    expect(r.variables[0].at).toBeUndefined();
   });
 
   it("what belongs outside a program, and options the run rejects", () => {

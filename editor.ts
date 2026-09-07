@@ -16,7 +16,7 @@ import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, t
 import { printScript } from "./compiler/print";
 import { Simulation, type SimulationEvent } from "./compiler/simulate";
 import { actionDef } from "./vendor/triggerDefs";
-import { createScriptEditor, loadMonaco, releaseScriptEditor, setCompilerMarkers, setDeclarations, type MonacoApi, type ScriptEditor } from "./monaco";
+import { BUILD_TIME_CLASS, createScriptEditor, loadMonaco, releaseScriptEditor, setCompilerMarkers, setDeclarations, setHoverVariables, type MonacoApi, type ScriptEditor } from "./monaco";
 import { FILE_NAME } from "./script";
 import type { BuildRefusal, MapNames, ScriptArtifact, ScriptService } from "./service";
 
@@ -32,8 +32,9 @@ trigger(AllPlayers, [
   preserve(),
 ]);
 
-// A program: let variables are death counters and switches; if, while, for and
-// functions work. It runs as one player, one loop iteration per trigger cycle.
+// A program: its variables are death counters and switches; if, while, for and
+// functions work. It runs as one player, one loop iteration per trigger cycle. The
+// underlined parts are computed when you build, everything else runs in the game.
 program(() => {
   let cycles = 0;
   while (true) {
@@ -83,6 +84,7 @@ const STYLE = `
 .tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
 .tsd .tsd-variables .internal { color: var(--text-faint); }
 .tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
+.${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 
 /** One line of the simulation log: "Display Text — hello". */
@@ -266,7 +268,7 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
     diagnostics = r.diagnostics;
     result = r;
     simulation = null;
-    if (editor && monaco) setCompilerMarkers(monaco, files, r.diagnostics);
+    if (editor && monaco) { setCompilerMarkers(monaco, files, r.diagnostics); editor.decorate(r.buildTime); }
     render();
   };
 
@@ -478,6 +480,7 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
           if (cancelled) return;
           monaco = m;
           if (generated) setDeclarations(m, generated.decls);
+          setHoverVariables(m, () => result?.variables ?? []);
           // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
           loadingCover.done();
           editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {

@@ -39,8 +39,10 @@ import { unitName } from "../vendor/units";
 
 /* ── Variables ───────────────────────────────────────────── */
 
-export interface DcVar { kind: "dc"; name: string; player: number; unit: number }
-export interface SwVar { kind: "switch"; name: string; index: number }
+/** Where a variable was declared, for the editor's hover; unset for the machine's own counters. */
+export interface VarSource { file: string; line: number; column: number }
+export interface DcVar { kind: "dc"; name: string; player: number; unit: number; at?: VarSource }
+export interface SwVar { kind: "switch"; name: string; index: number; at?: VarSource }
 export type Var = DcVar | SwVar;
 
 /**

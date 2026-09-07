@@ -1603,11 +1603,13 @@ function functions(kw) {
 ${kw}function trigger(players: Player | readonly Player[], conditions: Conditions, actions: Actions, options?: TriggerOptions): Trigger;
 /**
  * Code that runs in the game: a state machine built from death counters. Inside the arrow,
- * let variables holding numbers are death counters and booleans are switches; if / else,
- * while, do, for, break, continue and functions (inlined per call) all work; conditions go in
- * an if or while and actions stand as statements. One iteration of a loop per trigger cycle.
+ * variables holding numbers are death counters and booleans are switches (a const computed
+ * from them is one too, and cannot be reassigned); if / else, while, do, for, break, continue
+ * and functions (inlined per call, arguments passed by value) all work; conditions go in an
+ * if or while and actions stand as statements. One iteration of a loop per trigger cycle.
  * Everything the body reads from outside (constants, helpers, conditions, actions) is
- * computed when you build, so it must not depend on the variables.
+ * computed when you build \u2014 the editor underlines those parts \u2014 so it cannot depend on the
+ * variables.
  */
 ${kw}function program(body: () => void, options?: ProgramOptions): void;
 /** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
@@ -1616,6 +1618,12 @@ ${kw}function hyperTriggers(owner?: Player): void;
 ${kw}function random(): boolean;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
+/**
+ * The opposite of a condition, for a trigger's conditions list: a comparison flips ("at least 3" becomes
+ * "at most 2"), a switch test flips, always becomes never. Throws for "exactly n" and for conditions the
+ * game cannot negate in one condition; inside program(), if (!\u2026) handles every condition.
+ */
+${kw}function not(condition: Condition): Condition;
 /** A condition by raw type number and record fields, for types the editor does not know. */
 ${kw}function condition(${CONDITION_FIELDS.map((f) => `${f}?: number`).join(", ")}): Condition;
 /** An action by raw type number and record fields, for types the editor does not know. */
@@ -1716,6 +1724,11 @@ function libraryName(ts, checker, id) {
   if (!decl || decl.getSourceFile().fileName !== DECLARATIONS_FILE) return null;
   return sym.name;
 }
+function libraryCallName(ts, checker, call) {
+  const callee = call.expression;
+  const id = ts.isIdentifier(callee) ? callee : ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name) ? callee.name : null;
+  return id ? libraryName(ts, checker, id) : null;
+}
 function owningDeclaration(ts, decl) {
   let d = decl;
   while (ts.isBindingElement(d) || ts.isArrayBindingPattern(d) || ts.isObjectBindingPattern(d)) d = d.parent;
@@ -1759,9 +1772,14 @@ function planProgram(ts, checker, arrow) {
       ts.forEachChild(n, scan);
     };
     const identifier2 = (n, p) => {
-      if (ts.isPropertyAccessExpression(p) && p.name === n || ts.isPropertyAssignment(p) && p.name === n || ts.isMethodDeclaration(p) && p.name === n || ts.isQualifiedName(p)) return;
+      const property = ts.isPropertyAccessExpression(p) && p.name === n;
+      if (ts.isPropertyAssignment(p) && p.name === n || ts.isMethodDeclaration(p) && p.name === n || ts.isQualifiedName(p)) return;
       const lib = libraryName(ts, checker, n);
       if (lib === "random") {
+        ok = false;
+        return;
+      }
+      if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p.parent) && p.parent.expression === p && property) {
         ok = false;
         return;
       }
@@ -1769,6 +1787,7 @@ function planProgram(ts, checker, arrow) {
         ok = false;
         return;
       }
+      if (property) return;
       const decl = declarationOf(ts, checker, n);
       if (decl && isGameDecl(decl)) {
         ok = false;
@@ -1840,9 +1859,9 @@ function planProgram(ts, checker, arrow) {
       return;
     }
     if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
-      const lib = ts.isCallExpression(e) && ts.isIdentifier(e.expression) ? libraryName(ts, checker, e.expression) : null;
+      const lib = ts.isCallExpression(e) ? libraryCallName(ts, checker, e) : null;
       if (lib && FORBIDDEN_INSIDE.has(lib)) error(e, `${lib}() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements.`);
-      value(e.expression, items);
+      if (lib !== "random") value(e.expression, items);
       for (const a2 of e.arguments ?? []) value(a2, items);
       return;
     }
@@ -1969,12 +1988,10 @@ function planProgram(ts, checker, arrow) {
           items.push({ kind: "const", decl: d });
           continue;
         }
-        const name = ts.isIdentifier(d.name) ? d.name.text : "This constant";
         if (isFunctionValue(d.initializer)) {
-          error(d, `${name} is a function that uses the program's variables; declare it with function so it is inlined at each call.`);
+          error(d, `${ts.isIdentifier(d.name) ? d.name.text : "This constant"} is a function that uses the program's variables; declare it with function so it is inlined at each call.`);
           continue;
         }
-        error(d, `${name} depends on the program's variables: declare it with let.`);
         plan.game.add(d);
         memo.clear();
         descend(d.initializer, items);
@@ -1996,12 +2013,13 @@ function planProgram(ts, checker, arrow) {
 function hoistedFunction(ts, plan) {
   const f = ts.factory;
   const h = f.createIdentifier("__h");
+  const thunk = (expr) => f.createArrowFunction(void 0, void 0, [], void 0, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), f.createParenthesizedExpression(expr));
   const emit = (items) => items.map((item) => {
     switch (item.kind) {
       case "const":
         return f.createVariableStatement(void 0, f.createVariableDeclarationList([item.decl], ts.NodeFlags.Const));
       case "hoist":
-        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), item.expr));
+        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), thunk(item.expr)));
       case "block":
         return f.createBlock(emit(item.items), true);
     }
@@ -2023,8 +2041,8 @@ function transformer(ts, checker, ctx) {
       return out;
     };
     const visit = (node) => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-        const lib = libraryName(ts, checker, node.expression);
+      if (ts.isCallExpression(node)) {
+        const lib = libraryCallName(ts, checker, node);
         if (lib === "trigger" && node.arguments.length >= 3 && node.arguments.length <= 4) {
           const args = pad(node.arguments.map((a2) => ts.visitNode(a2, visit)), 4);
           return f.updateCallExpression(node, node.expression, node.typeArguments, [...args, at(node)]);
@@ -2329,6 +2347,12 @@ function createRuntime(names, collector, options = {}) {
     if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
     throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
   };
+  rt.not = (item) => {
+    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
+    const flipped = negateCondition(item.record);
+    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!\u2026) can test it.");
+    return condition(flipped[0]);
+  };
   const playersOf = (v, what) => {
     if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
     return flatten(v).map((p) => {
@@ -2421,6 +2445,13 @@ var Scope = class {
 };
 
 // compiler/structured.ts
+var ValueError = class extends LowerError {
+  node;
+  constructor(node, message) {
+    super(message);
+    this.node = node;
+  }
+};
 var MAX_INLINE_DEPTH = 16;
 var LABEL_LENGTH = 48;
 function describe2(v) {
@@ -2441,6 +2472,7 @@ var Structured = class {
   dead = false;
   inlineDepth = 0;
   scratchUsed = 0;
+  evaluated = /* @__PURE__ */ new Map();
   scope = new Scope(null);
   /** The program's outermost scope: what an inlined function body closes over. */
   topScope = this.scope;
@@ -2521,7 +2553,7 @@ var Structured = class {
     let e = expr;
     for (; ; ) {
       const k = this.c.plan.index.get(e);
-      if (k !== void 0) return { value: this.c.values[k] };
+      if (k !== void 0) return { value: this.hoistedValue(k, e) };
       if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
       else break;
     }
@@ -2653,9 +2685,21 @@ var Structured = class {
     }
     return void 0;
   }
+  /** A hoisted expression's value: its thunk, called the first time the walk reaches it. */
+  hoistedValue(k, at) {
+    if (this.evaluated.has(k)) return this.evaluated.get(k);
+    let value;
+    try {
+      value = this.c.hoisted[k]();
+    } catch (err) {
+      throw new ValueError(at, `${err instanceof Error ? err.message : String(err)} \u2014 this expression is computed when the script is built, not in the game.`);
+    }
+    this.evaluated.set(k, value);
+    return value;
+  }
   isLibraryCall(e, name) {
     const { ts } = this;
-    return ts.isCallExpression(e) && ts.isIdentifier(e.expression) && libraryName(ts, this.c.checker, e.expression) === name;
+    return ts.isCallExpression(e) && libraryCallName(ts, this.c.checker, e) === name;
   }
   /** The variable an expression that could not be hoisted depends on — for the message. */
   blamedVariable(expr) {
@@ -2685,7 +2729,8 @@ var Structured = class {
         this.statement(s, ctx);
       } catch (err) {
         if (!(err instanceof LowerError)) throw err;
-        this.c.error(s, err.message);
+        if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
+        else this.c.error(s, err.message);
       }
     }
     this.scope = outer;
@@ -2786,10 +2831,16 @@ var Structured = class {
         this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}.`);
         continue;
       }
+      v.at = this.sourceOf(d.name);
       if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
       else this.assignBool(v, d.initializer, d);
       this.scope.bind(d, { kind: "var", v });
     }
+  }
+  /** Where a declaration's name is, for the editor's hover. */
+  sourceOf(node) {
+    const p = this.c.sf.getLineAndCharacterOfPosition(node.getStart(this.c.sf));
+    return { file: this.c.sf.fileName, line: p.line + 1, column: p.character + 1 };
   }
   kindOf(type) {
     const { ts } = this;
@@ -2882,11 +2933,10 @@ var Structured = class {
           this.c.error(e, `${e.expression.text} is not a function.`);
           return;
         }
-        const lib = libraryName(ts, this.c.checker, e.expression);
-        if (lib === "random") {
-          this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean.");
-          return;
-        }
+      }
+      if (this.isLibraryCall(e, "random")) {
+        this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean.");
+        return;
       }
       this.notConstant(e, "A call's arguments");
       return;
@@ -2896,6 +2946,12 @@ var Structured = class {
   ifStatement(s, ctx) {
     const held = this.m.tempsHeld;
     const b = this.bool(s.expression);
+    if (b.kind === "const") {
+      this.m.releaseTo(held);
+      const live = b.value ? s.thenStatement : s.elseStatement;
+      if (live) this.statement(live, ctx);
+      return;
+    }
     const join = this.m.fresh();
     const thenState = this.m.fresh();
     const elseState = s.elseStatement ? this.m.fresh() : join;
@@ -2914,7 +2970,14 @@ var Structured = class {
     this.m.enter(join);
     this.dead = false;
   }
+  /** A loop condition known false when the script is built: the loop is not compiled at all. */
+  neverRuns(condition2) {
+    if (!condition2) return false;
+    const h = this.evaluate(condition2);
+    return !!h && !h.value && !isCondition(h.value);
+  }
   whileStatement(s, ctx) {
+    if (this.neverRuns(s.expression)) return;
     const header = this.m.loopHeader(this.line(s), this.label(s));
     const exit = this.m.fresh();
     let broke = false;
@@ -2963,6 +3026,10 @@ var Structured = class {
     if (s.initializer) {
       if (ts.isVariableDeclarationList(s.initializer)) this.declare(s.initializer);
       else this.expressionStatement(s.initializer);
+    }
+    if (this.neverRuns(s.condition)) {
+      this.scope = outer;
+      return;
     }
     const header = this.m.loopHeader(this.line(s), this.label(s));
     const exit = this.m.fresh();
@@ -3051,7 +3118,22 @@ var Structured = class {
       }
       const variable = this.varOf(arg);
       if (variable) {
-        scope.bind(p, { kind: "var", v: variable });
+        if (!this.assigns(decl.body, p)) {
+          scope.bind(p, { kind: "var", v: variable });
+          return;
+        }
+        const copy = variable.kind === "dc" ? this.m.dc(p.name.text) : this.m.switch(p.name.text);
+        if (!copy) {
+          this.c.error(p, `No ${variable.kind === "dc" ? "death counter" : "switch"} is free for ${p.name.text}.`);
+          ok = false;
+          return;
+        }
+        copy.at = this.sourceOf(p.name);
+        const line = this.line(call);
+        const label = `L${line}: ${p.name.text} = ${arg.getText(this.c.sf)}`;
+        if (copy.kind === "dc") this.m.assign(copy, { c: 0, terms: [{ v: variable, sign: 1 }] }, line, label);
+        else this.storeBool(copy, cond(switchCondition(variable, true)), line, label);
+        scope.bind(p, { kind: "var", v: copy });
         return;
       }
       this.notConstant(arg, "An argument");
@@ -3074,6 +3156,29 @@ var Structured = class {
       this.m.enter(end);
       this.dead = false;
     }
+  }
+  /** Whether a function body assigns to (or increments) one of its parameters anywhere. */
+  assigns(body2, param) {
+    const { ts } = this;
+    let found = false;
+    const target = (e) => {
+      const u = this.unwrap(e);
+      return ts.isIdentifier(u) && declarationOf(ts, this.c.checker, u) === param;
+    };
+    const walk = (n) => {
+      if (found) return;
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && target(n.left)) {
+        found = true;
+        return;
+      }
+      if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) && target(n.operand)) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(body2);
+    return found;
   }
   /* ── Numbers ── */
   assignNumber(v, expr, at) {
@@ -3167,11 +3272,15 @@ var Structured = class {
       this.m.releaseTo(held);
       return;
     }
+    this.storeBool(v, b, line, label);
+    this.m.releaseTo(held);
+  }
+  /** `v = b` for a condition tree: branch, set on one side, clear on the other. */
+  storeBool(v, b, line, label) {
     const on = this.m.fresh();
     const off = this.m.fresh();
     const join = this.m.fresh();
     this.m.branch(b, on, off, line, label);
-    this.m.releaseTo(held);
     this.m.enter(on);
     this.m.action(setSwitch(v, SwitchAction.Set), line, label);
     this.m.jump(join, line, label);
@@ -3179,6 +3288,7 @@ var Structured = class {
     this.m.action(setSwitch(v, SwitchAction.Clear), line, label);
     this.m.jump(join, line, label);
     this.m.enter(join);
+    this.dead = false;
   }
   /** A hoisted value as a condition tree. */
   hoistedBool(h, at) {
@@ -3336,7 +3446,7 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
   const scripts = /* @__PURE__ */ new Map();
   for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
@@ -3398,23 +3508,27 @@ function compileScript(ts, files, names, options) {
   const plans = /* @__PURE__ */ new Map();
   const byPosition = /* @__PURE__ */ new Map();
   const fileIndex = (sf) => fileNames.indexOf(sf.fileName);
+  const buildTime = [];
   for (const name of fileNames) {
     const sf = program.getSourceFile(name);
     const visit = (node) => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && libraryName(ts, checker, node.expression) === "program") {
+      if (ts.isCallExpression(node) && libraryCallName(ts, checker, node) === "program") {
         const arrow = node.arguments[0];
         if (arrow && (ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow))) {
           const plan = planProgram(ts, checker, arrow);
           plans.set(arrow, plan);
           byPosition.set(`${fileIndex(sf)}:${arrow.getStart(sf)}`, plan);
           for (const e of plan.errors) nodeError(e.node, e.message);
+          for (const e of plan.hoisted) buildTime.push({ file: name, ...position(sf, e.getStart(sf), e.getEnd()) });
           return;
         }
       }
       ts.forEachChild(node, visit);
     };
     visit(sf);
+    checkValuesAsBooleans(ts, checker, sf, plans, (node, message) => nodeError(node, message));
   }
+  if (diagnostics.length) return result();
   for (const d of diagnostics) planned.add(`${d.file}:${d.line}`);
   const emitted = program.emit(void 0, void 0, void 0, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow) })] });
   for (const d of emitted.diagnostics) {
@@ -3461,11 +3575,11 @@ function compileScript(ts, files, names, options) {
       diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
       continue;
     }
-    let values;
+    let hoisted;
     try {
-      values = entry.descriptor.hoisted();
+      hoisted = entry.descriptor.hoisted();
     } catch (err) {
-      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: `program(): ${err.message}`, source: "script" });
+      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: `program(): ${err.message} \u2014 a constant of the program is computed when the script is built.`, source: "script" });
       continue;
     }
     let machine;
@@ -3477,13 +3591,48 @@ function compileScript(ts, files, names, options) {
       continue;
     }
     const start = triggers.length;
-    new Structured({ ts, checker, sf, plan, values, machine, error: (node, message) => nodeError(node, message) }).run();
+    new Structured({ ts, checker, sf, plan, hoisted, machine, error: (node, message, source) => nodeError(node, message, source) }).run();
     triggers.push(...machine.triggers);
     for (const line of machine.lines) sources.push({ file, line });
     programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
   }
-  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit } : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index });
-  return result({ triggers, sources, strings: collector.strings, variables, programs });
+  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} });
+  return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime });
+}
+function checkValuesAsBooleans(ts, checker, sf, programs, error) {
+  const isLibraryType = (t, name) => {
+    if (t.isUnion() || t.isIntersection()) return t.types.some((x) => isLibraryType(x, name));
+    const decl = t.symbol?.declarations?.[0];
+    return t.symbol?.name === name && !!decl && decl.getSourceFile().fileName === DECLARATIONS_FILE;
+  };
+  const kindOf = (e) => {
+    const t = checker.getTypeAtLocation(e);
+    return isLibraryType(t, "Condition") ? "condition" : isLibraryType(t, "Action") ? "action" : null;
+  };
+  const short = (e) => {
+    const text = e.getText(sf).replace(/\s+/g, " ");
+    const paren = text.indexOf("(");
+    return paren > 0 ? `${text.slice(0, paren)}(\u2026)` : text.length > 32 ? `${text.slice(0, 31)}\u2026` : text;
+  };
+  const test = (e) => {
+    if (!e) return;
+    const kind = kindOf(e);
+    if (kind === "condition") error(e, `${short(e)} is a condition \u2014 a value the game tests, not a boolean. Put it in a trigger's conditions list (several conditions there must all hold), or test it in an if inside program().`);
+    else if (kind === "action") error(e, `${short(e)} is an action, not a boolean: nothing happens until a trigger runs it. Put it in a trigger's actions list, or write it as a statement inside program().`);
+  };
+  const visit = (node) => {
+    if (programs.has(node)) return;
+    if (ts.isIfStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) test(node.expression);
+    else if (ts.isForStatement(node)) test(node.condition);
+    else if (ts.isConditionalExpression(node)) test(node.condition);
+    else if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) test(node.operand);
+    else if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      test(node.left);
+      test(node.right);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
 }
 
 // compiler/entry.ts
@@ -3587,6 +3736,38 @@ function setDeclarations(monaco, content) {
   tsLanguage(monaco).typescriptDefaults.setExtraLibs([{ content, filePath: `file:///${DECLARATIONS_FILE}` }]);
 }
 var fileUri = (monaco, path) => monaco.Uri.parse(`file:///${normalizePath(path)}`);
+var pathOfUri = (uri) => normalizePath(uri.path.replace(/^\/+/, ""));
+var BUILD_TIME_CLASS = "trigscript-build-time";
+var BUILD_TIME_NOTE = "Computed when the script is built, not in the game.";
+var hoverVariables = () => [];
+var hoverRegistered = false;
+function setHoverVariables(monaco, variables) {
+  hoverVariables = variables;
+  if (hoverRegistered) return;
+  hoverRegistered = true;
+  monaco.languages.registerHoverProvider("typescript", {
+    async provideHover(model, position) {
+      if (model.uri.scheme !== "file") return null;
+      const word = model.getWordAtPosition(position);
+      if (!word) return null;
+      const client = await (await tsLanguage(monaco).getTypeScriptWorker())(model.uri);
+      const defs = await client.getDefinitionAtPosition(model.uri.toString(), model.getOffsetAt(position));
+      for (const d of defs ?? []) {
+        const m = monaco.editor.getModel(monaco.Uri.parse(d.fileName));
+        if (!m) continue;
+        const at = m.getPositionAt(d.textSpan.start);
+        const path = pathOfUri(m.uri);
+        const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
+        if (!v) continue;
+        return {
+          range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+          contents: [{ value: `**${v.name}** is a variable of the program: ${v.kind === "number" ? "a death counter" : "a switch"}, ${v.storage}.` }]
+        };
+      }
+      return null;
+    }
+  });
+}
 function setCompilerMarkers(monaco, files, diagnostics) {
   for (const path of Object.keys(files)) {
     const model = monaco.editor.getModel(fileUri(monaco, path));
@@ -3617,6 +3798,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
   disposeModels(monaco);
   const models = /* @__PURE__ */ new Map();
   const subs = /* @__PURE__ */ new Map();
+  const decorations = /* @__PURE__ */ new Map();
   const views = /* @__PURE__ */ new Map();
   const make = (path, text) => {
     const model = monaco.editor.createModel(text, "typescript", fileUri(monaco, path));
@@ -3679,6 +3861,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
       subs.delete(p);
       models.delete(p);
       views.delete(p);
+      decorations.delete(p);
       model.dispose();
     },
     rename(from, to) {
@@ -3693,6 +3876,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
       subs.delete(a2);
       models.delete(a2);
       views.delete(a2);
+      decorations.delete(a2);
       if (wasCurrent) editor.setModel(null);
       model.dispose();
       const next = make(b, text);
@@ -3706,6 +3890,16 @@ function createScriptEditor(monaco, host, files, active, onChange) {
     set(path, text) {
       const model = models.get(normalizePath(path));
       if (model && model.getValue() !== text) model.setValue(text);
+    },
+    decorate(ranges) {
+      for (const [p, model] of models) {
+        const next = ranges.filter((r) => normalizePath(r.file) === p).map((r) => ({
+          range: new monaco.Range(r.line, r.column, r.endLine, r.endColumn),
+          // Never grows with typing at its edges: the next check redraws it where the compiler says.
+          options: { inlineClassName: BUILD_TIME_CLASS, hoverMessage: { value: BUILD_TIME_NOTE }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges }
+        }));
+        decorations.set(p, model.deltaDecorations(decorations.get(p) ?? [], next));
+      }
     },
     dispose() {
       for (const s of subs.values()) s.dispose();
@@ -4292,8 +4486,9 @@ trigger(AllPlayers, [
   preserve(),
 ]);
 
-// A program: let variables are death counters and switches; if, while, for and
-// functions work. It runs as one player, one loop iteration per trigger cycle.
+// A program: its variables are death counters and switches; if, while, for and
+// functions work. It runs as one player, one loop iteration per trigger cycle. The
+// underlined parts are computed when you build, everything else runs in the game.
 program(() => {
   let cycles = 0;
   while (true) {
@@ -4337,6 +4532,7 @@ var STYLE = `
 .tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
 .tsd .tsd-variables .internal { color: var(--text-faint); }
 .tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
+.${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 function describeEvent(e) {
   const name = actionDef(e.action.type)?.name ?? `Action ${e.action.type}`;
@@ -4537,7 +4733,10 @@ function openScriptEditor(svc, options = {}) {
     diagnostics = r.diagnostics;
     result = r;
     simulation = null;
-    if (editor && monaco) setCompilerMarkers(monaco, files, r.diagnostics);
+    if (editor && monaco) {
+      setCompilerMarkers(monaco, files, r.diagnostics);
+      editor.decorate(r.buildTime);
+    }
     render();
   };
   const check = () => {
@@ -4750,6 +4949,7 @@ function openScriptEditor(svc, options = {}) {
           if (cancelled) return;
           monaco = m;
           if (generated) setDeclarations(m, generated.decls);
+          setHoverVariables(m, () => result?.variables ?? []);
           loadingCover.done();
           editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
             files = { ...files, [path]: text };

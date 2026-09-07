@@ -17,7 +17,7 @@ import type * as TS from "typescript";
 import type { TriggerRecord } from "../vendor/triggers";
 import { MODULE_NAME } from "./api";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
-import { libraryName, planProgram, transformer, type ProgramPlan } from "./hoist";
+import { libraryCallName, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { runModules, type LinkedFile } from "./link";
 import { Allocator, LowerError, Machine, storageLabel } from "./lower";
 import type { ScriptNames } from "./names";
@@ -53,6 +53,15 @@ export interface TriggerSource {
   line: number;
 }
 
+/** A span of a file, 1-based, the end exclusive. */
+export interface SourceRange {
+  file: string;
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+}
+
 export interface VariableInfo {
   name: string;
   kind: "number" | "boolean";
@@ -63,6 +72,8 @@ export interface VariableInfo {
   unit?: number;
   /** Switch index (booleans). */
   switch?: number;
+  /** Where the variable is declared; unset for the machine's own counters and temporaries. */
+  at?: { file: string; line: number; column: number };
 }
 
 export interface ProgramInfo {
@@ -85,6 +96,8 @@ export interface CompileResult {
   /** The programs' variables (temporaries and program counters included), in allocation order. */
   variables: VariableInfo[];
   programs: ProgramInfo[];
+  /** Inside the programs, the expressions computed when the script is built rather than in the game — what the editor underlines. */
+  buildTime: SourceRange[];
   /** No errors: `triggers` is the complete output. */
   ok: boolean;
 }
@@ -113,7 +126,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
   const scripts = new Map<string, string>();
@@ -176,23 +189,28 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const plans = new Map<TS.Node, ProgramPlan>();
   const byPosition = new Map<string, ProgramPlan>();
   const fileIndex = (sf: TS.SourceFile) => fileNames.indexOf(sf.fileName);
+  const buildTime: SourceRange[] = [];
   for (const name of fileNames) {
     const sf = program.getSourceFile(name)!;
     const visit = (node: TS.Node) => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && libraryName(ts, checker, node.expression) === "program") {
+      if (ts.isCallExpression(node) && libraryCallName(ts, checker, node) === "program") {
         const arrow = node.arguments[0];
         if (arrow && (ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow))) {
           const plan = planProgram(ts, checker, arrow);
           plans.set(arrow, plan);
           byPosition.set(`${fileIndex(sf)}:${arrow.getStart(sf)}`, plan);
           for (const e of plan.errors) nodeError(e.node, e.message);
+          for (const e of plan.hoisted) buildTime.push({ file: name, ...position(sf, e.getStart(sf), e.getEnd()) });
           return; // A program inside a program is the plan's error; nothing to find below.
         }
       }
       ts.forEachChild(node, visit);
     };
     visit(sf);
+    // Outside the programs, a condition or an action is a value: testing one as a boolean is a mistake TypeScript lets pass.
+    checkValuesAsBooleans(ts, checker, sf, plans, (node, message) => nodeError(node, message));
   }
+  if (diagnostics.length) return result();
   // The plan's errors do not stop the run: a body with a fault still lowers, so every problem shows at once.
   for (const d of diagnostics) planned.add(`${d.file}:${d.line}`);
 
@@ -239,11 +257,11 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const sf = program.getSourceFile(file)!;
     const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
     if (!plan) { diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" }); continue; }
-    let values: unknown[];
+    let hoisted: (() => unknown)[];
     try {
-      values = entry.descriptor.hoisted();
+      hoisted = entry.descriptor.hoisted();
     } catch (err) {
-      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: `program(): ${(err as Error).message}`, source: "script" });
+      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: `program(): ${(err as Error).message} — a constant of the program is computed when the script is built.`, source: "script" });
       continue;
     }
     let machine: Machine;
@@ -255,13 +273,52 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       continue;
     }
     const start = triggers.length;
-    new Structured({ ts, checker, sf, plan, values, machine, error: (node, message) => nodeError(node, message) }).run();
+    new Structured({ ts, checker, sf, plan, hoisted, machine, error: (node, message, source) => nodeError(node, message, source) }).run();
     triggers.push(...machine.triggers);
     for (const line of machine.lines) sources.push({ file, line });
     programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
   }
   const variables: VariableInfo[] = allocator.variables.map((v) => v.kind === "dc"
-    ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit }
-    : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index });
-  return result({ triggers, sources, strings: collector.strings, variables, programs });
+    ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...(v.at ? { at: v.at } : {}) }
+    : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...(v.at ? { at: v.at } : {}) });
+  return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime });
+}
+
+/**
+ * Outside `program()`, `bring(…)` is a value the game will test and `displayText(…)` a
+ * value the game will run; `if (bring(…))` tests whether the object exists, and
+ * `bring(…) && deaths(…)` is just `deaths(…)`. TypeScript allows both. Reported as
+ * errors on every boolean position — `if`, `while`, `for`, `?:`, `!`, `&&`, `||`.
+ */
+function checkValuesAsBooleans(ts: typeof TS, checker: TS.TypeChecker, sf: TS.SourceFile, programs: Map<TS.Node, ProgramPlan>, error: (node: TS.Node, message: string) => void) {
+  const isLibraryType = (t: TS.Type, name: string): boolean => {
+    if (t.isUnion() || t.isIntersection()) return t.types.some((x) => isLibraryType(x, name));
+    const decl = t.symbol?.declarations?.[0];
+    return t.symbol?.name === name && !!decl && decl.getSourceFile().fileName === DECLARATIONS_FILE;
+  };
+  const kindOf = (e: TS.Expression): "condition" | "action" | null => {
+    const t = checker.getTypeAtLocation(e);
+    return isLibraryType(t, "Condition") ? "condition" : isLibraryType(t, "Action") ? "action" : null;
+  };
+  const short = (e: TS.Expression) => {
+    const text = e.getText(sf).replace(/\s+/g, " ");
+    const paren = text.indexOf("(");
+    return paren > 0 ? `${text.slice(0, paren)}(…)` : text.length > 32 ? `${text.slice(0, 31)}…` : text;
+  };
+  const test = (e: TS.Expression | undefined) => {
+    if (!e) return;
+    const kind = kindOf(e);
+    if (kind === "condition") error(e, `${short(e)} is a condition — a value the game tests, not a boolean. Put it in a trigger's conditions list (several conditions there must all hold), or test it in an if inside program().`);
+    else if (kind === "action") error(e, `${short(e)} is an action, not a boolean: nothing happens until a trigger runs it. Put it in a trigger's actions list, or write it as a statement inside program().`);
+  };
+  const visit = (node: TS.Node) => {
+    if (programs.has(node)) return;
+    if (ts.isIfStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) test(node.expression);
+    else if (ts.isForStatement(node)) test(node.condition);
+    else if (ts.isConditionalExpression(node)) test(node.condition);
+    else if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) test(node.operand);
+    else if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)) { test(node.left); test(node.right); }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
 }

@@ -19,7 +19,7 @@ import {
 import { aiScriptByName, type ActionDef, type ArgKind, type ConditionDef } from "../vendor/triggerDefs";
 import { ACTION_IDENTS, CANONICAL, choiceOf, choiceWords, CONDITION_IDENTS, scriptParams, TRIGGER_OPTION_NAMES } from "./api";
 import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
-import { hyperTriggers, PLAYER_SLOTS } from "./lower";
+import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
 import type { ScriptNames } from "./names";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
@@ -41,13 +41,17 @@ export interface ProgramOptions {
   variableUnits: number[];
 }
 
-/** What the transformer turns `program(() => { … })` into: where the body is, and the build-time values its hoisted expressions have. */
+/**
+ * What the transformer turns `program(() => { … })` into: where the body is, and a
+ * function that declares the body's build-time constants and returns one thunk per
+ * hoisted expression — called by the compiler when its walk reaches the expression.
+ */
 export interface ProgramDescriptor {
   __trigscript: "program";
   at: At;
   /** Position of the arrow function in its file, to find the body again. */
   pos: number;
-  hoisted: () => unknown[];
+  hoisted: () => (() => unknown)[];
 }
 
 export type Entry =
@@ -195,6 +199,14 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
     throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
   };
+  // The opposite of a condition where one trigger condition can say it: a comparison flips ("at least 3" → "at most 2"),
+  // a switch flips, always ↔ never. "Not exactly 3" is two conditions either of which may hold, which a list cannot say.
+  rt.not = (item: unknown) => {
+    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
+    const flipped = negateCondition(item.record);
+    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!…) can test it.");
+    return condition(flipped[0]);
+  };
 
   /* ── Triggers ── */
   // An empty list is allowed: a trigger nobody owns is valid data that never runs (the editor's own New Trigger makes one).
@@ -282,6 +294,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   for (let i = 0; i < PLAYER_SLOTS; i++) out.push(`P${i + 1}`);
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
-  out.push("condition", "action", "memory", "setMemory", "disabled", "trigger", "hyperTriggers", "program", "random");
+  out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "random");
   return out;
 }

@@ -3,17 +3,22 @@
  * the game. The body is real TypeScript, but its `let` variables are death counters
  * and its `if`s are trigger conditions, so it cannot simply run. Instead:
  *
- * - A *game binding* is a `let` / `var` of the body, a parameter or a function declared
- *   in it. Everything else an expression can name — the script's other files, the
- *   library, a `const` of the body whose value needs no variable — is known at build time.
+ * - A *game binding* is a `let` / `var` of the body, a parameter, a function declared in
+ *   it, or a `const` whose value needs one of those. Everything else an expression can
+ *   name — the script's other files, the library, a `const` of the body computed from
+ *   build-time values alone — is known at build time.
  * - A *hoisted expression* is a maximal subexpression that mentions no game binding (and
- *   is not `random()`, which the game answers). It is evaluated once, when the script is
- *   built, by a function the transformer emits in the arrow's place; the structured
- *   compiler then sees its value — a number, a condition, an action — where the
- *   expression stood. `&&`, `||`, `!`, assignments and `++` are never hoisted whole, so
- *   `bring(…) && !alarm` decomposes into a hoisted condition and a game switch.
+ *   is not `random()`, which the game answers). The transformer emits, in the arrow's
+ *   place, a function returning one thunk per hoisted expression; the structured
+ *   compiler calls a thunk when its walk reaches the expression, so an expression in a
+ *   branch the compiler prunes (`if (false) …`) never runs, and one that throws is
+ *   reported at its own position. The value — a number, a condition, an action — then
+ *   stands where the expression stood. `&&`, `||`, `!`, assignments and `++` are never
+ *   hoisted whole, so `bring(…) && !alarm` decomposes into a hoisted condition and a
+ *   game switch.
  * - A `const` of the body whose initialiser is hoistable is a build-time constant: the
  *   emitted function declares it as written, so hoisted expressions can refer to it.
+ *   Declarations run when the program's function does, before any thunk.
  *
  * `planProgram` works out the sets and numbers the hoisted expressions in one
  * traversal; `hoistedFunction` turns the plan into the arrow the transformer emits, and
@@ -59,6 +64,17 @@ export function libraryName(ts: typeof TS, checker: TS.TypeChecker, id: TS.Ident
   const decl = sym?.valueDeclaration ?? sym?.declarations?.[0];
   if (!decl || decl.getSourceFile().fileName !== DECLARATIONS_FILE) return null;
   return sym!.name;
+}
+
+/**
+ * The library function a call is of (`trigger(…)`, or `ts.trigger(…)` through
+ * `import * as ts from "trigscript"`), or null: the callee is an identifier or a property
+ * whose symbol the checker places in the declarations.
+ */
+export function libraryCallName(ts: typeof TS, checker: TS.TypeChecker, call: TS.CallExpression): string | null {
+  const callee = call.expression;
+  const id = ts.isIdentifier(callee) ? callee : ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name) ? callee.name : null;
+  return id ? libraryName(ts, checker, id) : null;
 }
 
 /** Climb from a binding element to the declaration that owns it. */
@@ -107,10 +123,14 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
       ts.forEachChild(n, scan);
     };
     const identifier = (n: TS.Identifier, p: TS.Node) => {
-      if ((ts.isPropertyAccessExpression(p) && p.name === n) || (ts.isPropertyAssignment(p) && p.name === n) || (ts.isMethodDeclaration(p) && p.name === n) || ts.isQualifiedName(p)) return;
+      // A property name is not a value reference — unless it is the library's, reached through a namespace import (`ts.random()`).
+      const property = ts.isPropertyAccessExpression(p) && p.name === n;
+      if ((ts.isPropertyAssignment(p) && p.name === n) || (ts.isMethodDeclaration(p) && p.name === n) || ts.isQualifiedName(p)) return;
       const lib = libraryName(ts, checker, n);
       if (lib === "random") { ok = false; return; }
+      if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p.parent) && p.parent.expression === p && property) { ok = false; return; }
       if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p) && p.expression === n) { ok = false; return; }
+      if (property) return;
       const decl = declarationOf(ts, checker, n);
       if (decl && isGameDecl(decl)) { ok = false; return; }
     };
@@ -154,9 +174,10 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
     if (ts.isPropertyAccessExpression(e)) { value(e.expression, items); return; }
     if (ts.isElementAccessExpression(e)) { value(e.expression, items); value(e.argumentExpression, items); return; }
     if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
-      const lib = ts.isCallExpression(e) && ts.isIdentifier(e.expression) ? libraryName(ts, checker, e.expression) : null;
+      const lib = ts.isCallExpression(e) ? libraryCallName(ts, checker, e) : null;
       if (lib && FORBIDDEN_INSIDE.has(lib)) error(e, `${lib}() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements.`);
-      value(e.expression, items);
+      // `random()` is the game's: its callee is never a value, however it is spelt (`ts.random()` through a namespace import).
+      if (lib !== "random") value(e.expression, items);
       for (const a of e.arguments ?? []) value(a, items);
       return;
     }
@@ -215,9 +236,8 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
       if (isConst) {
         if (!d.initializer) { error(d, "A constant needs a value."); continue; }
         if (hoistable(d.initializer)) { plan.consts.add(d); items.push({ kind: "const", decl: d }); continue; }
-        const name = ts.isIdentifier(d.name) ? d.name.text : "This constant";
-        if (isFunctionValue(d.initializer)) { error(d, `${name} is a function that uses the program's variables; declare it with function so it is inlined at each call.`); continue; }
-        error(d, `${name} depends on the program's variables: declare it with let.`);
+        if (isFunctionValue(d.initializer)) { error(d, `${ts.isIdentifier(d.name) ? d.name.text : "This constant"} is a function that uses the program's variables; declare it with function so it is inlined at each call.`); continue; }
+        // A const computed from the program's variables lives in the game like a let; the checker keeps it from being reassigned.
         plan.game.add(d);
         memo.clear();
         descend(d.initializer, items);
@@ -237,14 +257,15 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
   return plan;
 }
 
-/** The arrow the transformer emits in the program's place: build-time constants as written, hoisted expressions into `__h`. */
+/** The arrow the transformer emits in the program's place: build-time constants as written, hoisted expressions as thunks into `__h`. */
 export function hoistedFunction(ts: typeof TS, plan: ProgramPlan): TS.ArrowFunction {
   const f = ts.factory;
   const h = f.createIdentifier("__h");
+  const thunk = (expr: TS.Expression) => f.createArrowFunction(undefined, undefined, [], undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), f.createParenthesizedExpression(expr));
   const emit = (items: PlanItem[]): TS.Statement[] => items.map((item): TS.Statement => {
     switch (item.kind) {
       case "const": return f.createVariableStatement(undefined, f.createVariableDeclarationList([item.decl], ts.NodeFlags.Const));
-      case "hoist": return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), item.expr));
+      case "hoist": return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), thunk(item.expr)));
       case "block": return f.createBlock(emit(item.items), true);
     }
   });
@@ -279,8 +300,8 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
       return out;
     };
     const visit = (node: TS.Node): TS.Node => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-        const lib = libraryName(ts, checker, node.expression);
+      if (ts.isCallExpression(node)) {
+        const lib = libraryCallName(ts, checker, node);
         if (lib === "trigger" && node.arguments.length >= 3 && node.arguments.length <= 4) {
           const args = pad(node.arguments.map((a) => ts.visitNode(a, visit) as TS.Expression), 4);
           return f.updateCallExpression(node, node.expression, node.typeArguments, [...args, at(node)]);

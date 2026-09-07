@@ -107,13 +107,22 @@ Every condition and action is a function named after StarEdit's, in camel case:
 ones take short words — `">="`, `"<="`, `"=="`; `"set"`, `"add"`, `"subtract"`; `"set"`,
 `"clear"`, `"toggle"`, `"randomize"` — with StarEdit's own labels (`"At least"`) accepted
 as well. `displayText(text)` always displays; `displayText(text, false)` does not. A
-count is a number or `"All"`.
+count is a number or `"All"`. `not(condition)` is the opposite of a condition where one
+condition can say it: `not(bring(…, ">=", 1))` is "at most 0", a switch test flips,
+`always()` becomes `never()`; "not exactly 3" has no single condition and throws.
+
+A condition is a *value* here — the game tests it later — so `if (bring(…))` outside a
+program tests whether the object exists, and `bring(…) && deaths(…)` is just
+`deaths(…)`. TypeScript allows both; the compiler reports them as errors and says
+where the test belongs: in a trigger's conditions list, or in an `if` inside `program()`.
 
 Because the script runs, anything TypeScript can do at build time is fair game: a class
 per base, a table of waves, `Array.from`, template strings, `Math`, a function that
 returns the ten triggers a shop needs. Files import each other with `import { x } from
-"./name"`; nothing else can be imported. What the script records is what the map gets,
-and the order of `trigger()` calls is the order of the triggers.
+"./name"`; nothing else can be imported. The library is `import { … } from
+"trigscript"`, `import * as ts from "trigscript"` for `ts.trigger(…)`, or simply the
+globals. What the script records is what the map gets, and the order of `trigger()`
+calls is the order of the triggers.
 
 Names come from the map. `identifier()` derives an identifier from each display name
 (`Terran Marine` becomes `units.TerranMarine`), and the display name itself still works
@@ -173,21 +182,31 @@ the comparison where the game can express it (`!bring(…, ">=", 1)` becomes "at
 and a skip trigger where it cannot (`!commandTheMost(…)`). `random()` is a randomized
 switch.
 
-**Functions declared in the body are inlined** at every call site. A parameter binds to
-a value or, if the argument is a variable, to that variable by reference. `return` works;
-return *values* do not. Locals get their own storage per call site.
+**Functions declared in the body are inlined** at every call site, and arguments pass
+by value, as in TypeScript: `function bump(x: number) { x++; }` leaves the caller's
+variable alone. A parameter the function never assigns reads the argument's variable
+directly and costs nothing; one it assigns is copied at the call (a variable-to-variable
+copy, about 64 triggers). `return` works; return *values* do not. Locals get their own
+storage per call site.
 
-**Everything the body reads from outside is computed when you build.** A constant, a
-helper, a condition, an action, a `const` declared in the body: each is evaluated once,
-when the script runs, and the compiler sees its value where the expression stood. That
-is what makes `burst(4)` above work — the helper is ordinary TypeScript, it returns two
-actions, and the program emits them. It is also the one rule to keep in mind: a program
-variable can never reach a condition, an action or a helper, because those are computed
-before the game starts. `createUnit(P2, units.ZergZergling, wave, spawnAt)` is an error
-saying so; compare and assign variables in the program's own statements instead. A
-parameter of an inlined function that was bound to a value does reach them, so
-`function spawn(p: Player, n: number) { createUnit(p, units.Zergling, n, spawnAt); }`
-works with `spawn(P2, 4)`.
+**A `const` is what it can be.** `const limit = waves.length` is computed when you build
+and inlined; `const next = wave + 1` needs a variable of the program, so it is one — a
+death counter like a `let`, which TypeScript keeps you from reassigning.
+
+**Everything else the body reads from outside is computed when you build.** A constant,
+a helper, a condition, an action: each is evaluated once, when the compiler reaches it,
+and the compiler sees its value where the expression stood. The editor underlines those
+parts with dots, so the boundary is visible as you type, and hovering a variable says
+where it lives. `if (false) …` and `while (false) …` are pruned, and nothing inside them
+is evaluated. A helper that throws is reported at the expression that called it, with a
+note that it ran when the script was built. That is what makes `burst(4)` above work —
+the helper is ordinary TypeScript, it returns two actions, and the program emits them.
+It is also the one rule to keep in mind: a program variable can never reach a condition,
+an action or a helper, because those are computed before the game starts.
+`createUnit(P2, units.ZergZergling, wave, spawnAt)` is an error saying so; compare and
+assign variables in the program's own statements instead. A parameter of an inlined
+function that was bound to a value does reach them, so `function spawn(p: Player, n:
+number) { createUnit(p, units.Zergling, n, spawnAt); }` works with `spawn(P2, 4)`.
 
 Cost matters here. `n += 5`, `n = 3` and `n++` are one action each. An operation between
 two variables (`a += b`, `a = b`, `a < b`) is the classic binary decomposition and costs

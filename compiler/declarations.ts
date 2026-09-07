@@ -97,11 +97,13 @@ function functions(kw: string): string {
 ${kw}function trigger(players: Player | readonly Player[], conditions: Conditions, actions: Actions, options?: TriggerOptions): Trigger;
 /**
  * Code that runs in the game: a state machine built from death counters. Inside the arrow,
- * let variables holding numbers are death counters and booleans are switches; if / else,
- * while, do, for, break, continue and functions (inlined per call) all work; conditions go in
- * an if or while and actions stand as statements. One iteration of a loop per trigger cycle.
+ * variables holding numbers are death counters and booleans are switches (a const computed
+ * from them is one too, and cannot be reassigned); if / else, while, do, for, break, continue
+ * and functions (inlined per call, arguments passed by value) all work; conditions go in an
+ * if or while and actions stand as statements. One iteration of a loop per trigger cycle.
  * Everything the body reads from outside (constants, helpers, conditions, actions) is
- * computed when you build, so it must not depend on the variables.
+ * computed when you build — the editor underlines those parts — so it cannot depend on the
+ * variables.
  */
 ${kw}function program(body: () => void, options?: ProgramOptions): void;
 /** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
@@ -110,6 +112,12 @@ ${kw}function hyperTriggers(owner?: Player): void;
 ${kw}function random(): boolean;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
+/**
+ * The opposite of a condition, for a trigger's conditions list: a comparison flips ("at least 3" becomes
+ * "at most 2"), a switch test flips, always becomes never. Throws for "exactly n" and for conditions the
+ * game cannot negate in one condition; inside program(), if (!…) handles every condition.
+ */
+${kw}function not(condition: Condition): Condition;
 /** A condition by raw type number and record fields, for types the editor does not know. */
 ${kw}function condition(${CONDITION_FIELDS.map((f) => `${f}?: number`).join(", ")}): Condition;
 /** An action by raw type number and record fields, for types the editor does not know. */

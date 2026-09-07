@@ -7,7 +7,9 @@
  * What the language means, in the game's terms:
  *
  * - A `let` holding a number is a death counter (unsigned 32-bit, `-=` stops at 0); a
- *   `let` holding a boolean is a switch. A `const` is computed when the script is built.
+ *   `let` holding a boolean is a switch. A `const` is computed when the script is built
+ *   when it can be, and is a variable like a `let` (one the checker keeps from being
+ *   reassigned) when its value needs the program's variables.
  * - Statements run in order within one trigger cycle; a loop's back edge waits for the
  *   next cycle, so `while (true) { … }` is a game loop running once per cycle.
  * - `if (bring(…) && x >= 3 || !flag)`: conditions are trigger conditions, comparisons
@@ -15,20 +17,25 @@
  *   `&&`, `||`, `!`, and `random()`.
  * - `x = y + 3`, `x += y`, `x++`: linear arithmetic only; there is no multiplication
  *   between variables because the game has no instruction for it.
- * - Functions declared in the body are inlined at each call — parameters bind to values
- *   or, when an argument is a variable, to that variable (by reference). No recursion,
- *   no return values.
+ * - Functions declared in the body are inlined at each call. Arguments pass by value, as
+ *   in TypeScript: a parameter bound to a build-time value is that value, one bound to a
+ *   variable reads that variable directly when the function never assigns it (free) and
+ *   is a copy when it does. No recursion, no return values.
+ * - `if (false) …` and `while (false) …` are pruned: what is inside never runs, when the
+ *   script is built or in the game.
  *
  * Everything the body reads from outside — the library's conditions and actions, the
  * script's constants and helpers — arrives as *hoisted values* (`hoist.ts`): the plan
- * numbers those expressions and the run evaluated them, so where the source says
- * `bring(P1, units.Marine, base, ">=", 1)` this walker sees a condition record.
+ * numbers those expressions and the run handed back a thunk for each, called when the
+ * walk reaches the expression, so where the source says `bring(P1, units.Marine, base,
+ * ">=", 1)` this walker sees a condition record. A thunk that throws is reported at the
+ * expression, with a note that it ran when the script was built.
  */
 import type * as TS from "typescript";
 import { ActionType, SwitchAction } from "../vendor/triggers";
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { ProgramPlan } from "./hoist";
-import { declarationOf, libraryName } from "./hoist";
+import { declarationOf, libraryCallName } from "./hoist";
 import { isAction, isCondition, isTrigger } from "./runtime";
 import { Scope, type Binding } from "./scope";
 import {
@@ -41,10 +48,19 @@ export interface StructuredContext {
   checker: TS.TypeChecker;
   sf: TS.SourceFile;
   plan: ProgramPlan;
-  /** The hoisted expressions' values, by the plan's index. */
-  values: unknown[];
+  /** The hoisted expressions' thunks, by the plan's index; each is called once, when the walk reaches the expression. */
+  hoisted: (() => unknown)[];
   machine: Machine;
-  error(node: TS.Node, message: string): void;
+  error(node: TS.Node, message: string, source?: "compiler" | "script"): void;
+}
+
+/** A hoisted expression threw when it was evaluated: reported at the expression, as the script's own error. */
+class ValueError extends LowerError {
+  readonly node: TS.Node;
+  constructor(node: TS.Node, message: string) {
+    super(message);
+    this.node = node;
+  }
 }
 
 interface Ctx {
@@ -79,6 +95,7 @@ export class Structured {
   private dead = false;
   private inlineDepth = 0;
   private scratchUsed = 0;
+  private readonly evaluated = new Map<number, unknown>();
   private scope: Scope = new Scope(null);
   /** The program's outermost scope: what an inlined function body closes over. */
   private readonly topScope = this.scope;
@@ -169,7 +186,7 @@ export class Structured {
     let e = expr;
     for (;;) {
       const k = this.c.plan.index.get(e);
-      if (k !== undefined) return { value: this.c.values[k] };
+      if (k !== undefined) return { value: this.hoistedValue(k, e) };
       if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
       else break;
     }
@@ -272,9 +289,22 @@ export class Structured {
     return undefined;
   }
 
+  /** A hoisted expression's value: its thunk, called the first time the walk reaches it. */
+  private hoistedValue(k: number, at: TS.Node): unknown {
+    if (this.evaluated.has(k)) return this.evaluated.get(k);
+    let value: unknown;
+    try {
+      value = this.c.hoisted[k]();
+    } catch (err) {
+      throw new ValueError(at, `${err instanceof Error ? err.message : String(err)} — this expression is computed when the script is built, not in the game.`);
+    }
+    this.evaluated.set(k, value);
+    return value;
+  }
+
   private isLibraryCall(e: TS.Expression, name: string): e is TS.CallExpression {
     const { ts } = this;
-    return ts.isCallExpression(e) && ts.isIdentifier(e.expression) && libraryName(ts, this.c.checker, e.expression) === name;
+    return ts.isCallExpression(e) && libraryCallName(ts, this.c.checker, e) === name;
   }
 
   /** The variable an expression that could not be hoisted depends on — for the message. */
@@ -307,7 +337,8 @@ export class Structured {
         this.statement(s, ctx);
       } catch (err) {
         if (!(err instanceof LowerError)) throw err;
-        this.c.error(s, err.message);
+        if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
+        else this.c.error(s, err.message);
       }
     }
     this.scope = outer;
@@ -356,11 +387,18 @@ export class Structured {
       if (!kind) { this.c.error(d, `Variables hold numbers (death counters) or booleans (switches); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
       const v = kind === "number" ? this.m.dc(d.name.text) : this.m.switch(d.name.text);
       if (!v) { this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}.`); continue; }
+      v.at = this.sourceOf(d.name);
       if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
       else this.assignBool(v, d.initializer, d);
       // Bound after the initialiser: `let x = x` is the checker's error, not a self-reference here.
       this.scope.bind(d, { kind: "var", v });
     }
+  }
+
+  /** Where a declaration's name is, for the editor's hover. */
+  private sourceOf(node: TS.Node): { file: string; line: number; column: number } {
+    const p = this.c.sf.getLineAndCharacterOfPosition(node.getStart(this.c.sf));
+    return { file: this.c.sf.fileName, line: p.line + 1, column: p.character + 1 };
   }
 
   private kindOf(type: TS.Type): "number" | "boolean" | null {
@@ -430,9 +468,8 @@ export class Structured {
           this.c.error(e, `${e.expression.text} is not a function.`);
           return;
         }
-        const lib = libraryName(ts, this.c.checker, e.expression);
-        if (lib === "random") { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean."); return; }
       }
+      if (this.isLibraryCall(e, "random")) { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean."); return; }
       this.notConstant(e, "A call's arguments");
       return;
     }
@@ -442,6 +479,13 @@ export class Structured {
   private ifStatement(s: TS.IfStatement, ctx: Ctx) {
     const held = this.m.tempsHeld;
     const b = this.bool(s.expression);
+    if (b.kind === "const") {
+      // Known when the script is built: only the side that runs is compiled, and the other is never evaluated either.
+      this.m.releaseTo(held);
+      const live = b.value ? s.thenStatement : s.elseStatement;
+      if (live) this.statement(live, ctx);
+      return;
+    }
     const join = this.m.fresh();
     const thenState = this.m.fresh();
     const elseState = s.elseStatement ? this.m.fresh() : join;
@@ -461,7 +505,15 @@ export class Structured {
     this.dead = false;
   }
 
+  /** A loop condition known false when the script is built: the loop is not compiled at all. */
+  private neverRuns(condition: TS.Expression | undefined): boolean {
+    if (!condition) return false;
+    const h = this.evaluate(condition);
+    return !!h && !h.value && !isCondition(h.value);
+  }
+
   private whileStatement(s: TS.WhileStatement, ctx: Ctx) {
+    if (this.neverRuns(s.expression)) return;
     const header = this.m.loopHeader(this.line(s), this.label(s));
     const exit = this.m.fresh();
     let broke = false;
@@ -508,6 +560,7 @@ export class Structured {
       if (ts.isVariableDeclarationList(s.initializer)) this.declare(s.initializer);
       else this.expressionStatement(s.initializer);
     }
+    if (this.neverRuns(s.condition)) { this.scope = outer; return; }
     const header = this.m.loopHeader(this.line(s), this.label(s));
     const exit = this.m.fresh();
     let broke = false;
@@ -562,7 +615,19 @@ export class Structured {
       const h = this.evaluate(arg);
       if (h) { scope.bind(p, { kind: "value", value: h.value }); return; }
       const variable = this.varOf(arg);
-      if (variable) { scope.bind(p, { kind: "var", v: variable }); return; }
+      if (variable) {
+        // By value, as in TypeScript. A parameter the function never assigns can read the caller's variable directly; one it assigns gets a copy.
+        if (!this.assigns(decl.body!, p)) { scope.bind(p, { kind: "var", v: variable }); return; }
+        const copy = variable.kind === "dc" ? this.m.dc(p.name.text) : this.m.switch(p.name.text);
+        if (!copy) { this.c.error(p, `No ${variable.kind === "dc" ? "death counter" : "switch"} is free for ${p.name.text}.`); ok = false; return; }
+        copy.at = this.sourceOf(p.name);
+        const line = this.line(call);
+        const label = `L${line}: ${p.name.text} = ${arg.getText(this.c.sf)}`;
+        if (copy.kind === "dc") this.m.assign(copy, { c: 0, terms: [{ v: variable as DcVar, sign: 1 }] }, line, label);
+        else this.storeBool(copy, cond(switchCondition(variable as SwVar, true)), line, label);
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
       this.notConstant(arg, "An argument");
       ok = false;
     });
@@ -580,6 +645,24 @@ export class Structured {
       this.m.enter(end);
       this.dead = false;
     }
+  }
+
+  /** Whether a function body assigns to (or increments) one of its parameters anywhere. */
+  private assigns(body: TS.Node, param: TS.ParameterDeclaration): boolean {
+    const { ts } = this;
+    let found = false;
+    const target = (e: TS.Expression) => {
+      const u = this.unwrap(e);
+      return ts.isIdentifier(u) && declarationOf(ts, this.c.checker, u) === param;
+    };
+    const walk = (n: TS.Node) => {
+      if (found) return;
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && target(n.left)) { found = true; return; }
+      if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) && target(n.operand)) { found = true; return; }
+      ts.forEachChild(n, walk);
+    };
+    walk(body);
+    return found;
   }
 
   /* ── Numbers ── */
@@ -654,11 +737,16 @@ export class Structured {
     const held = this.m.tempsHeld;
     const b = this.bool(e);
     if (b.kind === "const") { this.m.action(setSwitch(v, b.value ? SwitchAction.Set : SwitchAction.Clear), line, label); this.m.releaseTo(held); return; }
+    this.storeBool(v, b, line, label);
+    this.m.releaseTo(held);
+  }
+
+  /** `v = b` for a condition tree: branch, set on one side, clear on the other. */
+  private storeBool(v: SwVar, b: Bool, line: number, label: string) {
     const on = this.m.fresh();
     const off = this.m.fresh();
     const join = this.m.fresh();
     this.m.branch(b, on, off, line, label);
-    this.m.releaseTo(held);
     this.m.enter(on);
     this.m.action(setSwitch(v, SwitchAction.Set), line, label);
     this.m.jump(join, line, label);
@@ -666,6 +754,7 @@ export class Structured {
     this.m.action(setSwitch(v, SwitchAction.Clear), line, label);
     this.m.jump(join, line, label);
     this.m.enter(join);
+    this.dead = false;
   }
 
   /** A hoisted value as a condition tree. */

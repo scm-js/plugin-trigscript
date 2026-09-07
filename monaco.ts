@@ -16,7 +16,7 @@
  */
 import type * as Monaco from "monaco-editor";
 import { DECLARATIONS_FILE } from "./compiler/declarations";
-import type { ScriptDiagnostic, ScriptFiles } from "./compiler/compiler";
+import type { ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
 import { normalizePath } from "./compiler/compiler";
 
 export const MONACO_VERSION = "0.56.0";
@@ -131,6 +131,49 @@ export function setDeclarations(monaco: MonacoApi, content: string) {
 }
 
 export const fileUri = (monaco: MonacoApi, path: string) => monaco.Uri.parse(`file:///${normalizePath(path)}`);
+/** The script path of a `file:///` model. */
+const pathOfUri = (uri: Monaco.Uri) => normalizePath(uri.path.replace(/^\/+/, ""));
+
+/** The class the build-time parts of a program are drawn with; the dialog's stylesheet gives it its underline. */
+export const BUILD_TIME_CLASS = "trigscript-build-time";
+export const BUILD_TIME_NOTE = "Computed when the script is built, not in the game.";
+
+let hoverVariables: () => VariableInfo[] = () => [];
+let hoverRegistered = false;
+
+/**
+ * Hovering a program's variable says where it lives — "a death counter, P2 · Cantina
+ * (Unused)" — under TypeScript's own `let n: number`. The identifier is resolved to its
+ * declaration by Monaco's TypeScript worker, and the declaration matched against the
+ * last compile's variables. Registered once per Monaco; `variables` is the open dialog's.
+ */
+export function setHoverVariables(monaco: MonacoApi, variables: () => VariableInfo[]) {
+  hoverVariables = variables;
+  if (hoverRegistered) return;
+  hoverRegistered = true;
+  monaco.languages.registerHoverProvider("typescript", {
+    async provideHover(model, position) {
+      if (model.uri.scheme !== "file") return null;
+      const word = model.getWordAtPosition(position);
+      if (!word) return null;
+      const client = await (await tsLanguage(monaco).getTypeScriptWorker())(model.uri);
+      const defs = (await client.getDefinitionAtPosition(model.uri.toString(), model.getOffsetAt(position))) as { fileName: string; textSpan: { start: number } }[] | undefined;
+      for (const d of defs ?? []) {
+        const m = monaco.editor.getModel(monaco.Uri.parse(d.fileName));
+        if (!m) continue;
+        const at = m.getPositionAt(d.textSpan.start);
+        const path = pathOfUri(m.uri);
+        const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
+        if (!v) continue;
+        return {
+          range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
+          contents: [{ value: `**${v.name}** is a variable of the program: ${v.kind === "number" ? "a death counter" : "a switch"}, ${v.storage}.` }],
+        };
+      }
+      return null;
+    },
+  });
+}
 
 /** The compiler's own diagnostics, drawn under the TypeScript ones, per file. */
 export function setCompilerMarkers(monaco: MonacoApi, files: ScriptFiles, diagnostics: ScriptDiagnostic[]) {
@@ -163,6 +206,8 @@ export interface ScriptEditor {
   rename(from: string, to: string): void;
   /** Replace a file's text (an import), keeping the model. */
   set(path: string, text: string): void;
+  /** Underline the parts of the programs computed when the script is built (`CompileResult.buildTime`). */
+  decorate(ranges: SourceRange[]): void;
   dispose(): void;
 }
 
@@ -188,6 +233,8 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
   disposeModels(monaco);
   const models = new Map<string, Monaco.editor.ITextModel>();
   const subs = new Map<string, Monaco.IDisposable>();
+  /** Per file, the ids of the build-time decorations, for the next `deltaDecorations`. */
+  const decorations = new Map<string, string[]>();
   /** Per file, the view state (cursor, scroll) to restore when it is shown again. */
   const views = new Map<string, Monaco.editor.ICodeEditorViewState | null>();
   const make = (path: string, text: string) => {
@@ -248,6 +295,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
       subs.delete(p);
       models.delete(p);
       views.delete(p);
+      decorations.delete(p);
       model.dispose();
     },
     rename(from, to) {
@@ -262,6 +310,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
       subs.delete(a);
       models.delete(a);
       views.delete(a);
+      decorations.delete(a);
       if (wasCurrent) editor.setModel(null);
       model.dispose();
       const next = make(b, text);
@@ -271,6 +320,16 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     set(path, text) {
       const model = models.get(normalizePath(path));
       if (model && model.getValue() !== text) model.setValue(text);
+    },
+    decorate(ranges) {
+      for (const [p, model] of models) {
+        const next = ranges.filter((r) => normalizePath(r.file) === p).map((r) => ({
+          range: new monaco.Range(r.line, r.column, r.endLine, r.endColumn),
+          // Never grows with typing at its edges: the next check redraws it where the compiler says.
+          options: { inlineClassName: BUILD_TIME_CLASS, hoverMessage: { value: BUILD_TIME_NOTE }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+        }));
+        decorations.set(p, model.deltaDecorations(decorations.get(p) ?? [], next));
+      }
     },
     dispose() {
       for (const s of subs.values()) s.dispose();
