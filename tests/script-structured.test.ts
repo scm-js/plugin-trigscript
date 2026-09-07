@@ -46,7 +46,7 @@ function run(r: CompileResult, cycles: number, extra: ConstructorParameters<type
 /** The value of a program variable after a simulation. */
 function value(sim: Simulation, r: CompileResult, name: string): number {
   const v = r.variables.find((x) => x.name === name)!;
-  return v.kind === "number" ? sim.death(v.player!, v.unit!) : sim.switches[v.switch!];
+  return v.kind === "number" ? sim.death(v.player!, v.unit!) : v.flag !== undefined ? sim.death(PlayerGroup.CurrentPlayer, v.flag) : sim.switches[v.switch!];
 }
 
 const texts = (sim: Simulation) => sim.events.filter((e) => e.action.type === ActionType.DisplayText).map((e) => `${e.cycle}:${e.text}`);
@@ -584,7 +584,7 @@ describe("structured: diagnostics", () => {
   it("what belongs outside a program, and options the run rejects", () => {
     expect(messages(`program(() => {\n  let x = 1;\n  if (x) { trigger(P1, [], []); }\n});`)).toEqual(["3:trigger() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements."]);
     expect(messages(`program(() => {\n  program(() => {});\n});`)).toEqual(["2:program() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements."]);
-    expect(messages(`program(() => {}, { owner: AllPlayers });`)).toEqual(["1:program: the owner is a single player, P1 … P12: the program is one thread running as that player."]);
+    expect(messages(`program(() => {}, { owner: players.Foes });`)).toEqual(["1:program: the owner is a player (P1 … P12), AllPlayers, a force (players.Force1), or a list of players — the program runs once for each of them, with CurrentPlayer as that player."]);
     expect(messages(`const body = () => {};\nprogram(body);`)).toEqual(["2:program() takes an arrow function written directly in the call: program(() => { … })."]);
     expect(messages(`program(() => {\n  const f = () => { let n = 0; n++; };\n  let m = 0;\n  const g = () => m;\n  [1].forEach(() => m++);\n});`)).toEqual(["4:g is a function that uses the program's variables; declare it with function so it is inlined at each call.", "5:A function written inside program() cannot use the program's variables; declare it with function so it is inlined, or move it outside."]);
     expect(messages(`program(() => {\n  displayText("x");\n  random();\n});`)).toEqual(["3:random() does nothing on its own; test it in an if, or assign it to a boolean."]);
@@ -751,5 +751,96 @@ program(() => {
     expect(at(5)).toMatchObject({ triggers: 64, note: expect.stringContaining("u8 or u16") });
     expect(at(6)?.note).toBeUndefined();
     expect(r.costs.reduce((n, c) => n + c.triggers, 0)).toBe(r.triggers.length);
+  });
+});
+
+describe("structured: time, edges, lists and players", () => {
+  it("sleep pauses the program for that many cycles; seconds depend on hyper triggers", () => {
+    const r = okProgram('displayText("a"); sleep(cycles(3)); displayText("b");');
+    expect(texts(run(r, 6))).toEqual(["0:a", "3:b"]);
+    expect(texts(run(okProgram('sleep(seconds(2)); displayText("x");'), 4))).toEqual(["1:x"]);
+    expect(texts(run(okProgram('sleep(seconds(10)); displayText("x");'), 8))).toEqual(["5:x"]);
+    const hyper = ok(`hyperTriggers(P8); ${program('sleep(seconds(1)); displayText("x");')}`);
+    expect(texts(run(hyper, 20, { player: 0 }))).toEqual(["12:x"]);
+    const loop = okProgram('while (true) { displayText("w"); sleep(cycles(2)); }');
+    expect(texts(run(loop, 7))).toEqual(["0:w", "3:w", "6:w"]);
+  });
+
+  it("a bare duration, sleep outside a program and a bad argument are all told where they belong", () => {
+    const messages = (src: string) => compile(src).diagnostics.map((d) => d.message);
+    expect(messages(program("seconds(2);"))).toEqual(["A duration does nothing on its own; sleep(seconds(2)) pauses the program."]);
+    expect(messages("sleep(seconds(2));")).toEqual(["sleep() pauses a program: use it inside program(), as a statement — sleep(seconds(2))."]);
+    expect(messages(program("sleep(5 as any);"))).toEqual(["sleep() takes a duration from seconds(), minutes() or cycles(), got number 5."]);
+  });
+
+  it("rose() is true on the cycle its condition becomes true, once() only the first time", () => {
+    const r = okProgram(`
+      let n = 0;
+      let up = true;
+      while (true) {
+        if (up) n++; else n--;
+        if (n == 3) up = false;
+        if (n == 0) up = true;
+        if (rose(n >= 2)) displayText("rose");
+        if (once(n >= 2)) displayText("once");
+      }
+    `);
+    expect(texts(run(r, 8))).toEqual(["1:rose", "1:once", "7:rose"]);
+  });
+
+  it("for…of over a list known when the script is built is unrolled, with break and continue", () => {
+    const r = ok(`
+      const waves = [2, 5, 9];
+      program(() => {
+        let total = 0;
+        for (const w of waves) { total += w; displayText(\`wave \${w}\`); }
+        for (const w of waves) { if (w == 5) continue; if (w == 9) break; displayText(\`again \${w}\`); }
+        for (const name of ["a", "b"]) displayText(name);
+      });
+    `);
+    const sim = run(r, 1);
+    expect(value(sim, r, "total")).toBe(16);
+    expect(texts(sim)).toEqual(["0:wave 2", "0:wave 5", "0:wave 9", "0:again 2", "0:a", "0:b"]);
+    expect(compile(program("let n = 0; for (const x of [n]) displayText(\"x\");")).diagnostics[0].message).toMatch(/^What a for…of loop runs over must be known when the script is built, but n is a variable/);
+  });
+
+  it("a program owned by All Players runs once per player, each with their own variables", () => {
+    const r = ok(program('let kills = 0; let alive = true; kills += 2; alive = !alive; if (kills >= 2 && !alive) displayText("k"); let total = shared(0); total += 1; if (total >= 1) displayText("t");', "{ owner: AllPlayers }"));
+    expect(r.programs[0]).toMatchObject({ owner: 0, owners: [PlayerGroup.AllPlayers], perPlayer: true });
+    expect(r.triggers.every((t) => t.players[PlayerGroup.AllPlayers] === 1 && !t.players[0])).toBe(true);
+    const by = (name: string) => r.variables.find((v) => v.name === name)!;
+    expect(by("(program counter)").storage).toMatch(/^each player · /);
+    expect(by("kills")).toMatchObject({ player: PlayerGroup.CurrentPlayer, storage: expect.stringMatching(/^each player/) });
+    expect(by("alive")).toMatchObject({ kind: "boolean", flag: expect.any(Number) });
+    expect(by("total")).toMatchObject({ kind: "number", player: 0 });
+    for (const player of [0, 3]) {
+      const sim = run(r, 1, { player });
+      expect(texts(sim)).toEqual(["0:k", "0:t"]);
+      expect(value(sim, r, "kills")).toBe(2);
+      expect(value(sim, r, "alive")).toBe(0);
+    }
+    // Rows: twelve cells each, so three rows take three units of the pool; the shared cell is one slot of the next.
+    expect(new Set([by("(program counter)").unit, by("kills").unit, by("alive").flag]).size).toBe(3);
+  });
+
+  it("a force or a list of players is per player too; one player is not", () => {
+    const force = ok(program("let n = 0; n++;", "{ owner: players.Force2 }"));
+    expect(force.programs[0]).toMatchObject({ owners: [PlayerGroup.Force2], perPlayer: true });
+    expect(force.triggers[0].players[PlayerGroup.Force2]).toBe(1);
+    expect(value(run(force, 1, { player: 5 }), force, "n")).toBe(1);
+    const list = ok(program("let n = 0; n++;", "{ owner: [P1, P3] }"));
+    expect(list.programs[0]).toMatchObject({ owner: 0, owners: [0, 2], perPlayer: true });
+    expect(list.triggers[0].players.slice(0, 4)).toEqual([1, 0, 1, 0]);
+    const one = ok(program("let n = 0; n++;", "{ owner: P4 }"));
+    expect(one.programs[0]).toMatchObject({ owner: 3, owners: [3], perPlayer: false });
+    expect(one.variables.find((v) => v.name === "n")).toMatchObject({ player: 1, storage: "P2 · Cantina (Unused)" });
+  });
+
+  it("per-player booleans: random(), toggling and rose() go through flags", () => {
+    const r = ok(program('let f = false; f = random(); f = !f; if (rose(f)) displayText("r"); let g = shared(false); g = true; if (g) displayText("g");', "{ owner: AllPlayers }"));
+    const sim = new Simulation(r.triggers, { strings: r.strings, random: () => 0.9, player: 2 }).run(1);
+    expect(texts(sim)).toEqual(["0:g"]);
+    expect(value(sim, r, "f")).toBe(0);
+    expect(r.variables.find((v) => v.name === "g")).toMatchObject({ kind: "boolean", switch: expect.any(Number) });
   });
 });

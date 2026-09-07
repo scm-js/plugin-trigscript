@@ -19,7 +19,11 @@ import { MODULE_NAME } from "./api";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
 import { libraryCallName, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { runModules, type LinkedFile } from "./link";
-import { Allocator, LowerError, Machine, storageLabel } from "./lower";
+import { Allocator, LowerError, Machine, PLAYER_SLOTS, storageLabel } from "./lower";
+
+/** Trigger cycles a second at Fastest: with hyper triggers the loop runs every two ticks of twenty-four; without, once in two seconds. */
+export const HYPER_CYCLES_PER_SECOND = 12;
+export const PLAIN_CYCLES_PER_SECOND = 0.5;
 import type { ScriptNames } from "./names";
 import { storageOf } from "./reserve";
 import { Collector, createRuntime, type ScriptString } from "./runtime";
@@ -70,8 +74,10 @@ export interface VariableInfo {
   /** Death counter (numbers). */
   player?: number;
   unit?: number;
-  /** Switch index (booleans). */
+  /** Switch index (booleans held in a switch). */
   switch?: number;
+  /** A per-player boolean: a death-counter row of this unit (0 false, 1 true), one cell per player. */
+  flag?: number;
   /** Where the variable is declared; unset for the machine's own counters and temporaries. */
   at?: { file: string; line: number; column: number };
   /** A `u8` (8) or `u16` (16) variable; unset for the full 32 bits. */
@@ -88,8 +94,12 @@ export interface LineCost {
 }
 
 export interface ProgramInfo {
-  /** The player the program runs as (0-based). */
+  /** A player slot the program runs as (0-based; the first, when it runs for several) — what a simulation runs it as. */
   owner: number;
+  /** The player groups its triggers run for: slots, or All Players / a force. */
+  owners: number[];
+  /** Runs for several players at once, every variable per player. */
+  perPlayer: boolean;
   /** Index into `triggers` of the program's first trigger. */
   start: number;
   count: number;
@@ -281,21 +291,24 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     let machine: Machine;
     try {
       const comment = entry.options.comments ? (text: string) => collector.localString({ text }) : undefined;
-      machine = new Machine({ owner: entry.options.owner, allocator, units: entry.options.variableUnits, comment });
+      machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator, units: entry.options.variableUnits, comment });
     } catch (err) {
       diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: (err as LowerError).message, source: "compiler" });
       continue;
     }
     const start = triggers.length;
-    new Structured({ ts, checker, sf, plan, hoisted, machine, error: (node, message, source) => nodeError(node, message, source) }).run();
+    new Structured({ ts, checker, sf, plan, hoisted, machine, cyclesPerSecond: collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND, error: (node, message, source) => nodeError(node, message, source) }).run();
     triggers.push(...machine.triggers);
     for (const line of machine.lines) sources.push({ file, line });
     for (const [line, note] of machine.notes) notes.set(`${file}\0${line}`, note);
-    programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
+    const owners = entry.options.owners;
+    programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
   }
   const variables: VariableInfo[] = allocator.variables.map((v) => v.kind === "dc"
     ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...(v.at ? { at: v.at } : {}), ...(v.bits ? { bits: v.bits } : {}) }
-    : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...(v.at ? { at: v.at } : {}) });
+    : v.kind === "switch"
+      ? { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...(v.at ? { at: v.at } : {}) }
+      : { name: v.name, kind: "boolean", storage: storageLabel(v), flag: v.unit, ...(v.at ? { at: v.at } : {}) });
   const costs = new Map<string, LineCost>();
   for (const s of sources) {
     if (!s) continue;

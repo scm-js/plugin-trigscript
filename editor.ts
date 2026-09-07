@@ -16,6 +16,7 @@ import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, t
 import { printScript } from "./compiler/print";
 import { Simulation, type SimulationEvent } from "./compiler/simulate";
 import { actionDef } from "./vendor/triggerDefs";
+import { PlayerGroup } from "./vendor/triggers";
 import { BUILD_TIME_CLASS, createScriptEditor, loadMonaco, refreshCostHints, releaseScriptEditor, setCompilerMarkers, setCostHints, setDeclarations, setHoverVariables, type MonacoApi, type ScriptEditor } from "./monaco";
 import type { LineCost } from "./compiler/compiler";
 import { FILE_NAME } from "./script";
@@ -87,6 +88,11 @@ const STYLE = `
 .tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
+
+/** "P1", "all players", "Force 2", "P1, P2" — who a program runs for. */
+function ownerLabel(p: { owners: number[] }): string {
+  return p.owners.map((o) => (o === PlayerGroup.AllPlayers ? "all players" : o >= PlayerGroup.Force1 && o <= PlayerGroup.Force4 ? `Force ${o - PlayerGroup.Force1 + 1}` : `P${o + 1}`)).join(", ");
+}
 
 /** One line of the simulation log: "Display Text — hello". */
 function describeEvent(e: SimulationEvent): string {
@@ -211,7 +217,7 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
     programButton.hidden = programs.length === 0;
     if (programs.length) {
       const count = programs.reduce((n, p) => n + p.count, 0);
-      const owners = [...new Set(programs.map((p) => `P${p.owner + 1}`))].join(", ");
+      const owners = [...new Set(programs.map(ownerLabel))].join(", ");
       programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`}: ${count} trigger${count === 1 ? "" : "s"} as ${owners} · ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"}`;
     }
     variables.hidden = !(showVariables && result && result.variables.length > 0);
@@ -248,9 +254,10 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
         ));
       }
       for (const v of r.variables.filter((x) => !x.name.startsWith("("))) {
+        const shown = v.kind === "number" ? String(sim.death(v.player!, v.unit!)) : (v.flag !== undefined ? sim.death(PlayerGroup.CurrentPlayer, v.flag) !== 0 : sim.switches[v.switch!] === 1) ? "true" : "false";
         problems.append(el("li", undefined,
           el("span", { className: "where" }, "after"),
-          el("span", { className: "msg" }, `${v.name} = ${v.kind === "number" ? sim.death(v.player!, v.unit!) : sim.switches[v.switch!] ? "true" : "false"}`),
+          el("span", { className: "msg" }, `${v.name} = ${shown}`),
           el("span", { className: "src" }, v.storage),
         ));
       }
@@ -277,7 +284,7 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
   const costHints = (): LineCost[] => {
     if (!result) return [];
     const out = result.costs.filter((c) => c.triggers >= 2);
-    for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as P${p.owner + 1}.` });
+    for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as ${ownerLabel(p)}.` });
     return out;
   };
 

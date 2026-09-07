@@ -36,11 +36,11 @@ import { ActionType, SwitchAction } from "../vendor/triggers";
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { ProgramPlan } from "./hoist";
 import { declarationOf, libraryCallName } from "./hoist";
-import { isAction, isCondition, isTrigger } from "./runtime";
+import { isAction, isCondition, isDuration, isTrigger } from "./runtime";
 import { Scope, type Binding } from "./scope";
 import {
-  and, compareConst, cond, FALSE, flipOp, LowerError, Machine, not, or, setSwitch, switchCondition, TRUE,
-  type Bool, type CompareOp, type DcVar, type Linear, type SwVar,
+  and, boolCondition, compareConst, cond, FALSE, flipOp, LowerError, Machine, not, or, setBool, setSwitch, switchCondition, TRUE,
+  type Bool, type BoolVar, type CompareOp, type DcVar, type Linear,
 } from "./lower";
 
 export interface StructuredContext {
@@ -51,6 +51,8 @@ export interface StructuredContext {
   /** The hoisted expressions' thunks, by the plan's index; each is called once, when the walk reaches the expression. */
   hoisted: (() => unknown)[];
   machine: Machine;
+  /** How many trigger cycles a second is, for `sleep(seconds(n))`: twelve with hyper triggers, a half without. */
+  cyclesPerSecond: number;
   error(node: TS.Node, message: string, source?: "compiler" | "script"): void;
 }
 
@@ -80,6 +82,7 @@ function describe(v: unknown): string {
   if (isCondition(v)) return "a condition";
   if (isAction(v)) return "an action";
   if (isTrigger(v)) return "a trigger";
+  if (isDuration(v)) return "a duration";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "string") return "text";
   if (typeof v === "function") return "a function";
@@ -169,7 +172,7 @@ export class Structured {
     return decl ? this.scope.lookup(decl) : undefined;
   }
 
-  private varOf(expr: TS.Expression): DcVar | SwVar | undefined {
+  private varOf(expr: TS.Expression): DcVar | BoolVar | undefined {
     const b = this.binding(expr);
     return b?.kind === "var" ? b.v : undefined;
   }
@@ -371,7 +374,8 @@ export class Structured {
       return;
     }
     if (ts.isSwitchStatement(s)) { this.c.error(s, "switch is not supported in a program; use if / else if."); return; }
-    if (ts.isForOfStatement(s) || ts.isForInStatement(s)) { this.c.error(s, "for…of / for…in are not supported in a program; count with a for (let i = 0; …) loop."); return; }
+    if (ts.isForOfStatement(s)) { this.forOfStatement(s, ctx); return; }
+    if (ts.isForInStatement(s)) { this.c.error(s, "for…in is not supported in a program; for…of over a list known when the script is built is unrolled."); return; }
     if (ts.isThrowStatement(s) || ts.isTryStatement(s)) { this.c.error(s, "The game has no exceptions."); return; }
     this.c.error(s, "This statement is not supported in a program.");
   }
@@ -385,12 +389,17 @@ export class Structured {
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) { this.c.error(d, `Variables hold numbers (death counters) or booleans (switches); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
-      const v = kind === "number" ? this.m.dc(d.name.text) : this.m.switch(d.name.text);
-      if (!v) { this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}.`); continue; }
+      // `let total = shared(0)`: one cell for every player of a per-player program, initialised with the argument.
+      const init = this.unwrap(d.initializer);
+      const shared = this.isLibraryCall(init, "shared");
+      if (shared && init.arguments.length !== 1) { this.c.error(init, "shared() takes the initial value: shared(0) or shared(false)."); continue; }
+      const initializer = shared ? init.arguments[0] : d.initializer;
+      const v = kind === "number" ? (shared ? this.m.shared(d.name.text) : this.m.dc(d.name.text)) : shared ? this.m.switch(d.name.text) : this.m.bool(d.name.text);
+      if (!v) { this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}${this.m.perPlayer ? " (a per-player variable needs a unit with all twelve free)" : ""}.`); continue; }
       v.at = this.sourceOf(d.name);
       if (v.kind === "dc") { const bits = this.bitsOf(type); if (bits) v.bits = bits; }
-      if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
-      else this.assignBool(v, d.initializer, d);
+      if (v.kind === "dc") this.assignNumber(v, initializer, d);
+      else this.assignBool(v, initializer, d);
       // Bound after the initialiser: `let x = x` is the checker's error, not a self-reference here.
       this.scope.bind(d, { kind: "var", v });
     }
@@ -427,6 +436,7 @@ export class Structured {
   private hoistedStatement(expr: TS.Expression, h: Hoisted) {
     const v = h.value;
     if (v === undefined || v === null) return;
+    if (isDuration(v)) { this.c.error(expr, "A duration does nothing on its own; sleep(seconds(2)) pauses the program."); return; }
     if (isAction(v)) { this.emitAction(v.record, expr); return; }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) { for (const a of v) this.emitAction(a.record, expr); return; }
     if (Array.isArray(v) && v.length === 0) return;
@@ -439,6 +449,17 @@ export class Structured {
     this.m.action({ ...a }, this.line(at), this.label(at));
   }
 
+  /** `sleep(seconds(2))`: the duration is a build-time value; the cycles it makes depend on the map's hyper triggers. */
+  private sleepStatement(call: TS.CallExpression) {
+    if (call.arguments.length !== 1) { this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(cycles(5))."); return; }
+    const h = this.evaluate(call.arguments[0]);
+    if (!h) { this.notConstant(call.arguments[0], "A duration"); return; }
+    if (!isDuration(h.value)) { this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or cycles(), got ${describe(h.value)}.`); return; }
+    const d = h.value;
+    const n = d.cycles ?? Math.max(1, Math.round((d.ms ?? 0) / 1000 * this.c.cyclesPerSecond));
+    this.m.sleep(n, this.line(call), this.label(call));
+  }
+
   private expressionStatement(expr: TS.Expression) {
     const { ts } = this;
     const e = this.unwrap(expr);
@@ -449,7 +470,7 @@ export class Structured {
       const target = this.varOf(e.left);
       if (op === ts.SyntaxKind.EqualsToken || op === ts.SyntaxKind.PlusEqualsToken || op === ts.SyntaxKind.MinusEqualsToken) {
         if (!target) { this.c.error(e.left, "Only the program's let variables can be assigned."); return; }
-        if (target.kind === "switch") {
+        if (target.kind !== "dc") {
           if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "Booleans take = only."); return; }
           this.assignBool(target, e.right, e);
           return;
@@ -484,6 +505,9 @@ export class Structured {
         }
       }
       if (this.isLibraryCall(e, "random")) { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean."); return; }
+      if (this.isLibraryCall(e, "sleep")) { this.sleepStatement(e); return; }
+      if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) { this.c.error(e, "rose() / once() are conditions: test them in an if."); return; }
+      if (this.isLibraryCall(e, "shared")) { this.c.error(e, "shared() goes on a declaration: let total = shared(0)."); return; }
       this.notConstant(e, "A call's arguments");
       return;
     }
@@ -606,6 +630,47 @@ export class Structured {
     this.dead = false;
   }
 
+  /**
+   * `for (const w of waves)` over a list known when the script is built: unrolled, the body
+   * compiled once per element with `w` bound to that element's value. `break` leaves the
+   * whole loop, `continue` goes on with the next element.
+   */
+  private forOfStatement(s: TS.ForOfStatement, ctx: Ctx) {
+    const { ts } = this;
+    if (s.awaitModifier) { this.c.error(s, "for await is not supported in a program."); return; }
+    const decl = ts.isVariableDeclarationList(s.initializer) && s.initializer.declarations.length === 1 ? s.initializer.declarations[0] : undefined;
+    if (!decl || !ts.isIdentifier(decl.name)) { this.c.error(s.initializer, "for…of takes one variable: for (const w of waves) { … }."); return; }
+    const h = this.evaluate(s.expression);
+    if (!h) { this.notConstant(s.expression, "What a for…of loop runs over"); return; }
+    let items: unknown[];
+    try {
+      items = typeof h.value === "string" || (typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value) ? Array.from(h.value as Iterable<unknown>) : [];
+      if (!(typeof h.value === "string") && !(typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value)) { this.c.error(s.expression, `for…of runs over a list, got ${describe(h.value)}.`); return; }
+    } catch (err) {
+      this.c.error(s.expression, `for…of: ${(err as Error).message}`);
+      return;
+    }
+    const exit = this.m.fresh();
+    let broke = false;
+    for (const item of items) {
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "value", value: item });
+      let next: number | null = null;
+      this.block([s.statement], { fn: ctx.fn, breakTo: () => { broke = true; return exit; }, continueTo: () => (next ??= this.m.fresh()) }, scope);
+      if (next !== null) {
+        if (!this.dead) this.m.jump(next, this.line(s), `L${this.line(s)}: continue`);
+        this.m.enter(next);
+        this.dead = false;
+      }
+      if (this.dead) break; // Nothing after a break / return in the body's straight line is reached; nor are the elements after it.
+    }
+    if (broke) {
+      if (!this.dead) this.m.jump(exit, this.line(s), `L${this.line(s)}: end of for…of`);
+      this.m.enter(exit);
+      this.dead = false;
+    }
+  }
+
   /* ── Functions ── */
 
   private inline(call: TS.CallExpression, decl: TS.FunctionDeclaration) {
@@ -632,14 +697,14 @@ export class Structured {
       if (variable) {
         // By value, as in TypeScript. A parameter the function never assigns can read the caller's variable directly; one it assigns gets a copy.
         if (!this.assigns(decl.body!, p)) { scope.bind(p, { kind: "var", v: variable }); return; }
-        const copy = variable.kind === "dc" ? this.m.dc(p.name.text) : this.m.switch(p.name.text);
+        const copy = variable.kind === "dc" ? this.m.dc(p.name.text) : this.m.bool(p.name.text);
         if (!copy) { this.c.error(p, `No ${variable.kind === "dc" ? "death counter" : "switch"} is free for ${p.name.text}.`); ok = false; return; }
         copy.at = this.sourceOf(p.name);
         if (copy.kind === "dc" && variable.kind === "dc" && variable.bits) copy.bits = variable.bits;
         const line = this.line(call);
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.c.sf)}`;
         if (copy.kind === "dc") this.m.assign(copy, { c: 0, terms: [{ v: variable as DcVar, sign: 1 }] }, line, label);
-        else this.storeBool(copy, cond(switchCondition(variable as SwVar, true)), line, label);
+        else this.storeBool(copy, cond(boolCondition(variable as BoolVar, true)), line, label);
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
@@ -707,7 +772,7 @@ export class Structured {
     if (ts.isIdentifier(e)) {
       const b = this.binding(e);
       if (b?.kind === "var") {
-        if (b.v.kind === "switch") { this.c.error(e, `${b.v.name} is a boolean.`); return null; }
+        if (b.v.kind !== "dc") { this.c.error(e, `${b.v.name} is a boolean.`); return null; }
         return { c: 0, terms: [{ v: b.v, sign: 1 }] };
       }
       this.c.error(e, `${e.text} is not a variable of the program.`);
@@ -740,36 +805,69 @@ export class Structured {
 
   /* ── Booleans ── */
 
-  private assignBool(v: SwVar, expr: TS.Expression, at: TS.Node) {
+  private assignBool(v: BoolVar, expr: TS.Expression, at: TS.Node) {
     const { ts } = this;
     const e = this.unwrap(expr);
     const line = this.line(at);
     const label = this.label(at);
     const h = this.evaluate(expr);
-    if (h && typeof h.value === "boolean") { this.m.action(setSwitch(v, h.value ? SwitchAction.Set : SwitchAction.Clear), line, label); return; }
-    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v) { this.m.action(setSwitch(v, SwitchAction.Toggle), line, label); return; }
-    if (this.isLibraryCall(e, "random")) { this.m.action(setSwitch(v, SwitchAction.Randomize), line, label); return; }
+    if (h && typeof h.value === "boolean") { this.m.action(setBool(v, h.value), line, label); return; }
+    // A switch toggles and randomizes in one action; a flag (a per-player boolean) goes through a branch.
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v && v.kind === "switch") { this.m.action(setSwitch(v, SwitchAction.Toggle), line, label); return; }
+    if (this.isLibraryCall(e, "random") && v.kind === "switch") { this.m.action(setSwitch(v, SwitchAction.Randomize), line, label); return; }
     const held = this.m.tempsHeld;
     const b = this.bool(e);
-    if (b.kind === "const") { this.m.action(setSwitch(v, b.value ? SwitchAction.Set : SwitchAction.Clear), line, label); this.m.releaseTo(held); return; }
+    if (b.kind === "const") { this.m.action(setBool(v, b.value), line, label); this.m.releaseTo(held); return; }
     this.storeBool(v, b, line, label);
     this.m.releaseTo(held);
   }
 
   /** `v = b` for a condition tree: branch, set on one side, clear on the other. */
-  private storeBool(v: SwVar, b: Bool, line: number, label: string) {
+  private storeBool(v: BoolVar, b: Bool, line: number, label: string) {
     const on = this.m.fresh();
     const off = this.m.fresh();
     const join = this.m.fresh();
     this.m.branch(b, on, off, line, label);
     this.m.enter(on);
-    this.m.action(setSwitch(v, SwitchAction.Set), line, label);
+    this.m.action(setBool(v, true), line, label);
     this.m.jump(join, line, label);
     this.m.enter(off);
-    this.m.action(setSwitch(v, SwitchAction.Clear), line, label);
+    this.m.action(setBool(v, false), line, label);
     this.m.jump(join, line, label);
     this.m.enter(join);
     this.dead = false;
+  }
+
+  /**
+   * `rose(c)`: true on the cycle `c` becomes true; `once(c)`: true the first time it holds.
+   * A latch remembers whether `c` held last time; `fired` is what the caller tests. Five
+   * triggers: the branch on `c`, two in the true state (the latch clear → fire and set the
+   * latch, jumping on; else clear `fired`), one in the false state.
+   */
+  private edge(call: TS.CallExpression, kind: "rose" | "once", depth: number): Bool {
+    if (call.arguments.length !== 1) { this.c.error(call, `${kind}() takes one condition.`); return FALSE; }
+    const latch = this.m.bool(`(${kind} latch)`);
+    const fired = this.m.bool(`(${kind} fired)`);
+    if (!latch || !fired) { this.c.error(call, `No switch is free for ${kind}().`); return FALSE; }
+    const line = this.line(call);
+    const label = this.label(call);
+    const held = this.m.tempsHeld;
+    const c = this.boolInner(call.arguments[0], depth + 1);
+    const on = this.m.fresh();
+    const off = this.m.fresh();
+    const join = this.m.fresh();
+    this.m.branch(c, on, off, line, label);
+    this.m.releaseTo(held);
+    this.m.enter(on);
+    this.m.step([boolCondition(latch, false)], [setBool(fired, true), setBool(latch, true)], join, line, label);
+    this.m.step([], [setBool(fired, false)], join, line, label);
+    this.m.enter(off);
+    if (kind === "rose") this.m.action(setBool(latch, false), line, label);
+    this.m.action(setBool(fired, false), line, label);
+    this.m.jump(join, line, label);
+    this.m.enter(join);
+    this.dead = false;
+    return cond(boolCondition(fired, true));
   }
 
   /** A hoisted value as a condition tree. */
@@ -809,7 +907,7 @@ export class Structured {
     }
     if (ts.isIdentifier(e)) {
       const b = this.binding(e);
-      if (b?.kind === "var") return b.v.kind === "switch" ? cond(switchCondition(b.v, true)) : compareConst(b.v, ">=", 1);
+      if (b?.kind === "var") return b.v.kind !== "dc" ? cond(boolCondition(b.v, true)) : compareConst(b.v, ">=", 1);
       this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       return FALSE;
     }
@@ -820,6 +918,9 @@ export class Structured {
         this.m.action(setSwitch(s, SwitchAction.Randomize), this.line(e), `L${this.line(e)}: random()`);
         return cond(switchCondition(s, true));
       }
+      if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose", depth);
+      if (this.isLibraryCall(e, "once")) return this.edge(e, "once", depth);
+      if (this.isLibraryCall(e, "sleep")) { this.c.error(e, "sleep() is a statement, not a condition."); return FALSE; }
       this.notConstant(e, "A condition's arguments");
       return FALSE;
     }
@@ -832,7 +933,8 @@ export class Structured {
     const isBool = (x: TS.Expression) => {
       const h = this.evaluate(x);
       if (h) return typeof h.value === "boolean" || isCondition(h.value);
-      return this.varOf(this.unwrap(x))?.kind === "switch";
+      const v = this.varOf(this.unwrap(x));
+      return v !== undefined && v.kind !== "dc";
     };
     if (isBool(e.left) || isBool(e.right)) {
       if (op !== "==" && op !== "!=") { this.c.error(e, "Booleans compare with == and != only."); return FALSE; }

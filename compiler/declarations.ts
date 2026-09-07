@@ -63,6 +63,8 @@ ${kw}interface Condition { readonly __condition: true; }
 ${kw}interface Action { readonly __action: true; }
 /** A trigger, as returned by trigger(). */
 ${kw}interface Trigger { readonly __trigger: true; }
+/** A length of time, from seconds(), minutes() or cycles(): what sleep() takes. */
+${kw}interface Duration { readonly __duration: true; }
 /** Conditions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
 ${kw}type Conditions = readonly (Condition | Conditions | false | null | undefined)[];
 /** Actions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
@@ -75,8 +77,13 @@ ${TRIGGER_OPTION_NAMES.map(([, name]) => `  ${name}?: boolean;`).join("\n")}
 }
 
 ${kw}interface ProgramOptions {
-  /** The single player the program's triggers run as (default P1). It must be in the game for the program to run. */
-  owner?: Player;
+  /**
+   * Who the program runs for (default P1). One player: one thread, as that player. AllPlayers, a
+   * force (players.Force1) or a list of players: the program runs once for each of them at the
+   * same time, CurrentPlayer is that player, and every variable is per player — each player has
+   * their own copy (a variable declared with shared() is one cell they all share).
+   */
+  owner?: Player | readonly Player[];
   /** Put a Comment action naming the source line on every generated trigger (default true). */
   comments?: boolean;
   /** Unit types whose death counters hold the variables (default: the "(Unused)" units, Cantina first). */
@@ -109,7 +116,8 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
  * variables holding numbers are death counters and booleans are switches (a const computed
  * from them is one too, and cannot be reassigned); if / else, while, do, for, break, continue
  * and functions (inlined per call, arguments passed by value) all work; conditions go in an
- * if or while and actions stand as statements. One iteration of a loop per trigger cycle.
+ * if or while and actions stand as statements. One iteration of a loop per trigger cycle;
+ * sleep(seconds(n)) pauses. A for…of over a list known when you build is unrolled.
  * Everything the body reads from outside (constants, helpers, conditions, actions) is
  * computed when you build — the editor underlines those parts — so it cannot depend on the
  * variables.
@@ -119,6 +127,25 @@ ${kw}function program(body: () => void, options?: ProgramOptions): void;
 ${kw}function hyperTriggers(owner?: Player): void;
 /** A coin toss (Randomize Switch), inside program() only: \`flag = random()\`, \`if (random() && …)\`. */
 ${kw}function random(): boolean;
+/** A length of time in seconds, for sleep(). Turned into trigger cycles when the program is built: twelve a second with hyper triggers on the map, one every two seconds without (at Fastest). */
+${kw}function seconds(n: number): Duration;
+/** A length of time in minutes, for sleep(). */
+${kw}function minutes(n: number): Duration;
+/** A length of time in trigger cycles, for sleep(): one cycle is one pass over the trigger list. */
+${kw}function cycles(n: number): Duration;
+/**
+ * Pause the program, inside program() only: the statements after it run that much later, and nothing
+ * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); sleep(seconds(15)); }\`
+ * is a wave every fifteen seconds. Unlike wait(), it stalls no other trigger.
+ */
+${kw}function sleep(duration: Duration): void;
+/** True on the cycle its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(…)))\`. */
+${kw}function rose(condition: Condition | boolean): boolean;
+/** True the first time its condition holds, never again. Inside program(), in an if. */
+${kw}function once(condition: Condition | boolean): boolean;
+/** In a program that runs for several players, a variable they all share instead of one per player: \`let total = shared(0)\`. */
+${kw}function shared(initial: number): number;
+${kw}function shared(initial: boolean): boolean;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**

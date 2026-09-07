@@ -86,6 +86,8 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers"]);
+/** The library calls the game answers: never hoisted, the structured compiler lowers them. */
+const GAME_CALLS = new Set(["random", "sleep", "rose", "once", "shared"]);
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression): ProgramPlan {
   const plan: ProgramPlan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Set(), tree: [], errors: [] };
@@ -104,6 +106,8 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
   const collect = (node: TS.Node) => {
     if (isFunctionValue(node)) return;
     if (ts.isVariableDeclarationList(node) && !(node.flags & ts.NodeFlags.Const)) for (const d of node.declarations) declare(d);
+    // The variable of a for…of is bound per iteration when the loop is unrolled, like a parameter bound to a value.
+    if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && ts.isVariableDeclarationList(node.initializer)) for (const d of node.initializer.declarations) declare(d);
     if (ts.isFunctionDeclaration(node)) { declare(node); for (const p of node.parameters) declare(p); }
     ts.forEachChild(node, collect);
   };
@@ -127,7 +131,7 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
       const property = ts.isPropertyAccessExpression(p) && p.name === n;
       if ((ts.isPropertyAssignment(p) && p.name === n) || (ts.isMethodDeclaration(p) && p.name === n) || ts.isQualifiedName(p)) return;
       const lib = libraryName(ts, checker, n);
-      if (lib === "random") { ok = false; return; }
+      if (lib && GAME_CALLS.has(lib)) { ok = false; return; }
       if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p.parent) && p.parent.expression === p && property) { ok = false; return; }
       if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p) && p.expression === n) { ok = false; return; }
       if (property) return;
@@ -176,8 +180,8 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
     if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
       const lib = ts.isCallExpression(e) ? libraryCallName(ts, checker, e) : null;
       if (lib && FORBIDDEN_INSIDE.has(lib)) error(e, `${lib}() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements.`);
-      // `random()` is the game's: its callee is never a value, however it is spelt (`ts.random()` through a namespace import).
-      if (lib !== "random") value(e.expression, items);
+      // `random()`, `sleep()`, … are the game's: their callee is never a value, however it is spelt (`ts.random()` through a namespace import).
+      if (!lib || !GAME_CALLS.has(lib)) value(e.expression, items);
       for (const a of e.arguments ?? []) value(a, items);
       return;
     }

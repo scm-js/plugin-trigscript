@@ -1073,6 +1073,8 @@ function entryFor(t, value) {
 }
 
 // compiler/lower.ts
+var EACH_PLAYER = PlayerGroup.CurrentPlayer;
+var flagCell = (v) => ({ kind: "dc", name: v.name, player: EACH_PLAYER, unit: v.unit });
 var VARIABLE_UNITS = [181, 179, 180, 182, 183, 184, 185, 186, 187, 204, 91, 92, 119, 121, 145, 153, 158, 161];
 var PLAYER_SLOTS = 12;
 var dcKey = (player, unit) => unit * PLAYER_SLOTS + player;
@@ -1112,9 +1114,38 @@ var Allocator = class {
     }
     return null;
   }
+  /** A unit of the pool none of whose twelve cells is taken, all of them taken now; undefined when there is none. */
+  freeRow(units) {
+    for (const unit of units.length ? units : VARIABLE_UNITS) {
+      let free = true;
+      for (let player = 0; player < PLAYER_SLOTS && free; player++) if (this.usedDc.has(dcKey(player, unit))) free = false;
+      if (!free) continue;
+      for (let player = 0; player < PLAYER_SLOTS; player++) this.usedDc.add(dcKey(player, unit));
+      return unit;
+    }
+    return void 0;
+  }
+  /** A per-player number: a whole row of the pool, read and written as CurrentPlayer. */
+  row(name, units = VARIABLE_UNITS) {
+    const unit = this.freeRow(units);
+    if (unit === void 0) return null;
+    const v = { kind: "dc", name, player: EACH_PLAYER, unit };
+    this.variables.push(v);
+    return v;
+  }
+  /** A per-player boolean: a row too. */
+  flag(name, units = VARIABLE_UNITS) {
+    const unit = this.freeRow(units);
+    if (unit === void 0) return null;
+    const v = { kind: "flag", name, unit };
+    this.variables.push(v);
+    return v;
+  }
 };
 function storageLabel(v) {
-  return v.kind === "dc" ? `P${v.player + 1} \xB7 ${unitName(v.unit)}` : `Switch ${v.index + 1}`;
+  if (v.kind === "switch") return `Switch ${v.index + 1}`;
+  if (v.kind === "flag" || v.player === EACH_PLAYER) return `each player \xB7 ${unitName(v.unit)}`;
+  return `P${v.player + 1} \xB7 ${unitName(v.unit)}`;
 }
 function deathsCondition(v, comparison, amount) {
   return { ...emptyCondition(), type: ConditionType.Deaths, player: v.player, unitId: v.unit, comparison, amount: amount >>> 0, flags: ConditionFlag.UnitTypeUsed };
@@ -1127,6 +1158,14 @@ function switchCondition(v, set) {
 }
 function setSwitch(v, action2) {
   return { ...emptyAction(), type: ActionType.SetSwitch, target: v.index, modifier: action2 };
+}
+function boolCondition(v, set) {
+  if (v.kind === "switch") return switchCondition(v, set);
+  return deathsCondition(flagCell(v), set ? Comparison.AtLeast : Comparison.Exactly, set ? 1 : 0);
+}
+function setBool(v, on) {
+  if (v.kind === "switch") return setSwitch(v, on ? SwitchAction.Set : SwitchAction.Clear);
+  return setDeaths(flagCell(v), SetModifier.SetTo, on ? 1 : 0);
 }
 var U32_MAX = 4294967295;
 var bitsOf = (v) => v.bits ?? 32;
@@ -1214,7 +1253,8 @@ var LowerError = class extends Error {
 var STEP_ACTIONS = MAX_ACTIONS - 2;
 var STEP_CONDITIONS = MAX_CONDITIONS - 1;
 var Machine = class {
-  owner;
+  owners;
+  perPlayer;
   allocator;
   units;
   triggers = [];
@@ -1235,19 +1275,28 @@ var Machine = class {
   tempsInUse = 0;
   scratches = [];
   constructor(options) {
-    this.owner = options.owner;
+    this.owners = options.owners;
+    this.perPlayer = options.perPlayer;
     this.allocator = options.allocator;
     this.units = options.units ?? [];
     this.comment = options.comment;
     const pc = this.dc("(program counter)");
-    if (!pc) throw new LowerError("No death counter is free for the program counter.");
+    if (!pc) throw new LowerError(this.perPlayer ? "No unit of the pool has all twelve death counters free for the program counter." : "No death counter is free for the program counter.");
     this.pc = pc;
   }
-  /** A death counter for this program, from its own pool. */
+  /** A number for this program, from its own pool: a row when the program runs per player. */
   dc(name) {
+    return this.perPlayer ? this.allocator.row(name, this.units) : this.allocator.dc(name, this.units);
+  }
+  /** A number every player of a per-player program shares: one cell. */
+  shared(name) {
     return this.allocator.dc(name, this.units);
   }
-  /** A switch for this program. */
+  /** A boolean for this program: a switch, or a flag row when the program runs per player. */
+  bool(name) {
+    return this.perPlayer ? this.allocator.flag(name, this.units) : this.allocator.switch(name);
+  }
+  /** A switch for this program, whoever it runs for (scratch for `random()`, and `shared` booleans). */
   switch(name) {
     return this.allocator.switch(name);
   }
@@ -1285,7 +1334,7 @@ var Machine = class {
   }
   raw(conds, actions, next, line, label) {
     const t = emptyTrigger();
-    t.players[this.owner] = 1;
+    for (const o of this.owners) t.players[o] = 1;
     t.flags = TriggerFlag.Preserve;
     t.conditions = [deathsCondition(this.pc, Comparison.Exactly, this.state), ...conds];
     if (this.comment && label) t.actions.push({ ...emptyAction(), type: ActionType.Comment, text: this.comment(label) });
@@ -1334,6 +1383,21 @@ var Machine = class {
   loopHeader(line, label) {
     if (this.stepsInState === 0 && this.pending.length === 0) return this.state;
     return this.next(line, label);
+  }
+  /**
+   * Pause the program for `cycles` trigger cycles: a countdown in a temp, in a state of
+   * its own so nothing else of the program runs meanwhile. The finished test stands
+   * before the decrement, so `sleep(1)` resumes one cycle later, not at once.
+   */
+  sleep(cycles, line, label) {
+    const t = this.temp();
+    this.set(t, cycles, line, label);
+    this.next(line, label);
+    const after = this.fresh();
+    this.raw([deathsCondition(t, Comparison.Exactly, 0)], [], after, line, label);
+    this.raw([deathsCondition(t, Comparison.AtLeast, 1)], [setDeaths(t, SetModifier.Subtract, 1)], null, line, label);
+    this.enter(after);
+    this.release();
   }
   /* ── Arithmetic ── */
   set(v, n, line, label) {
@@ -1600,6 +1664,8 @@ ${kw}interface Condition { readonly __condition: true; }
 ${kw}interface Action { readonly __action: true; }
 /** A trigger, as returned by trigger(). */
 ${kw}interface Trigger { readonly __trigger: true; }
+/** A length of time, from seconds(), minutes() or cycles(): what sleep() takes. */
+${kw}interface Duration { readonly __duration: true; }
 /** Conditions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
 ${kw}type Conditions = readonly (Condition | Conditions | false | null | undefined)[];
 /** Actions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
@@ -1612,8 +1678,13 @@ ${TRIGGER_OPTION_NAMES.map(([, name]) => `  ${name}?: boolean;`).join("\n")}
 }
 
 ${kw}interface ProgramOptions {
-  /** The single player the program's triggers run as (default P1). It must be in the game for the program to run. */
-  owner?: Player;
+  /**
+   * Who the program runs for (default P1). One player: one thread, as that player. AllPlayers, a
+   * force (players.Force1) or a list of players: the program runs once for each of them at the
+   * same time, CurrentPlayer is that player, and every variable is per player \u2014 each player has
+   * their own copy (a variable declared with shared() is one cell they all share).
+   */
+  owner?: Player | readonly Player[];
   /** Put a Comment action naming the source line on every generated trigger (default true). */
   comments?: boolean;
   /** Unit types whose death counters hold the variables (default: the "(Unused)" units, Cantina first). */
@@ -1644,7 +1715,8 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
  * variables holding numbers are death counters and booleans are switches (a const computed
  * from them is one too, and cannot be reassigned); if / else, while, do, for, break, continue
  * and functions (inlined per call, arguments passed by value) all work; conditions go in an
- * if or while and actions stand as statements. One iteration of a loop per trigger cycle.
+ * if or while and actions stand as statements. One iteration of a loop per trigger cycle;
+ * sleep(seconds(n)) pauses. A for\u2026of over a list known when you build is unrolled.
  * Everything the body reads from outside (constants, helpers, conditions, actions) is
  * computed when you build \u2014 the editor underlines those parts \u2014 so it cannot depend on the
  * variables.
@@ -1654,6 +1726,25 @@ ${kw}function program(body: () => void, options?: ProgramOptions): void;
 ${kw}function hyperTriggers(owner?: Player): void;
 /** A coin toss (Randomize Switch), inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
 ${kw}function random(): boolean;
+/** A length of time in seconds, for sleep(). Turned into trigger cycles when the program is built: twelve a second with hyper triggers on the map, one every two seconds without (at Fastest). */
+${kw}function seconds(n: number): Duration;
+/** A length of time in minutes, for sleep(). */
+${kw}function minutes(n: number): Duration;
+/** A length of time in trigger cycles, for sleep(): one cycle is one pass over the trigger list. */
+${kw}function cycles(n: number): Duration;
+/**
+ * Pause the program, inside program() only: the statements after it run that much later, and nothing
+ * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); sleep(seconds(15)); }\`
+ * is a wave every fifteen seconds. Unlike wait(), it stalls no other trigger.
+ */
+${kw}function sleep(duration: Duration): void;
+/** True on the cycle its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(\u2026)))\`. */
+${kw}function rose(condition: Condition | boolean): boolean;
+/** True the first time its condition holds, never again. Inside program(), in an if. */
+${kw}function once(condition: Condition | boolean): boolean;
+/** In a program that runs for several players, a variable they all share instead of one per player: \`let total = shared(0)\`. */
+${kw}function shared(initial: number): number;
+${kw}function shared(initial: boolean): boolean;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -1773,6 +1864,7 @@ function owningDeclaration(ts, decl) {
   return d;
 }
 var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers"]);
+var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "rose", "once", "shared"]);
 function planProgram(ts, checker, arrow) {
   const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Set(), tree: [], errors: [] };
   const error = (node, message) => plan.errors.push({ node, message });
@@ -1788,6 +1880,7 @@ function planProgram(ts, checker, arrow) {
   const collect = (node) => {
     if (isFunctionValue(node)) return;
     if (ts.isVariableDeclarationList(node) && !(node.flags & ts.NodeFlags.Const)) for (const d of node.declarations) declare(d);
+    if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && ts.isVariableDeclarationList(node.initializer)) for (const d of node.initializer.declarations) declare(d);
     if (ts.isFunctionDeclaration(node)) {
       declare(node);
       for (const p of node.parameters) declare(p);
@@ -1813,7 +1906,7 @@ function planProgram(ts, checker, arrow) {
       const property = ts.isPropertyAccessExpression(p) && p.name === n;
       if (ts.isPropertyAssignment(p) && p.name === n || ts.isMethodDeclaration(p) && p.name === n || ts.isQualifiedName(p)) return;
       const lib = libraryName(ts, checker, n);
-      if (lib === "random") {
+      if (lib && GAME_CALLS.has(lib)) {
         ok = false;
         return;
       }
@@ -1899,7 +1992,7 @@ function planProgram(ts, checker, arrow) {
     if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
       const lib = ts.isCallExpression(e) ? libraryCallName(ts, checker, e) : null;
       if (lib && FORBIDDEN_INSIDE.has(lib)) error(e, `${lib}() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements.`);
-      if (lib !== "random") value(e.expression, items);
+      if (!lib || !GAME_CALLS.has(lib)) value(e.expression, items);
       for (const a2 of e.arguments ?? []) value(a2, items);
       return;
     }
@@ -2258,6 +2351,7 @@ function storageOf(triggers) {
 
 // compiler/runtime.ts
 var DEATHS_TABLE_ADDRESS = 5808996;
+var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
 var ScriptError = class extends Error {
   constructor(message) {
     super(message);
@@ -2267,6 +2361,8 @@ var ScriptError = class extends Error {
 var Collector = class {
   entries = [];
   strings = [];
+  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
+  hyper = false;
   localString(s) {
     const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
     if (at >= 0) return at + 1;
@@ -2430,20 +2526,43 @@ function createRuntime(names, collector, options = {}) {
     const p = integer(owner, "hyperTriggers: owner");
     if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
     for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
+    collector.hyper = true;
+  };
+  const number = (v, what) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
+    return v;
+  };
+  rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
+  rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
+  rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
+  rt.sleep = () => {
+    throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
+  };
+  rt.rose = () => {
+    throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if.");
+  };
+  rt.once = () => {
+    throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if.");
+  };
+  rt.shared = () => {
+    throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
   };
   rt.program = (body2, options2, at) => {
     if (!isProgramDescriptor(body2)) {
       throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
     }
-    const out = { owner: 0, comments: comment !== void 0, variableUnits: [] };
+    const out = { owners: [0], perPlayer: false, comments: comment !== void 0, variableUnits: [] };
     if (options2 !== void 0 && options2 !== null) {
       if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
       for (const [key, value] of Object.entries(options2)) {
         switch (key) {
           case "owner": {
-            const p = integer(value, "program: owner");
-            if (p >= PLAYER_SLOTS) throw new ScriptError(`program: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}: the program is one thread running as that player.`);
-            out.owner = p;
+            const owners = playersOf(value, "program: owner");
+            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
+            const groups = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 \u2026 P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players \u2014 the program runs once for each of them, with CurrentPlayer as that player.`);
+            out.owners = [...new Set(owners)];
+            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
             break;
           }
           case "comments":
@@ -2496,6 +2615,7 @@ function describe2(v) {
   if (isCondition(v)) return "a condition";
   if (isAction(v)) return "an action";
   if (isTrigger(v)) return "a trigger";
+  if (isDuration(v)) return "a duration";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "string") return "text";
   if (typeof v === "function") return "a function";
@@ -2836,8 +2956,12 @@ var Structured = class {
       this.c.error(s, "switch is not supported in a program; use if / else if.");
       return;
     }
-    if (ts.isForOfStatement(s) || ts.isForInStatement(s)) {
-      this.c.error(s, "for\u2026of / for\u2026in are not supported in a program; count with a for (let i = 0; \u2026) loop.");
+    if (ts.isForOfStatement(s)) {
+      this.forOfStatement(s, ctx);
+      return;
+    }
+    if (ts.isForInStatement(s)) {
+      this.c.error(s, "for\u2026in is not supported in a program; for\u2026of over a list known when the script is built is unrolled.");
       return;
     }
     if (ts.isThrowStatement(s) || ts.isTryStatement(s)) {
@@ -2864,9 +2988,16 @@ var Structured = class {
         this.c.error(d, `Variables hold numbers (death counters) or booleans (switches); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
         continue;
       }
-      const v = kind === "number" ? this.m.dc(d.name.text) : this.m.switch(d.name.text);
+      const init = this.unwrap(d.initializer);
+      const shared = this.isLibraryCall(init, "shared");
+      if (shared && init.arguments.length !== 1) {
+        this.c.error(init, "shared() takes the initial value: shared(0) or shared(false).");
+        continue;
+      }
+      const initializer = shared ? init.arguments[0] : d.initializer;
+      const v = kind === "number" ? shared ? this.m.shared(d.name.text) : this.m.dc(d.name.text) : shared ? this.m.switch(d.name.text) : this.m.bool(d.name.text);
       if (!v) {
-        this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}.`);
+        this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}${this.m.perPlayer ? " (a per-player variable needs a unit with all twelve free)" : ""}.`);
         continue;
       }
       v.at = this.sourceOf(d.name);
@@ -2874,8 +3005,8 @@ var Structured = class {
         const bits = this.bitsOf(type);
         if (bits) v.bits = bits;
       }
-      if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
-      else this.assignBool(v, d.initializer, d);
+      if (v.kind === "dc") this.assignNumber(v, initializer, d);
+      else this.assignBool(v, initializer, d);
       this.scope.bind(d, { kind: "var", v });
     }
   }
@@ -2907,6 +3038,10 @@ var Structured = class {
   hoistedStatement(expr, h) {
     const v = h.value;
     if (v === void 0 || v === null) return;
+    if (isDuration(v)) {
+      this.c.error(expr, "A duration does nothing on its own; sleep(seconds(2)) pauses the program.");
+      return;
+    }
     if (isAction(v)) {
       this.emitAction(v.record, expr);
       return;
@@ -2926,6 +3061,25 @@ var Structured = class {
     if (a2.type === ActionType.PreserveTrigger) return;
     this.m.action({ ...a2 }, this.line(at), this.label(at));
   }
+  /** `sleep(seconds(2))`: the duration is a build-time value; the cycles it makes depend on the map's hyper triggers. */
+  sleepStatement(call) {
+    if (call.arguments.length !== 1) {
+      this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(cycles(5)).");
+      return;
+    }
+    const h = this.evaluate(call.arguments[0]);
+    if (!h) {
+      this.notConstant(call.arguments[0], "A duration");
+      return;
+    }
+    if (!isDuration(h.value)) {
+      this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or cycles(), got ${describe2(h.value)}.`);
+      return;
+    }
+    const d = h.value;
+    const n = d.cycles ?? Math.max(1, Math.round((d.ms ?? 0) / 1e3 * this.c.cyclesPerSecond));
+    this.m.sleep(n, this.line(call), this.label(call));
+  }
   expressionStatement(expr) {
     const { ts } = this;
     const e = this.unwrap(expr);
@@ -2942,7 +3096,7 @@ var Structured = class {
           this.c.error(e.left, "Only the program's let variables can be assigned.");
           return;
         }
-        if (target.kind === "switch") {
+        if (target.kind !== "dc") {
           if (op !== ts.SyntaxKind.EqualsToken) {
             this.c.error(e, "Booleans take = only.");
             return;
@@ -2990,6 +3144,18 @@ var Structured = class {
       }
       if (this.isLibraryCall(e, "random")) {
         this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean.");
+        return;
+      }
+      if (this.isLibraryCall(e, "sleep")) {
+        this.sleepStatement(e);
+        return;
+      }
+      if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) {
+        this.c.error(e, "rose() / once() are conditions: test them in an if.");
+        return;
+      }
+      if (this.isLibraryCall(e, "shared")) {
+        this.c.error(e, "shared() goes on a declaration: let total = shared(0).");
         return;
       }
       this.notConstant(e, "A call's arguments");
@@ -3121,6 +3287,61 @@ var Structured = class {
     this.m.enter(exit);
     this.dead = false;
   }
+  /**
+   * `for (const w of waves)` over a list known when the script is built: unrolled, the body
+   * compiled once per element with `w` bound to that element's value. `break` leaves the
+   * whole loop, `continue` goes on with the next element.
+   */
+  forOfStatement(s, ctx) {
+    const { ts } = this;
+    if (s.awaitModifier) {
+      this.c.error(s, "for await is not supported in a program.");
+      return;
+    }
+    const decl = ts.isVariableDeclarationList(s.initializer) && s.initializer.declarations.length === 1 ? s.initializer.declarations[0] : void 0;
+    if (!decl || !ts.isIdentifier(decl.name)) {
+      this.c.error(s.initializer, "for\u2026of takes one variable: for (const w of waves) { \u2026 }.");
+      return;
+    }
+    const h = this.evaluate(s.expression);
+    if (!h) {
+      this.notConstant(s.expression, "What a for\u2026of loop runs over");
+      return;
+    }
+    let items;
+    try {
+      items = typeof h.value === "string" || typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value ? Array.from(h.value) : [];
+      if (!(typeof h.value === "string") && !(typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value)) {
+        this.c.error(s.expression, `for\u2026of runs over a list, got ${describe2(h.value)}.`);
+        return;
+      }
+    } catch (err) {
+      this.c.error(s.expression, `for\u2026of: ${err.message}`);
+      return;
+    }
+    const exit = this.m.fresh();
+    let broke = false;
+    for (const item of items) {
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "value", value: item });
+      let next = null;
+      this.block([s.statement], { fn: ctx.fn, breakTo: () => {
+        broke = true;
+        return exit;
+      }, continueTo: () => next ??= this.m.fresh() }, scope);
+      if (next !== null) {
+        if (!this.dead) this.m.jump(next, this.line(s), `L${this.line(s)}: continue`);
+        this.m.enter(next);
+        this.dead = false;
+      }
+      if (this.dead) break;
+    }
+    if (broke) {
+      if (!this.dead) this.m.jump(exit, this.line(s), `L${this.line(s)}: end of for\u2026of`);
+      this.m.enter(exit);
+      this.dead = false;
+    }
+  }
   /* ── Functions ── */
   inline(call, decl) {
     const { ts } = this;
@@ -3176,7 +3397,7 @@ var Structured = class {
           scope.bind(p, { kind: "var", v: variable });
           return;
         }
-        const copy = variable.kind === "dc" ? this.m.dc(p.name.text) : this.m.switch(p.name.text);
+        const copy = variable.kind === "dc" ? this.m.dc(p.name.text) : this.m.bool(p.name.text);
         if (!copy) {
           this.c.error(p, `No ${variable.kind === "dc" ? "death counter" : "switch"} is free for ${p.name.text}.`);
           ok = false;
@@ -3187,7 +3408,7 @@ var Structured = class {
         const line = this.line(call);
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.c.sf)}`;
         if (copy.kind === "dc") this.m.assign(copy, { c: 0, terms: [{ v: variable, sign: 1 }] }, line, label);
-        else this.storeBool(copy, cond(switchCondition(variable, true)), line, label);
+        else this.storeBool(copy, cond(boolCondition(variable, true)), line, label);
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
@@ -3265,7 +3486,7 @@ var Structured = class {
     if (ts.isIdentifier(e)) {
       const b = this.binding(e);
       if (b?.kind === "var") {
-        if (b.v.kind === "switch") {
+        if (b.v.kind !== "dc") {
           this.c.error(e, `${b.v.name} is a boolean.`);
           return null;
         }
@@ -3309,21 +3530,21 @@ var Structured = class {
     const label = this.label(at);
     const h = this.evaluate(expr);
     if (h && typeof h.value === "boolean") {
-      this.m.action(setSwitch(v, h.value ? SwitchAction.Set : SwitchAction.Clear), line, label);
+      this.m.action(setBool(v, h.value), line, label);
       return;
     }
-    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v) {
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v && v.kind === "switch") {
       this.m.action(setSwitch(v, SwitchAction.Toggle), line, label);
       return;
     }
-    if (this.isLibraryCall(e, "random")) {
+    if (this.isLibraryCall(e, "random") && v.kind === "switch") {
       this.m.action(setSwitch(v, SwitchAction.Randomize), line, label);
       return;
     }
     const held = this.m.tempsHeld;
     const b = this.bool(e);
     if (b.kind === "const") {
-      this.m.action(setSwitch(v, b.value ? SwitchAction.Set : SwitchAction.Clear), line, label);
+      this.m.action(setBool(v, b.value), line, label);
       this.m.releaseTo(held);
       return;
     }
@@ -3337,13 +3558,50 @@ var Structured = class {
     const join = this.m.fresh();
     this.m.branch(b, on, off, line, label);
     this.m.enter(on);
-    this.m.action(setSwitch(v, SwitchAction.Set), line, label);
+    this.m.action(setBool(v, true), line, label);
     this.m.jump(join, line, label);
     this.m.enter(off);
-    this.m.action(setSwitch(v, SwitchAction.Clear), line, label);
+    this.m.action(setBool(v, false), line, label);
     this.m.jump(join, line, label);
     this.m.enter(join);
     this.dead = false;
+  }
+  /**
+   * `rose(c)`: true on the cycle `c` becomes true; `once(c)`: true the first time it holds.
+   * A latch remembers whether `c` held last time; `fired` is what the caller tests. Five
+   * triggers: the branch on `c`, two in the true state (the latch clear → fire and set the
+   * latch, jumping on; else clear `fired`), one in the false state.
+   */
+  edge(call, kind, depth) {
+    if (call.arguments.length !== 1) {
+      this.c.error(call, `${kind}() takes one condition.`);
+      return FALSE;
+    }
+    const latch = this.m.bool(`(${kind} latch)`);
+    const fired = this.m.bool(`(${kind} fired)`);
+    if (!latch || !fired) {
+      this.c.error(call, `No switch is free for ${kind}().`);
+      return FALSE;
+    }
+    const line = this.line(call);
+    const label = this.label(call);
+    const held = this.m.tempsHeld;
+    const c2 = this.boolInner(call.arguments[0], depth + 1);
+    const on = this.m.fresh();
+    const off = this.m.fresh();
+    const join = this.m.fresh();
+    this.m.branch(c2, on, off, line, label);
+    this.m.releaseTo(held);
+    this.m.enter(on);
+    this.m.step([boolCondition(latch, false)], [setBool(fired, true), setBool(latch, true)], join, line, label);
+    this.m.step([], [setBool(fired, false)], join, line, label);
+    this.m.enter(off);
+    if (kind === "rose") this.m.action(setBool(latch, false), line, label);
+    this.m.action(setBool(fired, false), line, label);
+    this.m.jump(join, line, label);
+    this.m.enter(join);
+    this.dead = false;
+    return cond(boolCondition(fired, true));
   }
   /** A hoisted value as a condition tree. */
   hoistedBool(h, at) {
@@ -3386,7 +3644,7 @@ var Structured = class {
     }
     if (ts.isIdentifier(e)) {
       const b = this.binding(e);
-      if (b?.kind === "var") return b.v.kind === "switch" ? cond(switchCondition(b.v, true)) : compareConst(b.v, ">=", 1);
+      if (b?.kind === "var") return b.v.kind !== "dc" ? cond(boolCondition(b.v, true)) : compareConst(b.v, ">=", 1);
       this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       return FALSE;
     }
@@ -3400,6 +3658,12 @@ var Structured = class {
         this.m.action(setSwitch(s, SwitchAction.Randomize), this.line(e), `L${this.line(e)}: random()`);
         return cond(switchCondition(s, true));
       }
+      if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose", depth);
+      if (this.isLibraryCall(e, "once")) return this.edge(e, "once", depth);
+      if (this.isLibraryCall(e, "sleep")) {
+        this.c.error(e, "sleep() is a statement, not a condition.");
+        return FALSE;
+      }
       this.notConstant(e, "A condition's arguments");
       return FALSE;
     }
@@ -3410,7 +3674,8 @@ var Structured = class {
     const isBool = (x) => {
       const h = this.evaluate(x);
       if (h) return typeof h.value === "boolean" || isCondition(h.value);
-      return this.varOf(this.unwrap(x))?.kind === "switch";
+      const v = this.varOf(this.unwrap(x));
+      return v !== void 0 && v.kind !== "dc";
     };
     if (isBool(e.left) || isBool(e.right)) {
       if (op !== "==" && op !== "!=") {
@@ -3492,6 +3757,8 @@ function compareNumbers(a2, op, b) {
 }
 
 // compiler/compiler.ts
+var HYPER_CYCLES_PER_SECOND = 12;
+var PLAIN_CYCLES_PER_SECOND = 0.5;
 var ENTRY_FILE = "main.ts";
 var LIB_FILE = "lib.d.ts";
 function normalizePath(path) {
@@ -3641,19 +3908,20 @@ function compileScript(ts, files, names, options) {
     let machine;
     try {
       const comment = entry.options.comments ? (text) => collector.localString({ text }) : void 0;
-      machine = new Machine({ owner: entry.options.owner, allocator, units: entry.options.variableUnits, comment });
+      machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator, units: entry.options.variableUnits, comment });
     } catch (err) {
       diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: err.message, source: "compiler" });
       continue;
     }
     const start = triggers.length;
-    new Structured({ ts, checker, sf, plan, hoisted, machine, error: (node, message, source) => nodeError(node, message, source) }).run();
+    new Structured({ ts, checker, sf, plan, hoisted, machine, cyclesPerSecond: collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND, error: (node, message, source) => nodeError(node, message, source) }).run();
     triggers.push(...machine.triggers);
     for (const line of machine.lines) sources.push({ file, line });
     for (const [line, note] of machine.notes) notes.set(`${file}\0${line}`, note);
-    programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
+    const owners = entry.options.owners;
+    programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
   }
-  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {}, ...v.bits ? { bits: v.bits } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} });
+  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {}, ...v.bits ? { bits: v.bits } : {} } : v.kind === "switch" ? { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), flag: v.unit, ...v.at ? { at: v.at } : {} });
   const costs = /* @__PURE__ */ new Map();
   for (const s of sources) {
     if (!s) continue;
@@ -4319,7 +4587,7 @@ var Simulation = class {
     for (let i = 0; i < this.triggers.length; i++) {
       const t = this.triggers[i];
       if (this.done.has(i) || t.flags & TriggerFlag.Disabled) continue;
-      if (!(t.players[this.player] || t.players[PlayerGroup.AllPlayers])) continue;
+      if (!(t.players[this.player] || t.players[PlayerGroup.AllPlayers] || t.players[PlayerGroup.Force1] || t.players[PlayerGroup.Force2] || t.players[PlayerGroup.Force3] || t.players[PlayerGroup.Force4])) continue;
       if (!t.conditions.every((c2) => this.condition(c2))) continue;
       if (++runs > limit) throw new Error(`More than ${limit} trigger runs in one cycle.`);
       let preserve = (t.flags & TriggerFlag.Preserve) !== 0;
@@ -4630,6 +4898,9 @@ var STYLE = `
 .tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
+function ownerLabel(p) {
+  return p.owners.map((o) => o === PlayerGroup.AllPlayers ? "all players" : o >= PlayerGroup.Force1 && o <= PlayerGroup.Force4 ? `Force ${o - PlayerGroup.Force1 + 1}` : `P${o + 1}`).join(", ");
+}
 function describeEvent(e) {
   const name = actionDef(e.action.type)?.name ?? `Action ${e.action.type}`;
   return e.text !== void 0 ? `${name} \u2014 ${e.text}` : name;
@@ -4769,7 +5040,7 @@ function openScriptEditor(svc, options = {}) {
     programButton.hidden = programs.length === 0;
     if (programs.length) {
       const count = programs.reduce((n, p) => n + p.count, 0);
-      const owners = [...new Set(programs.map((p) => `P${p.owner + 1}`))].join(", ");
+      const owners = [...new Set(programs.map(ownerLabel))].join(", ");
       programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`}: ${count} trigger${count === 1 ? "" : "s"} as ${owners} \xB7 ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"}`;
     }
     variables.hidden = !(showVariables && result && result.variables.length > 0);
@@ -4810,11 +5081,12 @@ function openScriptEditor(svc, options = {}) {
         ));
       }
       for (const v of r.variables.filter((x) => !x.name.startsWith("("))) {
+        const shown = v.kind === "number" ? String(sim.death(v.player, v.unit)) : (v.flag !== void 0 ? sim.death(PlayerGroup.CurrentPlayer, v.flag) !== 0 : sim.switches[v.switch] === 1) ? "true" : "false";
         problems.append(el(
           "li",
           void 0,
           el("span", { className: "where" }, "after"),
-          el("span", { className: "msg" }, `${v.name} = ${v.kind === "number" ? sim.death(v.player, v.unit) : sim.switches[v.switch] ? "true" : "false"}`),
+          el("span", { className: "msg" }, `${v.name} = ${shown}`),
           el("span", { className: "src" }, v.storage)
         ));
       }
@@ -4839,7 +5111,7 @@ function openScriptEditor(svc, options = {}) {
   const costHints2 = () => {
     if (!result) return [];
     const out = result.costs.filter((c2) => c2.triggers >= 2);
-    for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as P${p.owner + 1}.` });
+    for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as ${ownerLabel(p)}.` });
     return out;
   };
   const check = () => {

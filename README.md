@@ -156,7 +156,7 @@ program(() => {
     }
     if (alarm) next();
     if (wave >= 10 || deaths(P1, units.TerranMarine, ">=", 50)) defeat();
-    wait(2000);
+    sleep(seconds(2));
   }
 }, { owner: P1 });
 ```
@@ -220,10 +220,64 @@ keeps it there — and a constant that does not fit is a compile error. There is
 multiplication or division between variables, because the game has no instruction for
 it; `*`, `/` and `%` work on build-time values.
 
-**A program is one thread running as one player**, its `owner` (default P1). It runs
-only while that player is in the game, and `CurrentPlayer` means that player. A script
-may have several programs; each gets its own program counter and variables, and the
-options are `owner`, `comments` (a Comment action naming the source line on every
+**Time is `sleep`.** `sleep(seconds(15))` pauses the program: the statements after it
+run that much later, nothing else of the program runs meanwhile, and other programs and
+the map's triggers go on. `while (true) { spawnWave(); sleep(seconds(15)); }` is a wave
+every fifteen seconds; `minutes()` and `cycles()` (one cycle is one pass over the trigger
+list) are the other units. A duration becomes trigger cycles when the program is
+compiled, from whether the script emits hyper triggers: twelve cycles a second with
+them, one every two seconds without, at Fastest. `wait()` inside a program is allowed
+but is a different thing: the game's own Wait stalls every trigger of that player for
+the time, hyper triggers included, so use it for a short pause inside one cycle (a text,
+then a sound) and `sleep` to pass time. Something that runs on its own clock is another
+program: one program per concurrent activity.
+
+**Edges.** `if (rose(bring(P1, units.AnyUnit, locations.Beacon, ">=", 1)))` is true on
+the cycle the condition becomes true, and not again until it has been false in between;
+`once(…)` is true the first time only. Each costs a latch and five triggers.
+
+**Lists are unrolled.** `for (const w of waves)` over a list known when you build
+compiles the body once per element, with `w` bound to that element, so a wave table is
+ordinary data:
+
+```ts
+const waves = [{ unit: units.ZergZergling, n: 6 }, { unit: units.ZergHydralisk, n: 4 }];
+program(() => {
+  for (const w of waves) {
+    createUnit(P2, w.unit, w.n, locations.Spawn);
+    sleep(seconds(20));
+  }
+  victory();
+});
+```
+
+`break` and `continue` work, and the cost hint shows the multiplied count.
+
+**A program runs for its `owner`** (default P1): one player is one thread running as that
+player, only while that player is in the game, and `CurrentPlayer` means that player.
+`AllPlayers`, a force (`players.Force1`) or a list of players (`[P1, P2, P3]`) makes a
+**per-player program**: the same triggers run once for each of those players at the same
+time, `CurrentPlayer` is that player, and every variable is per player, each player with
+their own copy (a whole row of the death table, twelve cells per variable; booleans live
+in rows too, since switches are shared by everyone). `let total = shared(0)` is one cell
+they all share. That is how lives, scores and cooldowns per player are written once:
+
+```ts
+program(() => {
+  let lives: u8 = 3;
+  while (true) {
+    if (rose(deaths(CurrentPlayer, units.TerranMarine, ">=", 1))) {
+      lives -= 1;
+      setDeaths(CurrentPlayer, units.TerranMarine, "set", 0);
+      if (lives == 0) defeat();
+    }
+  }
+}, { owner: AllPlayers });
+```
+
+The simulator runs such a program as one player at a time. A script may have several
+programs; each gets its own program counter and variables, and the options are `owner`,
+`comments` (a Comment action naming the source line on every
 generated trigger, which is what the Trigger Editor shows as the trigger's title; default
 on) and `variableUnits` (unit types whose death counters hold this program's variables).
 One allocator serves the whole script, so two programs never share a cell whatever pools

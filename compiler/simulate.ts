@@ -87,7 +87,8 @@ export class Simulation {
     for (let i = 0; i < this.triggers.length; i++) {
       const t = this.triggers[i];
       if (this.done.has(i) || t.flags & TriggerFlag.Disabled) continue;
-      if (!(t.players[this.player] || t.players[PlayerGroup.AllPlayers])) continue;
+      // The simulator knows no forces: a trigger a force owns runs for the player it simulates.
+      if (!(t.players[this.player] || t.players[PlayerGroup.AllPlayers] || t.players[PlayerGroup.Force1] || t.players[PlayerGroup.Force2] || t.players[PlayerGroup.Force3] || t.players[PlayerGroup.Force4])) continue;
       if (!t.conditions.every((c) => this.condition(c))) continue;
       if (++runs > limit) throw new Error(`More than ${limit} trigger runs in one cycle.`);
       let preserve = (t.flags & TriggerFlag.Preserve) !== 0;

@@ -36,10 +36,17 @@ export interface ActionValue { readonly __trigscript: "action"; readonly record:
 export interface TriggerValue { readonly __trigscript: "trigger"; readonly record: TriggerRecord }
 
 export interface ProgramOptions {
-  owner: number;
+  /** The player groups the program runs for: one slot, or All Players, a force, several slots. */
+  owners: number[];
+  /** Runs for several players at once: every variable is per player (see `Machine`). */
+  perPlayer: boolean;
   comments: boolean;
   variableUnits: number[];
 }
+
+/** What `seconds(2)`, `minutes(1)` and `cycles(5)` return: a length of time `sleep()` turns into trigger cycles when the program is compiled. */
+export interface DurationValue { readonly __trigscript: "duration"; readonly ms?: number; readonly cycles?: number }
+export const isDuration = (v: unknown): v is DurationValue => typeof v === "object" && v !== null && (v as DurationValue).__trigscript === "duration";
 
 /**
  * What the transformer turns `program(() => { … })` into: where the body is, and a
@@ -70,6 +77,8 @@ export class ScriptError extends Error {
 export class Collector {
   readonly entries: Entry[] = [];
   readonly strings: ScriptString[] = [];
+  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
+  hyper = false;
 
   localString(s: ScriptString): number {
     const at = this.strings.findIndex((x) => ("text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index));
@@ -247,7 +256,21 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     const p = integer(owner, "hyperTriggers: owner");
     if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 … P${PLAYER_SLOTS}.`);
     for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
+    collector.hyper = true;
   };
+
+  /* ── Time, and what only a program can do ── */
+  const number = (v: unknown, what: string) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
+    return v;
+  };
+  rt.seconds = (n: unknown): DurationValue => ({ __trigscript: "duration", ms: number(n, "seconds") * 1000 });
+  rt.minutes = (n: unknown): DurationValue => ({ __trigscript: "duration", ms: number(n, "minutes") * 60_000 });
+  rt.cycles = (n: unknown): DurationValue => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
+  rt.sleep = () => { throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement — sleep(seconds(2))."); };
+  rt.rose = () => { throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if."); };
+  rt.once = () => { throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if."); };
+  rt.shared = () => { throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program()."); };
 
   /* ── Programs ── */
   rt.program = (body: unknown, options?: unknown, at?: unknown) => {
@@ -256,15 +279,18 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
         ? "program() takes an arrow function written directly in the call: program(() => { … })."
         : `program() takes an arrow function, got ${describe(body)}.`);
     }
-    const out: ProgramOptions = { owner: 0, comments: comment !== undefined, variableUnits: [] };
+    const out: ProgramOptions = { owners: [0], perPlayer: false, comments: comment !== undefined, variableUnits: [] };
     if (options !== undefined && options !== null) {
       if (typeof options !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options)}.`);
       for (const [key, value] of Object.entries(options as Record<string, unknown>)) {
         switch (key) {
           case "owner": {
-            const p = integer(value, "program: owner");
-            if (p >= PLAYER_SLOTS) throw new ScriptError(`program: the owner is a single player, P1 … P${PLAYER_SLOTS}: the program is one thread running as that player.`);
-            out.owner = p;
+            const owners = playersOf(value, "program: owner");
+            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
+            const groups: number[] = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 … P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players — the program runs once for each of them, with CurrentPlayer as that player.`);
+            out.owners = [...new Set(owners)];
+            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
             break;
           }
           case "comments":
@@ -295,5 +321,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "random");
+  out.push("seconds", "minutes", "cycles", "sleep", "rose", "once", "shared");
   return out;
 }

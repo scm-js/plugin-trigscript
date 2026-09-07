@@ -31,7 +31,7 @@
  */
 import {
   ActionFlag, ActionType, Comparison, ConditionFlag, ConditionType, emptyAction, emptyCondition, emptyTrigger,
-  MAX_ACTIONS, MAX_CONDITIONS, SetModifier, SWITCH_COUNT, SwitchState, TriggerFlag,
+  MAX_ACTIONS, MAX_CONDITIONS, PlayerGroup, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, TriggerFlag,
   type ActionRecord, type ConditionRecord, type TriggerRecord,
 } from "../vendor/triggers";
 import { conditionDef } from "../vendor/triggerDefs";
@@ -49,7 +49,17 @@ export interface VarSource { file: string; line: number; column: number }
  */
 export interface DcVar { kind: "dc"; name: string; player: number; unit: number; bits?: number; at?: VarSource }
 export interface SwVar { kind: "switch"; name: string; index: number; at?: VarSource }
-export type Var = DcVar | SwVar;
+/**
+ * A boolean of a program that runs for several players: switches are shared by everyone,
+ * so it lives in a death-counter row instead — one cell per player, 0 false, 1 true.
+ */
+export interface FlagVar { kind: "flag"; name: string; unit: number; at?: VarSource }
+export type BoolVar = SwVar | FlagVar;
+export type Var = DcVar | BoolVar;
+
+/** A per-player variable is a whole row of the death table: `player` is CurrentPlayer, and each player reads their own cell. */
+export const EACH_PLAYER = PlayerGroup.CurrentPlayer;
+const flagCell = (v: FlagVar): DcVar => ({ kind: "dc", name: v.name, player: EACH_PLAYER, unit: v.unit });
 
 /**
  * Units whose death counters are safe to use as variables: they can never die because
@@ -113,11 +123,43 @@ export class Allocator {
     }
     return null;
   }
+
+  /** A unit of the pool none of whose twelve cells is taken, all of them taken now; undefined when there is none. */
+  private freeRow(units: readonly number[]): number | undefined {
+    for (const unit of units.length ? units : VARIABLE_UNITS) {
+      let free = true;
+      for (let player = 0; player < PLAYER_SLOTS && free; player++) if (this.usedDc.has(dcKey(player, unit))) free = false;
+      if (!free) continue;
+      for (let player = 0; player < PLAYER_SLOTS; player++) this.usedDc.add(dcKey(player, unit));
+      return unit;
+    }
+    return undefined;
+  }
+
+  /** A per-player number: a whole row of the pool, read and written as CurrentPlayer. */
+  row(name: string, units: readonly number[] = VARIABLE_UNITS): DcVar | null {
+    const unit = this.freeRow(units);
+    if (unit === undefined) return null;
+    const v: DcVar = { kind: "dc", name, player: EACH_PLAYER, unit };
+    this.variables.push(v);
+    return v;
+  }
+
+  /** A per-player boolean: a row too. */
+  flag(name: string, units: readonly number[] = VARIABLE_UNITS): FlagVar | null {
+    const unit = this.freeRow(units);
+    if (unit === undefined) return null;
+    const v: FlagVar = { kind: "flag", name, unit };
+    this.variables.push(v);
+    return v;
+  }
 }
 
-/** "P3 · Cantina (Unused)" / "Switch 256" — where a variable lives, for the UI. */
+/** "P3 · Cantina (Unused)" / "each player · Cantina (Unused)" / "Switch 256" — where a variable lives, for the UI. */
 export function storageLabel(v: Var): string {
-  return v.kind === "dc" ? `P${v.player + 1} · ${unitName(v.unit)}` : `Switch ${v.index + 1}`;
+  if (v.kind === "switch") return `Switch ${v.index + 1}`;
+  if (v.kind === "flag" || v.player === EACH_PLAYER) return `each player · ${unitName(v.unit)}`;
+  return `P${v.player + 1} · ${unitName(v.unit)}`;
 }
 
 /* ── Records ─────────────────────────────────────────────── */
@@ -136,6 +178,18 @@ export function switchCondition(v: SwVar, set: boolean): ConditionRecord {
 
 export function setSwitch(v: SwVar, action: number): ActionRecord {
   return { ...emptyAction(), type: ActionType.SetSwitch, target: v.index, modifier: action };
+}
+
+/** `v` is true (or false), for a switch or a flag. */
+export function boolCondition(v: BoolVar, set: boolean): ConditionRecord {
+  if (v.kind === "switch") return switchCondition(v, set);
+  return deathsCondition(flagCell(v), set ? Comparison.AtLeast : Comparison.Exactly, set ? 1 : 0);
+}
+
+/** `v = on`, for a switch or a flag. */
+export function setBool(v: BoolVar, on: boolean): ActionRecord {
+  if (v.kind === "switch") return setSwitch(v, on ? SwitchAction.Set : SwitchAction.Clear);
+  return setDeaths(flagCell(v), SetModifier.SetTo, on ? 1 : 0);
 }
 
 export const U32_MAX = 0xffffffff;
@@ -252,8 +306,14 @@ export class LowerError extends Error {}
 /* ── The machine ─────────────────────────────────────────── */
 
 export interface MachineOptions {
-  /** The player the program runs as (0-based). */
-  owner: number;
+  /** The player groups the program's triggers run for: one player slot, or All Players, a force, several slots. */
+  owners: readonly number[];
+  /**
+   * The program runs for several players at once (a group owner, or more than one slot):
+   * every trigger runs once per player with CurrentPlayer set, so the program counter and
+   * every variable are rows of the death table — each player has their own copy.
+   */
+  perPlayer: boolean;
   /** The compile's one allocator, shared with every other program. */
   allocator: Allocator;
   /** The units whose death counters hold this program's variables; the allocator's default pool when empty. */
@@ -268,7 +328,8 @@ export const STEP_ACTIONS = MAX_ACTIONS - 2;
 export const STEP_CONDITIONS = MAX_CONDITIONS - 1;
 
 export class Machine {
-  readonly owner: number;
+  readonly owners: readonly number[];
+  readonly perPlayer: boolean;
   readonly allocator: Allocator;
   private readonly units: readonly number[];
   readonly triggers: TriggerRecord[] = [];
@@ -290,21 +351,32 @@ export class Machine {
   private readonly scratches: SwVar[] = [];
 
   constructor(options: MachineOptions) {
-    this.owner = options.owner;
+    this.owners = options.owners;
+    this.perPlayer = options.perPlayer;
     this.allocator = options.allocator;
     this.units = options.units ?? [];
     this.comment = options.comment;
     const pc = this.dc("(program counter)");
-    if (!pc) throw new LowerError("No death counter is free for the program counter.");
+    if (!pc) throw new LowerError(this.perPlayer ? "No unit of the pool has all twelve death counters free for the program counter." : "No death counter is free for the program counter.");
     this.pc = pc;
   }
 
-  /** A death counter for this program, from its own pool. */
+  /** A number for this program, from its own pool: a row when the program runs per player. */
   dc(name: string): DcVar | null {
+    return this.perPlayer ? this.allocator.row(name, this.units) : this.allocator.dc(name, this.units);
+  }
+
+  /** A number every player of a per-player program shares: one cell. */
+  shared(name: string): DcVar | null {
     return this.allocator.dc(name, this.units);
   }
 
-  /** A switch for this program. */
+  /** A boolean for this program: a switch, or a flag row when the program runs per player. */
+  bool(name: string): BoolVar | null {
+    return this.perPlayer ? this.allocator.flag(name, this.units) : this.allocator.switch(name);
+  }
+
+  /** A switch for this program, whoever it runs for (scratch for `random()`, and `shared` booleans). */
   switch(name: string): SwVar | null {
     return this.allocator.switch(name);
   }
@@ -349,7 +421,7 @@ export class Machine {
 
   private raw(conds: ConditionRecord[], actions: ActionRecord[], next: number | null, line: number, label: string) {
     const t = emptyTrigger();
-    t.players[this.owner] = 1;
+    for (const o of this.owners) t.players[o] = 1;
     t.flags = TriggerFlag.Preserve;
     t.conditions = [deathsCondition(this.pc, Comparison.Exactly, this.state), ...conds];
     if (this.comment && label) t.actions.push({ ...emptyAction(), type: ActionType.Comment, text: this.comment(label) });
@@ -402,6 +474,22 @@ export class Machine {
   loopHeader(line: number, label: string): number {
     if (this.stepsInState === 0 && this.pending.length === 0) return this.state;
     return this.next(line, label);
+  }
+
+  /**
+   * Pause the program for `cycles` trigger cycles: a countdown in a temp, in a state of
+   * its own so nothing else of the program runs meanwhile. The finished test stands
+   * before the decrement, so `sleep(1)` resumes one cycle later, not at once.
+   */
+  sleep(cycles: number, line: number, label: string) {
+    const t = this.temp();
+    this.set(t, cycles, line, label);
+    this.next(line, label);
+    const after = this.fresh();
+    this.raw([deathsCondition(t, Comparison.Exactly, 0)], [], after, line, label);
+    this.raw([deathsCondition(t, Comparison.AtLeast, 1)], [setDeaths(t, SetModifier.Subtract, 1)], null, line, label);
+    this.enter(after);
+    this.release();
   }
 
   /* ── Arithmetic ── */

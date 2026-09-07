@@ -1,7 +1,7 @@
 {
   "name": "TrigScript",
   "id": "trigscript",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "TypeScript kept inside the map and built into its triggers. Ordinary TypeScript — files, imports, helpers, loops — runs when you build and records one trigger per trigger() call; code inside program(() => { … }) runs in the game as a state machine of death counters. Checked as you type against the map's own names, with a built-in simulator.",
   "author": "Jeany",
   "homepage": "https://github.com/scm-js/plugin-trigscript",
