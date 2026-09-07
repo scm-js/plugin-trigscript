@@ -380,6 +380,12 @@ describe("build", () => {
     expect(scriptState(plan.list, withFiles(plan.extras, { ...files, "lib/a.ts": "export const a = defeat();" })).unbuilt).toBe(true);
   });
 
+  it("keepFiles leaves the archive's files alone and the state unbuilt", () => {
+    const plan = buildScript([], withFiles(new Map(), main("// newer")), main("// compiled"), compile("// compiled"), () => 0, { keepFiles: true });
+    expect(readFiles(plan.extras)).toEqual(main("// newer"));
+    expect(scriptState(plan.list, plan.extras)).toMatchObject({ stale: false, unbuilt: true, block: { start: 0, count: 0 } });
+  });
+
   it("an empty script keeps an empty block", () => {
     const plan = buildScript([], new Map(), main(""), compile(""), () => 0);
     expect(plan.block).toEqual({ start: 0, count: 0, sources: [] });

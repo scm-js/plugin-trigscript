@@ -1077,38 +1077,40 @@ var VARIABLE_UNITS = [181, 179, 180, 182, 183, 184, 185, 186, 187, 204, 91, 92, 
 var PLAYER_SLOTS = 12;
 var dcKey = (player, unit) => unit * PLAYER_SLOTS + player;
 var Allocator = class {
-  units;
-  reservedDc;
-  reservedSw;
-  nextDc = 0;
-  nextSw = SWITCH_COUNT - 1;
+  usedDc = /* @__PURE__ */ new Set();
+  usedSw = /* @__PURE__ */ new Set();
   variables = [];
   constructor(options = {}) {
-    this.units = options.units?.length ? options.units : VARIABLE_UNITS;
-    this.reservedDc = new Set((options.reservedDeaths ?? []).map(([p, u]) => dcKey(p, u)));
-    this.reservedSw = new Set(options.reservedSwitches ?? []);
+    this.reserve(options.reservedDeaths ?? [], options.reservedSwitches ?? []);
   }
-  dc(name) {
-    for (; ; ) {
-      const i = this.nextDc++;
-      const unit = this.units[Math.floor(i / PLAYER_SLOTS)];
-      if (unit === void 0) return null;
-      const player = i % PLAYER_SLOTS;
-      if (this.reservedDc.has(dcKey(player, unit))) continue;
-      const v = { kind: "dc", name, player, unit };
-      this.variables.push(v);
-      return v;
+  /** Take cells out of the pool: something else uses them. */
+  reserve(deaths, switches) {
+    for (const [p, u] of deaths) this.usedDc.add(dcKey(p, u));
+    for (const s of switches) this.usedSw.add(s);
+  }
+  /** The first free death counter of the pool (the default pool when none is given). */
+  dc(name, units = VARIABLE_UNITS) {
+    for (const unit of units.length ? units : VARIABLE_UNITS) {
+      for (let player = 0; player < PLAYER_SLOTS; player++) {
+        const key = dcKey(player, unit);
+        if (this.usedDc.has(key)) continue;
+        this.usedDc.add(key);
+        const v = { kind: "dc", name, player, unit };
+        this.variables.push(v);
+        return v;
+      }
     }
+    return null;
   }
   switch(name) {
-    for (; ; ) {
-      const index = this.nextSw--;
-      if (index < 0) return null;
-      if (this.reservedSw.has(index)) continue;
+    for (let index = SWITCH_COUNT - 1; index >= 0; index--) {
+      if (this.usedSw.has(index)) continue;
+      this.usedSw.add(index);
       const v = { kind: "switch", name, index };
       this.variables.push(v);
       return v;
     }
+    return null;
   }
 };
 function storageLabel(v) {
@@ -1205,6 +1207,7 @@ var STEP_CONDITIONS = MAX_CONDITIONS - 1;
 var Machine = class {
   owner;
   allocator;
+  units;
   triggers = [];
   /** Per trigger, the source line it came from. */
   lines = [];
@@ -1223,10 +1226,19 @@ var Machine = class {
   constructor(options) {
     this.owner = options.owner;
     this.allocator = options.allocator;
+    this.units = options.units ?? [];
     this.comment = options.comment;
-    const pc = this.allocator.dc("(program counter)");
+    const pc = this.dc("(program counter)");
     if (!pc) throw new LowerError("No death counter is free for the program counter.");
     this.pc = pc;
+  }
+  /** A death counter for this program, from its own pool. */
+  dc(name) {
+    return this.allocator.dc(name, this.units);
+  }
+  /** A switch for this program. */
+  switch(name) {
+    return this.allocator.switch(name);
   }
   fresh() {
     return this.nextState++;
@@ -1242,7 +1254,7 @@ var Machine = class {
   /** Scratch counters for arithmetic: acquired in a stack, zeroed on acquisition by the caller. */
   temp() {
     if (this.tempsInUse === this.temps.length) {
-      const t = this.allocator.dc(`(temporary ${this.temps.length + 1})`);
+      const t = this.dc(`(temporary ${this.temps.length + 1})`);
       if (!t) throw new LowerError("Out of death counters for temporaries.");
       this.temps.push(t);
     }
@@ -1254,7 +1266,7 @@ var Machine = class {
   /** Scratch switches for `random()`: one per use within an expression, so two draws are independent. */
   scratch(i) {
     while (this.scratches.length <= i) {
-      const s = this.allocator.switch(`(scratch switch ${this.scratches.length + 1})`);
+      const s = this.switch(`(scratch switch ${this.scratches.length + 1})`);
       if (!s) throw new LowerError("Out of switches for a scratch switch.");
       this.scratches.push(s);
     }
@@ -1356,25 +1368,26 @@ var Machine = class {
     }
   }
   /**
-   * `x = c + Σ ±v`: constants first, additions before subtractions (so saturation only
-   * bites when the true result is negative), through a temp when `x` itself is a term
-   * anywhere but as the single leading `+x`.
+   * `x = c + Σ ±v`, with the meaning the source has: the sum worked out exactly, then
+   * stored — below zero it is 0, at 2³² and above it wraps. Every addition goes first and
+   * every subtraction after, whatever order the source wrote them in: the running value
+   * then only ever decreases through the subtractions, so it cannot touch zero unless the
+   * exact result is below zero, and saturation bites exactly when the store would clamp.
+   * (`a = a + b - 5` with `a = 0`, `b = 10` is 5, not 10: subtracting the 5 first would
+   * saturate.) Through a temp when `x` itself is a term anywhere but as the single
+   * leading `+x`.
    */
   assign(x, expr, line, label) {
     const sameAs = (a2, b) => a2.player === b.player && a2.unit === b.unit;
     const self = expr.terms.filter((t2) => sameAs(t2.v, x));
     const others = expr.terms.filter((t2) => !sameAs(t2.v, x));
     if (self.length === 1 && self[0].sign > 0) {
-      this.addConst(x, expr.c, line, label);
-      for (const t2 of others) if (t2.sign > 0) this.addVar(x, t2.v, false, line, label);
-      for (const t2 of others) if (t2.sign < 0) this.addVar(x, t2.v, true, line, label);
+      this.accumulate(x, { c: expr.c, terms: others }, line, label);
       return;
     }
     if (self.length === 0) {
       this.set(x, Math.max(0, expr.c), line, label);
-      for (const t2 of others) if (t2.sign > 0) this.addVar(x, t2.v, false, line, label);
-      if (expr.c < 0) this.addConst(x, expr.c, line, label);
-      for (const t2 of others) if (t2.sign < 0) this.addVar(x, t2.v, true, line, label);
+      this.accumulate(x, { c: Math.min(0, expr.c), terms: others }, line, label);
       return;
     }
     const t = this.temp();
@@ -1386,9 +1399,14 @@ var Machine = class {
   /** Compute a linear expression into a temp (zeroed first). */
   evaluate(t, expr, line, label) {
     this.set(t, Math.max(0, expr.c), line, label);
-    for (const term of expr.terms) if (term.sign > 0) this.addVar(t, term.v, false, line, label);
-    if (expr.c < 0) this.addConst(t, expr.c, line, label);
-    for (const term of expr.terms) if (term.sign < 0) this.addVar(t, term.v, true, line, label);
+    this.accumulate(t, { c: Math.min(0, expr.c), terms: expr.terms }, line, label);
+  }
+  /** `v += expr` in the order `assign` describes: the additions, then the subtractions. */
+  accumulate(v, expr, line, label) {
+    if (expr.c > 0) this.addConst(v, expr.c, line, label);
+    for (const t of expr.terms) if (t.sign > 0) this.addVar(v, t.v, false, line, label);
+    if (expr.c < 0) this.addConst(v, expr.c, line, label);
+    for (const t of expr.terms) if (t.sign < 0) this.addVar(v, t.v, true, line, label);
   }
   /**
    * `a op b` for two counters as a `Bool` over saturating differences computed now, into
@@ -2142,6 +2160,46 @@ function mapPosition(mapJson, line, column) {
   return best;
 }
 
+// compiler/reserve.ts
+var UNIT_CLASS_FIRST = 228;
+function playerSlots(player, owners) {
+  if (player < PLAYER_SLOTS) return [player];
+  if (player >= PLAYER_GROUP_COUNT) return [player];
+  if (player === PlayerGroup.None) return [];
+  if (player === PlayerGroup.CurrentPlayer) {
+    const out = /* @__PURE__ */ new Set();
+    for (const o of owners) for (const p of playerSlots(o, [])) if (p < PLAYER_SLOTS) out.add(p);
+    return [...out].sort((a2, b) => a2 - b);
+  }
+  return Array.from({ length: PLAYER_SLOTS }, (_, i) => i);
+}
+function storageOf(triggers) {
+  const deaths = /* @__PURE__ */ new Map();
+  const switches = /* @__PURE__ */ new Set();
+  const cell = (player, unit, owners) => {
+    if (unit >= UNIT_CLASS_FIRST) return;
+    for (const p of playerSlots(player, owners)) deaths.set(unit * PLAYER_SLOTS + p, [p, unit]);
+  };
+  const sw = (index) => {
+    if (index >= 0 && index < SWITCH_COUNT) switches.add(index);
+  };
+  for (const t of triggers) {
+    const owners = [];
+    t.players.forEach((on, i) => {
+      if (on) owners.push(i);
+    });
+    for (const c2 of t.conditions) {
+      if (c2.type === ConditionType.Deaths) cell(c2.player, c2.unitId, owners);
+      else if (c2.type === ConditionType.Switch) sw(c2.resource);
+    }
+    for (const a2 of t.actions) {
+      if (a2.type === ActionType.SetDeaths) cell(a2.player, a2.unitId, owners);
+      else if (a2.type === ActionType.SetSwitch) sw(a2.target);
+    }
+  }
+  return { deaths: [...deaths.values()], switches: [...switches].sort((a2, b) => a2 - b) };
+}
+
 // compiler/runtime.ts
 var DEATHS_TABLE_ADDRESS = 5808996;
 var ScriptError = class extends Error {
@@ -2723,7 +2781,7 @@ var Structured = class {
         this.c.error(d, `Variables hold numbers (death counters) or booleans (switches); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
         continue;
       }
-      const v = kind === "number" ? this.m.allocator.dc(d.name.text) : this.m.allocator.switch(d.name.text);
+      const v = kind === "number" ? this.m.dc(d.name.text) : this.m.switch(d.name.text);
       if (!v) {
         this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}.`);
         continue;
@@ -3386,6 +3444,8 @@ function compileScript(ts, files, names, options) {
   const sources = [];
   const programs = [];
   const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
+  const raw = storageOf(collector.entries.flatMap((e) => e.kind === "trigger" ? [e.record] : []));
+  allocator.reserve(raw.deaths, raw.switches);
   const sourceOf = (at) => at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null;
   for (const entry of collector.entries) {
     if (entry.kind === "trigger") {
@@ -3411,8 +3471,7 @@ function compileScript(ts, files, names, options) {
     let machine;
     try {
       const comment = entry.options.comments ? (text) => collector.localString({ text }) : void 0;
-      const units = entry.options.variableUnits.length ? new Allocator({ units: entry.options.variableUnits, reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches }) : allocator;
-      machine = new Machine({ owner: entry.options.owner, allocator: units, comment });
+      machine = new Machine({ owner: entry.options.owner, allocator, units: entry.options.variableUnits, comment });
     } catch (err) {
       diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: err.message, source: "compiler" });
       continue;
@@ -3422,7 +3481,6 @@ function compileScript(ts, files, names, options) {
     triggers.push(...machine.triggers);
     for (const line of machine.lines) sources.push({ file, line });
     programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
-    if (machine.allocator !== allocator) for (const v of machine.allocator.variables) allocator.variables.push(v);
   }
   const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit } : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index });
   return result({ triggers, sources, strings: collector.strings, variables, programs });
@@ -4162,23 +4220,13 @@ function relocateManifest(triggers, extras) {
   return withManifest(extras, { ...manifest, start: block2.start });
 }
 function reservedStorage(triggers, switchNames, block2) {
-  const deaths = /* @__PURE__ */ new Map();
-  const switches = /* @__PURE__ */ new Set();
-  triggers.forEach((t, i) => {
-    if (block2 && i >= block2.start && i < block2.start + block2.count) return;
-    for (const c2 of t.conditions) {
-      if (c2.type === ConditionType.Deaths) deaths.set(c2.unitId * 4096 + c2.player, [c2.player, c2.unitId]);
-      else if (c2.type === ConditionType.Switch) switches.add(c2.resource);
-    }
-    for (const a2 of t.actions) {
-      if (a2.type === ActionType.SetDeaths) deaths.set(a2.unitId * 4096 + a2.player, [a2.player, a2.unitId]);
-      else if (a2.type === ActionType.SetSwitch) switches.add(a2.target);
-    }
-  });
+  const hand = triggers.filter((_, i) => !(block2 && i >= block2.start && i < block2.start + block2.count));
+  const used = storageOf(hand);
+  const switches = new Set(used.switches);
   switchNames.forEach((s, i) => {
     if (s && s.trim() && s.trim() !== defaultSwitchName(i)) switches.add(i);
   });
-  return { reservedDeaths: [...deaths.values()], reservedSwitches: [...switches].sort((a2, b) => a2 - b) };
+  return { reservedDeaths: used.deaths, reservedSwitches: [...switches].sort((a2, b) => a2 - b) };
 }
 function resolveStrings(compiled, intern) {
   const cache = /* @__PURE__ */ new Map();
@@ -4220,7 +4268,7 @@ function buildScript(triggers, extras, files, compiled, intern, options = {}) {
     after = [];
   }
   const manifest = { version: 2, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files) };
-  return { list: [...before, ...records2, ...after], extras: withManifest(withFiles(extras, files), manifest), block: { start, count: records2.length, sources: manifest.sources } };
+  return { list: [...before, ...records2, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records2.length, sources: manifest.sources } };
 }
 function triggerAtLine(block2, file, line) {
   let hit = null;
@@ -4492,16 +4540,14 @@ function openScriptEditor(svc, options = {}) {
     if (editor && monaco) setCompilerMarkers(monaco, files, r.diagnostics);
     render();
   };
-  const input = () => generated ? { files, names: generated.names, reservedDeaths: generated.reservedDeaths, reservedSwitches: generated.reservedSwitches } : null;
   const check = () => {
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      const req = input();
-      if (cancelled || !req) return;
-      compileInBackground(req, svc.dist()).then(
-        (r) => {
-          if (!cancelled) applyResult(r);
+      if (cancelled || !generated) return;
+      svc.prepare(files, generated).then(
+        (a2) => {
+          if (!cancelled) applyResult(a2.compiled);
         },
         (err) => {
           if (!cancelled && !(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`);
@@ -4514,15 +4560,30 @@ function openScriptEditor(svc, options = {}) {
       clearTimeout(timer);
       timer = null;
     }
-    const req = input();
-    if (!req) return null;
-    try {
-      const r = await compileInBackground(req, svc.dist());
-      applyResult(r);
-      return r;
-    } catch (err) {
-      if (!(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`);
-      return null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (cancelled || !generated) return null;
+      try {
+        const a2 = await svc.prepare(files, generated);
+        applyResult(a2.compiled);
+        return a2;
+      } catch (err) {
+        if (err instanceof CompileSuperseded) continue;
+        setStatus("error", `Compiler: ${err.message}`);
+        return null;
+      }
+    }
+    return null;
+  };
+  const refusal = (why) => {
+    switch (why) {
+      case "closed":
+        return "Not built: the map closed.";
+      case "switched":
+        return "Not built: another map is in front now.";
+      case "changed":
+        return "Not built: the map changed while the script was running. Build again.";
+      default:
+        return "Not built.";
     }
   };
   const build = async (takeOver = false) => {
@@ -4530,23 +4591,29 @@ function openScriptEditor(svc, options = {}) {
     building = true;
     setStatus("busy", "Running the script\u2026");
     try {
-      const r = await compileNow();
-      if (!r) return false;
-      if (!r.ok) {
-        const n = r.diagnostics.length;
-        setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
+      for (let attempt = 0; ; attempt++) {
+        const a2 = await compileNow();
+        if (!a2 || cancelled) return false;
+        if (!a2.compiled.ok) {
+          const n = a2.compiled.diagnostics.length;
+          setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
+          return false;
+        }
+        const wasStale = svc.state()?.stale ?? false;
+        setStatus("busy", "Installing the triggers\u2026");
+        const out = svc.install(a2, { takeOver });
+        if (out.block) {
+          const b = out.block;
+          setStatus("ok", b.count === 0 ? "Built: the script defines no triggers; the block is empty." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${wasStale ? " (appended: the previous block had been edited outside the script)" : ""}.`);
+          return true;
+        }
+        if (out.refused === "changed" && attempt < 2) {
+          setStatus("busy", "The map changed while the script ran; running it again\u2026");
+          continue;
+        }
+        setStatus("error", refusal(out.refused));
         return false;
       }
-      const wasStale = svc.state()?.stale ?? false;
-      setStatus("busy", "Installing the triggers\u2026");
-      const out = await svc.build(files, { takeOver });
-      if (!out.block) {
-        setStatus("error", "Not built: the map closed.");
-        return false;
-      }
-      const b = out.block;
-      setStatus("ok", b.count === 0 ? "Built: the script defines no triggers; the block is empty." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${wasStale ? " (appended: the previous block had been edited outside the script)" : ""}.`);
-      return true;
     } finally {
       building = false;
       render();
@@ -4581,7 +4648,7 @@ function openScriptEditor(svc, options = {}) {
     if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
   };
   const simulateNow = async () => {
-    const r = await compileNow();
+    const r = (await compileNow())?.compiled;
     if (!r) return;
     if (!r.ok) {
       setStatus("error", `Not simulated: ${r.diagnostics.length} error${r.diagnostics.length === 1 ? "" : "s"}.`);
@@ -4745,9 +4812,11 @@ function commitExtras(api, before, after) {
 var ScriptService = class {
   api;
   claim;
+  compiler;
   lastManifest;
-  constructor(api, open) {
+  constructor(api, open, compiler = compileInBackground) {
     this.api = api;
+    this.compiler = compiler;
     this.claim = api.triggers.claim({
       label: "the TrigScript block",
       badge: "script",
@@ -4797,7 +4866,15 @@ var ScriptService = class {
     const triggers = api.triggers.list();
     const state = scriptState(triggers, snapshotExtras(api));
     const reserved = reservedStorage(triggers, switchNames, state.block);
-    return { names, decls: generateDeclarations(names), reservedDeaths: reserved.reservedDeaths ?? [], reservedSwitches: reserved.reservedSwitches ?? [] };
+    const decls = generateDeclarations(names);
+    const reservedDeaths = reserved.reservedDeaths ?? [];
+    const reservedSwitches = reserved.reservedSwitches ?? [];
+    return { names, decls, reservedDeaths, reservedSwitches, context: hashText(`${decls}\0${JSON.stringify([reservedDeaths, reservedSwitches])}`) };
+  }
+  /** The id of the map in front, or null on a host without ids (every map then compares equal). */
+  documentId() {
+    const doc = this.api.document;
+    return typeof doc.id === "function" ? doc.id() : null;
   }
   /** The declarations for the open map; `compact` is the shorter variant for a language model. */
   declarations(options = {}) {
@@ -4811,24 +4888,43 @@ var ScriptService = class {
     return { ...this.state()?.files ?? {}, [ENTRY_FILE]: input };
   }
   /** Compile against the open map's names; rejects with `CompileSuperseded` when a newer compile started first. */
-  compile(input) {
-    const map = this.names();
-    if (!map) return Promise.reject(new Error("No map is open."));
-    return compileInBackground({ files: this.filesOf(input), names: map.names, reservedDeaths: map.reservedDeaths, reservedSwitches: map.reservedSwitches }, this.dist());
+  async compile(input) {
+    return (await this.prepare(input)).compiled;
   }
   /**
-   * Compile and, when there are no errors, install the block — replacing the previous
-   * one, or appending when the previous was edited by hand — and store the files with
-   * the map. `takeOver` replaces the whole trigger list with the script's.
+   * Compile into an artifact `install` can check: the files as they are now, against the
+   * map in front and its names as they are now (`map`, when the caller already has them —
+   * the editor keeps a copy that follows the map's events).
    */
-  async build(input, options = {}) {
+  async prepare(input, map = this.names()) {
+    if (!map) throw new Error("No map is open.");
     const files = this.filesOf(input);
-    const compiled = await this.compile(files);
-    if (!compiled.ok || !this.api.document.isOpen()) return { compiled, block: null };
+    const document2 = this.documentId();
+    const archived = hashFiles(this.state()?.files ?? {});
+    const compiled = await this.compiler({ files, names: map.names, reservedDeaths: map.reservedDeaths, reservedSwitches: map.reservedSwitches }, this.dist());
+    return { files, compiled, document: document2, context: map.context, archived };
+  }
+  /**
+   * Install an artifact as the block — replacing the previous one, or appending when the
+   * previous was edited by hand — and store its files with the map, in one
+   * `document.update`. Refused, with the reason, when it has errors or the map it was
+   * compiled for is not the one in front any more (closed, switched, or changed under
+   * it). Files edited in the archive since the compile started are left as they are.
+   * `takeOver` replaces the whole trigger list with the script's.
+   */
+  install(artifact, options = {}) {
+    const { compiled, files } = artifact;
+    const refuse = (refused) => ({ compiled, block: null, refused });
+    if (!this.api.document.isOpen()) return refuse("closed");
+    if (this.documentId() !== artifact.document) return refuse("switched");
+    const map = this.names();
+    if (!map || map.context !== artifact.context) return refuse("changed");
+    if (!compiled.ok) return refuse("errors");
+    const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
     let block2 = null;
     this.api.document.update("Build TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
-      const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), options);
+      const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), { ...options, keepFiles });
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block2 = plan.block;
@@ -4839,6 +4935,16 @@ var ScriptService = class {
       this.api.ui.status(b.count === 0 ? "Built: the script defines no triggers." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}.`);
     }
     return { compiled, block: block2 };
+  }
+  /**
+   * `prepare` then `install`. When the map changed under the compile, it is compiled
+   * again against the new names, twice at most, before the refusal is reported.
+   */
+  async build(input, options = {}) {
+    for (let attempt = 0; ; attempt++) {
+      const out = this.install(await this.prepare(input), options);
+      if (out.refused !== "changed" || attempt >= 2) return out;
+    }
   }
   /** Records as raw `trigger()` calls in the script language — what Import map triggers writes. */
   print(triggers, options) {

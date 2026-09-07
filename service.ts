@@ -8,7 +8,7 @@
  */
 import type { PluginApi, TriggerClaimHandle } from "@scm-js/plugin-api";
 import type { TriggerRecord } from "./vendor/triggers";
-import { compileInBackground } from "./compile";
+import { compileInBackground, type CompileInput } from "./compile";
 import { ENTRY_FILE, type CompileResult, type ScriptFiles } from "./compiler/compiler";
 import { generateDeclarations } from "./compiler/declarations";
 import { scriptNames, type ScriptNames } from "./compiler/names";
@@ -16,14 +16,44 @@ import { printScript, type PrintOptions } from "./compiler/print";
 import { simulate, type SimulationEvent } from "./compiler/simulate";
 import { DEFAULT_DIST, DIST_STORAGE_KEY } from "./monaco";
 import {
-  buildScript, findBlock, isScriptMember, readManifest, relocateManifest, reservedStorage, scriptState, triggerAtLine, withFiles,
+  buildScript, findBlock, hashFiles, hashText, isScriptMember, readManifest, relocateManifest, reservedStorage, scriptState, triggerAtLine, withFiles,
   type BuildOptions, type Extras, type ScriptBlock, type ScriptState,
 } from "./script";
 
+/**
+ * A compile, with what it was compiled *for*: the map it read its names from and the
+ * state those names were in. Installing checks both, so a build lands only on the map
+ * and the names it was made against — another map in front by the time the worker
+ * answers, or a location renamed meanwhile, is refused rather than installed.
+ */
+export interface ScriptArtifact {
+  /** The files as compiled — the snapshot, not whatever the archive holds now. */
+  files: ScriptFiles;
+  compiled: CompileResult;
+  /** `api.document.id()` when the compile started; null on a host without ids. */
+  document: number | null;
+  /** `MapNames.context` when the compile started. */
+  context: string;
+  /** `hashFiles` of the archive's files when the compile started: what the build may overwrite. */
+  archived: string;
+}
+
+/** Why an artifact was not installed. */
+export type BuildRefusal =
+  /** The compile had errors. */
+  | "errors"
+  /** No map is open. */
+  | "closed"
+  /** Another map is in front. */
+  | "switched"
+  /** The map's names or reserved storage changed while the compile ran; compile again. */
+  | "changed";
+
 export interface ScriptBuildResult {
   compiled: CompileResult;
-  /** Where the block landed; null when the compile had errors and nothing was built. */
+  /** Where the block landed; null when nothing was built — `refused` says why. */
   block: ScriptBlock | null;
+  refused?: BuildRefusal;
 }
 
 export interface ScriptSimulation {
@@ -40,7 +70,12 @@ export interface MapNames {
   /** Storage the map's hand triggers already use, for the allocator to avoid. */
   reservedDeaths: readonly (readonly [number, number])[];
   reservedSwitches: readonly number[];
+  /** A hash over everything above: two compiles against the same context see the same map. */
+  context: string;
 }
+
+/** What compiles a script: `compileInBackground`, or something synchronous in a test. */
+export type Compiler = (input: CompileInput, dist: string) => Promise<CompileResult>;
 
 /** The script's members as the map holds them, by their stored names. */
 export function snapshotExtras(api: PluginApi): Map<string, Uint8Array> {
@@ -65,10 +100,12 @@ export type ScriptInput = string | ScriptFiles;
 export class ScriptService {
   readonly api: PluginApi;
   readonly claim: TriggerClaimHandle;
+  private readonly compiler: Compiler;
   private lastManifest: Uint8Array | null | undefined;
 
-  constructor(api: PluginApi, open: (file?: string, line?: number) => void) {
+  constructor(api: PluginApi, open: (file?: string, line?: number) => void, compiler: Compiler = compileInBackground) {
     this.api = api;
+    this.compiler = compiler;
     this.claim = api.triggers.claim({
       label: "the TrigScript block",
       badge: "script",
@@ -120,7 +157,16 @@ export class ScriptService {
     const triggers = api.triggers.list();
     const state = scriptState(triggers, snapshotExtras(api));
     const reserved = reservedStorage(triggers, switchNames, state.block);
-    return { names, decls: generateDeclarations(names), reservedDeaths: reserved.reservedDeaths ?? [], reservedSwitches: reserved.reservedSwitches ?? [] };
+    const decls = generateDeclarations(names);
+    const reservedDeaths = reserved.reservedDeaths ?? [];
+    const reservedSwitches = reserved.reservedSwitches ?? [];
+    return { names, decls, reservedDeaths, reservedSwitches, context: hashText(`${decls}\0${JSON.stringify([reservedDeaths, reservedSwitches])}`) };
+  }
+
+  /** The id of the map in front, or null on a host without ids (every map then compares equal). */
+  documentId(): number | null {
+    const doc = this.api.document as { id?: () => number | null };
+    return typeof doc.id === "function" ? doc.id() : null;
   }
 
   /** The declarations for the open map; `compact` is the shorter variant for a language model. */
@@ -137,25 +183,46 @@ export class ScriptService {
   }
 
   /** Compile against the open map's names; rejects with `CompileSuperseded` when a newer compile started first. */
-  compile(input: ScriptInput): Promise<CompileResult> {
-    const map = this.names();
-    if (!map) return Promise.reject(new Error("No map is open."));
-    return compileInBackground({ files: this.filesOf(input), names: map.names, reservedDeaths: map.reservedDeaths, reservedSwitches: map.reservedSwitches }, this.dist());
+  async compile(input: ScriptInput): Promise<CompileResult> {
+    return (await this.prepare(input)).compiled;
   }
 
   /**
-   * Compile and, when there are no errors, install the block — replacing the previous
-   * one, or appending when the previous was edited by hand — and store the files with
-   * the map. `takeOver` replaces the whole trigger list with the script's.
+   * Compile into an artifact `install` can check: the files as they are now, against the
+   * map in front and its names as they are now (`map`, when the caller already has them —
+   * the editor keeps a copy that follows the map's events).
    */
-  async build(input: ScriptInput, options: BuildOptions = {}): Promise<ScriptBuildResult> {
+  async prepare(input: ScriptInput, map: MapNames | null = this.names()): Promise<ScriptArtifact> {
+    if (!map) throw new Error("No map is open.");
     const files = this.filesOf(input);
-    const compiled = await this.compile(files);
-    if (!compiled.ok || !this.api.document.isOpen()) return { compiled, block: null };
+    const document = this.documentId();
+    const archived = hashFiles(this.state()?.files ?? {});
+    const compiled = await this.compiler({ files, names: map.names, reservedDeaths: map.reservedDeaths, reservedSwitches: map.reservedSwitches }, this.dist());
+    return { files, compiled, document, context: map.context, archived };
+  }
+
+  /**
+   * Install an artifact as the block — replacing the previous one, or appending when the
+   * previous was edited by hand — and store its files with the map, in one
+   * `document.update`. Refused, with the reason, when it has errors or the map it was
+   * compiled for is not the one in front any more (closed, switched, or changed under
+   * it). Files edited in the archive since the compile started are left as they are.
+   * `takeOver` replaces the whole trigger list with the script's.
+   */
+  install(artifact: ScriptArtifact, options: BuildOptions = {}): ScriptBuildResult {
+    const { compiled, files } = artifact;
+    const refuse = (refused: BuildRefusal): ScriptBuildResult => ({ compiled, block: null, refused });
+    if (!this.api.document.isOpen()) return refuse("closed");
+    if (this.documentId() !== artifact.document) return refuse("switched");
+    const map = this.names();
+    // Before the errors: a compile against names that changed under it may have failed *because* they did.
+    if (!map || map.context !== artifact.context) return refuse("changed");
+    if (!compiled.ok) return refuse("errors");
+    const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
     let block: ScriptBlock | null = null;
     this.api.document.update("Build TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
-      const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), options);
+      const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), { ...options, keepFiles });
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block = plan.block;
@@ -166,6 +233,17 @@ export class ScriptService {
       this.api.ui.status(b.count === 0 ? "Built: the script defines no triggers." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}.`);
     }
     return { compiled, block };
+  }
+
+  /**
+   * `prepare` then `install`. When the map changed under the compile, it is compiled
+   * again against the new names, twice at most, before the refusal is reported.
+   */
+  async build(input: ScriptInput, options: BuildOptions = {}): Promise<ScriptBuildResult> {
+    for (let attempt = 0; ; attempt++) {
+      const out = this.install(await this.prepare(input), options);
+      if (out.refused !== "changed" || attempt >= 2) return out;
+    }
   }
 
   /** Records as raw `trigger()` calls in the script language — what Import map triggers writes. */

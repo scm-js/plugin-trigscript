@@ -47,6 +47,10 @@ export type Var = DcVar | SwVar;
  * Units whose death counters are safe to use as variables: they can never die because
  * nothing can create them — the "(Unused)" entries of units.dat, Cantina first (the
  * community's classic choice). Twelve players per unit, so eighteen units give 216 slots.
+ *
+ * Numbers in a program are these counters: 0 to 4 294 967 295. A stored result below
+ * zero is 0 and one at 2³² or above wraps (the game's own Set Deaths rules; `assign`
+ * says how an expression is ordered so that the source's exact sum is what gets stored).
  */
 export const VARIABLE_UNITS: readonly number[] = [181, 179, 180, 182, 183, 184, 185, 186, 187, 204, 91, 92, 119, 121, 145, 153, 158, 161];
 
@@ -55,46 +59,51 @@ export const PLAYER_SLOTS = 12;
 const dcKey = (player: number, unit: number) => unit * PLAYER_SLOTS + player;
 
 /**
- * Hands out storage: death counters player-major over `units` (so the first twelve
- * variables share one unit id), switches from 255 downwards. Slots that the map's hand
- * triggers already touch are skipped.
+ * Hands out storage: death counters player-major over a pool of units (so the first
+ * twelve variables share one unit id), switches from 255 downwards. There is one
+ * allocator per compile — every program draws from it, whatever pool it asks for, so
+ * two programs can never be handed the same cell — and it starts out with the cells the
+ * map's hand triggers and the script's own raw triggers touch already taken.
  */
 export class Allocator {
-  private readonly units: readonly number[];
-  private readonly reservedDc: Set<number>;
-  private readonly reservedSw: Set<number>;
-  private nextDc = 0;
-  private nextSw = SWITCH_COUNT - 1;
+  private readonly usedDc = new Set<number>();
+  private readonly usedSw = new Set<number>();
   readonly variables: Var[] = [];
 
-  constructor(options: { units?: readonly number[]; reservedDeaths?: readonly (readonly [number, number])[]; reservedSwitches?: readonly number[] } = {}) {
-    this.units = options.units?.length ? options.units : VARIABLE_UNITS;
-    this.reservedDc = new Set((options.reservedDeaths ?? []).map(([p, u]) => dcKey(p, u)));
-    this.reservedSw = new Set(options.reservedSwitches ?? []);
+  constructor(options: { reservedDeaths?: readonly (readonly [number, number])[]; reservedSwitches?: readonly number[] } = {}) {
+    this.reserve(options.reservedDeaths ?? [], options.reservedSwitches ?? []);
   }
 
-  dc(name: string): DcVar | null {
-    for (;;) {
-      const i = this.nextDc++;
-      const unit = this.units[Math.floor(i / PLAYER_SLOTS)];
-      if (unit === undefined) return null;
-      const player = i % PLAYER_SLOTS;
-      if (this.reservedDc.has(dcKey(player, unit))) continue;
-      const v: DcVar = { kind: "dc", name, player, unit };
-      this.variables.push(v);
-      return v;
+  /** Take cells out of the pool: something else uses them. */
+  reserve(deaths: readonly (readonly [number, number])[], switches: readonly number[]) {
+    for (const [p, u] of deaths) this.usedDc.add(dcKey(p, u));
+    for (const s of switches) this.usedSw.add(s);
+  }
+
+  /** The first free death counter of the pool (the default pool when none is given). */
+  dc(name: string, units: readonly number[] = VARIABLE_UNITS): DcVar | null {
+    for (const unit of units.length ? units : VARIABLE_UNITS) {
+      for (let player = 0; player < PLAYER_SLOTS; player++) {
+        const key = dcKey(player, unit);
+        if (this.usedDc.has(key)) continue;
+        this.usedDc.add(key);
+        const v: DcVar = { kind: "dc", name, player, unit };
+        this.variables.push(v);
+        return v;
+      }
     }
+    return null;
   }
 
   switch(name: string): SwVar | null {
-    for (;;) {
-      const index = this.nextSw--;
-      if (index < 0) return null;
-      if (this.reservedSw.has(index)) continue;
+    for (let index = SWITCH_COUNT - 1; index >= 0; index--) {
+      if (this.usedSw.has(index)) continue;
+      this.usedSw.add(index);
       const v: SwVar = { kind: "switch", name, index };
       this.variables.push(v);
       return v;
     }
+    return null;
   }
 }
 
@@ -219,7 +228,10 @@ export class LowerError extends Error {}
 export interface MachineOptions {
   /** The player the program runs as (0-based). */
   owner: number;
+  /** The compile's one allocator, shared with every other program. */
   allocator: Allocator;
+  /** The units whose death counters hold this program's variables; the allocator's default pool when empty. */
+  units?: readonly number[];
   /** Local string id for a text (see `CompileResult.strings`); comments are dropped when absent. */
   comment?: (text: string) => number;
 }
@@ -232,6 +244,7 @@ export const STEP_CONDITIONS = MAX_CONDITIONS - 1;
 export class Machine {
   readonly owner: number;
   readonly allocator: Allocator;
+  private readonly units: readonly number[];
   readonly triggers: TriggerRecord[] = [];
   /** Per trigger, the source line it came from. */
   readonly lines: number[] = [];
@@ -251,10 +264,21 @@ export class Machine {
   constructor(options: MachineOptions) {
     this.owner = options.owner;
     this.allocator = options.allocator;
+    this.units = options.units ?? [];
     this.comment = options.comment;
-    const pc = this.allocator.dc("(program counter)");
+    const pc = this.dc("(program counter)");
     if (!pc) throw new LowerError("No death counter is free for the program counter.");
     this.pc = pc;
+  }
+
+  /** A death counter for this program, from its own pool. */
+  dc(name: string): DcVar | null {
+    return this.allocator.dc(name, this.units);
+  }
+
+  /** A switch for this program. */
+  switch(name: string): SwVar | null {
+    return this.allocator.switch(name);
   }
 
   fresh(): number {
@@ -274,7 +298,7 @@ export class Machine {
   /** Scratch counters for arithmetic: acquired in a stack, zeroed on acquisition by the caller. */
   temp(): DcVar {
     if (this.tempsInUse === this.temps.length) {
-      const t = this.allocator.dc(`(temporary ${this.temps.length + 1})`);
+      const t = this.dc(`(temporary ${this.temps.length + 1})`);
       if (!t) throw new LowerError("Out of death counters for temporaries.");
       this.temps.push(t);
     }
@@ -288,7 +312,7 @@ export class Machine {
   /** Scratch switches for `random()`: one per use within an expression, so two draws are independent. */
   scratch(i: number): SwVar {
     while (this.scratches.length <= i) {
-      const s = this.allocator.switch(`(scratch switch ${this.scratches.length + 1})`);
+      const s = this.switch(`(scratch switch ${this.scratches.length + 1})`);
       if (!s) throw new LowerError("Out of switches for a scratch switch.");
       this.scratches.push(s);
     }
@@ -399,9 +423,14 @@ export class Machine {
   }
 
   /**
-   * `x = c + Σ ±v`: constants first, additions before subtractions (so saturation only
-   * bites when the true result is negative), through a temp when `x` itself is a term
-   * anywhere but as the single leading `+x`.
+   * `x = c + Σ ±v`, with the meaning the source has: the sum worked out exactly, then
+   * stored — below zero it is 0, at 2³² and above it wraps. Every addition goes first and
+   * every subtraction after, whatever order the source wrote them in: the running value
+   * then only ever decreases through the subtractions, so it cannot touch zero unless the
+   * exact result is below zero, and saturation bites exactly when the store would clamp.
+   * (`a = a + b - 5` with `a = 0`, `b = 10` is 5, not 10: subtracting the 5 first would
+   * saturate.) Through a temp when `x` itself is a term anywhere but as the single
+   * leading `+x`.
    */
   assign(x: DcVar, expr: Linear, line: number, label: string) {
     const sameAs = (a: DcVar, b: DcVar) => a.player === b.player && a.unit === b.unit;
@@ -409,16 +438,12 @@ export class Machine {
     const others = expr.terms.filter((t) => !sameAs(t.v, x));
     if (self.length === 1 && self[0].sign > 0) {
       // x = x + rest
-      this.addConst(x, expr.c, line, label);
-      for (const t of others) if (t.sign > 0) this.addVar(x, t.v, false, line, label);
-      for (const t of others) if (t.sign < 0) this.addVar(x, t.v, true, line, label);
+      this.accumulate(x, { c: expr.c, terms: others }, line, label);
       return;
     }
     if (self.length === 0) {
       this.set(x, Math.max(0, expr.c), line, label);
-      for (const t of others) if (t.sign > 0) this.addVar(x, t.v, false, line, label);
-      if (expr.c < 0) this.addConst(x, expr.c, line, label);
-      for (const t of others) if (t.sign < 0) this.addVar(x, t.v, true, line, label);
+      this.accumulate(x, { c: Math.min(0, expr.c), terms: others }, line, label);
       return;
     }
     const t = this.temp();
@@ -431,9 +456,15 @@ export class Machine {
   /** Compute a linear expression into a temp (zeroed first). */
   evaluate(t: DcVar, expr: Linear, line: number, label: string) {
     this.set(t, Math.max(0, expr.c), line, label);
-    for (const term of expr.terms) if (term.sign > 0) this.addVar(t, term.v, false, line, label);
-    if (expr.c < 0) this.addConst(t, expr.c, line, label);
-    for (const term of expr.terms) if (term.sign < 0) this.addVar(t, term.v, true, line, label);
+    this.accumulate(t, { c: Math.min(0, expr.c), terms: expr.terms }, line, label);
+  }
+
+  /** `v += expr` in the order `assign` describes: the additions, then the subtractions. */
+  private accumulate(v: DcVar, expr: Linear, line: number, label: string) {
+    if (expr.c > 0) this.addConst(v, expr.c, line, label);
+    for (const t of expr.terms) if (t.sign > 0) this.addVar(v, t.v, false, line, label);
+    if (expr.c < 0) this.addConst(v, expr.c, line, label);
+    for (const t of expr.terms) if (t.sign < 0) this.addVar(v, t.v, true, line, label);
   }
 
   /**

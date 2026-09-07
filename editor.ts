@@ -11,14 +11,14 @@
  * first open.
  */
 import type { DialogHandle } from "@scm-js/plugin-api";
-import { compileInBackground, CompileSuperseded, retainCompileWorker } from "./compile";
+import { CompileSuperseded, retainCompileWorker } from "./compile";
 import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 import { printScript } from "./compiler/print";
 import { Simulation, type SimulationEvent } from "./compiler/simulate";
 import { actionDef } from "./vendor/triggerDefs";
 import { createScriptEditor, loadMonaco, releaseScriptEditor, setCompilerMarkers, setDeclarations, type MonacoApi, type ScriptEditor } from "./monaco";
 import { FILE_NAME } from "./script";
-import type { MapNames, ScriptService } from "./service";
+import type { BuildRefusal, MapNames, ScriptArtifact, ScriptService } from "./service";
 
 export const TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
 // one trigger of the map, in order; code inside program(() => { … }) runs in the game.
@@ -270,57 +270,83 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
     render();
   };
 
-  const input = () => generated ? { files, names: generated.names, reservedDeaths: generated.reservedDeaths, reservedSwitches: generated.reservedSwitches } : null;
-
   /** Type-check, run and lower in the background; markers land in the editor, the list below. */
   const check = () => {
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      const req = input();
-      if (cancelled || !req) return;
-      compileInBackground(req, svc.dist()).then(
-        (r) => { if (!cancelled) applyResult(r); },
+      if (cancelled || !generated) return;
+      svc.prepare(files, generated).then(
+        (a) => { if (!cancelled) applyResult(a.compiled); },
         (err: Error) => { if (!cancelled && !(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`); },
       );
     }, CHECK_DELAY_MS);
   };
 
-  const compileNow = async (): Promise<CompileResult | null> => {
+  /**
+   * Compile what is in the editor right now, and hand back the artifact a build installs.
+   * A keystroke during the compile supersedes it with the newer text's check; the newer
+   * text is what the user wants built, so it is compiled again — a few times at most.
+   */
+  const compileNow = async (): Promise<ScriptArtifact | null> => {
     if (timer !== null) { clearTimeout(timer); timer = null; }
-    const req = input();
-    if (!req) return null;
-    try {
-      const r = await compileInBackground(req, svc.dist());
-      applyResult(r);
-      return r;
-    } catch (err) {
-      if (!(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${(err as Error).message}`);
-      return null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (cancelled || !generated) return null;
+      try {
+        const a = await svc.prepare(files, generated);
+        applyResult(a.compiled);
+        return a;
+      } catch (err) {
+        if (err instanceof CompileSuperseded) continue;
+        setStatus("error", `Compiler: ${(err as Error).message}`);
+        return null;
+      }
+    }
+    return null;
+  };
+
+  const refusal = (why: BuildRefusal | undefined): string => {
+    switch (why) {
+      case "closed": return "Not built: the map closed.";
+      case "switched": return "Not built: another map is in front now.";
+      case "changed": return "Not built: the map changed while the script was running. Build again.";
+      default: return "Not built.";
     }
   };
 
+  /**
+   * One compile, then that exact result installed — never a second run of the script,
+   * whose output could differ from what the problems list and the summary show. The
+   * service refuses the install when the map is not the one the compile was made for.
+   */
   const build = async (takeOver = false): Promise<boolean> => {
     if (building || !ready) return false;
     building = true;
     setStatus("busy", "Running the script…");
     try {
-      const r = await compileNow();
-      if (!r) return false;
-      if (!r.ok) {
-        const n = r.diagnostics.length;
-        setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
+      for (let attempt = 0; ; attempt++) {
+        const a = await compileNow();
+        if (!a || cancelled) return false;
+        if (!a.compiled.ok) {
+          const n = a.compiled.diagnostics.length;
+          setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
+          return false;
+        }
+        const wasStale = svc.state()?.stale ?? false;
+        setStatus("busy", "Installing the triggers…");
+        const out = svc.install(a, { takeOver });
+        if (out.block) {
+          const b = out.block;
+          setStatus("ok", b.count === 0
+            ? "Built: the script defines no triggers; the block is empty."
+            : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}${wasStale ? " (appended: the previous block had been edited outside the script)" : ""}.`);
+          return true;
+        }
+        // The names changed under the compile (a location renamed, a trigger added): once more against the new ones.
+        if (out.refused === "changed" && attempt < 2) { setStatus("busy", "The map changed while the script ran; running it again…"); continue; }
+        setStatus("error", refusal(out.refused));
         return false;
       }
-      const wasStale = svc.state()?.stale ?? false;
-      setStatus("busy", "Installing the triggers…");
-      const out = await svc.build(files, { takeOver });
-      if (!out.block) { setStatus("error", "Not built: the map closed."); return false; }
-      const b = out.block;
-      setStatus("ok", b.count === 0
-        ? "Built: the script defines no triggers; the block is empty."
-        : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}${wasStale ? " (appended: the previous block had been edited outside the script)" : ""}.`);
-      return true;
     } finally {
       building = false;
       render();
@@ -355,7 +381,7 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
 
   /** Run the compiled triggers through the trigger-cycle interpreter and show what happened. */
   const simulateNow = async () => {
-    const r = await compileNow();
+    const r = (await compileNow())?.compiled;
     if (!r) return;
     if (!r.ok) { setStatus("error", `Not simulated: ${r.diagnostics.length} error${r.diagnostics.length === 1 ? "" : "s"}.`); return; }
     try {

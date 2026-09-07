@@ -155,7 +155,11 @@ program(() => {
 Everything inside the arrow runs in the game. **Variables are death counters.** A
 `let n = 0` takes a death counter on a unit that can never die (the "(Unused)" entries of
 units.dat, Cantina first), twelve players per unit, so there are hundreds available. A
-`let f = false` takes a switch. Values are unsigned 32-bit and `-=` saturates at 0.
+`let f = false` takes a switch. Numbers are what a death counter holds, 0 to 4 294 967 295,
+and an expression means what it says: `a = a + b - 5` is the exact sum, then stored —
+a result below zero is stored as 0, one at 2³² or above wraps. (The compiler orders the
+additions before the subtractions so that the game's saturating subtraction only bites
+when the result really is below zero.)
 
 **Control flow is a program counter.** Each basic block is a run of preserved triggers
 testing `pc == S`, in list order, so straight-line code runs inside a single trigger
@@ -197,8 +201,13 @@ may have several programs; each gets its own program counter and variables, and 
 options are `owner`, `comments` (a Comment action naming the source line on every
 generated trigger, which is what the Trigger Editor shows as the trigger's title; default
 on) and `variableUnits` (unit types whose death counters hold this program's variables).
-The allocator avoids every death counter and switch the map's hand-made triggers touch or
-its switch names claim, and the toolbar's program summary lists where each variable lives.
+One allocator serves the whole script, so two programs never share a cell whatever pools
+they name. It avoids every death counter and switch the map's hand-made triggers touch
+(a `CurrentPlayer` there counts for each of the trigger's owners, a force or All Players
+for every slot) or its switch names claim, and everything the script's own `trigger()`
+calls touch, wherever they stand in the text — a raw `setDeaths(P1, units.Cantina, …)`
+and a program in the same script keep out of each other's way. The toolbar's program
+summary lists where each variable lives.
 
 ## For other plugins
 
@@ -213,7 +222,7 @@ as they are) or an object of every file by path.
 | `trigscript.state()` | `{ files, source, manifest, block, stale, unbuilt }`: the map's script files, `main.ts` on its own, where its built block sits in the trigger list (null when the records were edited by hand — `stale`), and whether the files differ from what was last built. Null with no map. |
 | `trigscript.declarations({ compact? })` | The generated `.d.ts` the script type-checks against — the whole vocabulary for this map. `compact` is the shorter variant meant for a language model. Empty with no map. |
 | `trigscript.compile(source)` | A promise of a `CompileResult`: `ok`, `diagnostics` (`file`, 1-based `line` / `column`, `message`, `source: "typescript"`, `"compiler"` or `"script"` for an error the script threw), the records, `sources` (per record, the file and line it came from), the variable allocation, the `programs`. A newer compile supersedes an unfinished one, which rejects with `CompileSuperseded`. |
-| `trigscript.build(source, { takeOver? })` | Compile and, when clean, install the block (or append when the old one was edited) and store the files with the map: a promise of `{ compiled, block }`, `block` null when there were errors. `takeOver` replaces the whole trigger list with the script's. A settings-style transaction: not undoable, marks the map modified. |
+| `trigscript.build(source, { takeOver? })` | Compile and, when clean, install the block (or append when the old one was edited) and store the files with the map: a promise of `{ compiled, block, refused? }`. The build lands only on the map it was compiled for: `block` is null and `refused` says why when there were `"errors"`, the map `"closed"` or another one `"switched"` to the front while the script ran, or the map's names `"changed"` under it (that one is compiled again, twice at most, before it is reported). Files edited in the archive while the script ran are kept, and the state then reads as unbuilt. `takeOver` replaces the whole trigger list with the script's. A settings-style transaction: not undoable, marks the map modified. |
 | `trigscript.print(triggers, { imports?, header? })` | Records as `trigger()` calls in the script language — what Import map triggers writes. `imports` starts the text with an import of the names it uses. |
 | `trigscript.simulate(triggers, cycles, { player? })` | The interpreter: `{ cycles, events, switches }`. |
 | `trigscript.triggerAt(file, line)` | Which trigger (index in the map's list) a 1-based line of a file generated; null when none did or the block is stale. |
@@ -234,13 +243,13 @@ The layout:
 | | |
 | --- | --- |
 | `plugin.ts` | Activation: the menu item, the claim on the generated block (`api.triggers.claim`), the commands. |
-| `service.ts` | What the plugin does to the map: names off `api.settings` / `api.names` / `api.query`, the members through `api.document.extras`, a build as one `document.update`. |
+| `service.ts` | What the plugin does to the map: names off `api.settings` / `api.names` / `api.query`, the members through `api.document.extras`, a build as one `document.update`. A compile is `prepare`d into an artifact stamped with the map's id and a hash of its names, and `install` refuses an artifact whose map is not the one in front — the dialog compiles once and installs that, never a second run. |
 | `editor.ts` | The dialog: the file list and Monaco, plain DOM in the editor's own classes. |
 | `monaco.ts` | Monaco from `dist/` on jsDelivr's GitHub mirror (the tag `DIST_TAG` names; the workers start as blob module workers), one model per file under `file:///` so imports resolve, the theme. The plugin storage key `monacoDist` overrides where the files are fetched from — set `scmjs.plugin.trigscript.monacoDist` in the browser to `"http://localhost:3000/dist"` while developing. |
 | `bundle/`, `dist/` | `npm run bundle` builds Monaco with esbuild — the editor core, its features and the TypeScript language alone, styles injected by the module and the codicon font inlined, plus the two workers — and writes `lib.d.ts`, the standard library the compile worker checks scripts against (`bundle/lib.mjs`), into `dist/`, which is committed. A CDN's on-the-fly bundler turns Monaco's lazy language chunks into standalone bundles carrying a second editor core, which is why the plugin carries its own. After a Monaco bump: rebuild, commit, tag `monaco-<version>-<n>`, move `DIST_TAG`. |
 | `compile.ts` | Compiling in a worker: a blob worker `importScripts` TypeScript from the CDN, fetches `lib.d.ts` once, and imports this plugin's own compiler module by the `blob:` URL the editor's loader gave it; a request the script does not answer in fifteen seconds (an endless loop outside `program()`) terminates the worker. A main-thread fallback loads TypeScript through a `<script>` tag. |
 | `script.ts` | The files, the block and its manifest: hashing, finding the block by content, staleness, planning a build. Pure over a trigger list and a map of the members. |
-| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and lowers each `program()` through `structured.ts` into `lower.ts`'s state machine; `simulate.ts` is the interpreter; `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
+| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and lowers each `program()` through `structured.ts` into `lower.ts`'s state machine; `simulate.ts` is the interpreter; `reserve.ts` scans records for the cells they touch, for the allocator to avoid; `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
 | `vendor/` | The tables the compiler reads, copied from the editor: the trigger record layout and its codec, the condition and action definitions, the unit names, the flag names. The editor is the source of truth; copy them again when it changes. |
 | `dist/plugin.js` | The bundle the editor loads; `npm run build` writes it, CI commits it. |
 | `tests/` | vitest. `script.test.ts` pins the names, the declarations, the runtime's argument handling, files and imports, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and run back to the same record. |
@@ -291,10 +300,13 @@ when the program can reach it.
 
 `lower.ts` is the machine and knows no TypeScript: a basic block is a run of preserved
 triggers testing `pc == S` in list order; `[S, C] → THEN` followed by `[S] → ELSE` is
-negation by ordering. The allocator hands out death counters player-major over the
-"(Unused)" units and switches from 255 down. `addConst` is one action, `addVar` the
-32+32-step binary decomposition through a temporary, `compareVars` builds saturating
-differences into temporaries released after the branch. `Bool` trees go through a DNF
+negation by ordering. One allocator per compile hands out death counters player-major
+over the "(Unused)" units (a program's `variableUnits` is a pool restriction on it, not
+its own allocator) and switches from 255 down, starting with every cell the hand triggers
+and the script's raw records touch already taken. `addConst` is one action, `addVar` the
+32+32-step binary decomposition through a temporary; `assign` orders a sum's additions
+before its subtractions so the exact result is what gets stored; `compareVars` builds
+saturating differences into temporaries released after the branch. `Bool` trees go through a DNF
 conversion with negation pushed to the leaves; a leaf the game cannot negate becomes a
 negative literal with a skip step. State 0 is the entry (every counter is 0 at game
 start), `halt` is 0xFFFFFFFF.

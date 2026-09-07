@@ -15,9 +15,10 @@
  * reads the map's extras into that shape and writes the result back (see `service.ts`),
  * the tests hand lists and maps in directly.
  */
-import { ActionType, cloneTrigger, ConditionType, encodeTriggers, type TriggerRecord } from "./vendor/triggers";
+import { cloneTrigger, encodeTriggers, type TriggerRecord } from "./vendor/triggers";
 import { ENTRY_FILE, normalizePath, type CompileOptions, type CompileResult, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 import { defaultSwitchName } from "./compiler/names";
+import { storageOf } from "./compiler/reserve";
 
 /** The archive folder the script's files live in, next to `staredit\`. */
 export const SCRIPT_FOLDER = "trigscript\\";
@@ -198,25 +199,16 @@ export function relocateManifest(triggers: TriggerRecord[], extras: Extras): Map
  * The death counters and switches the map's hand triggers (those outside the script's
  * block) and its switch names already use, so the programs' variables are allocated
  * around them. The previous block's own records are not counted: a rebuild replaces
- * them. `switchNames` is the map's table with StarEdit's defaults in the blanks (what
+ * them. A player group in a record stands for every slot it can mean (`storageOf`).
+ * `switchNames` is the map's table with StarEdit's defaults in the blanks (what
  * `api.triggers.switchNames()` answers); a slot named anything else counts as used.
  */
 export function reservedStorage(triggers: TriggerRecord[], switchNames: readonly (string | null)[], block: ScriptBlock | null): Pick<CompileOptions, "reservedDeaths" | "reservedSwitches"> {
-  const deaths = new Map<number, [number, number]>();
-  const switches = new Set<number>();
-  triggers.forEach((t, i) => {
-    if (block && i >= block.start && i < block.start + block.count) return;
-    for (const c of t.conditions) {
-      if (c.type === ConditionType.Deaths) deaths.set(c.unitId * 4096 + c.player, [c.player, c.unitId]);
-      else if (c.type === ConditionType.Switch) switches.add(c.resource);
-    }
-    for (const a of t.actions) {
-      if (a.type === ActionType.SetDeaths) deaths.set(a.unitId * 4096 + a.player, [a.player, a.unitId]);
-      else if (a.type === ActionType.SetSwitch) switches.add(a.target);
-    }
-  });
+  const hand = triggers.filter((_, i) => !(block && i >= block.start && i < block.start + block.count));
+  const used = storageOf(hand);
+  const switches = new Set<number>(used.switches);
   switchNames.forEach((s, i) => { if (s && s.trim() && s.trim() !== defaultSwitchName(i)) switches.add(i); });
-  return { reservedDeaths: [...deaths.values()], reservedSwitches: [...switches].sort((a, b) => a - b) };
+  return { reservedDeaths: used.deaths, reservedSwitches: [...switches].sort((a, b) => a - b) };
 }
 
 /** The compiled records with their local string ids resolved through `intern` (the map's string table). */
@@ -244,6 +236,12 @@ export function resolveStrings(compiled: CompileResult, intern: (text: string) =
 export interface BuildOptions {
   /** Replace the *whole* list with the script's triggers (ejecting every hand trigger into the block). */
   takeOver?: boolean;
+  /**
+   * Leave the archive's files as they are instead of storing the compiled ones: they were
+   * edited while the compile ran, and the newer text must not be overwritten by the older.
+   * The manifest still records what the block was built from, so the state reads as unbuilt.
+   */
+  keepFiles?: boolean;
 }
 
 export interface BuildPlan {
@@ -275,7 +273,7 @@ export function buildScript(triggers: TriggerRecord[], extras: Extras, files: Sc
     start = triggers.length; before = triggers.slice(); after = [];
   }
   const manifest: ScriptManifest = { version: 2, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files) };
-  return { list: [...before, ...records, ...after], extras: withManifest(withFiles(extras, files), manifest), block: { start, count: records.length, sources: manifest.sources } };
+  return { list: [...before, ...records, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records.length, sources: manifest.sources } };
 }
 
 /** Which trigger a source line of a file belongs to (the trigger whose source starts at or before the line), if any. */

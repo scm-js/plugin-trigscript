@@ -21,6 +21,7 @@ import { libraryName, planProgram, transformer, type ProgramPlan } from "./hoist
 import { runModules, type LinkedFile } from "./link";
 import { Allocator, LowerError, Machine, storageLabel } from "./lower";
 import type { ScriptNames } from "./names";
+import { storageOf } from "./reserve";
 import { Collector, createRuntime, type ScriptString } from "./runtime";
 import { Structured } from "./structured";
 
@@ -91,7 +92,10 @@ export interface CompileResult {
 export interface CompileOptions {
   /** The standard library's declarations (`lib.es2022.d.ts` and what it references, concatenated). */
   lib: string;
-  /** Death counters (player, unit) the map's hand triggers use; variables avoid them. */
+  /**
+   * Death counters (player, unit) the map's hand triggers use; variables avoid them. The
+   * script's own raw triggers are scanned here and avoided too, whichever comes first.
+   */
   reservedDeaths?: readonly (readonly [number, number])[];
   /** Switches the map's hand triggers use or name; variables avoid them. */
   reservedSwitches?: readonly number[];
@@ -221,7 +225,12 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const triggers: TriggerRecord[] = [];
   const sources: (TriggerSource | null)[] = [];
   const programs: ProgramInfo[] = [];
+  // One allocator for the whole compile, and every cell a raw trigger of the script touches
+  // is taken before the first program asks — a program after a `trigger()` in the text is
+  // no different from one before it.
   const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
+  const raw = storageOf(collector.entries.flatMap((e) => (e.kind === "trigger" ? [e.record] : [])));
+  allocator.reserve(raw.deaths, raw.switches);
   const sourceOf = (at: [number, number] | null): TriggerSource | null => (at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null);
   for (const entry of collector.entries) {
     if (entry.kind === "trigger") { triggers.push(entry.record); sources.push(sourceOf(entry.at)); continue; }
@@ -240,8 +249,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     let machine: Machine;
     try {
       const comment = entry.options.comments ? (text: string) => collector.localString({ text }) : undefined;
-      const units = entry.options.variableUnits.length ? new Allocator({ units: entry.options.variableUnits, reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches }) : allocator;
-      machine = new Machine({ owner: entry.options.owner, allocator: units, comment });
+      machine = new Machine({ owner: entry.options.owner, allocator, units: entry.options.variableUnits, comment });
     } catch (err) {
       diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: (err as LowerError).message, source: "compiler" });
       continue;
@@ -251,7 +259,6 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     triggers.push(...machine.triggers);
     for (const line of machine.lines) sources.push({ file, line });
     programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
-    if (machine.allocator !== allocator) for (const v of machine.allocator.variables) allocator.variables.push(v);
   }
   const variables: VariableInfo[] = allocator.variables.map((v) => v.kind === "dc"
     ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit }

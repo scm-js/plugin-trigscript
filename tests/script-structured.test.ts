@@ -525,3 +525,85 @@ describe("simulator", () => {
     expect(sim2.events.map((e) => `${e.cycle}:${e.trigger}`)).toEqual(["0:0", "0:1", "0:3", "1:1", "2:1"]);
   });
 });
+
+describe("structured: one allocator for the whole compile", () => {
+  const texts = (r: CompileResult, cycles = 3) => run(r, cycles).events.filter((e) => e.action.type === ActionType.DisplayText).map((e) => e.text);
+  const pc = (r: CompileResult, i: number) => { const v = r.variables.filter((x) => x.name === "(program counter)")[i]; return [v.player, v.unit]; };
+
+  it("two programs asking for the same variableUnits get different cells, so both run", () => {
+    const r = ok(`
+      ${program(`let a = 1; displayText("A");`, "{ variableUnits: [181] }")}
+      ${program(`let b = 2; displayText("B");`, "{ variableUnits: [181] }")}
+    `);
+    expect(pc(r, 0)).toEqual([0, 181]);
+    expect(pc(r, 1)).toEqual([2, 181]);
+    expect(texts(r)).toEqual(["A", "B"]);
+  });
+
+  it("a raw trigger's cells are taken before any program allocates, wherever it stands in the text", () => {
+    const before = ok(`trigger(P1, [always()], [setDeaths(P1, 181, "set", 99)]); ${program(`displayText("program");`)}`);
+    expect(pc(before, 0)).toEqual([1, 181]);
+    expect(texts(before)).toEqual(["program"]);
+    const after = ok(`${program(`displayText("program");`)} trigger(P1, [always()], [setDeaths(P1, 181, "set", 99)]);`);
+    expect(pc(after, 0)).toEqual([1, 181]);
+    expect(texts(after)).toEqual(["program"]);
+  });
+
+  it("a raw trigger's switches are taken too", () => {
+    const r = ok(`trigger(P1, [always()], [setSwitch(switches.Switch256, "set")]); ${program(`let flag = false; if (switchIs(switches.Switch256, "set")) displayText("set");`)}`);
+    expect(r.variables.find((v) => v.name === "flag")).toMatchObject({ switch: 254 });
+    expect(texts(r)).toEqual(["set"]);
+  });
+
+  it("a raw memory write into the death table takes the cell it aliases", () => {
+    const r = ok(`trigger(P1, [always()], [setMemory(${DEATHS_TABLE_ADDRESS} + 4 * (181 * 12 + 0), "set", 1)]); ${program(`displayText("x");`)}`);
+    expect(pc(r, 0)).toEqual([1, 181]);
+  });
+
+  it("a hand trigger writing CurrentPlayer's counter reserves it for each of its owners", () => {
+    const hand = newTrigger([PlayerGroup.Player1, PlayerGroup.Player3]);
+    hand.actions.push({ type: ActionType.SetDeaths, player: PlayerGroup.CurrentPlayer, unitId: 181, modifier: SetModifier.SetTo, target: 99, location: 0, text: 0, wav: 0, time: 0, flags: 0, padding: 0, mask: 0 });
+    const reserved = reservedStorage([hand], [], null);
+    expect(reserved.reservedDeaths).toEqual([[0, 181], [2, 181]]);
+    const r = ok(program(`let n = 1;`), reserved);
+    expect(r.variables.map((v) => [v.player, v.unit])).toEqual([[1, 181], [3, 181]]);
+  });
+});
+
+describe("structured: arithmetic means what the source says", () => {
+  /** The body run as plain JavaScript, each variable then stored the way the game stores it: below 0 → 0, 2³² and above wraps. */
+  function expected(body: string): Record<string, number> {
+    const names = [...body.matchAll(/let (\w+)/g)].map((m) => m[1]);
+    const values = new Function(`${body}\nreturn { ${names.join(", ")} };`)() as Record<string, number>;
+    return Object.fromEntries(names.map((n) => [n, values[n] < 0 ? 0 : values[n] >>> 0]));
+  }
+  const cases = [
+    "let a = 0; let b = 10; a = a + b - 5;",
+    "let a = 0; let b = 10; a += b - 5;",
+    "let a = 0; let b = 3; a += b - 5;",
+    "let a = 10; let b = 0; let c = 5; let out = 0; out = a - (b - c);",
+    "let y = 20; let x = 0; x = 5 - y + 10;",
+    "let a = 7; let b = 3; a = b - a;",
+    "let a = 3; let b = 7; a = b - a;",
+    "let a = 3; a = 3 - 10;",
+    "let a = 10; a -= 20;",
+    "let a = 4294967295; a++;",
+    "let a = 1; let b = 2; let c = 3; a = a - b + c;",
+    "let a = 1; let b = 2; let c = 3; a = c - b - a;",
+    "let a = 5; let b = 2; let c = 3; a = a - b - c;",
+    "let a = 5; let b = 2; let c = 9; a = a - b + c;",
+    "let a = 5; let b = 2; a = a - b - 4;",
+    "let a = 5; let b = 2; a = a - 4 - b + 1;",
+    "let a = 2; a = a + a - 3;",
+    "let a = 2; let b = 1; a = b - a - a;",
+  ];
+  for (const body of cases) {
+    it(body, () => {
+      const r = okProgram(body);
+      const sim = run(r, 2);
+      const want = expected(body);
+      const got = Object.fromEntries(Object.keys(want).map((n) => [n, value(sim, r, n)]));
+      expect(got).toEqual(want);
+    });
+  }
+});

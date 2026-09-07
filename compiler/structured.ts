@@ -354,7 +354,7 @@ export class Structured {
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) { this.c.error(d, `Variables hold numbers (death counters) or booleans (switches); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
-      const v = kind === "number" ? this.m.allocator.dc(d.name.text) : this.m.allocator.switch(d.name.text);
+      const v = kind === "number" ? this.m.dc(d.name.text) : this.m.switch(d.name.text);
       if (!v) { this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}.`); continue; }
       if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
       else this.assignBool(v, d.initializer, d);
