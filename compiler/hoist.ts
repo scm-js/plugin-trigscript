@@ -16,13 +16,17 @@
  *   stands where the expression stood. `&&`, `||`, `!`, assignments and `++` are never
  *   hoisted whole, so `bring(…) && !alarm` decomposes into a hoisted condition and a
  *   game switch.
- * - A `const` of the body whose initialiser is hoistable is a build-time constant: the
- *   emitted function declares it as written, so hoisted expressions can refer to it.
- *   Declarations run when the program's function does, before any thunk.
+ * - A `const` of the body whose initialiser is hoistable is a build-time constant. It is
+ *   emitted as a memoised thunk too (`__c[i]`), and every reference to it in a hoisted
+ *   expression or another constant's initialiser becomes a call, so a constant is
+ *   computed the first time something needs it — or when the walk reaches its
+ *   declaration — and one inside a pruned branch never is.
  *
  * `planProgram` works out the sets and numbers the hoisted expressions in one
- * traversal; `hoistedFunction` turns the plan into the arrow the transformer emits, and
- * the structured compiler walks the same body against the same plan.
+ * traversal, for a `program()` body and for the arrow of a `game()` function alike
+ * (whose parameters are game bindings); `hoistedFunction` turns the plan into the arrow
+ * the transformer emits, and the structured compiler walks the same body against the
+ * same plan.
  */
 import type * as TS from "typescript";
 import { DECLARATIONS_FILE } from "./declarations";
@@ -39,15 +43,29 @@ export type PlanItem =
 export interface ProgramPlan {
   arrow: TS.ArrowFunction | TS.FunctionExpression;
   body: TS.Block;
+  /** A `game()` function with an expression body (`game((a: number) => a + 1)`): what it returns. */
+  expression?: TS.Expression;
   /** Hoisted expressions by index. */
   hoisted: TS.Expression[];
   index: Map<TS.Node, number>;
   /** Declarations that live in the game: let / var of the body, parameters and functions declared in it. */
   game: Set<TS.Node>;
-  /** `const` declarations of the body evaluated at build time. */
-  consts: Set<TS.VariableDeclaration>;
+  /** `const` declarations of the body evaluated at build time, by their index among the plan's constants. */
+  consts: Map<TS.VariableDeclaration, number>;
+  /** The same constants, by index. */
+  constList: TS.VariableDeclaration[];
   tree: PlanItem[];
   errors: PlanError[];
+}
+
+export interface PlanOptions {
+  /** The arrow is a `game()` function: its parameters are game bindings, and an expression body is allowed. */
+  parameters?: boolean;
+}
+
+/** Whether a call is of a `game()` function — its callee's type carries the brand — so it is never a build-time value. */
+export function isGameCall(checker: TS.TypeChecker, call: TS.CallExpression): boolean {
+  return !!checker.getPropertyOfType(checker.getTypeAtLocation(call.expression), "__game");
 }
 
 /** The declaration an identifier refers to, through import aliases; undefined for globals TypeScript cannot place. */
@@ -85,23 +103,34 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 }
 
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
-const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers"]);
+const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
 const GAME_CALLS = new Set(["random", "sleep", "rose", "once", "shared"]);
 
-export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression): ProgramPlan {
-  const plan: ProgramPlan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Set(), tree: [], errors: [] };
+export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {
+  const plan: ProgramPlan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [] };
   const error = (node: TS.Node, message: string) => plan.errors.push({ node, message });
+  const what = options.parameters ? "game()" : "program()";
   if (!ts.isBlock(arrow.body)) {
-    error(arrow.body, "program() takes an arrow with a block body: program(() => { … }).");
+    if (!options.parameters) {
+      error(arrow.body, "program() takes an arrow with a block body: program(() => { … }).");
+      plan.body = ts.factory.createBlock([]);
+      return plan;
+    }
+    plan.expression = arrow.body;
     plan.body = ts.factory.createBlock([]);
-    return plan;
   }
-  if (arrow.parameters.length) error(arrow.parameters[0], "The program's arrow takes no parameters.");
-  if (arrow.asteriskToken || arrow.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) error(arrow, "The program cannot be async or a generator.");
+  if (arrow.parameters.length && !options.parameters) error(arrow.parameters[0], "The program's arrow takes no parameters.");
+  if (arrow.asteriskToken || arrow.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) error(arrow, `A ${what} body cannot be async or a generator.`);
 
   /* ── Bindings ── */
   const declare = (node: TS.Node) => plan.game.add(node);
+  for (const p of arrow.parameters) {
+    if (!options.parameters) break;
+    if (!ts.isIdentifier(p.name)) error(p, "Destructured parameters are not supported in a game function.");
+    else if (p.dotDotDotToken) error(p, "Rest parameters are not supported in a game function.");
+    else declare(p);
+  }
   const isFunctionValue = (n: TS.Node) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isClassExpression(n) || ts.isClassDeclaration(n);
   const collect = (node: TS.Node) => {
     if (isFunctionValue(node)) return;
@@ -114,6 +143,12 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
   collect(arrow.body);
 
   /* ── Hoistability ── */
+  const gameCall = new Map<TS.Node, boolean>();
+  const isGame = (call: TS.CallExpression) => {
+    let hit = gameCall.get(call);
+    if (hit === undefined) { hit = isGameCall(checker, call); gameCall.set(call, hit); }
+    return hit;
+  };
   const memo = new Map<TS.Node, boolean>();
   const isGameDecl = (decl: TS.Declaration) => plan.game.has(owningDeclaration(ts, decl));
   const hoistable = (e: TS.Node): boolean => {
@@ -147,6 +182,8 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
         return;
       }
       if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword || ts.isAwaitExpression(n) || ts.isYieldExpression(n)) { ok = false; return; }
+      // A call of a game() function runs in the game, whatever its arguments are.
+      if (ts.isCallExpression(n) && isGame(n)) { ok = false; return; }
       if (ts.isBinaryExpression(n)) {
         const k = n.operatorToken.kind;
         if (k === ts.SyntaxKind.AmpersandAmpersandToken || k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.CommaToken || (k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment)) { ok = false; return; }
@@ -239,7 +276,7 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
     for (const d of list.declarations) {
       if (isConst) {
         if (!d.initializer) { error(d, "A constant needs a value."); continue; }
-        if (hoistable(d.initializer)) { plan.consts.add(d); items.push({ kind: "const", decl: d }); continue; }
+        if (hoistable(d.initializer)) { plan.consts.set(d, plan.constList.length); plan.constList.push(d); items.push({ kind: "const", decl: d }); continue; }
         if (isFunctionValue(d.initializer)) { error(d, `${ts.isIdentifier(d.name) ? d.name.text : "This constant"} is a function that uses the program's variables; declare it with function so it is inlined at each call.`); continue; }
         // A const computed from the program's variables lives in the game like a let; the checker keeps it from being reassigned.
         plan.game.add(d);
@@ -257,28 +294,90 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
     items.push(...deferred);
     return items;
   };
-  plan.tree = block(arrow.body.statements);
+  if (plan.expression) { const items: PlanItem[] = []; value(plan.expression, items); plan.tree = items; return plan; }
+  plan.tree = block(plan.body.statements);
   return plan;
 }
 
-/** The arrow the transformer emits in the program's place: build-time constants as written, hoisted expressions as thunks into `__h`. */
-export function hoistedFunction(ts: typeof TS, plan: ProgramPlan): TS.ArrowFunction {
+/** What a descriptor's `hoisted()` returns: a thunk per hoisted expression, and a memoised thunk per build-time constant. */
+export interface HoistedThunks { h: (() => unknown)[]; c: (() => unknown)[] }
+
+/**
+ * The arrow the transformer emits in the program's place: hoisted expressions as thunks
+ * into `__h`, build-time constants as memoised thunks into `__c` (a reference to a
+ * constant becomes `__c[i]()`, so nothing runs before something needs it), returned
+ * together. A constant that throws marks the error with its index, so the compiler can
+ * report it at the declaration.
+ */
+export function hoistedFunction(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, context: TS.TransformationContext): TS.ArrowFunction {
   const f = ts.factory;
   const h = f.createIdentifier("__h");
-  const thunk = (expr: TS.Expression) => f.createArrowFunction(undefined, undefined, [], undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), f.createParenthesizedExpression(expr));
+  const c = f.createIdentifier("__c");
+  const m = f.createIdentifier("__m");
+  const arrow = (params: string[], body: TS.ConciseBody) => f.createArrowFunction(undefined, undefined, params.map((p) => f.createParameterDeclaration(undefined, undefined, p)), undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), body);
+  // Every reference to a build-time constant of the body becomes a call of its thunk.
+  const rewrite = (node: TS.Node): TS.Node => {
+    if (ts.isTypeNode(node)) return node;
+    if (ts.isIdentifier(node) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) && !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) {
+      const decl = declarationOf(ts, checker, node);
+      const i = decl && ts.isVariableDeclaration(decl) ? plan.consts.get(decl) : undefined;
+      if (i !== undefined) return f.createCallExpression(f.createElementAccessExpression(c, f.createNumericLiteral(i)), undefined, []);
+      return node;
+    }
+    if (ts.isShorthandPropertyAssignment(node)) {
+      const decl = declarationOf(ts, checker, node.name);
+      const i = decl && ts.isVariableDeclaration(decl) ? plan.consts.get(decl) : undefined;
+      if (i !== undefined) return f.createPropertyAssignment(node.name, f.createCallExpression(f.createElementAccessExpression(c, f.createNumericLiteral(i)), undefined, []));
+      return node;
+    }
+    return ts.visitEachChild(node, rewrite, context);
+  };
+  const expr = (e: TS.Expression) => f.createParenthesizedExpression(ts.visitNode(e, rewrite) as TS.Expression);
+  const thunk = (e: TS.Expression) => arrow([], expr(e));
   const emit = (items: PlanItem[]): TS.Statement[] => items.map((item): TS.Statement => {
     switch (item.kind) {
-      case "const": return f.createVariableStatement(undefined, f.createVariableDeclarationList([item.decl], ts.NodeFlags.Const));
+      case "const": {
+        const i = plan.consts.get(item.decl)!;
+        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(c, f.createNumericLiteral(i)), f.createCallExpression(m, undefined, [f.createNumericLiteral(i), thunk(item.decl.initializer!)])));
+      }
       case "hoist": return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), thunk(item.expr)));
       case "block": return f.createBlock(emit(item.items), true);
     }
   });
+  // const __m = (i, g) => { let d = false, v; return () => { if (d) return v; try { v = g(); } catch (e) { if (e instanceof Object && e.__trigscriptConst === undefined) e.__trigscriptConst = i; throw e; } d = true; return v; }; };
+  const d = f.createIdentifier("d");
+  const v = f.createIdentifier("v");
+  const e = f.createIdentifier("e");
+  const g = f.createIdentifier("g");
+  const i = f.createIdentifier("i");
+  const mark = f.createPropertyAccessExpression(e, "__trigscriptConst");
+  const rethrow = f.createCatchClause(f.createVariableDeclaration(e), f.createBlock([
+    f.createIfStatement(
+      f.createLogicalAnd(f.createBinaryExpression(e, ts.SyntaxKind.InstanceOfKeyword, f.createIdentifier("Object")), f.createStrictEquality(mark, f.createIdentifier("undefined"))),
+      f.createExpressionStatement(f.createAssignment(mark, i)),
+    ),
+    f.createThrowStatement(e),
+  ]));
+  const getter = arrow([], f.createBlock([
+    f.createIfStatement(d, f.createReturnStatement(v)),
+    f.createTryStatement(f.createBlock([f.createExpressionStatement(f.createAssignment(v, f.createCallExpression(g, undefined, [])))]), rethrow, undefined),
+    f.createExpressionStatement(f.createAssignment(d, f.createTrue())),
+    f.createReturnStatement(v),
+  ], true));
+  const memo = arrow(["i", "g"], f.createBlock([
+    f.createVariableStatement(undefined, f.createVariableDeclarationList([f.createVariableDeclaration(d, undefined, undefined, f.createFalse()), f.createVariableDeclaration(v)], ts.NodeFlags.Let)),
+    f.createReturnStatement(getter),
+  ], true));
   const body = f.createBlock([
-    f.createVariableStatement(undefined, f.createVariableDeclarationList([f.createVariableDeclaration(h, undefined, undefined, f.createArrayLiteralExpression([]))], ts.NodeFlags.Const)),
+    f.createVariableStatement(undefined, f.createVariableDeclarationList([
+      f.createVariableDeclaration(h, undefined, undefined, f.createArrayLiteralExpression([])),
+      f.createVariableDeclaration(c, undefined, undefined, f.createArrayLiteralExpression([])),
+      f.createVariableDeclaration(m, undefined, undefined, memo),
+    ], ts.NodeFlags.Const)),
     ...emit(plan.tree),
-    f.createReturnStatement(h),
+    f.createReturnStatement(f.createObjectLiteralExpression([f.createPropertyAssignment("h", h), f.createPropertyAssignment("c", c)])),
   ], true);
-  return f.createArrowFunction(undefined, undefined, [], undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), body);
+  return arrow([], body);
 }
 
 export interface TransformContext {
@@ -310,7 +409,7 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
           const args = pad(node.arguments.map((a) => ts.visitNode(a, visit) as TS.Expression), 4);
           return f.updateCallExpression(node, node.expression, node.typeArguments, [...args, at(node)]);
         }
-        if (lib === "program" && node.arguments.length >= 1 && node.arguments.length <= 2) {
+        if ((lib === "program" && node.arguments.length >= 1 && node.arguments.length <= 2) || (lib === "game" && node.arguments.length === 1)) {
           const arrow = node.arguments[0];
           const plan = ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow) ? ctx.planFor(arrow) : undefined;
           if (plan) {
@@ -318,9 +417,9 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
               f.createPropertyAssignment("__trigscript", f.createStringLiteral("program")),
               f.createPropertyAssignment("at", at(node)),
               f.createPropertyAssignment("pos", f.createNumericLiteral(arrow.getStart(sf))),
-              f.createPropertyAssignment("hoisted", hoistedFunction(ts, plan)),
+              f.createPropertyAssignment("hoisted", hoistedFunction(ts, checker, plan, context)),
             ], true);
-            const rest = pad(node.arguments.slice(1).map((a) => ts.visitNode(a, visit) as TS.Expression), 1);
+            const rest = lib === "program" ? pad(node.arguments.slice(1).map((a) => ts.visitNode(a, visit) as TS.Expression), 1) : [];
             return f.updateCallExpression(node, node.expression, node.typeArguments, [descriptor, ...rest, at(node)]);
           }
         }

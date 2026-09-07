@@ -27,7 +27,7 @@ export default function activate(api: PluginApi) {
   api.commands.register({ id: "state", title: "TrigScript: state", run: () => svc.state() });
   api.commands.register({ id: "declarations", title: "TrigScript: declarations", run: (options) => svc.declarations({ compact: isRecord(options) && options.compact === true }) });
   api.commands.register({ id: "compile", title: "TrigScript: compile", run: (input) => svc.compile(scriptInput(input)) });
-  api.commands.register({ id: "build", title: "TrigScript: build", run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true }) });
+  api.commands.register({ id: "build", title: "TrigScript: build", run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true, replaceStale: isRecord(options) && options.replaceStale === true }) });
   api.commands.register({ id: "print", title: "TrigScript: print records as script", run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : undefined) });
   api.commands.register({ id: "simulate", title: "TrigScript: simulate records", run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : undefined }) });
   api.commands.register({ id: "triggerAt", title: "TrigScript: trigger at a source line", run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });

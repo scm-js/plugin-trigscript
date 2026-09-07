@@ -51,10 +51,15 @@ in comments. Hand-made triggers around the block are left alone, and inserting o
 before the block just moves it, since the block is found by content rather than
 position.
 
-Editing a generated trigger from outside makes the block *stale*: it reverts to ordinary
-triggers, and the next Build appends a fresh block. **Import map triggers** goes the other
-way, rewriting the hand-made triggers as script in their existing order around the block,
-so the whole list becomes script-generated.
+Editing a generated trigger from outside makes the block *stale*. The build remembers
+every trigger it made on its own, so the editor can say how many are still the build's
+and how many were changed, and the next Build replaces the unchanged ones with the new
+block and keeps the edited ones as hand-made triggers right after it — a wave system
+edited in one trigger does not come back twice. *Append instead* on the notice leaves them
+all in place and adds a fresh block after them, which is also what happens when the block
+was moved or removed rather than edited. **Import map triggers** goes the other way,
+rewriting the hand-made triggers as script in their existing order around the block, so
+the whole list becomes script-generated.
 
 **Simulate** runs the built triggers for thirty cycles in a built-in trigger-cycle
 interpreter and lists every action that ran, with its cycle and source line, plus each
@@ -146,8 +151,11 @@ and keep placing units while the code sits next to them. Beside the map:
 - **Pick from map** on the toolbar: click a location or a unit on the map, and its name
   (`locations.Beacon`, `units.TerranMarine`) lands at the cursor. From the window, the
   button first moves the editor beside the map.
-- When the map renames a location or a switch the script mentions, a notice offers to
-  **update the references** in every file.
+- When the map renames a location or a switch the script mentions — its custom name,
+  for a switch — a notice offers to **update the references** in every file. The
+  references are the compiler's, resolved like the code: `locations["Beacon"]`, an alias
+  from `import { locations as L }` and `ts.locations.Beacon` follow the rename; a
+  comment, a string, or a parameter that happens to be called `locations` is left alone.
 
 ### Programs
 
@@ -179,11 +187,18 @@ program(() => {
 Everything inside the arrow runs in the game. **Variables are death counters.** A
 `let n = 0` takes a death counter on a unit that can never die (the "(Unused)" entries of
 units.dat, Cantina first), twelve players per unit, so there are hundreds available. A
-`let f = false` takes a switch. Numbers are what a death counter holds, 0 to 4 294 967 295,
-and an expression means what it says: `a = a + b - 5` is the exact sum, then stored —
-a result below zero is stored as 0, one at 2³² or above wraps. (The compiler orders the
-additions before the subtractions so that the game's saturating subtraction only bites
-when the result really is below zero.)
+`let f = false` takes a switch. A `let p = { lives: 3, gold: 0, alive: true }` is a
+**record**: a variable per field (`p.lives -= 1`, `if (p.alive)`), nested ones included,
+declared types (`let p: { n: u8 } = { n: 0 }`) honoured, and a record passed to a
+function reaches it by reference. Numbers are what a death counter holds, 0 to
+4 294 967 295, and an expression means what it says: `a = a + b - 5` is the exact sum,
+then stored — a result below zero is stored as 0, one at 2³² or above wraps, and a `u8`
+or `u16` is saturated at its maximum *after* the whole sum, never between its parts. The
+compiler orders the additions before the subtractions so that the game's saturating
+subtraction only bites when the result really is below zero. The one thing a 32-bit cell
+cannot promise is a running sum of the additions past 2³² — `a + b - 1` with `a` at
+4 294 967 295 wraps at the `+`, since there is no wider counter to add into — so keep
+sums under that, or declare the widths.
 
 **Control flow is a program counter.** Each basic block is a run of preserved triggers
 testing `pc == S`, in list order, so straight-line code runs inside a single trigger
@@ -191,22 +206,52 @@ cycle and only a loop's back edge waits for the next one. `while (true) { … }`
 therefore a game loop running once per cycle: roughly every 2 s at Normal speed, or every
 frame with hyper triggers (`hyperTriggers(P8)` anywhere outside a program emits them).
 
-`if`/`else`, `while`, `do`, `for`, `break` and `continue` all work. `&&`, `||` and `!` are
-lowered to disjunctive normal form, one trigger per product, with negation folded into
-the comparison where the game can express it (`!bring(…, ">=", 1)` becomes "at most 0")
-and a skip trigger where it cannot (`!commandTheMost(…)`). `random()` is a randomized
-switch.
+`if`/`else`, `while`, `do`, `for`, `switch`, `break`, `continue` and `c ? a : b` all
+work. `switch (x)` over a variable tests its cases in order, each one trigger, and falls
+through without `break` as TypeScript does; the case values are known when you build.
+`&&`, `||` and `!` are lowered to disjunctive normal form, one trigger per product, with
+negation folded into the comparison where the game can express it (`!bring(…, ">=", 1)`
+becomes "at most 0") and a skip trigger where it cannot (`!commandTheMost(…)`). They
+short-circuit as in TypeScript: when the right side has an effect — `rose()`, `once()`,
+a call of a function — it is compiled as a branch of its own and only runs when the left
+side has not already decided, so `n >= 1 && once(…)` consumes the edge only once `n` is
+1. `random()` is a randomized switch.
 
-**Functions declared in the body are inlined** at every call site, and arguments pass
-by value, as in TypeScript: `function bump(x: number) { x++; }` leaves the caller's
-variable alone. A parameter the function never assigns reads the argument's variable
-directly and costs nothing; one it assigns is copied at the call (a variable-to-variable
-copy: 64 triggers, or 16 for a `u8`). `return` works; return *values* do not. Locals get
-their own storage per call site.
+**Functions are inlined** at every call site, and arguments pass by value, as in
+TypeScript: `function bump(x: number) { x++; }` leaves the caller's variable alone. A
+parameter the function never assigns reads the argument's variable directly and costs
+nothing; one it assigns is copied at the call (a variable-to-variable copy: 64 triggers,
+or 16 for a `u8`). Locals get their own storage per call site. A function may **return
+a number or a boolean** — `function canAfford(price: number) { return gold >= price; }`,
+`x = twice(y) + 1` — through a temporary that lives for the statement. There is no
+recursion.
+
+Functions the game runs can live in any file: `game()` marks them.
+
+```ts
+// shop.ts
+export const award = game((p: Player, n: number) => { setResources(p, "add", n, "ore"); });
+export const canAfford = game((have: number, price: number) => have >= price);
+
+// main.ts
+import { award, canAfford } from "./shop";
+program(() => {
+  let gold: u8 = 10;
+  if (canAfford(gold, 5)) { gold -= 5; award(P2, 3); }
+});
+```
+
+A `game()` function follows the program's rules — its body is inlined at each call, in
+the program's own storage, and its triggers are attributed to its own file and line, so
+the cost hints land there. It sees its parameters and what any file sees when you build,
+not the calling program's variables. Calling one outside a program is an error: it runs
+in the game, not when the script is built.
 
 **A `const` is what it can be.** `const limit = waves.length` is computed when you build
 and inlined; `const next = wave + 1` needs a variable of the program, so it is one — a
-death counter like a `let`, which TypeScript keeps you from reassigning.
+death counter like a `let`, which TypeScript keeps you from reassigning. A build-time
+constant is computed when the compiler reaches its declaration, or earlier if something
+needs it, and one inside a branch that is never compiled is never computed at all.
 
 **Everything else the body reads from outside is computed when you build.** A constant,
 a helper, a condition, an action: each is evaluated once, when the compiler reaches it,
@@ -230,10 +275,41 @@ and `n++` are one action each. An operation between two variables (`a += b`, `a 
 and 32 moving it back, so `a = b` is 66 triggers and `if (a < b)` 134 — so keep those out
 of hot loops, or **declare the range**: `let lives: u8 = 3` holds 0 … 255 and decomposes
 over 8 bits (`a = b` between two `u8`s is 19 triggers), `u16` holds 0 … 65 535 over 16.
-A narrow variable saturates at its maximum — one guard trigger after every addition
-keeps it there — and a constant that does not fit is a compile error. There is no
-multiplication or division between variables, because the game has no instruction for
-it; `*`, `/` and `%` work on build-time values.
+A narrow variable saturates at its maximum — one guard trigger after a sum that could
+outgrow it keeps it there — and a constant that does not fit is a compile error.
+
+**Arithmetic** is what the decomposition can express. `a * 3` costs the same as `a`: the
+steps add three times the bit. `a / 4` and `a % 4` — by any positive constant — are a
+binary long division, one step per bit of the dividend, and `/` is whole division (there
+are no fractions in the game; `Math.floor`, `Math.trunc`, `Math.round` and `Math.ceil`
+around it are accepted and change nothing). `Math.min(a, b)`, `Math.max(a, b)`,
+`Math.abs(a - b)` and `clamp(x, lo, hi)` work between variables through saturating
+differences, and against a constant with one guard. `a * b` between variables is
+possible — for every bit of `b` that is set, `a` shifted by it is added — and costly:
+about `bits(b) × (2·bits(a) + 3)` triggers, so declare them `u8`. Division by a variable
+is an error. `*=`, `/=` and `%=` follow.
+
+**An action can take a variable amount.** `setResources(P1, "add", n, "ore")`,
+`setResources(P2, "set", wave * 10 + 5, "gas")`, `setDeaths(…, "add", n)`,
+`setScore(…)`, `setCountdownTimer("set", n + 1)`: the action is done bit by bit — one step
+per bit of the variable, each doing the action with that bit's share; "set" sets the
+field to 0 first — and the variable is intact afterwards. `createUnit`, `killUnitAt`,
+`removeUnitAt` and `giveUnits` take a variable *count* the same way, over 8 bits since
+the game's count field holds 0 … 255; a value beyond that is done as 255. Nothing else
+does: a text, a location, a unit type or a player is known when you build, and a
+*condition* cannot be tested against a variable (the game compares a quantity with a
+number it is given) — compare variables in the program's own statements instead.
+
+**Loops.** `while` and `do` run one iteration per trigger cycle: the back edge waits for
+the next pass over the triggers, which is what a game loop wants. A `for` whose start,
+bound and step are known when you build — `for (let i = 0; i < 3; i++)`, counting down,
+stepping by two — is **unrolled**: the body is compiled once per value with `i` a
+build-time value (no death counter, and `createUnit(P2, unit, i + 1, at)` is an ordinary
+action), so it runs in the cycle it is reached in, as the source reads, and `break` and
+`continue` work. The cost hint on the line says which it is: *unrolled ×3*, or *one
+iteration per cycle*. A `for` over a variable bound, or one that assigns its variable in
+the body, is a `while` with a counter. An unroll of more than 256 iterations is an error
+that says how to write it as a loop instead.
 
 **Time is `sleep`.** `sleep(seconds(15))` pauses the program: the statements after it
 run that much later, nothing else of the program runs meanwhile, and other programs and
@@ -313,10 +389,10 @@ as they are) or an object of every file by path.
 
 | Command | |
 | --- | --- |
-| `trigscript.state()` | `{ files, source, manifest, block, stale, unbuilt }`: the map's script files, `main.ts` on its own, where its built block sits in the trigger list (null when the records were edited by hand — `stale`), and whether the files differ from what was last built. Null with no map. |
+| `trigscript.state()` | `{ files, source, manifest, block, stale, edited, unbuilt }`: the map's script files, `main.ts` on its own, where its built block sits in the trigger list (null when the records were edited by hand — `stale`, with `edited` counting how many are still the build's and how many changed, when that can be told), and whether the files differ from what was last built. Null with no map. |
 | `trigscript.declarations({ compact? })` | The generated `.d.ts` the script type-checks against — the whole vocabulary for this map. `compact` is the shorter variant meant for a language model. Empty with no map. |
-| `trigscript.compile(source)` | A promise of a `CompileResult`: `ok`, `diagnostics` (`file`, 1-based `line` / `column`, `message`, `source: "typescript"`, `"compiler"` or `"script"` for an error the script threw), the records, `sources` (per record, the file and line it came from), the variable allocation, the `programs`. A newer compile supersedes an unfinished one, which rejects with `CompileSuperseded`. |
-| `trigscript.build(source, { takeOver? })` | Compile and, when clean, install the block (or append when the old one was edited) and store the files with the map: a promise of `{ compiled, block, refused? }`. The build lands only on the map it was compiled for: `block` is null and `refused` says why when there were `"errors"`, the map `"closed"` or another one `"switched"` to the front while the script ran, or the map's names `"changed"` under it (that one is compiled again, twice at most, before it is reported). Files edited in the archive while the script ran are kept, and the state then reads as unbuilt. `takeOver` replaces the whole trigger list with the script's. A settings-style transaction: not undoable, marks the map modified. |
+| `trigscript.compile(source)` | A promise of a `CompileResult`: `ok`, `diagnostics` (`file`, 1-based `line` / `column`, `message`, `source: "typescript"`, `"compiler"` or `"script"` for an error the script threw), the records, `sources` (per record, the file and line it came from), the variable allocation, the `programs`, `costs` per line, and `refs` — every `locations.X` / `switches.X` the files mention, resolved by the checker, present even when the script does not type-check. A newer compile supersedes an unfinished one, which rejects with `CompileSuperseded`. |
+| `trigscript.build(source, { takeOver?, replaceStale? })` | Compile and, when clean, install the block and store the files with the map: a promise of `{ compiled, block, refused?, replaced? }`. The build lands only on the map it was compiled for: `block` is null and `refused` says why when there were `"errors"`, the map `"closed"` or another one `"switched"` to the front while the script ran, or the map's names `"changed"` under it (that one is compiled again, twice at most, before it is reported). Files edited in the archive while the script ran are kept, and the state then reads as unbuilt. When the old block was edited by hand, the new one is appended, or with `replaceStale` put in the old one's place with its unchanged records removed and the edited ones kept after it (`replaced` counts both). `takeOver` replaces the whole trigger list with the script's. A settings-style transaction: not undoable, marks the map modified. |
 | `trigscript.print(triggers, { imports?, header? })` | Records as `trigger()` calls in the script language — what Import map triggers writes. `imports` starts the text with an import of the names it uses. |
 | `trigscript.simulate(triggers, cycles, { player? })` | The interpreter: `{ cycles, events, switches }`. |
 | `trigscript.triggerAt(file, line)` | Which trigger (index in the map's list) a 1-based line of a file generated; null when none did or the block is stale. |
@@ -342,11 +418,11 @@ The layout:
 | `monaco.ts` | Monaco from `dist/` on jsDelivr's GitHub mirror (the tag `DIST_TAG` names; the workers start as blob module workers), one model per file under `file:///` so imports resolve, the theme. The plugin storage key `monacoDist` overrides where the files are fetched from — set `scmjs.plugin.trigscript.monacoDist` in the browser to `"http://localhost:3000/dist"` while developing. |
 | `bundle/`, `dist/` | `npm run bundle` builds Monaco with esbuild — the editor core, its features and the TypeScript language alone, styles injected by the module and the codicon font inlined, plus the two workers — and writes `lib.d.ts`, the standard library the compile worker checks scripts against (`bundle/lib.mjs`), into `dist/`, which is committed. A CDN's on-the-fly bundler turns Monaco's lazy language chunks into standalone bundles carrying a second editor core, which is why the plugin carries its own. After a Monaco bump: rebuild, commit, tag `monaco-<version>-<n>`, move `DIST_TAG`. |
 | `compile.ts` | Compiling in a worker: a blob worker `importScripts` TypeScript from the CDN, fetches `lib.d.ts` once, and imports this plugin's own compiler module by the `blob:` URL the editor's loader gave it; a request the script does not answer in fifteen seconds (an endless loop outside `program()`) terminates the worker. A main-thread fallback loads TypeScript through a `<script>` tag. |
-| `script.ts` | The files, the block and its manifest: hashing, finding the block by content, staleness, planning a build. Pure over a trigger list and a map of the members. |
-| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and lowers each `program()` through `structured.ts` into `lower.ts`'s state machine; `simulate.ts` is the interpreter; `reserve.ts` scans records for the cells they touch, for the allocator to avoid; `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
+| `script.ts` | The files, the block and its manifest: hashing (the block, and every record on its own), finding the block by content, staleness and what a stale block can still be taken apart into, planning a build. Pure over a trigger list and a map of the members. |
+| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, collects the map references, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and lowers each `program()` — and the `game()` functions it calls — through `structured.ts` into `lower.ts`'s state machine; `simulate.ts` is the interpreter; `reserve.ts` scans records for the cells they touch, for the allocator to avoid; `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
 | `vendor/` | The tables the compiler reads, copied from the editor: the trigger record layout and its codec, the condition and action definitions, the unit names, the flag names. The editor is the source of truth; copy them again when it changes. |
 | `dist/plugin.js` | The bundle the editor loads; `npm run build` writes it, CI commits it. |
-| `tests/` | vitest. `script.test.ts` pins the names, the declarations, the runtime's argument handling, files and imports, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and run back to the same record. |
+| `tests/` | vitest. `script.test.ts` pins the names, the declarations, the runtime's argument handling, files and imports, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation; `refs.test.ts` the references and renames. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and run back to the same record. |
 
 ### How the compiler is built
 
@@ -368,39 +444,59 @@ ids into `CompileResult.strings`, and the build resolves them through the map's 
 table.
 
 `compiler.ts` builds a real `ts.createProgram` over the files, the declarations and the
-standard library (in-memory host; `module: commonjs`, `moduleResolution: bundler`), and
-stops at the first type error. It then plans every `program()` body (`hoist.ts`): the
-*game bindings* are the body's `let` / `var`, the parameters and the functions declared
-in it; a *hoisted expression* is a maximal subexpression that mentions none of those (and
-is not `random()`), and a `const` of the body whose initialiser is hoistable is a
-build-time constant. The emit transformer appends its position to every `trigger()` call
-and replaces each program's arrow with a descriptor holding a function that evaluates the
-hoisted expressions, in the plan's numbering, with the constants declared as written.
-The emitted CommonJS is linked by `link.ts` — relative imports against the files,
+standard library (in-memory host; `module: commonjs`, `moduleResolution: bundler`),
+collects every reference to the map's tables while the checker is there (so a rename can
+follow them even when they no longer type-check), and stops at the first type error. It
+then plans every `program()` body and every `game()` arrow (`hoist.ts`): the *game
+bindings* are the body's `let` / `var`, the parameters and the functions declared in it;
+a *hoisted expression* is a maximal subexpression that mentions none of those (and is not
+`random()`, nor a call of a `game()` function — the callee's type carries a brand), and a
+`const` of the body whose initialiser is hoistable is a build-time constant. The emit
+transformer appends its position to every `trigger()` call and replaces each planned
+arrow with a descriptor holding a function that returns the hoisted expressions as
+thunks and the constants as memoised thunks, every reference to a constant rewritten to a
+call of its thunk — so a constant is computed when first needed and never in a pruned
+branch. The emitted CommonJS is linked by `link.ts` — relative imports against the files,
 `"trigscript"` to the runtime, the library's names in scope as globals — and run; an
-error the script throws is placed through the emitted source map.
+error the script throws is placed through the emitted source map. `game(descriptor)`
+returns a function that throws if the script calls it and carries the descriptor for
+the walker.
 
-`structured.ts` then walks each program body against the same plan, with the values the
+`structured.ts` then walks each program body against the same plan, with the thunks the
 descriptor's function returned: where the plan says an expression was hoisted, the walker
 takes its value — a number, a boolean, a condition, an action or a list of them. `let` →
-a death counter (number-like) or a switch (boolean-like), bound in a scope keyed by
-declaration node so shadowing and inlining resolve as the checker does; numeric
-expressions reduce to `c + Σ±v`; comparisons with a constant are one Deaths condition,
-between variables they cancel common terms and go through `compareVars`; functions
-declared in the body are inlined per call, and a call, member access or arithmetic over
-values a parameter was bound to is evaluated on the spot; unreachable code after `break`
-/ `continue` / `return` / an endless loop is tracked so the final `halt` is only emitted
-when the program can reach it.
+a death counter (number-like), a switch (boolean-like) or a record of them (an object
+literal), bound in a scope keyed by declaration node so shadowing and inlining resolve as
+the checker does; numeric expressions reduce to `c + Σ k·v` (a coefficient per variable),
+with a quotient, a product of variables, a ternary, an intrinsic or a call's result
+computed into a temp on the way; comparisons with a constant are one Deaths condition
+(a coefficient folds into the constant), between variables they cancel common terms and
+go through `compareVars`; `&&` / `||` / `!` whose right side has an effect are lowered as
+control flow, the rest as one DNF branch; functions declared in the body and `game()`
+functions are inlined per call — the walker switches to the function's own plan, file
+and thunks for the duration — with the result in a temp; a call, member access or
+arithmetic over values a parameter was bound to is evaluated on the spot; a `for` whose
+bounds evaluate is unrolled like a `for…of`; an action with a variable argument becomes
+`actionWithVar`; unreachable code after `break` / `continue` / `return` / an endless loop
+is tracked so the final `halt` is only emitted when the program can reach it. The
+programs are walked twice: once against a scratch allocator to collect the map's own
+records their bodies use (`setDeaths(P2, 181, …)` as a statement, `deaths(…)` in an
+`if`), which are then reserved, and once for real — the thunks are memoised in the
+bodies, so the script's build-time parts still run once.
 
 `lower.ts` is the machine and knows no TypeScript: a basic block is a run of preserved
 triggers testing `pc == S` in list order; `[S, C] → THEN` followed by `[S] → ELSE` is
 negation by ordering. One allocator per compile hands out death counters player-major
 over the "(Unused)" units (a program's `variableUnits` is a pool restriction on it, not
-its own allocator) and switches from 255 down, starting with every cell the hand triggers
-and the script's raw records touch already taken. `addConst` is one action, `addVar` the
-32+32-step binary decomposition through a temporary; `assign` orders a sum's additions
-before its subtractions so the exact result is what gets stored; `compareVars` builds
-saturating differences into temporaries released after the branch. `Bool` trees go through a DNF
+its own allocator) and switches from 255 down, starting with every cell the hand triggers,
+the script's raw records and the programs' bodies touch already taken. `addConst` is one
+action, `addVar` the 32+32-step binary decomposition through a temporary, each step adding
+`k` times the bit (`x += 3·y`), or consuming the source when it is a dead temp; `assign`
+orders a sum's additions before its subtractions so the exact result is what gets stored,
+and narrows a `u8` / `u16` once, after the sum, only when the sum could outgrow it;
+`divConst` is the long division, `mulVar` the product, `actionWithVar` the decomposition
+whose step is any action of the game; `compareVars` builds saturating differences into
+temporaries released after the branch. `Bool` trees go through a DNF
 conversion with negation pushed to the leaves; a leaf the game cannot negate becomes a
 negative literal with a skip step. State 0 is the entry (every counter is 0 at game
 start), `halt` is 0xFFFFFFFF.

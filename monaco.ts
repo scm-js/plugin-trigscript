@@ -199,7 +199,7 @@ export function setCostHints(monaco: MonacoApi, costs: () => LineCost[]) {
         .filter((c) => normalizePath(c.file) === path && c.line >= range.startLineNumber && c.line <= range.endLineNumber && c.line <= model.getLineCount())
         .map((c): Monaco.languages.InlayHint => ({
           position: { lineNumber: c.line, column: model.getLineMaxColumn(c.line) },
-          label: `${c.triggers} trigger${c.triggers === 1 ? "" : "s"}`,
+          label: c.label ? (c.triggers >= 2 ? `${c.label}, ${c.triggers} triggers` : c.label) : `${c.triggers} trigger${c.triggers === 1 ? "" : "s"}`,
           kind: monaco.languages.InlayHintKind.Type,
           paddingLeft: true,
           ...(c.note ? { tooltip: c.note } : {}),

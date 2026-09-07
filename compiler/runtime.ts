@@ -49,16 +49,36 @@ export interface DurationValue { readonly __trigscript: "duration"; readonly ms?
 export const isDuration = (v: unknown): v is DurationValue => typeof v === "object" && v !== null && (v as DurationValue).__trigscript === "duration";
 
 /**
- * What the transformer turns `program(() => { … })` into: where the body is, and a
- * function that declares the body's build-time constants and returns one thunk per
- * hoisted expression — called by the compiler when its walk reaches the expression.
+ * What the transformer turns `program(() => { … })` — and the arrow of `game(…)` — into:
+ * where the body is, and a function returning one thunk per hoisted expression and one
+ * memoised thunk per build-time constant, called by the compiler when its walk reaches
+ * the expression (`HoistedThunks` in `hoist.ts`).
  */
 export interface ProgramDescriptor {
   __trigscript: "program";
   at: At;
   /** Position of the arrow function in its file, to find the body again. */
   pos: number;
-  hoisted: () => (() => unknown)[];
+  hoisted: () => { h: (() => unknown)[]; c: (() => unknown)[] };
+}
+
+/**
+ * What `game(fn)` returns: a function that throws when the script calls it (it runs in
+ * the game, not when the script is built), carrying the descriptor the compiler inlines.
+ */
+export interface GameFunctionValue {
+  (...args: unknown[]): never;
+  readonly __trigscript: "gamefn";
+  readonly descriptor: ProgramDescriptor;
+}
+
+/** A condition or action function of the library, as the compiler sees it: it knows the definition, so an argument can be a variable of a program. */
+export interface BuilderFunction {
+  (...args: unknown[]): ConditionValue | ActionValue;
+  readonly __trigscript: "builder";
+  readonly kind: "condition" | "action";
+  readonly def: ConditionDef | ActionDef;
+  readonly ident: string;
 }
 
 export type Entry =
@@ -92,6 +112,8 @@ export const isCondition = (v: unknown): v is ConditionValue => typeof v === "ob
 export const isAction = (v: unknown): v is ActionValue => typeof v === "object" && v !== null && (v as ActionValue).__trigscript === "action";
 export const isTrigger = (v: unknown): v is TriggerValue => typeof v === "object" && v !== null && (v as TriggerValue).__trigscript === "trigger";
 export const isProgramDescriptor = (v: unknown): v is ProgramDescriptor => typeof v === "object" && v !== null && (v as ProgramDescriptor).__trigscript === "program";
+export const isGameFunction = (v: unknown): v is GameFunctionValue => typeof v === "function" && (v as GameFunctionValue).__trigscript === "gamefn";
+export const isBuilder = (v: unknown): v is BuilderFunction => typeof v === "function" && (v as BuilderFunction).__trigscript === "builder";
 
 const condition = (record: ConditionRecord): ConditionValue => ({ __trigscript: "condition", record });
 const action = (record: ActionRecord): ActionValue => ({ __trigscript: "action", record });
@@ -164,7 +186,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     }
   };
 
-  const fromDef = (ident: string, def: ConditionDef | ActionDef, kind: "condition" | "action") => (...args: unknown[]) => {
+  const fromDef = (ident: string, def: ConditionDef | ActionDef, kind: "condition" | "action"): BuilderFunction => Object.assign((...args: unknown[]) => {
     const params = scriptParams(def);
     const required = params.filter((p) => !p.optional).length;
     if (args.length < required || args.length > params.length) {
@@ -178,7 +200,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     });
     if (def.args.some((a) => a.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
     return kind === "condition" ? condition(record as unknown as ConditionRecord) : action(record as unknown as ActionRecord);
-  };
+  }, { __trigscript: "builder" as const, kind, def, ident });
   for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
   for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
   rt.preserve = rt.preserveTrigger;
@@ -271,6 +293,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.rose = () => { throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if."); };
   rt.once = () => { throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if."); };
   rt.shared = () => { throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program()."); };
+  rt.clamp = (v: unknown, lo: unknown, hi: unknown) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
 
   /* ── Programs ── */
   rt.program = (body: unknown, options?: unknown, at?: unknown) => {
@@ -309,6 +332,17 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   };
   rt.random = () => { throw new ScriptError("random() is a coin toss the game makes: use it inside program(), in an if, a while or an assignment."); };
 
+  /* ── Game functions ── */
+  rt.game = (body: unknown): GameFunctionValue => {
+    if (!isProgramDescriptor(body)) {
+      throw new ScriptError(typeof body === "function"
+        ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { … })."
+        : `game() takes an arrow function, got ${describe(body)}.`);
+    }
+    const fn = () => { throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built."); };
+    return Object.assign(fn, { __trigscript: "gamefn" as const, descriptor: body });
+  };
+
   return rt;
 }
 
@@ -320,7 +354,7 @@ export function runtimeNames(names: ScriptNames): string[] {
   for (let i = 0; i < PLAYER_SLOTS; i++) out.push(`P${i + 1}`);
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
-  out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "random");
-  out.push("seconds", "minutes", "cycles", "sleep", "rose", "once", "shared");
+  out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
+  out.push("seconds", "minutes", "cycles", "sleep", "rose", "once", "shared", "clamp");
   return out;
 }

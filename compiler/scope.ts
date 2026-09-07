@@ -8,8 +8,12 @@
 import type * as TS from "typescript";
 import type { Var } from "./lower";
 
-/** What an identifier means inside a program: a build-time value (a parameter bound to one) or a variable. */
-export type Binding = { kind: "value"; value: unknown } | { kind: "var"; v: Var };
+/**
+ * What an identifier means inside a program: a build-time value (a parameter bound to
+ * one), a variable, or a record — `let p = { lives: 3, alive: true }` — whose fields are
+ * bindings of their own (`p.lives` is a death counter like any `let`).
+ */
+export type Binding = { kind: "value"; value: unknown } | { kind: "var"; v: Var } | { kind: "record"; fields: Map<string, Binding> };
 
 /** Bindings keyed by declaration node, so shadowing and inlined functions resolve exactly as the checker does. */
 export class Scope {

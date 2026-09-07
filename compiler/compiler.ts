@@ -14,20 +14,21 @@
  * worker fetches it and the tests read it from node_modules.
  */
 import type * as TS from "typescript";
-import type { TriggerRecord } from "../vendor/triggers";
+import type { ActionRecord, ConditionRecord, TriggerRecord } from "../vendor/triggers";
 import { MODULE_NAME } from "./api";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
-import { libraryCallName, planProgram, transformer, type ProgramPlan } from "./hoist";
+import { libraryCallName, libraryName, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { runModules, type LinkedFile } from "./link";
 import { Allocator, LowerError, Machine, PLAYER_SLOTS, storageLabel } from "./lower";
+import { emptyTrigger } from "../vendor/triggers";
 
 /** Trigger cycles a second at Fastest: with hyper triggers the loop runs every two ticks of twenty-four; without, once in two seconds. */
 export const HYPER_CYCLES_PER_SECOND = 12;
 export const PLAIN_CYCLES_PER_SECOND = 0.5;
 import type { ScriptNames } from "./names";
 import { storageOf } from "./reserve";
-import { Collector, createRuntime, type ScriptString } from "./runtime";
-import { Structured } from "./structured";
+import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
+import { newBody, Structured, type Body } from "./structured";
 
 export type { ScriptString } from "./runtime";
 export { DEATHS_TABLE_ADDRESS } from "./runtime";
@@ -89,8 +90,10 @@ export interface LineCost {
   file: string;
   line: number;
   triggers: number;
-  /** Why it costs that, when the machine has something to say (a decomposition). */
+  /** Why it costs that, when the machine has something to say (a decomposition, a loop's timing). */
   note?: string;
+  /** A short label for the line's hint in place of the count — a loop's timing ("unrolled ×6"); such a line may have generated no trigger of its own. */
+  label?: string;
 }
 
 export interface ProgramInfo {
@@ -107,6 +110,15 @@ export interface ProgramInfo {
   source: TriggerSource;
 }
 
+/** Where the script names one of the map's things: `locations.Beacon`, `switches["Door"]`, resolved by the checker — through aliases and namespace imports, never in a comment, a string or a shadowing variable. */
+export interface MapReference extends SourceRange {
+  /** The table (`locations`, `switches`, `units`, `players`, `aiScripts`). */
+  object: string;
+  key: string;
+  /** `locations["Beacon"]`: the range covers the string literal, quotes included. */
+  quoted: boolean;
+}
+
 export interface CompileResult {
   triggers: TriggerRecord[];
   /** Per trigger, where it came from; null for a hyper trigger. */
@@ -121,6 +133,8 @@ export interface CompileResult {
   buildTime: SourceRange[];
   /** Triggers per source line, every line that generated one. */
   costs: LineCost[];
+  /** Every `locations.X` / `switches.X` / … the files mention, whatever else went wrong (a rename is what makes them not type-check). */
+  refs: MapReference[];
   /** No errors: `triggers` is the complete output. */
   ok: boolean;
 }
@@ -149,9 +163,10 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
+  const refs: MapReference[] = [];
   const scripts = new Map<string, string>();
   for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
   if (!scripts.has(ENTRY_FILE)) {
@@ -197,6 +212,27 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   };
   // Filled in after the programs are planned; empty until then.
   const planned = new Set<string>();
+  const tables = new Set([names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => t.object));
+  for (const name of fileNames) {
+    const sf = program.getSourceFile(name)!;
+    // `locations` itself, or the `locations` of `ts.locations` through a namespace import: the library's symbol either way.
+    const tableOf = (e: TS.Expression): string | null => {
+      const id = ts.isIdentifier(e) ? e : ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name) ? e.name : null;
+      const lib = id ? libraryName(ts, checker, id) : null;
+      return lib && tables.has(lib) ? lib : null;
+    };
+    const visit = (node: TS.Node) => {
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
+        const object = tableOf(node.expression);
+        if (object) refs.push({ file: name, ...position(sf, node.name.getStart(sf), node.name.getEnd()), object, key: node.name.text, quoted: false });
+      } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
+        const object = tableOf(node.expression);
+        if (object) refs.push({ file: name, ...position(sf, node.argumentExpression.getStart(sf), node.argumentExpression.getEnd()), object, key: node.argumentExpression.text, quoted: true });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
   // The whole program, not just the scripts: a broken declaration file is a bug worth seeing.
   for (const d of ts.getPreEmitDiagnostics(program)) {
     if (d.category !== ts.DiagnosticCategory.Error) continue;
@@ -208,20 +244,23 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   }
   if (diagnostics.length) return result();
 
-  /* ── Plan the programs ── */
+  /* ── Plan the programs and the game functions ── */
   const plans = new Map<TS.Node, ProgramPlan>();
-  const byPosition = new Map<string, ProgramPlan>();
+  const byPosition = new Map<string, { plan: ProgramPlan; sf: TS.SourceFile; name?: string }>();
   const fileIndex = (sf: TS.SourceFile) => fileNames.indexOf(sf.fileName);
   const buildTime: SourceRange[] = [];
   for (const name of fileNames) {
     const sf = program.getSourceFile(name)!;
     const visit = (node: TS.Node) => {
-      if (ts.isCallExpression(node) && libraryCallName(ts, checker, node) === "program") {
+      if (ts.isCallExpression(node)) {
+        const lib = libraryCallName(ts, checker, node);
         const arrow = node.arguments[0];
-        if (arrow && (ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow))) {
-          const plan = planProgram(ts, checker, arrow);
+        if ((lib === "program" || lib === "game") && arrow && (ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow))) {
+          const plan = planProgram(ts, checker, arrow, { parameters: lib === "game" });
           plans.set(arrow, plan);
-          byPosition.set(`${fileIndex(sf)}:${arrow.getStart(sf)}`, plan);
+          // `const award = game(…)`: the name, for the triggers' labels.
+          const fnName = lib === "game" && ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name) ? node.parent.name.text : undefined;
+          byPosition.set(`${fileIndex(sf)}:${arrow.getStart(sf)}`, { plan, sf, ...(fnName ? { name: fnName } : {}) });
           for (const e of plan.errors) nodeError(e.node, e.message);
           for (const e of plan.hoisted) buildTime.push({ file: name, ...position(sf, e.getStart(sf), e.getEnd()) });
           return; // A program inside a program is the plan's error; nothing to find below.
@@ -263,60 +302,91 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   }
 
   /* ── Lower the programs into the list ── */
-  const triggers: TriggerRecord[] = [];
-  const sources: (TriggerSource | null)[] = [];
-  const programs: ProgramInfo[] = [];
   // One allocator for the whole compile, and every cell a raw trigger of the script touches
   // is taken before the first program asks — a program after a `trigger()` in the text is
-  // no different from one before it.
-  const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
+  // no different from one before it. What the programs' *bodies* touch (`setDeaths(P2, 181,
+  // …)` as a statement, `deaths(…)` in an if) only shows when they are walked, so they are
+  // walked twice: once against a scratch allocator to collect those records, then for real
+  // with them reserved. Hoisted values are memoised in the bodies, so the script's
+  // build-time parts run once.
   const raw = storageOf(collector.entries.flatMap((e) => (e.kind === "trigger" ? [e.record] : [])));
-  allocator.reserve(raw.deaths, raw.switches);
   const sourceOf = (at: [number, number] | null): TriggerSource | null => (at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null);
-  const notes = new Map<string, string>();
-  for (const entry of collector.entries) {
-    if (entry.kind === "trigger") { triggers.push(entry.record); sources.push(sourceOf(entry.at)); continue; }
-    const plan = byPosition.get(`${entry.descriptor.at[0]}:${entry.descriptor.pos}`);
-    const file = fileNames[entry.descriptor.at[0]];
-    const sf = program.getSourceFile(file)!;
-    const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
-    if (!plan) { diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" }); continue; }
-    let hoisted: (() => unknown)[];
-    try {
-      hoisted = entry.descriptor.hoisted();
-    } catch (err) {
-      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: `program(): ${(err as Error).message} — a constant of the program is computed when the script is built.`, source: "script" });
-      continue;
+  const bodies = new Map<ProgramDescriptor, Body | null>();
+  const bodyOf = (d: ProgramDescriptor): Body | null => {
+    let b = bodies.get(d);
+    if (b !== undefined) return b;
+    const found = byPosition.get(`${d.at[0]}:${d.pos}`);
+    if (!found) b = null;
+    else {
+      try { b = newBody(found.plan, found.sf, d.hoisted(), found.name); } catch { b = null; }
     }
-    let machine: Machine;
-    try {
-      const comment = entry.options.comments ? (text: string) => collector.localString({ text }) : undefined;
-      machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator, units: entry.options.variableUnits, comment });
-    } catch (err) {
-      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: (err as LowerError).message, source: "compiler" });
-      continue;
+    bodies.set(d, b);
+    return b;
+  };
+  const resolve = (fn: GameFunctionValue): Body | undefined => bodyOf(fn.descriptor) ?? undefined;
+  const cyclesPerSecond = collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND;
+
+  interface Lowered { triggers: TriggerRecord[]; sources: (TriggerSource | null)[]; programs: ProgramInfo[]; notes: Map<string, { note: string; label?: string }> }
+  const lower = (allocator: Allocator, report: boolean, touched?: TriggerRecord[]): Lowered => {
+    const out: Lowered = { triggers: [], sources: [], programs: [], notes: new Map() };
+    const error = report ? nodeError : () => {};
+    for (const entry of collector.entries) {
+      if (entry.kind === "trigger") { out.triggers.push(entry.record); out.sources.push(sourceOf(entry.at)); continue; }
+      const file = fileNames[entry.descriptor.at[0]];
+      const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
+      const body = bodyOf(entry.descriptor);
+      if (!body) { if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" }); continue; }
+      let machine: Machine;
+      try {
+        const comment = entry.options.comments ? (text: string) => collector.localString({ text }) : undefined;
+        machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator, units: entry.options.variableUnits, comment });
+      } catch (err) {
+        if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: (err as LowerError).message, source: "compiler" });
+        continue;
+      }
+      const start = out.triggers.length;
+      const records: (ConditionRecord | ActionRecord)[] = [];
+      new Structured({ ts, checker, body, machine, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve, ...(touched ? { touched: records } : {}) }).run();
+      if (touched && records.length) {
+        // The body's own records, as a trigger owned by the program's owners, so `storageOf` expands CurrentPlayer to them.
+        const t = emptyTrigger();
+        for (const o of entry.options.owners) t.players[o] = 1;
+        t.conditions = records.filter((r): r is ConditionRecord => "unitId" in r && !("modifier" in r));
+        t.actions = records.filter((r): r is ActionRecord => "modifier" in r);
+        touched.push(t);
+      }
+      out.triggers.push(...machine.triggers);
+      for (const s of machine.sources) out.sources.push(s);
+      for (const [key, note] of machine.notes) out.notes.set(key, note);
+      const owners = entry.options.owners;
+      out.programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
     }
-    const start = triggers.length;
-    new Structured({ ts, checker, sf, plan, hoisted, machine, cyclesPerSecond: collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND, error: (node, message, source) => nodeError(node, message, source) }).run();
-    triggers.push(...machine.triggers);
-    for (const line of machine.lines) sources.push({ file, line });
-    for (const [line, note] of machine.notes) notes.set(`${file}\0${line}`, note);
-    const owners = entry.options.owners;
-    programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
-  }
+    return out;
+  };
+  const touched: TriggerRecord[] = [];
+  const scratch = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
+  scratch.reserve(raw.deaths, raw.switches);
+  if (collector.entries.some((e) => e.kind === "program")) lower(scratch, false, touched);
+  const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
+  allocator.reserve(raw.deaths, raw.switches);
+  const inBodies = storageOf(touched);
+  allocator.reserve(inBodies.deaths, inBodies.switches);
+  const { triggers, sources, programs, notes } = lower(allocator, true);
   const variables: VariableInfo[] = allocator.variables.map((v) => v.kind === "dc"
     ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...(v.at ? { at: v.at } : {}), ...(v.bits ? { bits: v.bits } : {}) }
     : v.kind === "switch"
       ? { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...(v.at ? { at: v.at } : {}) }
       : { name: v.name, kind: "boolean", storage: storageLabel(v), flag: v.unit, ...(v.at ? { at: v.at } : {}) });
   const costs = new Map<string, LineCost>();
-  for (const s of sources) {
-    if (!s) continue;
-    const key = `${s.file}\0${s.line}`;
-    const c = costs.get(key) ?? { file: s.file, line: s.line, triggers: 0, ...(notes.has(key) ? { note: notes.get(key) } : {}) };
-    c.triggers++;
-    costs.set(key, c);
-  }
+  const costOf = (file: string, line: number): LineCost => {
+    const key = `${file}\0${line}`;
+    let c = costs.get(key);
+    if (!c) { const n = notes.get(key); c = { file, line, triggers: 0, ...(n ? { note: n.note, ...(n.label ? { label: n.label } : {}) } : {}) }; costs.set(key, c); }
+    return c;
+  };
+  for (const s of sources) if (s) costOf(s.file, s.line).triggers++;
+  // A loop's line may have made no trigger of its own and still have something to say.
+  for (const [key, n] of notes) if (n.label) { const [file, line] = key.split("\0"); costOf(file, Number(line)); }
   return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
 }
 

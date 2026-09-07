@@ -8,8 +8,10 @@
  * records at the recorded start and, failing that, anywhere in the list — so a hand
  * trigger inserted before the block in the Trigger Editor moves the block without
  * breaking it (`relocateManifest` then rewrites the manifest). Only an edit *inside*
- * the block makes it stale, in which case the next Build appends a fresh block and the
- * old records are left as ordinary hand triggers.
+ * the block makes it stale. The manifest also hashes every record on its own, so a
+ * stale block can still be told apart record by record: the next Build can replace the
+ * records that are still the build's and keep only the edited ones as hand triggers
+ * (`replaceStale`), or append a fresh block and leave them all.
  *
  * Everything here is pure over a trigger list and a `Map` of the members: the plugin
  * reads the map's extras into that shape and writes the result back (see `service.ts`),
@@ -41,6 +43,8 @@ export interface ScriptManifest {
   files: string[];
   /** `hashFiles` of the files the block was built from. */
   sourceHash: string;
+  /** `hashRecord` of each generated record, so an edited block can be taken apart; absent in a manifest from before 2.4.1. */
+  records?: string[];
 }
 
 export interface ScriptBlock {
@@ -115,7 +119,8 @@ export function readManifest(extras: Extras): ScriptManifest | null {
     if (m.version !== 2 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
     const sources = Array.isArray(m.sources) ? m.sources.map((s) => (s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null)) : [];
     const files = Array.isArray(m.files) ? m.files.filter((f): f is string => typeof f === "string") : [];
-    return { version: 2, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "" };
+    const records = Array.isArray(m.records) && m.records.length === m.count && m.records.every((r) => typeof r === "string") ? m.records : undefined;
+    return { version: 2, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...(records ? { records } : {}) };
   } catch {
     return null;
   }
@@ -139,6 +144,11 @@ export function hashTriggers(list: TriggerRecord[]): string {
   return `${list.length}:${fnv1a(encodeTriggers(list))}`;
 }
 
+/** FNV-1a over one encoded record. */
+export function hashRecord(t: TriggerRecord): string {
+  return fnv1a(encodeTriggers([t]));
+}
+
 export function hashText(text: string): string {
   return fnv1a(encoder.encode(text));
 }
@@ -159,6 +169,28 @@ export function findBlock(list: TriggerRecord[], manifest: ScriptManifest): Scri
   return null;
 }
 
+/** A stale block taken apart: the indices at the manifest's start whose records are still the build's, and those that were edited. */
+export interface StaleRecords {
+  unchanged: number[];
+  changed: number[];
+}
+
+/**
+ * When the block is stale, which of the records at the manifest's start are still the
+ * build's own, by their individual hashes. Null when the manifest has none (an older
+ * build), or none of them is still there (the block was removed or moved, not edited).
+ */
+export function staleRecords(list: TriggerRecord[], manifest: ScriptManifest): StaleRecords | null {
+  if (!manifest.records) return null;
+  const out: StaleRecords = { unchanged: [], changed: [] };
+  for (let i = 0; i < manifest.count; i++) {
+    const at = manifest.start + i;
+    if (at >= list.length) break;
+    (hashRecord(list[at]) === manifest.records[i] ? out.unchanged : out.changed).push(at);
+  }
+  return out.unchanged.length ? out : null;
+}
+
 export interface ScriptState {
   /** The script's files; null when the map has none. */
   files: ScriptFiles | null;
@@ -169,6 +201,8 @@ export interface ScriptState {
   block: ScriptBlock | null;
   /** A manifest exists but its records were edited or removed. */
   stale: boolean;
+  /** A stale block the next build can take apart: how many records are still the build's, how many were edited. Null when it cannot. */
+  edited: { unchanged: number; changed: number } | null;
   /** The files differ from what the block was built from (or were never built). */
   unbuilt: boolean;
 }
@@ -179,7 +213,9 @@ export function scriptState(triggers: TriggerRecord[] | null, extras: Extras): S
   const manifest = readManifest(extras);
   const block = triggers && manifest ? findBlock(triggers, manifest) : null;
   const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
-  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block, stale: !!manifest && !block, unbuilt };
+  const stale = !!manifest && !block;
+  const parts = stale && triggers ? staleRecords(triggers, manifest!) : null;
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt };
 }
 
 export function isGenerated(state: ScriptState, index: number): boolean {
@@ -242,6 +278,13 @@ export interface BuildOptions {
    * The manifest still records what the block was built from, so the state reads as unbuilt.
    */
   keepFiles?: boolean;
+  /**
+   * The previous block was edited by hand (`ScriptState.stale`): remove the records that
+   * are still the build's own and put the new block in their place, keeping the edited
+   * records as hand triggers right after it. Without it, the new block is appended and
+   * the old records all stay.
+   */
+  replaceStale?: boolean;
 }
 
 export interface BuildPlan {
@@ -250,6 +293,8 @@ export interface BuildPlan {
   /** The members as they should be after the build. */
   extras: Map<string, Uint8Array>;
   block: ScriptBlock;
+  /** With `replaceStale`: how many of the previous block's records were removed, and how many edited ones kept. */
+  replaced?: { removed: number; kept: number };
 }
 
 /**
@@ -263,17 +308,26 @@ export function buildScript(triggers: TriggerRecord[], extras: Extras, files: Sc
   let start: number;
   let before: TriggerRecord[];
   let after: TriggerRecord[];
+  let replaced: BuildPlan["replaced"];
+  const parts = options.replaceStale && state.stale && state.manifest ? staleRecords(triggers, state.manifest) : null;
   if (options.takeOver) {
     start = 0; before = []; after = [];
   } else if (state.block) {
     start = state.block.start;
     before = triggers.slice(0, start);
     after = triggers.slice(start + state.block.count);
+  } else if (parts) {
+    // The edited records stay, as hand triggers right after the new block; the untouched ones go.
+    start = state.manifest!.start;
+    const end = Math.min(triggers.length, start + state.manifest!.count);
+    before = triggers.slice(0, start);
+    after = [...parts.changed.map((i) => triggers[i]), ...triggers.slice(end)];
+    replaced = { removed: parts.unchanged.length, kept: parts.changed.length };
   } else {
     start = triggers.length; before = triggers.slice(); after = [];
   }
-  const manifest: ScriptManifest = { version: 2, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files) };
-  return { list: [...before, ...records, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records.length, sources: manifest.sources } };
+  const manifest: ScriptManifest = { version: 2, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
+  return { list: [...before, ...records, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
 }
 
 /** Which trigger a source line of a file belongs to (the trigger whose source starts at or before the line), if any. */

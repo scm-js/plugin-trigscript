@@ -14,7 +14,7 @@ import { printScript, printTrigger } from "../compiler/print";
 import { runtimeNames } from "../compiler/runtime";
 import { mapPosition, resolveModule } from "../compiler/link";
 import {
-  buildScript, ENTRY_MEMBER, findBlock, hashTriggers, isScriptMember, readFiles, readManifest, relocateManifest, resolveStrings, scriptState, triggerAtLine, withFiles,
+  buildScript, ENTRY_MEMBER, findBlock, hashTriggers, isScriptMember, readFiles, readManifest, relocateManifest, resolveStrings, scriptState, triggerAtLine, withFiles, staleRecords,
 } from "../script";
 import { defaultLib } from "../bundle/lib.mjs";
 import { loadFixture } from "./fixture";
@@ -359,6 +359,38 @@ describe("build", () => {
     expect(findBlock(list, readManifest(extras)!)).toMatchObject({ start: 0, count: 2 });
     // The identical text was reused rather than interned twice.
     expect(table.strings.filter((t) => t === "one")).toHaveLength(1);
+  });
+
+  it("a stale block is taken apart record by record: replace what is still the build's, keep what was edited", () => {
+    const table = stringTable();
+    const src = 'trigger(P1, [always()], [displayText("a")]);\ntrigger(P1, [always()], [displayText("b")]);\ntrigger(P1, [always()], [displayText("c")]);';
+    let { list, extras } = buildScript([newTrigger([PlayerGroup.Player4])], new Map(), main(src), compile(src), table.intern);
+    expect(readManifest(extras)!.records).toHaveLength(3);
+    // The middle record is edited by hand, and a hand trigger follows the block.
+    list = [...list, newTrigger([PlayerGroup.Player5])];
+    list[2] = cloneTrigger(list[2]);
+    list[2].players[7] = 1;
+    const state = scriptState(list, extras);
+    expect(state).toMatchObject({ stale: true, edited: { unchanged: 2, changed: 1 } });
+    expect(staleRecords(list, state.manifest!)).toEqual({ unchanged: [1, 3], changed: [2] });
+    // Replace: the two untouched records go, the new block lands where the old one was, the edited record follows it, then the hand trigger.
+    const src2 = 'trigger(P2, [always()], [victory()]);';
+    const plan = buildScript(list, extras, main(src2), compile(src2), table.intern, { replaceStale: true });
+    expect(plan.replaced).toEqual({ removed: 2, kept: 1 });
+    expect(plan.block).toMatchObject({ start: 1, count: 1 });
+    expect(plan.list.map((t) => t.players.findIndex((p) => p === 1))).toEqual([3, 1, 0, 4]);
+    expect(plan.list[2].players[7]).toBe(1);
+    expect(scriptState(plan.list, plan.extras)).toMatchObject({ stale: false, edited: null, block: { start: 1, count: 1 } });
+    // Without the option, or with a manifest that has no record hashes, the block is appended and everything stays.
+    const appended = buildScript(list, extras, main(src2), compile(src2), table.intern);
+    expect(appended.replaced).toBeUndefined();
+    expect(appended.list).toHaveLength(6);
+    const old = new Map(extras);
+    old.set("trigscript\\build.json", new TextEncoder().encode(JSON.stringify({ ...readManifest(extras)!, records: undefined })));
+    expect(scriptState(list, old)).toMatchObject({ stale: true, edited: null });
+    expect(buildScript(list, old, main(src2), compile(src2), table.intern, { replaceStale: true }).list).toHaveLength(6);
+    // A block removed or moved whole has nothing to take apart.
+    expect(staleRecords([newTrigger([PlayerGroup.Player4])], state.manifest!)).toBeNull();
   });
 
   it("member names match without regard to case or slash direction; a build keeps every file", () => {

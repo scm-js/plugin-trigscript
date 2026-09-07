@@ -97,7 +97,7 @@ describe("structured: loops and branches", () => {
     expect(texts(sim)).toEqual(["0:tick", "1:tick", "2:tick", "3:tick"]);
   });
 
-  it("for with break and continue; the code after the loop runs the cycle it exits", () => {
+  it("a for with known bounds is unrolled: break and continue work, and it runs in the cycle it is reached in", () => {
     const r = okProgram(`
       let sum = 0;
       for (let i = 0; i < 10; i++) {
@@ -108,11 +108,41 @@ describe("structured: loops and branches", () => {
       displayText("done");
     `);
     const sim = run(r, 8);
+    expect(texts(sim)).toEqual(["0:done"]);
+    expect(value(sim, r, "sum")).toBe(8);
+    // `i` is a value known when the script is built: no death counter, and `sum += i` is a constant addition.
+    expect(r.variables.map((v) => v.name)).toEqual(["(program counter)", "sum"]);
+    expect(r.costs.find((c) => c.line === 3)?.note).toMatch(/^Unrolled: 10 iterations/);
+    // Halted: the program counter sits on a state no trigger tests.
+    expect(sim.death(0, 181)).toBe(0xffffffff);
+  });
+
+  it("a for over a variable bound is a loop, one iteration per cycle; the code after it runs the cycle it exits", () => {
+    const r = okProgram(`
+      let sum = 0;
+      let n = 10;
+      for (let i = 0; i < n; i++) {
+        if (i == 2) continue;
+        if (i == 5) break;
+        sum += i;
+      }
+      displayText("done");
+    `);
+    const sim = run(r, 8);
     expect(texts(sim)).toEqual(["5:done"]);
     expect(value(sim, r, "sum")).toBe(8);
     expect(value(sim, r, "i")).toBe(5);
-    // Halted: the program counter sits on a state no trigger tests.
-    expect(sim.death(0, 181)).toBe(0xffffffff);
+    expect(r.costs.find((c) => c.line === 4)?.note).toMatch(/one iteration per trigger cycle/);
+  });
+
+  it("a for that unrolls too far, counts down, or steps by more than one", () => {
+    expect(compile(program("let s = 0; for (let i = 0; i < 1000; i++) { s += i; }")).diagnostics.map((d) => d.message)).toEqual([expect.stringMatching(/unrolls to more than 256 iterations/)]);
+    const r = okProgram("let s = 0; for (let i = 10; i > 0; i -= 3) { s += i; } for (let j = 2; j <= 6; j += 2) s += j;");
+    expect(value(run(r, 1), r, "s")).toBe(10 + 7 + 4 + 1 + 2 + 4 + 6);
+    // Assigning the loop variable in the body makes it a variable of the game again.
+    const loop = okProgram("let s = 0; for (let i = 0; i < 4; i++) { s += i; i++; }");
+    expect(loop.variables.map((v) => v.name)).toContain("i");
+    expect(value(run(loop, 4), loop, "s")).toBe(2);
   });
 
   it("do … while and while (cond) with a variable condition", () => {
@@ -482,24 +512,25 @@ describe("structured: diagnostics", () => {
     const msgs = messages(`program(() => {
       let x = 1;
       let y = 2;
-      x *= 2;
-      x = x * y;
+      x /= y;
+      x = x ** y;
       wait(x);
       let s = "text";
       function f() { f(); }
       f();
-      function g() { return 1; }
-      g();
+      if (bring(P1, units.AnyUnit, locations.Anywhere, ">=", x)) x = 0;
+      displayText(\`\${x}\`);
       while (true) { break; }
-      switch (x) { default: }
+      switch (x) { case y: break; }
     });`);
-    expect(msgs).toContain("4:The game can only add and subtract: there is no multiplication or division between variables.");
-    expect(msgs).toContain("5:The game can only add and subtract variables; * / % work on values known when the script is built.");
-    expect(msgs).toContain("6:A call's arguments must be known when the script is built, but x is a variable of the program. Compare or assign variables in the program's own statements instead.");
-    expect(msgs.some((m) => m.startsWith("7:Variables hold numbers (death counters) or booleans (switches); s is string"))).toBe(true);
+    expect(msgs).toContain("4:Division is by a constant: the game has no instruction for dividing by a variable.");
+    expect(msgs).toContain("5:Expected a number: variables add, subtract, multiply, divide and take the remainder by a constant.");
+    expect(msgs).toContain("6:wait's milliseconds must be known when the script is built. Only an amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer) and a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) can be a variable of the program.");
+    expect(msgs.some((m) => m.startsWith("7:Variables hold numbers (death counters), booleans (switches) or records of them ({ lives: 3 }); s is string"))).toBe(true);
     expect(msgs).toContain("8:Functions nest too deeply (recursion is not possible: a call is inlined).");
-    expect(msgs).toContain("10:Functions in a program cannot return values; write the result into a variable instead.");
-    expect(msgs).toContain("13:switch is not supported in a program; use if / else if.");
+    expect(msgs).toContain("10:The game cannot test a condition against a variable of the program: a condition's amount is known when the script is built. Compare variables in the program's own statements.");
+    expect(msgs).toContain("11:displayText's text must be known when the script is built. Only an amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer) and a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) can be a variable of the program.");
+    expect(msgs).toContain("13:A case value must be known when the script is built, but y is a variable of the program. Compare or assign variables in the program's own statements instead.");
   });
 
   it("a const computed from the variables is a variable the checker keeps constant", () => {
@@ -842,5 +873,298 @@ describe("structured: time, edges, lists and players", () => {
     expect(texts(sim)).toEqual(["0:g"]);
     expect(value(sim, r, "f")).toBe(0);
     expect(r.variables.find((v) => v.name === "g")).toMatchObject({ kind: "boolean", switch: expect.any(Number) });
+  });
+});
+
+/* ── 2.4.1: the review's five findings ── */
+
+describe("structured: exact sums, short circuits, lazy constants, storage the bodies touch", () => {
+  const files = (src: Record<string, string>) => compileScript(ts, src, NAMES, { lib: LIB });
+
+  it("a narrow variable is saturated after the whole sum, not between its parts", () => {
+    const r = okProgram("let a: u8 = 250; let b: u8 = 10; a = a + b - 10; let c: u16 = 65530; let d: u16 = 10; c = c + d - 20;");
+    const sim = run(r, 1);
+    expect(value(sim, r, "a")).toBe(250);
+    expect(value(sim, r, "c")).toBe(65520);
+    // … and still saturates when the result really is over the top.
+    const over = okProgram("let a: u8 = 250; let b: u8 = 10; a = a + b - 1;");
+    expect(value(run(over, 1), over, "a")).toBe(255);
+    // A constant, a subtraction and a copy of a narrower variable need no guard.
+    const cheap = okProgram("let a: u8 = 200; let b: u8 = 10; a -= 3; a = b;");
+    expect(cheap.triggers.filter((t) => t.conditions.some((c) => c.amount === 256))).toHaveLength(0);
+  });
+
+  it("the running sum of the additions is the one thing a 32-bit cell cannot promise", () => {
+    // Documented: 2³² − 1 + 1 wraps to 0 before the subtraction; the source's exact sum (2³² − 1) fits, the cell does not.
+    const r = okProgram("let a = 4294967295; let b = 1; let out = 0; out = a + b - 1;");
+    expect(value(run(r, 1), r, "out")).toBe(0);
+  });
+
+  it("&& and || short-circuit when the right side has an effect: once() is consumed only when the left side allows", () => {
+    const r = okProgram("let n = 0; let out = 0; while (n < 3) { if (n >= 1 && once(true)) out++; n++; }");
+    const sim = run(r, 8);
+    expect(value(sim, r, "out")).toBe(1);
+    const or = okProgram("let n = 0; let out = 0; while (n < 3) { if (n == 0 || once(true)) out++; n++; }");
+    // n == 0 fires without touching once(); n == 1 consumes it; n == 2 is false.
+    expect(value(run(or, 8), or, "out")).toBe(2);
+    const neg = okProgram("let n = 0; let out = 0; while (n < 3) { if (!(n >= 1 && rose(true))) out++; n++; }");
+    // rose(true) rises once, at n == 1: the negation is true at n == 0 and n == 2.
+    expect(value(run(neg, 8), neg, "out")).toBe(2);
+    // A pure condition still goes through the DNF: one trigger per product.
+    const pure = okProgram('let a = 0; let f = false; if (a >= 1 && !f || random()) displayText("x");');
+    expect(pure.triggers.length).toBeLessThan(8);
+  });
+
+  it("a constant of the program is computed when it is needed, never inside a pruned branch", () => {
+    expect(okProgram('if (false) { const unused = (() => { throw new Error("dead branch evaluated"); })(); }').triggers).toHaveLength(1);
+    const later = okProgram("let x = 0; while (false) { const dead = (() => { throw new Error(\"no\"); })(); x = dead; } x = 1;");
+    expect(value(run(later, 1), later, "x")).toBe(1);
+    // A constant in live code runs where the source has it, and its error lands on its initializer.
+    const r = compile(program('let x = 0;\nconst bad = (() => { throw new Error("boom"); })();\nx = 1;'));
+    expect(r.diagnostics).toEqual([expect.objectContaining({ line: 2, column: 13, message: "boom — this constant is computed when the script is built, not in the game.", source: "script" })]);
+    // A constant used before its declaration by a hoisted function still resolves, once.
+    let calls = 0;
+    const r2 = okProgram("let x = 0; function f() { x = limit + 1; } const limit = 4; f(); f();");
+    expect(value(run(r2, 1), r2, "x")).toBe(5);
+    expect(calls).toBe(0);
+  });
+
+  it("a program body's own setDeaths / deaths keep the allocator away from those cells, whichever program they are in", () => {
+    const r = okProgram('let n = 1; setDeaths(P2, 181, "set", 42); n++;');
+    expect(r.variables.find((v) => v.name === "n")).toMatchObject({ player: 2, unit: 181 });
+    expect(value(run(r, 1), r, "n")).toBe(2);
+    // The second program's body claims a cell the first would otherwise have taken.
+    const two = ok('program(() => { let a = 1; a++; });\nprogram(() => { let b = 0; if (deaths(P2, 181, ">=", 1)) b = 1; }, { owner: P2 });');
+    expect(two.variables.filter((v) => v.player === 1 && v.unit === 181)).toHaveLength(0);
+    // CurrentPlayer in a per-player program's body means each of its owners.
+    const each = ok('program(() => { let a = 1; a++; }, { owner: [P1, P2] });\nprogram(() => { setDeaths(CurrentPlayer, 179, "add", 1); }, { owner: [P3, P4] });');
+    expect(each.variables.filter((v) => v.unit === 179 && (v.player === 2 || v.player === 3))).toHaveLength(0);
+    // Build-time parts of the body still run once, not once per walk.
+    const counted = files({ "main.ts": 'import { tick } from "./count";\nprogram(() => { let n = 0; if (bring(P1, units.AnyUnit, locations.Anywhere, ">=", tick())) n++; });', "count.ts": "let calls = 0;\nexport const tick = () => ++calls;\nexport const seen = () => calls;" });
+    expect(counted.ok).toBe(true);
+    expect(counted.triggers.find((t) => t.conditions.some((c) => c.type === ConditionType.Bring))?.conditions.find((c) => c.type === ConditionType.Bring)?.amount).toBe(1);
+  });
+
+  it("the map's names the files mention, resolved by the checker", () => {
+    const r = files({ "main.ts": '// locations.Beacon\nconst s = "locations.Beacon";\nfunction f(locations: any) { return locations.Beacon; }\nimport * as t from "trigscript";\nimport { switches as sw } from "trigscript";\nconst a = [locations.Anywhere, locations["No Location"], t.locations.NoLocation, sw.Switch1, units.TerranMarine];' });
+    expect(r.refs.map((x) => `${x.object}.${x.key}${x.quoted ? "!" : ""}@${x.line}:${x.column}`)).toEqual([
+      "locations.Anywhere@6:22", "locations.No Location!@6:42", "locations.NoLocation@6:70", "switches.Switch1@6:85", "units.TerranMarine@6:100",
+    ]);
+    // Present even when the script does not type-check: a renamed location is exactly that case.
+    const broken = files({ "main.ts": "const x = locations.Gone;" });
+    expect(broken.ok).toBe(false);
+    expect(broken.refs).toEqual([expect.objectContaining({ object: "locations", key: "Gone" })]);
+  });
+});
+
+/* ── 2.5.0: the language ── */
+
+describe("structured: game functions, returns and records", () => {
+  const files = (src: Record<string, string>) => compileScript(ts, src, NAMES, { lib: LIB });
+
+  it("a function of the body returns a number or a boolean, through a temp", () => {
+    const r = okProgram(`
+      let x = 0; let y: u8 = 7;
+      function twice(n: number) { return n + n; }
+      function big(n: number) { return n >= 10; }
+      function pick(n: number): number { if (n >= 5) return 1; return 2; }
+      x = twice(y) + 1;
+      if (big(x)) x = 100;
+      x = pick(x) + pick(1);
+    `);
+    const sim = run(r, 1);
+    expect(value(sim, r, "x")).toBe(3);
+    // The results are temps: no permanent storage per call site.
+    expect(r.variables.filter((v) => v.name.startsWith("(temporary")).length).toBeLessThanOrEqual(4);
+  });
+
+  it("game() functions come from any file, inline at each call, and return values", () => {
+    const r = files({
+      "main.ts": `
+        import { award, canAfford, tax } from "./shop";
+        program(() => {
+          let gold: u8 = 10;
+          let paid = false;
+          gold = tax(gold);
+          award(P2, 3);
+          if (canAfford(gold, 5)) { paid = true; gold -= 5; }
+        });`,
+      "shop.ts": `
+        export const award = game((p: Player, n: number) => { setResources(p, "add", n, "ore"); });
+        export const canAfford = game((have: number, price: number) => have >= price);
+        export const tax = game((n: number): number => { let out = n - 1; return out; });`,
+    });
+    expect(r.diagnostics).toEqual([]);
+    const sim = run(r, 1);
+    expect(value(sim, r, "gold")).toBe(4);
+    expect(value(sim, r, "paid")).toBe(1);
+    expect(sim.events.map((e) => `${e.action.type}:${e.action.player}:${e.action.target}`)).toEqual([`${ActionType.SetResources}:1:3`]);
+    // Its triggers are attributed to its own file and line, so the cost hints land there.
+    expect(r.sources.some((s) => s?.file === "shop.ts")).toBe(true);
+    expect(r.costs.some((c) => c.file === "shop.ts")).toBe(true);
+    expect(r.buildTime.some((b) => b.file === "shop.ts")).toBe(true);
+    // Calling one when the script is built is an error at the call.
+    const built = files({ "main.ts": 'const f = game((n: number) => n + 1); const x = f(1);' });
+    expect(built.diagnostics.map((d) => d.message)).toEqual(["A game() function runs in the game: call it inside program() or another game() function, not when the script is built."]);
+    // game() inside a program is not allowed; a game function calling another is.
+    expect(compile(program("const f = game((n: number) => n + 1);")).diagnostics[0].message).toMatch(/^game\(\) defines triggers of its own/);
+    const nested = files({ "main.ts": 'const inc = game((n: number) => n + 1); const twice = game((n: number) => inc(inc(n))); program(() => { let x = 0; x = twice(x); x = twice(x); });' });
+    expect(nested.diagnostics).toEqual([]);
+    expect(value(run(nested, 1), nested, "x")).toBe(4);
+  });
+
+  it("game functions see only their own bindings, and their locals are per call", () => {
+    const r = files({ "main.ts": 'const f = game((n: number) => { let acc = 0; acc += n; return acc; }); program(() => { let a = 0; let b = 0; a = f(2); b = f(3); });' });
+    expect(r.diagnostics).toEqual([]);
+    const sim = run(r, 1);
+    expect(value(sim, r, "a")).toBe(2);
+    expect(value(sim, r, "b")).toBe(3);
+    // A missing return in a function typed to return a number is TypeScript's error; a rest parameter is ours.
+    expect(files({ "main.ts": 'const f = game((...n: number[]) => 1); program(() => { let a = 0; a = f(1); });' }).diagnostics.map((d) => d.message)).toContain("Rest parameters are not supported in a game function.");
+  });
+
+  it("records: a let holding an object literal is a variable per field", () => {
+    const r = okProgram(`
+      let p = { lives: 3, gold: 0, alive: true, pos: { x: 1, y: 2 } };
+      p.lives -= 1;
+      p.gold = p.lives + p.pos.y;
+      if (p.lives == 2 && p.alive) p.alive = false;
+      p["pos"].x = p.pos.x + 5;
+      function hit(q: { lives: number }) { q.lives -= 1; }
+      hit(p);
+    `);
+    const sim = run(r, 1);
+    expect(value(sim, r, "p.lives")).toBe(1);
+    expect(value(sim, r, "p.gold")).toBe(4);
+    expect(value(sim, r, "p.alive")).toBe(0);
+    expect(value(sim, r, "p.pos.x")).toBe(6);
+    expect(r.variables.find((v) => v.name === "p.lives")).toMatchObject({ kind: "number", at: expect.objectContaining({ line: 2 }) });
+    const typed = okProgram("let p: { n: u8 } = { n: 250 }; p.n += 10;");
+    expect(value(run(typed, 1), typed, "p.n")).toBe(255);
+    expect(compile(program("let p = { n: 1 }; p = { n: 2 };")).diagnostics.map((d) => d.message)).toEqual(["A record is assigned field by field: p.lives = 3."]);
+    expect(compile(program("const p = { n: 1 }; p.n = 2;")).diagnostics.map((d) => d.message)).toEqual(["This object is computed when the script is built. Declare it with let inside the program to make it a record of variables."]);
+  });
+});
+
+describe("structured: switch, ternaries and arithmetic", () => {
+  it("switch over a variable: cases in order, fall-through, default anywhere, break", () => {
+    const r = okProgram(`
+      let x = 2; let out = 0;
+      switch (x) {
+        case 1: out = 10; break;
+        case 2:
+        case 3: out += 1;
+        default: out += 100; break;
+        case 9: out = 9;
+      }
+      switch (x + 7) { case 9: out += 1000; }
+    `);
+    expect(value(run(r, 1), r, "out")).toBe(1101);
+    // break inside a switch inside a loop leaves the switch; continue reaches the loop.
+    const loop = okProgram("let i = 0; let out = 0; while (i < 3) { i++; switch (i) { case 2: continue; default: out += i; break; } out += 10; }");
+    expect(value(run(loop, 6), loop, "out")).toBe(1 + 10 + 3 + 10);
+  });
+
+  it("?: as a number and as a condition, with a side that has effects reached only when chosen", () => {
+    const r = okProgram("let a = 3; let b = 0; let c = 0; b = a > 2 ? a + 1 : 0; c = a > 5 ? 1 : b + 1; let n = 0; if (n >= 1 ? once(true) : false) c = 99; if (b == 4 ? true : false) c += 100;");
+    const sim = run(r, 1);
+    expect(value(sim, r, "b")).toBe(4);
+    expect(value(sim, r, "c")).toBe(105);
+  });
+
+  it("multiplication by a constant, division and remainder by a constant", () => {
+    const r = okProgram("let a: u8 = 7; let b = 0; let c = 0; let d = 0; b = a * 3 + 2; c = b / 4; d = b % 4; a *= 2; b /= 3; let e = 0; e = (a + 1) * 2 - a * 2;");
+    const sim = run(r, 1);
+    expect(value(sim, r, "b")).toBe(7);
+    expect(value(sim, r, "c")).toBe(5);
+    expect(value(sim, r, "d")).toBe(3);
+    expect(value(sim, r, "a")).toBe(14);
+    expect(value(sim, r, "e")).toBe(2);
+    expect(r.costs.find((c) => c.line === 1)?.note).toMatch(/long division/);
+    expect(compile(program("let a = 1; a = a / 0;")).diagnostics.map((d) => d.message)).toEqual(["Divide by a whole number of at least 1, not 0."]);
+  });
+
+  it("multiplication between variables, and its cost", () => {
+    const r = okProgram("let a: u8 = 6; let b: u8 = 7; let c = 0; c = a * b; c += a * a;");
+    const sim = run(r, 1);
+    expect(value(sim, r, "c")).toBe(42 + 36);
+    expect(value(sim, r, "a")).toBe(6);
+    expect(value(sim, r, "b")).toBe(7);
+    expect(r.costs.find((c) => c.line === 1)?.note).toMatch(/Multiplying two variables/);
+    expect(r.triggers.length).toBeLessThan(500);
+  });
+
+  it("Math.min / max / abs, clamp(), rounding — against constants and between variables", () => {
+    const r = okProgram(`
+      let a: u8 = 20; let b: u8 = 5; let lo = 0; let hi = 0; let d = 0; let k = 0; let m = 0;
+      lo = Math.min(a, b); hi = Math.max(a, b); d = Math.abs(b - a); k = clamp(a, 8, 12); m = Math.max(Math.min(a, 7), b, 6);
+      let f = 0; f = Math.floor(a / 3) + Math.trunc(b);
+      let z = 0; z = Math.min(a, 3) + Math.max(b, 30) + Math.min(a, b, 2);
+    `);
+    const sim = run(r, 1);
+    expect(value(sim, r, "lo")).toBe(5);
+    expect(value(sim, r, "hi")).toBe(20);
+    expect(value(sim, r, "d")).toBe(15);
+    expect(value(sim, r, "k")).toBe(12);
+    expect(value(sim, r, "m")).toBe(7);
+    expect(value(sim, r, "f")).toBe(11);
+    expect(value(sim, r, "z")).toBe(3 + 30 + 2);
+    // The operands are intact.
+    expect(value(sim, r, "a")).toBe(20);
+    expect(value(sim, r, "b")).toBe(5);
+  });
+
+  it("comparisons with a coefficient fold to a test against a constant", () => {
+    const r = okProgram('let a = 3; let out = 0; if (a * 2 >= 5) out += 1; if (a * 2 == 7) out += 10; if (a * 2 != 7) out += 100; if (3 * a < 10) out += 1000; if (a + a == 6) out += 10000;');
+    expect(value(run(r, 1), r, "out")).toBe(11101);
+    // No temps: every test is one condition on `a`.
+    expect(r.variables.filter((v) => v.name.startsWith("(temporary"))).toHaveLength(0);
+  });
+});
+
+describe("structured: actions with a variable amount", () => {
+  const eventsOf = (sim: Simulation, type: number) => sim.events.filter((e) => e.action.type === type).map((e) => e.action);
+
+  it("setResources / setDeaths / setScore / setCountdownTimer add, subtract and set a variable amount", () => {
+    const r = okProgram(`
+      let n: u8 = 13; let wave = 0; wave = 3;
+      setResources(P1, "add", n, "ore");
+      setResources(P2, "set", wave * 10 + 5, "gas");
+      setScore(P1, "subtract", n, "kills");
+      setCountdownTimer("set", n + 1);
+      setDeaths(P3, units.TerranMarine, "add", n);
+    `);
+    const sim = run(r, 1);
+    const sum = (list: { target: number }[]) => list.reduce((s, a) => s + a.target, 0);
+    const ore = eventsOf(sim, ActionType.SetResources).filter((a) => a.player === 0);
+    expect(ore.every((a) => a.modifier === SetModifier.Add)).toBe(true);
+    expect(sum(ore)).toBe(13);
+    const gas = eventsOf(sim, ActionType.SetResources).filter((a) => a.player === 1);
+    expect(gas[0]).toMatchObject({ modifier: SetModifier.SetTo, target: 0 });
+    expect(sum(gas.slice(1))).toBe(35);
+    expect(sum(eventsOf(sim, ActionType.SetScore))).toBe(13);
+    expect(eventsOf(sim, ActionType.SetCountdownTimer).reduce((s, a) => s + a.time, 0)).toBe(14);
+    // The deaths went to the map's counter, which the simulator models, and the variable is intact.
+    expect(sim.death(2, unitName.length ? 0 : 0)).toBe(13);
+    expect(value(sim, r, "n")).toBe(13);
+    expect(r.costs.find((c) => c.line === 4)?.note).toMatch(/variable amount/);
+  });
+
+  it("createUnit and its kin take a variable count, saturated at 255", () => {
+    const r = okProgram(`
+      let n: u8 = 6; let big = 0; big = 300;
+      createUnit(P2, units.ZergZergling, n, locations.Anywhere);
+      killUnitAt(P2, units.ZergZergling, n + 1, locations.Anywhere);
+      createUnit(P3, units.ZergZergling, big, locations.Anywhere);
+    `);
+    const sim = run(r, 1);
+    const created = eventsOf(sim, ActionType.CreateUnit);
+    expect(created.filter((a) => a.player === 1).reduce((s, a) => s + a.modifier, 0)).toBe(6);
+    expect(eventsOf(sim, ActionType.KillUnitAt).reduce((s, a) => s + a.modifier, 0)).toBe(7);
+    expect(created.filter((a) => a.player === 2).reduce((s, a) => s + a.modifier, 0)).toBe(255);
+    expect(value(sim, r, "n")).toBe(6);
+    expect(value(sim, r, "big")).toBe(300);
+    expect(compile(program("let n = 0; moveLocation(P1, units.AnyUnit, locations.Anywhere, n);")).diagnostics[0].message).toMatch(/^moveLocation's \w+ must be known/);
+    expect(compile(program('let a = 0; let b = 0; setResources(P1, "add", a, b);')).diagnostics[0].message).toMatch(/must be known when the script is built/);
   });
 });

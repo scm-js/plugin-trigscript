@@ -56,6 +56,8 @@ ${kw}type u8 = number & Brand<"u8">;
 ${kw}type u16 = number & Brand<"u16">;
 /** A number of a program with the full range, 0 … 4 294 967 295 — what a plain \`number\` is. */
 ${kw}type u32 = number & Brand<"u32">;
+/** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
+${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
 
 /** A condition, as returned by bring(...), deaths(...), …: give it to trigger(), or test it in an if inside program(). */
 ${kw}interface Condition { readonly __condition: true; }
@@ -114,15 +116,27 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
 /**
  * Code that runs in the game: a state machine built from death counters. Inside the arrow,
  * variables holding numbers are death counters and booleans are switches (a const computed
- * from them is one too, and cannot be reassigned); if / else, while, do, for, break, continue
- * and functions (inlined per call, arguments passed by value) all work; conditions go in an
- * if or while and actions stand as statements. One iteration of a loop per trigger cycle;
- * sleep(seconds(n)) pauses. A for…of over a list known when you build is unrolled.
- * Everything the body reads from outside (constants, helpers, conditions, actions) is
- * computed when you build — the editor underlines those parts — so it cannot depend on the
- * variables.
+ * from them is one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them);
+ * if / else, while, do, for, switch, break, continue, ?: and functions (inlined per call,
+ * arguments passed by value, return values allowed) all work; conditions go in an if or
+ * while and actions stand as statements. One iteration of a while loop per trigger cycle; a
+ * for with bounds known when you build is unrolled and runs at once; sleep(seconds(n))
+ * pauses. A for…of over a list known when you build is unrolled too. Arithmetic: + −, × by a
+ * constant, / and % by a constant, Math.min / max / abs, clamp(); × between variables is
+ * possible but costly. Everything the body reads from outside (constants, helpers,
+ * conditions, actions) is computed when you build — the editor underlines those parts — so
+ * it cannot depend on the variables, except the amount of setResources / setDeaths /
+ * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
+ * giveUnits, which can be a variable.
  */
 ${kw}function program(body: () => void, options?: ProgramOptions): void;
+/**
+ * A function that runs in the game, for programs to call — from any file, imported like any
+ * other: \`export const award = game((p: Player, n: number) => { setResources(p, "add", n, "ore"); })\`.
+ * Its body follows program()'s rules; it is inlined at every call, arguments pass by value and
+ * it may return a number or a boolean. Calling it when the script is built is an error.
+ */
+${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
 /** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
 ${kw}function hyperTriggers(owner?: Player): void;
 /** A coin toss (Randomize Switch), inside program() only: \`flag = random()\`, \`if (random() && …)\`. */
@@ -146,6 +160,8 @@ ${kw}function once(condition: Condition | boolean): boolean;
 /** In a program that runs for several players, a variable they all share instead of one per player: \`let total = shared(0)\`. */
 ${kw}function shared(initial: number): number;
 ${kw}function shared(initial: boolean): boolean;
+/** The value kept within low … high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
+${kw}function clamp(value: number, low: number, high: number): number;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**

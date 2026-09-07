@@ -226,6 +226,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   let cancelled = false;
   /** Renames the map made to things the script names, waiting for the user's word. */
   let renames: { object: string; list: Renamed[] }[] = [];
+  /** With a stale block that can be taken apart: the user chose to append a fresh block instead of replacing what is still the build's. */
+  let appendInstead = false;
 
   /* ── DOM ── */
   const style = el("style", undefined, STYLE);
@@ -243,7 +245,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "Where the programs' variables are stored (death counters and switches)", onClick: () => { showVariables = !showVariables; render(); } });
   const problemsCount = el("span", { className: "hint" }, "");
   const variables = el("div", { className: "tsd-variables", hidden: true });
-  const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block.");
+  const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale });
   const renameNotice = el("div", { className: "tsd-notice tsd-renames", hidden: true });
   const hostEl = el("div", { className: "tsd-host" });
   const problems = el("ul", { className: "tsd-problems", hidden: true });
@@ -296,13 +298,34 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     }));
   };
 
+  /** The block was edited outside the script: what the next Build does about it, and the other choice. */
+  const renderStale = (state: { stale: boolean; edited: { unchanged: number; changed: number } | null } | null) => {
+    const stale = state?.stale ?? false;
+    notice.hidden = !stale;
+    if (!stale) return;
+    const e = state?.edited ?? null;
+    if (!e) {
+      notice.replaceChildren(el("span", { className: "grow" }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block."));
+      return;
+    }
+    const n = (k: number, what: string) => `${k} ${what}${k === 1 ? "" : "s"}`;
+    const facts = `The block from the last build was edited outside the script: ${n(e.unchanged, "trigger")} ${e.unchanged === 1 ? "is" : "are"} still the build's, ${n(e.changed, "trigger")} ${e.changed === 1 ? "was" : "were"} changed.`;
+    const plan = appendInstead
+      ? "The next Build leaves them all as hand-made triggers and appends a fresh block."
+      : `The next Build replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
+    notice.replaceChildren(
+      el("span", { className: "grow" }, `${facts} ${plan}`),
+      w.button(appendInstead ? "Replace instead" : "Append instead", { ghost: true, onClick: () => { appendInstead = !appendInstead; render(); } }),
+    );
+  };
+
   const renderRenames = () => {
     const all = renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} → ${r.object}.${x.to}`));
     renameNotice.hidden = all.length === 0;
     if (all.length === 0) return;
     renameNotice.replaceChildren(
       el("span", { className: "grow" }, `The map renamed ${all.length === 1 ? "something the script names" : `${all.length} things the script names`}: ${all.join(", ")}.`),
-      w.button("Update references", { onClick: () => applyRenames() }),
+      w.button("Update references", { onClick: () => { void applyRenames(); } }),
       w.button("Leave", { ghost: true, onClick: () => { renames = []; renderRenames(); } }),
     );
   };
@@ -333,7 +356,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const state = svc.state();
     const block = state?.block ?? null;
     const stale = state?.stale ?? false;
-    notice.hidden = !stale;
+    renderStale(state);
     renderFiles();
     renderRenames();
 
@@ -391,7 +414,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /** Which lines get a cost at their end: those that made more than one trigger, and each program's own line with its total. */
   const costHints = (): LineCost[] => {
     if (!result) return [];
-    const out = result.costs.filter((c) => c.triggers >= 2);
+    const out = result.costs.filter((c) => c.triggers >= 2 || c.label);
     for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as ${ownerLabel(p)}.` });
     return out;
   };
@@ -476,12 +499,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         }
         const wasStale = svc.state()?.stale ?? false;
         setStatus("busy", "Installing the triggers…");
-        const out = svc.install(a, { takeOver });
+        const out = svc.install(a, { takeOver, replaceStale: wasStale && !appendInstead });
         if (out.block) {
           const b = out.block;
+          const tail = out.replaced
+            ? ` (replaced the previous block's ${out.replaced.removed} unchanged trigger${out.replaced.removed === 1 ? "" : "s"}; ${out.replaced.kept} edited one${out.replaced.kept === 1 ? "" : "s"} kept after it)`
+            : wasStale ? " (appended: the previous block had been edited outside the script)" : "";
           setStatus("ok", b.count === 0
             ? "Built: the script defines no triggers; the block is empty."
-            : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}${wasStale ? " (appended: the previous block had been edited outside the script)" : ""}.`);
+            : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}${tail}.`);
           return true;
         }
         // The names changed under the compile (a location renamed, a trigger added): once more against the new ones.
@@ -568,13 +594,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     }
   };
 
-  /** The map renamed things the script names: after the user says so, the references follow. */
-  const applyRenames = () => {
+  /** The map renamed things the script names: after the user says so, the references follow — the checker's, from a compile of the text as it is now. */
+  const applyRenames = async () => {
     if (!editor) return;
+    const a = await compileNow();
+    if (!a || cancelled || !editor) return;
     let next = files;
     let count = 0;
     for (const r of renames) {
-      const done = replaceReferences(next, r.object, r.list);
+      const done = replaceReferences(next, a.compiled.refs, r.object, r.list);
       next = done.files;
       count += done.count;
     }
@@ -643,7 +671,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (before && generated) {
       for (const table of ["locations", "switches"] as const) {
         const object = generated.names[table].object;
-        const list = renamesInUse(files, object, renamedKeys(before.names[table], generated.names[table]));
+        const list = renamesInUse(result?.refs ?? [], object, renamedKeys(before.names[table], generated.names[table]));
         if (list.length === 0) continue;
         const slot = renames.find((r) => r.object === object);
         if (slot) slot.list = [...slot.list.filter((x) => !list.some((y) => y.value === x.value)), ...list];

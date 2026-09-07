@@ -1172,7 +1172,7 @@ var bitsOf = (v) => v.bits ?? 32;
 var maxOf = (bits) => bits >= 32 ? U32_MAX : 2 ** bits - 1;
 var bitLength = (n) => n <= 0 ? 0 : Math.min(32, Math.floor(Math.log2(n)) + 1);
 function widthOf(expr) {
-  const widths = expr.terms.filter((t) => t.sign > 0).map((t) => bitsOf(t.v));
+  const widths = expr.terms.filter((t) => t.k > 0).map((t) => bitsOf(t.v) + bitLength(t.k) - 1);
   if (expr.c > 0) widths.push(bitLength(expr.c));
   if (widths.length === 0) return 32;
   return Math.min(32, Math.max(...widths) + bitLength(widths.length - 1));
@@ -1250,6 +1250,7 @@ function toDnf(b) {
 }
 var LowerError = class extends Error {
 };
+var DECOMPOSITION_NOTE = "A variable-to-variable operation is the binary decomposition: 32 steps in and 32 back per variable. Declare the variable u8 or u16 for 8 + 8 or 16 + 16.";
 var STEP_ACTIONS = MAX_ACTIONS - 2;
 var STEP_CONDITIONS = MAX_CONDITIONS - 1;
 var Machine = class {
@@ -1258,10 +1259,12 @@ var Machine = class {
   allocator;
   units;
   triggers = [];
-  /** Per trigger, the source line it came from. */
-  lines = [];
+  /** Per trigger, the source file and line it came from. */
+  sources = [];
+  /** The file the statements being lowered are in: the program's, or an inlined game function's. */
+  file = "";
   pc;
-  /** Per source line, a note on why it costs what it costs (a decomposition), for the editor's cost hints. */
+  /** Per source line (`file\0line`), a note on why it costs what it costs (a decomposition) and, for a loop, a short label, for the editor's cost hints. */
   notes = /* @__PURE__ */ new Map();
   /** The state whose steps are being emitted. State 0 is the entry: every counter is 0 at game start. */
   state = 0;
@@ -1311,14 +1314,32 @@ var Machine = class {
     this.state = state;
     this.stepsInState = 0;
   }
-  /** Scratch counters for arithmetic: acquired in a stack, zeroed on acquisition by the caller. */
-  temp() {
+  /**
+   * Scratch counters for arithmetic: acquired in a stack, zeroed on acquisition by the
+   * caller. `bits` is what the caller knows the value will fit in — the width a later
+   * decomposition of the temp uses — 32 when nothing is known.
+   */
+  temp(bits = 32) {
     if (this.tempsInUse === this.temps.length) {
-      const t = this.dc(`(temporary ${this.temps.length + 1})`);
-      if (!t) throw new LowerError("Out of death counters for temporaries.");
-      this.temps.push(t);
+      const t2 = this.dc(`(temporary ${this.temps.length + 1})`);
+      if (!t2) throw new LowerError("Out of death counters for temporaries.");
+      this.temps.push(t2);
     }
-    return this.temps[this.tempsInUse++];
+    const t = this.temps[this.tempsInUse++];
+    if (bits < 32) t.bits = bits;
+    else delete t.bits;
+    return t;
+  }
+  /**
+   * A note on a source line for the editor's cost hints, with a short label when the line
+   * is worth one on its own. The first note stays, except that a specific one (a division,
+   * a product, an action with a variable amount) replaces the general decomposition note.
+   */
+  remark(line, text, label, specific = false) {
+    const key = `${this.file}\0${line}`;
+    const had = this.notes.get(key);
+    if (had && !(specific && had.note === DECOMPOSITION_NOTE)) return;
+    this.notes.set(key, { note: text, ...label ? { label } : {} });
   }
   release(n = 1) {
     this.tempsInUse -= n;
@@ -1342,7 +1363,7 @@ var Machine = class {
     if (next !== null) t.actions.push(setDeaths(this.pc, SetModifier.SetTo, next));
     if (t.conditions.length > MAX_CONDITIONS) throw new LowerError(`A branch tests more than ${STEP_CONDITIONS} conditions at once; split it.`);
     this.triggers.push(t);
-    this.lines.push(line);
+    this.sources.push({ file: this.file, line });
     this.stepsInState++;
   }
   /** Queue an action for the current state; it is written out with the next step. */
@@ -1406,100 +1427,177 @@ var Machine = class {
   }
   addConst(v, n, line, label) {
     if (n === 0) return;
-    this.action(setDeaths(v, n > 0 ? SetModifier.Add : SetModifier.Subtract, Math.abs(n)), line, label);
-    if (n > 0) this.clamp(v, line, label);
+    this.action(setDeaths(v, n > 0 ? SetModifier.Add : SetModifier.Subtract, Math.min(U32_MAX, Math.abs(n))), line, label);
   }
-  /** After an addition to a narrow variable: one trigger that saturates it at its maximum. */
+  /**
+   * After an expression was stored in a narrow variable: one trigger that saturates it at
+   * its maximum. Only the stored result is narrowed, never a running value — `a = a + b - 10`
+   * over `u8`s is the exact sum first, then 255 at most — so between the store and the
+   * guard the cell may briefly hold more, which nothing reads.
+   */
   clamp(v, line, label) {
     const bits = bitsOf(v);
     if (bits >= 32) return;
     this.step([deathsCondition(v, Comparison.AtLeast, 2 ** bits)], [setDeaths(v, SetModifier.SetTo, maxOf(bits))], null, line, label);
   }
   note(line, bits) {
-    if (bits >= 32 && !this.notes.has(line)) this.notes.set(line, "A variable-to-variable operation is the binary decomposition: 32 steps in and 32 back per variable. Declare the variable u8 or u16 for 8 + 8 or 16 + 16.");
+    if (bits >= 32) this.remark(line, DECOMPOSITION_NOTE);
   }
   /**
-   * `dst += src` (or `-=`), `src` intact afterwards: the binary decomposition through a
-   * temp, over `bits` bits (`src`'s width, or what the caller knows the value fits in).
+   * `dst += k·src`: the binary decomposition of `src` over `bits` bits (its width, or what
+   * the caller knows the value fits in), each step adding `k` times the bit to `dst` — a
+   * negative `k` subtracts. `src` is intact afterwards, moved through a temp and back,
+   * unless the caller `consume`s it (a temp that is dead afterwards): then it is 0 and the
+   * operation costs half.
    */
-  addVar(dst, src, subtract, line, label, bits = bitsOf(src)) {
+  addVar(dst, src, k, line, label, bits = bitsOf(src), consume = false) {
+    if (k === 0) return;
     this.note(line, bits);
-    if (dst === src || dst.player === src.player && dst.unit === src.unit) {
-      if (subtract) {
-        this.set(dst, 0, line, label);
-        return;
-      }
+    if (dst.player === src.player && dst.unit === src.unit) {
       const t2 = this.temp();
       this.set(t2, 0, line, label);
-      for (let k = bits - 1; k >= 0; k--) {
-        const bit = 2 ** k;
-        if (k === 31) this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit)], null, line, label);
-        else this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(t2, SetModifier.Add, bit * 2)], null, line, label);
-      }
-      this.move(t2, dst, line, label, Math.min(32, bits + 1));
+      this.addVar(t2, src, k, line, label, bits, false);
+      this.addVar(dst, t2, 1, line, label, Math.min(32, bits + bitLength(Math.abs(k))), true);
       this.release();
-      this.clamp(dst, line, label);
+      return;
+    }
+    const mod = k > 0 ? SetModifier.Add : SetModifier.Subtract;
+    const amount = (bit) => k > 0 ? bit * k >>> 0 : Math.min(U32_MAX, bit * -k);
+    if (consume) {
+      for (let b = bits - 1; b >= 0; b--) {
+        const bit = 2 ** b;
+        this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, amount(bit))], null, line, label);
+      }
       return;
     }
     const t = this.temp();
     this.set(t, 0, line, label);
-    const mod = subtract ? SetModifier.Subtract : SetModifier.Add;
-    for (let k = bits - 1; k >= 0; k--) {
-      const bit = 2 ** k;
-      this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, bit), setDeaths(t, SetModifier.Add, bit)], null, line, label);
+    for (let b = bits - 1; b >= 0; b--) {
+      const bit = 2 ** b;
+      this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, amount(bit)), setDeaths(t, SetModifier.Add, bit)], null, line, label);
     }
-    this.move(t, src, line, label, bits);
+    this.addVar(src, t, 1, line, label, bits, true);
     this.release();
-    if (!subtract) this.clamp(dst, line, label);
   }
-  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. The caller clamps `dst` if it needs it. */
+  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. */
   move(src, dst, line, label, bits = bitsOf(src)) {
-    for (let k = bits - 1; k >= 0; k--) {
-      const bit = 2 ** k;
-      this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, SetModifier.Add, bit)], null, line, label);
-    }
+    this.addVar(dst, src, 1, line, label, bits, true);
   }
   /**
-   * `x = c + Σ ±v`, with the meaning the source has: the sum worked out exactly, then
-   * stored — below zero it is 0, at 2³² and above it wraps. Every addition goes first and
-   * every subtraction after, whatever order the source wrote them in: the running value
-   * then only ever decreases through the subtractions, so it cannot touch zero unless the
-   * exact result is below zero, and saturation bites exactly when the store would clamp.
-   * (`a = a + b - 5` with `a = 0`, `b = 10` is 5, not 10: subtracting the 5 first would
-   * saturate.) Through a temp when `x` itself is a term anywhere but as the single
-   * leading `+x`.
+   * `x = c + Σ k·v`, with the meaning the source has: the sum worked out exactly, then
+   * stored — below zero it is 0, at 2³² and above it wraps, and a `u8` / `u16` is
+   * saturated at its maximum *after* the whole sum. Every addition goes first and every
+   * subtraction after, whatever order the source wrote them in: the running value then only
+   * ever decreases through the subtractions, so it cannot touch zero unless the exact
+   * result is below zero, and the game's saturating subtraction bites exactly when the
+   * store would clamp. (`a = a + b - 5` with `a = 0`, `b = 10` is 5, not 10: subtracting
+   * the 5 first would saturate.) The one thing this cannot promise is a running sum of the
+   * additions past 2³² — the cell is 32 bits and there is no wider one — which wraps.
+   * Through a temp when `x` itself is a term anywhere but as the single leading `+x`.
    */
   assign(x, expr, line, label) {
     const sameAs = (a2, b) => a2.player === b.player && a2.unit === b.unit;
-    const self = expr.terms.filter((t2) => sameAs(t2.v, x));
-    const others = expr.terms.filter((t2) => !sameAs(t2.v, x));
-    if (self.length === 1 && self[0].sign > 0) {
+    const self = expr.terms.filter((t) => sameAs(t.v, x));
+    const others = expr.terms.filter((t) => !sameAs(t.v, x));
+    if (self.length === 1 && self[0].k === 1) {
       this.accumulate(x, { c: expr.c, terms: others }, line, label);
-      return;
-    }
-    if (self.length === 0) {
+    } else if (self.length === 0) {
       this.set(x, Math.max(0, expr.c), line, label);
       this.accumulate(x, { c: Math.min(0, expr.c), terms: others }, line, label);
-      return;
+    } else {
+      const t = this.temp();
+      this.evaluate(t, expr, line, label);
+      this.set(x, 0, line, label);
+      this.move(t, x, line, label, widthOf(expr));
+      this.release();
     }
-    const t = this.temp();
-    this.evaluate(t, expr, line, label);
-    this.set(x, 0, line, label);
-    this.move(t, x, line, label, widthOf(expr));
-    this.release();
-    this.clamp(x, line, label);
+    if (widthOf(expr) > bitsOf(x)) this.clamp(x, line, label);
   }
-  /** Compute a linear expression into a temp (zeroed first). */
+  /** Compute a linear expression into a temp (zeroed first); a temp is never narrowed. */
   evaluate(t, expr, line, label) {
     this.set(t, Math.max(0, expr.c), line, label);
     this.accumulate(t, { c: Math.min(0, expr.c), terms: expr.terms }, line, label);
   }
-  /** `v += expr` in the order `assign` describes: the additions, then the subtractions. */
+  /** `v += expr` in the order `assign` describes: the additions, then the subtractions; no narrowing. */
   accumulate(v, expr, line, label) {
     if (expr.c > 0) this.addConst(v, expr.c, line, label);
-    for (const t of expr.terms) if (t.sign > 0) this.addVar(v, t.v, false, line, label);
+    for (const t of expr.terms) if (t.k > 0) this.addVar(v, t.v, t.k, line, label);
     if (expr.c < 0) this.addConst(v, expr.c, line, label);
-    for (const t of expr.terms) if (t.sign < 0) this.addVar(v, t.v, true, line, label);
+    for (const t of expr.terms) if (t.k < 0) this.addVar(v, t.v, t.k, line, label);
+  }
+  /**
+   * `q = n / d`, `n = n % d` for a constant `d ≥ 1`: long division in binary, high bit
+   * first — `[n ≥ d·2ᵇ] → n −= d·2ᵇ, q += 2ᵇ` for every b where d·2ᵇ fits in 32 bits.
+   * `n` is consumed (a temp holding the dividend) and holds the remainder afterwards;
+   * `q` must be 0 before.
+   */
+  divConst(n, q, d, line, label, bits = bitsOf(n)) {
+    this.remark(line, `Division by a constant is a binary long division: one step per bit of the dividend (${bits}).`, void 0, true);
+    for (let b = bits - 1; b >= 0; b--) {
+      const chunk = d * 2 ** b;
+      if (chunk > U32_MAX) continue;
+      this.step([deathsCondition(n, Comparison.AtLeast, chunk)], [setDeaths(n, SetModifier.Subtract, chunk), setDeaths(q, SetModifier.Add, 2 ** b)], null, line, label);
+    }
+  }
+  /**
+   * `dst += a · b` between two variables: for every bit of `b` that is set, `dst += a·2ᵇ`
+   * (a decomposition of `a` each time), so it costs `bits(b) · (2·bits(a) + 3)` triggers —
+   * declare the variables `u8` or `u16` to keep it small. `a` and `b` are intact afterwards.
+   */
+  mulVar(dst, a2, b, line, label) {
+    const ba = bitsOf(a2);
+    const bb = bitsOf(b);
+    this.remark(line, `Multiplying two variables adds a\xB72\u1D47 once per set bit of b: ${bb} \xD7 (2\xB7${ba} + 3) triggers. Declare them u8 or u16 to keep it small.`, void 0, true);
+    let copy = null;
+    if (a2.player === b.player && a2.unit === b.unit) {
+      copy = this.temp(bb);
+      this.set(copy, 0, line, label);
+      this.addVar(copy, b, 1, line, label, bb);
+      b = copy;
+    }
+    const t = this.temp();
+    this.set(t, 0, line, label);
+    for (let k = bb - 1; k >= 0; k--) {
+      const bit = 2 ** k;
+      const add = this.fresh();
+      const next = this.fresh();
+      this.step([deathsCondition(b, Comparison.AtLeast, bit)], [setDeaths(b, SetModifier.Subtract, bit), setDeaths(t, SetModifier.Add, bit)], add, line, label);
+      this.jump(next, line, label);
+      this.enter(add);
+      this.addVar(dst, a2, bit, line, label, ba);
+      this.jump(next, line, label);
+      this.enter(next);
+    }
+    this.addVar(b, t, 1, line, label, bb, true);
+    this.release(copy ? 2 : 1);
+  }
+  /**
+   * An action done with a variable amount: the decomposition of `src` where each step's
+   * action is `record` with `field` set to `k·bit` — `setResources(P1, "add", n, "ore")`
+   * adds n ore; `createUnit(P2, unit, n, at)` creates n units, bit by bit (128, 64, …).
+   * A "set" modifier sets the field to 0 first and adds from there. `src` is intact
+   * afterwards unless `consume`d.
+   */
+  actionWithVar(record, field, src, bits, consume, line, label) {
+    let rec = { ...record };
+    const hasModifier = ACTIONS_WITH_MODIFIER.has(rec.type);
+    if (hasModifier && rec.modifier === SetModifier.SetTo) {
+      this.action({ ...rec, [field]: 0 }, line, label);
+      rec = { ...rec, modifier: SetModifier.Add };
+    }
+    this.remark(line, `An action with a variable amount is the binary decomposition of the variable: one step per bit (${bits}), each doing the action with that bit's share${consume ? "" : ", then the variable is restored"}.`, void 0, true);
+    const t = consume ? null : this.temp();
+    if (t) this.set(t, 0, line, label);
+    for (let b = bits - 1; b >= 0; b--) {
+      const bit = 2 ** b;
+      const actions = [setDeaths(src, SetModifier.Subtract, bit), { ...rec, [field]: bit }];
+      if (t) actions.push(setDeaths(t, SetModifier.Add, bit));
+      this.step([deathsCondition(src, Comparison.AtLeast, bit)], actions, null, line, label);
+    }
+    if (t) {
+      this.addVar(src, t, 1, line, label, bits, true);
+      this.release();
+    }
   }
   /**
    * `a op b` for two counters as a `Bool` over saturating differences computed now, into
@@ -1509,8 +1607,8 @@ var Machine = class {
     const diff = (p, q) => {
       const t = this.temp();
       this.set(t, 0, line, label);
-      this.addVar(t, p, false, line, label);
-      this.addVar(t, q, true, line, label);
+      this.addVar(t, p, 1, line, label);
+      this.addVar(t, q, -1, line, label);
       return t;
     };
     const zero = (t) => cond(deathsCondition(t, Comparison.Exactly, 0));
@@ -1580,6 +1678,7 @@ var Machine = class {
     this.tempsInUse = n;
   }
 };
+var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
 function flipOp(op) {
   switch (op) {
     case "<":
@@ -1657,6 +1756,8 @@ ${kw}type u8 = number & Brand<"u8">;
 ${kw}type u16 = number & Brand<"u16">;
 /** A number of a program with the full range, 0 \u2026 4 294 967 295 \u2014 what a plain \`number\` is. */
 ${kw}type u32 = number & Brand<"u32">;
+/** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
+${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
 
 /** A condition, as returned by bring(...), deaths(...), \u2026: give it to trigger(), or test it in an if inside program(). */
 ${kw}interface Condition { readonly __condition: true; }
@@ -1713,15 +1814,27 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
 /**
  * Code that runs in the game: a state machine built from death counters. Inside the arrow,
  * variables holding numbers are death counters and booleans are switches (a const computed
- * from them is one too, and cannot be reassigned); if / else, while, do, for, break, continue
- * and functions (inlined per call, arguments passed by value) all work; conditions go in an
- * if or while and actions stand as statements. One iteration of a loop per trigger cycle;
- * sleep(seconds(n)) pauses. A for\u2026of over a list known when you build is unrolled.
- * Everything the body reads from outside (constants, helpers, conditions, actions) is
- * computed when you build \u2014 the editor underlines those parts \u2014 so it cannot depend on the
- * variables.
+ * from them is one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them);
+ * if / else, while, do, for, switch, break, continue, ?: and functions (inlined per call,
+ * arguments passed by value, return values allowed) all work; conditions go in an if or
+ * while and actions stand as statements. One iteration of a while loop per trigger cycle; a
+ * for with bounds known when you build is unrolled and runs at once; sleep(seconds(n))
+ * pauses. A for\u2026of over a list known when you build is unrolled too. Arithmetic: + \u2212, \xD7 by a
+ * constant, / and % by a constant, Math.min / max / abs, clamp(); \xD7 between variables is
+ * possible but costly. Everything the body reads from outside (constants, helpers,
+ * conditions, actions) is computed when you build \u2014 the editor underlines those parts \u2014 so
+ * it cannot depend on the variables, except the amount of setResources / setDeaths /
+ * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
+ * giveUnits, which can be a variable.
  */
 ${kw}function program(body: () => void, options?: ProgramOptions): void;
+/**
+ * A function that runs in the game, for programs to call \u2014 from any file, imported like any
+ * other: \`export const award = game((p: Player, n: number) => { setResources(p, "add", n, "ore"); })\`.
+ * Its body follows program()'s rules; it is inlined at every call, arguments pass by value and
+ * it may return a number or a boolean. Calling it when the script is built is an error.
+ */
+${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
 /** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
 ${kw}function hyperTriggers(owner?: Player): void;
 /** A coin toss (Randomize Switch), inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
@@ -1745,6 +1858,8 @@ ${kw}function once(condition: Condition | boolean): boolean;
 /** In a program that runs for several players, a variable they all share instead of one per player: \`let total = shared(0)\`. */
 ${kw}function shared(initial: number): number;
 ${kw}function shared(initial: boolean): boolean;
+/** The value kept within low \u2026 high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
+${kw}function clamp(value: number, low: number, high: number): number;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -1841,6 +1956,9 @@ ${module}
 }
 
 // compiler/hoist.ts
+function isGameCall(checker, call) {
+  return !!checker.getPropertyOfType(checker.getTypeAtLocation(call.expression), "__game");
+}
 function declarationOf(ts, checker, id) {
   let sym = ts.isShorthandPropertyAssignment(id.parent) && id.parent.name === id ? checker.getShorthandAssignmentValueSymbol(id.parent) : checker.getSymbolAtLocation(id);
   if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
@@ -1863,19 +1981,30 @@ function owningDeclaration(ts, decl) {
   while (ts.isBindingElement(d) || ts.isArrayBindingPattern(d) || ts.isObjectBindingPattern(d)) d = d.parent;
   return d;
 }
-var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers"]);
+var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers", "game"]);
 var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "rose", "once", "shared"]);
-function planProgram(ts, checker, arrow) {
-  const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Set(), tree: [], errors: [] };
+function planProgram(ts, checker, arrow, options = {}) {
+  const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Map(), constList: [], tree: [], errors: [] };
   const error = (node, message) => plan.errors.push({ node, message });
+  const what = options.parameters ? "game()" : "program()";
   if (!ts.isBlock(arrow.body)) {
-    error(arrow.body, "program() takes an arrow with a block body: program(() => { \u2026 }).");
+    if (!options.parameters) {
+      error(arrow.body, "program() takes an arrow with a block body: program(() => { \u2026 }).");
+      plan.body = ts.factory.createBlock([]);
+      return plan;
+    }
+    plan.expression = arrow.body;
     plan.body = ts.factory.createBlock([]);
-    return plan;
   }
-  if (arrow.parameters.length) error(arrow.parameters[0], "The program's arrow takes no parameters.");
-  if (arrow.asteriskToken || arrow.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) error(arrow, "The program cannot be async or a generator.");
+  if (arrow.parameters.length && !options.parameters) error(arrow.parameters[0], "The program's arrow takes no parameters.");
+  if (arrow.asteriskToken || arrow.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) error(arrow, `A ${what} body cannot be async or a generator.`);
   const declare = (node) => plan.game.add(node);
+  for (const p of arrow.parameters) {
+    if (!options.parameters) break;
+    if (!ts.isIdentifier(p.name)) error(p, "Destructured parameters are not supported in a game function.");
+    else if (p.dotDotDotToken) error(p, "Rest parameters are not supported in a game function.");
+    else declare(p);
+  }
   const isFunctionValue = (n) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isClassExpression(n) || ts.isClassDeclaration(n);
   const collect = (node) => {
     if (isFunctionValue(node)) return;
@@ -1888,6 +2017,15 @@ function planProgram(ts, checker, arrow) {
     ts.forEachChild(node, collect);
   };
   collect(arrow.body);
+  const gameCall = /* @__PURE__ */ new Map();
+  const isGame = (call) => {
+    let hit = gameCall.get(call);
+    if (hit === void 0) {
+      hit = isGameCall(checker, call);
+      gameCall.set(call, hit);
+    }
+    return hit;
+  };
   const memo = /* @__PURE__ */ new Map();
   const isGameDecl = (decl) => plan.game.has(owningDeclaration(ts, decl));
   const hoistable = (e) => {
@@ -1936,6 +2074,10 @@ function planProgram(ts, checker, arrow) {
         return;
       }
       if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword || ts.isAwaitExpression(n) || ts.isYieldExpression(n)) {
+        ok = false;
+        return;
+      }
+      if (ts.isCallExpression(n) && isGame(n)) {
         ok = false;
         return;
       }
@@ -2107,15 +2249,16 @@ function planProgram(ts, checker, arrow) {
     }
   };
   const declarations = (list, items) => {
-    const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
+    const isConst2 = (list.flags & ts.NodeFlags.Const) !== 0;
     for (const d of list.declarations) {
-      if (isConst) {
+      if (isConst2) {
         if (!d.initializer) {
           error(d, "A constant needs a value.");
           continue;
         }
         if (hoistable(d.initializer)) {
-          plan.consts.add(d);
+          plan.consts.set(d, plan.constList.length);
+          plan.constList.push(d);
           items.push({ kind: "const", decl: d });
           continue;
         }
@@ -2138,29 +2281,84 @@ function planProgram(ts, checker, arrow) {
     items.push(...deferred);
     return items;
   };
-  plan.tree = block2(arrow.body.statements);
+  if (plan.expression) {
+    const items = [];
+    value(plan.expression, items);
+    plan.tree = items;
+    return plan;
+  }
+  plan.tree = block2(plan.body.statements);
   return plan;
 }
-function hoistedFunction(ts, plan) {
+function hoistedFunction(ts, checker, plan, context) {
   const f = ts.factory;
   const h = f.createIdentifier("__h");
-  const thunk = (expr) => f.createArrowFunction(void 0, void 0, [], void 0, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), f.createParenthesizedExpression(expr));
+  const c2 = f.createIdentifier("__c");
+  const m = f.createIdentifier("__m");
+  const arrow = (params, body3) => f.createArrowFunction(void 0, void 0, params.map((p) => f.createParameterDeclaration(void 0, void 0, p)), void 0, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), body3);
+  const rewrite = (node) => {
+    if (ts.isTypeNode(node)) return node;
+    if (ts.isIdentifier(node) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) && !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) {
+      const decl = declarationOf(ts, checker, node);
+      const i2 = decl && ts.isVariableDeclaration(decl) ? plan.consts.get(decl) : void 0;
+      if (i2 !== void 0) return f.createCallExpression(f.createElementAccessExpression(c2, f.createNumericLiteral(i2)), void 0, []);
+      return node;
+    }
+    if (ts.isShorthandPropertyAssignment(node)) {
+      const decl = declarationOf(ts, checker, node.name);
+      const i2 = decl && ts.isVariableDeclaration(decl) ? plan.consts.get(decl) : void 0;
+      if (i2 !== void 0) return f.createPropertyAssignment(node.name, f.createCallExpression(f.createElementAccessExpression(c2, f.createNumericLiteral(i2)), void 0, []));
+      return node;
+    }
+    return ts.visitEachChild(node, rewrite, context);
+  };
+  const expr = (e2) => f.createParenthesizedExpression(ts.visitNode(e2, rewrite));
+  const thunk = (e2) => arrow([], expr(e2));
   const emit = (items) => items.map((item) => {
     switch (item.kind) {
-      case "const":
-        return f.createVariableStatement(void 0, f.createVariableDeclarationList([item.decl], ts.NodeFlags.Const));
+      case "const": {
+        const i2 = plan.consts.get(item.decl);
+        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(c2, f.createNumericLiteral(i2)), f.createCallExpression(m, void 0, [f.createNumericLiteral(i2), thunk(item.decl.initializer)])));
+      }
       case "hoist":
         return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), thunk(item.expr)));
       case "block":
         return f.createBlock(emit(item.items), true);
     }
   });
+  const d = f.createIdentifier("d");
+  const v = f.createIdentifier("v");
+  const e = f.createIdentifier("e");
+  const g = f.createIdentifier("g");
+  const i = f.createIdentifier("i");
+  const mark = f.createPropertyAccessExpression(e, "__trigscriptConst");
+  const rethrow = f.createCatchClause(f.createVariableDeclaration(e), f.createBlock([
+    f.createIfStatement(
+      f.createLogicalAnd(f.createBinaryExpression(e, ts.SyntaxKind.InstanceOfKeyword, f.createIdentifier("Object")), f.createStrictEquality(mark, f.createIdentifier("undefined"))),
+      f.createExpressionStatement(f.createAssignment(mark, i))
+    ),
+    f.createThrowStatement(e)
+  ]));
+  const getter = arrow([], f.createBlock([
+    f.createIfStatement(d, f.createReturnStatement(v)),
+    f.createTryStatement(f.createBlock([f.createExpressionStatement(f.createAssignment(v, f.createCallExpression(g, void 0, [])))]), rethrow, void 0),
+    f.createExpressionStatement(f.createAssignment(d, f.createTrue())),
+    f.createReturnStatement(v)
+  ], true));
+  const memo = arrow(["i", "g"], f.createBlock([
+    f.createVariableStatement(void 0, f.createVariableDeclarationList([f.createVariableDeclaration(d, void 0, void 0, f.createFalse()), f.createVariableDeclaration(v)], ts.NodeFlags.Let)),
+    f.createReturnStatement(getter)
+  ], true));
   const body2 = f.createBlock([
-    f.createVariableStatement(void 0, f.createVariableDeclarationList([f.createVariableDeclaration(h, void 0, void 0, f.createArrayLiteralExpression([]))], ts.NodeFlags.Const)),
+    f.createVariableStatement(void 0, f.createVariableDeclarationList([
+      f.createVariableDeclaration(h, void 0, void 0, f.createArrayLiteralExpression([])),
+      f.createVariableDeclaration(c2, void 0, void 0, f.createArrayLiteralExpression([])),
+      f.createVariableDeclaration(m, void 0, void 0, memo)
+    ], ts.NodeFlags.Const)),
     ...emit(plan.tree),
-    f.createReturnStatement(h)
+    f.createReturnStatement(f.createObjectLiteralExpression([f.createPropertyAssignment("h", h), f.createPropertyAssignment("c", c2)]))
   ], true);
-  return f.createArrowFunction(void 0, void 0, [], void 0, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), body2);
+  return arrow([], body2);
 }
 function transformer(ts, checker, ctx) {
   return (context) => (sf) => {
@@ -2178,7 +2376,7 @@ function transformer(ts, checker, ctx) {
           const args = pad(node.arguments.map((a2) => ts.visitNode(a2, visit)), 4);
           return f.updateCallExpression(node, node.expression, node.typeArguments, [...args, at(node)]);
         }
-        if (lib === "program" && node.arguments.length >= 1 && node.arguments.length <= 2) {
+        if (lib === "program" && node.arguments.length >= 1 && node.arguments.length <= 2 || lib === "game" && node.arguments.length === 1) {
           const arrow = node.arguments[0];
           const plan = ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow) ? ctx.planFor(arrow) : void 0;
           if (plan) {
@@ -2186,9 +2384,9 @@ function transformer(ts, checker, ctx) {
               f.createPropertyAssignment("__trigscript", f.createStringLiteral("program")),
               f.createPropertyAssignment("at", at(node)),
               f.createPropertyAssignment("pos", f.createNumericLiteral(arrow.getStart(sf))),
-              f.createPropertyAssignment("hoisted", hoistedFunction(ts, plan))
+              f.createPropertyAssignment("hoisted", hoistedFunction(ts, checker, plan, context))
             ], true);
-            const rest = pad(node.arguments.slice(1).map((a2) => ts.visitNode(a2, visit)), 1);
+            const rest = lib === "program" ? pad(node.arguments.slice(1).map((a2) => ts.visitNode(a2, visit)), 1) : [];
             return f.updateCallExpression(node, node.expression, node.typeArguments, [descriptor, ...rest, at(node)]);
           }
         }
@@ -2374,6 +2572,8 @@ var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript =
 var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
 var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
 var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
+var isGameFunction = (v) => typeof v === "function" && v.__trigscript === "gamefn";
+var isBuilder = (v) => typeof v === "function" && v.__trigscript === "builder";
 var condition = (record) => ({ __trigscript: "condition", record });
 var action = (record) => ({ __trigscript: "action", record });
 function describe(v) {
@@ -2438,7 +2638,7 @@ function createRuntime(names, collector, options = {}) {
         return integer(v, what);
     }
   };
-  const fromDef = (ident, def, kind) => (...args) => {
+  const fromDef = (ident, def, kind) => Object.assign((...args) => {
     const params = scriptParams(def);
     const required = params.filter((p) => !p.optional).length;
     if (args.length < required || args.length > params.length) {
@@ -2452,7 +2652,7 @@ function createRuntime(names, collector, options = {}) {
     });
     if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
     return kind === "condition" ? condition(record) : action(record);
-  };
+  }, { __trigscript: "builder", kind, def, ident });
   for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
   for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
   rt.preserve = rt.preserveTrigger;
@@ -2547,6 +2747,7 @@ function createRuntime(names, collector, options = {}) {
   rt.shared = () => {
     throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
   };
+  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
   rt.program = (body2, options2, at) => {
     if (!isProgramDescriptor(body2)) {
       throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
@@ -2582,6 +2783,15 @@ function createRuntime(names, collector, options = {}) {
   rt.random = () => {
     throw new ScriptError("random() is a coin toss the game makes: use it inside program(), in an if, a while or an assignment.");
   };
+  rt.game = (body2) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { \u2026 })." : `game() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const fn = () => {
+      throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built.");
+    };
+    return Object.assign(fn, { __trigscript: "gamefn", descriptor: body2 });
+  };
   return rt;
 }
 var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
@@ -2602,6 +2812,9 @@ var Scope = class {
 };
 
 // compiler/structured.ts
+function newBody(plan, sf, values, name) {
+  return { plan, sf, values, memo: /* @__PURE__ */ new Map(), constMemo: /* @__PURE__ */ new Map(), ...name ? { name } : {} };
+}
 var ValueError = class extends LowerError {
   node;
   constructor(node, message) {
@@ -2611,58 +2824,82 @@ var ValueError = class extends LowerError {
 };
 var MAX_INLINE_DEPTH = 16;
 var LABEL_LENGTH = 48;
+var MAX_UNROLL = 256;
+var COUNT_ACTIONS = /* @__PURE__ */ new Set([ActionType.CreateUnit, ActionType.CreateUnitWithProperties, ActionType.KillUnitAt, ActionType.RemoveUnitAt, ActionType.GiveUnits]);
 function describe2(v) {
   if (isCondition(v)) return "a condition";
   if (isAction(v)) return "an action";
   if (isTrigger(v)) return "a trigger";
   if (isDuration(v)) return "a duration";
+  if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "string") return "text";
   if (typeof v === "function") return "a function";
   if (v === null || v === void 0) return String(v);
   return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
 }
+var sameCell = (a2, b) => a2.player === b.player && a2.unit === b.unit;
+function scale(l, k) {
+  if (k === 0) return { c: 0, terms: [] };
+  return { c: l.c * k, terms: l.terms.map((t) => ({ v: t.v, k: t.k * k })) };
+}
+function merge(l, r) {
+  const terms = [];
+  for (const t of [...l.terms, ...r.terms]) {
+    const hit = terms.find((x) => sameCell(x.v, t.v));
+    if (hit) hit.k += t.k;
+    else terms.push({ v: t.v, k: t.k });
+  }
+  return { c: l.c + r.c, terms: terms.filter((t) => t.k !== 0) };
+}
+var isConst = (l) => l.terms.length === 0;
+var single = (l) => l.c === 0 && l.terms.length === 1 && l.terms[0].k === 1 ? l.terms[0].v : null;
+var ofVar = (v) => ({ c: 0, terms: [{ v, k: 1 }] });
 var Structured = class {
   c;
   m;
   ts;
+  /** The body being walked: the program's, or the game function being inlined. */
+  body;
   /** After `break` / `continue` / `return` / an endless loop: the next statement needs a state of its own. */
   dead = false;
   inlineDepth = 0;
   scratchUsed = 0;
-  evaluated = /* @__PURE__ */ new Map();
   scope = new Scope(null);
-  /** The program's outermost scope: what an inlined function body closes over. */
+  /** The program's outermost scope: what an inlined function of the body closes over. */
   topScope = this.scope;
   constructor(c2) {
     this.c = c2;
     this.m = c2.machine;
     this.ts = c2.ts;
+    this.body = c2.body;
+    this.m.file = c2.body.sf.fileName;
   }
   run() {
-    const statements = this.c.plan.body.statements;
+    const statements = this.body.plan.body.statements;
     try {
       this.block(statements, {}, this.topScope);
       if (!this.dead) this.m.jump(this.m.halt, this.lastLine(statements), "end of program");
     } catch (err) {
       if (!(err instanceof LowerError)) throw err;
-      this.c.error(statements[statements.length - 1] ?? this.c.plan.body, err.message);
+      this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
     }
   }
   lineOf(node) {
-    return this.c.sf.getLineAndCharacterOfPosition(node.getStart(this.c.sf)).line + 1;
+    return this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf)).line + 1;
   }
   lastLine(statements) {
     const last = statements[statements.length - 1];
-    return last ? this.c.sf.getLineAndCharacterOfPosition(last.getEnd()).line + 1 : this.lineOf(this.c.plan.body);
+    return last ? this.body.sf.getLineAndCharacterOfPosition(last.getEnd()).line + 1 : this.lineOf(this.body.plan.body);
   }
-  /** "L12: while (x < 3)" — the comment a generated trigger carries. */
+  /** "L12: while (x < 3)" — the comment a generated trigger carries; "waves.ts L12: …" inside a game function from another file. */
   label(node) {
-    let text = node.getText(this.c.sf).replace(/\s+/g, " ").trim();
+    let text = node.getText(this.body.sf).replace(/\s+/g, " ").trim();
     const brace = text.indexOf("{");
     if (brace > 0) text = text.slice(0, brace).trim();
     if (text.length > LABEL_LENGTH) text = `${text.slice(0, LABEL_LENGTH - 1)}\u2026`;
-    return `L${this.lineOf(node)}: ${text}`;
+    const file = this.body.sf === this.c.body.sf ? "" : `${this.body.sf.fileName} `;
+    return `${file}L${this.lineOf(node)}: ${text}`;
   }
   line(node) {
     return this.lineOf(node);
@@ -2682,21 +2919,33 @@ var Structured = class {
       else return expr;
     }
   }
-  /** The declaration of an identifier when it is one of the program's own (a let, a parameter, a function). */
+  /** The declaration of an identifier when it is one of the body's own (a let, a parameter, a function). */
   gameDeclaration(id) {
     const { ts } = this;
     let decl = declarationOf(ts, this.c.checker, id);
     while (decl && (ts.isBindingElement(decl) || ts.isArrayBindingPattern(decl) || ts.isObjectBindingPattern(decl))) decl = decl.parent;
-    return decl && this.c.plan.game.has(decl) ? decl : void 0;
+    return decl && this.body.plan.game.has(decl) ? decl : void 0;
   }
-  binding(expr) {
+  /** What an identifier, or a field of a record (`p.lives`, `p["lives"]`), is bound to. */
+  bindingOf(expr) {
+    const { ts } = this;
     const e = this.unwrap(expr);
-    if (!this.ts.isIdentifier(e)) return void 0;
-    const decl = this.gameDeclaration(e);
-    return decl ? this.scope.lookup(decl) : void 0;
+    if (ts.isIdentifier(e)) {
+      const decl = this.gameDeclaration(e);
+      return decl ? this.scope.lookup(decl) : void 0;
+    }
+    if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) {
+      const obj = this.bindingOf(e.expression);
+      return obj?.kind === "record" ? obj.fields.get(e.name.text) : void 0;
+    }
+    if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression)) {
+      const obj = this.bindingOf(e.expression);
+      return obj?.kind === "record" ? obj.fields.get(e.argumentExpression.text) : void 0;
+    }
+    return void 0;
   }
   varOf(expr) {
-    const b = this.binding(expr);
+    const b = this.bindingOf(expr);
     return b?.kind === "var" ? b.v : void 0;
   }
   /**
@@ -2704,13 +2953,13 @@ var Structured = class {
    * parameter's bound to one, or — so that `createUnit(p, units.Zergling, count, at)`
    * works inside a function whose `p` and `count` were bound at the call — a call,
    * member access, arithmetic or template over such values, evaluated now. Undefined
-   * when a variable of the program is involved.
+   * when a variable of the program is involved, or a game function is called.
    */
   evaluate(expr, depth = 0) {
     const { ts } = this;
     let e = expr;
     for (; ; ) {
-      const k = this.c.plan.index.get(e);
+      const k = this.body.plan.index.get(e);
       if (k !== void 0) return { value: this.hoistedValue(k, e) };
       if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
       else break;
@@ -2718,7 +2967,7 @@ var Structured = class {
     if (depth > 32) return void 0;
     const sub = (x) => this.evaluate(x, depth + 1);
     if (ts.isIdentifier(e)) {
-      const b = this.binding(e);
+      const b = this.bindingOf(e);
       return b?.kind === "value" ? { value: b.value } : void 0;
     }
     if (e.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
@@ -2739,7 +2988,7 @@ var Structured = class {
     }
     if (ts.isCallExpression(e)) {
       const callee = sub(e.expression);
-      if (!callee || typeof callee.value !== "function") return void 0;
+      if (!callee || typeof callee.value !== "function" || isGameFunction(callee.value)) return void 0;
       const self = ts.isPropertyAccessExpression(e.expression) ? sub(e.expression.expression)?.value : void 0;
       const args = [];
       for (const a2 of e.arguments) {
@@ -2843,17 +3092,33 @@ var Structured = class {
     }
     return void 0;
   }
+  /** A thunk's outcome, computed the first time and kept — an error is thrown again at every use. */
+  force(memo, k, thunk, at) {
+    let o = memo.get(k);
+    if (!o) {
+      try {
+        o = { ok: true, value: thunk() };
+      } catch (error) {
+        o = { ok: false, error };
+      }
+      memo.set(k, o);
+    }
+    if (o.ok) return o.value;
+    const err = o.error;
+    const message = err instanceof Error ? err.message : String(err);
+    const i = err?.__trigscriptConst;
+    const decl = i !== void 0 ? this.body.plan.constList[i] : void 0;
+    if (decl?.initializer) throw new ValueError(decl.initializer, `${message} \u2014 this constant is computed when the script is built, not in the game.`);
+    throw new ValueError(at, `${message} \u2014 this expression is computed when the script is built, not in the game.`);
+  }
   /** A hoisted expression's value: its thunk, called the first time the walk reaches it. */
   hoistedValue(k, at) {
-    if (this.evaluated.has(k)) return this.evaluated.get(k);
-    let value;
-    try {
-      value = this.c.hoisted[k]();
-    } catch (err) {
-      throw new ValueError(at, `${err instanceof Error ? err.message : String(err)} \u2014 this expression is computed when the script is built, not in the game.`);
-    }
-    this.evaluated.set(k, value);
-    return value;
+    return this.force(this.body.memo, k, this.body.values.h[k], at);
+  }
+  /** A build-time constant of the body, computed now if nothing needed it before. */
+  constValue(decl) {
+    const i = this.body.plan.consts.get(decl);
+    return this.force(this.body.constMemo, i, this.body.values.c[i], decl.initializer);
   }
   isLibraryCall(e, name) {
     const { ts } = this;
@@ -2865,7 +3130,7 @@ var Structured = class {
     let found = null;
     const walk = (n) => {
       if (found) return;
-      if (ts.isIdentifier(n) && this.gameDeclaration(n) && this.binding(n)?.kind !== "value") {
+      if (ts.isIdentifier(n) && this.gameDeclaration(n) && this.bindingOf(n)?.kind !== "value") {
         found = n.text;
         return;
       }
@@ -2883,6 +3148,7 @@ var Structured = class {
     const outer = this.scope;
     this.scope = scope;
     for (const s of statements) {
+      const held = this.m.tempsHeld;
       try {
         this.statement(s, ctx);
       } catch (err) {
@@ -2890,6 +3156,7 @@ var Structured = class {
         if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
         else this.c.error(s, err.message);
       }
+      this.m.releaseTo(held);
     }
     this.scope = outer;
   }
@@ -2940,20 +3207,11 @@ var Structured = class {
       return;
     }
     if (ts.isReturnStatement(s)) {
-      if (!ctx.fn) {
-        this.c.error(s, "return outside a function.");
-        return;
-      }
-      if (s.expression) {
-        this.c.error(s.expression, "Functions in a program cannot return values; write the result into a variable instead.");
-        return;
-      }
-      this.m.jump(ctx.fn.end(), this.line(s), this.label(s));
-      this.dead = true;
+      this.returnStatement(s, ctx);
       return;
     }
     if (ts.isSwitchStatement(s)) {
-      this.c.error(s, "switch is not supported in a program; use if / else if.");
+      this.switchStatement(s, ctx);
       return;
     }
     if (ts.isForOfStatement(s)) {
@@ -2970,10 +3228,39 @@ var Structured = class {
     }
     this.c.error(s, "This statement is not supported in a program.");
   }
+  returnStatement(s, ctx) {
+    if (!ctx.fn) {
+      this.c.error(s, "return outside a function.");
+      return;
+    }
+    const { fn } = ctx;
+    if (fn.kind === "void") {
+      if (s.expression) {
+        const h = this.evaluate(s.expression);
+        if (h && (isAction(h.value) || Array.isArray(h.value) && h.value.every(isAction))) this.hoistedStatement(this.unwrap(s.expression), h);
+        else {
+          this.c.error(s.expression, "This function returns nothing the game can hold: a function returns a number or a boolean.");
+          return;
+        }
+      }
+    } else if (!s.expression) {
+      this.c.error(s, `The function returns a ${fn.kind}; return one here.`);
+      return;
+    } else if (fn.kind === "number") {
+      this.assignNumber(fn.result, s.expression, s);
+    } else {
+      this.storeBool(fn.result, s.expression, this.line(s), this.label(s));
+    }
+    if (!this.dead) this.m.jump(fn.end(), this.line(s), this.label(s));
+    this.dead = true;
+  }
   declare(list) {
     const { ts } = this;
     for (const d of list.declarations) {
-      if (this.c.plan.consts.has(d)) continue;
+      if (this.body.plan.consts.has(d)) {
+        this.constValue(d);
+        continue;
+      }
       if (!ts.isIdentifier(d.name)) {
         this.c.error(d.name, "Destructuring is not supported in a program.");
         continue;
@@ -2982,19 +3269,24 @@ var Structured = class {
         this.c.error(d, `Give ${d.name.text} an initial value: let ${d.name.text} = 0 or = false.`);
         continue;
       }
+      const init = this.unwrap(d.initializer);
+      if (ts.isObjectLiteralExpression(init)) {
+        const record = this.declareRecord(d.name.text, init, this.c.checker.getTypeAtLocation(d.name), d);
+        if (record) this.scope.bind(d, record);
+        continue;
+      }
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) {
-        this.c.error(d, `Variables hold numbers (death counters) or booleans (switches); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
+        this.c.error(d, `Variables hold numbers (death counters), booleans (switches) or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
         continue;
       }
-      const init = this.unwrap(d.initializer);
-      const shared = this.isLibraryCall(init, "shared");
-      if (shared && init.arguments.length !== 1) {
+      const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
+      if (shared && shared.arguments.length !== 1) {
         this.c.error(init, "shared() takes the initial value: shared(0) or shared(false).");
         continue;
       }
-      const initializer = shared ? init.arguments[0] : d.initializer;
+      const initializer = shared ? shared.arguments[0] : d.initializer;
       const v = kind === "number" ? shared ? this.m.shared(d.name.text) : this.m.dc(d.name.text) : shared ? this.m.switch(d.name.text) : this.m.bool(d.name.text);
       if (!v) {
         this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}${this.m.perPlayer ? " (a per-player variable needs a unit with all twelve free)" : ""}.`);
@@ -3006,14 +3298,66 @@ var Structured = class {
         if (bits) v.bits = bits;
       }
       if (v.kind === "dc") this.assignNumber(v, initializer, d);
-      else this.assignBool(v, initializer, d);
+      else this.storeBool(v, initializer, this.line(d), this.label(d));
       this.scope.bind(d, { kind: "var", v });
     }
   }
+  /** `let p = { lives: 3, alive: true, pos: { x: 0, y: 0 } }`: a variable per field, the record a binding over them. */
+  declareRecord(name, literal, type, at) {
+    const { ts } = this;
+    const fields = /* @__PURE__ */ new Map();
+    let ok = true;
+    for (const p of literal.properties) {
+      let key;
+      let init;
+      if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name))) {
+        key = p.name.text;
+        init = p.initializer;
+      } else if (ts.isShorthandPropertyAssignment(p)) {
+        key = p.name.text;
+        init = p.name;
+      } else {
+        this.c.error(p, "A record's fields are plain values: { lives: 3, alive: true }.");
+        ok = false;
+        continue;
+      }
+      const full = `${name}.${key}`;
+      const prop = type.getProperty(key);
+      const ft = prop ? this.c.checker.getTypeOfSymbol(prop) : this.c.checker.getTypeAtLocation(init);
+      const inner = this.unwrap(init);
+      if (ts.isObjectLiteralExpression(inner)) {
+        const rec = this.declareRecord(full, inner, ft, p);
+        if (rec) fields.set(key, rec);
+        else ok = false;
+        continue;
+      }
+      const kind = this.kindOf(ft);
+      if (!kind) {
+        this.c.error(p, `A record's fields hold numbers or booleans; ${full} is ${this.c.checker.typeToString(ft)}.`);
+        ok = false;
+        continue;
+      }
+      const v = kind === "number" ? this.m.dc(full) : this.m.bool(full);
+      if (!v) {
+        this.c.error(p, `No ${kind === "number" ? "death counter" : "switch"} is free for ${full}.`);
+        ok = false;
+        continue;
+      }
+      v.at = this.sourceOf(p.name);
+      if (v.kind === "dc") {
+        const bits = this.bitsOf(ft);
+        if (bits) v.bits = bits;
+      }
+      if (v.kind === "dc") this.assignNumber(v, init, at);
+      else this.storeBool(v, init, this.line(at), this.label(at));
+      fields.set(key, { kind: "var", v });
+    }
+    return ok ? { kind: "record", fields } : null;
+  }
   /** Where a declaration's name is, for the editor's hover. */
   sourceOf(node) {
-    const p = this.c.sf.getLineAndCharacterOfPosition(node.getStart(this.c.sf));
-    return { file: this.c.sf.fileName, line: p.line + 1, column: p.character + 1 };
+    const p = this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf));
+    return { file: this.body.sf.fileName, line: p.line + 1, column: p.character + 1 };
   }
   /** The width a `u8` / `u16` annotation declares, read off the brand in the type; undefined for a plain number. */
   bitsOf(type) {
@@ -3059,6 +3403,7 @@ var Structured = class {
   }
   emitAction(a2, at) {
     if (a2.type === ActionType.PreserveTrigger) return;
+    this.c.touched?.push(a2);
     this.m.action({ ...a2 }, this.line(at), this.label(at));
   }
   /** `sleep(seconds(2))`: the duration is a build-time value; the cycles it makes depend on the map's hyper triggers. */
@@ -3090,10 +3435,13 @@ var Structured = class {
     }
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
-      const target = this.varOf(e.left);
-      if (op === ts.SyntaxKind.EqualsToken || op === ts.SyntaxKind.PlusEqualsToken || op === ts.SyntaxKind.MinusEqualsToken) {
+      if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment) {
+        const target = this.varOf(e.left);
         if (!target) {
-          this.c.error(e.left, "Only the program's let variables can be assigned.");
+          const b = this.bindingOf(e.left);
+          if (b?.kind === "record") this.c.error(e.left, "A record is assigned field by field: p.lives = 3.");
+          else if ((ts.isPropertyAccessExpression(this.unwrap(e.left)) || ts.isElementAccessExpression(this.unwrap(e.left))) && this.evaluate(e.left)) this.c.error(e.left, "This object is computed when the script is built. Declare it with let inside the program to make it a record of variables.");
+          else this.c.error(e.left, "Only the program's let variables can be assigned.");
           return;
         }
         if (target.kind !== "dc") {
@@ -3101,21 +3449,22 @@ var Structured = class {
             this.c.error(e, "Booleans take = only.");
             return;
           }
-          this.assignBool(target, e.right, e);
+          this.storeBool(target, e.right, this.line(e), this.label(e));
           return;
         }
         if (op === ts.SyntaxKind.EqualsToken) {
           this.assignNumber(target, e.right, e);
           return;
         }
+        const arith = compoundOp(ts, op);
+        if (!arith) {
+          this.c.error(e, "Only = += -= *= /= %= assign a number.");
+          return;
+        }
         const rhs = this.linear(e.right);
         if (!rhs) return;
-        const sign = op === ts.SyntaxKind.PlusEqualsToken ? 1 : -1;
-        this.m.assign(target, { c: sign * rhs.c, terms: [{ v: target, sign: 1 }, ...rhs.terms.map((t) => ({ v: t.v, sign: t.sign * sign }))] }, this.line(e), this.label(e));
-        return;
-      }
-      if (op === ts.SyntaxKind.AsteriskEqualsToken || op === ts.SyntaxKind.SlashEqualsToken || op === ts.SyntaxKind.PercentEqualsToken) {
-        this.c.error(e, "The game can only add and subtract: there is no multiplication or division between variables.");
+        const value = this.linearOp(arith, ofVar(target), rhs, e);
+        if (value) this.m.assign(target, value, this.line(e), this.label(e));
         return;
       }
       this.c.error(e, "Only assignments and calls can stand as statements.");
@@ -3127,56 +3476,138 @@ var Structured = class {
         this.c.error(e, "++ / -- apply to number variables.");
         return;
       }
-      this.m.addConst(target, e.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1, this.line(e), this.label(e));
+      this.m.assign(target, { c: e.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1, terms: [{ v: target, k: 1 }] }, this.line(e), this.label(e));
       return;
     }
     if (ts.isCallExpression(e)) {
-      if (ts.isIdentifier(e.expression)) {
-        const decl = this.gameDeclaration(e.expression);
-        if (decl) {
-          if (ts.isFunctionDeclaration(decl)) {
-            this.inline(e, decl);
-            return;
-          }
-          this.c.error(e, `${e.expression.text} is not a function.`);
-          return;
-        }
-      }
-      if (this.isLibraryCall(e, "random")) {
-        this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean.");
-        return;
-      }
-      if (this.isLibraryCall(e, "sleep")) {
-        this.sleepStatement(e);
-        return;
-      }
-      if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) {
-        this.c.error(e, "rose() / once() are conditions: test them in an if.");
-        return;
-      }
-      if (this.isLibraryCall(e, "shared")) {
-        this.c.error(e, "shared() goes on a declaration: let total = shared(0).");
-        return;
-      }
-      this.notConstant(e, "A call's arguments");
+      this.callStatement(e);
       return;
     }
     this.c.error(e, "Only assignments and calls can stand as statements.");
   }
-  ifStatement(s, ctx) {
-    const held = this.m.tempsHeld;
-    const b = this.bool(s.expression);
-    if (b.kind === "const") {
-      this.m.releaseTo(held);
-      const live = b.value ? s.thenStatement : s.elseStatement;
-      if (live) this.statement(live, ctx);
+  /** A call standing as a statement: a function of the body, a game function, an action with a variable amount, or a game call. */
+  callStatement(e) {
+    const { ts } = this;
+    if (ts.isIdentifier(e.expression)) {
+      const decl = this.gameDeclaration(e.expression);
+      if (decl) {
+        if (ts.isFunctionDeclaration(decl)) {
+          this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+          return;
+        }
+        this.c.error(e, `${e.expression.text} is not a function.`);
+        return;
+      }
+    }
+    if (this.isLibraryCall(e, "random")) {
+      this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean.");
       return;
     }
+    if (this.isLibraryCall(e, "sleep")) {
+      this.sleepStatement(e);
+      return;
+    }
+    if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) {
+      this.c.error(e, "rose() / once() are conditions: test them in an if.");
+      return;
+    }
+    if (this.isLibraryCall(e, "shared")) {
+      this.c.error(e, "shared() goes on a declaration: let total = shared(0).");
+      return;
+    }
+    const callee = this.evaluate(e.expression)?.value;
+    if (isGameFunction(callee)) {
+      this.gameCall(e, callee);
+      return;
+    }
+    if (isBuilder(callee)) {
+      if (callee.kind === "action") {
+        this.actionWithVars(e, callee.ident, callee.def);
+        return;
+      }
+      this.c.error(e, "This is a condition; test it in an if or a while.");
+      return;
+    }
+    this.notConstant(e, "A call's arguments");
+  }
+  /* ── Conditions as control flow ── */
+  /** Whether lowering an expression as a condition emits anything: an edge, a call of a game function, a ternary. */
+  hasEffects(e) {
+    const { ts } = this;
+    let found = false;
+    const walk = (n) => {
+      if (found) return;
+      if (ts.isCallExpression(n)) {
+        const lib = libraryCallName(ts, this.c.checker, n);
+        if (lib === "rose" || lib === "once" || ts.isIdentifier(n.expression) && !!this.gameDeclaration(n.expression) || isGameCall(this.c.checker, n)) {
+          found = true;
+          return;
+        }
+      }
+      if (ts.isConditionalExpression(n)) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(e);
+    return found;
+  }
+  /** `a && b` / `a || b` / `!…` where a right side has effects: the DNF would run them whether or not the left side decided. */
+  shortCircuits(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (ts.isBinaryExpression(e) && (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      return this.hasEffects(e.right) || this.shortCircuits(e.left) || this.shortCircuits(e.right);
+    }
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return this.shortCircuits(e.operand);
+    return false;
+  }
+  /**
+   * End the current state with a conditional jump on an expression. `&&` and `||` with an
+   * effectful right side are lowered as control flow — the left side first, the right in
+   * a state only reached when the left has not decided — so `n >= 1 && once(…)` consumes
+   * the edge only when `n >= 1`; everything else goes through the DNF branch.
+   */
+  branchOn(expr, thenState, elseState, line, label) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (ts.isBinaryExpression(e) && (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken) && this.shortCircuits(e)) {
+      const mid = this.m.fresh();
+      if (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) this.branchOn(e.left, mid, elseState, line, label);
+      else this.branchOn(e.left, thenState, mid, line, label);
+      this.m.enter(mid);
+      this.dead = false;
+      this.branchOn(e.right, thenState, elseState, line, label);
+      return;
+    }
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.shortCircuits(e)) {
+      this.branchOn(e.operand, elseState, thenState, line, label);
+      return;
+    }
+    const held = this.m.tempsHeld;
+    const b = this.bool(e);
+    this.m.branch(b, thenState, elseState, line, label);
+    this.m.releaseTo(held);
+  }
+  ifStatement(s, ctx) {
     const join = this.m.fresh();
     const thenState = this.m.fresh();
     const elseState = s.elseStatement ? this.m.fresh() : join;
-    this.m.branch(b, thenState, elseState, this.line(s), this.label(s));
-    this.m.releaseTo(held);
+    if (this.shortCircuits(s.expression)) {
+      this.branchOn(s.expression, thenState, elseState, this.line(s), this.label(s));
+    } else {
+      const held = this.m.tempsHeld;
+      const b = this.bool(s.expression);
+      if (b.kind === "const") {
+        this.m.releaseTo(held);
+        const live = b.value ? s.thenStatement : s.elseStatement;
+        if (live) this.statement(live, ctx);
+        return;
+      }
+      this.m.branch(b, thenState, elseState, this.line(s), this.label(s));
+      this.m.releaseTo(held);
+    }
     this.m.enter(thenState);
     this.dead = false;
     this.statement(s.thenStatement, ctx);
@@ -3196,21 +3627,37 @@ var Structured = class {
     const h = this.evaluate(condition2);
     return !!h && !h.value && !isCondition(h.value);
   }
-  whileStatement(s, ctx) {
-    if (this.neverRuns(s.expression)) return;
-    const header = this.m.loopHeader(this.line(s), this.label(s));
-    const exit = this.m.fresh();
-    let broke = false;
+  /**
+   * A loop's test at its header: the body state and the exit. Returns the body state,
+   * which is the header itself for a condition known true (no trigger spent), or null
+   * with the loop entered when the test emitted its own branch.
+   */
+  loopTest(condition2, header, exit, at) {
+    if (!condition2) return header;
+    if (this.shortCircuits(condition2)) {
+      const body3 = this.m.fresh();
+      this.branchOn(condition2, body3, exit, this.line(at), this.label(at));
+      this.m.enter(body3);
+      return body3;
+    }
     const held = this.m.tempsHeld;
-    const b = this.bool(s.expression);
-    let body2;
-    if (b.kind === "const" && b.value) body2 = header;
-    else {
+    const b = this.bool(condition2);
+    let body2 = header;
+    if (!(b.kind === "const" && b.value)) {
       body2 = this.m.fresh();
-      this.m.branch(b, body2, exit, this.line(s), this.label(s));
+      this.m.branch(b, body2, exit, this.line(at), this.label(at));
       this.m.enter(body2);
     }
     this.m.releaseTo(held);
+    return body2;
+  }
+  whileStatement(s, ctx) {
+    if (this.neverRuns(s.expression)) return;
+    this.m.remark(this.line(s), "A while loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
+    const header = this.m.loopHeader(this.line(s), this.label(s));
+    const exit = this.m.fresh();
+    let broke = false;
+    const body2 = this.loopTest(s.expression, header, exit, s);
     this.dead = false;
     this.statement(s.statement, { fn: ctx.fn, breakTo: () => {
       broke = true;
@@ -3225,6 +3672,7 @@ var Structured = class {
     this.dead = false;
   }
   doStatement(s, ctx) {
+    this.m.remark(this.line(s), "A do loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
     const body2 = this.m.loopHeader(this.line(s), this.label(s));
     const check = this.m.fresh();
     const exit = this.m.fresh();
@@ -3233,14 +3681,72 @@ var Structured = class {
     if (!this.dead) this.m.jump(check, this.line(s), `L${this.line(s)}: while`);
     this.m.enter(check);
     this.dead = false;
-    const held = this.m.tempsHeld;
-    const b = this.bool(s.expression);
-    this.m.branch(b, body2, exit, this.line(s), `L${this.line(s)}: while (${s.expression.getText(this.c.sf).replace(/\s+/g, " ")})`);
-    this.m.releaseTo(held);
+    const label = `L${this.line(s)}: while (${s.expression.getText(this.body.sf).replace(/\s+/g, " ")})`;
+    if (this.shortCircuits(s.expression)) this.branchOn(s.expression, body2, exit, this.line(s), label);
+    else {
+      const held = this.m.tempsHeld;
+      const b = this.bool(s.expression);
+      this.m.branch(b, body2, exit, this.line(s), label);
+      this.m.releaseTo(held);
+    }
     this.m.enter(exit);
+  }
+  /**
+   * `for (let i = 0; i < 3; i++)` with the start, the bound and the step known when the
+   * script is built, and `i` never assigned in the body: unrolled like a `for…of`, `i`
+   * bound to each value in turn — the loop runs in the cycle it is reached in, as the
+   * source reads, and `i` costs no death counter. Null when the loop is not of that form.
+   */
+  unrollable(s) {
+    const { ts } = this;
+    if (!s.initializer || !ts.isVariableDeclarationList(s.initializer) || s.initializer.declarations.length !== 1 || !s.condition || !s.incrementor) return null;
+    const decl = s.initializer.declarations[0];
+    if (!ts.isIdentifier(decl.name) || !decl.initializer) return null;
+    const isVar = (e) => {
+      const u = this.unwrap(e);
+      return ts.isIdentifier(u) && declarationOf(ts, this.c.checker, u) === decl;
+    };
+    const integer2 = (e) => {
+      const h = this.evaluate(e);
+      return h && typeof h.value === "number" && Number.isInteger(h.value) ? h.value : null;
+    };
+    const start = integer2(decl.initializer);
+    if (start === null) return null;
+    const cond2 = this.unwrap(s.condition);
+    if (!ts.isBinaryExpression(cond2)) return null;
+    let op = compareOp(ts, cond2.operatorToken.kind);
+    if (!op) return null;
+    let bound;
+    if (isVar(cond2.left)) bound = integer2(cond2.right);
+    else if (isVar(cond2.right)) {
+      bound = integer2(cond2.left);
+      op = flipOp(op);
+    } else return null;
+    if (bound === null) return null;
+    const inc = this.unwrap(s.incrementor);
+    let step = null;
+    if ((ts.isPostfixUnaryExpression(inc) || ts.isPrefixUnaryExpression(inc)) && isVar(inc.operand)) step = inc.operator === ts.SyntaxKind.PlusPlusToken ? 1 : inc.operator === ts.SyntaxKind.MinusMinusToken ? -1 : null;
+    else if (ts.isBinaryExpression(inc) && isVar(inc.left) && (inc.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken || inc.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken)) {
+      const k = integer2(inc.right);
+      if (k !== null) step = inc.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken ? k : -k;
+    }
+    if (step === null || step === 0) return null;
+    if (this.assigns(s.statement, decl)) return null;
+    const values = [];
+    for (let i = start; compareNumbers(i, op, bound); i += step) {
+      values.push(i);
+      if (values.length > MAX_UNROLL) throw new LowerError(`This for loop unrolls to more than ${MAX_UNROLL} iterations. Loop over a variable instead \u2014 let i = 0; while (i < ${bound}) { \u2026; i++ } runs one iteration per trigger cycle \u2014 or make the bound smaller.`);
+    }
+    return { decl, values };
   }
   forStatement(s, ctx) {
     const { ts } = this;
+    const unrolled = this.unrollable(s);
+    if (unrolled) {
+      this.m.remark(this.line(s), `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"} in one trigger cycle, the loop variable a value known when the script is built.`, `unrolled \xD7${unrolled.values.length}`);
+      this.unrolledLoop(unrolled.decl, unrolled.values, s.statement, s, ctx);
+      return;
+    }
     const outer = this.scope;
     this.scope = new Scope(outer);
     if (s.initializer) {
@@ -3251,20 +3757,12 @@ var Structured = class {
       this.scope = outer;
       return;
     }
+    this.m.remark(this.line(s), "This for loop runs one iteration per trigger cycle: its bound or step is not known when the script is built, so it is a while over a variable.", "one iteration per cycle");
     const header = this.m.loopHeader(this.line(s), this.label(s));
     const exit = this.m.fresh();
     let broke = false;
     let incr = null;
-    const held = this.m.tempsHeld;
-    const b = s.condition ? this.bool(s.condition) : TRUE;
-    let body2;
-    if (b.kind === "const" && b.value) body2 = header;
-    else {
-      body2 = this.m.fresh();
-      this.m.branch(b, body2, exit, this.line(s), this.label(s));
-      this.m.enter(body2);
-    }
-    this.m.releaseTo(held);
+    const body2 = this.loopTest(s.condition, header, exit, s);
     this.dead = false;
     this.statement(s.statement, { fn: ctx.fn, breakTo: () => {
       broke = true;
@@ -3287,10 +3785,34 @@ var Structured = class {
     this.m.enter(exit);
     this.dead = false;
   }
+  /** The body compiled once per value, the declaration bound to that value; `break` leaves, `continue` goes on with the next. */
+  unrolledLoop(decl, values, body2, s, ctx) {
+    const exit = this.m.fresh();
+    let broke = false;
+    for (const item of values) {
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "value", value: item });
+      let next = null;
+      this.block([body2], { fn: ctx.fn, breakTo: () => {
+        broke = true;
+        return exit;
+      }, continueTo: () => next ??= this.m.fresh() }, scope);
+      if (next !== null) {
+        if (!this.dead) this.m.jump(next, this.line(s), `L${this.line(s)}: continue`);
+        this.m.enter(next);
+        this.dead = false;
+      }
+      if (this.dead) break;
+    }
+    if (broke) {
+      if (!this.dead) this.m.jump(exit, this.line(s), `L${this.line(s)}: end of loop`);
+      this.m.enter(exit);
+      this.dead = false;
+    }
+  }
   /**
    * `for (const w of waves)` over a list known when the script is built: unrolled, the body
-   * compiled once per element with `w` bound to that element's value. `break` leaves the
-   * whole loop, `continue` goes on with the next element.
+   * compiled once per element with `w` bound to that element's value.
    */
   forOfStatement(s, ctx) {
     const { ts } = this;
@@ -3310,56 +3832,109 @@ var Structured = class {
     }
     let items;
     try {
-      items = typeof h.value === "string" || typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value ? Array.from(h.value) : [];
-      if (!(typeof h.value === "string") && !(typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value)) {
+      const iterable = typeof h.value === "string" || typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value;
+      if (!iterable) {
         this.c.error(s.expression, `for\u2026of runs over a list, got ${describe2(h.value)}.`);
         return;
       }
+      items = Array.from(h.value);
     } catch (err) {
       this.c.error(s.expression, `for\u2026of: ${err.message}`);
       return;
     }
+    this.unrolledLoop(decl, items, s.statement, s, ctx);
+  }
+  /**
+   * `switch (x) { case 1: … break; case 2: … default: … }` over a number: the cases
+   * tested in order, each one trigger, then the bodies in source order — a body without
+   * `break` falls through to the next, as in TypeScript. Case values are known when the
+   * script is built.
+   */
+  switchStatement(s, ctx) {
+    const { ts } = this;
+    const line = this.line(s);
+    const held = this.m.tempsHeld;
+    const lin = this.linear(s.expression);
+    if (!lin) return;
+    if (isConst(lin)) {
+      this.c.error(s.expression, "switch over a value known when the script is built: write the case that applies.");
+      return;
+    }
+    const v = single(lin) ?? (() => {
+      const t = this.m.temp(widthOf(lin));
+      this.m.evaluate(t, lin, line, this.label(s));
+      return t;
+    })();
+    const clauses = s.caseBlock.clauses;
     const exit = this.m.fresh();
-    let broke = false;
-    for (const item of items) {
-      const scope = new Scope(this.scope);
-      scope.bind(decl, { kind: "value", value: item });
-      let next = null;
-      this.block([s.statement], { fn: ctx.fn, breakTo: () => {
-        broke = true;
-        return exit;
-      }, continueTo: () => next ??= this.m.fresh() }, scope);
-      if (next !== null) {
-        if (!this.dead) this.m.jump(next, this.line(s), `L${this.line(s)}: continue`);
-        this.m.enter(next);
-        this.dead = false;
+    const states = clauses.map(() => this.m.fresh());
+    let fallback = exit;
+    clauses.forEach((c2, i) => {
+      if (ts.isDefaultClause(c2)) {
+        fallback = states[i];
+        return;
       }
-      if (this.dead) break;
-    }
-    if (broke) {
-      if (!this.dead) this.m.jump(exit, this.line(s), `L${this.line(s)}: end of for\u2026of`);
-      this.m.enter(exit);
+      const h = this.evaluate(c2.expression);
+      if (!h) {
+        this.notConstant(c2.expression, "A case value");
+        return;
+      }
+      const n = this.asInteger(h, c2.expression);
+      if (n === null) return;
+      if (n < 0 || n > U32_MAX) return;
+      this.m.step([deathsCondition(v, Comparison.Exactly, n)], [], states[i], line, `L${line}: case ${n}`);
+    });
+    this.m.jump(fallback, line, `L${line}: ${fallback === exit ? "end switch" : "default"}`);
+    this.m.releaseTo(held);
+    const scope = new Scope(this.scope);
+    clauses.forEach((c2, i) => {
+      this.m.enter(states[i]);
       this.dead = false;
-    }
+      this.block(c2.statements, { fn: ctx.fn, continueTo: ctx.continueTo, breakTo: () => exit }, scope);
+      if (!this.dead) this.m.jump(i + 1 < states.length ? states[i + 1] : exit, line, `L${line}: fall through`);
+    });
+    this.m.enter(exit);
+    this.dead = false;
   }
   /* ── Functions ── */
-  inline(call, decl) {
+  /** A call of a `game()` function: inlined from its own body, wherever that file is. */
+  gameCall(call, fn) {
+    const target = this.c.resolve(fn);
+    if (!target) {
+      this.c.error(call, "This game function's body could not be found again.");
+      return void 0;
+    }
+    const arrow = target.plan.arrow;
+    return this.inline(call, arrow.parameters, target.plan.expression ?? arrow.body, target, target.name, arrow);
+  }
+  /**
+   * Inline a function at a call: parameters bound, the body walked in the current
+   * state, `return` jumping to a state after it. The result — a number or a boolean the
+   * checker says the call has — comes back in a temp the caller reads (0 / 1 for a
+   * boolean) and releases with its statement.
+   */
+  inline(call, parameters, body2, target, name, decl) {
     const { ts } = this;
-    if (!decl.body) {
+    const what = name ?? "The function";
+    if (!body2) {
       this.c.error(call, "The function has no body.");
-      return;
+      return void 0;
     }
     if (this.inlineDepth >= MAX_INLINE_DEPTH) {
       this.c.error(call, "Functions nest too deeply (recursion is not possible: a call is inlined).");
-      return;
+      return void 0;
     }
-    if (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+    if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) && (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))) {
       this.c.error(decl, "Generators and async functions are not supported in a program.");
-      return;
+      return void 0;
     }
-    const scope = new Scope(this.topScope);
+    const kind = this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? "void";
+    const line = this.line(call);
+    const result = kind === "void" ? void 0 : this.m.temp();
+    if (result) this.m.set(result, 0, line, this.label(call));
+    const scope = new Scope(target === this.body && target === this.c.body ? this.topScope : null);
     let ok = true;
-    decl.parameters.forEach((p, i) => {
+    parameters.forEach((p, i) => {
       if (!ts.isIdentifier(p.name)) {
         this.c.error(p, "Destructured parameters are not supported in a program.");
         ok = false;
@@ -3377,7 +3952,9 @@ var Structured = class {
           ok = false;
           return;
         }
+        const saved2 = this.enterBody(target);
         const h2 = this.evaluate(p.initializer);
+        this.leaveBody(saved2);
         if (!h2) {
           this.notConstant(p.initializer, "A default value");
           ok = false;
@@ -3391,9 +3968,19 @@ var Structured = class {
         scope.bind(p, { kind: "value", value: h.value });
         return;
       }
-      const variable = this.varOf(arg);
+      const binding = this.bindingOf(arg);
+      if (binding?.kind === "record") {
+        if (this.assigns(body2, p)) {
+          this.c.error(p, `${p.name.text} is a record; a record parameter can have its fields assigned, not be reassigned itself.`);
+          ok = false;
+          return;
+        }
+        scope.bind(p, binding);
+        return;
+      }
+      const variable = binding?.kind === "var" ? binding.v : void 0;
       if (variable) {
-        if (!this.assigns(decl.body, p)) {
+        if (!this.assigns(body2, p)) {
           scope.bind(p, { kind: "var", v: variable });
           return;
         }
@@ -3403,43 +3990,90 @@ var Structured = class {
           ok = false;
           return;
         }
-        copy.at = this.sourceOf(p.name);
+        copy.at = this.sourceOfIn(target, p.name);
         if (copy.kind === "dc" && variable.kind === "dc" && variable.bits) copy.bits = variable.bits;
-        const line = this.line(call);
-        const label = `L${line}: ${p.name.text} = ${arg.getText(this.c.sf)}`;
-        if (copy.kind === "dc") this.m.assign(copy, { c: 0, terms: [{ v: variable, sign: 1 }] }, line, label);
-        else this.storeBool(copy, cond(boolCondition(variable, true)), line, label);
+        const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
+        if (copy.kind === "dc") this.m.assign(copy, ofVar(variable), line, label);
+        else this.storeBoolTree(copy, cond(boolCondition(variable, true)), line, label);
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
+      const lin = ts.isIdentifier(this.unwrap(arg)) ? null : this.linearQuietly(arg);
+      if (lin) {
+        const copy = this.m.dc(p.name.text);
+        if (!copy) {
+          this.c.error(p, `No death counter is free for ${p.name.text}.`);
+          ok = false;
+          return;
+        }
+        copy.at = this.sourceOfIn(target, p.name);
+        this.m.assign(copy, lin, line, `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`);
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
       this.notConstant(arg, "An argument");
       ok = false;
     });
-    if (!ok) return;
-    if (call.arguments.length > decl.parameters.length) {
-      this.c.error(call, `${decl.name?.text ?? "The function"} takes ${decl.parameters.length} argument${decl.parameters.length === 1 ? "" : "s"}.`);
-      return;
+    if (!ok) return result;
+    if (call.arguments.length > parameters.length) {
+      this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`);
+      return result;
     }
-    const saved = this.scope;
+    const saved = this.enterBody(target);
+    const outerScope = this.scope;
     this.scope = scope;
     this.inlineDepth++;
     let end = null;
-    this.block(decl.body.statements, { fn: { end: () => end ??= this.m.fresh() } });
-    this.inlineDepth--;
-    this.scope = saved;
+    const fn = { end: () => end ??= this.m.fresh(), kind, result };
+    try {
+      if (ts.isBlock(body2)) this.block(body2.statements, { fn });
+      else {
+        const held = this.m.tempsHeld;
+        try {
+          if (kind === "number") this.assignNumber(result, body2, body2);
+          else if (kind === "boolean") this.storeBool(result, body2, this.line(body2), this.label(body2));
+          else this.expressionStatement(body2);
+        } catch (err) {
+          if (!(err instanceof LowerError)) throw err;
+          if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
+          else this.c.error(body2, err.message);
+        }
+        this.m.releaseTo(held);
+      }
+    } finally {
+      this.inlineDepth--;
+      this.scope = outerScope;
+      this.leaveBody(saved);
+    }
     if (end !== null) {
-      if (!this.dead) this.m.jump(end, this.line(call), `L${this.line(call)}: end of ${decl.name?.text ?? "function"}`);
+      if (!this.dead) this.m.jump(end, line, `L${line}: end of ${name ?? "function"}`);
       this.m.enter(end);
       this.dead = false;
     }
+    return result;
   }
-  /** Whether a function body assigns to (or increments) one of its parameters anywhere. */
-  assigns(body2, param) {
+  /** Walk another body (a game function's) until `leaveBody`: its plan, file and thunks. */
+  enterBody(target) {
+    const saved = this.body;
+    this.body = target;
+    this.m.file = target.sf.fileName;
+    return saved;
+  }
+  leaveBody(saved) {
+    this.body = saved;
+    this.m.file = saved.sf.fileName;
+  }
+  sourceOfIn(target, node) {
+    const p = target.sf.getLineAndCharacterOfPosition(node.getStart(target.sf));
+    return { file: target.sf.fileName, line: p.line + 1, column: p.character + 1 };
+  }
+  /** Whether a body assigns to (or increments) a declaration anywhere. */
+  assigns(body2, decl) {
     const { ts } = this;
     let found = false;
     const target = (e) => {
       const u = this.unwrap(e);
-      return ts.isIdentifier(u) && declarationOf(ts, this.c.checker, u) === param;
+      return ts.isIdentifier(u) && declarationOf(ts, this.c.checker, u) === decl;
     };
     const walk = (n) => {
       if (found) return;
@@ -3474,7 +4108,126 @@ var Structured = class {
     }
     return v;
   }
-  /** `c + Σ ±v` over death counters, or null (with a diagnostic). */
+  /** `linear` without diagnostics, for a probe that may fail. */
+  linearQuietly(expr) {
+    const { error } = this.c;
+    let failed = false;
+    this.c.error = () => {
+      failed = true;
+    };
+    try {
+      const out = this.linear(expr);
+      return failed ? null : out;
+    } finally {
+      this.c.error = error;
+    }
+  }
+  /** A variable holding a linear expression's value: the variable itself when it is one, else a temp computed now. */
+  sideVar(l, line, label) {
+    const v = single(l);
+    if (v) return v;
+    const t = this.m.temp(widthOf(l));
+    this.m.evaluate(t, l, line, label);
+    return t;
+  }
+  /** `l op r` for `*`, `/`, `%` (and `+`, `-`) over linear expressions, emitting what needs a temp. */
+  linearOp(op, l, r, at) {
+    const line = this.line(at);
+    const label = this.label(at);
+    switch (op) {
+      case "+":
+        return merge(l, r);
+      case "-":
+        return merge(l, scale(r, -1));
+      case "*": {
+        if (isConst(r)) return scale(l, r.c);
+        if (isConst(l)) return scale(r, l.c);
+        const a2 = this.sideVar(l, line, label);
+        const b = this.sideVar(r, line, label);
+        const t = this.m.temp(Math.min(32, bitsOf(a2) + bitsOf(b)));
+        this.m.set(t, 0, line, label);
+        this.m.mulVar(t, a2, b, line, label);
+        return ofVar(t);
+      }
+      case "/":
+      case "%": {
+        if (!isConst(r)) {
+          this.c.error(at, "Division is by a constant: the game has no instruction for dividing by a variable.");
+          return null;
+        }
+        const d = r.c;
+        if (!Number.isInteger(d) || d <= 0) {
+          this.c.error(at, `Divide by a whole number of at least 1, not ${d}.`);
+          return null;
+        }
+        if (isConst(l)) return { c: op === "/" ? Math.trunc(l.c / d) : l.c % d, terms: [] };
+        const n = this.m.temp(widthOf(l));
+        this.m.evaluate(n, l, line, label);
+        const q = this.m.temp(Math.max(1, widthOf(l) - bitLength(d) + 1));
+        this.m.set(q, 0, line, label);
+        this.m.divConst(n, q, d, line, label, widthOf(l));
+        return ofVar(op === "/" ? q : n);
+      }
+    }
+  }
+  /** `Math.min(a, b)` / `Math.max(a, b)`: against a constant, a copy and one guard; between variables, saturating differences. */
+  minMax(kind, l, r, line, label) {
+    if (isConst(l) && isConst(r)) return { c: kind === "min" ? Math.min(l.c, r.c) : Math.max(l.c, r.c), terms: [] };
+    if (isConst(l) || isConst(r)) {
+      const c2 = isConst(l) ? l.c : r.c;
+      const x = isConst(l) ? r : l;
+      const t2 = this.m.temp(kind === "min" ? Math.min(widthOf(x), bitLength(Math.max(0, c2))) : Math.max(widthOf(x), bitLength(Math.max(0, c2))));
+      if (kind === "min" && c2 <= 0) {
+        this.m.set(t2, 0, line, label);
+        return ofVar(t2);
+      }
+      this.m.evaluate(t2, x, line, label);
+      if (kind === "min") {
+        if (c2 < U32_MAX) this.m.step([deathsCondition(t2, Comparison.AtLeast, c2 + 1)], [setDeaths(t2, SetModifier.SetTo, c2)], null, line, label);
+      } else if (c2 > 0) this.m.step([deathsCondition(t2, Comparison.AtMost, c2 - 1)], [setDeaths(t2, SetModifier.SetTo, Math.min(c2, U32_MAX))], null, line, label);
+      return ofVar(t2);
+    }
+    const t = this.m.temp(kind === "min" ? Math.min(widthOf(l), widthOf(r)) : Math.max(widthOf(l), widthOf(r)));
+    const u = this.m.temp(kind === "min" ? widthOf(l) : widthOf(r));
+    this.m.evaluate(u, kind === "min" ? merge(l, scale(r, -1)) : merge(r, scale(l, -1)), line, label);
+    this.m.evaluate(t, l, line, label);
+    this.m.addVar(t, u, kind === "min" ? -1 : 1, line, label, bitsOf(u), true);
+    this.m.release();
+    return ofVar(t);
+  }
+  /** `Math.abs(l)` = (l −̇ 0) + (−l −̇ 0). */
+  abs(l, line, label) {
+    if (isConst(l)) return { c: Math.abs(l.c), terms: [] };
+    const t = this.m.temp(widthOf(l));
+    const u = this.m.temp(widthOf(scale(l, -1)));
+    this.m.evaluate(t, l, line, label);
+    this.m.evaluate(u, scale(l, -1), line, label);
+    this.m.addVar(t, u, 1, line, label, bitsOf(u), true);
+    this.m.release();
+    return ofVar(t);
+  }
+  /** `c ? a : b` as a number: a temp assigned on either side of a branch. */
+  ternary(e) {
+    const line = this.line(e);
+    const label = this.label(e);
+    const t = this.m.temp();
+    const on = this.m.fresh();
+    const off = this.m.fresh();
+    const join = this.m.fresh();
+    this.branchOn(e.condition, on, off, line, label);
+    this.m.enter(on);
+    this.dead = false;
+    this.assignNumber(t, e.whenTrue, e);
+    this.m.jump(join, line, label);
+    this.m.enter(off);
+    this.dead = false;
+    this.assignNumber(t, e.whenFalse, e);
+    this.m.jump(join, line, label);
+    this.m.enter(join);
+    this.dead = false;
+    return ofVar(t);
+  }
+  /** `c + Σ k·v` over death counters, or null (with a diagnostic). Emits what needs a temp: a quotient, a product, a call's result. */
   linear(expr) {
     const { ts } = this;
     const e = this.unwrap(expr);
@@ -3483,85 +4236,249 @@ var Structured = class {
       const n = this.asInteger(h, e);
       return n === null ? null : { c: n, terms: [] };
     }
-    if (ts.isIdentifier(e)) {
-      const b = this.binding(e);
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
       if (b?.kind === "var") {
         if (b.v.kind !== "dc") {
           this.c.error(e, `${b.v.name} is a boolean.`);
           return null;
         }
-        return { c: 0, terms: [{ v: b.v, sign: 1 }] };
+        return ofVar(b.v);
       }
-      this.c.error(e, `${e.text} is not a variable of the program.`);
+      if (b?.kind === "record") {
+        this.c.error(e, "This is a record; use one of its fields.");
+        return null;
+      }
+      if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program.`);
+      else this.notConstant(e, "A value");
       return null;
     }
     if (ts.isPrefixUnaryExpression(e)) {
       const inner = this.linear(e.operand);
       if (!inner) return null;
       if (e.operator === ts.SyntaxKind.PlusToken) return inner;
-      if (e.operator === ts.SyntaxKind.MinusToken) return { c: -inner.c, terms: inner.terms.map((t) => ({ v: t.v, sign: -t.sign })) };
+      if (e.operator === ts.SyntaxKind.MinusToken) return scale(inner, -1);
       this.c.error(e, "Only + and - apply to variables.");
       return null;
     }
     if (ts.isBinaryExpression(e)) {
-      const op = e.operatorToken.kind;
-      if (op === ts.SyntaxKind.PlusToken || op === ts.SyntaxKind.MinusToken) {
-        const l = this.linear(e.left);
-        const r = this.linear(e.right);
-        if (!l || !r) return null;
-        const sign = op === ts.SyntaxKind.PlusToken ? 1 : -1;
-        return { c: l.c + sign * r.c, terms: [...l.terms, ...r.terms.map((t) => ({ v: t.v, sign: t.sign * sign }))] };
+      const op = arithOp(ts, e.operatorToken.kind);
+      if (!op) {
+        this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder by a constant.");
+        return null;
       }
-      this.c.error(e, "The game can only add and subtract variables; * / % work on values known when the script is built.");
-      return null;
+      const l = this.linear(e.left);
+      const r = this.linear(e.right);
+      if (!l || !r) return null;
+      return this.linearOp(op, l, r, e);
     }
-    if (ts.isCallExpression(e)) {
-      this.notConstant(e, "A call's arguments");
-      return null;
-    }
-    this.c.error(e, "Expected a number: a value, a variable, or a sum of them.");
+    if (ts.isConditionalExpression(e)) return this.ternary(e);
+    if (ts.isCallExpression(e)) return this.callValue(e);
+    this.c.error(e, "Expected a number: a value, a variable, or arithmetic over them.");
     return null;
   }
-  /* ── Booleans ── */
-  assignBool(v, expr, at) {
+  /** A call as a number: a function of the body or a game function (its result), or an intrinsic over variables. */
+  callValue(e) {
     const { ts } = this;
-    const e = this.unwrap(expr);
-    const line = this.line(at);
-    const label = this.label(at);
-    const h = this.evaluate(expr);
-    if (h && typeof h.value === "boolean") {
-      this.m.action(setBool(v, h.value), line, label);
+    const line = this.line(e);
+    const label = this.label(e);
+    if (ts.isIdentifier(e.expression)) {
+      const decl = this.gameDeclaration(e.expression);
+      if (decl && ts.isFunctionDeclaration(decl)) {
+        const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
+        if (kind !== "number") {
+          this.c.error(e, `${e.expression.text} does not return a number.`);
+          return null;
+        }
+        const r = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+        return r ? ofVar(r) : null;
+      }
+    }
+    const args = (n, what) => {
+      if (e.arguments.length !== n) {
+        this.c.error(e, `${what} takes ${n} argument${n === 1 ? "" : "s"}.`);
+        return null;
+      }
+      const out = [];
+      for (const a2 of e.arguments) {
+        const l = this.linear(a2);
+        if (!l) return null;
+        out.push(l);
+      }
+      return out;
+    };
+    if (this.isLibraryCall(e, "clamp")) {
+      const a2 = args(3, "clamp()");
+      if (!a2) return null;
+      return this.minMax("min", this.minMax("max", a2[0], a2[1], line, label), a2[2], line, label);
+    }
+    const callee = this.evaluate(e.expression)?.value;
+    if (isGameFunction(callee)) {
+      const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
+      if (kind !== "number") {
+        this.c.error(e, "This game function does not return a number.");
+        return null;
+      }
+      const r = this.gameCall(e, callee);
+      return r ? ofVar(r) : null;
+    }
+    if (callee === Math.floor || callee === Math.trunc || callee === Math.round || callee === Math.ceil) {
+      const a2 = args(1, "Math rounding");
+      return a2 ? a2[0] : null;
+    }
+    if (callee === Math.abs) {
+      const a2 = args(1, "Math.abs()");
+      return a2 ? this.abs(a2[0], line, label) : null;
+    }
+    if (callee === Math.min || callee === Math.max) {
+      if (e.arguments.length === 0) {
+        this.c.error(e, "Math.min / Math.max take at least one argument.");
+        return null;
+      }
+      let acc = null;
+      for (const a2 of e.arguments) {
+        const l = this.linear(a2);
+        if (!l) return null;
+        acc = acc ? this.minMax(callee === Math.min ? "min" : "max", acc, l, line, label) : l;
+      }
+      return acc;
+    }
+    if (isBuilder(callee)) {
+      this.c.error(e, callee.kind === "condition" ? "This is a condition; test it in an if or a while." : "This is an action; it stands as a statement.");
+      return null;
+    }
+    if (typeof callee === "function") {
+      this.c.error(e, "This helper is computed when the script is built and cannot take a variable of the program. Write it as a game() function to run it in the game.");
+      return null;
+    }
+    this.notConstant(e, "A call's arguments");
+    return null;
+  }
+  /**
+   * An action whose argument is a variable: `setResources(P1, "add", n, "ore")`,
+   * `createUnit(P2, unit, count, at)`. The record is built with the variable's place
+   * as 0, then done bit by bit through `Machine.actionWithVar`.
+   */
+  actionWithVars(e, ident, def) {
+    const params = scriptParams(def);
+    const line = this.line(e);
+    const label = this.label(e);
+    const values = [];
+    let variable = null;
+    for (let i = 0; i < e.arguments.length; i++) {
+      const a2 = e.arguments[i];
+      const h = this.evaluate(a2);
+      if (h) {
+        values.push(h.value);
+        continue;
+      }
+      const p2 = params[i];
+      if (!p2) {
+        this.c.error(a2, `${ident} takes ${params.length} argument${params.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      const eligible = (p2.arg.kind === "amount" || p2.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type) || p2.arg.kind === "count" && COUNT_ACTIONS.has(def.type);
+      if (!eligible) {
+        this.c.error(a2, `${ident}'s ${p2.name} must be known when the script is built. Only an amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer) and a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) can be a variable of the program.`);
+        return;
+      }
+      if (variable) {
+        this.c.error(a2, `${ident}: one argument at a time can be a variable of the program.`);
+        return;
+      }
+      const lin2 = this.linear(a2);
+      if (!lin2) return;
+      variable = { index: i, lin: lin2 };
+      values.push(0);
+    }
+    if (!variable) {
+      this.notConstant(e, "A call's arguments");
       return;
     }
-    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v && v.kind === "switch") {
+    let record;
+    try {
+      const built = this.evaluate(e.expression).value(...values);
+      if (!isAction(built)) {
+        this.c.error(e, "Expected an action.");
+        return;
+      }
+      record = built.record;
+    } catch (err) {
+      throw new ValueError(e, err instanceof Error ? err.message : String(err));
+    }
+    const p = params[variable.index];
+    const fieldBits = p.arg.kind === "count" ? 8 : 32;
+    const { lin } = variable;
+    const v = single(lin);
+    let src;
+    let consume;
+    let bits;
+    if (v && bitsOf(v) <= fieldBits) {
+      src = v;
+      consume = false;
+      bits = bitsOf(v);
+    } else {
+      src = this.m.temp(widthOf(lin));
+      this.m.evaluate(src, lin, line, label);
+      if (widthOf(lin) > fieldBits) {
+        this.m.step([deathsCondition(src, Comparison.AtLeast, 2 ** fieldBits)], [setDeaths(src, SetModifier.SetTo, maxOf(fieldBits))], null, line, label);
+        this.m.remark(line, `A ${p.name} larger than ${maxOf(fieldBits)} is done as ${maxOf(fieldBits)}: that is what the action's field holds.`);
+      }
+      consume = true;
+      bits = Math.min(widthOf(lin), fieldBits);
+    }
+    this.c.touched?.push(record);
+    this.m.actionWithVar(record, p.arg.field, src, bits, consume, line, label);
+  }
+  /* ── Booleans ── */
+  /** `v = expr` for a boolean: a constant, a toggle, a coin toss, or a branch that sets one side and clears the other. */
+  storeBool(v, expr, line, label) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h && typeof h.value === "boolean") {
+      this.m.action(setTruth(v, h.value), line, label);
+      return;
+    }
+    if (v.kind === "switch" && ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v) {
       this.m.action(setSwitch(v, SwitchAction.Toggle), line, label);
       return;
     }
-    if (this.isLibraryCall(e, "random") && v.kind === "switch") {
+    if (v.kind === "switch" && this.isLibraryCall(e, "random")) {
       this.m.action(setSwitch(v, SwitchAction.Randomize), line, label);
+      return;
+    }
+    if (this.shortCircuits(e)) {
+      const on = this.m.fresh();
+      const off = this.m.fresh();
+      this.branchOn(e, on, off, line, label);
+      this.storeSides(v, on, off, line, label);
       return;
     }
     const held = this.m.tempsHeld;
     const b = this.bool(e);
     if (b.kind === "const") {
-      this.m.action(setBool(v, b.value), line, label);
+      this.m.action(setTruth(v, b.value), line, label);
       this.m.releaseTo(held);
       return;
     }
-    this.storeBool(v, b, line, label);
+    this.storeBoolTree(v, b, line, label);
     this.m.releaseTo(held);
   }
   /** `v = b` for a condition tree: branch, set on one side, clear on the other. */
-  storeBool(v, b, line, label) {
+  storeBoolTree(v, b, line, label) {
     const on = this.m.fresh();
     const off = this.m.fresh();
-    const join = this.m.fresh();
     this.m.branch(b, on, off, line, label);
+    this.storeSides(v, on, off, line, label);
+  }
+  storeSides(v, on, off, line, label) {
+    const join = this.m.fresh();
     this.m.enter(on);
-    this.m.action(setBool(v, true), line, label);
+    this.m.action(setTruth(v, true), line, label);
     this.m.jump(join, line, label);
     this.m.enter(off);
-    this.m.action(setBool(v, false), line, label);
+    this.m.action(setTruth(v, false), line, label);
     this.m.jump(join, line, label);
     this.m.enter(join);
     this.dead = false;
@@ -3572,7 +4489,7 @@ var Structured = class {
    * triggers: the branch on `c`, two in the true state (the latch clear → fire and set the
    * latch, jumping on; else clear `fired`), one in the false state.
    */
-  edge(call, kind, depth) {
+  edge(call, kind) {
     if (call.arguments.length !== 1) {
       this.c.error(call, `${kind}() takes one condition.`);
       return FALSE;
@@ -3585,13 +4502,10 @@ var Structured = class {
     }
     const line = this.line(call);
     const label = this.label(call);
-    const held = this.m.tempsHeld;
-    const c2 = this.boolInner(call.arguments[0], depth + 1);
     const on = this.m.fresh();
     const off = this.m.fresh();
     const join = this.m.fresh();
-    this.m.branch(c2, on, off, line, label);
-    this.m.releaseTo(held);
+    this.branchOn(call.arguments[0], on, off, line, label);
     this.m.enter(on);
     this.m.step([boolCondition(latch, false)], [setBool(fired, true), setBool(latch, true)], join, line, label);
     this.m.step([], [setBool(fired, false)], join, line, label);
@@ -3609,8 +4523,14 @@ var Structured = class {
     if (typeof v === "boolean") return v ? TRUE : FALSE;
     if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
     if (typeof v === "string") return v !== "" ? TRUE : FALSE;
-    if (isCondition(v)) return cond(v.record);
-    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return and(v.map((c2) => cond(c2.record)));
+    if (isCondition(v)) {
+      this.c.touched?.push(v.record);
+      return cond(v.record);
+    }
+    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) {
+      for (const c2 of v) this.c.touched?.push(c2.record);
+      return and(v.map((c2) => cond(c2.record)));
+    }
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
       return FALSE;
@@ -3618,7 +4538,7 @@ var Structured = class {
     this.c.error(at, `Expected a condition, got ${describe2(v)}.`);
     return FALSE;
   }
-  /** A condition as a `Bool` tree; may emit steps (temps for variable comparisons, a randomize). */
+  /** A condition as a `Bool` tree; may emit steps (temps for variable comparisons, a randomize, an edge, a call). */
   bool(expr) {
     this.scratchUsed = 0;
     return this.boolInner(expr, 0);
@@ -3642,26 +4562,59 @@ var Structured = class {
       this.c.error(e, "Expected a condition.");
       return FALSE;
     }
-    if (ts.isIdentifier(e)) {
-      const b = this.binding(e);
+    if (ts.isConditionalExpression(e)) {
+      const t = this.m.temp(1);
+      const on = this.m.fresh();
+      const off = this.m.fresh();
+      this.branchOn(e.condition, on, off, this.line(e), this.label(e));
+      const join = this.m.fresh();
+      this.m.enter(on);
+      this.dead = false;
+      this.storeBool(t, e.whenTrue, this.line(e), this.label(e));
+      this.m.jump(join, this.line(e), this.label(e));
+      this.m.enter(off);
+      this.dead = false;
+      this.storeBool(t, e.whenFalse, this.line(e), this.label(e));
+      this.m.jump(join, this.line(e), this.label(e));
+      this.m.enter(join);
+      this.dead = false;
+      return cond(deathsCondition(t, Comparison.AtLeast, 1));
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
       if (b?.kind === "var") return b.v.kind !== "dc" ? cond(boolCondition(b.v, true)) : compareConst(b.v, ">=", 1);
-      this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
+      if (b?.kind === "record") {
+        this.c.error(e, "This is a record; test one of its fields.");
+        return FALSE;
+      }
+      if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
+      else this.notConstant(e, "A condition");
       return FALSE;
     }
     if (ts.isCallExpression(e)) {
-      if (ts.isIdentifier(e.expression) && this.gameDeclaration(e.expression)) {
-        this.c.error(e, "Functions in a program have no return value; test a variable the function sets instead.");
-        return FALSE;
+      if (ts.isIdentifier(e.expression)) {
+        const decl = this.gameDeclaration(e.expression);
+        if (decl && ts.isFunctionDeclaration(decl)) return this.callBool(e, () => this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl));
       }
       if (this.isLibraryCall(e, "random")) {
         const s = this.m.scratch(this.scratchUsed++);
         this.m.action(setSwitch(s, SwitchAction.Randomize), this.line(e), `L${this.line(e)}: random()`);
         return cond(switchCondition(s, true));
       }
-      if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose", depth);
-      if (this.isLibraryCall(e, "once")) return this.edge(e, "once", depth);
+      if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose");
+      if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
       if (this.isLibraryCall(e, "sleep")) {
         this.c.error(e, "sleep() is a statement, not a condition.");
+        return FALSE;
+      }
+      const callee = this.evaluate(e.expression)?.value;
+      if (isGameFunction(callee)) return this.callBool(e, () => this.gameCall(e, callee));
+      if (isBuilder(callee) && callee.kind === "condition") {
+        this.c.error(e, "The game cannot test a condition against a variable of the program: a condition's amount is known when the script is built. Compare variables in the program's own statements.");
+        return FALSE;
+      }
+      if (isBuilder(callee)) {
+        this.c.error(e, "This is an action, not a condition.");
         return FALSE;
       }
       this.notConstant(e, "A condition's arguments");
@@ -3670,12 +4623,23 @@ var Structured = class {
     this.c.error(e, "Expected a condition: a trigger condition, a comparison, a boolean variable, or a combination with && || !.");
     return FALSE;
   }
+  /** A call whose result is tested: a boolean result is `≥ 1`, a number's is `≠ 0` — both `≥ 1` on a counter. */
+  callBool(e, run) {
+    const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
+    if (!kind) {
+      this.c.error(e, "This function returns nothing to test; test a variable it sets instead.");
+      return FALSE;
+    }
+    const r = run();
+    return r ? cond(deathsCondition(r, Comparison.AtLeast, 1)) : FALSE;
+  }
   comparison(e, op, depth) {
     const isBool = (x) => {
       const h = this.evaluate(x);
       if (h) return typeof h.value === "boolean" || isCondition(h.value);
-      const v = this.varOf(this.unwrap(x));
-      return v !== void 0 && v.kind !== "dc";
+      const v = this.varOf(x);
+      if (v !== void 0) return v.kind !== "dc";
+      return this.kindOf(this.c.checker.getTypeAtLocation(x)) === "boolean";
     };
     if (isBool(e.left) || isBool(e.right)) {
       if (op !== "==" && op !== "!=") {
@@ -3690,35 +4654,42 @@ var Structured = class {
     const l = this.linear(e.left);
     const r = this.linear(e.right);
     if (!l || !r) return FALSE;
-    const d = { c: l.c - r.c, terms: [...l.terms, ...r.terms.map((t) => ({ v: t.v, sign: -t.sign }))] };
-    for (let i = 0; i < d.terms.length; i++) {
-      const j = d.terms.findIndex((t, k) => k > i && t.v === d.terms[i].v && t.sign !== d.terms[i].sign);
-      if (j >= 0) {
-        d.terms.splice(j, 1);
-        d.terms.splice(i, 1);
-        i--;
-      }
-    }
+    const d = merge(l, scale(r, -1));
     if (d.terms.length === 0) return compareNumbers(d.c, op, 0) ? TRUE : FALSE;
     if (d.terms.length === 1) {
       const t = d.terms[0];
-      return t.sign > 0 ? compareConst(t.v, op, -d.c) : compareConst(t.v, flipOp(op), d.c);
+      return compareScaled(t.v, t.k, op, -d.c);
     }
     const line = this.line(e);
-    const label = `L${line}: ${e.getText(this.c.sf).replace(/\s+/g, " ")}`;
-    const left = { c: Math.max(0, d.c), terms: d.terms.filter((t) => t.sign > 0) };
-    const right = { c: Math.max(0, -d.c), terms: d.terms.filter((t) => t.sign < 0).map((t) => ({ v: t.v, sign: 1 })) };
-    const side = (x) => {
-      if (x.c === 0 && x.terms.length === 1) return x.terms[0].v;
-      const t = this.m.temp();
-      this.m.evaluate(t, x, line, label);
-      return t;
-    };
-    const a2 = side(left);
-    const b = side(right);
+    const label = `L${line}: ${e.getText(this.body.sf).replace(/\s+/g, " ")}`;
+    const left = { c: Math.max(0, d.c), terms: d.terms.filter((t) => t.k > 0) };
+    const right = { c: Math.max(0, -d.c), terms: d.terms.filter((t) => t.k < 0).map((t) => ({ v: t.v, k: -t.k })) };
+    const a2 = this.sideVar(left, line, label);
+    const b = this.sideVar(right, line, label);
     return this.m.compareVars(a2, op, b, line, label).bool;
   }
 };
+function setTruth(v, on) {
+  return v.kind === "dc" ? setDeaths(v, SetModifier.SetTo, on ? 1 : 0) : setBool(v, on);
+}
+function compareScaled(v, k, op, n) {
+  if (k < 0) return compareScaled(v, -k, flipOp(op), -n);
+  if (k === 1) return compareConst(v, op, n);
+  switch (op) {
+    case ">=":
+      return compareConst(v, ">=", Math.ceil(n / k));
+    case ">":
+      return compareConst(v, ">=", Math.ceil((n + 1) / k));
+    case "<=":
+      return compareConst(v, "<=", Math.floor(n / k));
+    case "<":
+      return compareConst(v, "<=", Math.floor((n - 1) / k));
+    case "==":
+      return n % k === 0 ? compareConst(v, "==", n / k) : FALSE;
+    case "!=":
+      return n % k === 0 ? compareConst(v, "!=", n / k) : TRUE;
+  }
+}
 function compareOp(ts, kind) {
   switch (kind) {
     case ts.SyntaxKind.LessThanToken:
@@ -3735,6 +4706,38 @@ function compareOp(ts, kind) {
     case ts.SyntaxKind.ExclamationEqualsToken:
     case ts.SyntaxKind.ExclamationEqualsEqualsToken:
       return "!=";
+    default:
+      return null;
+  }
+}
+function arithOp(ts, kind) {
+  switch (kind) {
+    case ts.SyntaxKind.PlusToken:
+      return "+";
+    case ts.SyntaxKind.MinusToken:
+      return "-";
+    case ts.SyntaxKind.AsteriskToken:
+      return "*";
+    case ts.SyntaxKind.SlashToken:
+      return "/";
+    case ts.SyntaxKind.PercentToken:
+      return "%";
+    default:
+      return null;
+  }
+}
+function compoundOp(ts, kind) {
+  switch (kind) {
+    case ts.SyntaxKind.PlusEqualsToken:
+      return "+";
+    case ts.SyntaxKind.MinusEqualsToken:
+      return "-";
+    case ts.SyntaxKind.AsteriskEqualsToken:
+      return "*";
+    case ts.SyntaxKind.SlashEqualsToken:
+      return "/";
+    case ts.SyntaxKind.PercentEqualsToken:
+      return "%";
     default:
       return null;
   }
@@ -3768,8 +4771,9 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
+  const refs = [];
   const scripts = /* @__PURE__ */ new Map();
   for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
   if (!scripts.has(ENTRY_FILE)) {
@@ -3818,6 +4822,26 @@ function compileScript(ts, files, names, options) {
     diagnostics.push({ file: sf.fileName, ...pos, message, source });
   };
   const planned = /* @__PURE__ */ new Set();
+  const tables2 = new Set([names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => t.object));
+  for (const name of fileNames) {
+    const sf = program.getSourceFile(name);
+    const tableOf = (e) => {
+      const id = ts.isIdentifier(e) ? e : ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name) ? e.name : null;
+      const lib = id ? libraryName(ts, checker, id) : null;
+      return lib && tables2.has(lib) ? lib : null;
+    };
+    const visit = (node) => {
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
+        const object = tableOf(node.expression);
+        if (object) refs.push({ file: name, ...position(sf, node.name.getStart(sf), node.name.getEnd()), object, key: node.name.text, quoted: false });
+      } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
+        const object = tableOf(node.expression);
+        if (object) refs.push({ file: name, ...position(sf, node.argumentExpression.getStart(sf), node.argumentExpression.getEnd()), object, key: node.argumentExpression.text, quoted: true });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
   for (const d of ts.getPreEmitDiagnostics(program)) {
     if (d.category !== ts.DiagnosticCategory.Error) continue;
     const sf = d.file;
@@ -3834,12 +4858,14 @@ function compileScript(ts, files, names, options) {
   for (const name of fileNames) {
     const sf = program.getSourceFile(name);
     const visit = (node) => {
-      if (ts.isCallExpression(node) && libraryCallName(ts, checker, node) === "program") {
+      if (ts.isCallExpression(node)) {
+        const lib = libraryCallName(ts, checker, node);
         const arrow = node.arguments[0];
-        if (arrow && (ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow))) {
-          const plan = planProgram(ts, checker, arrow);
+        if ((lib === "program" || lib === "game") && arrow && (ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow))) {
+          const plan = planProgram(ts, checker, arrow, { parameters: lib === "game" });
           plans.set(arrow, plan);
-          byPosition.set(`${fileIndex(sf)}:${arrow.getStart(sf)}`, plan);
+          const fnName = lib === "game" && ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name) ? node.parent.name.text : void 0;
+          byPosition.set(`${fileIndex(sf)}:${arrow.getStart(sf)}`, { plan, sf, ...fnName ? { name: fnName } : {} });
           for (const e of plan.errors) nodeError(e.node, e.message);
           for (const e of plan.hoisted) buildTime.push({ file: name, ...position(sf, e.getStart(sf), e.getEnd()) });
           return;
@@ -3876,59 +4902,94 @@ function compileScript(ts, files, names, options) {
     diagnostics.push({ file: failure.file ?? ENTRY_FILE, line, column: failure.column ?? 1, endLine: line, endColumn: (failure.column ?? 1) + 1, message: failure.message, source: "script" });
     return result();
   }
-  const triggers = [];
-  const sources = [];
-  const programs = [];
-  const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
   const raw = storageOf(collector.entries.flatMap((e) => e.kind === "trigger" ? [e.record] : []));
-  allocator.reserve(raw.deaths, raw.switches);
   const sourceOf = (at) => at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null;
-  const notes = /* @__PURE__ */ new Map();
-  for (const entry of collector.entries) {
-    if (entry.kind === "trigger") {
-      triggers.push(entry.record);
-      sources.push(sourceOf(entry.at));
-      continue;
+  const bodies = /* @__PURE__ */ new Map();
+  const bodyOf = (d) => {
+    let b = bodies.get(d);
+    if (b !== void 0) return b;
+    const found = byPosition.get(`${d.at[0]}:${d.pos}`);
+    if (!found) b = null;
+    else {
+      try {
+        b = newBody(found.plan, found.sf, d.hoisted(), found.name);
+      } catch {
+        b = null;
+      }
     }
-    const plan = byPosition.get(`${entry.descriptor.at[0]}:${entry.descriptor.pos}`);
-    const file = fileNames[entry.descriptor.at[0]];
-    const sf = program.getSourceFile(file);
-    const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
-    if (!plan) {
-      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
-      continue;
+    bodies.set(d, b);
+    return b;
+  };
+  const resolve = (fn) => bodyOf(fn.descriptor) ?? void 0;
+  const cyclesPerSecond = collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND;
+  const lower = (allocator2, report, touched2) => {
+    const out = { triggers: [], sources: [], programs: [], notes: /* @__PURE__ */ new Map() };
+    const error = report ? nodeError : () => {
+    };
+    for (const entry of collector.entries) {
+      if (entry.kind === "trigger") {
+        out.triggers.push(entry.record);
+        out.sources.push(sourceOf(entry.at));
+        continue;
+      }
+      const file = fileNames[entry.descriptor.at[0]];
+      const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
+      const body2 = bodyOf(entry.descriptor);
+      if (!body2) {
+        if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
+        continue;
+      }
+      let machine;
+      try {
+        const comment = entry.options.comments ? (text) => collector.localString({ text }) : void 0;
+        machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator: allocator2, units: entry.options.variableUnits, comment });
+      } catch (err) {
+        if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: err.message, source: "compiler" });
+        continue;
+      }
+      const start = out.triggers.length;
+      const records2 = [];
+      new Structured({ ts, checker, body: body2, machine, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve, ...touched2 ? { touched: records2 } : {} }).run();
+      if (touched2 && records2.length) {
+        const t = emptyTrigger();
+        for (const o of entry.options.owners) t.players[o] = 1;
+        t.conditions = records2.filter((r) => "unitId" in r && !("modifier" in r));
+        t.actions = records2.filter((r) => "modifier" in r);
+        touched2.push(t);
+      }
+      out.triggers.push(...machine.triggers);
+      for (const s of machine.sources) out.sources.push(s);
+      for (const [key, note] of machine.notes) out.notes.set(key, note);
+      const owners = entry.options.owners;
+      out.programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
     }
-    let hoisted;
-    try {
-      hoisted = entry.descriptor.hoisted();
-    } catch (err) {
-      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: `program(): ${err.message} \u2014 a constant of the program is computed when the script is built.`, source: "script" });
-      continue;
-    }
-    let machine;
-    try {
-      const comment = entry.options.comments ? (text) => collector.localString({ text }) : void 0;
-      machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator, units: entry.options.variableUnits, comment });
-    } catch (err) {
-      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: err.message, source: "compiler" });
-      continue;
-    }
-    const start = triggers.length;
-    new Structured({ ts, checker, sf, plan, hoisted, machine, cyclesPerSecond: collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND, error: (node, message, source) => nodeError(node, message, source) }).run();
-    triggers.push(...machine.triggers);
-    for (const line of machine.lines) sources.push({ file, line });
-    for (const [line, note] of machine.notes) notes.set(`${file}\0${line}`, note);
-    const owners = entry.options.owners;
-    programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
-  }
+    return out;
+  };
+  const touched = [];
+  const scratch = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
+  scratch.reserve(raw.deaths, raw.switches);
+  if (collector.entries.some((e) => e.kind === "program")) lower(scratch, false, touched);
+  const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
+  allocator.reserve(raw.deaths, raw.switches);
+  const inBodies = storageOf(touched);
+  allocator.reserve(inBodies.deaths, inBodies.switches);
+  const { triggers, sources, programs, notes } = lower(allocator, true);
   const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {}, ...v.bits ? { bits: v.bits } : {} } : v.kind === "switch" ? { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), flag: v.unit, ...v.at ? { at: v.at } : {} });
   const costs = /* @__PURE__ */ new Map();
-  for (const s of sources) {
-    if (!s) continue;
-    const key = `${s.file}\0${s.line}`;
-    const c2 = costs.get(key) ?? { file: s.file, line: s.line, triggers: 0, ...notes.has(key) ? { note: notes.get(key) } : {} };
-    c2.triggers++;
-    costs.set(key, c2);
+  const costOf = (file, line) => {
+    const key = `${file}\0${line}`;
+    let c2 = costs.get(key);
+    if (!c2) {
+      const n = notes.get(key);
+      c2 = { file, line, triggers: 0, ...n ? { note: n.note, ...n.label ? { label: n.label } : {} } : {} };
+      costs.set(key, c2);
+    }
+    return c2;
+  };
+  for (const s of sources) if (s) costOf(s.file, s.line).triggers++;
+  for (const [key, n] of notes) if (n.label) {
+    const [file, line] = key.split("\0");
+    costOf(file, Number(line));
   }
   return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
 }
@@ -3997,32 +5058,37 @@ function findReferences(text, object) {
 }
 function renamedKeys(before, after) {
   const out = [];
-  const was = new Map(before.entries.map((e) => [e.value, e.keys[0]]));
+  const was = new Map(before.entries.map((e) => [e.value, e.keys]));
   for (const e of after.entries) {
-    const from = was.get(e.value);
-    if (from !== void 0 && from !== e.keys[0]) out.push({ value: e.value, from, to: e.keys[0] });
+    const old = was.get(e.value);
+    if (!old) continue;
+    const lost = old.filter((k) => !e.keys.includes(k));
+    const gained = e.keys.filter((k) => !old.includes(k));
+    lost.forEach((from, i) => out.push({ value: e.value, from, to: gained[i] ?? gained[0] ?? e.keys[0] }));
   }
   return out;
 }
-function renamesInUse(files, object, renames) {
+function renamesInUse(refs, object, renames) {
   const used = /* @__PURE__ */ new Set();
-  for (const text of Object.values(files)) for (const r of findReferences(text, object)) used.add(r.key);
+  for (const r of refs) if (r.object === object) used.add(r.key);
   return renames.filter((r) => used.has(r.from));
 }
-function replaceReferences(files, object, renames) {
+function replaceReferences(files, refs, object, renames) {
   const to = new Map(renames.map((r) => [r.from, r.to]));
   let count = 0;
   const out = {};
   for (const [path, text] of Object.entries(files)) {
-    const refs = findReferences(text, object).filter((r) => to.has(r.key));
-    if (refs.length === 0) {
+    const here = refs.filter((r) => normalizePath(r.file) === normalizePath(path) && r.object === object && to.has(r.key));
+    if (here.length === 0) {
       out[normalizePath(path)] = text;
       continue;
     }
     const lines = text.split("\n");
-    for (const r of [...refs].sort((a2, b) => b.line - a2.line || b.column - a2.column)) {
+    for (const r of [...here].sort((a2, b) => b.line - a2.line || b.column - a2.column)) {
       const l = lines[r.line - 1];
-      lines[r.line - 1] = l.slice(0, r.column - 1) + to.get(r.key) + l.slice(r.endColumn - 1);
+      if (l === void 0 || r.endLine !== r.line) continue;
+      const replacement = r.quoted ? JSON.stringify(to.get(r.key)) : to.get(r.key);
+      lines[r.line - 1] = l.slice(0, r.column - 1) + replacement + l.slice(r.endColumn - 1);
       count++;
     }
     out[normalizePath(path)] = lines.join("\n");
@@ -4178,7 +5244,7 @@ function setCostHints(monaco, costs) {
       const path = pathOfUri(model.uri);
       const hints = costHints().filter((c2) => normalizePath(c2.file) === path && c2.line >= range.startLineNumber && c2.line <= range.endLineNumber && c2.line <= model.getLineCount()).map((c2) => ({
         position: { lineNumber: c2.line, column: model.getLineMaxColumn(c2.line) },
-        label: `${c2.triggers} trigger${c2.triggers === 1 ? "" : "s"}`,
+        label: c2.label ? c2.triggers >= 2 ? `${c2.label}, ${c2.triggers} triggers` : c2.label : `${c2.triggers} trigger${c2.triggers === 1 ? "" : "s"}`,
         kind: monaco.languages.InlayHintKind.Type,
         paddingLeft: true,
         ...c2.note ? { tooltip: c2.note } : {}
@@ -4843,7 +5909,8 @@ function readManifest(extras) {
     if (m.version !== 2 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
     const sources = Array.isArray(m.sources) ? m.sources.map((s) => s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null) : [];
     const files = Array.isArray(m.files) ? m.files.filter((f) => typeof f === "string") : [];
-    return { version: 2, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "" };
+    const records2 = Array.isArray(m.records) && m.records.length === m.count && m.records.every((r) => typeof r === "string") ? m.records : void 0;
+    return { version: 2, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...records2 ? { records: records2 } : {} };
   } catch {
     return null;
   }
@@ -4862,6 +5929,9 @@ function fnv1a(bytes) {
 function hashTriggers(list) {
   return `${list.length}:${fnv1a(encodeTriggers(list))}`;
 }
+function hashRecord(t) {
+  return fnv1a(encodeTriggers([t]));
+}
 function hashText(text) {
   return fnv1a(encoder.encode(text));
 }
@@ -4877,13 +5947,25 @@ function findBlock(list, manifest) {
   for (let s = 0; s + count <= list.length; s++) if (s !== start && at(s)) return { start: s, count, sources: manifest.sources };
   return null;
 }
+function staleRecords(list, manifest) {
+  if (!manifest.records) return null;
+  const out = { unchanged: [], changed: [] };
+  for (let i = 0; i < manifest.count; i++) {
+    const at = manifest.start + i;
+    if (at >= list.length) break;
+    (hashRecord(list[at]) === manifest.records[i] ? out.unchanged : out.changed).push(at);
+  }
+  return out.unchanged.length ? out : null;
+}
 function scriptState(triggers, extras) {
   const read = readFiles(extras);
   const files = Object.keys(read).length ? read : null;
   const manifest = readManifest(extras);
   const block2 = triggers && manifest ? findBlock(triggers, manifest) : null;
   const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
-  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale: !!manifest && !block2, unbuilt };
+  const stale = !!manifest && !block2;
+  const parts = stale && triggers ? staleRecords(triggers, manifest) : null;
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt };
 }
 function relocateManifest(triggers, extras) {
   const manifest = readManifest(extras);
@@ -4927,6 +6009,8 @@ function buildScript(triggers, extras, files, compiled, intern, options = {}) {
   let start;
   let before;
   let after;
+  let replaced;
+  const parts = options.replaceStale && state.stale && state.manifest ? staleRecords(triggers, state.manifest) : null;
   if (options.takeOver) {
     start = 0;
     before = [];
@@ -4935,13 +6019,19 @@ function buildScript(triggers, extras, files, compiled, intern, options = {}) {
     start = state.block.start;
     before = triggers.slice(0, start);
     after = triggers.slice(start + state.block.count);
+  } else if (parts) {
+    start = state.manifest.start;
+    const end = Math.min(triggers.length, start + state.manifest.count);
+    before = triggers.slice(0, start);
+    after = [...parts.changed.map((i) => triggers[i]), ...triggers.slice(end)];
+    replaced = { removed: parts.unchanged.length, kept: parts.changed.length };
   } else {
     start = triggers.length;
     before = triggers.slice();
     after = [];
   }
-  const manifest = { version: 2, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files) };
-  return { list: [...before, ...records2, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records2.length, sources: manifest.sources } };
+  const manifest = { version: 2, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records2.map(hashRecord) };
+  return { list: [...before, ...records2, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records2.length, sources: manifest.sources }, ...replaced ? { replaced } : {} };
 }
 function triggerAtLine(block2, file, line) {
   let hit = null;
@@ -5104,6 +6194,7 @@ function createWorkspace(svc, options, mode) {
   let showVariables = false;
   let cancelled = false;
   let renames = [];
+  let appendInstead = false;
   const style = el("style", void 0, STYLE);
   const buildButton = w.button("Build", { onClick: () => {
     void build();
@@ -5130,7 +6221,7 @@ function createWorkspace(svc, options, mode) {
   } });
   const problemsCount = el("span", { className: "hint" }, "");
   const variables = el("div", { className: "tsd-variables", hidden: true });
-  const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block.");
+  const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale });
   const renameNotice = el("div", { className: "tsd-notice tsd-renames", hidden: true });
   const hostEl = el("div", { className: "tsd-host" });
   const problems = el("ul", { className: "tsd-problems", hidden: true });
@@ -5202,13 +6293,35 @@ function createWorkspace(svc, options, mode) {
       return row;
     }));
   };
+  const renderStale = (state) => {
+    const stale = state?.stale ?? false;
+    notice.hidden = !stale;
+    if (!stale) return;
+    const e = state?.edited ?? null;
+    if (!e) {
+      notice.replaceChildren(el("span", { className: "grow" }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block."));
+      return;
+    }
+    const n = (k, what) => `${k} ${what}${k === 1 ? "" : "s"}`;
+    const facts = `The block from the last build was edited outside the script: ${n(e.unchanged, "trigger")} ${e.unchanged === 1 ? "is" : "are"} still the build's, ${n(e.changed, "trigger")} ${e.changed === 1 ? "was" : "were"} changed.`;
+    const plan = appendInstead ? "The next Build leaves them all as hand-made triggers and appends a fresh block." : `The next Build replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
+    notice.replaceChildren(
+      el("span", { className: "grow" }, `${facts} ${plan}`),
+      w.button(appendInstead ? "Replace instead" : "Append instead", { ghost: true, onClick: () => {
+        appendInstead = !appendInstead;
+        render();
+      } })
+    );
+  };
   const renderRenames = () => {
     const all = renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} \u2192 ${r.object}.${x.to}`));
     renameNotice.hidden = all.length === 0;
     if (all.length === 0) return;
     renameNotice.replaceChildren(
       el("span", { className: "grow" }, `The map renamed ${all.length === 1 ? "something the script names" : `${all.length} things the script names`}: ${all.join(", ")}.`),
-      w.button("Update references", { onClick: () => applyRenames() }),
+      w.button("Update references", { onClick: () => {
+        void applyRenames();
+      } }),
       w.button("Leave", { ghost: true, onClick: () => {
         renames = [];
         renderRenames();
@@ -5240,7 +6353,7 @@ function createWorkspace(svc, options, mode) {
     const state = svc.state();
     const block2 = state?.block ?? null;
     const stale = state?.stale ?? false;
-    notice.hidden = !stale;
+    renderStale(state);
     renderFiles();
     renderRenames();
     problems.replaceChildren();
@@ -5303,7 +6416,7 @@ function createWorkspace(svc, options, mode) {
   };
   const costHints2 = () => {
     if (!result) return [];
-    const out = result.costs.filter((c2) => c2.triggers >= 2);
+    const out = result.costs.filter((c2) => c2.triggers >= 2 || c2.label);
     for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as ${ownerLabel(p)}.` });
     return out;
   };
@@ -5385,10 +6498,11 @@ function createWorkspace(svc, options, mode) {
         }
         const wasStale = svc.state()?.stale ?? false;
         setStatus("busy", "Installing the triggers\u2026");
-        const out = svc.install(a2, { takeOver });
+        const out = svc.install(a2, { takeOver, replaceStale: wasStale && !appendInstead });
         if (out.block) {
           const b = out.block;
-          setStatus("ok", b.count === 0 ? "Built: the script defines no triggers; the block is empty." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${wasStale ? " (appended: the previous block had been edited outside the script)" : ""}.`);
+          const tail = out.replaced ? ` (replaced the previous block's ${out.replaced.removed} unchanged trigger${out.replaced.removed === 1 ? "" : "s"}; ${out.replaced.kept} edited one${out.replaced.kept === 1 ? "" : "s"} kept after it)` : wasStale ? " (appended: the previous block had been edited outside the script)" : "";
+          setStatus("ok", b.count === 0 ? "Built: the script defines no triggers; the block is empty." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${tail}.`);
           return true;
         }
         if (out.refused === "changed" && attempt < 2) {
@@ -5477,12 +6591,14 @@ function createWorkspace(svc, options, mode) {
       render();
     }
   };
-  const applyRenames = () => {
+  const applyRenames = async () => {
     if (!editor) return;
+    const a2 = await compileNow();
+    if (!a2 || cancelled || !editor) return;
     let next = files;
     let count = 0;
     for (const r of renames) {
-      const done = replaceReferences(next, r.object, r.list);
+      const done = replaceReferences(next, a2.compiled.refs, r.object, r.list);
       next = done.files;
       count += done.count;
     }
@@ -5551,7 +6667,7 @@ function createWorkspace(svc, options, mode) {
     if (before && generated) {
       for (const table2 of ["locations", "switches"]) {
         const object = generated.names[table2].object;
-        const list = renamesInUse(files, object, renamedKeys(before.names[table2], generated.names[table2]));
+        const list = renamesInUse(result?.refs ?? [], object, renamedKeys(before.names[table2], generated.names[table2]));
         if (list.length === 0) continue;
         const slot = renames.find((r) => r.object === object);
         if (slot) slot.list = [...slot.list.filter((x) => !list.some((y) => y.value === x.value)), ...list];
@@ -5759,19 +6875,21 @@ var ScriptService = class {
     if (!compiled.ok) return refuse("errors");
     const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
     let block2 = null;
+    let replaced;
     this.api.document.update("Build TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
       const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), { ...options, keepFiles });
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block2 = plan.block;
+      replaced = plan.replaced;
     });
     this.claim.refresh();
     if (block2) {
       const b = block2;
       this.api.ui.status(b.count === 0 ? "Built: the script defines no triggers." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}.`);
     }
-    return { compiled, block: block2 };
+    return { compiled, block: block2, ...replaced ? { replaced } : {} };
   }
   /**
    * `prepare` then `install`. When the map changed under the compile, it is compiled
@@ -5855,7 +6973,7 @@ function activate(api) {
   api.commands.register({ id: "state", title: "TrigScript: state", run: () => svc.state() });
   api.commands.register({ id: "declarations", title: "TrigScript: declarations", run: (options) => svc.declarations({ compact: isRecord(options) && options.compact === true }) });
   api.commands.register({ id: "compile", title: "TrigScript: compile", run: (input) => svc.compile(scriptInput(input)) });
-  api.commands.register({ id: "build", title: "TrigScript: build", run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true }) });
+  api.commands.register({ id: "build", title: "TrigScript: build", run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true, replaceStale: isRecord(options) && options.replaceStale === true }) });
   api.commands.register({ id: "print", title: "TrigScript: print records as script", run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : void 0) });
   api.commands.register({ id: "simulate", title: "TrigScript: simulate records", run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
   api.commands.register({ id: "triggerAt", title: "TrigScript: trigger at a source line", run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });

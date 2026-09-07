@@ -22,7 +22,9 @@
  *    unsigned 32-bit, subtraction saturating at 0. `x += 5` is one action; `x += y` is the
  *    classic binary decomposition (32 conditioned steps moving `y` into `x` and a temp,
  *    32 moving the temp back), so a variable-to-variable operation costs 64 triggers.
- *    Booleans are switches.
+ *    The same decomposition, with each step adding `k` times the bit, is `x += k·y`; with
+ *    the step's action being any action of the game that takes an amount, it is that
+ *    action done with a variable amount. Booleans are switches.
  *
  * The machine is deliberately ignorant of TypeScript: the compiler walks the AST and
  * calls `Machine` with records; `Bool` trees carry ready-made condition records. Every
@@ -202,11 +204,12 @@ export const maxOf = (bits: number): number => (bits >= 32 ? U32_MAX : 2 ** bits
 export const bitLength = (n: number): number => (n <= 0 ? 0 : Math.min(32, Math.floor(Math.log2(n)) + 1));
 
 /**
- * The width the value of `c + Σ ±v` needs, from the widths of what goes into it: the widest
- * term or constant, plus room for their sum (each extra addend can carry once).
+ * The width the value of `c + Σ k·v` needs, from the widths of what goes into it: the
+ * widest term (a variable's width plus its coefficient's) or constant, plus room for
+ * their sum (each extra addend can carry once).
  */
 export function widthOf(expr: Linear): number {
-  const widths = expr.terms.filter((t) => t.sign > 0).map((t) => bitsOf(t.v));
+  const widths = expr.terms.filter((t) => t.k > 0).map((t) => bitsOf(t.v) + bitLength(t.k) - 1);
   if (expr.c > 0) widths.push(bitLength(expr.c));
   if (widths.length === 0) return 32;
   return Math.min(32, Math.max(...widths) + bitLength(widths.length - 1));
@@ -322,6 +325,8 @@ export interface MachineOptions {
   comment?: (text: string) => number;
 }
 
+const DECOMPOSITION_NOTE = "A variable-to-variable operation is the binary decomposition: 32 steps in and 32 back per variable. Declare the variable u8 or u16 for 8 + 8 or 16 + 16.";
+
 /** The most user actions one step carries: 64 minus the comment and the `pc` set. */
 export const STEP_ACTIONS = MAX_ACTIONS - 2;
 /** The most conditions one step tests besides `pc`. */
@@ -333,11 +338,13 @@ export class Machine {
   readonly allocator: Allocator;
   private readonly units: readonly number[];
   readonly triggers: TriggerRecord[] = [];
-  /** Per trigger, the source line it came from. */
-  readonly lines: number[] = [];
+  /** Per trigger, the source file and line it came from. */
+  readonly sources: { file: string; line: number }[] = [];
+  /** The file the statements being lowered are in: the program's, or an inlined game function's. */
+  file = "";
   readonly pc: DcVar;
-  /** Per source line, a note on why it costs what it costs (a decomposition), for the editor's cost hints. */
-  readonly notes = new Map<number, string>();
+  /** Per source line (`file\0line`), a note on why it costs what it costs (a decomposition) and, for a loop, a short label, for the editor's cost hints. */
+  readonly notes = new Map<string, { note: string; label?: string }>();
   /** The state whose steps are being emitted. State 0 is the entry: every counter is 0 at game start. */
   state = 0;
   private nextState = 1;
@@ -395,14 +402,33 @@ export class Machine {
     this.stepsInState = 0;
   }
 
-  /** Scratch counters for arithmetic: acquired in a stack, zeroed on acquisition by the caller. */
-  temp(): DcVar {
+  /**
+   * Scratch counters for arithmetic: acquired in a stack, zeroed on acquisition by the
+   * caller. `bits` is what the caller knows the value will fit in — the width a later
+   * decomposition of the temp uses — 32 when nothing is known.
+   */
+  temp(bits = 32): DcVar {
     if (this.tempsInUse === this.temps.length) {
       const t = this.dc(`(temporary ${this.temps.length + 1})`);
       if (!t) throw new LowerError("Out of death counters for temporaries.");
       this.temps.push(t);
     }
-    return this.temps[this.tempsInUse++];
+    const t = this.temps[this.tempsInUse++];
+    if (bits < 32) t.bits = bits;
+    else delete t.bits;
+    return t;
+  }
+
+  /**
+   * A note on a source line for the editor's cost hints, with a short label when the line
+   * is worth one on its own. The first note stays, except that a specific one (a division,
+   * a product, an action with a variable amount) replaces the general decomposition note.
+   */
+  remark(line: number, text: string, label?: string, specific = false) {
+    const key = `${this.file}\0${line}`;
+    const had = this.notes.get(key);
+    if (had && !(specific && had.note === DECOMPOSITION_NOTE)) return;
+    this.notes.set(key, { note: text, ...(label ? { label } : {}) });
   }
 
   release(n = 1) {
@@ -429,7 +455,7 @@ export class Machine {
     if (next !== null) t.actions.push(setDeaths(this.pc, SetModifier.SetTo, next));
     if (t.conditions.length > MAX_CONDITIONS) throw new LowerError(`A branch tests more than ${STEP_CONDITIONS} conditions at once; split it.`);
     this.triggers.push(t);
-    this.lines.push(line);
+    this.sources.push({ file: this.file, line });
     this.stepsInState++;
   }
 
@@ -499,13 +525,17 @@ export class Machine {
     this.action(setDeaths(v, SetModifier.SetTo, n), line, label);
   }
 
-  addConst(v: DcVar, n: number, line: number, label: string) {
+  private addConst(v: DcVar, n: number, line: number, label: string) {
     if (n === 0) return;
-    this.action(setDeaths(v, n > 0 ? SetModifier.Add : SetModifier.Subtract, Math.abs(n)), line, label);
-    if (n > 0) this.clamp(v, line, label);
+    this.action(setDeaths(v, n > 0 ? SetModifier.Add : SetModifier.Subtract, Math.min(U32_MAX, Math.abs(n))), line, label);
   }
 
-  /** After an addition to a narrow variable: one trigger that saturates it at its maximum. */
+  /**
+   * After an expression was stored in a narrow variable: one trigger that saturates it at
+   * its maximum. Only the stored result is narrowed, never a running value — `a = a + b - 10`
+   * over `u8`s is the exact sum first, then 255 at most — so between the store and the
+   * guard the cell may briefly hold more, which nothing reads.
+   */
   private clamp(v: DcVar, line: number, label: string) {
     const bits = bitsOf(v);
     if (bits >= 32) return;
@@ -513,94 +543,172 @@ export class Machine {
   }
 
   private note(line: number, bits: number) {
-    if (bits >= 32 && !this.notes.has(line)) this.notes.set(line, "A variable-to-variable operation is the binary decomposition: 32 steps in and 32 back per variable. Declare the variable u8 or u16 for 8 + 8 or 16 + 16.");
+    if (bits >= 32) this.remark(line, DECOMPOSITION_NOTE);
   }
 
   /**
-   * `dst += src` (or `-=`), `src` intact afterwards: the binary decomposition through a
-   * temp, over `bits` bits (`src`'s width, or what the caller knows the value fits in).
+   * `dst += k·src`: the binary decomposition of `src` over `bits` bits (its width, or what
+   * the caller knows the value fits in), each step adding `k` times the bit to `dst` — a
+   * negative `k` subtracts. `src` is intact afterwards, moved through a temp and back,
+   * unless the caller `consume`s it (a temp that is dead afterwards): then it is 0 and the
+   * operation costs half.
    */
-  addVar(dst: DcVar, src: DcVar, subtract: boolean, line: number, label: string, bits = bitsOf(src)) {
+  addVar(dst: DcVar, src: DcVar, k: number, line: number, label: string, bits = bitsOf(src), consume = false) {
+    if (k === 0) return;
     this.note(line, bits);
-    if (dst === src || (dst.player === src.player && dst.unit === src.unit)) {
-      if (subtract) { this.set(dst, 0, line, label); return; }
-      // x += x: decompose x into a doubled temp, then move the temp back.
+    if (dst.player === src.player && dst.unit === src.unit) {
+      // x += k·x: k·x into a temp, then the temp into x.
       const t = this.temp();
       this.set(t, 0, line, label);
-      for (let k = bits - 1; k >= 0; k--) {
-        const bit = 2 ** k;
-        if (k === 31) this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit)], null, line, label);
-        else this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(t, SetModifier.Add, bit * 2)], null, line, label);
-      }
-      this.move(t, dst, line, label, Math.min(32, bits + 1));
+      this.addVar(t, src, k, line, label, bits, false);
+      this.addVar(dst, t, 1, line, label, Math.min(32, bits + bitLength(Math.abs(k))), true);
       this.release();
-      this.clamp(dst, line, label);
+      return;
+    }
+    const mod = k > 0 ? SetModifier.Add : SetModifier.Subtract;
+    const amount = (bit: number) => (k > 0 ? (bit * k) >>> 0 : Math.min(U32_MAX, bit * -k));
+    if (consume) {
+      for (let b = bits - 1; b >= 0; b--) {
+        const bit = 2 ** b;
+        this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, amount(bit))], null, line, label);
+      }
       return;
     }
     const t = this.temp();
     this.set(t, 0, line, label);
-    const mod = subtract ? SetModifier.Subtract : SetModifier.Add;
-    for (let k = bits - 1; k >= 0; k--) {
-      const bit = 2 ** k;
-      this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, bit), setDeaths(t, SetModifier.Add, bit)], null, line, label);
+    for (let b = bits - 1; b >= 0; b--) {
+      const bit = 2 ** b;
+      this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, amount(bit)), setDeaths(t, SetModifier.Add, bit)], null, line, label);
     }
-    this.move(t, src, line, label, bits);
+    this.addVar(src, t, 1, line, label, bits, true);
     this.release();
-    if (!subtract) this.clamp(dst, line, label);
   }
 
-  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. The caller clamps `dst` if it needs it. */
+  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. */
   move(src: DcVar, dst: DcVar, line: number, label: string, bits = bitsOf(src)) {
-    for (let k = bits - 1; k >= 0; k--) {
-      const bit = 2 ** k;
-      this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, SetModifier.Add, bit)], null, line, label);
-    }
+    this.addVar(dst, src, 1, line, label, bits, true);
   }
 
   /**
-   * `x = c + Σ ±v`, with the meaning the source has: the sum worked out exactly, then
-   * stored — below zero it is 0, at 2³² and above it wraps. Every addition goes first and
-   * every subtraction after, whatever order the source wrote them in: the running value
-   * then only ever decreases through the subtractions, so it cannot touch zero unless the
-   * exact result is below zero, and saturation bites exactly when the store would clamp.
-   * (`a = a + b - 5` with `a = 0`, `b = 10` is 5, not 10: subtracting the 5 first would
-   * saturate.) Through a temp when `x` itself is a term anywhere but as the single
-   * leading `+x`.
+   * `x = c + Σ k·v`, with the meaning the source has: the sum worked out exactly, then
+   * stored — below zero it is 0, at 2³² and above it wraps, and a `u8` / `u16` is
+   * saturated at its maximum *after* the whole sum. Every addition goes first and every
+   * subtraction after, whatever order the source wrote them in: the running value then only
+   * ever decreases through the subtractions, so it cannot touch zero unless the exact
+   * result is below zero, and the game's saturating subtraction bites exactly when the
+   * store would clamp. (`a = a + b - 5` with `a = 0`, `b = 10` is 5, not 10: subtracting
+   * the 5 first would saturate.) The one thing this cannot promise is a running sum of the
+   * additions past 2³² — the cell is 32 bits and there is no wider one — which wraps.
+   * Through a temp when `x` itself is a term anywhere but as the single leading `+x`.
    */
   assign(x: DcVar, expr: Linear, line: number, label: string) {
     const sameAs = (a: DcVar, b: DcVar) => a.player === b.player && a.unit === b.unit;
     const self = expr.terms.filter((t) => sameAs(t.v, x));
     const others = expr.terms.filter((t) => !sameAs(t.v, x));
-    if (self.length === 1 && self[0].sign > 0) {
+    if (self.length === 1 && self[0].k === 1) {
       // x = x + rest
       this.accumulate(x, { c: expr.c, terms: others }, line, label);
-      return;
-    }
-    if (self.length === 0) {
+    } else if (self.length === 0) {
       this.set(x, Math.max(0, expr.c), line, label);
       this.accumulate(x, { c: Math.min(0, expr.c), terms: others }, line, label);
-      return;
+    } else {
+      const t = this.temp();
+      this.evaluate(t, expr, line, label);
+      this.set(x, 0, line, label);
+      this.move(t, x, line, label, widthOf(expr));
+      this.release();
     }
-    const t = this.temp();
-    this.evaluate(t, expr, line, label);
-    this.set(x, 0, line, label);
-    this.move(t, x, line, label, widthOf(expr));
-    this.release();
-    this.clamp(x, line, label);
+    // Only a sum that can outgrow the variable needs the guard: `x = 200`, `x -= 3` and a copy of a narrower variable cannot.
+    if (widthOf(expr) > bitsOf(x)) this.clamp(x, line, label);
   }
 
-  /** Compute a linear expression into a temp (zeroed first). */
+  /** Compute a linear expression into a temp (zeroed first); a temp is never narrowed. */
   evaluate(t: DcVar, expr: Linear, line: number, label: string) {
     this.set(t, Math.max(0, expr.c), line, label);
     this.accumulate(t, { c: Math.min(0, expr.c), terms: expr.terms }, line, label);
   }
 
-  /** `v += expr` in the order `assign` describes: the additions, then the subtractions. */
+  /** `v += expr` in the order `assign` describes: the additions, then the subtractions; no narrowing. */
   private accumulate(v: DcVar, expr: Linear, line: number, label: string) {
     if (expr.c > 0) this.addConst(v, expr.c, line, label);
-    for (const t of expr.terms) if (t.sign > 0) this.addVar(v, t.v, false, line, label);
+    for (const t of expr.terms) if (t.k > 0) this.addVar(v, t.v, t.k, line, label);
     if (expr.c < 0) this.addConst(v, expr.c, line, label);
-    for (const t of expr.terms) if (t.sign < 0) this.addVar(v, t.v, true, line, label);
+    for (const t of expr.terms) if (t.k < 0) this.addVar(v, t.v, t.k, line, label);
+  }
+
+  /**
+   * `q = n / d`, `n = n % d` for a constant `d ≥ 1`: long division in binary, high bit
+   * first — `[n ≥ d·2ᵇ] → n −= d·2ᵇ, q += 2ᵇ` for every b where d·2ᵇ fits in 32 bits.
+   * `n` is consumed (a temp holding the dividend) and holds the remainder afterwards;
+   * `q` must be 0 before.
+   */
+  divConst(n: DcVar, q: DcVar, d: number, line: number, label: string, bits = bitsOf(n)) {
+    this.remark(line, `Division by a constant is a binary long division: one step per bit of the dividend (${bits}).`, undefined, true);
+    for (let b = bits - 1; b >= 0; b--) {
+      const chunk = d * 2 ** b;
+      if (chunk > U32_MAX) continue;
+      this.step([deathsCondition(n, Comparison.AtLeast, chunk)], [setDeaths(n, SetModifier.Subtract, chunk), setDeaths(q, SetModifier.Add, 2 ** b)], null, line, label);
+    }
+  }
+
+  /**
+   * `dst += a · b` between two variables: for every bit of `b` that is set, `dst += a·2ᵇ`
+   * (a decomposition of `a` each time), so it costs `bits(b) · (2·bits(a) + 3)` triggers —
+   * declare the variables `u8` or `u16` to keep it small. `a` and `b` are intact afterwards.
+   */
+  mulVar(dst: DcVar, a: DcVar, b: DcVar, line: number, label: string) {
+    const ba = bitsOf(a);
+    const bb = bitsOf(b);
+    this.remark(line, `Multiplying two variables adds a·2ᵇ once per set bit of b: ${bb} × (2·${ba} + 3) triggers. Declare them u8 or u16 to keep it small.`, undefined, true);
+    let copy: DcVar | null = null;
+    if (a.player === b.player && a.unit === b.unit) {
+      // x · x: the multiplier is taken apart while the multiplicand is read, so one of them is a copy.
+      copy = this.temp(bb);
+      this.set(copy, 0, line, label);
+      this.addVar(copy, b, 1, line, label, bb);
+      b = copy;
+    }
+    const t = this.temp();
+    this.set(t, 0, line, label);
+    for (let k = bb - 1; k >= 0; k--) {
+      const bit = 2 ** k;
+      const add = this.fresh();
+      const next = this.fresh();
+      this.step([deathsCondition(b, Comparison.AtLeast, bit)], [setDeaths(b, SetModifier.Subtract, bit), setDeaths(t, SetModifier.Add, bit)], add, line, label);
+      this.jump(next, line, label);
+      this.enter(add);
+      this.addVar(dst, a, bit, line, label, ba);
+      this.jump(next, line, label);
+      this.enter(next);
+    }
+    this.addVar(b, t, 1, line, label, bb, true);
+    this.release(copy ? 2 : 1);
+  }
+
+  /**
+   * An action done with a variable amount: the decomposition of `src` where each step's
+   * action is `record` with `field` set to `k·bit` — `setResources(P1, "add", n, "ore")`
+   * adds n ore; `createUnit(P2, unit, n, at)` creates n units, bit by bit (128, 64, …).
+   * A "set" modifier sets the field to 0 first and adds from there. `src` is intact
+   * afterwards unless `consume`d.
+   */
+  actionWithVar(record: ActionRecord, field: keyof ActionRecord, src: DcVar, bits: number, consume: boolean, line: number, label: string) {
+    let rec: ActionRecord = { ...record };
+    const hasModifier = ACTIONS_WITH_MODIFIER.has(rec.type);
+    if (hasModifier && rec.modifier === SetModifier.SetTo) {
+      this.action({ ...rec, [field]: 0 } as ActionRecord, line, label);
+      rec = { ...rec, modifier: SetModifier.Add };
+    }
+    this.remark(line, `An action with a variable amount is the binary decomposition of the variable: one step per bit (${bits}), each doing the action with that bit's share${consume ? "" : ", then the variable is restored"}.`, undefined, true);
+    const t = consume ? null : this.temp();
+    if (t) this.set(t, 0, line, label);
+    for (let b = bits - 1; b >= 0; b--) {
+      const bit = 2 ** b;
+      const actions = [setDeaths(src, SetModifier.Subtract, bit), { ...rec, [field]: bit } as ActionRecord];
+      if (t) actions.push(setDeaths(t, SetModifier.Add, bit));
+      this.step([deathsCondition(src, Comparison.AtLeast, bit)], actions, null, line, label);
+    }
+    if (t) { this.addVar(src, t, 1, line, label, bits, true); this.release(); }
   }
 
   /**
@@ -611,8 +719,8 @@ export class Machine {
     const diff = (p: DcVar, q: DcVar) => {
       const t = this.temp();
       this.set(t, 0, line, label);
-      this.addVar(t, p, false, line, label);
-      this.addVar(t, q, true, line, label);
+      this.addVar(t, p, 1, line, label);
+      this.addVar(t, q, -1, line, label);
       return t;
     };
     const zero = (t: DcVar) => cond(deathsCondition(t, Comparison.Exactly, 0));
@@ -675,11 +783,14 @@ export class Machine {
 
 export type CompareOp = "<" | "<=" | ">" | ">=" | "==" | "!=";
 
-/** `c + Σ sign·v` — what the compiler reduces a numeric expression to. */
+/** `c + Σ k·v`, `k` a non-zero integer — what the compiler reduces a numeric expression to. */
 export interface Linear {
   c: number;
-  terms: { v: DcVar; sign: 1 | -1 }[];
+  terms: { v: DcVar; k: number }[];
 }
+
+/** The actions whose amount comes with a Set / Add / Subtract modifier. */
+export const ACTIONS_WITH_MODIFIER: ReadonlySet<number> = new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
 
 export function flipOp(op: CompareOp): CompareOp {
   switch (op) {

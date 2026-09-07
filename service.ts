@@ -54,6 +54,8 @@ export interface ScriptBuildResult {
   /** Where the block landed; null when nothing was built — `refused` says why. */
   block: ScriptBlock | null;
   refused?: BuildRefusal;
+  /** With `replaceStale`: what became of the edited block. */
+  replaced?: { removed: number; kept: number };
 }
 
 export interface ScriptSimulation {
@@ -220,19 +222,21 @@ export class ScriptService {
     if (!compiled.ok) return refuse("errors");
     const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
     let block: ScriptBlock | null = null;
+    let replaced: ScriptBuildResult["replaced"];
     this.api.document.update("Build TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
       const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), { ...options, keepFiles });
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block = plan.block;
+      replaced = plan.replaced;
     });
     this.claim.refresh();
     if (block) {
       const b: ScriptBlock = block;
       this.api.ui.status(b.count === 0 ? "Built: the script defines no triggers." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}.`);
     }
-    return { compiled, block };
+    return { compiled, block, ...(replaced ? { replaced } : {}) };
   }
 
   /**
