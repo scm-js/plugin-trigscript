@@ -388,6 +388,7 @@ export class Structured {
       const v = kind === "number" ? this.m.dc(d.name.text) : this.m.switch(d.name.text);
       if (!v) { this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}.`); continue; }
       v.at = this.sourceOf(d.name);
+      if (v.kind === "dc") { const bits = this.bitsOf(type); if (bits) v.bits = bits; }
       if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
       else this.assignBool(v, d.initializer, d);
       // Bound after the initialiser: `let x = x` is the checker's error, not a self-reference here.
@@ -399,6 +400,19 @@ export class Structured {
   private sourceOf(node: TS.Node): { file: string; line: number; column: number } {
     const p = this.c.sf.getLineAndCharacterOfPosition(node.getStart(this.c.sf));
     return { file: this.c.sf.fileName, line: p.line + 1, column: p.character + 1 };
+  }
+
+  /** The width a `u8` / `u16` annotation declares, read off the brand in the type; undefined for a plain number. */
+  private bitsOf(type: TS.Type): number | undefined {
+    for (const t of type.isIntersection() ? type.types : [type]) {
+      const p = t.getProperty("__kind");
+      if (!p) continue;
+      const pt = this.c.checker.getTypeOfSymbol(p);
+      const names = (pt.isUnion() ? pt.types : [pt]).filter((x): x is TS.StringLiteralType => x.isStringLiteral()).map((x) => x.value);
+      if (names.includes("u8")) return 8;
+      if (names.includes("u16")) return 16;
+    }
+    return undefined;
   }
 
   private kindOf(type: TS.Type): "number" | "boolean" | null {
@@ -621,6 +635,7 @@ export class Structured {
         const copy = variable.kind === "dc" ? this.m.dc(p.name.text) : this.m.switch(p.name.text);
         if (!copy) { this.c.error(p, `No ${variable.kind === "dc" ? "death counter" : "switch"} is free for ${p.name.text}.`); ok = false; return; }
         copy.at = this.sourceOf(p.name);
+        if (copy.kind === "dc" && variable.kind === "dc" && variable.bits) copy.bits = variable.bits;
         const line = this.line(call);
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.c.sf)}`;
         if (copy.kind === "dc") this.m.assign(copy, { c: 0, terms: [{ v: variable as DcVar, sign: 1 }] }, line, label);

@@ -16,7 +16,8 @@ import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, t
 import { printScript } from "./compiler/print";
 import { Simulation, type SimulationEvent } from "./compiler/simulate";
 import { actionDef } from "./vendor/triggerDefs";
-import { BUILD_TIME_CLASS, createScriptEditor, loadMonaco, releaseScriptEditor, setCompilerMarkers, setDeclarations, setHoverVariables, type MonacoApi, type ScriptEditor } from "./monaco";
+import { BUILD_TIME_CLASS, createScriptEditor, loadMonaco, refreshCostHints, releaseScriptEditor, setCompilerMarkers, setCostHints, setDeclarations, setHoverVariables, type MonacoApi, type ScriptEditor } from "./monaco";
+import type { LineCost } from "./compiler/compiler";
 import { FILE_NAME } from "./script";
 import type { BuildRefusal, MapNames, ScriptArtifact, ScriptService } from "./service";
 
@@ -268,8 +269,16 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
     diagnostics = r.diagnostics;
     result = r;
     simulation = null;
-    if (editor && monaco) { setCompilerMarkers(monaco, files, r.diagnostics); editor.decorate(r.buildTime); }
+    if (editor && monaco) { setCompilerMarkers(monaco, files, r.diagnostics); editor.decorate(r.buildTime); refreshCostHints(); }
     render();
+  };
+
+  /** Which lines get a cost at their end: those that made more than one trigger, and each program's own line with its total. */
+  const costHints = (): LineCost[] => {
+    if (!result) return [];
+    const out = result.costs.filter((c) => c.triggers >= 2);
+    for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as P${p.owner + 1}.` });
+    return out;
   };
 
   /** Type-check, run and lower in the background; markers land in the editor, the list below. */
@@ -481,6 +490,7 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
           monaco = m;
           if (generated) setDeclarations(m, generated.decls);
           setHoverVariables(m, () => result?.variables ?? []);
+          setCostHints(m, costHints);
           // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
           loadingCover.done();
           editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {

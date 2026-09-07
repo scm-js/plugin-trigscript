@@ -41,7 +41,13 @@ import { unitName } from "../vendor/units";
 
 /** Where a variable was declared, for the editor's hover; unset for the machine's own counters. */
 export interface VarSource { file: string; line: number; column: number }
-export interface DcVar { kind: "dc"; name: string; player: number; unit: number; at?: VarSource }
+/**
+ * A death counter. `bits` is its declared width — 8 for a `u8`, 16 for a `u16`, unset for
+ * the full 32 — which is what a variable-to-variable operation decomposes over: a narrow
+ * variable makes those cheap, and saturates at its maximum (one guard trigger after every
+ * addition keeps the value in range, so the decomposition can trust it).
+ */
+export interface DcVar { kind: "dc"; name: string; player: number; unit: number; bits?: number; at?: VarSource }
 export interface SwVar { kind: "switch"; name: string; index: number; at?: VarSource }
 export type Var = DcVar | SwVar;
 
@@ -133,6 +139,24 @@ export function setSwitch(v: SwVar, action: number): ActionRecord {
 }
 
 export const U32_MAX = 0xffffffff;
+
+/** The width a decomposition uses for a variable: its declared one, or all 32 bits. */
+export const bitsOf = (v: DcVar): number => v.bits ?? 32;
+/** The most a variable of that width holds. */
+export const maxOf = (bits: number): number => (bits >= 32 ? U32_MAX : 2 ** bits - 1);
+/** Bits needed for a non-negative integer (0 needs none). */
+export const bitLength = (n: number): number => (n <= 0 ? 0 : Math.min(32, Math.floor(Math.log2(n)) + 1));
+
+/**
+ * The width the value of `c + Σ ±v` needs, from the widths of what goes into it: the widest
+ * term or constant, plus room for their sum (each extra addend can carry once).
+ */
+export function widthOf(expr: Linear): number {
+  const widths = expr.terms.filter((t) => t.sign > 0).map((t) => bitsOf(t.v));
+  if (expr.c > 0) widths.push(bitLength(expr.c));
+  if (widths.length === 0) return 32;
+  return Math.min(32, Math.max(...widths) + bitLength(widths.length - 1));
+}
 
 /* ── Boolean expressions ─────────────────────────────────── */
 
@@ -251,6 +275,8 @@ export class Machine {
   /** Per trigger, the source line it came from. */
   readonly lines: number[] = [];
   readonly pc: DcVar;
+  /** Per source line, a note on why it costs what it costs (a decomposition), for the editor's cost hints. */
+  readonly notes = new Map<number, string>();
   /** The state whose steps are being emitted. State 0 is the entry: every counter is 0 at game start. */
   state = 0;
   private nextState = 1;
@@ -381,44 +407,63 @@ export class Machine {
   /* ── Arithmetic ── */
 
   set(v: DcVar, n: number, line: number, label: string) {
+    if (n > maxOf(bitsOf(v))) throw new LowerError(`${v.name} is a u${bitsOf(v)} and holds 0 … ${maxOf(bitsOf(v))}, not ${n}.`);
     this.action(setDeaths(v, SetModifier.SetTo, n), line, label);
   }
 
   addConst(v: DcVar, n: number, line: number, label: string) {
     if (n === 0) return;
     this.action(setDeaths(v, n > 0 ? SetModifier.Add : SetModifier.Subtract, Math.abs(n)), line, label);
+    if (n > 0) this.clamp(v, line, label);
   }
 
-  /** `dst += src` (or `-=`), `src` intact afterwards: the binary decomposition through a temp. */
-  addVar(dst: DcVar, src: DcVar, subtract: boolean, line: number, label: string) {
+  /** After an addition to a narrow variable: one trigger that saturates it at its maximum. */
+  private clamp(v: DcVar, line: number, label: string) {
+    const bits = bitsOf(v);
+    if (bits >= 32) return;
+    this.step([deathsCondition(v, Comparison.AtLeast, 2 ** bits)], [setDeaths(v, SetModifier.SetTo, maxOf(bits))], null, line, label);
+  }
+
+  private note(line: number, bits: number) {
+    if (bits >= 32 && !this.notes.has(line)) this.notes.set(line, "A variable-to-variable operation is the binary decomposition: 32 steps in and 32 back per variable. Declare the variable u8 or u16 for 8 + 8 or 16 + 16.");
+  }
+
+  /**
+   * `dst += src` (or `-=`), `src` intact afterwards: the binary decomposition through a
+   * temp, over `bits` bits (`src`'s width, or what the caller knows the value fits in).
+   */
+  addVar(dst: DcVar, src: DcVar, subtract: boolean, line: number, label: string, bits = bitsOf(src)) {
+    this.note(line, bits);
     if (dst === src || (dst.player === src.player && dst.unit === src.unit)) {
       if (subtract) { this.set(dst, 0, line, label); return; }
       // x += x: decompose x into a doubled temp, then move the temp back.
       const t = this.temp();
       this.set(t, 0, line, label);
-      for (let k = 31; k >= 0; k--) {
+      for (let k = bits - 1; k >= 0; k--) {
         const bit = 2 ** k;
         if (k === 31) this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit)], null, line, label);
         else this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(t, SetModifier.Add, bit * 2)], null, line, label);
       }
-      this.move(t, dst, line, label);
+      this.move(t, dst, line, label, Math.min(32, bits + 1));
       this.release();
+      this.clamp(dst, line, label);
       return;
     }
     const t = this.temp();
     this.set(t, 0, line, label);
     const mod = subtract ? SetModifier.Subtract : SetModifier.Add;
-    for (let k = 31; k >= 0; k--) {
+    for (let k = bits - 1; k >= 0; k--) {
       const bit = 2 ** k;
       this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, bit), setDeaths(t, SetModifier.Add, bit)], null, line, label);
     }
-    this.move(t, src, line, label);
+    this.move(t, src, line, label, bits);
     this.release();
+    if (!subtract) this.clamp(dst, line, label);
   }
 
-  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. */
-  move(src: DcVar, dst: DcVar, line: number, label: string) {
-    for (let k = 31; k >= 0; k--) {
+  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. The caller clamps `dst` if it needs it. */
+  move(src: DcVar, dst: DcVar, line: number, label: string, bits = bitsOf(src)) {
+    for (let k = bits - 1; k >= 0; k--) {
       const bit = 2 ** k;
       this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, SetModifier.Add, bit)], null, line, label);
     }
@@ -451,8 +496,9 @@ export class Machine {
     const t = this.temp();
     this.evaluate(t, expr, line, label);
     this.set(x, 0, line, label);
-    this.move(t, x, line, label);
+    this.move(t, x, line, label, widthOf(expr));
     this.release();
+    this.clamp(x, line, label);
   }
 
   /** Compute a linear expression into a temp (zeroed first). */

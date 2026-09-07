@@ -74,6 +74,17 @@ export interface VariableInfo {
   switch?: number;
   /** Where the variable is declared; unset for the machine's own counters and temporaries. */
   at?: { file: string; line: number; column: number };
+  /** A `u8` (8) or `u16` (16) variable; unset for the full 32 bits. */
+  bits?: number;
+}
+
+/** What one source line generated, for the editor's cost hints. */
+export interface LineCost {
+  file: string;
+  line: number;
+  triggers: number;
+  /** Why it costs that, when the machine has something to say (a decomposition). */
+  note?: string;
 }
 
 export interface ProgramInfo {
@@ -98,6 +109,8 @@ export interface CompileResult {
   programs: ProgramInfo[];
   /** Inside the programs, the expressions computed when the script is built rather than in the game — what the editor underlines. */
   buildTime: SourceRange[];
+  /** Triggers per source line, every line that generated one. */
+  costs: LineCost[];
   /** No errors: `triggers` is the complete output. */
   ok: boolean;
 }
@@ -126,7 +139,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
   const scripts = new Map<string, string>();
@@ -250,6 +263,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const raw = storageOf(collector.entries.flatMap((e) => (e.kind === "trigger" ? [e.record] : [])));
   allocator.reserve(raw.deaths, raw.switches);
   const sourceOf = (at: [number, number] | null): TriggerSource | null => (at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null);
+  const notes = new Map<string, string>();
   for (const entry of collector.entries) {
     if (entry.kind === "trigger") { triggers.push(entry.record); sources.push(sourceOf(entry.at)); continue; }
     const plan = byPosition.get(`${entry.descriptor.at[0]}:${entry.descriptor.pos}`);
@@ -276,12 +290,21 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     new Structured({ ts, checker, sf, plan, hoisted, machine, error: (node, message, source) => nodeError(node, message, source) }).run();
     triggers.push(...machine.triggers);
     for (const line of machine.lines) sources.push({ file, line });
+    for (const [line, note] of machine.notes) notes.set(`${file}\0${line}`, note);
     programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
   }
   const variables: VariableInfo[] = allocator.variables.map((v) => v.kind === "dc"
-    ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...(v.at ? { at: v.at } : {}) }
+    ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...(v.at ? { at: v.at } : {}), ...(v.bits ? { bits: v.bits } : {}) }
     : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...(v.at ? { at: v.at } : {}) });
-  return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime });
+  const costs = new Map<string, LineCost>();
+  for (const s of sources) {
+    if (!s) continue;
+    const key = `${s.file}\0${s.line}`;
+    const c = costs.get(key) ?? { file: s.file, line: s.line, triggers: 0, ...(notes.has(key) ? { note: notes.get(key) } : {}) };
+    c.triggers++;
+    costs.set(key, c);
+  }
+  return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
 }
 
 /**

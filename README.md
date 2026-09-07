@@ -186,8 +186,8 @@ switch.
 by value, as in TypeScript: `function bump(x: number) { x++; }` leaves the caller's
 variable alone. A parameter the function never assigns reads the argument's variable
 directly and costs nothing; one it assigns is copied at the call (a variable-to-variable
-copy, about 64 triggers). `return` works; return *values* do not. Locals get their own
-storage per call site.
+copy: 64 triggers, or 16 for a `u8`). `return` works; return *values* do not. Locals get
+their own storage per call site.
 
 **A `const` is what it can be.** `const limit = waves.length` is computed when you build
 and inlined; `const next = wave + 1` needs a variable of the program, so it is one — a
@@ -208,11 +208,17 @@ assign variables in the program's own statements instead. A parameter of an inli
 function that was bound to a value does reach them, so `function spawn(p: Player, n:
 number) { createUnit(p, units.Zergling, n, spawnAt); }` works with `spawn(P2, 4)`.
 
-Cost matters here. `n += 5`, `n = 3` and `n++` are one action each. An operation between
-two variables (`a += b`, `a = b`, `a < b`) is the classic binary decomposition and costs
-about 64 triggers, so keep those out of hot loops. There is no multiplication or division
-between variables, because the game has no instruction for it; `*`, `/` and `%` work on
-build-time values.
+Cost matters here, and the editor shows it: every line that generated more than one
+trigger gets its count at its end, and the `program(` line its total. `n += 5`, `n = 3`
+and `n++` are one action each. An operation between two variables (`a += b`, `a = b`,
+`a < b`) is the classic binary decomposition — 32 conditioned steps moving the value out
+and 32 moving it back, so `a = b` is 66 triggers and `if (a < b)` 134 — so keep those out
+of hot loops, or **declare the range**: `let lives: u8 = 3` holds 0 … 255 and decomposes
+over 8 bits (`a = b` between two `u8`s is 19 triggers), `u16` holds 0 … 65 535 over 16.
+A narrow variable saturates at its maximum — one guard trigger after every addition
+keeps it there — and a constant that does not fit is a compile error. There is no
+multiplication or division between variables, because the game has no instruction for
+it; `*`, `/` and `%` work on build-time values.
 
 **A program is one thread running as one player**, its `owner` (default P1). It runs
 only while that player is in the game, and `CurrentPlayer` means that player. A script

@@ -1129,6 +1129,15 @@ function setSwitch(v, action2) {
   return { ...emptyAction(), type: ActionType.SetSwitch, target: v.index, modifier: action2 };
 }
 var U32_MAX = 4294967295;
+var bitsOf = (v) => v.bits ?? 32;
+var maxOf = (bits) => bits >= 32 ? U32_MAX : 2 ** bits - 1;
+var bitLength = (n) => n <= 0 ? 0 : Math.min(32, Math.floor(Math.log2(n)) + 1);
+function widthOf(expr) {
+  const widths = expr.terms.filter((t) => t.sign > 0).map((t) => bitsOf(t.v));
+  if (expr.c > 0) widths.push(bitLength(expr.c));
+  if (widths.length === 0) return 32;
+  return Math.min(32, Math.max(...widths) + bitLength(widths.length - 1));
+}
 var TRUE = { kind: "const", value: true };
 var FALSE = { kind: "const", value: false };
 var cond = (c2) => ({ kind: "cond", cond: c2 });
@@ -1212,6 +1221,8 @@ var Machine = class {
   /** Per trigger, the source line it came from. */
   lines = [];
   pc;
+  /** Per source line, a note on why it costs what it costs (a decomposition), for the editor's cost hints. */
+  notes = /* @__PURE__ */ new Map();
   /** The state whose steps are being emitted. State 0 is the entry: every counter is 0 at game start. */
   state = 0;
   nextState = 1;
@@ -1326,14 +1337,29 @@ var Machine = class {
   }
   /* ── Arithmetic ── */
   set(v, n, line, label) {
+    if (n > maxOf(bitsOf(v))) throw new LowerError(`${v.name} is a u${bitsOf(v)} and holds 0 \u2026 ${maxOf(bitsOf(v))}, not ${n}.`);
     this.action(setDeaths(v, SetModifier.SetTo, n), line, label);
   }
   addConst(v, n, line, label) {
     if (n === 0) return;
     this.action(setDeaths(v, n > 0 ? SetModifier.Add : SetModifier.Subtract, Math.abs(n)), line, label);
+    if (n > 0) this.clamp(v, line, label);
   }
-  /** `dst += src` (or `-=`), `src` intact afterwards: the binary decomposition through a temp. */
-  addVar(dst, src, subtract, line, label) {
+  /** After an addition to a narrow variable: one trigger that saturates it at its maximum. */
+  clamp(v, line, label) {
+    const bits = bitsOf(v);
+    if (bits >= 32) return;
+    this.step([deathsCondition(v, Comparison.AtLeast, 2 ** bits)], [setDeaths(v, SetModifier.SetTo, maxOf(bits))], null, line, label);
+  }
+  note(line, bits) {
+    if (bits >= 32 && !this.notes.has(line)) this.notes.set(line, "A variable-to-variable operation is the binary decomposition: 32 steps in and 32 back per variable. Declare the variable u8 or u16 for 8 + 8 or 16 + 16.");
+  }
+  /**
+   * `dst += src` (or `-=`), `src` intact afterwards: the binary decomposition through a
+   * temp, over `bits` bits (`src`'s width, or what the caller knows the value fits in).
+   */
+  addVar(dst, src, subtract, line, label, bits = bitsOf(src)) {
+    this.note(line, bits);
     if (dst === src || dst.player === src.player && dst.unit === src.unit) {
       if (subtract) {
         this.set(dst, 0, line, label);
@@ -1341,28 +1367,30 @@ var Machine = class {
       }
       const t2 = this.temp();
       this.set(t2, 0, line, label);
-      for (let k = 31; k >= 0; k--) {
+      for (let k = bits - 1; k >= 0; k--) {
         const bit = 2 ** k;
         if (k === 31) this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit)], null, line, label);
         else this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(t2, SetModifier.Add, bit * 2)], null, line, label);
       }
-      this.move(t2, dst, line, label);
+      this.move(t2, dst, line, label, Math.min(32, bits + 1));
       this.release();
+      this.clamp(dst, line, label);
       return;
     }
     const t = this.temp();
     this.set(t, 0, line, label);
     const mod = subtract ? SetModifier.Subtract : SetModifier.Add;
-    for (let k = 31; k >= 0; k--) {
+    for (let k = bits - 1; k >= 0; k--) {
       const bit = 2 ** k;
       this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, bit), setDeaths(t, SetModifier.Add, bit)], null, line, label);
     }
-    this.move(t, src, line, label);
+    this.move(t, src, line, label, bits);
     this.release();
+    if (!subtract) this.clamp(dst, line, label);
   }
-  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. */
-  move(src, dst, line, label) {
-    for (let k = 31; k >= 0; k--) {
+  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. The caller clamps `dst` if it needs it. */
+  move(src, dst, line, label, bits = bitsOf(src)) {
+    for (let k = bits - 1; k >= 0; k--) {
       const bit = 2 ** k;
       this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, SetModifier.Add, bit)], null, line, label);
     }
@@ -1393,8 +1421,9 @@ var Machine = class {
     const t = this.temp();
     this.evaluate(t, expr, line, label);
     this.set(x, 0, line, label);
-    this.move(t, x, line, label);
+    this.move(t, x, line, label, widthOf(expr));
     this.release();
+    this.clamp(x, line, label);
   }
   /** Compute a linear expression into a temp (zeroed first). */
   evaluate(t, expr, line, label) {
@@ -1555,6 +1584,15 @@ ${kw}type Switch<N extends number = number> = N & Brand<"switch">;
 ${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
 /** A unit count: a number, or "All". */
 ${kw}type Count = number | "All";
+/**
+ * A number of a program that stays within 0 \u2026 255. Operations between variables decompose over
+ * 8 bits instead of 32, so \`a += b\` costs 8 + 8 triggers rather than 32 + 32. Saturates at 255.
+ */
+${kw}type u8 = number & Brand<"u8">;
+/** A number of a program that stays within 0 \u2026 65 535: 16-bit operations between variables. Saturates at 65 535. */
+${kw}type u16 = number & Brand<"u16">;
+/** A number of a program with the full range, 0 \u2026 4 294 967 295 \u2014 what a plain \`number\` is. */
+${kw}type u32 = number & Brand<"u32">;
 
 /** A condition, as returned by bring(...), deaths(...), \u2026: give it to trigger(), or test it in an if inside program(). */
 ${kw}interface Condition { readonly __condition: true; }
@@ -2832,6 +2870,10 @@ var Structured = class {
         continue;
       }
       v.at = this.sourceOf(d.name);
+      if (v.kind === "dc") {
+        const bits = this.bitsOf(type);
+        if (bits) v.bits = bits;
+      }
       if (v.kind === "dc") this.assignNumber(v, d.initializer, d);
       else this.assignBool(v, d.initializer, d);
       this.scope.bind(d, { kind: "var", v });
@@ -2841,6 +2883,18 @@ var Structured = class {
   sourceOf(node) {
     const p = this.c.sf.getLineAndCharacterOfPosition(node.getStart(this.c.sf));
     return { file: this.c.sf.fileName, line: p.line + 1, column: p.character + 1 };
+  }
+  /** The width a `u8` / `u16` annotation declares, read off the brand in the type; undefined for a plain number. */
+  bitsOf(type) {
+    for (const t of type.isIntersection() ? type.types : [type]) {
+      const p = t.getProperty("__kind");
+      if (!p) continue;
+      const pt = this.c.checker.getTypeOfSymbol(p);
+      const names = (pt.isUnion() ? pt.types : [pt]).filter((x) => x.isStringLiteral()).map((x) => x.value);
+      if (names.includes("u8")) return 8;
+      if (names.includes("u16")) return 16;
+    }
+    return void 0;
   }
   kindOf(type) {
     const { ts } = this;
@@ -3129,6 +3183,7 @@ var Structured = class {
           return;
         }
         copy.at = this.sourceOf(p.name);
+        if (copy.kind === "dc" && variable.kind === "dc" && variable.bits) copy.bits = variable.bits;
         const line = this.line(call);
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.c.sf)}`;
         if (copy.kind === "dc") this.m.assign(copy, { c: 0, terms: [{ v: variable, sign: 1 }] }, line, label);
@@ -3446,7 +3501,7 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
   const scripts = /* @__PURE__ */ new Map();
   for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
@@ -3561,6 +3616,7 @@ function compileScript(ts, files, names, options) {
   const raw = storageOf(collector.entries.flatMap((e) => e.kind === "trigger" ? [e.record] : []));
   allocator.reserve(raw.deaths, raw.switches);
   const sourceOf = (at) => at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null;
+  const notes = /* @__PURE__ */ new Map();
   for (const entry of collector.entries) {
     if (entry.kind === "trigger") {
       triggers.push(entry.record);
@@ -3594,10 +3650,19 @@ function compileScript(ts, files, names, options) {
     new Structured({ ts, checker, sf, plan, hoisted, machine, error: (node, message, source) => nodeError(node, message, source) }).run();
     triggers.push(...machine.triggers);
     for (const line of machine.lines) sources.push({ file, line });
+    for (const [line, note] of machine.notes) notes.set(`${file}\0${line}`, note);
     programs.push({ owner: entry.options.owner, start, count: machine.triggers.length, source: at });
   }
-  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} });
-  return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime });
+  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {}, ...v.bits ? { bits: v.bits } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} });
+  const costs = /* @__PURE__ */ new Map();
+  for (const s of sources) {
+    if (!s) continue;
+    const key = `${s.file}\0${s.line}`;
+    const c2 = costs.get(key) ?? { file: s.file, line: s.line, triggers: 0, ...notes.has(key) ? { note: notes.get(key) } : {} };
+    c2.triggers++;
+    costs.set(key, c2);
+  }
+  return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
 }
 function checkValuesAsBooleans(ts, checker, sf, programs, error) {
   const isLibraryType = (t, name) => {
@@ -3759,14 +3824,45 @@ function setHoverVariables(monaco, variables) {
         const path = pathOfUri(m.uri);
         const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
         if (!v) continue;
+        const what = v.kind === "boolean" ? "a switch" : v.bits ? `a u${v.bits} death counter (0 \u2026 ${2 ** v.bits - 1})` : "a death counter";
         return {
           range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-          contents: [{ value: `**${v.name}** is a variable of the program: ${v.kind === "number" ? "a death counter" : "a switch"}, ${v.storage}.` }]
+          contents: [{ value: `**${v.name}** is a variable of the program: ${what}, ${v.storage}.` }]
         };
       }
       return null;
     }
   });
+}
+var costHints = () => [];
+var costChanged = null;
+function setCostHints(monaco, costs) {
+  costHints = costs;
+  if (costChanged) {
+    costChanged.fire();
+    return;
+  }
+  const changed = new monaco.Emitter();
+  costChanged = changed;
+  monaco.languages.registerInlayHintsProvider("typescript", {
+    onDidChangeInlayHints: changed.event,
+    provideInlayHints(model, range) {
+      if (model.uri.scheme !== "file") return null;
+      const path = pathOfUri(model.uri);
+      const hints = costHints().filter((c2) => normalizePath(c2.file) === path && c2.line >= range.startLineNumber && c2.line <= range.endLineNumber && c2.line <= model.getLineCount()).map((c2) => ({
+        position: { lineNumber: c2.line, column: model.getLineMaxColumn(c2.line) },
+        label: `${c2.triggers} trigger${c2.triggers === 1 ? "" : "s"}`,
+        kind: monaco.languages.InlayHintKind.Type,
+        paddingLeft: true,
+        ...c2.note ? { tooltip: c2.note } : {}
+      }));
+      return { hints, dispose() {
+      } };
+    }
+  });
+}
+function refreshCostHints() {
+  costChanged?.fire();
 }
 function setCompilerMarkers(monaco, files, diagnostics) {
   for (const path of Object.keys(files)) {
@@ -4736,8 +4832,15 @@ function openScriptEditor(svc, options = {}) {
     if (editor && monaco) {
       setCompilerMarkers(monaco, files, r.diagnostics);
       editor.decorate(r.buildTime);
+      refreshCostHints();
     }
     render();
+  };
+  const costHints2 = () => {
+    if (!result) return [];
+    const out = result.costs.filter((c2) => c2.triggers >= 2);
+    for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as P${p.owner + 1}.` });
+    return out;
   };
   const check = () => {
     if (timer !== null) clearTimeout(timer);
@@ -4950,6 +5053,7 @@ function openScriptEditor(svc, options = {}) {
           monaco = m;
           if (generated) setDeclarations(m, generated.decls);
           setHoverVariables(m, () => result?.variables ?? []);
+          setCostHints(m, costHints2);
           loadingCover.done();
           editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
             files = { ...files, [path]: text };

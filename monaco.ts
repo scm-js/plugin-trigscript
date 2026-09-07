@@ -16,7 +16,7 @@
  */
 import type * as Monaco from "monaco-editor";
 import { DECLARATIONS_FILE } from "./compiler/declarations";
-import type { ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
+import type { LineCost, ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
 import { normalizePath } from "./compiler/compiler";
 
 export const MONACO_VERSION = "0.56.0";
@@ -165,14 +165,51 @@ export function setHoverVariables(monaco: MonacoApi, variables: () => VariableIn
         const path = pathOfUri(m.uri);
         const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
         if (!v) continue;
+        const what = v.kind === "boolean" ? "a switch" : v.bits ? `a u${v.bits} death counter (0 … ${2 ** v.bits - 1})` : "a death counter";
         return {
           range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-          contents: [{ value: `**${v.name}** is a variable of the program: ${v.kind === "number" ? "a death counter" : "a switch"}, ${v.storage}.` }],
+          contents: [{ value: `**${v.name}** is a variable of the program: ${what}, ${v.storage}.` }],
         };
       }
       return null;
     },
   });
+}
+
+let costHints: () => LineCost[] = () => [];
+let costChanged: Monaco.Emitter<void> | null = null;
+
+/**
+ * The cost of a line, at its end, as an inlay hint: "66 triggers" after `a = b`. The
+ * dialog decides which lines get one (`costs` is its filtered list); `refreshCostHints`
+ * makes Monaco ask again after a compile. Registered once per Monaco.
+ */
+export function setCostHints(monaco: MonacoApi, costs: () => LineCost[]) {
+  costHints = costs;
+  if (costChanged) { costChanged.fire(); return; }
+  const changed = new monaco.Emitter<void>();
+  costChanged = changed;
+  monaco.languages.registerInlayHintsProvider("typescript", {
+    onDidChangeInlayHints: changed.event,
+    provideInlayHints(model, range) {
+      if (model.uri.scheme !== "file") return null;
+      const path = pathOfUri(model.uri);
+      const hints = costHints()
+        .filter((c) => normalizePath(c.file) === path && c.line >= range.startLineNumber && c.line <= range.endLineNumber && c.line <= model.getLineCount())
+        .map((c): Monaco.languages.InlayHint => ({
+          position: { lineNumber: c.line, column: model.getLineMaxColumn(c.line) },
+          label: `${c.triggers} trigger${c.triggers === 1 ? "" : "s"}`,
+          kind: monaco.languages.InlayHintKind.Type,
+          paddingLeft: true,
+          ...(c.note ? { tooltip: c.note } : {}),
+        }));
+      return { hints, dispose() {} };
+    },
+  });
+}
+
+export function refreshCostHints() {
+  costChanged?.fire();
 }
 
 /** The compiler's own diagnostics, drawn under the TypeScript ones, per file. */

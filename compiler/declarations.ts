@@ -47,6 +47,15 @@ ${kw}type Switch<N extends number = number> = N & Brand<"switch">;
 ${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
 /** A unit count: a number, or "All". */
 ${kw}type Count = number | "All";
+/**
+ * A number of a program that stays within 0 … 255. Operations between variables decompose over
+ * 8 bits instead of 32, so \`a += b\` costs 8 + 8 triggers rather than 32 + 32. Saturates at 255.
+ */
+${kw}type u8 = number & Brand<"u8">;
+/** A number of a program that stays within 0 … 65 535: 16-bit operations between variables. Saturates at 65 535. */
+${kw}type u16 = number & Brand<"u16">;
+/** A number of a program with the full range, 0 … 4 294 967 295 — what a plain \`number\` is. */
+${kw}type u32 = number & Brand<"u32">;
 
 /** A condition, as returned by bring(...), deaths(...), …: give it to trigger(), or test it in an if inside program(). */
 ${kw}interface Condition { readonly __condition: true; }

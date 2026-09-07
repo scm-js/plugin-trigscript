@@ -703,3 +703,53 @@ describe("structured: arithmetic means what the source says", () => {
     });
   }
 });
+
+describe("structured: widths and costs", () => {
+  it("u8 variables decompose over 8 bits and saturate at 255", () => {
+    const wide = okProgram("let a = 0; let b = 100; a = b;");
+    const narrow = okProgram("let a: u8 = 200; let b: u8 = 100; a += b;");
+    expect(wide.triggers).toHaveLength(66);
+    expect(narrow.triggers).toHaveLength(19);
+    const sim = run(narrow, 1);
+    expect(value(sim, narrow, "a")).toBe(255);
+    expect(value(sim, narrow, "b")).toBe(100);
+    expect(narrow.variables.find((v) => v.name === "a")).toMatchObject({ bits: 8 });
+    expect(wide.variables.find((v) => v.name === "a")?.bits).toBeUndefined();
+  });
+
+  it("u16 saturates on a constant addition too, and a constant that does not fit is an error", () => {
+    const r = okProgram("let n: u16 = 65535; n++; n += 5;");
+    expect(value(run(r, 1), r, "n")).toBe(65535);
+    expect(compile(program("let a: u8 = 300;")).diagnostics.map((d) => d.message)).toEqual(["a is a u8 and holds 0 … 255, not 300."]);
+  });
+
+  it("a comparison between narrow variables is much cheaper", () => {
+    const wide = okProgram('let a = 1; let b = 2; if (a < b) displayText("yes");');
+    const narrow = okProgram('let a: u8 = 1; let b: u8 = 2; if (a < b) displayText("yes");');
+    expect(wide.triggers).toHaveLength(134);
+    expect(narrow.triggers.length).toBeLessThan(50);
+    expect(texts(run(narrow, 1))).toEqual(["0:yes"]);
+  });
+
+  it("a copied parameter keeps the argument's width; a sum through a temp stays right", () => {
+    const r = okProgram("let a: u8 = 250; let b: u8 = 10; let c: u8 = 0; function bump(x: number) { x += 1; c = x; } bump(a); c = a + b;");
+    const sim = run(r, 1);
+    expect(value(sim, r, "c")).toBe(255);
+    expect(r.variables.find((v) => v.name === "x")).toMatchObject({ bits: 8 });
+  });
+
+  it("reports the triggers each line generated, with a note where a decomposition is the reason", () => {
+    const r = ok(`for (let i = 0; i < 3; i++) trigger(P1, [always()], [victory()]);
+program(() => {
+  let a = 0;
+  let b = 1;
+  a = b;
+  displayText("x");
+});`);
+    const at = (line: number) => r.costs.find((c) => c.line === line);
+    expect(at(1)).toEqual({ file: "main.ts", line: 1, triggers: 3 });
+    expect(at(5)).toMatchObject({ triggers: 64, note: expect.stringContaining("u8 or u16") });
+    expect(at(6)?.note).toBeUndefined();
+    expect(r.costs.reduce((n, c) => n + c.triggers, 0)).toBe(r.triggers.length);
+  });
+});
