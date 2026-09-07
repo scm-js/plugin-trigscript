@@ -68,9 +68,6 @@ The files and a build manifest live in the map archive itself, under `trigscript
 they travel with the `.scx`. The editor's Save dialog lists them under the archive's
 other files, with a tick each, so a copy for release can leave the source out.
 
-A script written for this plugin's predecessor, Trigger Script, is not converted: it
-was a different language. Its file stays in the archive untouched.
-
 ## The language
 
 ### Triggers
