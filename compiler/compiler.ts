@@ -29,6 +29,8 @@ import type { ScriptNames } from "./names";
 import { storageOf } from "./reserve";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
 import { newBody, Structured, type Body } from "./structured";
+import { Classic } from "./classic";
+import type { Program } from "./ir";
 
 export type { ScriptString } from "./runtime";
 export { DEATHS_TABLE_ADDRESS } from "./runtime";
@@ -135,6 +137,8 @@ export interface CompileResult {
   costs: LineCost[];
   /** Every `locations.X` / `switches.X` / … the files mention, whatever else went wrong (a rename is what makes them not type-check). */
   refs: MapReference[];
+  /** The programs as IR (`ir.ts`), one per `program()` in order — what the Remastered target builds from. */
+  ir: Program[];
   /** No errors: `triggers` is the complete output. */
   ok: boolean;
 }
@@ -163,7 +167,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
   const refs: MapReference[] = [];
@@ -326,9 +330,9 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const resolve = (fn: GameFunctionValue): Body | undefined => bodyOf(fn.descriptor) ?? undefined;
   const cyclesPerSecond = collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND;
 
-  interface Lowered { triggers: TriggerRecord[]; sources: (TriggerSource | null)[]; programs: ProgramInfo[]; notes: Map<string, { note: string; label?: string }> }
+  interface Lowered { triggers: TriggerRecord[]; sources: (TriggerSource | null)[]; programs: ProgramInfo[]; notes: Map<string, { note: string; label?: string }>; ir: Program[] }
   const lower = (allocator: Allocator, report: boolean, touched?: TriggerRecord[]): Lowered => {
-    const out: Lowered = { triggers: [], sources: [], programs: [], notes: new Map() };
+    const out: Lowered = { triggers: [], sources: [], programs: [], notes: new Map(), ir: [] };
     const error = report ? nodeError : () => {};
     for (const entry of collector.entries) {
       if (entry.kind === "trigger") { out.triggers.push(entry.record); out.sources.push(sourceOf(entry.at)); continue; }
@@ -346,7 +350,10 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       }
       const start = out.triggers.length;
       const records: (ConditionRecord | ActionRecord)[] = [];
-      new Structured({ ts, checker, body, machine, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve, ...(touched ? { touched: records } : {}) }).run();
+      const owner = entry.options.owners.find((o) => o < PLAYER_SLOTS) ?? 0;
+      const emitted = new Structured({ ts, checker, body, owner, owners: entry.options.owners, perPlayer: entry.options.perPlayer, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve }).run();
+      out.ir.push(emitted.program);
+      new Classic({ machine, program: emitted.program, error: (node, message) => error(emitted.nodeOf(node) ?? body.plan.body, message), ...(touched ? { touched: records } : {}) }).run();
       if (touched && records.length) {
         // The body's own records, as a trigger owned by the program's owners, so `storageOf` expands CurrentPlayer to them.
         const t = emptyTrigger();
@@ -371,7 +378,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   allocator.reserve(raw.deaths, raw.switches);
   const inBodies = storageOf(touched);
   allocator.reserve(inBodies.deaths, inBodies.switches);
-  const { triggers, sources, programs, notes } = lower(allocator, true);
+  const { triggers, sources, programs, notes, ir } = lower(allocator, true);
   const variables: VariableInfo[] = allocator.variables.map((v) => v.kind === "dc"
     ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...(v.at ? { at: v.at } : {}), ...(v.bits ? { bits: v.bits } : {}) }
     : v.kind === "switch"
@@ -387,7 +394,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   for (const s of sources) if (s) costOf(s.file, s.line).triggers++;
   // A loop's line may have made no trigger of its own and still have something to say.
   for (const [key, n] of notes) if (n.label) { const [file, line] = key.split("\0"); costOf(file, Number(line)); }
-  return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
+  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
 }
 
 /**

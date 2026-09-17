@@ -2811,6 +2811,9 @@ var Scope = class {
   }
 };
 
+// compiler/ir.ts
+var IR_VERSION = 1;
+
 // compiler/structured.ts
 function newBody(plan, sf, values, name) {
   return { plan, sf, values, memo: /* @__PURE__ */ new Map(), constMemo: /* @__PURE__ */ new Map(), ...name ? { name } : {} };
@@ -2838,59 +2841,45 @@ function describe2(v) {
   if (v === null || v === void 0) return String(v);
   return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
 }
-var sameCell = (a2, b) => a2.player === b.player && a2.unit === b.unit;
-function scale(l, k) {
-  if (k === 0) return { c: 0, terms: [] };
-  return { c: l.c * k, terms: l.terms.map((t) => ({ v: t.v, k: t.k * k })) };
-}
-function merge(l, r) {
-  const terms = [];
-  for (const t of [...l.terms, ...r.terms]) {
-    const hit = terms.find((x) => sameCell(x.v, t.v));
-    if (hit) hit.k += t.k;
-    else terms.push({ v: t.v, k: t.k });
-  }
-  return { c: l.c + r.c, terms: terms.filter((t) => t.k !== 0) };
-}
-var isConst = (l) => l.terms.length === 0;
-var single = (l) => l.c === 0 && l.terms.length === 1 && l.terms[0].k === 1 ? l.terms[0].v : null;
-var ofVar = (v) => ({ c: 0, terms: [{ v, k: 1 }] });
+var TRUE2 = { kind: "const", value: true };
+var FALSE2 = { kind: "const", value: false };
+var num = (value) => ({ kind: "const", value });
+var varRef = (v) => ({ kind: "var", id: v.id });
+var boolRef = (v) => ({ kind: "var", id: v.id });
 var Structured = class {
   c;
-  m;
   ts;
   /** The body being walked: the program's, or the game function being inlined. */
   body;
-  /** After `break` / `continue` / `return` / an endless loop: the next statement needs a state of its own. */
-  dead = false;
   inlineDepth = 0;
-  scratchUsed = 0;
   scope = new Scope(null);
   /** The program's outermost scope: what an inlined function of the body closes over. */
   topScope = this.scope;
+  /** The statement list being filled. */
+  out = [];
+  nodes = /* @__PURE__ */ new WeakMap();
+  nextId = 0;
   constructor(c2) {
     this.c = c2;
-    this.m = c2.machine;
     this.ts = c2.ts;
     this.body = c2.body;
-    this.m.file = c2.body.sf.fileName;
   }
   run() {
     const statements = this.body.plan.body.statements;
+    const at = this.at(this.body.plan.body);
+    const program = { version: IR_VERSION, ...this.body.name ? { name: this.body.name } : {}, owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, cyclesPerSecond: this.c.cyclesPerSecond, body: [], at };
+    this.nodes.set(program, this.body.plan.body);
+    this.out = program.body;
     try {
       this.block(statements, {}, this.topScope);
-      if (!this.dead) this.m.jump(this.m.halt, this.lastLine(statements), "end of program");
     } catch (err) {
       if (!(err instanceof LowerError)) throw err;
       this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
     }
+    return { program, nodeOf: (node) => this.nodes.get(node) };
   }
   lineOf(node) {
     return this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf)).line + 1;
-  }
-  lastLine(statements) {
-    const last = statements[statements.length - 1];
-    return last ? this.body.sf.getLineAndCharacterOfPosition(last.getEnd()).line + 1 : this.lineOf(this.body.plan.body);
   }
   /** "L12: while (x < 3)" — the comment a generated trigger carries; "waves.ts L12: …" inside a game function from another file. */
   label(node) {
@@ -2904,11 +2893,33 @@ var Structured = class {
   line(node) {
     return this.lineOf(node);
   }
-  live() {
-    if (this.dead) {
-      this.m.enter(this.m.fresh());
-      this.dead = false;
+  /** Where a node is, for the IR. */
+  at(node) {
+    return this.sourceOf(node);
+  }
+  /** Remember which source node an IR node came from, and hand the IR node back. */
+  mark(ir, node) {
+    this.nodes.set(ir, node);
+    return ir;
+  }
+  emit(s, node) {
+    this.out.push(this.mark(s, node));
+    return s;
+  }
+  /** A statement list filled by `fill`, handed back. */
+  collect(fill) {
+    const saved = this.out;
+    const list = [];
+    this.out = list;
+    try {
+      fill();
+    } finally {
+      this.out = saved;
     }
+    return list;
+  }
+  newVar(name, kind, at, extra = {}) {
+    return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...extra.bits ? { bits: extra.bits } : {}, ...extra.temp ? { temp: true } : {}, at };
   }
   /* ── Values and bindings ── */
   /** Strip parentheses, `as`, `satisfies`, `!` — the wrappers that change nothing. */
@@ -3148,7 +3159,6 @@ var Structured = class {
     const outer = this.scope;
     this.scope = scope;
     for (const s of statements) {
-      const held = this.m.tempsHeld;
       try {
         this.statement(s, ctx);
       } catch (err) {
@@ -3156,20 +3166,23 @@ var Structured = class {
         if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
         else this.c.error(s, err.message);
       }
-      this.m.releaseTo(held);
     }
     this.scope = outer;
+  }
+  /** A statement's IR, as a list of its own (a block a backend scopes). */
+  sub(s, ctx) {
+    return this.collect(() => this.statement(s, ctx));
   }
   statement(s, ctx) {
     const { ts } = this;
     if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s) || ts.isFunctionDeclaration(s)) return;
-    this.live();
     if (ts.isVariableStatement(s)) {
       this.declare(s.declarationList);
       return;
     }
     if (ts.isBlock(s)) {
-      this.block(s.statements, ctx);
+      const body2 = this.collect(() => this.block(s.statements, ctx));
+      this.emit({ kind: "block", body: body2, at: this.at(s) }, s);
       return;
     }
     if (ts.isExpressionStatement(s)) {
@@ -3197,13 +3210,11 @@ var Structured = class {
         this.c.error(s, "Labelled break / continue is not supported.");
         return;
       }
-      const target = ts.isBreakStatement(s) ? ctx.breakTo : ctx.continueTo;
-      if (!target) {
+      if (ts.isBreakStatement(s) ? !ctx.canBreak : !ctx.canContinue) {
         this.c.error(s, `${ts.isBreakStatement(s) ? "break" : "continue"} outside a loop.`);
         return;
       }
-      this.m.jump(target(), this.line(s), this.label(s));
-      this.dead = true;
+      this.emit({ kind: ts.isBreakStatement(s) ? "break" : "continue", at: this.at(s), label: this.label(s) }, s);
       return;
     }
     if (ts.isReturnStatement(s)) {
@@ -3243,16 +3254,21 @@ var Structured = class {
           return;
         }
       }
-    } else if (!s.expression) {
+      this.emit({ kind: "return", at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
+    if (!s.expression) {
       this.c.error(s, `The function returns a ${fn.kind}; return one here.`);
       return;
-    } else if (fn.kind === "number") {
-      this.assignNumber(fn.result, s.expression, s);
-    } else {
-      this.storeBool(fn.result, s.expression, this.line(s), this.label(s));
     }
-    if (!this.dead) this.m.jump(fn.end(), this.line(s), this.label(s));
-    this.dead = true;
+    if (fn.kind === "number") {
+      const value = this.num(s.expression);
+      if (!value) return;
+      this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    } else {
+      const value = this.boolValue(s.expression);
+      this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    }
   }
   declare(list) {
     const { ts } = this;
@@ -3287,19 +3303,18 @@ var Structured = class {
         continue;
       }
       const initializer = shared ? shared.arguments[0] : d.initializer;
-      const v = kind === "number" ? shared ? this.m.shared(d.name.text) : this.m.dc(d.name.text) : shared ? this.m.switch(d.name.text) : this.m.bool(d.name.text);
-      if (!v) {
-        this.c.error(d, `No ${kind === "number" ? "death counter" : "switch"} is free for ${d.name.text}${this.m.perPlayer ? " (a per-player variable needs a unit with all twelve free)" : ""}.`);
-        continue;
-      }
-      v.at = this.sourceOf(d.name);
-      if (v.kind === "dc") {
-        const bits = this.bitsOf(type);
-        if (bits) v.bits = bits;
-      }
-      if (v.kind === "dc") this.assignNumber(v, initializer, d);
-      else this.storeBool(v, initializer, this.line(d), this.label(d));
+      const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...kind === "number" ? { bits: this.bitsOf(type) } : {} });
+      this.emitDeclare(v, initializer, d);
       this.scope.bind(d, { kind: "var", v });
+    }
+  }
+  /** `declare` with its initial value; a number's that fails to compile still declares the variable (as before, the cell is taken). */
+  emitDeclare(v, initializer, at) {
+    if (v.kind === "number") {
+      const value = this.num(initializer);
+      this.emit({ kind: "declare", decl: v, init: value ?? num(0), ...value ? {} : { failed: true }, at: this.at(at), label: this.label(at) }, at);
+    } else {
+      this.emit({ kind: "declare", decl: v, init: this.boolValue(initializer), at: this.at(at), label: this.label(at) }, at);
     }
   }
   /** `let p = { lives: 3, alive: true, pos: { x: 0, y: 0 } }`: a variable per field, the record a binding over them. */
@@ -3337,19 +3352,8 @@ var Structured = class {
         ok = false;
         continue;
       }
-      const v = kind === "number" ? this.m.dc(full) : this.m.bool(full);
-      if (!v) {
-        this.c.error(p, `No ${kind === "number" ? "death counter" : "switch"} is free for ${full}.`);
-        ok = false;
-        continue;
-      }
-      v.at = this.sourceOf(p.name);
-      if (v.kind === "dc") {
-        const bits = this.bitsOf(ft);
-        if (bits) v.bits = bits;
-      }
-      if (v.kind === "dc") this.assignNumber(v, init, at);
-      else this.storeBool(v, init, this.line(at), this.label(at));
+      const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? { bits: this.bitsOf(ft) } : {});
+      this.emitDeclare(v, init, at);
       fields.set(key, { kind: "var", v });
     }
     return ok ? { kind: "record", fields } : null;
@@ -3403,10 +3407,9 @@ var Structured = class {
   }
   emitAction(a2, at) {
     if (a2.type === ActionType.PreserveTrigger) return;
-    this.c.touched?.push(a2);
-    this.m.action({ ...a2 }, this.line(at), this.label(at));
+    this.emit({ kind: "action", record: { ...a2 }, at: this.at(at), label: this.label(at) }, at);
   }
-  /** `sleep(seconds(2))`: the duration is a build-time value; the cycles it makes depend on the map's hyper triggers. */
+  /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   sleepStatement(call) {
     if (call.arguments.length !== 1) {
       this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(cycles(5)).");
@@ -3422,8 +3425,7 @@ var Structured = class {
       return;
     }
     const d = h.value;
-    const n = d.cycles ?? Math.max(1, Math.round((d.ms ?? 0) / 1e3 * this.c.cyclesPerSecond));
-    this.m.sleep(n, this.line(call), this.label(call));
+    this.emit({ kind: "sleep", ...d.cycles !== void 0 ? { cycles: d.cycles } : {}, ...d.ms !== void 0 ? { ms: d.ms } : {}, at: this.at(call), label: this.label(call) }, call);
   }
   expressionStatement(expr) {
     const { ts } = this;
@@ -3444,16 +3446,17 @@ var Structured = class {
           else this.c.error(e.left, "Only the program's let variables can be assigned.");
           return;
         }
-        if (target.kind !== "dc") {
+        if (target.kind !== "number") {
           if (op !== ts.SyntaxKind.EqualsToken) {
             this.c.error(e, "Booleans take = only.");
             return;
           }
-          this.storeBool(target, e.right, this.line(e), this.label(e));
+          this.emit({ kind: "assignBool", target: target.id, value: this.boolValue(e.right), at: this.at(e), label: this.label(e) }, e);
           return;
         }
         if (op === ts.SyntaxKind.EqualsToken) {
-          this.assignNumber(target, e.right, e);
+          const value = this.num(e.right);
+          if (value) this.emit({ kind: "assign", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
           return;
         }
         const arith = compoundOp(ts, op);
@@ -3461,10 +3464,9 @@ var Structured = class {
           this.c.error(e, "Only = += -= *= /= %= assign a number.");
           return;
         }
-        const rhs = this.linear(e.right);
+        const rhs = this.num(e.right);
         if (!rhs) return;
-        const value = this.linearOp(arith, ofVar(target), rhs, e);
-        if (value) this.m.assign(target, value, this.line(e), this.label(e));
+        this.emit({ kind: "assign", target: target.id, value: this.mark({ kind: "binary", op: arith, left: varRef(target), right: rhs, at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
         return;
       }
       this.c.error(e, "Only assignments and calls can stand as statements.");
@@ -3472,11 +3474,12 @@ var Structured = class {
     }
     if ((ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)) {
       const target = this.varOf(e.operand);
-      if (!target || target.kind !== "dc") {
+      if (!target || target.kind !== "number") {
         this.c.error(e, "++ / -- apply to number variables.");
         return;
       }
-      this.m.assign(target, { c: e.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1, terms: [{ v: target, k: 1 }] }, this.line(e), this.label(e));
+      const value = this.mark({ kind: "binary", op: e.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-", left: varRef(target), right: num(1), at: this.at(e), label: this.label(e) }, e);
+      this.emit({ kind: "assign", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
       return;
     }
     if (ts.isCallExpression(e)) {
@@ -3492,7 +3495,8 @@ var Structured = class {
       const decl = this.gameDeclaration(e.expression);
       if (decl) {
         if (ts.isFunctionDeclaration(decl)) {
-          this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+          const call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+          if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
           return;
         }
         this.c.error(e, `${e.expression.text} is not a function.`);
@@ -3517,7 +3521,8 @@ var Structured = class {
     }
     const callee = this.evaluate(e.expression)?.value;
     if (isGameFunction(callee)) {
-      this.gameCall(e, callee);
+      const call = this.gameCall(e, callee);
+      if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
       return;
     }
     if (isBuilder(callee)) {
@@ -3530,96 +3535,32 @@ var Structured = class {
     }
     this.notConstant(e, "A call's arguments");
   }
-  /* ── Conditions as control flow ── */
-  /** Whether lowering an expression as a condition emits anything: an edge, a call of a game function, a ternary. */
-  hasEffects(e) {
-    const { ts } = this;
-    let found = false;
-    const walk = (n) => {
-      if (found) return;
-      if (ts.isCallExpression(n)) {
-        const lib = libraryCallName(ts, this.c.checker, n);
-        if (lib === "rose" || lib === "once" || ts.isIdentifier(n.expression) && !!this.gameDeclaration(n.expression) || isGameCall(this.c.checker, n)) {
-          found = true;
-          return;
-        }
-      }
-      if (ts.isConditionalExpression(n)) {
-        found = true;
-        return;
-      }
-      ts.forEachChild(n, walk);
-    };
-    walk(e);
-    return found;
-  }
-  /** `a && b` / `a || b` / `!…` where a right side has effects: the DNF would run them whether or not the left side decided. */
-  shortCircuits(expr) {
-    const { ts } = this;
-    const e = this.unwrap(expr);
-    if (ts.isBinaryExpression(e) && (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
-      return this.hasEffects(e.right) || this.shortCircuits(e.left) || this.shortCircuits(e.right);
-    }
-    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return this.shortCircuits(e.operand);
-    return false;
-  }
-  /**
-   * End the current state with a conditional jump on an expression. `&&` and `||` with an
-   * effectful right side are lowered as control flow — the left side first, the right in
-   * a state only reached when the left has not decided — so `n >= 1 && once(…)` consumes
-   * the edge only when `n >= 1`; everything else goes through the DNF branch.
-   */
-  branchOn(expr, thenState, elseState, line, label) {
-    const { ts } = this;
-    const e = this.unwrap(expr);
-    if (ts.isBinaryExpression(e) && (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken) && this.shortCircuits(e)) {
-      const mid = this.m.fresh();
-      if (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) this.branchOn(e.left, mid, elseState, line, label);
-      else this.branchOn(e.left, thenState, mid, line, label);
-      this.m.enter(mid);
-      this.dead = false;
-      this.branchOn(e.right, thenState, elseState, line, label);
-      return;
-    }
-    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.shortCircuits(e)) {
-      this.branchOn(e.operand, elseState, thenState, line, label);
-      return;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(e);
-    this.m.branch(b, thenState, elseState, line, label);
-    this.m.releaseTo(held);
+  /* ── Control flow ── */
+  /** A condition known when the script is built (a hoisted boolean, number or text): true, false, or undefined when it must be tested in the game. */
+  knownCondition(expr) {
+    const h = this.evaluate(expr);
+    if (!h) return void 0;
+    const v = h.value;
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") return v !== "";
+    return void 0;
   }
   ifStatement(s, ctx) {
-    const join = this.m.fresh();
-    const thenState = this.m.fresh();
-    const elseState = s.elseStatement ? this.m.fresh() : join;
-    if (this.shortCircuits(s.expression)) {
-      this.branchOn(s.expression, thenState, elseState, this.line(s), this.label(s));
-    } else {
-      const held = this.m.tempsHeld;
-      const b = this.bool(s.expression);
-      if (b.kind === "const") {
-        this.m.releaseTo(held);
-        const live = b.value ? s.thenStatement : s.elseStatement;
-        if (live) this.statement(live, ctx);
-        return;
-      }
-      this.m.branch(b, thenState, elseState, this.line(s), this.label(s));
-      this.m.releaseTo(held);
+    const known = this.knownCondition(s.expression);
+    if (known !== void 0) {
+      const live = known ? s.thenStatement : s.elseStatement;
+      if (live) this.statement(live, ctx);
+      return;
     }
-    this.m.enter(thenState);
-    this.dead = false;
-    this.statement(s.thenStatement, ctx);
-    if (!this.dead) this.m.jump(join, this.line(s), `L${this.line(s)}: end if`);
-    if (s.elseStatement) {
-      this.m.enter(elseState);
-      this.dead = false;
-      this.statement(s.elseStatement, ctx);
-      if (!this.dead) this.m.jump(join, this.line(s), `L${this.line(s)}: end else`);
+    const cond2 = this.bool(s.expression);
+    if (cond2.kind === "const" && !cond2.value) {
+      if (s.elseStatement) this.statement(s.elseStatement, ctx);
+      return;
     }
-    this.m.enter(join);
-    this.dead = false;
+    const then = this.sub(s.thenStatement, ctx);
+    const otherwise = s.elseStatement ? this.sub(s.elseStatement, ctx) : void 0;
+    this.emit({ kind: "if", cond: cond2, then, ...otherwise ? { else: otherwise } : {}, at: this.at(s), label: this.label(s) }, s);
   }
   /** A loop condition known false when the script is built: the loop is not compiled at all. */
   neverRuns(condition2) {
@@ -3627,69 +3568,24 @@ var Structured = class {
     const h = this.evaluate(condition2);
     return !!h && !h.value && !isCondition(h.value);
   }
-  /**
-   * A loop's test at its header: the body state and the exit. Returns the body state,
-   * which is the header itself for a condition known true (no trigger spent), or null
-   * with the loop entered when the test emitted its own branch.
-   */
-  loopTest(condition2, header, exit, at) {
-    if (!condition2) return header;
-    if (this.shortCircuits(condition2)) {
-      const body3 = this.m.fresh();
-      this.branchOn(condition2, body3, exit, this.line(at), this.label(at));
-      this.m.enter(body3);
-      return body3;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(condition2);
-    let body2 = header;
-    if (!(b.kind === "const" && b.value)) {
-      body2 = this.m.fresh();
-      this.m.branch(b, body2, exit, this.line(at), this.label(at));
-      this.m.enter(body2);
-    }
-    this.m.releaseTo(held);
-    return body2;
+  /** A loop's test: absent for `while (true)` and any condition known true when the script is built. */
+  loopCondition(condition2) {
+    if (!condition2) return void 0;
+    const known = this.knownCondition(condition2);
+    if (known === true) return void 0;
+    return this.bool(condition2);
   }
   whileStatement(s, ctx) {
     if (this.neverRuns(s.expression)) return;
-    this.m.remark(this.line(s), "A while loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
-    const header = this.m.loopHeader(this.line(s), this.label(s));
-    const exit = this.m.fresh();
-    let broke = false;
-    const body2 = this.loopTest(s.expression, header, exit, s);
-    this.dead = false;
-    this.statement(s.statement, { fn: ctx.fn, breakTo: () => {
-      broke = true;
-      return exit;
-    }, continueTo: () => header });
-    if (!this.dead) this.m.jump(header, this.line(s), `L${this.line(s)}: loop`);
-    if (body2 === header && !broke) {
-      this.dead = true;
-      return;
-    }
-    this.m.enter(exit);
-    this.dead = false;
+    const cond2 = this.loopCondition(s.expression);
+    const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
+    this.emit({ kind: "while", ...cond2 ? { cond: cond2 } : {}, body: body2, at: this.at(s), label: this.label(s) }, s);
   }
   doStatement(s, ctx) {
-    this.m.remark(this.line(s), "A do loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
-    const body2 = this.m.loopHeader(this.line(s), this.label(s));
-    const check = this.m.fresh();
-    const exit = this.m.fresh();
-    this.dead = false;
-    this.statement(s.statement, { fn: ctx.fn, breakTo: () => exit, continueTo: () => check });
-    if (!this.dead) this.m.jump(check, this.line(s), `L${this.line(s)}: while`);
-    this.m.enter(check);
-    this.dead = false;
-    const label = `L${this.line(s)}: while (${s.expression.getText(this.body.sf).replace(/\s+/g, " ")})`;
-    if (this.shortCircuits(s.expression)) this.branchOn(s.expression, body2, exit, this.line(s), label);
-    else {
-      const held = this.m.tempsHeld;
-      const b = this.bool(s.expression);
-      this.m.branch(b, body2, exit, this.line(s), label);
-      this.m.releaseTo(held);
-    }
-    this.m.enter(exit);
+    const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
+    const cond2 = this.bool(s.expression);
+    const condLabel = `L${this.line(s)}: while (${s.expression.getText(this.body.sf).replace(/\s+/g, " ")})`;
+    this.emit({ kind: "do", body: body2, cond: cond2, at: this.at(s), label: this.label(s), condLabel }, s);
   }
   /**
    * `for (let i = 0; i < 3; i++)` with the start, the bound and the step known when the
@@ -3720,7 +3616,7 @@ var Structured = class {
     if (isVar(cond2.left)) bound = integer2(cond2.right);
     else if (isVar(cond2.right)) {
       bound = integer2(cond2.left);
-      op = flipOp(op);
+      op = flipOp2(op);
     } else return null;
     if (bound === null) return null;
     const inc = this.unwrap(s.incrementor);
@@ -3743,7 +3639,7 @@ var Structured = class {
     const { ts } = this;
     const unrolled = this.unrollable(s);
     if (unrolled) {
-      this.m.remark(this.line(s), `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"} in one trigger cycle, the loop variable a value known when the script is built.`, `unrolled \xD7${unrolled.values.length}`);
+      this.emit({ kind: "remark", text: `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"} in one trigger cycle, the loop variable a value known when the script is built.`, short: `unrolled \xD7${unrolled.values.length}`, at: this.at(s) }, s);
       this.unrolledLoop(unrolled.decl, unrolled.values, s.statement, s, ctx);
       return;
     }
@@ -3757,58 +3653,21 @@ var Structured = class {
       this.scope = outer;
       return;
     }
-    this.m.remark(this.line(s), "This for loop runs one iteration per trigger cycle: its bound or step is not known when the script is built, so it is a while over a variable.", "one iteration per cycle");
-    const header = this.m.loopHeader(this.line(s), this.label(s));
-    const exit = this.m.fresh();
-    let broke = false;
-    let incr = null;
-    const body2 = this.loopTest(s.condition, header, exit, s);
-    this.dead = false;
-    this.statement(s.statement, { fn: ctx.fn, breakTo: () => {
-      broke = true;
-      return exit;
-    }, continueTo: () => s.incrementor ? incr ??= this.m.fresh() : header });
-    if (incr !== null) {
-      if (!this.dead) this.m.jump(incr, this.line(s), `L${this.line(s)}: continue`);
-      this.m.enter(incr);
-      this.dead = false;
-    }
-    if (!this.dead) {
-      if (s.incrementor) this.expressionStatement(s.incrementor);
-      this.m.jump(header, this.line(s), `L${this.line(s)}: loop`);
-    }
+    const cond2 = this.loopCondition(s.condition);
+    const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
+    const update = s.incrementor ? this.collect(() => this.expressionStatement(s.incrementor)) : [];
     this.scope = outer;
-    if (body2 === header && !broke) {
-      this.dead = true;
-      return;
-    }
-    this.m.enter(exit);
-    this.dead = false;
+    this.emit({ kind: "for", ...cond2 ? { cond: cond2 } : {}, update, body: body2, at: this.at(s), label: this.label(s) }, s);
   }
   /** The body compiled once per value, the declaration bound to that value; `break` leaves, `continue` goes on with the next. */
   unrolledLoop(decl, values, body2, s, ctx) {
-    const exit = this.m.fresh();
-    let broke = false;
+    const iterations = [];
     for (const item of values) {
       const scope = new Scope(this.scope);
       scope.bind(decl, { kind: "value", value: item });
-      let next = null;
-      this.block([body2], { fn: ctx.fn, breakTo: () => {
-        broke = true;
-        return exit;
-      }, continueTo: () => next ??= this.m.fresh() }, scope);
-      if (next !== null) {
-        if (!this.dead) this.m.jump(next, this.line(s), `L${this.line(s)}: continue`);
-        this.m.enter(next);
-        this.dead = false;
-      }
-      if (this.dead) break;
+      iterations.push(this.collect(() => this.block([body2], { fn: ctx.fn, canBreak: true, canContinue: true }, scope)));
     }
-    if (broke) {
-      if (!this.dead) this.m.jump(exit, this.line(s), `L${this.line(s)}: end of loop`);
-      this.m.enter(exit);
-      this.dead = false;
-    }
+    this.emit({ kind: "unrolled", iterations, at: this.at(s), label: this.label(s) }, s);
   }
   /**
    * `for (const w of waves)` over a list known when the script is built: unrolled, the body
@@ -3846,55 +3705,31 @@ var Structured = class {
   }
   /**
    * `switch (x) { case 1: … break; case 2: … default: … }` over a number: the cases
-   * tested in order, each one trigger, then the bodies in source order — a body without
-   * `break` falls through to the next, as in TypeScript. Case values are known when the
-   * script is built.
+   * tested in order, then the bodies in source order — a body without `break` falls
+   * through to the next, as in TypeScript. Case values are known when the script is built.
    */
   switchStatement(s, ctx) {
     const { ts } = this;
-    const line = this.line(s);
-    const held = this.m.tempsHeld;
-    const lin = this.linear(s.expression);
-    if (!lin) return;
-    if (isConst(lin)) {
+    const value = this.num(s.expression);
+    if (!value) return;
+    if (value.kind === "const") {
       this.c.error(s.expression, "switch over a value known when the script is built: write the case that applies.");
       return;
     }
-    const v = single(lin) ?? (() => {
-      const t = this.m.temp(widthOf(lin));
-      this.m.evaluate(t, lin, line, this.label(s));
-      return t;
-    })();
     const clauses = s.caseBlock.clauses;
-    const exit = this.m.fresh();
-    const states = clauses.map(() => this.m.fresh());
-    let fallback = exit;
-    clauses.forEach((c2, i) => {
-      if (ts.isDefaultClause(c2)) {
-        fallback = states[i];
-        return;
-      }
+    const values = clauses.map((c2) => {
+      if (ts.isDefaultClause(c2)) return null;
       const h = this.evaluate(c2.expression);
       if (!h) {
         this.notConstant(c2.expression, "A case value");
-        return;
+        return Number.NaN;
       }
       const n = this.asInteger(h, c2.expression);
-      if (n === null) return;
-      if (n < 0 || n > U32_MAX) return;
-      this.m.step([deathsCondition(v, Comparison.Exactly, n)], [], states[i], line, `L${line}: case ${n}`);
+      return n === null ? Number.NaN : n;
     });
-    this.m.jump(fallback, line, `L${line}: ${fallback === exit ? "end switch" : "default"}`);
-    this.m.releaseTo(held);
     const scope = new Scope(this.scope);
-    clauses.forEach((c2, i) => {
-      this.m.enter(states[i]);
-      this.dead = false;
-      this.block(c2.statements, { fn: ctx.fn, continueTo: ctx.continueTo, breakTo: () => exit }, scope);
-      if (!this.dead) this.m.jump(i + 1 < states.length ? states[i + 1] : exit, line, `L${line}: fall through`);
-    });
-    this.m.enter(exit);
-    this.dead = false;
+    const cases = clauses.map((c2, i) => ({ value: values[i], body: this.collect(() => this.block(c2.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    this.emit({ kind: "switch", value, cases, at: this.at(s), label: this.label(s) }, s);
   }
   /* ── Functions ── */
   /** A call of a `game()` function: inlined from its own body, wherever that file is. */
@@ -3908,10 +3743,9 @@ var Structured = class {
     return this.inline(call, arrow.parameters, target.plan.expression ?? arrow.body, target, target.name, arrow);
   }
   /**
-   * Inline a function at a call: parameters bound, the body walked in the current
-   * state, `return` jumping to a state after it. The result — a number or a boolean the
-   * checker says the call has — comes back in a temp the caller reads (0 / 1 for a
-   * boolean) and releases with its statement.
+   * Inline a function at a call: parameters bound, the body walked, `return` leaving it.
+   * The result — a number or a boolean the checker says the call has — comes back in a
+   * variable of the call's own that dies with the statement.
    */
   inline(call, parameters, body2, target, name, decl) {
     const { ts } = this;
@@ -3930,8 +3764,9 @@ var Structured = class {
     }
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? "void";
     const line = this.line(call);
-    const result = kind === "void" ? void 0 : this.m.temp();
-    if (result) this.m.set(result, 0, line, this.label(call));
+    const out = { ...name ? { name } : {}, at: this.at(call), label: this.label(call), params: [], body: [] };
+    if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true }), kind };
+    this.mark(out, call);
     const scope = new Scope(target === this.body && target === this.c.body ? this.topScope : null);
     let ok = true;
     parameters.forEach((p, i) => {
@@ -3984,84 +3819,64 @@ var Structured = class {
           scope.bind(p, { kind: "var", v: variable });
           return;
         }
-        const copy = variable.kind === "dc" ? this.m.dc(p.name.text) : this.m.bool(p.name.text);
-        if (!copy) {
-          this.c.error(p, `No ${variable.kind === "dc" ? "death counter" : "switch"} is free for ${p.name.text}.`);
-          ok = false;
-          return;
-        }
-        copy.at = this.sourceOfIn(target, p.name);
-        if (copy.kind === "dc" && variable.kind === "dc" && variable.bits) copy.bits = variable.bits;
+        const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), variable.bits ? { bits: variable.bits } : {});
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
-        if (copy.kind === "dc") this.m.assign(copy, ofVar(variable), line, label);
-        else this.storeBoolTree(copy, cond(boolCondition(variable, true)), line, label);
+        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : boolRef(variable), label });
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
-      const lin = ts.isIdentifier(this.unwrap(arg)) ? null : this.linearQuietly(arg);
-      if (lin) {
-        const copy = this.m.dc(p.name.text);
-        if (!copy) {
-          this.c.error(p, `No death counter is free for ${p.name.text}.`);
-          ok = false;
-          return;
-        }
-        copy.at = this.sourceOfIn(target, p.name);
-        this.m.assign(copy, lin, line, `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`);
+      const value = ts.isIdentifier(this.unwrap(arg)) ? null : this.numQuietly(arg);
+      if (value) {
+        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name));
+        out.params.push({ decl: copy, init: value, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
       this.notConstant(arg, "An argument");
       ok = false;
     });
-    if (!ok) return result;
+    if (!ok) return out;
     if (call.arguments.length > parameters.length) {
       this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`);
-      return result;
+      return out;
     }
     const saved = this.enterBody(target);
     const outerScope = this.scope;
     this.scope = scope;
     this.inlineDepth++;
-    let end = null;
-    const fn = { end: () => end ??= this.m.fresh(), kind, result };
+    const fn = { kind };
     try {
-      if (ts.isBlock(body2)) this.block(body2.statements, { fn });
-      else {
-        const held = this.m.tempsHeld;
-        try {
-          if (kind === "number") this.assignNumber(result, body2, body2);
-          else if (kind === "boolean") this.storeBool(result, body2, this.line(body2), this.label(body2));
-          else this.expressionStatement(body2);
-        } catch (err) {
-          if (!(err instanceof LowerError)) throw err;
-          if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
-          else this.c.error(body2, err.message);
+      out.body = this.collect(() => {
+        if (ts.isBlock(body2)) this.block(body2.statements, { fn });
+        else {
+          try {
+            if (kind === "number") {
+              const value = this.num(body2);
+              if (value) this.emit({ kind: "return", value, at: this.at(body2), label: this.label(body2) }, body2);
+            } else if (kind === "boolean") this.emit({ kind: "return", value: this.boolValue(body2), at: this.at(body2), label: this.label(body2) }, body2);
+            else this.expressionStatement(body2);
+          } catch (err) {
+            if (!(err instanceof LowerError)) throw err;
+            if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
+            else this.c.error(body2, err.message);
+          }
         }
-        this.m.releaseTo(held);
-      }
+      });
     } finally {
       this.inlineDepth--;
       this.scope = outerScope;
       this.leaveBody(saved);
     }
-    if (end !== null) {
-      if (!this.dead) this.m.jump(end, line, `L${line}: end of ${name ?? "function"}`);
-      this.m.enter(end);
-      this.dead = false;
-    }
-    return result;
+    return out;
   }
   /** Walk another body (a game function's) until `leaveBody`: its plan, file and thunks. */
   enterBody(target) {
     const saved = this.body;
     this.body = target;
-    this.m.file = target.sf.fileName;
     return saved;
   }
   leaveBody(saved) {
     this.body = saved;
-    this.m.file = saved.sf.fileName;
   }
   sourceOfIn(target, node) {
     const p = target.sf.getLineAndCharacterOfPosition(node.getStart(target.sf));
@@ -4091,10 +3906,6 @@ var Structured = class {
     return found;
   }
   /* ── Numbers ── */
-  assignNumber(v, expr, at) {
-    const rhs = this.linear(expr);
-    if (rhs) this.m.assign(v, rhs, this.line(at), this.label(at));
-  }
   asInteger(h, at) {
     const v = h.value;
     if (typeof v === "boolean") return v ? 1 : 0;
@@ -4108,142 +3919,37 @@ var Structured = class {
     }
     return v;
   }
-  /** `linear` without diagnostics, for a probe that may fail. */
-  linearQuietly(expr) {
+  /** `num` without diagnostics, for a probe that may fail. */
+  numQuietly(expr) {
     const { error } = this.c;
     let failed = false;
     this.c.error = () => {
       failed = true;
     };
     try {
-      const out = this.linear(expr);
+      const out = this.num(expr);
       return failed ? null : out;
     } finally {
       this.c.error = error;
     }
   }
-  /** A variable holding a linear expression's value: the variable itself when it is one, else a temp computed now. */
-  sideVar(l, line, label) {
-    const v = single(l);
-    if (v) return v;
-    const t = this.m.temp(widthOf(l));
-    this.m.evaluate(t, l, line, label);
-    return t;
-  }
-  /** `l op r` for `*`, `/`, `%` (and `+`, `-`) over linear expressions, emitting what needs a temp. */
-  linearOp(op, l, r, at) {
-    const line = this.line(at);
-    const label = this.label(at);
-    switch (op) {
-      case "+":
-        return merge(l, r);
-      case "-":
-        return merge(l, scale(r, -1));
-      case "*": {
-        if (isConst(r)) return scale(l, r.c);
-        if (isConst(l)) return scale(r, l.c);
-        const a2 = this.sideVar(l, line, label);
-        const b = this.sideVar(r, line, label);
-        const t = this.m.temp(Math.min(32, bitsOf(a2) + bitsOf(b)));
-        this.m.set(t, 0, line, label);
-        this.m.mulVar(t, a2, b, line, label);
-        return ofVar(t);
-      }
-      case "/":
-      case "%": {
-        if (!isConst(r)) {
-          this.c.error(at, "Division is by a constant: the game has no instruction for dividing by a variable.");
-          return null;
-        }
-        const d = r.c;
-        if (!Number.isInteger(d) || d <= 0) {
-          this.c.error(at, `Divide by a whole number of at least 1, not ${d}.`);
-          return null;
-        }
-        if (isConst(l)) return { c: op === "/" ? Math.trunc(l.c / d) : l.c % d, terms: [] };
-        const n = this.m.temp(widthOf(l));
-        this.m.evaluate(n, l, line, label);
-        const q = this.m.temp(Math.max(1, widthOf(l) - bitLength(d) + 1));
-        this.m.set(q, 0, line, label);
-        this.m.divConst(n, q, d, line, label, widthOf(l));
-        return ofVar(op === "/" ? q : n);
-      }
-    }
-  }
-  /** `Math.min(a, b)` / `Math.max(a, b)`: against a constant, a copy and one guard; between variables, saturating differences. */
-  minMax(kind, l, r, line, label) {
-    if (isConst(l) && isConst(r)) return { c: kind === "min" ? Math.min(l.c, r.c) : Math.max(l.c, r.c), terms: [] };
-    if (isConst(l) || isConst(r)) {
-      const c2 = isConst(l) ? l.c : r.c;
-      const x = isConst(l) ? r : l;
-      const t2 = this.m.temp(kind === "min" ? Math.min(widthOf(x), bitLength(Math.max(0, c2))) : Math.max(widthOf(x), bitLength(Math.max(0, c2))));
-      if (kind === "min" && c2 <= 0) {
-        this.m.set(t2, 0, line, label);
-        return ofVar(t2);
-      }
-      this.m.evaluate(t2, x, line, label);
-      if (kind === "min") {
-        if (c2 < U32_MAX) this.m.step([deathsCondition(t2, Comparison.AtLeast, c2 + 1)], [setDeaths(t2, SetModifier.SetTo, c2)], null, line, label);
-      } else if (c2 > 0) this.m.step([deathsCondition(t2, Comparison.AtMost, c2 - 1)], [setDeaths(t2, SetModifier.SetTo, Math.min(c2, U32_MAX))], null, line, label);
-      return ofVar(t2);
-    }
-    const t = this.m.temp(kind === "min" ? Math.min(widthOf(l), widthOf(r)) : Math.max(widthOf(l), widthOf(r)));
-    const u = this.m.temp(kind === "min" ? widthOf(l) : widthOf(r));
-    this.m.evaluate(u, kind === "min" ? merge(l, scale(r, -1)) : merge(r, scale(l, -1)), line, label);
-    this.m.evaluate(t, l, line, label);
-    this.m.addVar(t, u, kind === "min" ? -1 : 1, line, label, bitsOf(u), true);
-    this.m.release();
-    return ofVar(t);
-  }
-  /** `Math.abs(l)` = (l −̇ 0) + (−l −̇ 0). */
-  abs(l, line, label) {
-    if (isConst(l)) return { c: Math.abs(l.c), terms: [] };
-    const t = this.m.temp(widthOf(l));
-    const u = this.m.temp(widthOf(scale(l, -1)));
-    this.m.evaluate(t, l, line, label);
-    this.m.evaluate(u, scale(l, -1), line, label);
-    this.m.addVar(t, u, 1, line, label, bitsOf(u), true);
-    this.m.release();
-    return ofVar(t);
-  }
-  /** `c ? a : b` as a number: a temp assigned on either side of a branch. */
-  ternary(e) {
-    const line = this.line(e);
-    const label = this.label(e);
-    const t = this.m.temp();
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    const join = this.m.fresh();
-    this.branchOn(e.condition, on, off, line, label);
-    this.m.enter(on);
-    this.dead = false;
-    this.assignNumber(t, e.whenTrue, e);
-    this.m.jump(join, line, label);
-    this.m.enter(off);
-    this.dead = false;
-    this.assignNumber(t, e.whenFalse, e);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-    return ofVar(t);
-  }
-  /** `c + Σ k·v` over death counters, or null (with a diagnostic). Emits what needs a temp: a quotient, a product, a call's result. */
-  linear(expr) {
+  /** A number expression: a constant, a variable, arithmetic, an intrinsic, a call — or null, with a diagnostic. */
+  num(expr) {
     const { ts } = this;
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
     if (h) {
       const n = this.asInteger(h, e);
-      return n === null ? null : { c: n, terms: [] };
+      return n === null ? null : num(n);
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") {
-        if (b.v.kind !== "dc") {
+        if (b.v.kind !== "number") {
           this.c.error(e, `${b.v.name} is a boolean.`);
           return null;
         }
-        return ofVar(b.v);
+        return varRef(b.v);
       }
       if (b?.kind === "record") {
         this.c.error(e, "This is a record; use one of its fields.");
@@ -4254,10 +3960,10 @@ var Structured = class {
       return null;
     }
     if (ts.isPrefixUnaryExpression(e)) {
-      const inner = this.linear(e.operand);
+      const inner = this.num(e.operand);
       if (!inner) return null;
       if (e.operator === ts.SyntaxKind.PlusToken) return inner;
-      if (e.operator === ts.SyntaxKind.MinusToken) return scale(inner, -1);
+      if (e.operator === ts.SyntaxKind.MinusToken) return this.mark({ kind: "unary", op: "-", expr: inner, at: this.at(e) }, e);
       this.c.error(e, "Only + and - apply to variables.");
       return null;
     }
@@ -4267,12 +3973,18 @@ var Structured = class {
         this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder by a constant.");
         return null;
       }
-      const l = this.linear(e.left);
-      const r = this.linear(e.right);
+      const l = this.num(e.left);
+      const r = this.num(e.right);
       if (!l || !r) return null;
-      return this.linearOp(op, l, r, e);
+      return this.mark({ kind: "binary", op, left: l, right: r, at: this.at(e), label: this.label(e) }, e);
     }
-    if (ts.isConditionalExpression(e)) return this.ternary(e);
+    if (ts.isConditionalExpression(e)) {
+      const cond2 = this.bool(e.condition);
+      const whenTrue = this.num(e.whenTrue);
+      const whenFalse = this.num(e.whenFalse);
+      if (!whenTrue || !whenFalse) return null;
+      return this.mark({ kind: "ternary", cond: cond2, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+    }
     if (ts.isCallExpression(e)) return this.callValue(e);
     this.c.error(e, "Expected a number: a value, a variable, or arithmetic over them.");
     return null;
@@ -4280,8 +3992,6 @@ var Structured = class {
   /** A call as a number: a function of the body or a game function (its result), or an intrinsic over variables. */
   callValue(e) {
     const { ts } = this;
-    const line = this.line(e);
-    const label = this.label(e);
     if (ts.isIdentifier(e.expression)) {
       const decl = this.gameDeclaration(e.expression);
       if (decl && ts.isFunctionDeclaration(decl)) {
@@ -4290,8 +4000,8 @@ var Structured = class {
           this.c.error(e, `${e.expression.text} does not return a number.`);
           return null;
         }
-        const r = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
-        return r ? ofVar(r) : null;
+        const call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+        return call?.result ? this.mark({ kind: "call", call }, e) : null;
       }
     }
     const args = (n, what) => {
@@ -4301,16 +4011,17 @@ var Structured = class {
       }
       const out = [];
       for (const a2 of e.arguments) {
-        const l = this.linear(a2);
+        const l = this.num(a2);
         if (!l) return null;
         out.push(l);
       }
       return out;
     };
+    const intrinsic = (name, list) => this.mark({ kind: "intrinsic", name, args: list, at: this.at(e), label: this.label(e) }, e);
     if (this.isLibraryCall(e, "clamp")) {
       const a2 = args(3, "clamp()");
       if (!a2) return null;
-      return this.minMax("min", this.minMax("max", a2[0], a2[1], line, label), a2[2], line, label);
+      return intrinsic("min", [intrinsic("max", [a2[0], a2[1]]), a2[2]]);
     }
     const callee = this.evaluate(e.expression)?.value;
     if (isGameFunction(callee)) {
@@ -4319,8 +4030,8 @@ var Structured = class {
         this.c.error(e, "This game function does not return a number.");
         return null;
       }
-      const r = this.gameCall(e, callee);
-      return r ? ofVar(r) : null;
+      const call = this.gameCall(e, callee);
+      return call?.result ? this.mark({ kind: "call", call }, e) : null;
     }
     if (callee === Math.floor || callee === Math.trunc || callee === Math.round || callee === Math.ceil) {
       const a2 = args(1, "Math rounding");
@@ -4328,7 +4039,7 @@ var Structured = class {
     }
     if (callee === Math.abs) {
       const a2 = args(1, "Math.abs()");
-      return a2 ? this.abs(a2[0], line, label) : null;
+      return a2 ? intrinsic("abs", [a2[0]]) : null;
     }
     if (callee === Math.min || callee === Math.max) {
       if (e.arguments.length === 0) {
@@ -4337,9 +4048,9 @@ var Structured = class {
       }
       let acc = null;
       for (const a2 of e.arguments) {
-        const l = this.linear(a2);
+        const l = this.num(a2);
         if (!l) return null;
-        acc = acc ? this.minMax(callee === Math.min ? "min" : "max", acc, l, line, label) : l;
+        acc = acc ? intrinsic(callee === Math.min ? "min" : "max", [acc, l]) : l;
       }
       return acc;
     }
@@ -4357,12 +4068,10 @@ var Structured = class {
   /**
    * An action whose argument is a variable: `setResources(P1, "add", n, "ore")`,
    * `createUnit(P2, unit, count, at)`. The record is built with the variable's place
-   * as 0, then done bit by bit through `Machine.actionWithVar`.
+   * as 0; the backend does the action with the expression's value in that field.
    */
   actionWithVars(e, ident, def) {
     const params = scriptParams(def);
-    const line = this.line(e);
-    const label = this.label(e);
     const values = [];
     let variable = null;
     for (let i = 0; i < e.arguments.length; i++) {
@@ -4386,9 +4095,9 @@ var Structured = class {
         this.c.error(a2, `${ident}: one argument at a time can be a variable of the program.`);
         return;
       }
-      const lin2 = this.linear(a2);
-      if (!lin2) return;
-      variable = { index: i, lin: lin2 };
+      const expr = this.num(a2);
+      if (!expr) return;
+      variable = { index: i, expr };
       values.push(0);
     }
     if (!variable) {
@@ -4407,140 +4116,47 @@ var Structured = class {
       throw new ValueError(e, err instanceof Error ? err.message : String(err));
     }
     const p = params[variable.index];
-    const fieldBits = p.arg.kind === "count" ? 8 : 32;
-    const { lin } = variable;
-    const v = single(lin);
-    let src;
-    let consume;
-    let bits;
-    if (v && bitsOf(v) <= fieldBits) {
-      src = v;
-      consume = false;
-      bits = bitsOf(v);
-    } else {
-      src = this.m.temp(widthOf(lin));
-      this.m.evaluate(src, lin, line, label);
-      if (widthOf(lin) > fieldBits) {
-        this.m.step([deathsCondition(src, Comparison.AtLeast, 2 ** fieldBits)], [setDeaths(src, SetModifier.SetTo, maxOf(fieldBits))], null, line, label);
-        this.m.remark(line, `A ${p.name} larger than ${maxOf(fieldBits)} is done as ${maxOf(fieldBits)}: that is what the action's field holds.`);
-      }
-      consume = true;
-      bits = Math.min(widthOf(lin), fieldBits);
-    }
-    this.c.touched?.push(record);
-    this.m.actionWithVar(record, p.arg.field, src, bits, consume, line, label);
+    this.emit({ kind: "action", record: { ...record }, variable: { field: p.arg.field, bits: p.arg.kind === "count" ? 8 : 32, name: p.name, expr: variable.expr }, at: this.at(e), label: this.label(e) }, e);
   }
   /* ── Booleans ── */
-  /** `v = expr` for a boolean: a constant, a toggle, a coin toss, or a branch that sets one side and clears the other. */
-  storeBool(v, expr, line, label) {
+  /** The value stored into a boolean: a constant, a coin toss, a condition tree. */
+  boolValue(expr) {
     const { ts } = this;
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
-    if (h && typeof h.value === "boolean") {
-      this.m.action(setTruth(v, h.value), line, label);
-      return;
+    if (h && typeof h.value === "boolean") return { kind: "const", value: h.value };
+    if (this.isLibraryCall(e, "random")) return this.mark({ kind: "random", at: this.at(e) }, e);
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
+      const v = this.varOf(e.operand);
+      if (v && v.kind === "boolean") return { kind: "not", expr: boolRef(v) };
     }
-    if (v.kind === "switch" && ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken && this.varOf(e.operand) === v) {
-      this.m.action(setSwitch(v, SwitchAction.Toggle), line, label);
-      return;
-    }
-    if (v.kind === "switch" && this.isLibraryCall(e, "random")) {
-      this.m.action(setSwitch(v, SwitchAction.Randomize), line, label);
-      return;
-    }
-    if (this.shortCircuits(e)) {
-      const on = this.m.fresh();
-      const off = this.m.fresh();
-      this.branchOn(e, on, off, line, label);
-      this.storeSides(v, on, off, line, label);
-      return;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(e);
-    if (b.kind === "const") {
-      this.m.action(setTruth(v, b.value), line, label);
-      this.m.releaseTo(held);
-      return;
-    }
-    this.storeBoolTree(v, b, line, label);
-    this.m.releaseTo(held);
+    return this.bool(e);
   }
-  /** `v = b` for a condition tree: branch, set on one side, clear on the other. */
-  storeBoolTree(v, b, line, label) {
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    this.m.branch(b, on, off, line, label);
-    this.storeSides(v, on, off, line, label);
-  }
-  storeSides(v, on, off, line, label) {
-    const join = this.m.fresh();
-    this.m.enter(on);
-    this.m.action(setTruth(v, true), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(off);
-    this.m.action(setTruth(v, false), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-  }
-  /**
-   * `rose(c)`: true on the cycle `c` becomes true; `once(c)`: true the first time it holds.
-   * A latch remembers whether `c` held last time; `fired` is what the caller tests. Five
-   * triggers: the branch on `c`, two in the true state (the latch clear → fire and set the
-   * latch, jumping on; else clear `fired`), one in the false state.
-   */
+  /** `rose(c)`: true on the cycle `c` becomes true; `once(c)`: true the first time it holds. */
   edge(call, kind) {
     if (call.arguments.length !== 1) {
       this.c.error(call, `${kind}() takes one condition.`);
-      return FALSE;
+      return FALSE2;
     }
-    const latch = this.m.bool(`(${kind} latch)`);
-    const fired = this.m.bool(`(${kind} fired)`);
-    if (!latch || !fired) {
-      this.c.error(call, `No switch is free for ${kind}().`);
-      return FALSE;
-    }
-    const line = this.line(call);
-    const label = this.label(call);
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    const join = this.m.fresh();
-    this.branchOn(call.arguments[0], on, off, line, label);
-    this.m.enter(on);
-    this.m.step([boolCondition(latch, false)], [setBool(fired, true), setBool(latch, true)], join, line, label);
-    this.m.step([], [setBool(fired, false)], join, line, label);
-    this.m.enter(off);
-    if (kind === "rose") this.m.action(setBool(latch, false), line, label);
-    this.m.action(setBool(fired, false), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-    return cond(boolCondition(fired, true));
+    return this.mark({ kind: "edge", edge: kind, cond: this.bool(call.arguments[0]), at: this.at(call), label: this.label(call) }, call);
   }
-  /** A hoisted value as a condition tree. */
+  /** A hoisted value as a condition. */
   hoistedBool(h, at) {
     const v = h.value;
-    if (typeof v === "boolean") return v ? TRUE : FALSE;
-    if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
-    if (typeof v === "string") return v !== "" ? TRUE : FALSE;
-    if (isCondition(v)) {
-      this.c.touched?.push(v.record);
-      return cond(v.record);
-    }
-    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) {
-      for (const c2 of v) this.c.touched?.push(c2.record);
-      return and(v.map((c2) => cond(c2.record)));
-    }
+    if (typeof v === "boolean") return v ? TRUE2 : FALSE2;
+    if (typeof v === "number") return v !== 0 ? TRUE2 : FALSE2;
+    if (typeof v === "string") return v !== "" ? TRUE2 : FALSE2;
+    if (isCondition(v)) return this.mark({ kind: "cond", record: { ...v.record } }, at);
+    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
-      return FALSE;
+      return FALSE2;
     }
     this.c.error(at, `Expected a condition, got ${describe2(v)}.`);
-    return FALSE;
+    return FALSE2;
   }
-  /** A condition as a `Bool` tree; may emit steps (temps for variable comparisons, a randomize, an edge, a call). */
+  /** A condition as a `BoolExpr` tree. */
   bool(expr) {
-    this.scratchUsed = 0;
     return this.boolInner(expr, 0);
   }
   boolInner(expr, depth) {
@@ -4548,148 +4164,99 @@ var Structured = class {
     const e = this.unwrap(expr);
     if (depth > 64) {
       this.c.error(e, "The condition nests too deeply.");
-      return FALSE;
+      return FALSE2;
     }
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
-    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return not(this.boolInner(e.operand, depth + 1));
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return { kind: "not", expr: this.boolInner(e.operand, depth + 1) };
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
-      if (op === ts.SyntaxKind.AmpersandAmpersandToken) return and([this.boolInner(e.left, depth + 1), this.boolInner(e.right, depth + 1)]);
-      if (op === ts.SyntaxKind.BarBarToken) return or([this.boolInner(e.left, depth + 1), this.boolInner(e.right, depth + 1)]);
+      if (op === ts.SyntaxKind.AmpersandAmpersandToken) return this.mark({ kind: "and", items: [this.boolInner(e.left, depth + 1), this.boolInner(e.right, depth + 1)] }, e);
+      if (op === ts.SyntaxKind.BarBarToken) return this.mark({ kind: "or", items: [this.boolInner(e.left, depth + 1), this.boolInner(e.right, depth + 1)] }, e);
       const cmp = compareOp(ts, op);
       if (cmp) return this.comparison(e, cmp, depth);
       this.c.error(e, "Expected a condition.");
-      return FALSE;
+      return FALSE2;
     }
     if (ts.isConditionalExpression(e)) {
-      const t = this.m.temp(1);
-      const on = this.m.fresh();
-      const off = this.m.fresh();
-      this.branchOn(e.condition, on, off, this.line(e), this.label(e));
-      const join = this.m.fresh();
-      this.m.enter(on);
-      this.dead = false;
-      this.storeBool(t, e.whenTrue, this.line(e), this.label(e));
-      this.m.jump(join, this.line(e), this.label(e));
-      this.m.enter(off);
-      this.dead = false;
-      this.storeBool(t, e.whenFalse, this.line(e), this.label(e));
-      this.m.jump(join, this.line(e), this.label(e));
-      this.m.enter(join);
-      this.dead = false;
-      return cond(deathsCondition(t, Comparison.AtLeast, 1));
+      const cond2 = this.bool(e.condition);
+      const whenTrue = this.boolValue(e.whenTrue);
+      const whenFalse = this.boolValue(e.whenFalse);
+      return this.mark({ kind: "ternary", cond: cond2, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
-      if (b?.kind === "var") return b.v.kind !== "dc" ? cond(boolCondition(b.v, true)) : compareConst(b.v, ">=", 1);
+      if (b?.kind === "var") return b.v.kind !== "number" ? boolRef(b.v) : this.mark({ kind: "test", expr: varRef(b.v), at: this.at(e), label: this.label(e) }, e);
       if (b?.kind === "record") {
         this.c.error(e, "This is a record; test one of its fields.");
-        return FALSE;
+        return FALSE2;
       }
       if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       else this.notConstant(e, "A condition");
-      return FALSE;
+      return FALSE2;
     }
     if (ts.isCallExpression(e)) {
       if (ts.isIdentifier(e.expression)) {
         const decl = this.gameDeclaration(e.expression);
         if (decl && ts.isFunctionDeclaration(decl)) return this.callBool(e, () => this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl));
       }
-      if (this.isLibraryCall(e, "random")) {
-        const s = this.m.scratch(this.scratchUsed++);
-        this.m.action(setSwitch(s, SwitchAction.Randomize), this.line(e), `L${this.line(e)}: random()`);
-        return cond(switchCondition(s, true));
-      }
+      if (this.isLibraryCall(e, "random")) return this.mark({ kind: "random", at: this.at(e) }, e);
       if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose");
       if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
       if (this.isLibraryCall(e, "sleep")) {
         this.c.error(e, "sleep() is a statement, not a condition.");
-        return FALSE;
+        return FALSE2;
       }
       const callee = this.evaluate(e.expression)?.value;
       if (isGameFunction(callee)) return this.callBool(e, () => this.gameCall(e, callee));
       if (isBuilder(callee) && callee.kind === "condition") {
         this.c.error(e, "The game cannot test a condition against a variable of the program: a condition's amount is known when the script is built. Compare variables in the program's own statements.");
-        return FALSE;
+        return FALSE2;
       }
       if (isBuilder(callee)) {
         this.c.error(e, "This is an action, not a condition.");
-        return FALSE;
+        return FALSE2;
       }
       this.notConstant(e, "A condition's arguments");
-      return FALSE;
+      return FALSE2;
     }
     this.c.error(e, "Expected a condition: a trigger condition, a comparison, a boolean variable, or a combination with && || !.");
-    return FALSE;
+    return FALSE2;
   }
-  /** A call whose result is tested: a boolean result is `≥ 1`, a number's is `≠ 0` — both `≥ 1` on a counter. */
+  /** A call whose result is tested: a boolean result, or a number's `!= 0`. */
   callBool(e, run) {
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
     if (!kind) {
       this.c.error(e, "This function returns nothing to test; test a variable it sets instead.");
-      return FALSE;
+      return FALSE2;
     }
-    const r = run();
-    return r ? cond(deathsCondition(r, Comparison.AtLeast, 1)) : FALSE;
+    const call = run();
+    return call?.result ? this.mark({ kind: "call", call }, e) : FALSE2;
   }
   comparison(e, op, depth) {
     const isBool = (x) => {
       const h = this.evaluate(x);
       if (h) return typeof h.value === "boolean" || isCondition(h.value);
       const v = this.varOf(x);
-      if (v !== void 0) return v.kind !== "dc";
+      if (v !== void 0) return v.kind !== "number";
       return this.kindOf(this.c.checker.getTypeAtLocation(x)) === "boolean";
     };
     if (isBool(e.left) || isBool(e.right)) {
       if (op !== "==" && op !== "!=") {
         this.c.error(e, "Booleans compare with == and != only.");
-        return FALSE;
+        return FALSE2;
       }
       const l2 = this.boolInner(e.left, depth + 1);
       const r2 = this.boolInner(e.right, depth + 1);
-      const same = or([and([l2, r2]), and([not(l2), not(r2)])]);
-      return op === "==" ? same : not(same);
+      const same = { kind: "or", items: [{ kind: "and", items: [l2, r2] }, { kind: "and", items: [{ kind: "not", expr: l2 }, { kind: "not", expr: r2 }] }] };
+      return op === "==" ? same : { kind: "not", expr: same };
     }
-    const l = this.linear(e.left);
-    const r = this.linear(e.right);
-    if (!l || !r) return FALSE;
-    const d = merge(l, scale(r, -1));
-    if (d.terms.length === 0) return compareNumbers(d.c, op, 0) ? TRUE : FALSE;
-    if (d.terms.length === 1) {
-      const t = d.terms[0];
-      return compareScaled(t.v, t.k, op, -d.c);
-    }
-    const line = this.line(e);
-    const label = `L${line}: ${e.getText(this.body.sf).replace(/\s+/g, " ")}`;
-    const left = { c: Math.max(0, d.c), terms: d.terms.filter((t) => t.k > 0) };
-    const right = { c: Math.max(0, -d.c), terms: d.terms.filter((t) => t.k < 0).map((t) => ({ v: t.v, k: -t.k })) };
-    const a2 = this.sideVar(left, line, label);
-    const b = this.sideVar(right, line, label);
-    return this.m.compareVars(a2, op, b, line, label).bool;
+    const l = this.num(e.left);
+    const r = this.num(e.right);
+    if (!l || !r) return FALSE2;
+    return this.mark({ kind: "compare", op, left: l, right: r, at: this.at(e), label: `L${this.line(e)}: ${e.getText(this.body.sf).replace(/\s+/g, " ")}` }, e);
   }
 };
-function setTruth(v, on) {
-  return v.kind === "dc" ? setDeaths(v, SetModifier.SetTo, on ? 1 : 0) : setBool(v, on);
-}
-function compareScaled(v, k, op, n) {
-  if (k < 0) return compareScaled(v, -k, flipOp(op), -n);
-  if (k === 1) return compareConst(v, op, n);
-  switch (op) {
-    case ">=":
-      return compareConst(v, ">=", Math.ceil(n / k));
-    case ">":
-      return compareConst(v, ">=", Math.ceil((n + 1) / k));
-    case "<=":
-      return compareConst(v, "<=", Math.floor(n / k));
-    case "<":
-      return compareConst(v, "<=", Math.floor((n - 1) / k));
-    case "==":
-      return n % k === 0 ? compareConst(v, "==", n / k) : FALSE;
-    case "!=":
-      return n % k === 0 ? compareConst(v, "!=", n / k) : TRUE;
-  }
-}
 function compareOp(ts, kind) {
   switch (kind) {
     case ts.SyntaxKind.LessThanToken:
@@ -4708,6 +4275,20 @@ function compareOp(ts, kind) {
       return "!=";
     default:
       return null;
+  }
+}
+function flipOp2(op) {
+  switch (op) {
+    case "<":
+      return ">";
+    case "<=":
+      return ">=";
+    case ">":
+      return "<";
+    case ">=":
+      return "<=";
+    default:
+      return op;
   }
 }
 function arithOp(ts, kind) {
@@ -4759,6 +4340,856 @@ function compareNumbers(a2, op, b) {
   }
 }
 
+// compiler/classic.ts
+var sameCell = (a2, b) => a2.player === b.player && a2.unit === b.unit;
+function scale(l, k) {
+  if (k === 0) return { c: 0, terms: [] };
+  return { c: l.c * k, terms: l.terms.map((t) => ({ v: t.v, k: t.k * k })) };
+}
+function merge(l, r) {
+  const terms = [];
+  for (const t of [...l.terms, ...r.terms]) {
+    const hit = terms.find((x) => sameCell(x.v, t.v));
+    if (hit) hit.k += t.k;
+    else terms.push({ v: t.v, k: t.k });
+  }
+  return { c: l.c + r.c, terms: terms.filter((t) => t.k !== 0) };
+}
+var isConst = (l) => l.terms.length === 0;
+var single = (l) => l.c === 0 && l.terms.length === 1 && l.terms[0].k === 1 ? l.terms[0].v : null;
+var ofVar = (v) => ({ c: 0, terms: [{ v, k: 1 }] });
+var Classic = class {
+  c;
+  m;
+  vars = /* @__PURE__ */ new Map();
+  /** After `break` / `continue` / `return` / an endless loop: the next statement needs a state of its own. */
+  dead = false;
+  scratchUsed = 0;
+  /** The statement being lowered, where an error with no node of its own lands. */
+  current;
+  constructor(c2) {
+    this.c = c2;
+    this.m = c2.machine;
+    this.current = c2.program;
+    this.m.file = c2.program.at.file;
+  }
+  run() {
+    const { body: body2 } = this.c.program;
+    try {
+      this.block(body2, {});
+      if (!this.dead) this.m.jump(this.m.halt, this.lastLine(body2), "end of program");
+    } catch (err) {
+      if (!(err instanceof LowerError)) throw err;
+      this.c.error(body2[body2.length - 1] ?? this.c.program, err.message);
+    }
+  }
+  lastLine(body2) {
+    const last = body2[body2.length - 1];
+    return last ? last.at.line : this.c.program.at.line;
+  }
+  live() {
+    if (this.dead) {
+      this.m.enter(this.m.fresh());
+      this.dead = false;
+    }
+  }
+  error(node, message) {
+    this.c.error(node ?? this.current, message);
+  }
+  dc(id, node) {
+    const v = this.vars.get(id);
+    if (!v) {
+      this.error(node, "A variable was used before it was declared.");
+      return null;
+    }
+    if (v.kind !== "dc") {
+      this.error(node, `${v.name} is a boolean.`);
+      return null;
+    }
+    return v;
+  }
+  boolVar(id, node) {
+    const v = this.vars.get(id);
+    if (!v) {
+      this.error(node, "A variable was used before it was declared.");
+      return null;
+    }
+    return v;
+  }
+  /* ── Statements ── */
+  block(statements, ctx) {
+    for (const s of statements) {
+      const held = this.m.tempsHeld;
+      try {
+        this.statement(s, ctx);
+      } catch (err) {
+        if (!(err instanceof LowerError)) throw err;
+        this.c.error(s, err.message);
+      }
+      this.m.releaseTo(held);
+    }
+  }
+  statement(s, ctx) {
+    this.current = s;
+    this.m.file = s.at.file;
+    this.live();
+    switch (s.kind) {
+      case "declare":
+        this.declare(s);
+        return;
+      case "assign": {
+        const v = this.dc(s.target, s);
+        if (!v) return;
+        const rhs = this.linear(s.value);
+        if (rhs) this.m.assign(v, rhs, s.at.line, s.label);
+        return;
+      }
+      case "assignBool": {
+        const v = this.boolVar(s.target, s);
+        if (v) this.storeBool(v, s.value, s.at.line, s.label);
+        return;
+      }
+      case "if":
+        this.ifStatement(s, ctx);
+        return;
+      case "while":
+        this.whileStatement(s, ctx);
+        return;
+      case "do":
+        this.doStatement(s, ctx);
+        return;
+      case "for":
+        this.forStatement(s, ctx);
+        return;
+      case "unrolled":
+        this.unrolledLoop(s, ctx);
+        return;
+      case "switch":
+        this.switchStatement(s, ctx);
+        return;
+      case "break":
+      case "continue": {
+        const target = s.kind === "break" ? ctx.breakTo : ctx.continueTo;
+        if (!target) {
+          this.error(s, `${s.kind} outside a loop.`);
+          return;
+        }
+        this.m.jump(target(), s.at.line, s.label);
+        this.dead = true;
+        return;
+      }
+      case "return":
+        this.returnStatement(s, ctx);
+        return;
+      case "sleep": {
+        const n = s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * this.c.program.cyclesPerSecond));
+        this.m.sleep(n, s.at.line, s.label);
+        return;
+      }
+      case "action":
+        this.action(s);
+        return;
+      case "call":
+        this.inline(s.call);
+        return;
+      case "block":
+        this.block(s.body, ctx);
+        return;
+      case "remark":
+        this.m.remark(s.at.line, s.text, s.short);
+        return;
+    }
+  }
+  declare(s) {
+    const { decl } = s;
+    const v = decl.kind === "number" ? decl.shared ? this.m.shared(decl.name) : this.m.dc(decl.name) : decl.shared ? this.m.switch(decl.name) : this.m.bool(decl.name);
+    if (!v) {
+      const note = this.m.perPlayer && !decl.name.includes(".") ? " (a per-player variable needs a unit with all twelve free)" : "";
+      this.error(s, `No ${decl.kind === "number" ? "death counter" : "switch"} is free for ${decl.name}${note}.`);
+      return;
+    }
+    v.at = decl.at;
+    if (v.kind === "dc" && decl.bits) v.bits = decl.bits;
+    if (v.kind === "dc") {
+      if (!s.failed) {
+        const rhs = this.linear(s.init);
+        if (rhs) this.m.assign(v, rhs, s.at.line, s.label);
+      }
+    } else {
+      this.storeBool(v, s.init, s.at.line, s.label);
+    }
+    this.vars.set(decl.id, v);
+  }
+  returnStatement(s, ctx) {
+    if (!ctx.fn) {
+      this.error(s, "return outside a function.");
+      return;
+    }
+    const { fn } = ctx;
+    if (s.value && fn.result) {
+      if (fn.kind === "number") {
+        const rhs = this.linear(s.value);
+        if (rhs) this.m.assign(fn.result, rhs, s.at.line, s.label);
+      } else this.storeBool(fn.result, s.value, s.at.line, s.label);
+    }
+    if (!this.dead) this.m.jump(fn.end(), s.at.line, s.label);
+    this.dead = true;
+  }
+  action(s) {
+    const line = s.at.line;
+    const { label } = s;
+    if (!s.variable) {
+      this.c.touched?.push(s.record);
+      this.m.action({ ...s.record }, line, label);
+      return;
+    }
+    const { variable } = s;
+    const fieldBits = variable.bits;
+    const lin = this.linear(variable.expr);
+    if (!lin) return;
+    const v = single(lin);
+    let src;
+    let consume;
+    let bits;
+    if (v && bitsOf(v) <= fieldBits) {
+      src = v;
+      consume = false;
+      bits = bitsOf(v);
+    } else {
+      src = this.m.temp(widthOf(lin));
+      this.m.evaluate(src, lin, line, label);
+      if (widthOf(lin) > fieldBits) {
+        this.m.step([deathsCondition(src, Comparison.AtLeast, 2 ** fieldBits)], [setDeaths(src, SetModifier.SetTo, maxOf(fieldBits))], null, line, label);
+        this.m.remark(line, `A ${variable.name} larger than ${maxOf(fieldBits)} is done as ${maxOf(fieldBits)}: that is what the action's field holds.`);
+      }
+      consume = true;
+      bits = Math.min(widthOf(lin), fieldBits);
+    }
+    this.c.touched?.push(s.record);
+    this.m.actionWithVar(s.record, variable.field, src, bits, consume, line, label);
+  }
+  /* ── Conditions as control flow ── */
+  /** Whether lowering an expression as a condition emits anything: an edge, a call of a function, a ternary. */
+  hasEffects(e) {
+    switch (e.kind) {
+      case "edge":
+      case "call":
+      case "ternary":
+        return true;
+      case "and":
+      case "or":
+        return e.items.some((i) => this.hasEffects(i));
+      case "not":
+        return this.hasEffects(e.expr);
+      case "test":
+        return this.hasEffects(e.expr);
+      case "compare":
+      case "binary":
+        return this.hasEffects(e.left) || this.hasEffects(e.right);
+      case "unary":
+        return this.hasEffects(e.expr);
+      case "intrinsic":
+        return e.args.some((a2) => this.hasEffects(a2));
+      default:
+        return false;
+    }
+  }
+  /** `a && b` / `a || b` / `!…` where a right side has effects: the DNF would run them whether or not the left side decided. */
+  shortCircuits(e) {
+    if ((e.kind === "and" || e.kind === "or") && e.items.length === 2) return this.hasEffects(e.items[1]) || this.shortCircuits(e.items[0]) || this.shortCircuits(e.items[1]);
+    if (e.kind === "not") return this.shortCircuits(e.expr);
+    return false;
+  }
+  /**
+   * End the current state with a conditional jump on an expression. `&&` and `||` with an
+   * effectful right side are lowered as control flow — the left side first, the right in
+   * a state only reached when the left has not decided — so `n >= 1 && once(…)` consumes
+   * the edge only when `n >= 1`; everything else goes through the DNF branch.
+   */
+  branchOn(e, thenState, elseState, line, label) {
+    if ((e.kind === "and" || e.kind === "or") && e.items.length === 2 && this.shortCircuits(e)) {
+      const mid = this.m.fresh();
+      if (e.kind === "and") this.branchOn(e.items[0], mid, elseState, line, label);
+      else this.branchOn(e.items[0], thenState, mid, line, label);
+      this.m.enter(mid);
+      this.dead = false;
+      this.branchOn(e.items[1], thenState, elseState, line, label);
+      return;
+    }
+    if (e.kind === "not" && this.shortCircuits(e)) {
+      this.branchOn(e.expr, elseState, thenState, line, label);
+      return;
+    }
+    const held = this.m.tempsHeld;
+    const b = this.bool(e);
+    this.m.branch(b, thenState, elseState, line, label);
+    this.m.releaseTo(held);
+  }
+  ifStatement(s, ctx) {
+    const join = this.m.fresh();
+    const thenState = this.m.fresh();
+    const elseState = s.else ? this.m.fresh() : join;
+    if (this.shortCircuits(s.cond)) {
+      this.branchOn(s.cond, thenState, elseState, s.at.line, s.label);
+    } else {
+      const held = this.m.tempsHeld;
+      const b = this.bool(s.cond);
+      if (b.kind === "const") {
+        this.m.releaseTo(held);
+        const live = b.value ? s.then : s.else;
+        if (live) this.block(live, ctx);
+        return;
+      }
+      this.m.branch(b, thenState, elseState, s.at.line, s.label);
+      this.m.releaseTo(held);
+    }
+    this.m.enter(thenState);
+    this.dead = false;
+    this.block(s.then, ctx);
+    if (!this.dead) this.m.jump(join, s.at.line, `L${s.at.line}: end if`);
+    if (s.else) {
+      this.m.enter(elseState);
+      this.dead = false;
+      this.block(s.else, ctx);
+      if (!this.dead) this.m.jump(join, s.at.line, `L${s.at.line}: end else`);
+    }
+    this.m.enter(join);
+    this.dead = false;
+  }
+  /**
+   * A loop's test at its header: the body state and the exit. Returns the body state,
+   * which is the header itself for a condition known true (no trigger spent), or the
+   * fresh state the test branched to.
+   */
+  loopTest(condition2, header, exit, line, label) {
+    if (!condition2) return header;
+    if (this.shortCircuits(condition2)) {
+      const body3 = this.m.fresh();
+      this.branchOn(condition2, body3, exit, line, label);
+      this.m.enter(body3);
+      return body3;
+    }
+    const held = this.m.tempsHeld;
+    const b = this.bool(condition2);
+    let body2 = header;
+    if (!(b.kind === "const" && b.value)) {
+      body2 = this.m.fresh();
+      this.m.branch(b, body2, exit, line, label);
+      this.m.enter(body2);
+    }
+    this.m.releaseTo(held);
+    return body2;
+  }
+  whileStatement(s, ctx) {
+    const line = s.at.line;
+    this.m.remark(line, "A while loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
+    const header = this.m.loopHeader(line, s.label);
+    const exit = this.m.fresh();
+    let broke = false;
+    const body2 = this.loopTest(s.cond, header, exit, line, s.label);
+    this.dead = false;
+    this.block(s.body, { fn: ctx.fn, breakTo: () => {
+      broke = true;
+      return exit;
+    }, continueTo: () => header });
+    if (!this.dead) this.m.jump(header, line, `L${line}: loop`);
+    if (body2 === header && !broke) {
+      this.dead = true;
+      return;
+    }
+    this.m.enter(exit);
+    this.dead = false;
+  }
+  doStatement(s, ctx) {
+    const line = s.at.line;
+    this.m.remark(line, "A do loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
+    const body2 = this.m.loopHeader(line, s.label);
+    const check = this.m.fresh();
+    const exit = this.m.fresh();
+    this.dead = false;
+    this.block(s.body, { fn: ctx.fn, breakTo: () => exit, continueTo: () => check });
+    if (!this.dead) this.m.jump(check, line, `L${line}: while`);
+    this.m.enter(check);
+    this.dead = false;
+    if (this.shortCircuits(s.cond)) this.branchOn(s.cond, body2, exit, line, s.condLabel);
+    else {
+      const held = this.m.tempsHeld;
+      const b = this.bool(s.cond);
+      this.m.branch(b, body2, exit, line, s.condLabel);
+      this.m.releaseTo(held);
+    }
+    this.m.enter(exit);
+  }
+  forStatement(s, ctx) {
+    const line = s.at.line;
+    this.m.remark(line, "This for loop runs one iteration per trigger cycle: its bound or step is not known when the script is built, so it is a while over a variable.", "one iteration per cycle");
+    const header = this.m.loopHeader(line, s.label);
+    const exit = this.m.fresh();
+    let broke = false;
+    let incr = null;
+    const body2 = this.loopTest(s.cond, header, exit, line, s.label);
+    this.dead = false;
+    this.block(s.body, { fn: ctx.fn, breakTo: () => {
+      broke = true;
+      return exit;
+    }, continueTo: () => s.update.length ? incr ??= this.m.fresh() : header });
+    if (incr !== null) {
+      if (!this.dead) this.m.jump(incr, line, `L${line}: continue`);
+      this.m.enter(incr);
+      this.dead = false;
+    }
+    if (!this.dead) {
+      for (const u of s.update) {
+        try {
+          this.statement(u, ctx);
+        } catch (err) {
+          if (!(err instanceof LowerError)) throw err;
+          this.c.error(u, err.message);
+        }
+      }
+      this.m.jump(header, line, `L${line}: loop`);
+    }
+    if (body2 === header && !broke) {
+      this.dead = true;
+      return;
+    }
+    this.m.enter(exit);
+    this.dead = false;
+  }
+  /** The body compiled once per value; `break` leaves, `continue` goes on with the next. */
+  unrolledLoop(s, ctx) {
+    const line = s.at.line;
+    const exit = this.m.fresh();
+    let broke = false;
+    for (const iteration of s.iterations) {
+      let next = null;
+      this.block(iteration, { fn: ctx.fn, breakTo: () => {
+        broke = true;
+        return exit;
+      }, continueTo: () => next ??= this.m.fresh() });
+      if (next !== null) {
+        if (!this.dead) this.m.jump(next, line, `L${line}: continue`);
+        this.m.enter(next);
+        this.dead = false;
+      }
+      if (this.dead) break;
+    }
+    if (broke) {
+      if (!this.dead) this.m.jump(exit, line, `L${line}: end of loop`);
+      this.m.enter(exit);
+      this.dead = false;
+    }
+  }
+  /**
+   * `switch (x) { case 1: … break; case 2: … default: … }` over a number: the cases
+   * tested in order, each one trigger, then the bodies in source order — a body without
+   * `break` falls through to the next, as in TypeScript.
+   */
+  switchStatement(s, ctx) {
+    const line = s.at.line;
+    const held = this.m.tempsHeld;
+    const lin = this.linear(s.value);
+    if (!lin) return;
+    if (isConst(lin)) {
+      this.error(s.value, "switch over a value known when the script is built: write the case that applies.");
+      return;
+    }
+    const v = single(lin) ?? (() => {
+      const t = this.m.temp(widthOf(lin));
+      this.m.evaluate(t, lin, line, s.label);
+      return t;
+    })();
+    const exit = this.m.fresh();
+    const states = s.cases.map(() => this.m.fresh());
+    let fallback = exit;
+    s.cases.forEach((c2, i) => {
+      if (c2.value === null) {
+        fallback = states[i];
+        return;
+      }
+      const n = c2.value;
+      if (Number.isNaN(n) || n < 0 || n > U32_MAX) return;
+      this.m.step([deathsCondition(v, Comparison.Exactly, n)], [], states[i], line, `L${line}: case ${n}`);
+    });
+    this.m.jump(fallback, line, `L${line}: ${fallback === exit ? "end switch" : "default"}`);
+    this.m.releaseTo(held);
+    s.cases.forEach((c2, i) => {
+      this.m.enter(states[i]);
+      this.dead = false;
+      this.block(c2.body, { fn: ctx.fn, continueTo: ctx.continueTo, breakTo: () => exit });
+      if (!this.dead) this.m.jump(i + 1 < states.length ? states[i + 1] : exit, line, `L${line}: fall through`);
+    });
+    this.m.enter(exit);
+    this.dead = false;
+  }
+  /* ── Functions ── */
+  /**
+   * An inlined call: the result temp first, then the parameter copies, then the body in
+   * the current state, `return` jumping to a state after it. The result comes back in a
+   * temp the caller reads (0 / 1 for a boolean) and releases with its statement.
+   */
+  inline(call) {
+    const line = call.at.line;
+    const result = call.result ? this.m.temp() : void 0;
+    if (result) this.m.set(result, 0, line, call.label);
+    for (const p of call.params) {
+      const copy = p.decl.kind === "number" ? this.m.dc(p.decl.name) : this.m.bool(p.decl.name);
+      if (!copy) {
+        this.error(call, `No ${p.decl.kind === "number" ? "death counter" : "switch"} is free for ${p.decl.name}.`);
+        return result;
+      }
+      copy.at = p.decl.at;
+      if (copy.kind === "dc" && p.decl.bits) copy.bits = p.decl.bits;
+      if (copy.kind === "dc") {
+        const rhs = this.linear(p.init);
+        if (rhs) this.m.assign(copy, rhs, line, p.label);
+      } else this.storeBool(copy, p.init, line, p.label);
+      this.vars.set(p.decl.id, copy);
+    }
+    if (call.result && result) this.vars.set(call.result.decl.id, result);
+    const file = this.m.file;
+    let end = null;
+    const fn = { end: () => end ??= this.m.fresh(), kind: call.result?.kind ?? "void", result };
+    this.block(call.body, { fn });
+    this.m.file = file;
+    if (end !== null) {
+      if (!this.dead) this.m.jump(end, line, `L${line}: end of ${call.name ?? "function"}`);
+      this.m.enter(end);
+      this.dead = false;
+    }
+    return result;
+  }
+  /* ── Numbers ── */
+  /** A variable holding a linear expression's value: the variable itself when it is one, else a temp computed now. */
+  sideVar(l, line, label) {
+    const v = single(l);
+    if (v) return v;
+    const t = this.m.temp(widthOf(l));
+    this.m.evaluate(t, l, line, label);
+    return t;
+  }
+  /** `l op r` for `*`, `/`, `%` (and `+`, `-`) over linear expressions, emitting what needs a temp. */
+  linearOp(op, l, r, at, line, label) {
+    switch (op) {
+      case "+":
+        return merge(l, r);
+      case "-":
+        return merge(l, scale(r, -1));
+      case "*": {
+        if (isConst(r)) return scale(l, r.c);
+        if (isConst(l)) return scale(r, l.c);
+        const a2 = this.sideVar(l, line, label);
+        const b = this.sideVar(r, line, label);
+        const t = this.m.temp(Math.min(32, bitsOf(a2) + bitsOf(b)));
+        this.m.set(t, 0, line, label);
+        this.m.mulVar(t, a2, b, line, label);
+        return ofVar(t);
+      }
+      case "/":
+      case "%": {
+        if (!isConst(r)) {
+          this.error(at, "Division is by a constant: the game has no instruction for dividing by a variable.");
+          return null;
+        }
+        const d = r.c;
+        if (!Number.isInteger(d) || d <= 0) {
+          this.error(at, `Divide by a whole number of at least 1, not ${d}.`);
+          return null;
+        }
+        if (isConst(l)) return { c: op === "/" ? Math.trunc(l.c / d) : l.c % d, terms: [] };
+        const n = this.m.temp(widthOf(l));
+        this.m.evaluate(n, l, line, label);
+        const q = this.m.temp(Math.max(1, widthOf(l) - bitLength(d) + 1));
+        this.m.set(q, 0, line, label);
+        this.m.divConst(n, q, d, line, label, widthOf(l));
+        return ofVar(op === "/" ? q : n);
+      }
+    }
+  }
+  /** `Math.min(a, b)` / `Math.max(a, b)`: against a constant, a copy and one guard; between variables, saturating differences. */
+  minMax(kind, l, r, line, label) {
+    if (isConst(l) && isConst(r)) return { c: kind === "min" ? Math.min(l.c, r.c) : Math.max(l.c, r.c), terms: [] };
+    if (isConst(l) || isConst(r)) {
+      const c2 = isConst(l) ? l.c : r.c;
+      const x = isConst(l) ? r : l;
+      const t2 = this.m.temp(kind === "min" ? Math.min(widthOf(x), bitLength(Math.max(0, c2))) : Math.max(widthOf(x), bitLength(Math.max(0, c2))));
+      if (kind === "min" && c2 <= 0) {
+        this.m.set(t2, 0, line, label);
+        return ofVar(t2);
+      }
+      this.m.evaluate(t2, x, line, label);
+      if (kind === "min") {
+        if (c2 < U32_MAX) this.m.step([deathsCondition(t2, Comparison.AtLeast, c2 + 1)], [setDeaths(t2, SetModifier.SetTo, c2)], null, line, label);
+      } else if (c2 > 0) this.m.step([deathsCondition(t2, Comparison.AtMost, c2 - 1)], [setDeaths(t2, SetModifier.SetTo, Math.min(c2, U32_MAX))], null, line, label);
+      return ofVar(t2);
+    }
+    const t = this.m.temp(kind === "min" ? Math.min(widthOf(l), widthOf(r)) : Math.max(widthOf(l), widthOf(r)));
+    const u = this.m.temp(kind === "min" ? widthOf(l) : widthOf(r));
+    this.m.evaluate(u, kind === "min" ? merge(l, scale(r, -1)) : merge(r, scale(l, -1)), line, label);
+    this.m.evaluate(t, l, line, label);
+    this.m.addVar(t, u, kind === "min" ? -1 : 1, line, label, bitsOf(u), true);
+    this.m.release();
+    return ofVar(t);
+  }
+  /** `Math.abs(l)` = (l −̇ 0) + (−l −̇ 0). */
+  abs(l, line, label) {
+    if (isConst(l)) return { c: Math.abs(l.c), terms: [] };
+    const t = this.m.temp(widthOf(l));
+    const u = this.m.temp(widthOf(scale(l, -1)));
+    this.m.evaluate(t, l, line, label);
+    this.m.evaluate(u, scale(l, -1), line, label);
+    this.m.addVar(t, u, 1, line, label, bitsOf(u), true);
+    this.m.release();
+    return ofVar(t);
+  }
+  /** `c ? a : b` as a number: a temp assigned on either side of a branch. */
+  ternary(e) {
+    const line = e.at.line;
+    const { label } = e;
+    const t = this.m.temp();
+    const on = this.m.fresh();
+    const off = this.m.fresh();
+    const join = this.m.fresh();
+    this.branchOn(e.cond, on, off, line, label);
+    this.m.enter(on);
+    this.dead = false;
+    const a2 = this.linear(e.whenTrue);
+    if (a2) this.m.assign(t, a2, line, label);
+    this.m.jump(join, line, label);
+    this.m.enter(off);
+    this.dead = false;
+    const b = this.linear(e.whenFalse);
+    if (b) this.m.assign(t, b, line, label);
+    this.m.jump(join, line, label);
+    this.m.enter(join);
+    this.dead = false;
+    return ofVar(t);
+  }
+  /** `c + Σ k·v` over death counters, or null (with a diagnostic). Emits what needs a temp: a quotient, a product, a call's result. */
+  linear(e) {
+    switch (e.kind) {
+      case "const":
+        return { c: e.value, terms: [] };
+      case "var": {
+        const v = this.dc(e.id, e);
+        return v ? ofVar(v) : null;
+      }
+      case "unary": {
+        const inner = this.linear(e.expr);
+        return inner ? scale(inner, -1) : null;
+      }
+      case "binary": {
+        const l = this.linear(e.left);
+        const r = this.linear(e.right);
+        if (!l || !r) return null;
+        return this.linearOp(e.op, l, r, e, e.at.line, e.label);
+      }
+      case "ternary":
+        return this.ternary(e);
+      case "intrinsic": {
+        const args = [];
+        for (const a2 of e.args) {
+          const l = this.linear(a2);
+          if (!l) return null;
+          args.push(l);
+        }
+        if (e.name === "abs") return this.abs(args[0], e.at.line, e.label);
+        return this.minMax(e.name, args[0], args[1], e.at.line, e.label);
+      }
+      case "call": {
+        const r = this.inline(e.call);
+        return r ? ofVar(r) : null;
+      }
+    }
+  }
+  /* ── Booleans ── */
+  /** `v = expr` for a boolean: a constant, a toggle, a coin toss, or a branch that sets one side and clears the other. */
+  storeBool(v, e, line, label) {
+    if (e.kind === "const") {
+      this.m.action(setTruth(v, e.value), line, label);
+      return;
+    }
+    if (v.kind === "switch" && e.kind === "not" && e.expr.kind === "var" && this.vars.get(e.expr.id) === v) {
+      this.m.action(setSwitch(v, SwitchAction.Toggle), line, label);
+      return;
+    }
+    if (v.kind === "switch" && e.kind === "random") {
+      this.m.action(setSwitch(v, SwitchAction.Randomize), line, label);
+      return;
+    }
+    if (this.shortCircuits(e)) {
+      const on = this.m.fresh();
+      const off = this.m.fresh();
+      this.branchOn(e, on, off, line, label);
+      this.storeSides(v, on, off, line, label);
+      return;
+    }
+    const held = this.m.tempsHeld;
+    const b = this.bool(e);
+    if (b.kind === "const") {
+      this.m.action(setTruth(v, b.value), line, label);
+      this.m.releaseTo(held);
+      return;
+    }
+    this.storeBoolTree(v, b, line, label);
+    this.m.releaseTo(held);
+  }
+  /** `v = b` for a condition tree: branch, set on one side, clear on the other. */
+  storeBoolTree(v, b, line, label) {
+    const on = this.m.fresh();
+    const off = this.m.fresh();
+    this.m.branch(b, on, off, line, label);
+    this.storeSides(v, on, off, line, label);
+  }
+  storeSides(v, on, off, line, label) {
+    const join = this.m.fresh();
+    this.m.enter(on);
+    this.m.action(setTruth(v, true), line, label);
+    this.m.jump(join, line, label);
+    this.m.enter(off);
+    this.m.action(setTruth(v, false), line, label);
+    this.m.jump(join, line, label);
+    this.m.enter(join);
+    this.dead = false;
+  }
+  /**
+   * `rose(c)`: true on the cycle `c` becomes true; `once(c)`: true the first time it holds.
+   * A latch remembers whether `c` held last time; `fired` is what the caller tests. Five
+   * triggers: the branch on `c`, two in the true state (the latch clear → fire and set the
+   * latch, jumping on; else clear `fired`), one in the false state.
+   */
+  edge(e) {
+    const kind = e.edge;
+    const latch = this.m.bool(`(${kind} latch)`);
+    const fired = this.m.bool(`(${kind} fired)`);
+    if (!latch || !fired) {
+      this.error(e, `No switch is free for ${kind}().`);
+      return FALSE;
+    }
+    const line = e.at.line;
+    const { label } = e;
+    const on = this.m.fresh();
+    const off = this.m.fresh();
+    const join = this.m.fresh();
+    this.branchOn(e.cond, on, off, line, label);
+    this.m.enter(on);
+    this.m.step([boolCondition(latch, false)], [setBool(fired, true), setBool(latch, true)], join, line, label);
+    this.m.step([], [setBool(fired, false)], join, line, label);
+    this.m.enter(off);
+    if (kind === "rose") this.m.action(setBool(latch, false), line, label);
+    this.m.action(setBool(fired, false), line, label);
+    this.m.jump(join, line, label);
+    this.m.enter(join);
+    this.dead = false;
+    return cond(boolCondition(fired, true));
+  }
+  /** A condition as a `Bool` tree; may emit steps (temps for variable comparisons, a randomize, an edge, a call). */
+  bool(e) {
+    this.scratchUsed = 0;
+    return this.boolInner(e);
+  }
+  boolInner(e) {
+    switch (e.kind) {
+      case "const":
+        return e.value ? TRUE : FALSE;
+      case "cond":
+        this.c.touched?.push(e.record);
+        return cond(e.record);
+      case "var": {
+        const v = this.boolVar(e.id, e);
+        if (!v) return FALSE;
+        return v.kind !== "dc" ? cond(boolCondition(v, true)) : compareConst(v, ">=", 1);
+      }
+      case "test": {
+        if (e.expr.kind === "var") {
+          const v = this.dc(e.expr.id, e);
+          return v ? compareConst(v, ">=", 1) : FALSE;
+        }
+        const l = this.linear(e.expr);
+        if (!l) return FALSE;
+        return cond(deathsCondition(this.sideVar(l, e.at.line, e.label), Comparison.AtLeast, 1));
+      }
+      case "not":
+        return not(this.boolInner(e.expr));
+      case "and":
+        return and(e.items.map((i) => this.boolInner(i)));
+      case "or":
+        return or(e.items.map((i) => this.boolInner(i)));
+      case "compare":
+        return this.comparison(e);
+      case "random": {
+        const s = this.m.scratch(this.scratchUsed++);
+        this.m.action(setSwitch(s, SwitchAction.Randomize), e.at.line, `L${e.at.line}: random()`);
+        return cond(switchCondition(s, true));
+      }
+      case "edge":
+        return this.edge(e);
+      case "ternary": {
+        const line = e.at.line;
+        const t = this.m.temp(1);
+        const on = this.m.fresh();
+        const off = this.m.fresh();
+        this.branchOn(e.cond, on, off, line, e.label);
+        const join = this.m.fresh();
+        this.m.enter(on);
+        this.dead = false;
+        this.storeBool(t, e.whenTrue, line, e.label);
+        this.m.jump(join, line, e.label);
+        this.m.enter(off);
+        this.dead = false;
+        this.storeBool(t, e.whenFalse, line, e.label);
+        this.m.jump(join, line, e.label);
+        this.m.enter(join);
+        this.dead = false;
+        return cond(deathsCondition(t, Comparison.AtLeast, 1));
+      }
+      case "call": {
+        const r = this.inline(e.call);
+        return r ? cond(deathsCondition(r, Comparison.AtLeast, 1)) : FALSE;
+      }
+    }
+  }
+  comparison(e) {
+    const l = this.linear(e.left);
+    const r = this.linear(e.right);
+    if (!l || !r) return FALSE;
+    const d = merge(l, scale(r, -1));
+    if (d.terms.length === 0) return compareNumbers(d.c, e.op, 0) ? TRUE : FALSE;
+    if (d.terms.length === 1) {
+      const t = d.terms[0];
+      return compareScaled(t.v, t.k, e.op, -d.c);
+    }
+    const line = e.at.line;
+    const { label } = e;
+    const left = { c: Math.max(0, d.c), terms: d.terms.filter((t) => t.k > 0) };
+    const right = { c: Math.max(0, -d.c), terms: d.terms.filter((t) => t.k < 0).map((t) => ({ v: t.v, k: -t.k })) };
+    const a2 = this.sideVar(left, line, label);
+    const b = this.sideVar(right, line, label);
+    return this.m.compareVars(a2, e.op, b, line, label).bool;
+  }
+};
+function setTruth(v, on) {
+  return v.kind === "dc" ? setDeaths(v, SetModifier.SetTo, on ? 1 : 0) : setBool(v, on);
+}
+function compareScaled(v, k, op, n) {
+  if (k < 0) return compareScaled(v, -k, flipOp(op), -n);
+  if (k === 1) return compareConst(v, op, n);
+  switch (op) {
+    case ">=":
+      return compareConst(v, ">=", Math.ceil(n / k));
+    case ">":
+      return compareConst(v, ">=", Math.ceil((n + 1) / k));
+    case "<=":
+      return compareConst(v, "<=", Math.floor(n / k));
+    case "<":
+      return compareConst(v, "<=", Math.floor((n - 1) / k));
+    case "==":
+      return n % k === 0 ? compareConst(v, "==", n / k) : FALSE;
+    case "!=":
+      return n % k === 0 ? compareConst(v, "!=", n / k) : TRUE;
+  }
+}
+
 // compiler/compiler.ts
 var HYPER_CYCLES_PER_SECOND = 12;
 var PLAIN_CYCLES_PER_SECOND = 0.5;
@@ -4771,7 +5202,7 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
   const refs = [];
   const scripts = /* @__PURE__ */ new Map();
@@ -4923,7 +5354,7 @@ function compileScript(ts, files, names, options) {
   const resolve = (fn) => bodyOf(fn.descriptor) ?? void 0;
   const cyclesPerSecond = collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND;
   const lower = (allocator2, report, touched2) => {
-    const out = { triggers: [], sources: [], programs: [], notes: /* @__PURE__ */ new Map() };
+    const out = { triggers: [], sources: [], programs: [], notes: /* @__PURE__ */ new Map(), ir: [] };
     const error = report ? nodeError : () => {
     };
     for (const entry of collector.entries) {
@@ -4949,7 +5380,10 @@ function compileScript(ts, files, names, options) {
       }
       const start = out.triggers.length;
       const records2 = [];
-      new Structured({ ts, checker, body: body2, machine, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve, ...touched2 ? { touched: records2 } : {} }).run();
+      const owner = entry.options.owners.find((o) => o < PLAYER_SLOTS) ?? 0;
+      const emitted2 = new Structured({ ts, checker, body: body2, owner, owners: entry.options.owners, perPlayer: entry.options.perPlayer, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve }).run();
+      out.ir.push(emitted2.program);
+      new Classic({ machine, program: emitted2.program, error: (node, message) => error(emitted2.nodeOf(node) ?? body2.plan.body, message), ...touched2 ? { touched: records2 } : {} }).run();
       if (touched2 && records2.length) {
         const t = emptyTrigger();
         for (const o of entry.options.owners) t.players[o] = 1;
@@ -4973,7 +5407,7 @@ function compileScript(ts, files, names, options) {
   allocator.reserve(raw.deaths, raw.switches);
   const inBodies = storageOf(touched);
   allocator.reserve(inBodies.deaths, inBodies.switches);
-  const { triggers, sources, programs, notes } = lower(allocator, true);
+  const { triggers, sources, programs, notes, ir } = lower(allocator, true);
   const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {}, ...v.bits ? { bits: v.bits } : {} } : v.kind === "switch" ? { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), flag: v.unit, ...v.at ? { at: v.at } : {} });
   const costs = /* @__PURE__ */ new Map();
   const costOf = (file, line) => {
@@ -4991,7 +5425,7 @@ function compileScript(ts, files, names, options) {
     const [file, line] = key.split("\0");
     costOf(file, Number(line));
   }
-  return result({ triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
+  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
 }
 function checkValuesAsBooleans(ts, checker, sf, programs, error) {
   const isLibraryType = (t, name) => {
@@ -5454,7 +5888,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "2.5.1";
+var VERSION = "2.6.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -5912,16 +6346,37 @@ function readManifest(extras) {
   try {
     const m = JSON.parse(decoder.decode(bytes));
     if (m.version !== 2 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
+    const target = m.target === "remastered" ? { target: m.target } : {};
     const sources = Array.isArray(m.sources) ? m.sources.map((s) => s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null) : [];
     const files = Array.isArray(m.files) ? m.files.filter((f) => typeof f === "string") : [];
     const records2 = Array.isArray(m.records) && m.records.length === m.count && m.records.every((r) => typeof r === "string") ? m.records : void 0;
-    return { version: 2, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...records2 ? { records: records2 } : {} };
+    return { version: 2, ...target, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...records2 ? { records: records2 } : {} };
   } catch {
     return null;
   }
 }
 function withManifest(extras, manifest) {
   return withMember(extras, MANIFEST_MEMBER, manifest ? encoder.encode(JSON.stringify(manifest)) : null);
+}
+function readTarget(extras) {
+  const bytes = member(extras, MANIFEST_MEMBER);
+  if (!bytes) return "classic";
+  try {
+    const m = JSON.parse(decoder.decode(bytes));
+    return m.target === "remastered" ? "remastered" : "classic";
+  } catch {
+    return "classic";
+  }
+}
+function withTarget(extras, target) {
+  const manifest = readManifest(extras);
+  if (manifest) {
+    const next = { ...manifest };
+    if (target === "remastered") next.target = target;
+    else delete next.target;
+    return withManifest(extras, next);
+  }
+  return withMember(extras, MANIFEST_MEMBER, target === "remastered" ? encoder.encode(JSON.stringify({ version: 2, target })) : null);
 }
 function fnv1a(bytes) {
   let h = 2166136261;
@@ -5970,7 +6425,7 @@ function scriptState(triggers, extras) {
   const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
   const stale = !!manifest && !block2;
   const parts = stale && triggers ? staleRecords(triggers, manifest) : null;
-  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt };
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, target: readTarget(extras) };
 }
 function relocateManifest(triggers, extras) {
   const manifest = readManifest(extras);
@@ -5988,9 +6443,9 @@ function reservedStorage(triggers, switchNames, block2) {
   });
   return { reservedDeaths: used.deaths, reservedSwitches: [...switches].sort((a2, b) => a2 - b) };
 }
-function resolveStrings(compiled, intern) {
+function stringResolver(compiled, intern) {
   const cache = /* @__PURE__ */ new Map();
-  const resolve = (local) => {
+  return (local) => {
     if (local === 0) return 0;
     const hit = cache.get(local);
     if (hit !== void 0) return hit;
@@ -5999,6 +6454,9 @@ function resolveStrings(compiled, intern) {
     cache.set(local, index);
     return index;
   };
+}
+function resolveStrings(compiled, intern) {
+  const resolve = stringResolver(compiled, intern);
   return compiled.triggers.map((t) => {
     const next = cloneTrigger(t);
     for (const a2 of next.actions) {
@@ -6035,7 +6493,8 @@ function buildScript(triggers, extras, files, compiled, intern, options = {}) {
     before = triggers.slice();
     after = [];
   }
-  const manifest = { version: 2, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records2.map(hashRecord) };
+  const target = options.target ?? readTarget(extras);
+  const manifest = { version: 2, ...target === "remastered" ? { target } : {}, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records2.map(hashRecord) };
   return { list: [...before, ...records2, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records2.length, sources: manifest.sources }, ...replaced ? { replaced } : {} };
 }
 function triggerAtLine(block2, file, line) {
@@ -6045,6 +6504,1469 @@ function triggerAtLine(block2, file, line) {
     if (s && normalizePath(s.file) === path && s.line <= line) hit = block2.start + i;
   });
   return hit;
+}
+
+// compiler/simulateIr.ts
+var FRAMES_PER_SECOND = 24;
+var U32 = 4294967296;
+var Halt = class extends Error {
+};
+var ProgramRun = class {
+  vars = /* @__PURE__ */ new Map();
+  bits = /* @__PURE__ */ new Map();
+  latches = /* @__PURE__ */ new Map();
+  body;
+  done = false;
+  steps = 0;
+  sim;
+  index;
+  program;
+  constructor(sim, index, program) {
+    this.sim = sim;
+    this.index = index;
+    this.program = program;
+    this.body = this.run();
+  }
+  *run() {
+    const flow = yield* this.block(this.program.body, {});
+    void flow;
+    return "next";
+  }
+  /** One cycle's worth: resume the body until it gives the cycle back or ends. */
+  tick() {
+    if (this.done || !this.body) return;
+    this.steps = 0;
+    const r = this.body.next();
+    if (r.done) {
+      this.done = true;
+      this.body = null;
+    }
+  }
+  step() {
+    if (++this.steps > this.sim.maxSteps) throw new Halt(`A program ran more than ${this.sim.maxSteps} statements in one ${this.sim.target === "classic" ? "cycle" : "frame"}: is there a loop with no sleep() in it?`);
+  }
+  /* ── storage ── */
+  read(id, at) {
+    const v = this.vars.get(id);
+    if (v === void 0) throw new Error(`The variable ${id} was read before it was declared${at ? ` (line ${at.line})` : ""}.`);
+    return v;
+  }
+  store(id, value) {
+    if (typeof value === "number") {
+      let v = Math.trunc(value);
+      if (v < 0) v = 0;
+      else if (v >= U32) v = v % U32;
+      const bits = this.bits.get(id);
+      if (bits) v = Math.min(v, 2 ** bits - 1);
+      this.vars.set(id, v);
+    } else {
+      this.vars.set(id, value);
+    }
+  }
+  declare(decl) {
+    if (decl.bits) this.bits.set(decl.id, decl.bits);
+    this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
+  }
+  /* ── expressions ── */
+  *num(e) {
+    switch (e.kind) {
+      case "const":
+        return e.value;
+      case "var":
+        return Number(this.read(e.id));
+      case "unary":
+        return -(yield* this.num(e.expr));
+      case "binary": {
+        const a2 = yield* this.num(e.left);
+        const b = yield* this.num(e.right);
+        switch (e.op) {
+          case "+":
+            return a2 + b;
+          case "-":
+            return a2 - b;
+          case "*":
+            return a2 * b;
+          case "/":
+            return b === 0 ? 0 : Math.trunc(a2 / b);
+          case "%":
+            return b === 0 ? 0 : a2 % b;
+        }
+        return 0;
+      }
+      case "ternary":
+        return (yield* this.bool(e.cond)) ? yield* this.num(e.whenTrue) : yield* this.num(e.whenFalse);
+      case "intrinsic": {
+        const args = [];
+        for (const a2 of e.args) args.push(yield* this.num(a2));
+        switch (e.name) {
+          case "min":
+            return Math.min(...args);
+          case "max":
+            return Math.max(...args);
+          case "abs":
+            return Math.abs(args[0] ?? 0);
+        }
+        return 0;
+      }
+      case "call":
+        return Number(yield* this.call(e.call));
+    }
+  }
+  *bool(e) {
+    switch (e.kind) {
+      case "const":
+        return e.value;
+      case "cond":
+        return this.sim.condition(e.record);
+      case "var":
+        return Boolean(this.read(e.id));
+      case "test":
+        return (yield* this.num(e.expr)) !== 0;
+      case "compare": {
+        const a2 = yield* this.num(e.left);
+        const b = yield* this.num(e.right);
+        switch (e.op) {
+          case "<":
+            return a2 < b;
+          case "<=":
+            return a2 <= b;
+          case ">":
+            return a2 > b;
+          case ">=":
+            return a2 >= b;
+          case "==":
+            return a2 === b;
+          case "!=":
+            return a2 !== b;
+        }
+        return false;
+      }
+      case "and": {
+        for (const i of e.items) if (!(yield* this.bool(i))) return false;
+        return true;
+      }
+      case "or": {
+        for (const i of e.items) if (yield* this.bool(i)) return true;
+        return false;
+      }
+      case "not":
+        return !(yield* this.bool(e.expr));
+      case "random":
+        return this.sim.random() < 0.5;
+      case "edge": {
+        const held = yield* this.bool(e.cond);
+        const was = this.latches.get(e) ?? false;
+        if (held) {
+          if (was) return false;
+          this.latches.set(e, true);
+          return true;
+        }
+        if (e.edge === "rose") this.latches.set(e, false);
+        return false;
+      }
+      case "ternary":
+        return (yield* this.bool(e.cond)) ? yield* this.bool(e.whenTrue) : yield* this.bool(e.whenFalse);
+      case "call":
+        return Boolean(yield* this.call(e.call));
+    }
+  }
+  *init(e, kind) {
+    return kind === "number" ? yield* this.num(e) : yield* this.bool(e);
+  }
+  *call(c2) {
+    if (c2.result) this.declare(c2.result.decl);
+    for (const p of c2.params) {
+      this.declare(p.decl);
+      this.store(p.decl.id, yield* this.init(p.init, p.decl.kind));
+    }
+    const flow = yield* this.block(c2.body, { fn: { result: c2.result?.decl.id } });
+    if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c2.at.line}).`);
+    return c2.result ? this.read(c2.result.decl.id) : 0;
+  }
+  /* ── statements ── */
+  *block(body2, ctx) {
+    for (const s of body2) {
+      const flow = yield* this.stmt(s, ctx);
+      if (flow !== "next") return flow;
+    }
+    return "next";
+  }
+  /** The back edge of a loop: a cycle on the classic target, nothing on Remastered. */
+  *backEdge() {
+    if (this.sim.target === "classic") yield;
+    return "next";
+  }
+  *stmt(s, ctx) {
+    this.step();
+    switch (s.kind) {
+      case "declare": {
+        this.declare(s.decl);
+        if (!s.failed) this.store(s.decl.id, yield* this.init(s.init, s.decl.kind));
+        return "next";
+      }
+      case "assign":
+        this.store(s.target, yield* this.num(s.value));
+        return "next";
+      case "assignBool":
+        this.store(s.target, yield* this.bool(s.value));
+        return "next";
+      case "if": {
+        if (yield* this.bool(s.cond)) return yield* this.block(s.then, ctx);
+        return s.else ? yield* this.block(s.else, ctx) : "next";
+      }
+      case "while": {
+        for (; ; ) {
+          if (s.cond && !(yield* this.bool(s.cond))) return "next";
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+          yield* this.backEdge();
+        }
+      }
+      case "do": {
+        for (; ; ) {
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+          if (!(yield* this.bool(s.cond))) return "next";
+          yield* this.backEdge();
+        }
+      }
+      case "for": {
+        for (; ; ) {
+          if (s.cond && !(yield* this.bool(s.cond))) return "next";
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+          const up = yield* this.block(s.update, ctx);
+          if (up === "return") return up;
+          yield* this.backEdge();
+        }
+      }
+      case "unrolled": {
+        for (const iteration of s.iterations) {
+          const flow = yield* this.block(iteration, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+        }
+        return "next";
+      }
+      case "switch": {
+        const v = yield* this.num(s.value);
+        let from = s.cases.findIndex((c2) => c2.value !== null && c2.value === v);
+        if (from < 0) from = s.cases.findIndex((c2) => c2.value === null);
+        if (from < 0) return "next";
+        for (let i = from; i < s.cases.length; i++) {
+          const flow = yield* this.block(s.cases[i].body, ctx);
+          if (flow === "break") return "next";
+          if (flow !== "next") return flow;
+        }
+        return "next";
+      }
+      case "break":
+        return "break";
+      case "continue":
+        return "continue";
+      case "return": {
+        if (s.value && ctx.fn?.result) this.store(ctx.fn.result, yield* this.init(s.value, typeof this.read(ctx.fn.result) === "number" ? "number" : "boolean"));
+        return "return";
+      }
+      case "sleep": {
+        const n = this.sim.target === "classic" ? s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * this.program.cyclesPerSecond)) : s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * FRAMES_PER_SECOND));
+        for (let i = 0; i < n; i++) yield;
+        return "next";
+      }
+      case "action": {
+        const record = { ...s.record };
+        if (s.variable) {
+          const v = yield* this.num(s.variable.expr);
+          const stored = Math.max(0, Math.min(v, 2 ** s.variable.bits - 1));
+          record[s.variable.field] = stored;
+        }
+        this.sim.act(this, record, s.at);
+        return "next";
+      }
+      case "call": {
+        yield* this.call(s.call);
+        return "next";
+      }
+      case "block":
+        return yield* this.block(s.body, ctx);
+      case "remark":
+        return "next";
+    }
+  }
+  /** A user variable's value by its source name (the last declared with that name). */
+  value(name) {
+    let found;
+    for (const [id, v] of this.vars) if (id === name || id.startsWith(`${name}#`)) found = v;
+    return found;
+  }
+};
+var ProgramSimulation = class {
+  target;
+  world;
+  runs;
+  events = [];
+  maxSteps;
+  random;
+  conditionOf;
+  cycle = 0;
+  constructor(programs, options) {
+    this.target = options.target;
+    this.world = options.world ?? new Simulation([], { player: options.player ?? programs[0]?.owner ?? 0, condition: options.condition, random: options.random, strings: options.strings });
+    this.maxSteps = options.maxStepsPerCycle ?? 1e5;
+    this.random = options.random ?? Math.random;
+    this.conditionOf = options.condition;
+    this.runs = programs.map((p, i) => new ProgramRun(this, i, p));
+  }
+  get player() {
+    return this.world.player;
+  }
+  /** Deaths, switches, always and never against the world; anything else the caller's, else false. */
+  condition(c2) {
+    switch (c2.type) {
+      case ConditionType.Always:
+        return true;
+      case ConditionType.Never:
+        return false;
+      case ConditionType.Deaths: {
+        const v = this.world.death(c2.player, c2.unitId);
+        const n = c2.amount >>> 0;
+        return c2.comparison === Comparison.AtLeast ? v >= n : c2.comparison === Comparison.AtMost ? v <= n : c2.comparison === Comparison.Exactly ? v === n : false;
+      }
+      case ConditionType.Switch:
+        return c2.comparison === SwitchState.Set ? this.world.switches[c2.resource] === 1 : this.world.switches[c2.resource] === 0;
+      default:
+        return this.conditionOf?.(c2, this.world) ?? false;
+    }
+  }
+  /** An action a program takes: the world's own kinds are applied, the rest logged. */
+  act(run, a2, at) {
+    switch (a2.type) {
+      case ActionType.SetDeaths: {
+        const cur = this.world.death(a2.player, a2.unitId);
+        const n = a2.target >>> 0;
+        this.world.setDeath(a2.player, a2.unitId, a2.modifier === SetModifier.SetTo ? n : a2.modifier === SetModifier.Add ? cur + n >>> 0 : Math.max(0, cur - n));
+        return;
+      }
+      case ActionType.SetSwitch: {
+        const i = a2.target;
+        if (i < 0 || i >= SWITCH_COUNT) return;
+        switch (a2.modifier) {
+          case SwitchAction.Set:
+            this.world.switches[i] = 1;
+            break;
+          case SwitchAction.Clear:
+            this.world.switches[i] = 0;
+            break;
+          case SwitchAction.Toggle:
+            this.world.switches[i] ^= 1;
+            break;
+          case SwitchAction.Randomize:
+            this.world.switches[i] = this.random() < 0.5 ? 0 : 1;
+            break;
+        }
+        return;
+      }
+      case ActionType.Comment:
+      case ActionType.PreserveTrigger:
+        return;
+      default: {
+        const ev = { cycle: this.cycle, program: run.index, at, action: a2 };
+        const text = this.world.text(a2.text);
+        if (text !== void 0) ev.text = text;
+        this.events.push(ev);
+      }
+    }
+  }
+  /** One cycle (or frame): every program in order, from where it left off. */
+  step() {
+    for (const run of this.runs) {
+      try {
+        run.tick();
+      } catch (err) {
+        if (err instanceof Halt) throw new Error(err.message);
+        throw err;
+      }
+    }
+    this.cycle++;
+  }
+  run(cycles) {
+    for (let i = 0; i < cycles; i++) this.step();
+    return this;
+  }
+  /** Whether every program has ended. */
+  finished() {
+    return this.runs.every((r) => r.done);
+  }
+  /** A variable's value by its source name, in a program (the first by default). */
+  value(name, program = 0) {
+    return this.runs[program]?.value(name);
+  }
+};
+
+// compiler/eud.ts
+function checkForTarget(program, target) {
+  const out = [];
+  if (target === "remastered") checkSleeps(program.body, out);
+  return out;
+}
+function assigned(body2, into = /* @__PURE__ */ new Set()) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        into.add(s.decl.id);
+        break;
+      case "assign":
+      case "assignBool":
+        into.add(s.target);
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "for":
+        s.body.forEach(stmt);
+        if (s.kind === "for") s.update.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) into.add(p.decl.id);
+    if (c2.result) into.add(c2.result.decl.id);
+    c2.body.forEach(stmt);
+  };
+  body2.forEach(stmt);
+  return into;
+}
+function reads(e, into = /* @__PURE__ */ new Set()) {
+  switch (e.kind) {
+    case "var":
+      into.add(e.id);
+      break;
+    case "unary":
+      reads(e.expr, into);
+      break;
+    case "binary":
+    case "compare":
+      reads(e.left, into);
+      reads(e.right, into);
+      break;
+    case "ternary":
+      reads(e.cond, into);
+      reads(e.whenTrue, into);
+      reads(e.whenFalse, into);
+      break;
+    case "intrinsic":
+      e.args.forEach((a2) => reads(a2, into));
+      break;
+    case "and":
+    case "or":
+      e.items.forEach((i) => reads(i, into));
+      break;
+    case "not":
+      reads(e.expr, into);
+      break;
+    case "test":
+      reads(e.expr, into);
+      break;
+    case "edge":
+      reads(e.cond, into);
+      break;
+    case "call":
+      break;
+    default:
+      break;
+  }
+  return into;
+}
+function sleepsOnEveryPath(body2) {
+  for (const s of body2) {
+    switch (s.kind) {
+      case "sleep":
+        return true;
+      case "break":
+      case "return":
+        return true;
+      // Leaves the loop: no freeze on this path.
+      case "continue":
+        return false;
+      case "if":
+        if (s.else && sleepsOnEveryPath(s.then) && sleepsOnEveryPath(s.else)) return true;
+        break;
+      case "block":
+        if (sleepsOnEveryPath(s.body)) return true;
+        break;
+      case "unrolled":
+        if (s.iterations.some(sleepsOnEveryPath)) return true;
+        break;
+      case "switch": {
+        const hasDefault = s.cases.some((c2) => c2.value === null);
+        if (hasDefault && s.cases.every((c2) => sleepsOnEveryPath(c2.body))) return true;
+        break;
+      }
+      case "while":
+      case "do":
+      case "for":
+        if (sleepsOnEveryPath(s.body)) return true;
+        break;
+      case "call":
+        if (sleepsOnEveryPath(s.call.body)) return true;
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+function checkSleeps(body2, out) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "while":
+      case "for":
+      case "do": {
+        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body).has(id)) : false;
+        if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond ? "This loop's condition never changes inside it, and no path around it sleeps: on the Remastered target the body runs to completion within a frame, so this loop would never give the frame back. Add sleep(frames(1)) inside it, or change what it tests." : "A loop without an end needs a sleep() on every path around it: on the Remastered target the body runs to completion within a frame, so this loop would freeze the game. Add sleep(frames(1)) inside it." });
+        s.body.forEach(stmt);
+        if (s.kind === "for") s.update.forEach(stmt);
+        break;
+      }
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function serializeIr(programs, resolve) {
+  const action2 = (r) => ({ ...r, text: resolve(r.text), wav: resolve(r.wav) });
+  const condition2 = (r) => ({ ...r });
+  const expr = (e) => {
+    switch (e.kind) {
+      case "unary":
+        return { ...e, expr: expr(e.expr) };
+      case "binary":
+      case "compare":
+        return { ...e, left: expr(e.left), right: expr(e.right) };
+      case "ternary":
+        return { ...e, cond: expr(e.cond), whenTrue: expr(e.whenTrue), whenFalse: expr(e.whenFalse) };
+      case "intrinsic":
+        return { ...e, args: e.args.map(expr) };
+      case "call":
+        return { ...e, call: call(e.call) };
+      case "cond":
+        return { ...e, record: condition2(e.record) };
+      case "test":
+        return { ...e, expr: expr(e.expr) };
+      case "and":
+      case "or":
+        return { ...e, items: e.items.map(expr) };
+      case "not":
+        return { ...e, expr: expr(e.expr) };
+      case "edge":
+        return { ...e, cond: expr(e.cond) };
+      default:
+        return e;
+    }
+  };
+  const call = (c2) => ({ ...c2, params: c2.params.map((p) => ({ ...p, init: expr(p.init) })), body: c2.body.map(stmt) });
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        return { ...s, init: expr(s.init) };
+      case "assign":
+        return { ...s, value: expr(s.value) };
+      case "assignBool":
+        return { ...s, value: expr(s.value) };
+      case "if":
+        return { ...s, cond: expr(s.cond), then: s.then.map(stmt), ...s.else ? { else: s.else.map(stmt) } : {} };
+      case "while":
+        return { ...s, ...s.cond ? { cond: expr(s.cond) } : {}, body: s.body.map(stmt) };
+      case "do":
+        return { ...s, body: s.body.map(stmt), cond: expr(s.cond) };
+      case "for":
+        return { ...s, ...s.cond ? { cond: expr(s.cond) } : {}, update: s.update.map(stmt), body: s.body.map(stmt) };
+      case "unrolled":
+        return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
+      case "switch":
+        return { ...s, value: expr(s.value), cases: s.cases.map((c2) => ({ ...c2, body: c2.body.map(stmt) })) };
+      case "return":
+        return s.value ? { ...s, value: expr(s.value) } : s;
+      case "action":
+        return { ...s, record: action2(s.record), ...s.variable ? { variable: { ...s.variable, expr: expr(s.variable.expr) } } : {} };
+      case "call":
+        return { ...s, call: call(s.call) };
+      case "block":
+        return { ...s, body: s.body.map(stmt) };
+      default:
+        return s;
+    }
+  };
+  return JSON.stringify({ version: programs[0]?.version ?? 1, programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
+}
+
+// compiler/generated/trigscriptPy.ts
+var TRIGSCRIPT_PY = `"""
+[trigscript]
+ir : /work/files/trigscript.json
+
+TrigScript's Remastered target: the euddraft plugin that lowers the compiler's IR \u2014 data,
+never code \u2014 into eudplib. The IR file is what the plugin's compiler wrote (docs/ir.md);
+this module is handed to the eudplib library plugin as a source with every build, so the
+two halves of the IR version are always the same build.
+
+A program is a coroutine the game runs every frame. Its body is lowered to straight-line
+eudplib triggers with jumps between labels (the same shape the classic backend's state
+machine has): \`if\` / \`while\` / \`switch\` become conditional jumps, and \`sleep\` stores the
+label to resume at in a state variable, sets a frame counter, and leaves the frame. The
+frame's entry counts the wait down, then jumps to the stored label. A per-player program
+runs once per human player each frame with CurrentPlayer set, its variables and its state
+as 12-slot arrays indexed by the player.
+
+Numbers keep the classic contract: 32-bit unsigned, an expression's exact value stored
+below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
+"""
+import json
+
+from eudplib import *
+
+IR_VERSION = 1
+FRAMES_PER_SECOND = 24
+# The state of a program whose body ended: nothing resumes it.
+DONE = 0xFFFFFFFF
+U32 = 0xFFFFFFFF
+
+with open(settings["ir"], encoding="utf-8") as _f:
+    IR = json.load(_f)
+if IR.get("version") != IR_VERSION:
+    raise RuntimeError("trigscript: the IR is version %r; this plugin reads version %d" % (IR.get("version"), IR_VERSION))
+
+
+def where(node):
+    """" at main.ts:12:5" for a node with a position \u2014 what the editor parses back into a marker."""
+    at = node.get("at") if isinstance(node, dict) else None
+    if not at:
+        return ""
+    if at.get("file"):
+        return " at %s:%s:%s" % (at.get("file"), at.get("line"), at.get("column"))
+    return " at %s:%s" % (at.get("line"), at.get("column"))
+
+
+class Fail(RuntimeError):
+    pass
+
+
+class Leave(Exception):
+    """Raised through the lowering when a statement ends the straight line (break / continue / return)."""
+
+
+class Storage:
+    """A variable's cell: plain, or a 12-slot row of a per-player program."""
+
+    def __init__(self, decl, per_player, player_of):
+        self.decl = decl
+        self.bits = decl.get("bits")
+        self.rowed = per_player and not decl.get("shared")
+        self.player_of = player_of
+        self.store = EUDArray([0] * 12) if self.rowed else EUDVariable(0)
+
+    def get(self):
+        return self.store[self.player_of()] if self.rowed else self.store
+
+    def set(self, value):
+        if self.bits:
+            value = saturate(value, self.bits)
+        if self.rowed:
+            self.store[self.player_of()] = value
+        else:
+            self.store << value
+
+
+def saturate(value, bits):
+    top = (1 << bits) - 1
+    if isinstance(value, int):
+        return min(value, top)
+    v = EUDVariable()
+    v << value
+    if EUDIf()(v >= top + 1):
+        v << top
+    EUDEndIf()
+    return v
+
+
+def as_var(value):
+    if isinstance(value, int):
+        return EUDVariable(value & U32)
+    return value
+
+
+class Lowering:
+    def __init__(self, program):
+        self.p = program
+        self.per_player = bool(program.get("perPlayer"))
+        self.owner = int(program.get("owner", 0))
+        self.player = None
+        self.vars = {}
+        self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)
+        self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)
+        self.resumes = []  # (index, Forward) for every sleep
+        self.frame_end = None
+        self.latches = {}
+
+    # \u2500\u2500 storage \u2500\u2500
+    def player_of(self):
+        if self.player is None:
+            raise Fail("trigscript: a per-player variable outside the player loop")
+        return self.player
+
+    def declare(self, decl):
+        s = Storage(decl, self.per_player, self.player_of)
+        self.vars[decl["id"]] = s
+        return s
+
+    def var(self, id_, node=None):
+        s = self.vars.get(id_)
+        if s is None:
+            raise Fail("trigscript: unknown variable %r%s" % (id_, where(node)))
+        return s
+
+    def get_state(self):
+        return self.state[self.player] if self.per_player else self.state
+
+    def set_state(self, value):
+        if self.per_player:
+            self.state[self.player] = value
+        else:
+            self.state << value
+
+    def get_wait(self):
+        return self.wait[self.player] if self.per_player else self.wait
+
+    def set_wait(self, value):
+        if self.per_player:
+            self.wait[self.player] = value
+        else:
+            self.wait << value
+
+    # \u2500\u2500 numbers: an int or an EUDVariable \u2500\u2500
+    def linear(self, e, pos, neg, sign):
+        """Flatten + and - into positive and negative terms; anything else is one term."""
+        k = e["kind"]
+        if k == "binary" and e["op"] in ("+", "-"):
+            self.linear(e["left"], pos, neg, sign)
+            self.linear(e["right"], pos, neg, sign if e["op"] == "+" else -sign)
+        elif k == "unary":
+            self.linear(e["expr"], pos, neg, -sign)
+        else:
+            (pos if sign > 0 else neg).append(self.term(e))
+
+    def num(self, e):
+        k = e["kind"]
+        if k == "unary" or (k == "binary" and e["op"] in ("+", "-")):
+            pos, neg = [], []
+            self.linear(e, pos, neg, 1)
+            cp = sum(t for t in pos if isinstance(t, int))
+            cn = sum(t for t in neg if isinstance(t, int))
+            vp = [t for t in pos if not isinstance(t, int)]
+            vn = [t for t in neg if not isinstance(t, int)]
+            if not vp and not vn:
+                return max(cp - cn, 0) & U32
+            if not vn and cn == 0:
+                acc = EUDVariable(cp & U32)
+                for t in vp:
+                    acc += t
+                return acc
+            acc = EUDVariable(cp & U32)
+            for t in vp:
+                acc += t
+            sub = EUDVariable(cn & U32)
+            for t in vn:
+                sub += t
+            r = EUDVariable()
+            if EUDIf()(acc >= sub):
+                r << acc - sub
+            if EUDElse()():
+                r << 0
+            EUDEndIf()
+            return r
+        return self.term(e)
+
+    def term(self, e):
+        k = e["kind"]
+        if k == "const":
+            return int(e["value"]) & U32
+        if k == "var":
+            return self.var(e["id"], e).get()
+        if k == "binary":
+            a, b = self.num(e["left"]), self.num(e["right"])
+            op = e["op"]
+            if isinstance(a, int) and isinstance(b, int):
+                if op == "*":
+                    return (a * b) & U32
+                if b == 0:
+                    raise Fail("trigscript: division by zero%s" % where(e))
+                return (a // b if op == "/" else a % b) & U32
+            if op == "*":
+                return f_mul(as_var(a), as_var(b))
+            q, r = f_div(as_var(a), as_var(b))
+            return q if op == "/" else r
+        if k == "unary":
+            return self.num(e)
+        if k == "ternary":
+            t = EUDVariable()
+            if EUDIf()(self.cond(e["cond"])):
+                t << self.num(e["whenTrue"])
+            if EUDElse()():
+                t << self.num(e["whenFalse"])
+            EUDEndIf()
+            return t
+        if k == "intrinsic":
+            args = [self.num(a) for a in e["args"]]
+            name = e["name"]
+            if name == "abs":
+                return args[0]  # unsigned: a stored value is never negative
+            a, b = args
+            if isinstance(a, int) and isinstance(b, int):
+                return min(a, b) if name == "min" else max(a, b)
+            t = EUDVariable()
+            av, bv = as_var(a), as_var(b)
+            if EUDIf()(av <= bv if name == "min" else av >= bv):
+                t << av
+            if EUDElse()():
+                t << bv
+            EUDEndIf()
+            return t
+        if k == "call":
+            return self.call(e["call"])
+        raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))
+
+    # \u2500\u2500 booleans: an eudplib condition \u2500\u2500
+    def cond(self, e):
+        k = e["kind"]
+        if k == "const":
+            return EUDVariable(1 if e["value"] else 0) >= 1
+        if k == "cond":
+            return condition(e["record"])
+        if k == "var":
+            return as_var(self.var(e["id"], e).get()) >= 1
+        if k == "test":
+            return as_var(self.num(e["expr"])) >= 1
+        if k == "compare":
+            a, b = self.num(e["left"]), self.num(e["right"])
+            op = e["op"]
+            if isinstance(a, int) and isinstance(b, int):
+                return EUDVariable(1 if compare(a, op, b) else 0) >= 1
+            # One comparison, built once: a comparison between variables writes into its own
+            # condition, and one that is built and dropped is an orphan eudplib refuses.
+            av = as_var(a)
+            if op == "==":
+                return av == b
+            if op == "!=":
+                return av != b
+            if op == "<":
+                return av < b
+            if op == "<=":
+                return av <= b
+            if op == ">":
+                return av > b
+            return av >= b
+        if k == "and":
+            return EUDAnd(*[self.cond(c) for c in e["items"]])
+        if k == "or":
+            return EUDOr(*[self.cond(c) for c in e["items"]])
+        if k == "not":
+            return EUDNot(self.cond(e["expr"]))
+        if k == "random":
+            return (f_rand() & 1) >= 1
+        if k == "edge":
+            return self.edge(e)
+        if k == "ternary":
+            t = EUDVariable()
+            if EUDIf()(self.cond(e["cond"])):
+                t << self.truth(e["whenTrue"])
+            if EUDElse()():
+                t << self.truth(e["whenFalse"])
+            EUDEndIf()
+            return t >= 1
+        if k == "call":
+            return as_var(self.call(e["call"])) >= 1
+        raise Fail("trigscript: unknown condition %r%s" % (k, where(e)))
+
+    def truth(self, e):
+        """A boolean expression as 0 / 1."""
+        if e["kind"] == "const":
+            return 1 if e["value"] else 0
+        if e["kind"] == "var":
+            return self.var(e["id"], e).get()
+        t = EUDVariable(0)
+        if EUDIf()(self.cond(e)):
+            t << 1
+        EUDEndIf()
+        return t
+
+    def edge(self, e):
+        """rose(c): true on the frame c becomes true; once(c): true the first time it holds."""
+        key = id(e)
+        if key not in self.latches:
+            self.latches[key] = EUDArray([0] * 12) if self.per_player else EUDVariable(0)
+        latch = self.latches[key]
+
+        def get():
+            return latch[self.player] if self.per_player else latch
+
+        def put(v):
+            if self.per_player:
+                latch[self.player] = v
+            else:
+                latch << v
+
+        fired = EUDVariable(0)
+        held = self.truth(e["cond"])
+        if EUDIf()(as_var(held) >= 1):
+            if EUDIf()(as_var(get()) == 0):
+                fired << 1
+                put(1)
+            EUDEndIf()
+        if EUDElse()():
+            if e["edge"] == "rose":
+                put(0)
+        EUDEndIf()
+        return fired >= 1
+
+    # \u2500\u2500 statements \u2500\u2500
+    def block(self, statements, ctx):
+        for st in statements:
+            self.statement(st, ctx)
+
+    def statement(self, st, ctx):
+        k = st["kind"]
+        if k == "declare":
+            s = self.declare(st["decl"])
+            if not st.get("failed"):
+                s.set(self.num(st["init"]) if st["decl"]["kind"] == "number" else self.truth(st["init"]))
+        elif k == "assign":
+            self.var(st["target"], st).set(self.num(st["value"]))
+        elif k == "assignBool":
+            self.var(st["target"], st).set(self.truth(st["value"]))
+        elif k == "if":
+            self.if_(st, ctx)
+        elif k == "while":
+            self.while_(st, ctx)
+        elif k == "do":
+            self.do_(st, ctx)
+        elif k == "for":
+            self.for_(st, ctx)
+        elif k == "unrolled":
+            self.unrolled(st, ctx)
+        elif k == "switch":
+            self.switch(st, ctx)
+        elif k == "break":
+            if "break" not in ctx:
+                raise Fail("trigscript: break outside a loop%s" % where(st))
+            EUDJump(ctx["break"])
+            raise Leave()
+        elif k == "continue":
+            if "continue" not in ctx:
+                raise Fail("trigscript: continue outside a loop%s" % where(st))
+            EUDJump(ctx["continue"])
+            raise Leave()
+        elif k == "return":
+            fn = ctx.get("fn")
+            if fn is None:
+                raise Fail("trigscript: return outside a function%s" % where(st))
+            if st.get("value") is not None and fn["result"] is not None:
+                fn["result"].set(self.num(st["value"]) if fn["kind"] == "number" else self.truth(st["value"]))
+            EUDJump(fn["end"])
+            raise Leave()
+        elif k == "sleep":
+            self.sleep(st)
+        elif k == "action":
+            self.action(st)
+        elif k == "call":
+            self.call(st["call"])
+        elif k == "block":
+            self.block(st["body"], ctx)
+        elif k == "remark":
+            pass
+        else:
+            raise Fail("trigscript: unknown statement %r%s" % (k, where(st)))
+
+    def straight(self, statements, ctx):
+        """A statement list whose end may not be reached (a break inside): Leave stops it. True when the end was reached."""
+        try:
+            self.block(statements, ctx)
+            return True
+        except Leave:
+            return False
+
+    def if_(self, st, ctx):
+        else_l, end = Forward(), Forward()
+        EUDJumpIfNot(self.cond(st["cond"]), else_l)
+        if self.straight(st["then"], ctx):
+            EUDJump(end)
+        else_l << NextTrigger()
+        if st.get("else"):
+            self.straight(st["else"], ctx)
+        end << NextTrigger()
+
+    def while_(self, st, ctx):
+        head, exit_ = Forward(), Forward()
+        head << NextTrigger()
+        if st.get("cond") is not None:
+            EUDJumpIfNot(self.cond(st["cond"]), exit_)
+        if self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": head})):
+            EUDJump(head)
+        exit_ << NextTrigger()
+
+    def do_(self, st, ctx):
+        body, check, exit_ = Forward(), Forward(), Forward()
+        body << NextTrigger()
+        self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": check}))
+        check << NextTrigger()
+        EUDJumpIf(self.cond(st["cond"]), body)
+        exit_ << NextTrigger()
+
+    def for_(self, st, ctx):
+        head, update, exit_ = Forward(), Forward(), Forward()
+        head << NextTrigger()
+        if st.get("cond") is not None:
+            EUDJumpIfNot(self.cond(st["cond"]), exit_)
+        self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": update}))
+        update << NextTrigger()
+        if self.straight(st["update"], ctx):
+            EUDJump(head)
+        exit_ << NextTrigger()
+
+    def unrolled(self, st, ctx):
+        exit_ = Forward()
+        for statements in st["iterations"]:
+            nxt = Forward()
+            self.straight(statements, dict(ctx, **{"break": exit_, "continue": nxt}))
+            nxt << NextTrigger()
+        exit_ << NextTrigger()
+
+    def switch(self, st, ctx):
+        v = as_var(self.num(st["value"]))
+        exit_ = Forward()
+        labels = [Forward() for _ in st["cases"]]
+        default = None
+        for c, label in zip(st["cases"], labels):
+            if c["value"] is None:
+                default = label
+                continue
+            n = c["value"]
+            if n != n or n < 0 or n > U32:  # NaN, or a value the variable never holds
+                continue
+            EUDJumpIf(v == int(n), label)
+        EUDJump(default if default is not None else exit_)
+        for c, label in zip(st["cases"], labels):
+            label << NextTrigger()
+            self.straight(c["body"], dict(ctx, **{"break": exit_}))
+        exit_ << NextTrigger()
+
+    def sleep(self, st):
+        if st.get("cycles") is not None:
+            frames = int(st["cycles"])
+        else:
+            frames = max(1, int(round(float(st.get("ms", 0)) * FRAMES_PER_SECOND / 1000)))
+        index = len(self.resumes) + 1
+        resume = Forward()
+        self.resumes.append((index, resume))
+        self.set_state(index)
+        self.set_wait(frames)
+        EUDJump(self.frame_end)
+        resume << NextTrigger()
+
+    def action(self, st):
+        r = st["record"]
+        variable = st.get("variable")
+        fields = dict(locid1=r["location"], strid=r["text"], wavid=r["wav"], time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])
+        if variable is None:
+            DoActions(Action(**fields))
+            return
+        value = as_var(self.num(variable["expr"]))
+        field = variable["field"]
+        if field == "modifier":
+            # A unit count: the byte field is not a variable's place, so the action is done once per unit.
+            fields["amount"] = 1
+            for _ in EUDLoopRange(0, value):
+                DoActions(Action(**fields))
+            return
+        name = {"target": "player2", "time": "time", "player": "player1", "location": "locid1", "text": "strid", "wav": "wavid", "unitId": "unitid"}.get(field)
+        if name is None:
+            raise Fail("trigscript: no variable can stand in the %s field%s" % (field, where(st)))
+        fields[name] = value
+        DoActions(Action(**fields))
+
+    def call(self, call):
+        result = self.declare(call["result"]["decl"]) if call.get("result") else None
+        if result is not None:
+            result.set(0)
+        for p in call["params"]:
+            s = self.declare(p["decl"])
+            s.set(self.num(p["init"]) if p["decl"]["kind"] == "number" else self.truth(p["init"]))
+        end = Forward()
+        self.straight(call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}})
+        end << NextTrigger()
+        return result.get() if result is not None else 0
+
+    # \u2500\u2500 one frame \u2500\u2500
+    def frame(self):
+        self.frame_end = Forward()
+        start = Forward()
+        skip = Forward()
+        # Still waiting: count down and leave.
+        EUDJumpIfNot(as_var(self.get_wait()) >= 1, skip)
+        self.set_wait(as_var(self.get_wait()) - 1)
+        EUDJump(self.frame_end)
+        skip << NextTrigger()
+        # The body once, resumes recorded as sleeps are met; the jump table is filled in after.
+        table = Forward()
+        EUDJump(table)
+        start << NextTrigger()
+        try:
+            self.block(self.p["body"], {})
+        except Leave:
+            pass
+        # The body ended: the program stops for good, as the classic backend's does.
+        self.set_state(DONE)
+        EUDJump(self.frame_end)
+        table << NextTrigger()
+        EUDJumpIf(as_var(self.get_state()) == DONE, self.frame_end)
+        for index, resume in self.resumes:
+            EUDJumpIf(as_var(self.get_state()) == index, resume)
+        EUDJump(start)
+        self.frame_end << NextTrigger()
+
+    def run(self):
+        if self.per_player:
+            for p in EUDLoopPlayer("Human"):
+                self.player = p
+                f_setcurpl(p)
+                self.frame()
+            self.player = None
+        else:
+            f_setcurpl(self.owner if self.owner < 12 else 0)
+            self.frame()
+
+
+def compare(a, op, b):
+    return {"==": a == b, "!=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
+
+
+def condition(r):
+    return Condition(r["location"], r["player"], r["amount"], r["unitId"], r["comparison"], r["type"], r["resource"], r["flags"], eudx=r.get("mask", 0) or 0)
+
+
+PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
+
+
+def afterTriggerExec():
+    for prog in PROGRAMS:
+        prog.run()
+`;
+
+// vendor/eudplib.ts
+var EUDPLIB_SERVICE = "eudplib.build";
+
+// service.ts
+var EudBuildError = class extends Error {
+  at;
+  constructor(message) {
+    super(message);
+    this.name = "EudBuildError";
+    const m = /\bat (?:([^\s:]+\.ts):)?(\d+):(\d+)\b/.exec(message);
+    this.at = m ? { file: m[1] ?? ENTRY_FILE, line: Number(m[2]), column: Number(m[3]) } : null;
+  }
+};
+function snapshotExtras(api) {
+  const out = /* @__PURE__ */ new Map();
+  for (const name of api.document.extras.list()) {
+    if (!isScriptMember(name)) continue;
+    const bytes = api.document.extras.get(name);
+    if (bytes) out.set(name, bytes);
+  }
+  return out;
+}
+function commitExtras(api, before, after) {
+  for (const name of before.keys()) if (!after.has(name)) api.document.extras.remove(name);
+  for (const [name, bytes] of after) if (before.get(name) !== bytes) api.document.extras.set(name, bytes);
+}
+var ScriptService = class {
+  api;
+  claim;
+  compiler;
+  lastManifest;
+  constructor(api, open, compiler = compileInBackground) {
+    this.api = api;
+    this.compiler = compiler;
+    this.claim = api.triggers.claim({
+      label: "the TrigScript block",
+      badge: "script",
+      locate: (list) => {
+        const manifest = readManifest(snapshotExtras(api));
+        return manifest ? findBlock(list, manifest) : null;
+      },
+      describe: (index, list) => {
+        const at = this.sourceOf(index, list);
+        return `This trigger is generated by the map's TrigScript${at ? ` (${at.file}, line ${at.line})` : ""}. Edit the source instead; a Build replaces the whole block.`;
+      },
+      open: (index, list) => {
+        const at = this.sourceOf(index, list);
+        open(at?.file, at?.line);
+      },
+      openLabel: "Open TrigScript"
+    });
+  }
+  sourceOf(index, list) {
+    const manifest = readManifest(snapshotExtras(this.api));
+    const block2 = manifest ? findBlock(list, manifest) : null;
+    return block2 ? block2.sources[index - block2.start] ?? null : null;
+  }
+  /** The Monaco build's base URL — the standard library is fetched from there too. */
+  dist() {
+    return this.api.storage.get(DIST_STORAGE_KEY, DEFAULT_DIST);
+  }
+  /** The map's script files, its manifest, and whether the built block is still intact. Null with no map. */
+  state() {
+    if (!this.api.document.isOpen()) return null;
+    return scriptState(this.api.triggers.list(), snapshotExtras(this.api));
+  }
+  /** The target the open map's script is written for; classic with no map. */
+  target() {
+    if (!this.api.document.isOpen()) return "classic";
+    return readTarget(snapshotExtras(this.api));
+  }
+  /** Record the target in `build.json` (marks the map modified when it changes). */
+  setTarget(target) {
+    if (!this.api.document.isOpen() || this.target() === target) return;
+    const before = snapshotExtras(this.api);
+    commitExtras(this.api, before, withTarget(before, target));
+  }
+  /** The eudplib plugin's service, or null when it is not installed or is off. */
+  library() {
+    return this.api.services.get(EUDPLIB_SERVICE);
+  }
+  /** Called at once and whenever the eudplib plugin arrives or goes. */
+  watchLibrary(listener) {
+    return this.api.services.watch(EUDPLIB_SERVICE, (s) => listener(s));
+  }
+  /** What a target cannot take in a compile's programs, as diagnostics the editor shows like the compiler's own. */
+  targetDiagnostics(compiled, target) {
+    const out = [];
+    for (const p of compiled.ir) {
+      for (const d of checkForTarget(p, target)) out.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
+    }
+    return out;
+  }
+  /**
+   * The Remastered build: the map as it stands (the classic block just installed, so
+   * every text the IR names is in it), the IR, and `python/trigscript.py` to the eudplib
+   * plugin's service. The library asks to download its runtime the first time. Throws
+   * `EudBuildError`, with the IR node's position when the lowering named one.
+   */
+  async buildRemastered(ir, options = {}) {
+    const svc = this.library();
+    if (!svc) throw new EudBuildError("The eudplib plugin is not running; install or turn it on under Plugins \u25B8 Manage Plugins\u2026.");
+    if (!await svc.ensure({ reason: "TrigScript needs it to build this map for StarCraft: Remastered." })) throw new EudBuildError("Not built: the build runtime was not installed.");
+    const file = await this.api.document.export();
+    if (!file) throw new EudBuildError("No map is open.");
+    const map = new Uint8Array(await file.arrayBuffer());
+    try {
+      const r = await svc.build(
+        { map, plugins: { trigscript: { ir: "/work/files/trigscript.json" }, eudTurbo: {} }, sources: { trigscript: TRIGSCRIPT_PY }, files: { "trigscript.json": ir } },
+        { onLog: options.onLog, signal: options.signal }
+      );
+      return { map: r.map, log: r.log, chkBytes: r.chkBytes, ms: r.ms };
+    } catch (err) {
+      throw err instanceof EudBuildError ? err : new EudBuildError(String(err.message ?? err));
+    }
+  }
+  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names and custom unit names. Null with no map. */
+  names() {
+    const api = this.api;
+    const info = api.document.info();
+    if (!info) return null;
+    const custom = new Map(api.settings.unitTypes().map((u) => [u.id, u.customName]));
+    const used = [...new Set(api.query.locationsIn({ x0: 0, y0: 0, x1: info.width, y1: info.height }))].sort((a2, b) => a2 - b);
+    const switchNames = api.triggers.switchNames();
+    const names = scriptNames({
+      forceNames: api.settings.forces().map((f) => f.name || null),
+      locations: used.map((index) => ({ index, name: api.names.location(index) })),
+      switchNames,
+      unitCustomName: (id) => custom.get(id) || null
+    });
+    const triggers = api.triggers.list();
+    const state = scriptState(triggers, snapshotExtras(api));
+    const reserved = reservedStorage(triggers, switchNames, state.block);
+    const decls = generateDeclarations(names);
+    const reservedDeaths = reserved.reservedDeaths ?? [];
+    const reservedSwitches = reserved.reservedSwitches ?? [];
+    return { names, decls, reservedDeaths, reservedSwitches, context: hashText(`${decls}\0${JSON.stringify([reservedDeaths, reservedSwitches])}`) };
+  }
+  /** The id of the map in front, or null on a host without ids (every map then compares equal). */
+  documentId() {
+    const doc = this.api.document;
+    return typeof doc.id === "function" ? doc.id() : null;
+  }
+  /** The declarations for the open map; `compact` is the shorter variant for a language model. */
+  declarations(options = {}) {
+    const map = this.names();
+    if (!map) return "";
+    return options.compact ? generateDeclarations(map.names, { compact: true }) : map.decls;
+  }
+  /** A command's input as files: a string is the entry file, over the map's other files. */
+  filesOf(input) {
+    if (typeof input !== "string") return { ...input };
+    return { ...this.state()?.files ?? {}, [ENTRY_FILE]: input };
+  }
+  /** Compile against the open map's names; rejects with `CompileSuperseded` when a newer compile started first. */
+  async compile(input) {
+    return (await this.prepare(input)).compiled;
+  }
+  /**
+   * Compile into an artifact `install` can check: the files as they are now, against the
+   * map in front and its names as they are now (`map`, when the caller already has them —
+   * the editor keeps a copy that follows the map's events).
+   */
+  async prepare(input, map = this.names()) {
+    if (!map) throw new Error("No map is open.");
+    const files = this.filesOf(input);
+    const document2 = this.documentId();
+    const archived = hashFiles(this.state()?.files ?? {});
+    const compiled = await this.compiler({ files, names: map.names, reservedDeaths: map.reservedDeaths, reservedSwitches: map.reservedSwitches }, this.dist());
+    return { files, compiled, document: document2, context: map.context, archived };
+  }
+  /**
+   * Install an artifact as the block — replacing the previous one, or appending when the
+   * previous was edited by hand — and store its files with the map, in one
+   * `document.update`. Refused, with the reason, when it has errors or the map it was
+   * compiled for is not the one in front any more (closed, switched, or changed under
+   * it). Files edited in the archive since the compile started are left as they are.
+   * `takeOver` replaces the whole trigger list with the script's.
+   */
+  install(artifact, options = {}) {
+    const { compiled, files } = artifact;
+    const refuse = (refused) => ({ compiled, block: null, refused });
+    if (!this.api.document.isOpen()) return refuse("closed");
+    if (this.documentId() !== artifact.document) return refuse("switched");
+    const map = this.names();
+    if (!map || map.context !== artifact.context) return refuse("changed");
+    if (!compiled.ok) return refuse("errors");
+    const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
+    let block2 = null;
+    let replaced;
+    let ir;
+    this.api.document.update("Build TrigScript", (tx) => {
+      const before = snapshotExtras(this.api);
+      const intern = (text) => tx.strings.intern(text);
+      const plan = buildScript(tx.triggers.list(), before, files, compiled, intern, { ...options, keepFiles });
+      tx.triggers.set(plan.list);
+      commitExtras(this.api, before, plan.extras);
+      block2 = plan.block;
+      replaced = plan.replaced;
+      if (options.ir) ir = serializeIr(compiled.ir, stringResolver(compiled, intern));
+    });
+    this.claim.refresh();
+    if (block2) {
+      const b = block2;
+      this.api.ui.status(b.count === 0 ? "Built: the script defines no triggers." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}.`);
+    }
+    return { compiled, block: block2, ...replaced ? { replaced } : {}, ...ir !== void 0 ? { ir } : {} };
+  }
+  /**
+   * `prepare` then `install`. When the map changed under the compile, it is compiled
+   * again against the new names, twice at most, before the refusal is reported.
+   */
+  async build(input, options = {}) {
+    for (let attempt = 0; ; attempt++) {
+      const out = this.install(await this.prepare(input), options);
+      if (out.refused !== "changed" || attempt >= 2) return out;
+    }
+  }
+  /** Records as raw `trigger()` calls in the script language — what Import map triggers writes. */
+  print(triggers, options) {
+    const names = this.names()?.names ?? scriptNames();
+    return printScript(triggers, { names, string: (i) => this.api.names.string(i) }, options);
+  }
+  /** The trigger-cycle interpreter over records: Deaths, Switch, Always and Never modelled, other conditions false, other actions logged. */
+  simulate(triggers, cycles, options = {}) {
+    const sim = simulate(triggers, cycles, { player: options.player, strings: (i) => this.api.names.string(i) });
+    const switches = [];
+    sim.switches.forEach((v, i) => {
+      if (v) switches.push(i);
+    });
+    return { cycles: sim.cycle, events: sim.events, switches };
+  }
+  /** The index of the trigger a 1-based line of a file generated, per the build manifest; null when none did or the block is stale. */
+  triggerAt(file, line) {
+    const state = this.state();
+    return state?.block && !state.stale ? triggerAtLine(state.block, file, line) : null;
+  }
+  /** The files as typed, straight into the archive (the map is modified; only Build changes triggers). */
+  writeFiles(files) {
+    if (!this.api.document.isOpen()) return;
+    const before = snapshotExtras(this.api);
+    commitExtras(this.api, before, withFiles(before, files));
+  }
+  /** The hand-made triggers around the block, in list order: what Import map triggers rewrites as script. */
+  handTriggers() {
+    const list = this.api.triggers.list();
+    const block2 = this.state()?.block ?? null;
+    return block2 ? { before: list.slice(0, block2.start), after: list.slice(block2.start + block2.count) } : { before: list, after: [] };
+  }
+  /** After the trigger list changed under the block: point the manifest at where it went. */
+  relocate() {
+    if (!this.api.document.isOpen()) return;
+    const before = snapshotExtras(this.api);
+    const moved = relocateManifest(this.api.triggers.list(), before);
+    if (moved) commitExtras(this.api, before, moved);
+  }
+  /** The manifest member changed (a build, a relocation, another map): the editors should ask `locate` again. */
+  manifestChanged() {
+    const now = readManifestBytes(this.api);
+    const changed = now !== this.lastManifest;
+    this.lastManifest = now;
+    return changed;
+  }
+};
+function readManifestBytes(api) {
+  for (const [name, bytes] of snapshotExtras(api)) if (name.toLowerCase().endsWith("build.json")) return bytes;
+  return null;
 }
 
 // editor.ts
@@ -6112,6 +8034,10 @@ var STYLE = `
 .tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
 .tsd .tsd-notice .grow { flex: 1; }
 .tsd .tsd-mode { margin-left: 4px; }
+.tsd .tsd-target { margin-left: 4px; }
+.tsd .tsd-library { font-size: var(--fs-xs); color: var(--text-faint); white-space: nowrap; }
+.tsd .tsd-eud { margin: 0; }
+.tsd .tsd-eud pre { max-height: 160px; overflow: auto; margin: 4px 0 0; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-xs); background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--radius); white-space: pre-wrap; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 function ownerLabel(p) {
@@ -6121,6 +8047,7 @@ function describeEvent(e) {
   const name = actionDef(e.action.type)?.name ?? `Action ${e.action.type}`;
   return e.text !== void 0 ? `${name} \u2014 ${e.text}` : name;
 }
+var targetLabel = (t) => t === "remastered" ? "Remastered (EUD)" : "Classic";
 var current = null;
 function openScriptEditor(svc, options = {}) {
   const api = svc.api;
@@ -6197,6 +8124,9 @@ function createWorkspace(svc, options, mode) {
   let result = null;
   let simulation = null;
   let showVariables = false;
+  let target = initial?.target ?? "classic";
+  let library = svc.library();
+  let eudAbort = null;
   let cancelled = false;
   let renames = [];
   let appendInstead = false;
@@ -6217,6 +8147,17 @@ function createWorkspace(svc, options, mode) {
     void pickFromMap();
   } });
   pickButton.title = "Click a location or a unit on the map to put its name at the cursor";
+  const testButton = w.button("Build & Test", { onClick: () => {
+    void buildAndTest();
+  } });
+  testButton.title = "Build the classic block, then the Remastered map through the eudplib plugin, saved beside the source as <name>-eud.scx";
+  testButton.hidden = target !== "remastered";
+  const targetSelect = w.select([{ value: "classic", label: "Classic" }, { value: "remastered", label: "Remastered (EUD)" }], { value: target, onChange: (v) => {
+    void setTarget(v === "remastered" ? "remastered" : "classic");
+  } });
+  targetSelect.className += " tsd-target";
+  targetSelect.title = "Which game the built map is for: Classic runs on every version as death-counter triggers; Remastered (EUD) builds the programs with eudplib through the eudplib plugin and needs StarCraft: Remastered";
+  const libraryLine = el("span", { className: "tsd-library" });
   const modeButton = w.button(mode === "dialog" ? "Beside the map" : "In a window", { ghost: true, onClick: () => switchMode() });
   modeButton.className += " tsd-mode";
   modeButton.title = mode === "dialog" ? "Open the script as a panel beside the map, so the map stays in reach" : "Open the script in a full-screen window";
@@ -6227,6 +8168,8 @@ function createWorkspace(svc, options, mode) {
   const problemsCount = el("span", { className: "hint" }, "");
   const variables = el("div", { className: "tsd-variables", hidden: true });
   const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale });
+  const eudFold = w.fold({ text: "Remastered build", className: "tsd-eud" });
+  eudFold.hidden = true;
   const renameNotice = el("div", { className: "tsd-notice tsd-renames", hidden: true });
   const hostEl = el("div", { className: "tsd-host" });
   const problems = el("ul", { className: "tsd-problems", hidden: true });
@@ -6241,9 +8184,10 @@ function createWorkspace(svc, options, mode) {
     "div",
     { className: mode === "panel" ? "tsd tsd-panel" : "tsd" },
     style,
-    el("div", { className: "row" }, buildButton, importButton, simulateButton, pickButton, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
+    el("div", { className: "row" }, buildButton, testButton, importButton, simulateButton, pickButton, targetSelect, libraryLine, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
     variables,
     notice,
+    eudFold,
     renameNotice,
     el(
       "div",
@@ -6339,6 +8283,18 @@ function createWorkspace(svc, options, mode) {
     importButton.setBusy(importing);
     pickButton.setBusy(picking);
     buildButton.disabled = importButton.disabled = !ready || building;
+    testButton.hidden = target !== "remastered";
+    testButton.disabled = !ready || building || !library;
+    testButton.setBusy(building && eudAbort !== null);
+    targetSelect.disabled = !ready || building;
+    targetSelect.value = target;
+    if (target === "remastered") {
+      libraryLine.hidden = false;
+      libraryLine.textContent = library ? `eudplib ${library.versions.eudplib} \xB7 ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading\u2026" : library.state() === "failed" ? "runtime failed" : "runtime not downloaded yet"}` : "eudplib plugin not running";
+      libraryLine.title = library ? "The eudplib plugin builds the Remastered map inside the editor; its runtime is downloaded once, on the first build" : "Install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026";
+    } else {
+      libraryLine.hidden = true;
+    }
     simulateButton.disabled = !ready || building || errors > 0;
     pickButton.disabled = !ready || picking;
     newButton.disabled = !ready;
@@ -6377,47 +8333,72 @@ function createWorkspace(svc, options, mode) {
     } else if (simulation) {
       problems.hidden = false;
       problems.className = "tsd-problems tsd-run";
-      const { sim, result: r } = simulation;
-      if (sim.events.length === 0) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_CYCLES} cycles.`)));
-      for (const e of sim.events) {
+      const { sim, programs: ps, result: r, target: t } = simulation;
+      const unit = t === "remastered" ? "frame" : "cycle";
+      const rows = [];
+      sim.events.forEach((e, i) => {
         const at = r.sources[e.trigger];
-        problems.append(el(
+        rows.push({ cycle: e.cycle, order: i, line: () => el(
           "li",
           { title: `Trigger #${e.trigger + 1}`, onClick: () => {
             if (at) goTo(at.file, at.line);
           } },
-          el("span", { className: "where" }, `cycle ${e.cycle + 1}`),
+          el("span", { className: "where" }, `${unit} ${e.cycle + 1}`),
           el("span", { className: "msg" }, describeEvent(e)),
           el("span", { className: "src" }, where(at))
-        ));
-      }
+        ) });
+      });
+      ps?.events.forEach((e, i) => {
+        rows.push({ cycle: e.cycle, order: sim.events.length + i, line: () => el(
+          "li",
+          { title: `Program ${e.program + 1}`, onClick: () => goTo(e.at.file, e.at.line, e.at.column) },
+          el("span", { className: "where" }, `${unit} ${e.cycle + 1}`),
+          el("span", { className: "msg" }, describeEvent(e)),
+          el("span", { className: "src" }, where({ file: e.at.file, line: e.at.line }))
+        ) });
+      });
+      rows.sort((a2, b) => a2.cycle - b.cycle || a2.order - b.order);
+      if (rows.length === 0) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_CYCLES} ${unit}s.`)));
+      for (const row of rows) problems.append(row.line());
+      const shownVars = /* @__PURE__ */ new Set();
       for (const v of r.variables.filter((x) => !x.name.startsWith("("))) {
-        const shown = v.kind === "number" ? String(sim.death(v.player, v.unit)) : (v.flag !== void 0 ? sim.death(PlayerGroup.CurrentPlayer, v.flag) !== 0 : sim.switches[v.switch] === 1) ? "true" : "false";
+        if (shownVars.has(v.name)) continue;
+        shownVars.add(v.name);
+        const value = ps?.value(v.name);
+        const shown = value === void 0 ? "?" : typeof value === "boolean" ? value ? "true" : "false" : String(value);
         problems.append(el(
           "li",
           void 0,
           el("span", { className: "where" }, "after"),
           el("span", { className: "msg" }, `${v.name} = ${shown}`),
-          el("span", { className: "src" }, v.storage)
+          el("span", { className: "src" }, t === "remastered" ? "eudplib variable" : v.storage)
         ));
       }
     } else {
       problems.hidden = true;
     }
-    const line = status.text || (block2 ? `Block: ${block2.count} generated trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}${state?.unbuilt ? " \xB7 unbuilt changes" : ""}` : stale ? "The last build's triggers were edited outside the script" : "Not built yet");
+    const line = status.text || (block2 ? `Block: ${block2.count} generated trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}${state?.unbuilt ? " \xB7 unbuilt changes" : ""}${target === "remastered" ? " \xB7 Remastered target: the built map needs StarCraft: Remastered" : ""}` : stale ? "The last build's triggers were edited outside the script" : target === "remastered" ? "Not built yet \xB7 Remastered target: the built map needs StarCraft: Remastered" : "Not built yet");
     if (status.kind === "busy") statusLine.busy(line);
     else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : void 0);
   };
   const applyResult = (r) => {
-    diagnostics = r.diagnostics;
+    diagnostics = r.ok && target === "remastered" ? [...r.diagnostics, ...svc.targetDiagnostics(r, target)] : r.diagnostics;
     result = r;
     simulation = null;
     if (editor && monaco) {
-      setCompilerMarkers(monaco, files, r.diagnostics);
+      setCompilerMarkers(monaco, files, diagnostics);
       editor.decorate(r.buildTime);
       refreshCostHints();
     }
     render();
+  };
+  const setTarget = async (t) => {
+    if (t === target) return;
+    target = t;
+    svc.setTarget(t);
+    if (result) applyResult(result);
+    render();
+    check();
   };
   const costHints2 = () => {
     if (!result) return [];
@@ -6488,7 +8469,7 @@ function createWorkspace(svc, options, mode) {
         return "Not built.";
     }
   };
-  const build = async (takeOver = false) => {
+  const build = async (takeOver = false, withIr = false) => {
     if (building || !ready) return false;
     building = true;
     setStatus("busy", "Running the script\u2026");
@@ -6496,19 +8477,19 @@ function createWorkspace(svc, options, mode) {
       for (let attempt = 0; ; attempt++) {
         const a2 = await compileNow();
         if (!a2 || cancelled) return false;
-        if (!a2.compiled.ok) {
-          const n = a2.compiled.diagnostics.length;
+        if (!a2.compiled.ok || diagnostics.length) {
+          const n = diagnostics.length || a2.compiled.diagnostics.length;
           setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
           return false;
         }
         const wasStale = svc.state()?.stale ?? false;
         setStatus("busy", "Installing the triggers\u2026");
-        const out = svc.install(a2, { takeOver, replaceStale: wasStale && !appendInstead });
+        const out = svc.install(a2, { takeOver, replaceStale: wasStale && !appendInstead, target, ir: withIr });
         if (out.block) {
           const b = out.block;
           const tail = out.replaced ? ` (replaced the previous block's ${out.replaced.removed} unchanged trigger${out.replaced.removed === 1 ? "" : "s"}; ${out.replaced.kept} edited one${out.replaced.kept === 1 ? "" : "s"} kept after it)` : wasStale ? " (appended: the previous block had been edited outside the script)" : "";
           setStatus("ok", b.count === 0 ? "Built: the script defines no triggers; the block is empty." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${tail}.`);
-          return true;
+          return withIr ? out.ir ?? true : true;
         }
         if (out.refused === "changed" && attempt < 2) {
           setStatus("busy", "The map changed while the script ran; running it again\u2026");
@@ -6518,6 +8499,83 @@ function createWorkspace(svc, options, mode) {
         return false;
       }
     } finally {
+      building = false;
+      render();
+    }
+  };
+  const buildAndTest = async () => {
+    if (building || !ready || target !== "remastered") return;
+    const built = await build(false, true);
+    if (typeof built !== "string" || cancelled) return;
+    building = true;
+    eudAbort = new AbortController();
+    const steps = w.steps();
+    const log = el("pre", {});
+    log.hidden = true;
+    eudFold.hidden = false;
+    eudFold.open = true;
+    eudFold.mark("\u2026");
+    eudFold.set(`Remastered build \u2014 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
+    eudFold.body.replaceChildren(steps, log);
+    steps.running(true);
+    const s1 = steps.add("Classic triggers installed");
+    s1.done();
+    const s2 = steps.add("eudplib build", { running: true });
+    const s3 = steps.add("Save the built map");
+    render();
+    const lines = [];
+    try {
+      setStatus("busy", "Building the Remastered map\u2026");
+      const eud = await svc.buildRemastered(built, { signal: eudAbort.signal, onLog: (line) => {
+        lines.push(line);
+        log.textContent = lines.join("\n");
+        log.hidden = false;
+      } });
+      s2.done(`${Math.round(eud.chkBytes / 1024)} KB of scenario in ${(eud.ms / 1e3).toFixed(1)} s`);
+      if (eud.log) {
+        log.textContent = eud.log;
+        log.hidden = false;
+      }
+      s3.start();
+      const info = api.document.info();
+      const stem = (info?.fileName ?? "map").replace(/\.(scx|scm|chk)$/i, "");
+      const saved = await api.ui.saveFile(eud.map, `${stem}-eud.scx`);
+      if (saved) {
+        s3.done(saved.fileName);
+        const test = api.document.test;
+        const s4 = test ? steps.add("Test Map", { running: true }) : null;
+        const outcome = test ? await test(eud.map, saved.fileName).catch((e) => {
+          s4?.fail(e.message);
+          return null;
+        }) : null;
+        if (outcome) s4?.done(outcome.launched ? `started the game with ${outcome.path}` : `written to ${outcome.path}${outcome.message ? ` \u2014 ${outcome.message}` : ""}`);
+        else s4?.skip("no test folder here");
+        eudFold.mark("\u2713", "ok");
+        const kb = Math.round(eud.map.length / 1024);
+        setStatus("ok", outcome?.launched ? `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered and started the game; keep this map as the source.` : outcome ? `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered, written to ${outcome.path}; keep this map as the source.` : `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered. Open it with Test Map to play it; keep this map as the source.`);
+      } else {
+        s3.skip("not saved");
+        eudFold.mark("!", "warn");
+        setStatus("info", "Built for Remastered, but the file was not saved.");
+      }
+    } catch (err) {
+      const e = err instanceof EudBuildError ? err : new EudBuildError(String(err.message ?? err));
+      s2.fail(e.message);
+      s3.skip();
+      eudFold.mark("\xD7", "error");
+      if (lines.length) {
+        log.textContent = lines.join("\n");
+        log.hidden = false;
+      }
+      if (e.at) {
+        diagnostics = [...diagnostics, { file: e.at.file, line: e.at.line, column: e.at.column, endLine: e.at.line, endColumn: e.at.column + 1, message: e.message, source: "compiler" }];
+        if (editor && monaco) setCompilerMarkers(monaco, files, diagnostics);
+        goTo(e.at.file, e.at.line, e.at.column);
+      }
+      setStatus("error", `Remastered build failed: ${e.message}`);
+    } finally {
+      steps.running(false);
+      eudAbort = null;
       building = false;
       render();
     }
@@ -6543,7 +8601,7 @@ function createWorkspace(svc, options, mode) {
     importing = true;
     let ok = false;
     try {
-      ok = await build(true);
+      ok = await build(true) !== false;
     } finally {
       importing = false;
     }
@@ -6558,9 +8616,22 @@ function createWorkspace(svc, options, mode) {
       return;
     }
     try {
-      const sim = new Simulation(r.triggers, { strings: r.strings, player: r.programs[0]?.owner }).run(SIMULATE_CYCLES);
-      simulation = { sim, result: r };
-      setStatus("ok", `Simulated ${SIMULATE_CYCLES} trigger cycles as P${sim.player + 1}: ${sim.events.length} action${sim.events.length === 1 ? "" : "s"} ran. Unit conditions (bring, command, \u2026) count as false; wait takes no time.`);
+      const generated2 = /* @__PURE__ */ new Set();
+      r.programs.forEach((p) => {
+        for (let i = p.start; i < p.start + p.count; i++) generated2.add(i);
+      });
+      const hand = r.triggers.filter((_, i) => !generated2.has(i));
+      const player = r.programs[0]?.owner;
+      const sim = new Simulation(hand, { strings: r.strings, player });
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { target, world: sim, strings: r.strings, player }) : null;
+      for (let i = 0; i < SIMULATE_CYCLES; i++) {
+        sim.step();
+        programs?.step();
+      }
+      simulation = { sim, programs, result: r, target };
+      const count = sim.events.length + (programs?.events.length ?? 0);
+      const unit = target === "remastered" ? "frames" : "trigger cycles";
+      setStatus("ok", `Simulated ${SIMULATE_CYCLES} ${unit} as P${sim.player + 1} on the ${targetLabel(target)} target: ${count} action${count === 1 ? "" : "s"} ran. Unit conditions (bring, command, \u2026) count as false; wait takes no time.`);
     } catch (err) {
       setStatus("error", `Simulation stopped: ${err.message}`);
     }
@@ -6695,6 +8766,10 @@ function createWorkspace(svc, options, mode) {
     const loadingCover = w.busy(hostEl, "Loading the editor\u2026");
     const releaseWorker = retainCompileWorker();
     const subs = [
+      svc.watchLibrary((s) => {
+        library = s;
+        if (!cancelled) render();
+      }),
       api.events.on("settings", refreshNames),
       api.events.on("locations", refreshNames),
       api.events.on("triggers", refreshNames),
@@ -6733,6 +8808,7 @@ function createWorkspace(svc, options, mode) {
     );
     return () => {
       cancelled = true;
+      eudAbort?.abort();
       loadingCover.done();
       if (timer !== null) clearTimeout(timer);
       editor?.dispose();
@@ -6747,214 +8823,10 @@ function createWorkspace(svc, options, mode) {
     root,
     host: hostEl,
     attach,
-    build: () => build(),
+    build: async () => await build() !== false,
     reveal,
     cursor: () => editor?.cursor() ?? null
   };
-}
-
-// service.ts
-function snapshotExtras(api) {
-  const out = /* @__PURE__ */ new Map();
-  for (const name of api.document.extras.list()) {
-    if (!isScriptMember(name)) continue;
-    const bytes = api.document.extras.get(name);
-    if (bytes) out.set(name, bytes);
-  }
-  return out;
-}
-function commitExtras(api, before, after) {
-  for (const name of before.keys()) if (!after.has(name)) api.document.extras.remove(name);
-  for (const [name, bytes] of after) if (before.get(name) !== bytes) api.document.extras.set(name, bytes);
-}
-var ScriptService = class {
-  api;
-  claim;
-  compiler;
-  lastManifest;
-  constructor(api, open, compiler = compileInBackground) {
-    this.api = api;
-    this.compiler = compiler;
-    this.claim = api.triggers.claim({
-      label: "the TrigScript block",
-      badge: "script",
-      locate: (list) => {
-        const manifest = readManifest(snapshotExtras(api));
-        return manifest ? findBlock(list, manifest) : null;
-      },
-      describe: (index, list) => {
-        const at = this.sourceOf(index, list);
-        return `This trigger is generated by the map's TrigScript${at ? ` (${at.file}, line ${at.line})` : ""}. Edit the source instead; a Build replaces the whole block.`;
-      },
-      open: (index, list) => {
-        const at = this.sourceOf(index, list);
-        open(at?.file, at?.line);
-      },
-      openLabel: "Open TrigScript"
-    });
-  }
-  sourceOf(index, list) {
-    const manifest = readManifest(snapshotExtras(this.api));
-    const block2 = manifest ? findBlock(list, manifest) : null;
-    return block2 ? block2.sources[index - block2.start] ?? null : null;
-  }
-  /** The Monaco build's base URL — the standard library is fetched from there too. */
-  dist() {
-    return this.api.storage.get(DIST_STORAGE_KEY, DEFAULT_DIST);
-  }
-  /** The map's script files, its manifest, and whether the built block is still intact. Null with no map. */
-  state() {
-    if (!this.api.document.isOpen()) return null;
-    return scriptState(this.api.triggers.list(), snapshotExtras(this.api));
-  }
-  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names and custom unit names. Null with no map. */
-  names() {
-    const api = this.api;
-    const info = api.document.info();
-    if (!info) return null;
-    const custom = new Map(api.settings.unitTypes().map((u) => [u.id, u.customName]));
-    const used = [...new Set(api.query.locationsIn({ x0: 0, y0: 0, x1: info.width, y1: info.height }))].sort((a2, b) => a2 - b);
-    const switchNames = api.triggers.switchNames();
-    const names = scriptNames({
-      forceNames: api.settings.forces().map((f) => f.name || null),
-      locations: used.map((index) => ({ index, name: api.names.location(index) })),
-      switchNames,
-      unitCustomName: (id) => custom.get(id) || null
-    });
-    const triggers = api.triggers.list();
-    const state = scriptState(triggers, snapshotExtras(api));
-    const reserved = reservedStorage(triggers, switchNames, state.block);
-    const decls = generateDeclarations(names);
-    const reservedDeaths = reserved.reservedDeaths ?? [];
-    const reservedSwitches = reserved.reservedSwitches ?? [];
-    return { names, decls, reservedDeaths, reservedSwitches, context: hashText(`${decls}\0${JSON.stringify([reservedDeaths, reservedSwitches])}`) };
-  }
-  /** The id of the map in front, or null on a host without ids (every map then compares equal). */
-  documentId() {
-    const doc = this.api.document;
-    return typeof doc.id === "function" ? doc.id() : null;
-  }
-  /** The declarations for the open map; `compact` is the shorter variant for a language model. */
-  declarations(options = {}) {
-    const map = this.names();
-    if (!map) return "";
-    return options.compact ? generateDeclarations(map.names, { compact: true }) : map.decls;
-  }
-  /** A command's input as files: a string is the entry file, over the map's other files. */
-  filesOf(input) {
-    if (typeof input !== "string") return { ...input };
-    return { ...this.state()?.files ?? {}, [ENTRY_FILE]: input };
-  }
-  /** Compile against the open map's names; rejects with `CompileSuperseded` when a newer compile started first. */
-  async compile(input) {
-    return (await this.prepare(input)).compiled;
-  }
-  /**
-   * Compile into an artifact `install` can check: the files as they are now, against the
-   * map in front and its names as they are now (`map`, when the caller already has them —
-   * the editor keeps a copy that follows the map's events).
-   */
-  async prepare(input, map = this.names()) {
-    if (!map) throw new Error("No map is open.");
-    const files = this.filesOf(input);
-    const document2 = this.documentId();
-    const archived = hashFiles(this.state()?.files ?? {});
-    const compiled = await this.compiler({ files, names: map.names, reservedDeaths: map.reservedDeaths, reservedSwitches: map.reservedSwitches }, this.dist());
-    return { files, compiled, document: document2, context: map.context, archived };
-  }
-  /**
-   * Install an artifact as the block — replacing the previous one, or appending when the
-   * previous was edited by hand — and store its files with the map, in one
-   * `document.update`. Refused, with the reason, when it has errors or the map it was
-   * compiled for is not the one in front any more (closed, switched, or changed under
-   * it). Files edited in the archive since the compile started are left as they are.
-   * `takeOver` replaces the whole trigger list with the script's.
-   */
-  install(artifact, options = {}) {
-    const { compiled, files } = artifact;
-    const refuse = (refused) => ({ compiled, block: null, refused });
-    if (!this.api.document.isOpen()) return refuse("closed");
-    if (this.documentId() !== artifact.document) return refuse("switched");
-    const map = this.names();
-    if (!map || map.context !== artifact.context) return refuse("changed");
-    if (!compiled.ok) return refuse("errors");
-    const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
-    let block2 = null;
-    let replaced;
-    this.api.document.update("Build TrigScript", (tx) => {
-      const before = snapshotExtras(this.api);
-      const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), { ...options, keepFiles });
-      tx.triggers.set(plan.list);
-      commitExtras(this.api, before, plan.extras);
-      block2 = plan.block;
-      replaced = plan.replaced;
-    });
-    this.claim.refresh();
-    if (block2) {
-      const b = block2;
-      this.api.ui.status(b.count === 0 ? "Built: the script defines no triggers." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}.`);
-    }
-    return { compiled, block: block2, ...replaced ? { replaced } : {} };
-  }
-  /**
-   * `prepare` then `install`. When the map changed under the compile, it is compiled
-   * again against the new names, twice at most, before the refusal is reported.
-   */
-  async build(input, options = {}) {
-    for (let attempt = 0; ; attempt++) {
-      const out = this.install(await this.prepare(input), options);
-      if (out.refused !== "changed" || attempt >= 2) return out;
-    }
-  }
-  /** Records as raw `trigger()` calls in the script language — what Import map triggers writes. */
-  print(triggers, options) {
-    const names = this.names()?.names ?? scriptNames();
-    return printScript(triggers, { names, string: (i) => this.api.names.string(i) }, options);
-  }
-  /** The trigger-cycle interpreter over records: Deaths, Switch, Always and Never modelled, other conditions false, other actions logged. */
-  simulate(triggers, cycles, options = {}) {
-    const sim = simulate(triggers, cycles, { player: options.player, strings: (i) => this.api.names.string(i) });
-    const switches = [];
-    sim.switches.forEach((v, i) => {
-      if (v) switches.push(i);
-    });
-    return { cycles: sim.cycle, events: sim.events, switches };
-  }
-  /** The index of the trigger a 1-based line of a file generated, per the build manifest; null when none did or the block is stale. */
-  triggerAt(file, line) {
-    const state = this.state();
-    return state?.block && !state.stale ? triggerAtLine(state.block, file, line) : null;
-  }
-  /** The files as typed, straight into the archive (the map is modified; only Build changes triggers). */
-  writeFiles(files) {
-    if (!this.api.document.isOpen()) return;
-    const before = snapshotExtras(this.api);
-    commitExtras(this.api, before, withFiles(before, files));
-  }
-  /** The hand-made triggers around the block, in list order: what Import map triggers rewrites as script. */
-  handTriggers() {
-    const list = this.api.triggers.list();
-    const block2 = this.state()?.block ?? null;
-    return block2 ? { before: list.slice(0, block2.start), after: list.slice(block2.start + block2.count) } : { before: list, after: [] };
-  }
-  /** After the trigger list changed under the block: point the manifest at where it went. */
-  relocate() {
-    if (!this.api.document.isOpen()) return;
-    const before = snapshotExtras(this.api);
-    const moved = relocateManifest(this.api.triggers.list(), before);
-    if (moved) commitExtras(this.api, before, moved);
-  }
-  /** The manifest member changed (a build, a relocation, another map): the editors should ask `locate` again. */
-  manifestChanged() {
-    const now = readManifestBytes(this.api);
-    const changed = now !== this.lastManifest;
-    this.lastManifest = now;
-    return changed;
-  }
-};
-function readManifestBytes(api) {
-  for (const [name, bytes] of snapshotExtras(api)) if (name.toLowerCase().endsWith("build.json")) return bytes;
-  return null;
 }
 
 // plugin.ts
@@ -6971,7 +8843,7 @@ function activate(api) {
     svc.manifestChanged();
     svc.claim.refresh();
   });
-  api.commands.register({ id: "open", title: "TrigScript\u2026", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num(options.line), dock: options.dock === true ? true : options.dock === false ? false : void 0 } : {}) });
+  api.commands.register({ id: "open", title: "TrigScript\u2026", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num2(options.line), dock: options.dock === true ? true : options.dock === false ? false : void 0 } : {}) });
   api.commands.register({ id: "dock", title: "TrigScript beside the map", enabled: () => api.document.isOpen(), run: () => openScriptEditor(svc, { dock: true }) });
   api.menu.add("Triggers", { label: "TrigScript\u2026", after: "Text Trigger Editor\u2026", enabled: () => api.document.isOpen(), command: "open" });
   api.menu.add("Triggers", { label: "TrigScript beside the map", after: "TrigScript\u2026", enabled: () => api.document.isOpen(), command: "dock" });
@@ -6985,7 +8857,7 @@ function activate(api) {
 }
 var isRecord = (v) => typeof v === "object" && v !== null;
 var str = (v) => typeof v === "string" ? v : void 0;
-var num = (v) => typeof v === "number" ? v : void 0;
+var num2 = (v) => typeof v === "number" ? v : void 0;
 var records = (v) => Array.isArray(v) ? v : [];
 var scriptInput = (v) => isRecord(v) ? Object.fromEntries(Object.entries(v).filter(([, t]) => typeof t === "string")) : String(v ?? "");
 export {

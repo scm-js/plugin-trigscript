@@ -30,8 +30,13 @@ export const ENTRY_MEMBER = `${SCRIPT_FOLDER}${ENTRY_FILE}`;
 
 export type Extras = ReadonlyMap<string, Uint8Array>;
 
+/** Which triggers a build makes: the classic death-counter machine, or eudplib's through the eudplib plugin. */
+export type BuildTarget = "classic" | "remastered";
+
 export interface ScriptManifest {
   version: 2;
+  /** The target the map is written for; classic when absent. Kept in `build.json` even before the first build. */
+  target?: BuildTarget;
   /** Index of the first generated trigger. */
   start: number;
   count: number;
@@ -117,10 +122,11 @@ export function readManifest(extras: Extras): ScriptManifest | null {
   try {
     const m = JSON.parse(decoder.decode(bytes)) as Partial<ScriptManifest>;
     if (m.version !== 2 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
+    const target = m.target === "remastered" ? { target: m.target } : {};
     const sources = Array.isArray(m.sources) ? m.sources.map((s) => (s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null)) : [];
     const files = Array.isArray(m.files) ? m.files.filter((f): f is string => typeof f === "string") : [];
     const records = Array.isArray(m.records) && m.records.length === m.count && m.records.every((r) => typeof r === "string") ? m.records : undefined;
-    return { version: 2, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...(records ? { records } : {}) };
+    return { version: 2, ...target, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...(records ? { records } : {}) };
   } catch {
     return null;
   }
@@ -128,6 +134,33 @@ export function readManifest(extras: Extras): ScriptManifest | null {
 
 export function withManifest(extras: Extras, manifest: ScriptManifest | null): Map<string, Uint8Array> {
   return withMember(extras, MANIFEST_MEMBER, manifest ? encoder.encode(JSON.stringify(manifest)) : null);
+}
+
+/**
+ * The target `build.json` names, block or no block: before the first build the member
+ * holds `{ "version": 2, "target": … }` alone, which `readManifest` does not count as a
+ * block. Classic when the member is absent or says nothing.
+ */
+export function readTarget(extras: Extras): BuildTarget {
+  const bytes = member(extras, MANIFEST_MEMBER);
+  if (!bytes) return "classic";
+  try {
+    const m = JSON.parse(decoder.decode(bytes)) as { target?: unknown };
+    return m.target === "remastered" ? "remastered" : "classic";
+  } catch {
+    return "classic";
+  }
+}
+
+/** The members with the target written into `build.json`, the block's record kept as it is. */
+export function withTarget(extras: Extras, target: BuildTarget): Map<string, Uint8Array> {
+  const manifest = readManifest(extras);
+  if (manifest) {
+    const next = { ...manifest };
+    if (target === "remastered") next.target = target; else delete next.target;
+    return withManifest(extras, next);
+  }
+  return withMember(extras, MANIFEST_MEMBER, target === "remastered" ? encoder.encode(JSON.stringify({ version: 2, target })) : null);
 }
 
 function fnv1a(bytes: Uint8Array): string {
@@ -205,6 +238,8 @@ export interface ScriptState {
   edited: { unchanged: number; changed: number } | null;
   /** The files differ from what the block was built from (or were never built). */
   unbuilt: boolean;
+  /** The target `build.json` names. */
+  target: BuildTarget;
 }
 
 export function scriptState(triggers: TriggerRecord[] | null, extras: Extras): ScriptState {
@@ -215,7 +250,7 @@ export function scriptState(triggers: TriggerRecord[] | null, extras: Extras): S
   const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
   const stale = !!manifest && !block;
   const parts = stale && triggers ? staleRecords(triggers, manifest!) : null;
-  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt };
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, target: readTarget(extras) };
 }
 
 export function isGenerated(state: ScriptState, index: number): boolean {
@@ -248,9 +283,10 @@ export function reservedStorage(triggers: TriggerRecord[], switchNames: readonly
 }
 
 /** The compiled records with their local string ids resolved through `intern` (the map's string table). */
-export function resolveStrings(compiled: CompileResult, intern: (text: string) => number): TriggerRecord[] {
+/** The compile's local string ids → the map's, interning each text once. */
+export function stringResolver(compiled: CompileResult, intern: (text: string) => number): (local: number) => number {
   const cache = new Map<number, number>();
-  const resolve = (local: number): number => {
+  return (local: number): number => {
     if (local === 0) return 0;
     const hit = cache.get(local);
     if (hit !== undefined) return hit;
@@ -259,6 +295,10 @@ export function resolveStrings(compiled: CompileResult, intern: (text: string) =
     cache.set(local, index);
     return index;
   };
+}
+
+export function resolveStrings(compiled: CompileResult, intern: (text: string) => number): TriggerRecord[] {
+  const resolve = stringResolver(compiled, intern);
   return compiled.triggers.map((t) => {
     const next = cloneTrigger(t);
     for (const a of next.actions) {
@@ -270,6 +310,8 @@ export function resolveStrings(compiled: CompileResult, intern: (text: string) =
 }
 
 export interface BuildOptions {
+  /** The target to record in the manifest; the one `build.json` already names by default. */
+  target?: BuildTarget;
   /** Replace the *whole* list with the script's triggers (ejecting every hand trigger into the block). */
   takeOver?: boolean;
   /**
@@ -326,7 +368,8 @@ export function buildScript(triggers: TriggerRecord[], extras: Extras, files: Sc
   } else {
     start = triggers.length; before = triggers.slice(); after = [];
   }
-  const manifest: ScriptManifest = { version: 2, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
+  const target = options.target ?? readTarget(extras);
+  const manifest: ScriptManifest = { version: 2, ...(target === "remastered" ? { target } : {}), start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
   return { list: [...before, ...records, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
 }
 

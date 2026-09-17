@@ -1,6 +1,6 @@
 {
   "name": "scmjs-plugin-trigscript",
-  "version": "2.5.1",
+  "version": "2.6.0",
   "private": true,
   "description": "TrigScript — TypeScript that builds into triggers; a plugin for the scmJS StarCraft map editor.",
   "author": "Jeany",
@@ -11,7 +11,8 @@
     "dev": "npm run build -- --watch",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "bundle": "node bundle/build.mjs"
+    "bundle": "node bundle/build.mjs",
+    "embed": "node scripts/embed-python.mts"
   },
   "devDependencies": {
     "@scm-js/plugin-api": "^1",

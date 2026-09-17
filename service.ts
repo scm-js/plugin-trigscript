@@ -9,16 +9,19 @@
 import type { PluginApi, TriggerClaimHandle } from "@scm-js/plugin-api";
 import type { TriggerRecord } from "./vendor/triggers";
 import { compileInBackground, type CompileInput } from "./compile";
-import { ENTRY_FILE, type CompileResult, type ScriptFiles } from "./compiler/compiler";
+import { ENTRY_FILE, type CompileResult, type ScriptDiagnostic, type ScriptFiles } from "./compiler/compiler";
 import { generateDeclarations } from "./compiler/declarations";
+import { checkForTarget, serializeIr } from "./compiler/eud";
+import { TRIGSCRIPT_PY } from "./compiler/generated/trigscriptPy";
 import { scriptNames, type ScriptNames } from "./compiler/names";
 import { printScript, type PrintOptions } from "./compiler/print";
 import { simulate, type SimulationEvent } from "./compiler/simulate";
 import { DEFAULT_DIST, DIST_STORAGE_KEY } from "./monaco";
 import {
-  buildScript, findBlock, hashFiles, hashText, isScriptMember, readManifest, relocateManifest, reservedStorage, scriptState, triggerAtLine, withFiles,
-  type BuildOptions, type Extras, type ScriptBlock, type ScriptState,
+  buildScript, findBlock, hashFiles, hashText, isScriptMember, readManifest, readTarget, relocateManifest, reservedStorage, scriptState, stringResolver, triggerAtLine, withFiles, withTarget,
+  type BuildOptions, type BuildTarget, type Extras, type ScriptBlock, type ScriptState,
 } from "./script";
+import { EUDPLIB_SERVICE, type EudplibService } from "./vendor/eudplib";
 
 /**
  * A compile, with what it was compiled *for*: the map it read its names from and the
@@ -56,6 +59,27 @@ export interface ScriptBuildResult {
   refused?: BuildRefusal;
   /** With `replaceStale`: what became of the edited block. */
   replaced?: { removed: number; kept: number };
+  /** With `ir`: the programs as JSON for the eudplib plugin, the map's string indices in place of the compile's local ones. */
+  ir?: string;
+}
+
+/** What a Remastered build made: the built map's bytes and the log. */
+export interface EudBuild {
+  map: Uint8Array;
+  log: string;
+  chkBytes: number;
+  ms: number;
+}
+
+/** The eudplib plugin refused or failed a build; `at` when the message named a node of the IR. */
+export class EudBuildError extends Error {
+  readonly at: { file: string; line: number; column: number } | null;
+  constructor(message: string) {
+    super(message);
+    this.name = "EudBuildError";
+    const m = /\bat (?:([^\s:]+\.ts):)?(\d+):(\d+)\b/.exec(message);
+    this.at = m ? { file: m[1] ?? ENTRY_FILE, line: Number(m[2]), column: Number(m[3]) } : null;
+  }
 }
 
 export interface ScriptSimulation {
@@ -141,6 +165,62 @@ export class ScriptService {
     return scriptState(this.api.triggers.list(), snapshotExtras(this.api));
   }
 
+  /** The target the open map's script is written for; classic with no map. */
+  target(): BuildTarget {
+    if (!this.api.document.isOpen()) return "classic";
+    return readTarget(snapshotExtras(this.api));
+  }
+
+  /** Record the target in `build.json` (marks the map modified when it changes). */
+  setTarget(target: BuildTarget): void {
+    if (!this.api.document.isOpen() || this.target() === target) return;
+    const before = snapshotExtras(this.api);
+    commitExtras(this.api, before, withTarget(before, target));
+  }
+
+  /** The eudplib plugin's service, or null when it is not installed or is off. */
+  library(): EudplibService | null {
+    return this.api.services.get<EudplibService>(EUDPLIB_SERVICE);
+  }
+
+  /** Called at once and whenever the eudplib plugin arrives or goes. */
+  watchLibrary(listener: (service: EudplibService | null) => void): { dispose(): void } {
+    return this.api.services.watch<EudplibService>(EUDPLIB_SERVICE, (s) => listener(s));
+  }
+
+  /** What a target cannot take in a compile's programs, as diagnostics the editor shows like the compiler's own. */
+  targetDiagnostics(compiled: CompileResult, target: BuildTarget): ScriptDiagnostic[] {
+    const out: ScriptDiagnostic[] = [];
+    for (const p of compiled.ir) {
+      for (const d of checkForTarget(p, target)) out.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
+    }
+    return out;
+  }
+
+  /**
+   * The Remastered build: the map as it stands (the classic block just installed, so
+   * every text the IR names is in it), the IR, and `python/trigscript.py` to the eudplib
+   * plugin's service. The library asks to download its runtime the first time. Throws
+   * `EudBuildError`, with the IR node's position when the lowering named one.
+   */
+  async buildRemastered(ir: string, options: { onLog?: (line: string) => void; signal?: AbortSignal } = {}): Promise<EudBuild> {
+    const svc = this.library();
+    if (!svc) throw new EudBuildError("The eudplib plugin is not running; install or turn it on under Plugins ▸ Manage Plugins….");
+    if (!(await svc.ensure({ reason: "TrigScript needs it to build this map for StarCraft: Remastered." }))) throw new EudBuildError("Not built: the build runtime was not installed.");
+    const file = await this.api.document.export();
+    if (!file) throw new EudBuildError("No map is open.");
+    const map = new Uint8Array(await file.arrayBuffer());
+    try {
+      const r = await svc.build(
+        { map, plugins: { trigscript: { ir: "/work/files/trigscript.json" }, eudTurbo: {} }, sources: { trigscript: TRIGSCRIPT_PY }, files: { "trigscript.json": ir } },
+        { onLog: options.onLog, signal: options.signal },
+      );
+      return { map: r.map, log: r.log, chkBytes: r.chkBytes, ms: r.ms };
+    } catch (err) {
+      throw err instanceof EudBuildError ? err : new EudBuildError(String((err as Error).message ?? err));
+    }
+  }
+
   /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names and custom unit names. Null with no map. */
   names(): MapNames | null {
     const api = this.api;
@@ -211,7 +291,7 @@ export class ScriptService {
    * it). Files edited in the archive since the compile started are left as they are.
    * `takeOver` replaces the whole trigger list with the script's.
    */
-  install(artifact: ScriptArtifact, options: BuildOptions = {}): ScriptBuildResult {
+  install(artifact: ScriptArtifact, options: BuildOptions & { ir?: boolean } = {}): ScriptBuildResult {
     const { compiled, files } = artifact;
     const refuse = (refused: BuildRefusal): ScriptBuildResult => ({ compiled, block: null, refused });
     if (!this.api.document.isOpen()) return refuse("closed");
@@ -223,20 +303,24 @@ export class ScriptService {
     const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
     let block: ScriptBlock | null = null;
     let replaced: ScriptBuildResult["replaced"];
+    let ir: string | undefined;
     this.api.document.update("Build TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
-      const plan = buildScript(tx.triggers.list(), before, files, compiled, (text) => tx.strings.intern(text), { ...options, keepFiles });
+      const intern = (text: string) => tx.strings.intern(text);
+      const plan = buildScript(tx.triggers.list(), before, files, compiled, intern, { ...options, keepFiles });
       tx.triggers.set(plan.list);
       commitExtras(this.api, before, plan.extras);
       block = plan.block;
       replaced = plan.replaced;
+      // The same interning as the block's records, so the IR's texts are the strings the map now holds.
+      if (options.ir) ir = serializeIr(compiled.ir, stringResolver(compiled, intern));
     });
     this.claim.refresh();
     if (block) {
       const b: ScriptBlock = block;
       this.api.ui.status(b.count === 0 ? "Built: the script defines no triggers." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}.`);
     }
-    return { compiled, block, ...(replaced ? { replaced } : {}) };
+    return { compiled, block, ...(replaced ? { replaced } : {}), ...(ir !== undefined ? { ir } : {}) };
   }
 
   /**

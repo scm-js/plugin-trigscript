@@ -325,7 +325,10 @@ them, one every two seconds without, at Fastest. `wait()` inside a program is al
 but is a different thing: the game's own Wait stalls every trigger of that player for
 the time, hyper triggers included, so use it for a short pause inside one cycle (a text,
 then a sound) and `sleep` to pass time. Something that runs on its own clock is another
-program: one program per concurrent activity.
+program: one program per concurrent activity. On the Remastered target a loop runs to
+completion within one frame, so a loop that never sleeps and whose condition never changes
+inside it would freeze the game; the compiler refuses it and says where to put a
+`sleep(frames(1))` — see *The Remastered target* below.
 
 **Edges.** `if (rose(bring(P1, units.AnyUnit, locations.Beacon, ">=", 1)))` is true on
 the cycle the condition becomes true, and not again until it has been false in between;
@@ -383,6 +386,48 @@ calls touch, wherever they stand in the text — a raw `setDeaths(P1, units.Cant
 and a program in the same script keep out of each other's way. The toolbar's program
 summary lists where each variable lives.
 
+### The Remastered target
+
+Everything above builds triggers the way every version of StarCraft runs them: a program
+is a state machine of death counters, and that costs what it costs — `a = b` is 66
+triggers, a loop runs one iteration per trigger cycle, a condition cannot be compared with
+a variable. **StarCraft: Remastered** can run trigger code that eudplib, the compiler
+behind euddraft, generates, and that removes those limits. The toolbar's target switch,
+**Classic** / **Remastered (EUD)**, picks which game the built map is for; it is kept in
+the map's `trigscript\build.json`.
+
+On the Remastered target nothing about the language changes, only what a build does:
+
+- **Build** does what it always does — runs the script, installs the classic block — and
+  also checks every program against the target. The one new rule: a loop with no
+  `sleep()` on some path around it, whose condition never mentions a variable the body
+  changes, is an error naming the loop, since the body runs to completion within a frame.
+  The source map keeps working in any client.
+- **Build & Test** builds, then hands the programs — as data, an intermediate
+  representation, never code — with the map and the plugin's own Python to the
+  [eudplib plugin](https://github.com/scm-js/plugin-eudplib), which runs eudplib inside
+  the editor and hands back the built map, saved beside the source as `<name>-eud.scx`.
+  That file is what players get; keep this map as the source, the way a program's source
+  is kept beside its build. Open the built map with *Test Map* to play it (a plugin cannot
+  launch a file that is not the open map yet). A block under the toolbar shows the steps
+  and eudplib's log; an error from the lowering lands on its line like a compiler error.
+- The eudplib plugin is installed with TrigScript (the manifest requires it) and cannot be
+  turned off underneath it. Its runtime — Pyodide, a Python for the browser, and eudplib —
+  is downloaded once, about 15 MB from jsDelivr, after asking, the first time a build
+  needs it; every build after that runs on this machine and nothing about the map leaves
+  it. The line beside the switch says whether the plugin is running and what it has.
+- **Simulate** runs the programs on the current target: on Remastered, loops finish within
+  the frame, `sleep(seconds(1))` is twenty-four frames, and the log counts frames. The
+  same program does the same things in the same order on both targets; only the timing
+  differs, and the test suite proves it.
+
+What runs on the Remastered target in this version is the language as it is: variables,
+arithmetic, `if`/`while`/`for`/`switch`, functions, records, `sleep`, the game's actions
+with a variable amount, `once`/`rose`, per-player programs. Reads of the game as values
+(`deaths(P1, u)` as a number, `minerals()`), units on the map as objects, dynamic text and
+input come in later versions; the plan is `docs/eud-plan.md` and the IR the two sides
+share is `docs/ir.md`.
+
 ## For other plugins
 
 The plugin registers commands, so another plugin gets the script without the editor
@@ -393,7 +438,7 @@ as they are) or an object of every file by path.
 
 | Command | |
 | --- | --- |
-| `trigscript.state()` | `{ files, source, manifest, block, stale, edited, unbuilt }`: the map's script files, `main.ts` on its own, where its built block sits in the trigger list (null when the records were edited by hand — `stale`, with `edited` counting how many are still the build's and how many changed, when that can be told), and whether the files differ from what was last built. Null with no map. |
+| `trigscript.state()` | `{ files, source, manifest, block, stale, edited, unbuilt, target }`: the map's script files, `main.ts` on its own, where its built block sits in the trigger list (null when the records were edited by hand — `stale`, with `edited` counting how many are still the build's and how many changed, when that can be told), and whether the files differ from what was last built. Null with no map. |
 | `trigscript.declarations({ compact? })` | The generated `.d.ts` the script type-checks against — the whole vocabulary for this map. `compact` is the shorter variant meant for a language model. Empty with no map. |
 | `trigscript.compile(source)` | A promise of a `CompileResult`: `ok`, `diagnostics` (`file`, 1-based `line` / `column`, `message`, `source: "typescript"`, `"compiler"` or `"script"` for an error the script threw), the records, `sources` (per record, the file and line it came from), the variable allocation, the `programs`, `costs` per line, and `refs` — every `locations.X` / `switches.X` the files mention, resolved by the checker, present even when the script does not type-check. A newer compile supersedes an unfinished one, which rejects with `CompileSuperseded`. |
 | `trigscript.build(source, { takeOver?, replaceStale? })` | Compile and, when clean, install the block and store the files with the map: a promise of `{ compiled, block, refused?, replaced? }`. The build lands only on the map it was compiled for: `block` is null and `refused` says why when there were `"errors"`, the map `"closed"` or another one `"switched"` to the front while the script ran, or the map's names `"changed"` under it (that one is compiled again, twice at most, before it is reported). Files edited in the archive while the script ran are kept, and the state then reads as unbuilt. When the old block was edited by hand, the new one is appended, or with `replaceStale` put in the old one's place with its unchanged records removed and the edited ones kept after it (`replaced` counts both). `takeOver` replaces the whole trigger list with the script's. A settings-style transaction: not undoable, marks the map modified. |
@@ -423,10 +468,11 @@ The layout:
 | `bundle/`, `dist/` | `npm run bundle` builds Monaco with esbuild — the editor core, its features and the TypeScript language alone, styles injected by the module and the codicon font inlined, plus the two workers — and writes `lib.d.ts`, the standard library the compile worker checks scripts against (`bundle/lib.mjs`), into `dist/`, which is committed. A CDN's on-the-fly bundler turns Monaco's lazy language chunks into standalone bundles carrying a second editor core, which is why the plugin carries its own. After a Monaco bump: rebuild, commit, tag `monaco-<version>-<n>`, move `DIST_TAG`. |
 | `compile.ts` | Compiling in a worker: a blob worker `importScripts` TypeScript from the CDN, fetches `lib.d.ts` once, and imports this plugin's own compiler module by the `blob:` URL the editor's loader gave it; a request the script does not answer in fifteen seconds (an endless loop outside `program()`) terminates the worker. A main-thread fallback loads TypeScript through a `<script>` tag. |
 | `script.ts` | The files, the block and its manifest: hashing (the block, and every record on its own), finding the block by content, staleness and what a stale block can still be taken apart into, planning a build. Pure over a trigger list and a map of the members. |
-| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, collects the map references, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and lowers each `program()` — and the `game()` functions it calls — through `structured.ts` into `lower.ts`'s state machine; `simulate.ts` is the interpreter; `reserve.ts` scans records for the cells they touch, for the allocator to avoid; `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
+| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, collects the map references, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and lowers each `program()` — and the `game()` functions it calls — through `structured.ts` into the IR (`ir.ts`, `docs/ir.md`), which `classic.ts` drives into `lower.ts`'s state machine and `eud.ts` checks and serialises for the Remastered target; `simulate.ts` is the trigger-cycle interpreter and `simulateIr.ts` the program interpreter over the IR for both targets; `reserve.ts` scans records for the cells they touch, for the allocator to avoid; `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
+| `python/trigscript.py` | The Remastered lowering: the euddraft plugin that turns the IR into eudplib code, handed to the eudplib plugin with every build. `npm run embed` writes it into `compiler/generated/trigscriptPy.ts`; `tests/python.test.ts` fails when the two drift. `scripts/build-fixture.mts` builds a script into a playable map under Node through a plugin-eudplib checkout; `fixtures/eud/spike.ts` is the probe map. |
 | `vendor/` | The tables the compiler reads, copied from the editor: the trigger record layout and its codec, the condition and action definitions, the unit names, the flag names. The editor is the source of truth; copy them again when it changes. |
 | `dist/plugin.js`, `dist/compiler.js` | The bundle the editor loads, and the compiler alone (`compiler/entry.ts`) for the compile worker of a copy compiled into the editor, which has no `blob:` module to hand it; `npm run build` writes both — commit both before tagging (CI commits and checks `plugin.js` on its own). |
-| `tests/` | vitest. `script.test.ts` pins the names, the declarations, the runtime's argument handling, files and imports, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation; `refs.test.ts` the references and renames. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and run back to the same record. |
+| `tests/` | vitest. `script.test.ts` pins the names, the declarations, the runtime's argument handling, files and imports, the printer and the block logic; `script-structured.test.ts` compiles programs and asserts the simulation; `simulate-ir.test.ts` is the parity suite (the program interpreter against the trigger interpreter cycle for cycle on the classic target, and the two targets against each other); `eud-build.test.ts` builds golden maps through a plugin-eudplib checkout beside this repository when there is one; `refs.test.ts` the references and renames. Copies of Blizzard's own maps in `fixtures/maps/` (gitignored) make every trigger eject to script and run back to the same record. |
 
 ### How the compiler is built
 
