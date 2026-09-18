@@ -60,7 +60,7 @@ class Storage:
         self.bits = decl.get("bits")
         self.rowed = per_player and not decl.get("shared")
         self.player_of = player_of
-        self.store = EUDArray([0] * 12) if self.rowed else EUDVariable(0)
+        self.store = EUDArray([0] * 12) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
 
     def get(self):
         return self.store[self.player_of()] if self.rowed else self.store
@@ -88,8 +88,18 @@ def saturate(value, bits):
 
 def as_var(value):
     if isinstance(value, int):
-        return EUDVariable(value & U32)
+        return EUDVariable(value & U32)  # initial: a constant, never written
     return value
+
+
+def fresh(value=0):
+    """A temporary that starts from `value` every time the code runs. `EUDVariable(n)` is not
+    that: n is the cell's value when the map loads, so a temporary built that way and then
+    written keeps what the last run left in it — `ticks + 1` went 1, 2, 4, 8 (found in the
+    first played probe, 2026-09-18). Anything the lowering writes to starts here."""
+    v = EUDVariable()
+    v << value
+    return v
 
 
 class Lowering:
@@ -99,8 +109,8 @@ class Lowering:
         self.owner = int(program.get("owner", 0))
         self.player = None
         self.vars = {}
-        self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)
-        self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)
+        self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
+        self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
         self.resumes = []  # (index, Forward) for every sleep
         self.frame_end = None
         self.latches = {}
@@ -164,14 +174,14 @@ class Lowering:
             if not vp and not vn:
                 return max(cp - cn, 0) & U32
             if not vn and cn == 0:
-                acc = EUDVariable(cp & U32)
+                acc = fresh(cp & U32)
                 for t in vp:
                     acc += t
                 return acc
-            acc = EUDVariable(cp & U32)
+            acc = fresh(cp & U32)
             for t in vp:
                 acc += t
-            sub = EUDVariable(cn & U32)
+            sub = fresh(cn & U32)
             for t in vn:
                 sub += t
             r = EUDVariable()
@@ -236,7 +246,7 @@ class Lowering:
     def cond(self, e):
         k = e["kind"]
         if k == "const":
-            return EUDVariable(1 if e["value"] else 0) >= 1
+            return EUDVariable(1 if e["value"] else 0) >= 1  # initial: a constant, never written
         if k == "cond":
             return condition(e["record"])
         if k == "var":
@@ -247,7 +257,7 @@ class Lowering:
             a, b = self.num(e["left"]), self.num(e["right"])
             op = e["op"]
             if isinstance(a, int) and isinstance(b, int):
-                return EUDVariable(1 if compare(a, op, b) else 0) >= 1
+                return EUDVariable(1 if compare(a, op, b) else 0) >= 1  # initial: a constant, never written
             # One comparison, built once: a comparison between variables writes into its own
             # condition, and one that is built and dropped is an orphan eudplib refuses.
             av = as_var(a)
@@ -290,7 +300,7 @@ class Lowering:
             return 1 if e["value"] else 0
         if e["kind"] == "var":
             return self.var(e["id"], e).get()
-        t = EUDVariable(0)
+        t = fresh(0)
         if EUDIf()(self.cond(e)):
             t << 1
         EUDEndIf()
@@ -300,7 +310,7 @@ class Lowering:
         """rose(c): true on the frame c becomes true; once(c): true the first time it holds."""
         key = id(e)
         if key not in self.latches:
-            self.latches[key] = EUDArray([0] * 12) if self.per_player else EUDVariable(0)
+            self.latches[key] = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: the latch
         latch = self.latches[key]
 
         def get():
@@ -312,7 +322,7 @@ class Lowering:
             else:
                 latch << v
 
-        fired = EUDVariable(0)
+        fired = fresh(0)
         held = self.truth(e["cond"])
         if EUDIf()(as_var(held) >= 1):
             if EUDIf()(as_var(get()) == 0):

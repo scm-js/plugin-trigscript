@@ -3,7 +3,7 @@
 Written 2026-09-17; revised the same day when the build server was replaced by the
 [eudplib plugin](https://github.com/scm-js/plugin-eudplib), which runs eudplib inside the
 editor. Status: slice 0 built (`python/trigscript.py` lowers a hand-written IR,
-`fixtures/eud/spike.json`, into `fixtures/eud/spike-eud.scx`; not yet played). The
+`probes/spike.ts` since slice 1, into `fixtures/eud/spike-eud.scx`, which is ignored because it sits on a Blizzard map). **Played 2026-09-18, all pass**: the tick every second, ore by a constant, gas set from a variable, the per-player greeting after a sleep, and a unit created when the counter reached 5. The second play found the one bug so far: `EUDVariable(n)` is a load-time value, so a temporary built with it kept the last run's total (see `fresh()` in `python/trigscript.py`). The
 question it answers: what does TrigScript become when eudplib can assemble its output,
 and how do we get the best developer experience out of that.
 
@@ -320,7 +320,7 @@ before the slice is called done, in the Magenta manner.
 
 | # | Slice | What it proves | Size |
 | --- | --- | --- | --- |
-| 0 | Spike: hand-written IR → eudplib plugin → map; a counter, a sleep, a dynamic print, per-player (built 2026-09-17, `fixtures/eud/spike-eud.scx`, to play) | frames, eudTurbo, prints, per-player arrays work; a number for build time and payload size | 1 day |
+| 0 | Spike: hand-written IR → eudplib plugin → map; a counter, a sleep, a dynamic print, per-player (built 2026-09-17, played 2026-09-18: all pass) | frames, eudTurbo, prints, per-player arrays work; a number for build time and payload size | 1 day |
 | 1 | IR refactor + Remastered backend for today's language + Build & Test + simulator on IR | every existing test program simulates identically on both targets; `a = b` and `if (a < b)` cost nothing; loops run in-frame; the sleep rule | the big one, ~1 week |
 | 2 | Reads and text | `deaths(P1, u)` as a value, `minerals()`, `countUnits()`, template literals with numbers and names; on classic, reads by decomposition with hints | 2–3 days |
 | 3 | `Unit` objects, unit loops, picks, `stats()` | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
@@ -348,6 +348,14 @@ with first; 5 and 6 are what make it feel finished.
   a function called from many places; a `{ inline: false }` option could come later.
 - **A limit on scans.** A loop over every unit on every frame in a per-player program is
   twelve scans a frame. A hint is planned; a hard cap is not.
+- **The classic install on the Remastered target.** As of 2.6 every compile still runs the
+  classic backend and Build still writes the classic block into the source map, so a script on
+  the Remastered target must fit Classic's limits (death counters free, the forms of division
+  Classic takes) and pays Classic's trigger counts. No limit can be lifted until that is
+  optional. The choice: a Remastered script skips the classic block entirely (the source map
+  then carries the script but no playable triggers of its own), or keeps a classic block only
+  for what Classic can express and leaves the rest to the built map. To settle before slice 2,
+  since reads and text cannot compile on Classic as they are.
 - ~~Rate limiting the server.~~ There is no server: the build runs in the editor.
 - ~~Offline.~~ Solved by the eudplib plugin: after its one-time download every build is
   local, on the desktop as on the web.

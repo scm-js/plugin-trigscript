@@ -3,7 +3,9 @@
  * does: compile to IR, hand the IR, the map and `python/trigscript.py` to a plugin-eudplib
  * checkout's `scripts/build-map.mts`, write the built map. For probe maps that get played.
  *
- *   npx tsx scripts/build-fixture.mts fixtures/eud/spike.ts fixtures/eud/spike-eud.scx [map.scx] [../plugin-eudplib]
+ *   npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike-eud.scx [map.scx] [../plugin-eudplib]
+ *
+ * The output lands in the ignored fixtures/ folder: it is built on a Blizzard map, which is never committed.
  *
  * The script's texts are interned into the map's string table first through the editor's
  * own codec (a scm-js checkout beside this repository, or SCMJS_DIR), the way a build in
@@ -36,9 +38,32 @@ if (problems.length) { for (const d of problems) console.error(`${d.at.file}:${d
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));
 const { parseScenario, serializeScenario } = await import(join(EDITOR, "src", "formats", "chk", "scenario.ts"));
-const { internString } = await import(join(EDITOR, "src", "editor", "settings.ts"));
+const { internString, patchPlayer } = await import(join(EDITOR, "src", "editor", "settings.ts"));
 const loaded = await loadMap(new Uint8Array(readFileSync(map)));
 const scn = parseScenario(loaded.chk);
+// A probe map is played alone: Player 1 is the human (Terran), Player 2 a computer (Zerg) in a
+// force of its own, so a Use Map Settings game starts with one person. Fixed races on purpose:
+// with User Selectable the game hands out melee units and drops the placed ones.
+patchPlayer(scn, 0, { type: 6, race: 1, force: 0 });
+patchPlayer(scn, 1, { type: 5, race: 0, force: 1 });
+// The base map is a melee map: its stock triggers defeat whoever commands no buildings, and in
+// Use Map Settings nobody is handed melee units — both players lose at once and the game
+// ends in a draw a second in. The probe's own programs are the only triggers it should have,
+// and each player gets a base at their start location so there is something to look at.
+const { markDirty } = await import(join(EDITOR, "src", "formats", "chk", "scenario.ts"));
+const { addUnits, applyUnitChanges, makeUnit, nextSerial } = await import(join(EDITOR, "src", "editor", "units.ts"));
+scn.triggers = [];
+const START_LOCATION = 214, COMMAND_CENTER = 106, HATCHERY = 131, MARINE = 0, ZERGLING = 37;
+const placed = [];
+let serial = nextSerial(scn);
+for (const [owner, base, troop] of [[0, COMMAND_CENTER, MARINE], [1, HATCHERY, ZERGLING]] as const) {
+  const start = scn.units.find((u: { unitId: number; owner: number }) => u.unitId === START_LOCATION && u.owner === owner);
+  if (!start) continue;
+  placed.push(makeUnit(null, base, owner, start.x, start.y, serial++));
+  for (let i = 0; i < 4; i++) placed.push(makeUnit(null, troop, owner, start.x - 48 + i * 32, start.y + 96, serial++));
+}
+applyUnitChanges(scn, addUnits(scn, placed));
+markDirty(scn, "TRIG", "UNIT");
 const indices = new Map<number, number>();
 r.strings.forEach((str, i) => { indices.set(i + 1, "index" in str ? str.index : internString(scn, str.text)); });
 const ir = serializeIr(r.ir, (local) => (local === 0 ? 0 : indices.get(local) ?? 0));

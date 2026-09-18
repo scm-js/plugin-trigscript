@@ -13,4 +13,11 @@ describe("the embedded Python lowering", () => {
     expect(m, "python/trigscript.py names IR_VERSION").not.toBeNull();
     expect(Number(m![1])).toBe(IR_VERSION);
   });
+  it("never uses an initial value where a run-time value is meant", () => {
+    // `EUDVariable(n)` sets the cell when the map loads, once. A temporary built that way and
+    // written to keeps the last run's value (`ticks + 1` went 1, 2, 4, 8 in the first played
+    // probe). Every construction with an argument must say why an initial value is right.
+    const offenders = TRIGSCRIPT_PY.split("\n").filter((l) => /EUDVariable\([^)]/.test(l) && !l.includes("# initial") && !l.includes("`EUDVariable(n)`"));
+    expect(offenders).toEqual([]);
+  });
 });
