@@ -48,10 +48,10 @@ import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
 import { declarationOf, libraryCallName } from "./hoist";
 import { scriptParams } from "./api";
-import { isAction, isBuilder, isCondition, isDuration, isGameFunction, isTrigger, type GameFunctionValue } from "./runtime";
+import { hasTextMark, isAction, isBuilder, isCondition, isDuration, isGameFunction, isPrint, isRead, isReader, isTrigger, READ_ARITY, textParts, type GameFunctionValue, type ReadValue, type ScriptString } from "./runtime";
 import { Scope, type Binding } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { IR_VERSION, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type VarDecl } from "./ir";
+import { IR_VERSION, type ArithOp, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type TextPart, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -78,6 +78,8 @@ export interface StructuredContext {
   owner: number;
   owners: readonly number[];
   perPlayer: boolean;
+  /** The run's strings, by the local id a record's text holds: a text with name() or color() in it becomes a print. */
+  strings: readonly ScriptString[];
   error(node: TS.Node, message: string, source?: "compiler" | "script"): void;
   /** The body of a `game()` function, from the value the run made for it; undefined when the compiler cannot place it. */
   resolve(fn: GameFunctionValue): Body | undefined;
@@ -115,12 +117,28 @@ function describe(v: unknown): string {
   if (isAction(v)) return "an action";
   if (isTrigger(v)) return "a trigger";
   if (isDuration(v)) return "a duration";
+  if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isPrint(v)) return "a print()";
   if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "string") return "text";
   if (typeof v === "function") return "a function";
   if (v === null || v === undefined) return String(v);
   return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
+}
+
+/** The player a trigger is running for, as a player number. */
+const CURRENT_PLAYER = 13;
+
+/** Neighbouring pieces of written text as one. */
+function mergeText(parts: TextPart[]): TextPart[] {
+  const out: TextPart[] = [];
+  for (const p of parts) {
+    const last = out[out.length - 1];
+    if (p.kind === "text" && last?.kind === "text") out[out.length - 1] = { kind: "text", text: last.text + p.text };
+    else out.push(p);
+  }
+  return out;
 }
 
 const TRUE: BoolExpr = { kind: "const", value: true };
@@ -306,7 +324,8 @@ export class Structured {
       for (const a of e.arguments) {
         if (ts.isSpreadElement(a)) { const v = sub(a.expression); if (!v || !Array.isArray(v.value)) return undefined; args.push(...(v.value as unknown[])); continue; }
         const v = sub(a);
-        if (!v) return undefined;
+        // A read among the arguments makes the call the program's: an action with that amount, a function inlined.
+        if (!v || isRead(v.value)) return undefined;
         args.push(v.value);
       }
       try {
@@ -319,7 +338,7 @@ export class Structured {
       let out = e.head.text;
       for (const span of e.templateSpans) {
         const v = sub(span.expression);
-        if (!v) return undefined;
+        if (!v || isRead(v.value)) return undefined;
         out += String(v.value) + span.literal.text;
       }
       return { value: out };
@@ -337,7 +356,8 @@ export class Structured {
     }
     if (ts.isPrefixUnaryExpression(e)) {
       const v = sub(e.operand);
-      if (!v) return undefined;
+      // A read has no value yet: arithmetic over it is the program's, not the script's.
+      if (!v || isRead(v.value)) return undefined;
       switch (e.operator) {
         case ts.SyntaxKind.MinusToken: return { value: -(v.value as number) };
         case ts.SyntaxKind.PlusToken: return { value: +(v.value as number) };
@@ -348,7 +368,7 @@ export class Structured {
     if (ts.isBinaryExpression(e)) {
       const l = sub(e.left);
       const r = sub(e.right);
-      if (!l || !r) return undefined;
+      if (!l || !r || isRead(l.value) || isRead(r.value)) return undefined;
       const a = l.value as number;
       const b = r.value as number;
       switch (e.operatorToken.kind) {
@@ -369,7 +389,7 @@ export class Structured {
     }
     if (ts.isConditionalExpression(e)) {
       const c = sub(e.condition);
-      if (!c) return undefined;
+      if (!c || isRead(c.value)) return undefined;
       return c.value ? sub(e.whenTrue) : sub(e.whenFalse);
     }
     return undefined;
@@ -600,6 +620,8 @@ export class Structured {
     if (v === undefined || v === null) return;
     if (isDuration(v)) { this.c.error(expr, "A duration does nothing on its own; sleep(seconds(2)) pauses the program."); return; }
     if (isAction(v)) { this.emitAction(v.record, expr); return; }
+    if (isPrint(v)) { this.emitPrint(textParts(v.text), v.to, v.position, expr); return; }
+    if (isRead(v)) { this.c.error(expr, `${v.ident}() reads a value and does nothing on its own: assign it to a variable, or compare it in an if.`); return; }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) { for (const a of v) this.emitAction(a.record, expr); return; }
     if (Array.isArray(v) && v.length === 0) return;
     if (isCondition(v)) { this.c.error(expr, "This is a condition; test it in an if or a while."); return; }
@@ -608,7 +630,77 @@ export class Structured {
 
   private emitAction(a: ActionRecord, at: TS.Node) {
     if (a.type === ActionType.PreserveTrigger) return; // Every generated trigger is preserved already.
+    const s = a.text > 0 ? this.c.strings[a.text - 1] : undefined;
+    if (s && "text" in s && hasTextMark(s.text)) {
+      // name() or color() in the text: only displayText has a form the game fills in.
+      if (a.type !== ActionType.DisplayText) { this.c.error(at, "name() and color() are filled in while the game runs, which displayText() and print() can do; this action's text is fixed when the script is built."); return; }
+      this.emitPrint(textParts(s.text), CURRENT_PLAYER, "chat", at);
+      return;
+    }
     this.emit({ kind: "action", record: { ...a }, at: this.at(at), label: this.label(at) }, at);
+  }
+
+  private emitPrint(parts: TextPart[], to: number, position: "chat" | "center", at: TS.Node) {
+    if (!parts.length) return;
+    this.emit({ kind: "print", parts: mergeText(parts), to, position, at: this.at(at), label: this.label(at) }, at);
+  }
+
+  /**
+   * A text with the program's values in it, as parts: a template literal, texts joined with +,
+   * and in them numbers of the program (their digits), name(p), color(p) and anything known
+   * when the script is built. Null, with a diagnostic, when a piece is none of those.
+   */
+  private textOf(expr: TS.Expression): TextPart[] | null {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h && !isRead(h.value)) {
+      const v = h.value;
+      if (typeof v === "string") return textParts(v);
+      if (typeof v === "number" || typeof v === "boolean") return [{ kind: "text", text: String(v) }];
+      this.c.error(e, `Expected text or a number, got ${describe(v)}.`);
+      return null;
+    }
+    if (ts.isTemplateExpression(e)) {
+      const out: TextPart[] = e.head.text ? [{ kind: "text", text: e.head.text }] : [];
+      for (const span of e.templateSpans) {
+        const part = this.textOf(span.expression);
+        if (!part) return null;
+        out.push(...part);
+        if (span.literal.text) out.push({ kind: "text", text: span.literal.text });
+      }
+      return out;
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken && this.isText(e)) {
+      const l = this.textOf(e.left);
+      const r = this.textOf(e.right);
+      return l && r ? [...l, ...r] : null;
+    }
+    if (this.kindOf(this.c.checker.getTypeAtLocation(e)) === "boolean") { this.c.error(e, "A boolean has no text of its own: write flag ? \"yes\" : \"no\" with both texts known when the script is built, or show a number."); return null; }
+    const value = this.num(e);
+    return value ? [{ kind: "number", expr: value }] : null;
+  }
+
+  private isText(e: TS.Expression): boolean {
+    return (this.c.checker.getTypeAtLocation(e).flags & this.ts.TypeFlags.StringLike) !== 0;
+  }
+
+  /** `print(text, { to: P2, position: "center" })` with the program's values in the text. */
+  private printStatement(e: TS.CallExpression) {
+    if (e.arguments.length < 1 || e.arguments.length > 2) { this.c.error(e, "print() takes the text and, optionally, { to, position }."); return; }
+    let to = CURRENT_PLAYER;
+    let position: "chat" | "center" = "chat";
+    if (e.arguments[1]) {
+      const h = this.evaluate(e.arguments[1]);
+      if (!h) { this.notConstant(e.arguments[1], "print()'s options"); return; }
+      // The library checks the options: print("", options) is the same call without the text.
+      const probe = (this.evaluate(e.expression)!.value as (...a: unknown[]) => unknown)("", h.value);
+      if (!isPrint(probe)) return;
+      to = probe.to;
+      position = probe.position;
+    }
+    const parts = this.textOf(e.arguments[0]);
+    if (parts) this.emitPrint(parts, to, position, e);
   }
 
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
@@ -648,7 +740,7 @@ export class Structured {
           return;
         }
         const arith = compoundOp(ts, op);
-        if (!arith) { this.c.error(e, "Only = += -= *= /= %= assign a number."); return; }
+        if (!arith) { this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number."); return; }
         const rhs = this.num(e.right);
         if (!rhs) return;
         this.emit({ kind: "assign", target: target.id, value: this.mark({ kind: "binary", op: arith, left: varRef(target), right: rhs, at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
@@ -679,13 +771,21 @@ export class Structured {
         return;
       }
     }
-    if (this.isLibraryCall(e, "random")) { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean."); return; }
+    if (this.isLibraryCall(e, "random")) { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a variable."); return; }
     if (this.isLibraryCall(e, "sleep")) { this.sleepStatement(e); return; }
     if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) { this.c.error(e, "rose() / once() are conditions: test them in an if."); return; }
     if (this.isLibraryCall(e, "shared")) { this.c.error(e, "shared() goes on a declaration: let total = shared(0)."); return; }
+    if (this.isLibraryCall(e, "print")) { this.printStatement(e); return; }
     const callee = this.evaluate(e.expression)?.value;
     if (isGameFunction(callee)) { const call = this.gameCall(e, callee); if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e); return; }
+    if (isReader(callee) || (isBuilder(callee) && callee.kind === "condition" && READ_ARITY.get(callee.ident) === e.arguments.length)) { this.c.error(e, "This reads a value and does nothing on its own: assign it to a variable, or compare it in an if."); return; }
     if (isBuilder(callee)) {
+      if (callee.kind === "action" && callee.def.type === ActionType.DisplayText && e.arguments[0] && !this.evaluate(e.arguments[0])) {
+        // displayText(`${gold} gold`): the text has the program's values in it, so it is printed, for the current player as displayText is.
+        const parts = this.textOf(e.arguments[0]);
+        if (parts) this.emitPrint(parts, CURRENT_PLAYER, "chat", e);
+        return;
+      }
       if (callee.kind === "action") { this.actionWithVars(e, callee.ident, callee.def as Parameters<typeof scriptParams>[0]); return; }
       this.c.error(e, "This is a condition; test it in an if or a while.");
       return;
@@ -919,7 +1019,8 @@ export class Structured {
         return;
       }
       const h = this.evaluate(arg);
-      if (h) { scope.bind(p, { kind: "value", value: h.value }); return; }
+      // By value: a read passed as an argument is read once, at the call, into a variable of the parameter's own.
+      if (h && !isRead(h.value)) { scope.bind(p, { kind: "value", value: h.value }); return; }
       const binding = this.bindingOf(arg);
       if (binding?.kind === "record") {
         if (this.assigns(body, p)) { this.c.error(p, `${p.name.text} is a record; a record parameter can have its fields assigned, not be reassigned itself.`); ok = false; return; }
@@ -1041,6 +1142,7 @@ export class Structured {
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
     if (h) {
+      if (isRead(h.value)) return this.readValue(h.value, e);
       const n = this.asInteger(h, e);
       return n === null ? null : num(n);
     }
@@ -1065,7 +1167,7 @@ export class Structured {
     }
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
-      if (!op) { this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder."); return null; }
+      if (!op) { this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >>."); return null; }
       const l = this.num(e.left);
       const r = this.num(e.right);
       if (!l || !r) return null;
@@ -1081,6 +1183,42 @@ export class Structured {
     if (ts.isCallExpression(e)) return this.callValue(e);
     this.c.error(e, "Expected a number: a value, a variable, or arithmetic over them.");
     return null;
+  }
+
+  /** A read as a number of the program; one that is a boolean of its own (`isHuman`) counts 1 or 0. */
+  private readValue(v: ReadValue, at: TS.Node): NumExpr {
+    const read = this.mark<NumExpr>({ kind: "read", read: v.read, at: this.at(at), label: this.label(at) }, at);
+    if (v.equals === undefined) return read;
+    const cond = this.mark<BoolExpr>({ kind: "compare", op: "==", left: read, right: num(v.equals), at: this.at(at), label: this.label(at) }, at);
+    return this.mark<NumExpr>({ kind: "ternary", cond, whenTrue: num(1), whenFalse: num(0), at: this.at(at), label: this.label(at) }, at);
+  }
+
+  /** A read as a condition: `isHuman(p)` is its byte being 2, a number is tested `!= 0`. */
+  private readBool(v: ReadValue, at: TS.Node): BoolExpr {
+    const read = this.mark<NumExpr>({ kind: "read", read: v.read, at: this.at(at), label: this.label(at) }, at);
+    if (v.equals === undefined) return this.mark<BoolExpr>({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at);
+    return this.mark<BoolExpr>({ kind: "compare", op: "==", left: read, right: num(v.equals), at: this.at(at), label: this.label(at) }, at);
+  }
+
+  /**
+   * A call that reads the game — `minerals(P1)`, `deaths(P1, unit)` without its comparison — made
+   * now, with its arguments, which are known when the script is built; what it returns says where
+   * the value is. Undefined when the call is not one; null, with a diagnostic, when it failed.
+   */
+  private readCall(e: TS.CallExpression): ReadValue | null | undefined {
+    const callee = this.evaluate(e.expression)?.value;
+    const reads = isReader(callee) || (isBuilder(callee) && callee.kind === "condition" && READ_ARITY.get(callee.ident) === e.arguments.length);
+    if (!reads) return undefined;
+    const args: unknown[] = [];
+    for (const a of e.arguments) {
+      const h = this.evaluate(a);
+      if (!h || isRead(h.value)) { this.notConstant(a, "What to read"); return null; }
+      args.push(h.value);
+    }
+    let out: unknown;
+    try { out = (callee as (...a: unknown[]) => unknown)(...args); } catch (err) { throw new ValueError(e, err instanceof Error ? err.message : String(err)); }
+    if (!isRead(out)) { this.c.error(e, "Expected a read."); return null; }
+    return out;
   }
 
   /** A call as a number: a function of the body or a game function (its result), or an intrinsic over variables. */
@@ -1102,6 +1240,13 @@ export class Structured {
       return out;
     };
     const intrinsic = (name: "min" | "max" | "abs", list: NumExpr[]): NumExpr => this.mark<NumExpr>({ kind: "intrinsic", name, args: list, at: this.at(e), label: this.label(e) }, e);
+    if (this.isLibraryCall(e, "random")) {
+      if (e.arguments.length !== 1) { this.c.error(e, "random() is a coin toss, a boolean; random(n) is a number from 0 to n − 1."); return null; }
+      const bound = this.num(e.arguments[0]);
+      return bound ? this.mark<NumExpr>({ kind: "randomInt", bound, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    const read = this.readCall(e);
+    if (read !== undefined) return read ? this.readValue(read, e) : null;
     if (this.isLibraryCall(e, "clamp")) {
       const a = args(3, "clamp()");
       if (!a) return null;
@@ -1150,7 +1295,8 @@ export class Structured {
     for (let i = 0; i < e.arguments.length; i++) {
       const a = e.arguments[i];
       const h = this.evaluate(a);
-      if (h) { values.push(h.value); continue; }
+      // A read is the program's value, not the script's: it takes the variable's place.
+      if (h && !isRead(h.value)) { values.push(h.value); continue; }
       const p = params[i];
       if (!p) { this.c.error(a, `${ident} takes ${params.length} argument${params.length === 1 ? "" : "s"}.`); return; }
       const eligible = ((p.arg.kind === "amount" || p.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type)) || (p.arg.kind === "count" && COUNT_ACTIONS.has(def.type));
@@ -1185,7 +1331,7 @@ export class Structured {
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
     if (h && typeof h.value === "boolean") return { kind: "const", value: h.value };
-    if (this.isLibraryCall(e, "random")) return this.mark<BoolExpr>({ kind: "random", at: this.at(e) }, e);
+    if (this.isLibraryCall(e, "random") && (e as TS.CallExpression).arguments.length === 0) return this.mark<BoolExpr>({ kind: "random", at: this.at(e) }, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
       const v = this.varOf(e.operand);
       if (v && v.kind === "boolean") return { kind: "not", expr: boolRef(v) };
@@ -1206,6 +1352,7 @@ export class Structured {
     if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
     if (typeof v === "string") return v !== "" ? TRUE : FALSE;
     if (isCondition(v)) return this.mark<BoolExpr>({ kind: "cond", record: { ...v.record } }, at);
+    if (isRead(v)) return this.readBool(v, at);
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c) => this.mark<BoolExpr>({ kind: "cond", record: { ...c.record } }, at)) };
     if (isAction(v)) { this.c.error(at, "This is an action, not a condition."); return FALSE; }
     this.c.error(at, `Expected a condition, got ${describe(v)}.`);
@@ -1253,13 +1400,19 @@ export class Structured {
         const decl = this.gameDeclaration(e.expression);
         if (decl && ts.isFunctionDeclaration(decl)) return this.callBool(e, () => this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl));
       }
-      if (this.isLibraryCall(e, "random")) return this.mark<BoolExpr>({ kind: "random", at: this.at(e) }, e);
+      if (this.isLibraryCall(e, "random")) {
+        if (e.arguments.length === 0) return this.mark<BoolExpr>({ kind: "random", at: this.at(e) }, e);
+        const n = this.callValue(e);
+        return n ? this.mark<BoolExpr>({ kind: "test", expr: n, at: this.at(e), label: this.label(e) }, e) : FALSE;
+      }
       if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose");
       if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
       if (this.isLibraryCall(e, "sleep")) { this.c.error(e, "sleep() is a statement, not a condition."); return FALSE; }
+      const read = this.readCall(e);
+      if (read !== undefined) return read ? this.readBool(read, e) : FALSE;
       const callee = this.evaluate(e.expression)?.value;
       if (isGameFunction(callee)) return this.callBool(e, () => this.gameCall(e, callee));
-      if (isBuilder(callee) && callee.kind === "condition") { this.c.error(e, "The game cannot test a condition against a variable of the program: a condition's amount is known when the script is built. Compare variables in the program's own statements."); return FALSE; }
+      if (isBuilder(callee) && callee.kind === "condition") { this.c.error(e, `A condition's amount is known when the script is built. To compare with a variable of the program, read the value and compare it yourself: ${callee.ident}(…) >= x, without the comparison and the amount inside the call.`); return FALSE; }
       if (isBuilder(callee)) { this.c.error(e, "This is an action, not a condition."); return FALSE; }
       this.notConstant(e, "A condition's arguments");
       return FALSE;
@@ -1280,7 +1433,7 @@ export class Structured {
     // Boolean equality: `flag == true`, `a != b` over switches.
     const isBool = (x: TS.Expression) => {
       const h = this.evaluate(x);
-      if (h) return typeof h.value === "boolean" || isCondition(h.value);
+      if (h) return typeof h.value === "boolean" || isCondition(h.value) || (isRead(h.value) && h.value.equals !== undefined);
       const v = this.varOf(x);
       if (v !== undefined) return v.kind !== "number";
       return this.kindOf(this.c.checker.getTypeAtLocation(x)) === "boolean";
@@ -1321,8 +1474,6 @@ export function flipOp(op: CompareOp): CompareOp {
   }
 }
 
-type ArithOp = "+" | "-" | "*" | "/" | "%";
-
 function arithOp(ts: typeof TS, kind: TS.SyntaxKind): ArithOp | null {
   switch (kind) {
     case ts.SyntaxKind.PlusToken: return "+";
@@ -1330,6 +1481,12 @@ function arithOp(ts: typeof TS, kind: TS.SyntaxKind): ArithOp | null {
     case ts.SyntaxKind.AsteriskToken: return "*";
     case ts.SyntaxKind.SlashToken: return "/";
     case ts.SyntaxKind.PercentToken: return "%";
+    case ts.SyntaxKind.AmpersandToken: return "&";
+    case ts.SyntaxKind.BarToken: return "|";
+    case ts.SyntaxKind.CaretToken: return "^";
+    case ts.SyntaxKind.LessThanLessThanToken: return "<<";
+    // Numbers are unsigned, so the two right shifts are one.
+    case ts.SyntaxKind.GreaterThanGreaterThanToken: case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: return ">>";
     default: return null;
   }
 }
@@ -1341,6 +1498,11 @@ function compoundOp(ts: typeof TS, kind: TS.SyntaxKind): ArithOp | null {
     case ts.SyntaxKind.AsteriskEqualsToken: return "*";
     case ts.SyntaxKind.SlashEqualsToken: return "/";
     case ts.SyntaxKind.PercentEqualsToken: return "%";
+    case ts.SyntaxKind.AmpersandEqualsToken: return "&";
+    case ts.SyntaxKind.BarEqualsToken: return "|";
+    case ts.SyntaxKind.CaretEqualsToken: return "^";
+    case ts.SyntaxKind.LessThanLessThanEqualsToken: return "<<";
+    case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken: case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken: return ">>";
     default: return null;
   }
 }

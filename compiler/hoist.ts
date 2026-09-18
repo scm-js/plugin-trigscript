@@ -31,6 +31,7 @@
 import type * as TS from "typescript";
 import { DECLARATIONS_FILE } from "./declarations";
 import { MODULE_NAME } from "./api";
+import { READ_ARITY, READER_NAMES } from "./runtime";
 
 export interface PlanError { node: TS.Node; message: string }
 
@@ -106,6 +107,14 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
 const GAME_CALLS = new Set(["random", "sleep", "rose", "once", "shared"]);
+/**
+ * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
+ * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
+ * build-time value, though its callee and its arguments are: `minerals(P1) * 2` is the program's
+ * arithmetic, not the script's.
+ */
+const READ_CALLS = new Set<string>([...READER_NAMES, "print"]);
+const isReadCall = (lib: string | null, args: number) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {
   const plan: ProgramPlan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [] };
@@ -184,6 +193,7 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
       if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword || ts.isAwaitExpression(n) || ts.isYieldExpression(n)) { ok = false; return; }
       // A call of a game() function runs in the game, whatever its arguments are.
       if (ts.isCallExpression(n) && isGame(n)) { ok = false; return; }
+      if (ts.isCallExpression(n) && isReadCall(libraryCallName(ts, checker, n), n.arguments.length)) { ok = false; return; }
       if (ts.isBinaryExpression(n)) {
         const k = n.operatorToken.kind;
         if (k === ts.SyntaxKind.AmpersandAmpersandToken || k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.CommaToken || (k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment)) { ok = false; return; }

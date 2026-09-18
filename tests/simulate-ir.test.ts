@@ -72,3 +72,96 @@ describe("numbers come out as the game computes them", () => {
     expect(value("const k = -4; let a = 10; let out = 0; out = a + k;")).toBe(6);
   });
 });
+
+describe("reads: what the game holds, as a value", () => {
+  const errors = (src: string) => compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB }).diagnostics.map((d) => `${d.line}:${d.message}`);
+
+  it("a comparing condition without its comparison is a read of what it compares", () => {
+    const r = compile(`setDeaths(P1, units.TerranMarine, "set", 7); let out = deaths(P1, units.TerranMarine); let twice = deaths(P1, units.TerranMarine) * 2 + 1;`);
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings });
+    expect(sim.value("out")).toBe(7);
+    expect(sim.value("twice")).toBe(15);
+    const decl = r.ir[0].body.find((s) => s.kind === "declare" && s.decl.name === "out");
+    expect(decl).toMatchObject({ init: { kind: "read", read: { source: "condition", record: { type: 15, player: 0, unitId: 0, comparison: 0, amount: 0 } } } });
+  });
+  it("the resources a program set are what minerals() finds, in a comparison and as an action's amount", () => {
+    const sim = after(`let gold = 20; let out = 0; setResources(P1, "set", 50, "ore"); if (minerals(P1) > gold * 2) out = minerals(P1) - gold; setResources(P1, "add", minerals(P1), "gas"); let both = resources(P1, "oreAndGas"); let g = gas(P1);`);
+    expect(sim.value("out")).toBe(30);
+    expect(sim.value("g")).toBe(50);
+    expect(sim.value("both")).toBe(100);
+  });
+  it("the current player's own value, and what the caller says for what the simulation does not hold", () => {
+    const r = compile(`let n = countUnits(CurrentPlayer, units.ZergZergling, locations.Anywhere); let all = countUnits(P2, units.ZergZergling); let k = kills(P1, units.AnyUnit); let t = countdown() + elapsed();`);
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, read: (read) => (read.source === "condition" ? read.record.type : undefined) });
+    expect([sim.value("n"), sim.value("all"), sim.value("k"), sim.value("t")]).toEqual([3, 2, 5, 13]);
+  });
+  it("player facts: the race, the slot, a person or not, left or not, the supply", () => {
+    const r = compile(`let out = 0; if (isHuman(CurrentPlayer) && !hasLeft(P2) && race(P1) == races.Terran && slot(P3) == slots.Empty) out = supply(P1, "used") + supply(P1, "max", races.Zerg); let h = isHuman(P1); let n = 0; if (isHuman(P1) == true) n = 1;`);
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, read: (read) => (read.source === "player" ? (read.fact === "race" ? 1 : read.fact === "slot" ? (read.player === 2 ? 0 : 2) : 0) : read.source === "supply" ? (read.of === "used" ? 12 : read.race === 0 ? 200 : 0) : undefined) });
+    expect(sim.value("out")).toBe(212);
+    expect(sim.value("h")).toBe(true);
+    expect(sim.value("n")).toBe(1);
+  });
+  it("a read outside a program, a read as a statement, and a read of a variable's player are said plainly", () => {
+    expect(errors(`trigger(P1, [deaths(P1, units.TerranMarine) as any], []);`)[0]).toMatch(/^1:trigger: conditions: deaths\(\) without a comparison reads the value/);
+    expect(errors(`trigger(P1, [always()], [setResources(P1, "set", minerals(P1) as any, "ore")]);`)[0]).toMatch(/minerals\(\) is a value the game holds/);
+    expect(errors(`const twice = minerals(P1) * 2;`)[0]).toMatch(/minerals\(\) is a value the game holds, read while the game runs/);
+    expect(errors(`program(() => {\n  minerals(P1);\n});`)).toEqual(["2:minerals() reads a value and does nothing on its own: assign it to a variable, or compare it in an if."]);
+    expect(errors(`program(() => {\n  let p = 0;\n  let m = minerals(p as Player);\n});`)[0]).toMatch(/^3:What to read must be known when the script is built, but p is a variable/);
+    expect(errors(`program(() => {\n  let m = minerals(AllPlayers) + race(AllPlayers);\n});`)[0]).toMatch(/race: player: expected one player/);
+  });
+  it("a loop on a read needs a sleep unless its body acts on the game", () => {
+    expect(errors(`program(() => {\n  while (minerals(P1) < 100) { }\n});`)[0]).toMatch(/^2:This loop's condition never changes inside it/);
+    expect(errors(`program(() => {\n  while (countUnits(P1, units.TerranMarine) < 5) createUnit(P1, units.TerranMarine, 1, locations.Anywhere);\n});`)).toEqual([]);
+  });
+});
+
+describe("random(n) and the bitwise operators", () => {
+  const value = (body: string, name = "out") => after(body).value(name);
+  it("random(n) is 0 … n − 1, with a variable bound too; random() stays a coin toss", () => {
+    const r = compile(`let n = 6; let out = random(n); let zero = random(0); let lane = random(3); let coin = random();`);
+    const rolls = [0.999, 0.5, 0.2]; // random(0) asks for none
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, random: () => rolls.shift() ?? 0 });
+    expect([sim.value("out"), sim.value("zero"), sim.value("lane"), sim.value("coin")]).toEqual([5, 0, 1, true]);
+  });
+  it("& | ^ << >> work on 32 unsigned bits, and a shift by 32 or more leaves nothing", () => {
+    expect(value("let a = 12; let b = 10; let out = 0; out = (a & b) + (a | b) * 100 + (a ^ b) * 10000;")).toBe(8 + 1400 + 60000);
+    expect(value("let a = 1; let s = 31; let out = 0; out = a << s;")).toBe(2147483648);
+    expect(value("let a = 4294967295; let s = 28; let out = 0; out = a >> s; out = out + (a >>> s);")).toBe(30);
+    expect(value("let a = 5; let s = 32; let out = 9; out = (a << s) + (a >> s);")).toBe(0);
+    expect(value("let a = 6; let out = 0; a &= 3; a |= 8; a ^= 1; a <<= 2; a >>= 1; out = a;")).toBe(22);
+  });
+});
+
+describe("text with the program's values in it", () => {
+  const texts = (body: string, options = {}) => { const r = compile(body); return simulatePrograms(r.ir, 1, { strings: r.strings, ...options }).events.map((e) => `${e.action.player}:${e.text}`); };
+
+  it("displayText with a template is printed for the current player, the numbers as they are then", () => {
+    expect(texts("let gold = 5; gold += 2; displayText(`You have ${gold} gold, ${gold * 2} soon`);")).toEqual(["13:You have 7 gold, 14 soon"]);
+    expect(texts("let n = 3; displayText(\"n = \" + n + \"!\");")).toEqual(["13:n = 3!"]);
+    expect(texts("displayText(`ore ${minerals(P1)}`);")).toEqual(["13:ore 0"]);
+  });
+  it("name() and color() are filled in by the game, wherever the text was put together", () => {
+    const r = compile("const banner = (p: Player) => `${color(p)}${name(p)} wins`; let n = 1; displayText(banner(P2)); displayText(`${name(CurrentPlayer)} has ${n}`);");
+    const prints = r.ir[0].body.filter((s) => s.kind === "print");
+    expect(prints[0]).toMatchObject({ to: 13, position: "chat", parts: [{ kind: "color", player: 1 }, { kind: "name", player: 1 }, { kind: "text", text: " wins" }] });
+    expect(prints[1]).toMatchObject({ parts: [{ kind: "name", player: 13 }, { kind: "text", text: " has " }, { kind: "number" }] });
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, playerName: (p) => ["Ann", "Bob"][p] ?? "?" });
+    expect(sim.events.map((e) => e.text)).toEqual(["Bob wins", "Ann has 1"]);
+    // Nothing of a program's text is left for the map's string table to take.
+    expect(r.triggers).toEqual([]);
+  });
+  it("print() shows it to someone else, or in the middle of the screen", () => {
+    const r = compile("let wave = 2; print(`Wave ${wave}`, { to: AllPlayers, position: \"center\" }); print(\"plain\", { to: P2 }); print(`for me ${wave}`);");
+    expect(r.ir[0].body.filter((s) => s.kind === "print").map((s) => (s.kind === "print" ? [s.to, s.position] : []))).toEqual([[17, "center"], [1, "chat"], [13, "chat"]]);
+    expect(simulatePrograms(r.ir, 1, { strings: r.strings }).events.map((e) => `${e.action.player}:${e.text}`)).toEqual(["17:Wave 2", "1:plain", "13:for me 2"]);
+  });
+  it("what a text cannot hold is said", () => {
+    const errors = (src: string) => compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB }).diagnostics.map((d) => `${d.line}:${d.message}`);
+    expect(errors("trigger(P1, [always()], [displayText(`${name(P1)} wins`)]);")[0]).toMatch(/^1:name\(\) and color\(\) are filled in by a program while the game runs/);
+    expect(errors("program(() => {\n  let flag = true;\n  displayText(`${flag}`);\n});")[0]).toMatch(/^3:A boolean has no text of its own/);
+    expect(errors("program(() => {\n  let n = 1;\n  setMissionObjectives(`${n} left`);\n});")[0]).toMatch(/^3:setMissionObjectives's text must be known when the script is built/);
+    expect(errors("program(() => {\n  print(\"x\", { to: players.Foes });\n});")[0]).toMatch(/print: to is a player/);
+    expect(errors("trigger(P1, [always()], [print(\"x\") as any]);")[0]).toMatch(/print\(\) is a statement of a program/);
+  });
+});

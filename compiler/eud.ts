@@ -34,6 +34,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void) {
       case "binary": case "compare": expr(e.left); expr(e.right); break;
       case "ternary": expr(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
       case "intrinsic": e.args.forEach(expr); break;
+      case "randomInt": expr(e.bound); break;
       case "and": case "or": e.items.forEach(expr); break;
       case "not": expr(e.expr); break;
       case "test": expr(e.expr); break;
@@ -55,6 +56,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void) {
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) expr(s.value); break;
       case "action": if (s.variable) expr(s.variable.expr); break;
+      case "print": for (const p of s.parts) if (p.kind === "number") expr(p.expr); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
@@ -116,10 +118,11 @@ function remarks(body: Stmt[], out: LineHint[]) {
   body.forEach(stmt);
 }
 
-/** The variables a statement list assigns (declares count too), by id. */
+/** The variables a statement list assigns (declares count too), by id — and `THE_GAME` when it takes an action, which may change what a read finds. */
 function assigned(body: Stmt[], into = new Set<string>()): Set<string> {
   const stmt = (s: Stmt) => {
     switch (s.kind) {
+      case "action": into.add(THE_GAME); break;
       case "declare": into.add(s.decl.id); break;
       case "assign": case "assignBool": into.add(s.target); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
@@ -137,10 +140,15 @@ function assigned(body: Stmt[], into = new Set<string>()): Set<string> {
   return into;
 }
 
-/** The variables an expression reads, by id. */
+/** What stands in `reads()` for "this expression reads the game": an id no variable has. */
+const THE_GAME = "(the game)";
+
+/** The variables an expression reads, by id — and `THE_GAME` when it reads a value of the game or tests a condition. */
 function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
   switch (e.kind) {
     case "var": into.add(e.id); break;
+    case "read": case "cond": into.add(THE_GAME); break;
+    case "randomInt": reads(e.bound, into); break;
     case "unary": reads(e.expr, into); break;
     case "binary": case "compare": reads(e.left, into); reads(e.right, into); break;
     case "ternary": reads(e.cond, into); reads(e.whenTrue, into); reads(e.whenFalse, into); break;
@@ -222,6 +230,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "binary": case "compare": return { ...e, left: expr(e.left), right: expr(e.right) };
       case "ternary": return { ...e, cond: expr(e.cond), whenTrue: expr(e.whenTrue), whenFalse: expr(e.whenFalse) } as E;
       case "intrinsic": return { ...e, args: e.args.map(expr) };
+      case "randomInt": return { ...e, bound: expr(e.bound) };
       case "call": return { ...e, call: call(e.call) };
       case "cond": return { ...e, record: condition(e.record) };
       case "test": return { ...e, expr: expr(e.expr) };
@@ -245,6 +254,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
       case "return": return s.value ? { ...s, value: expr(s.value) } : s;
       case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variable ? { variable: { ...s.variable, expr: expr(s.variable.expr) } } : {}) };
+      case "print": return { ...s, parts: s.parts.map((p) => (p.kind === "number" ? { ...p, expr: expr(p.expr) } : p)) };
       case "call": return { ...s, call: call(s.call) };
       case "block": return { ...s, body: s.body.map(stmt) };
       default: return s;

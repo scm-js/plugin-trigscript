@@ -264,9 +264,9 @@ describe("service: saving applies the script and builds its programs", () => {
     expect(compiles).toBe(before);
     expect(Object.keys(input.plugins)).toEqual(["trigscript", "eudTurbo"]);
     expect(input.plugins.trigscript).toEqual({ ir: "/work/files/trigscript.json" });
-    expect(input.sources!.trigscript).toContain("IR_VERSION = 2");
+    expect(input.sources!.trigscript).toContain("IR_VERSION = 3");
     const ir = JSON.parse(input.files!["trigscript.json"]);
-    expect(ir.version).toBe(2);
+    expect(ir.version).toBe(3);
     expect(ir.programs).toHaveLength(1);
     expect(JSON.stringify(ir)).toContain('"text":"tick"');
     // The library going away takes the contribution with it; coming back, it is made again.

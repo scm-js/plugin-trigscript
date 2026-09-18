@@ -29,6 +29,17 @@ and how do we get the best developer experience out of that.
 > lowering's arithmetic was brought to the contract the simulator states (whole sums,
 > exact comparisons, `abs` as a distance, a 0 divisor gives 0), and the simulator mirrors
 > the lowering down to the 32-bit wrap. Slices 2–6 below stand as written.
+>
+> **Slice 2, as built (3.2.0, 2026-09-18).** Reads are the comparing conditions without
+> their comparison and amount, plus the plainer names; a read means what its condition
+> means, because where no table of the game is the value the lowering searches with the
+> condition itself. Player facts as planned, with `races.` and `slots.` to compare against
+> and `supply(p, of, race?)` as the top bar shows it. Text: `displayText` stays "for the
+> current player"; `print(text, { to, position })` addresses anyone else, and its positions
+> are the chat area and the centre line (`f_eprintln`); `name(p)` and `color(p)` are marks
+> inside a string, so they survive a helper or a `+`, and only `displayText` / `print`
+> take them. `random(n)`, seeded from the game, and `& | ^ << >>`. IR version 3. The probe
+> is `probes/reads.ts`.
 
 ## What we are aiming for
 
@@ -357,7 +368,7 @@ before the slice is called done, in the Magenta manner.
 | 0 | Spike: hand-written IR → eudplib plugin → map; a counter, a sleep, a dynamic print, per-player (built 2026-09-17, played 2026-09-18: all pass) | frames, eudTurbo, prints, per-player arrays work; a number for build time and payload size | 1 day |
 | 1 | IR refactor + Remastered backend for today's language + Build & Test + simulator on IR | every existing test program simulates identically on both targets; `a = b` and `if (a < b)` cost nothing; loops run in-frame; the sleep rule | the big one, ~1 week |
 | 1½ | The workspace as VS Code lays one out (3.1.0) | the frame slices 5 and 6 put their panels in: no banner moves the text, every command in the palette, the keys people already know | 2 days, no probe: nothing about the game changes |
-| 2 | Reads and text | `deaths(P1, u)` as a value, `minerals()`, `countUnits()`, template literals with numbers and names; on classic, reads by decomposition with hints | 2–3 days |
+| 2 | Reads and text (3.2.0) | `deaths(P1, u)` as a value, `minerals()`, `countUnits()`, player facts, template literals with numbers and names, `print()`, `random(n)`, the bitwise operators | 2–3 days |
 | 3 | `Unit` objects, unit loops, picks, `stats()` | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
 | 4 | Input | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |
 | 5 | `test()` blocks + debugger | Tests panel, frame stepping, breakpoints, world table | 3–4 days |

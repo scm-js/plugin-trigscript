@@ -8,8 +8,11 @@
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 
-/** 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone. */
-export const IR_VERSION = 2;
+/**
+ * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
+ * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
+ */
+export const IR_VERSION = 3;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -28,11 +31,33 @@ export interface VarDecl {
   at: At;
 }
 
+/** A player's race as the game holds it; what `race(p)` gives and `supply()` takes. */
+export type RaceId = 0 | 1 | 2;
+
+/**
+ * What a `read` reads. `condition`: the quantity a trigger condition tests — the record is
+ * that condition with "at least 0" in it, so whatever the condition can be asked (a force's
+ * minerals, the Marines a player brought to a location) can be read. `player`: a byte of
+ * the game's player tables. `supply`: a player's supply as the top bar shows it, of one
+ * race or (`race` null) of the race the player is. `player` is a slot, or 13 for the
+ * current player.
+ */
+export type ReadSource =
+  | { source: "condition"; record: ConditionRecord }
+  | { source: "player"; fact: "race" | "slot" | "left"; player: number }
+  | { source: "supply"; of: "used" | "max" | "provided"; race: RaceId | null; player: number };
+
+export type ArithOp = "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>";
+
 export type NumExpr =
   | { kind: "const"; value: number }
   | { kind: "var"; id: string }
   | { kind: "unary"; op: "-"; expr: NumExpr; at: At }
-  | { kind: "binary"; op: "+" | "-" | "*" | "/" | "%"; left: NumExpr; right: NumExpr; at: At; label: string }
+  | { kind: "binary"; op: ArithOp; left: NumExpr; right: NumExpr; at: At; label: string }
+  /** A value of the game, read when the expression is evaluated. */
+  | { kind: "read"; read: ReadSource; at: At; label: string }
+  /** `random(n)`: a whole number from 0 to n − 1, fresh at every evaluation; 0 when n is 0. */
+  | { kind: "randomInt"; bound: NumExpr; at: At; label: string }
   | { kind: "ternary"; cond: BoolExpr; whenTrue: NumExpr; whenFalse: NumExpr; at: At; label: string }
   | { kind: "intrinsic"; name: "min" | "max" | "abs"; args: NumExpr[]; at: At; label: string }
   /** A call inlined here: its body runs, its result is the number. */
@@ -57,6 +82,13 @@ export type BoolExpr =
   | { kind: "ternary"; cond: BoolExpr; whenTrue: BoolExpr; whenFalse: BoolExpr; at: At; label: string }
   /** A call inlined here whose boolean result is tested. */
   | { kind: "call"; call: Call };
+
+/** A piece of a `print`'s text: written text, a number's digits, a player's name, the colour code of a player's colour. */
+export type TextPart =
+  | { kind: "text"; text: string }
+  | { kind: "number"; expr: NumExpr }
+  | { kind: "name"; player: number }
+  | { kind: "color"; player: number };
 
 export type CompareOp = "<" | "<=" | ">" | ">=" | "==" | "!=";
 
@@ -94,6 +126,11 @@ export type Stmt =
   | { kind: "sleep"; ms?: number; cycles?: number; at: At; label: string }
   /** A trigger action; `variable` names a field that takes an expression's value instead of the record's. */
   | { kind: "action"; record: ActionRecord; variable?: { field: keyof ActionRecord; bits: 8 | 32; name: string; expr: NumExpr }; at: At; label: string }
+  /**
+   * Text with values in it, shown to `to` — a slot, 13 for the current player, All Players or a
+   * force — in the chat area or on the line in the middle of the screen the game's own errors use.
+   */
+  | { kind: "print"; parts: TextPart[]; to: number; position: "chat" | "center"; at: At; label: string }
   | { kind: "call"; call: Call; at: At; label: string }
   /** A block only for scoping; nothing of its own. */
   | { kind: "block"; body: Stmt[]; at: At }
@@ -114,7 +151,7 @@ export const isNumExpr = (e: NumExpr | BoolExpr): e is NumExpr => {
   switch (e.kind) {
     case "const": return typeof e.value === "number";
     case "var": return false; // ambiguous by shape; callers know the variable's kind
-    case "unary": case "binary": case "intrinsic": return true;
+    case "unary": case "binary": case "intrinsic": case "read": case "randomInt": return true;
     case "ternary": return isNumExpr(e.whenTrue);
     case "call": return e.call.result?.kind === "number";
     default: return false;
@@ -137,6 +174,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) init(s.value); break;
       case "action": if (s.variable) expr(s.variable.expr); break;
+      case "print": for (const p of s.parts) if (p.kind === "number") expr(p.expr); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
@@ -154,6 +192,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "binary": expr(e.left); expr(e.right); break;
       case "ternary": bool(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
       case "intrinsic": e.args.forEach(expr); break;
+      case "randomInt": expr(e.bound); break;
       case "call": call(e.call); break;
       default: break;
     }

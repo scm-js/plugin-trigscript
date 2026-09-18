@@ -17,10 +17,13 @@
  * round.
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
-import type { At, BoolExpr, Call, NumExpr, Program, Stmt, VarDecl } from "./ir";
+import { emptyAction, PlayerGroup, ResourceType } from "../vendor/triggers";
+import type { At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TextPart, VarDecl } from "./ir";
 import { Simulation, type SimulationOptions } from "./simulate";
 
 export const FRAMES_PER_SECOND = 24;
+/** What Elapsed Time and the countdown count: a game second is sixteen frames (the slice 2 probe: 21 after 336 frames), not the twenty-four of a second at Fastest. */
+export const FRAMES_PER_GAME_SECOND = 16;
 const U32 = 0x1_0000_0000;
 
 export interface ProgramEvent {
@@ -38,6 +41,14 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
   world?: Simulation;
   /** A runaway guard: statements one program may run in one frame; default 100 000. */
   maxStepsPerCycle?: number;
+  /**
+   * What a read finds, for the values the simulation does not hold itself (unit counts, kills,
+   * scores, the clocks, the player tables). Undefined falls back to the simulation's own answer:
+   * deaths and resources from its world, the simulated player a human, 0 for the rest.
+   */
+  read?: (read: ReadSource, sim: ProgramSimulation) => number | undefined;
+  /** A player's name in a printed text; default "Player 1" … */
+  playerName?: (player: number) => string;
 }
 
 /** What an expression adds and what it subtracts: the constants exactly, the rest wrapping at 2³² as the game's additions do. */
@@ -185,8 +196,19 @@ class ProgramRun {
           case "*": return Number((BigInt(a) * BigInt(b)) % BigInt(U32));
           case "/": return b === 0 ? 0 : Math.floor(a / b);
           case "%": return b === 0 ? 0 : a % b;
+          case "&": return (a & b) >>> 0;
+          case "|": return (a | b) >>> 0;
+          case "^": return (a ^ b) >>> 0;
+          // A shift by 32 or more leaves nothing, where JavaScript would shift by the remainder.
+          case "<<": return b >= 32 ? 0 : (a << b) >>> 0;
+          case ">>": return b >= 32 ? 0 : a >>> b;
           default: return yield* this.num(e);
         }
+      }
+      case "read": return this.sim.read(e.read);
+      case "randomInt": {
+        const n = yield* this.num(e.bound);
+        return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n));
       }
       case "ternary": return (yield* this.bool(e.cond)) ? yield* this.num(e.whenTrue) : yield* this.num(e.whenFalse);
       case "intrinsic": {
@@ -350,6 +372,12 @@ class ProgramRun {
         this.sim.act(this, record, s.at);
         return "next";
       }
+      case "print": {
+        let text = "";
+        for (const p of s.parts) text += p.kind === "number" ? String(yield* this.num(p.expr)) : this.sim.partText(p);
+        this.sim.print(this, text, s.to, s.at);
+        return "next";
+      }
       case "call": { yield* this.call(s.call); return "next"; }
       case "block": return yield* this.block(s.body, ctx);
       case "remark": return "next";
@@ -371,6 +399,10 @@ export class ProgramSimulation {
   readonly maxSteps: number;
   readonly random: () => number;
   private readonly conditionOf?: SimulationOptions["condition"];
+  private readonly readOf?: ProgramSimulationOptions["read"];
+  private readonly nameOf: (player: number) => string;
+  /** Ore and gas by player slot, as the programs' own setResources actions leave them. */
+  private readonly resources = new Map<number, [ore: number, gas: number]>();
   cycle = 0;
 
   constructor(programs: Program[], options: ProgramSimulationOptions) {
@@ -378,6 +410,8 @@ export class ProgramSimulation {
     this.maxSteps = options.maxStepsPerCycle ?? 100_000;
     this.random = options.random ?? Math.random;
     this.conditionOf = options.condition;
+    this.readOf = options.read;
+    this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
     this.runs = programs.map((p, i) => new ProgramRun(this, i, p));
   }
 
@@ -398,8 +432,61 @@ export class ProgramSimulation {
     }
   }
 
+  /** The simulation runs one player and knows no forces: the current player is that one, and so is any group, as in the world's death table. */
+  private slotOf(player: number): number {
+    return player < 12 ? player : player <= PlayerGroup.Force4 || player === PlayerGroup.CurrentPlayer ? this.player : player;
+  }
+
+  private stock(player: number): [number, number] {
+    const slot = this.slotOf(player);
+    let r = this.resources.get(slot);
+    if (!r) { r = [0, 0]; this.resources.set(slot, r); }
+    return r;
+  }
+
+  /** The quantity a comparing condition tests, where the simulation holds it. */
+  private quantity(c: ConditionRecord): number | undefined {
+    switch (c.type) {
+      case ConditionType.Deaths: return this.world.death(c.player, c.unitId);
+      case ConditionType.Accumulate: {
+        if (this.slotOf(c.player) >= 12) return undefined;
+        const [ore, gas] = this.stock(c.player);
+        return c.resource === ResourceType.Ore ? ore : c.resource === ResourceType.Gas ? gas : (ore + gas) % U32;
+      }
+      case ConditionType.ElapsedTime: return Math.floor(this.cycle / FRAMES_PER_GAME_SECOND);
+      default: return undefined;
+    }
+  }
+
+  /** What a read finds: the caller's answer, else the simulation's own, else 0. */
+  read(r: ReadSource): number {
+    const given = this.readOf?.(r, this);
+    if (given !== undefined) return Math.max(0, Math.trunc(given)) % U32;
+    if (r.source === "condition") return this.quantity(r.record) ?? 0;
+    if (r.source === "player" && r.fact === "slot") return this.slotOf(r.player) === this.player ? 2 : 0;
+    return 0;
+  }
+
+  partText(p: Exclude<TextPart, { kind: "number" }>): string {
+    // A colour is a control character in the game; the log keeps the words.
+    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
+  }
+
+  /** A printed text: an event like a Display Text action's, the text already filled in. */
+  print(run: ProgramRun, text: string, to: number, at: At): void {
+    this.events.push({ cycle: this.cycle, program: run.index, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
+  }
+
   /** An action a program takes: the world's own kinds are applied, the rest logged. */
   act(run: ProgramRun, a: ActionRecord, at: At): void {
+    if (a.type === ActionType.SetResources && this.slotOf(a.player) < 12) {
+      // Kept as well as logged, so a read of the resources sees what the program did to them.
+      const stock = this.stock(a.player);
+      const n = a.target >>> 0;
+      const set = (cur: number) => (a.modifier === SetModifier.SetTo ? n : a.modifier === SetModifier.Add ? (cur + n) % U32 : Math.max(0, cur - n));
+      if (a.unitId === ResourceType.Ore || a.unitId === ResourceType.OreAndGas) stock[0] = set(stock[0]);
+      if (a.unitId === ResourceType.Gas || a.unitId === ResourceType.OreAndGas) stock[1] = set(stock[1]);
+    }
     switch (a.type) {
       case ActionType.SetDeaths: {
         const cur = this.world.death(a.player, a.unitId);

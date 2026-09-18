@@ -317,7 +317,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     if (!body) { diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" }); continue; }
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
-    const emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    const emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
     const index = programs.length;
     ir.push(emitted.program);
     programs.push({ ...(emitted.program.name ? { name: emitted.program.name } : {}), owner, owners, perPlayer: entry.options.perPlayer, source: at });

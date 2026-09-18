@@ -13,7 +13,7 @@
  * Nothing here touches TypeScript or the DOM: the same code runs under vitest.
  */
 import {
-  ActionFlag, ConditionFlag, ActionType, ConditionType, emptyAction, emptyCondition, emptyTrigger, MAX_ACTIONS, MAX_CONDITIONS, PLAYER_GROUP_COUNT, PlayerGroup,
+  ActionFlag, Comparison, ConditionFlag, ActionType, ConditionType, emptyAction, emptyCondition, emptyTrigger, MAX_ACTIONS, MAX_CONDITIONS, PLAYER_GROUP_COUNT, PlayerGroup,
   type ActionRecord, type ConditionRecord, type TriggerRecord,
 } from "../vendor/triggers";
 import { aiScriptByName, type ActionDef, type ArgKind, type ConditionDef } from "../vendor/triggerDefs";
@@ -21,6 +21,7 @@ import { ACTION_IDENTS, CANONICAL, choiceOf, choiceWords, CONDITION_IDENTS, scri
 import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
 import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
 import type { ScriptNames } from "./names";
+import type { RaceId, ReadSource, TextPart } from "./ir";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -45,6 +46,55 @@ export interface ProgramOptions {
 /** What `seconds(2)`, `minutes(1)` and `frames(5)` return: a length of time for `sleep()`; `cycles` counts frames. */
 export interface DurationValue { readonly __trigscript: "duration"; readonly ms?: number; readonly cycles?: number }
 export const isDuration = (v: unknown): v is DurationValue => typeof v === "object" && v !== null && (v as DurationValue).__trigscript === "duration";
+
+/**
+ * What a read returns when the script is built — `deaths(P1, unit)`, `minerals(P1)`, `race(P2)`: not a
+ * number, a description of where the game keeps one. A program's expression takes it as a value
+ * (`let ore = minerals(P1)`); anywhere else it is a mistake, and using it in arithmetic when the
+ * script is built says so. `equals` makes a boolean of it: `isHuman(p)` is the slot's byte being 2.
+ */
+export interface ReadValue { readonly __trigscript: "read"; readonly read: ReadSource; readonly equals?: number; readonly ident: string }
+export const isRead = (v: unknown): v is ReadValue => typeof v === "object" && v !== null && (v as ReadValue).__trigscript === "read";
+
+/** What `print(text, { to, position })` returns: a program's statement, never a trigger's action. */
+export interface PrintValue { readonly __trigscript: "print"; readonly text: string; readonly to: number; readonly position: "chat" | "center" }
+export const isPrint = (v: unknown): v is PrintValue => typeof v === "object" && v !== null && (v as PrintValue).__trigscript === "print";
+
+/** A function of the library a program's expression calls for a value of the game: never computed when the script is built. */
+export interface ReaderFunction { (...args: unknown[]): ReadValue; readonly __trigscript: "reader" }
+export const isReader = (v: unknown): v is ReaderFunction => typeof v === "function" && (v as ReaderFunction).__trigscript === "reader";
+
+/**
+ * `name(p)` and `color(p)` are text only the game knows, so inside a string they travel as a mark
+ * — two private-use characters around a letter and the player — which `textParts` takes out again
+ * where a program shows the text. Text is text: the mark survives a template, a `+`, a helper.
+ */
+const MARK_OPEN = "\uE000";
+const MARK_CLOSE = "\uE001";
+const MARK = /\uE000([nc])(\d+)\uE001/g;
+export const hasTextMark = (text: string): boolean => text.includes(MARK_OPEN);
+const textMark = (letter: "n" | "c", player: number): string => `${MARK_OPEN}${letter}${player}${MARK_CLOSE}`;
+
+/** A text as the parts a `print` has: written text, and the names and colours marked in it. */
+export function textParts(text: string): TextPart[] {
+  const out: TextPart[] = [];
+  let from = 0;
+  for (const m of text.matchAll(MARK)) {
+    if (m.index > from) out.push({ kind: "text", text: text.slice(from, m.index) });
+    out.push({ kind: m[1] === "n" ? "name" : "color", player: Number(m[2]) });
+    from = m.index + m[0].length;
+  }
+  if (from < text.length) out.push({ kind: "text", text: text.slice(from) });
+  return out;
+}
+
+/** The conditions that compare a quantity: leave the comparison and the amount out and the call is a read of it. */
+export const READ_ARITY: ReadonlyMap<string, number> = new Map(
+  [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a) => a.kind === "comparison") && def.args.some((a) => a.kind === "amount"))
+    .map(([ident, def]) => [ident, def.args.length - 2]),
+);
+/** The library's functions that read the game, by the name a script calls them by. */
+export const READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"] as const;
 
 /**
  * What the transformer turns `program(() => { … })` — and the arrow of `game(…)` — into:
@@ -72,7 +122,8 @@ export interface GameFunctionValue {
 
 /** A condition or action function of the library, as the compiler sees it: it knows the definition, so an argument can be a variable of a program. */
 export interface BuilderFunction {
-  (...args: unknown[]): ConditionValue | ActionValue;
+  /** A comparing condition called without its comparison and amount is a read of what it compares. */
+  (...args: unknown[]): ConditionValue | ActionValue | ReadValue;
   readonly __trigscript: "builder";
   readonly kind: "condition" | "action";
   readonly def: ConditionDef | ActionDef;
@@ -121,6 +172,8 @@ function describe(v: unknown): string {
   if (typeof v === "number" || typeof v === "boolean" || v === null || v === undefined) return String(v);
   if (isCondition(v)) return "a condition";
   if (isAction(v)) return "an action";
+  if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isPrint(v)) return "a print()";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "function") return "a function";
   return "an object";
@@ -129,6 +182,7 @@ function describe(v: unknown): string {
 function integer(v: unknown, what: string): number {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
   if (typeof v === "boolean") return v ? 1 : 0;
+  if (isRead(v)) throw new ScriptError(`${what}: ${v.ident}() is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it; a trigger's condition or action takes numbers known when the script is built.`);
   throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
 }
 
@@ -187,6 +241,8 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   const fromDef = (ident: string, def: ConditionDef | ActionDef, kind: "condition" | "action"): BuilderFunction => Object.assign((...args: unknown[]) => {
     const params = scriptParams(def);
     const required = params.filter((p) => !p.optional).length;
+    // deaths(P1, unit): the condition without its comparison and amount is a read of what it compares.
+    if (kind === "condition" && READ_ARITY.get(ident) === args.length) return readOf(ident, def as ConditionDef, args);
     if (args.length < required || args.length > params.length) {
       throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
     }
@@ -199,6 +255,17 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     if (def.args.some((a) => a.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
     return kind === "condition" ? condition(record as unknown as ConditionRecord) : action(record as unknown as ActionRecord);
   }, { __trigscript: "builder" as const, kind, def, ident });
+  const read = (ident: string, source: ReadSource, equals?: number): ReadValue => {
+    const fail = (): never => { throw new ScriptError(`${ident}() is a value the game holds, read while the game runs: it has no value when the script is built. Inside program(), assign it to a let or use it in the program's own arithmetic and comparisons.`); };
+    return { __trigscript: "read", read: source, ident, ...(equals !== undefined ? { equals } : {}), valueOf: fail, toString: fail } as ReadValue;
+  };
+  const readOf = (ident: string, def: ConditionDef, args: unknown[]): ReadValue => {
+    const record = { ...emptyCondition(), type: def.type, comparison: Comparison.AtLeast } as unknown as Record<string, number>;
+    const params = scriptParams(def).filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount");
+    params.forEach((p, i) => { record[p.arg.field] = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`); });
+    if (def.args.some((a) => a.kind === "unit")) record.flags |= ConditionFlag.UnitTypeUsed;
+    return read(ident, { source: "condition", record: record as unknown as ConditionRecord });
+  };
   for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
   for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
   rt.preserve = rt.preserveTrigger;
@@ -250,6 +317,8 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   const items = <T>(v: unknown, test: (x: unknown) => x is T, what: string, wrong: (x: unknown) => x is unknown, wrongName: string): T[] =>
     flatten(v).map((x) => {
       if (test(x)) return x;
+      if (isRead(x)) throw new ScriptError(`${what}: ${x.ident}() without a comparison reads the value, which only a program can do. In a trigger, give the comparison and the amount: ${x.ident}(…, ">=", 1).`);
+      if (isPrint(x)) throw new ScriptError(`${what}: print() is a statement of a program; a trigger shows text with displayText().`);
       if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
       throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
     });
@@ -258,6 +327,10 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
     t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c) => ({ ...c.record }));
     t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a) => ({ ...a.record }));
+    for (const a of t.actions) {
+      const s = a.text > 0 ? collector.strings[a.text - 1] : undefined;
+      if (s && "text" in s && hasTextMark(s.text)) throw new ScriptError("name() and color() are filled in by a program while the game runs; a trigger's text is fixed when the script is built. Show this text from inside program().");
+    }
     if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
     if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
     if (options !== undefined && options !== null) {
@@ -295,6 +368,70 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.shared = () => { throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program()."); };
   rt.clamp = (v: unknown, lo: unknown, hi: unknown) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
 
+  /* ── Reads: what the game holds, as a value of a program ── */
+  const reader = (fn: (...args: unknown[]) => ReadValue): ReaderFunction => Object.assign(fn, { __trigscript: "reader" as const });
+  // One player: a read is a number, and a group of players has one only where a condition sums it (a condition's read takes a group).
+  const onePlayer = (v: unknown, what: string, slots = PLAYER_SLOTS): number => {
+    const n = integer(v, what);
+    if (n !== PlayerGroup.CurrentPlayer && n >= slots) throw new ScriptError(`${what}: expected one player, P1 … P${slots} or CurrentPlayer.`);
+    return n;
+  };
+  const conditionRead = (ident: string, type: number, fields: Partial<ConditionRecord>): ReadValue =>
+    read(ident, { source: "condition", record: { ...emptyCondition(), type, comparison: Comparison.AtLeast, ...fields } });
+  const resourceRead = (ident: string, player: unknown, kind: unknown) =>
+    conditionRead(ident, ConditionType.Accumulate, { player: argValue("player", player, `${ident}: player`), resource: argValue("resource", kind, `${ident}: resource`) });
+  rt.minerals = reader((player) => resourceRead("minerals", player, "ore"));
+  rt.gas = reader((player) => resourceRead("gas", player, "gas"));
+  rt.resources = reader((player, kind) => resourceRead("resources", player, kind));
+  rt.countUnits = reader((player, unit, location) => {
+    const fields = { player: argValue("player", player, "countUnits: player"), unitId: argValue("unit", unit, "countUnits: unit"), flags: ConditionFlag.UnitTypeUsed };
+    return location === undefined
+      ? conditionRead("countUnits", ConditionType.Command, fields)
+      : conditionRead("countUnits", ConditionType.Bring, { ...fields, location: argValue("location", location, "countUnits: location") });
+  });
+  rt.kills = reader((player, unit) => conditionRead("kills", ConditionType.Kill, { player: argValue("player", player, "kills: player"), unitId: argValue("unit", unit, "kills: unit"), flags: ConditionFlag.UnitTypeUsed }));
+  rt.countdown = reader(() => conditionRead("countdown", ConditionType.CountdownTimer, {}));
+  rt.elapsed = reader(() => conditionRead("elapsed", ConditionType.ElapsedTime, {}));
+  rt.races = Object.freeze({ Zerg: 0, Terran: 1, Protoss: 2 });
+  rt.slots = Object.freeze({ Empty: 0, Computer: 1, Human: 2, Rescuable: 3, Neutral: 7 });
+  rt.race = reader((player) => read("race", { source: "player", fact: "race", player: onePlayer(player, "race: player", 12) }));
+  rt.slot = reader((player) => read("slot", { source: "player", fact: "slot", player: onePlayer(player, "slot: player", 12) }));
+  rt.isHuman = reader((player) => read("isHuman", { source: "player", fact: "slot", player: onePlayer(player, "isHuman: player", 12) }, 2));
+  rt.hasLeft = reader((player) => read("hasLeft", { source: "player", fact: "left", player: onePlayer(player, "hasLeft: player") }, 1));
+  rt.supply = reader((player, of = "used", race) => {
+    if (of !== "used" && of !== "max" && of !== "provided") throw new ScriptError(`supply: expected "used", "max" or "provided", got ${describe(of)}.`);
+    let r: RaceId | null = null;
+    if (race !== undefined && race !== null) {
+      const n = typeof race === "string" ? ["zerg", "terran", "protoss"].indexOf(race.trim().toLowerCase()) : integer(race, "supply: race");
+      if (n !== 0 && n !== 1 && n !== 2) throw new ScriptError(`supply: the race is races.Zerg, races.Terran or races.Protoss, got ${describe(race)}.`);
+      r = n;
+    }
+    return read("supply", { source: "supply", of, race: r, player: onePlayer(player, "supply: player", 12) });
+  });
+
+  /* ── Text a program fills in ── */
+  rt.name = (player: unknown) => textMark("n", onePlayer(player, "name: player", 12));
+  rt.color = (player: unknown) => textMark("c", onePlayer(player, "color: player", 12));
+  rt.print = (text: unknown, options?: unknown): PrintValue => {
+    if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
+    let to: number = PlayerGroup.CurrentPlayer;
+    let position: PrintValue["position"] = "chat";
+    if (options !== undefined && options !== null) {
+      if (typeof options !== "object") throw new ScriptError(`print: options is an object such as { to: P2 }, got ${describe(options)}.`);
+      for (const [key, value] of Object.entries(options as Record<string, unknown>)) {
+        if (key === "to") {
+          to = integer(value, "print: to");
+          const groups: number[] = [PlayerGroup.CurrentPlayer, PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+          if (to >= PLAYER_SLOTS && !groups.includes(to)) throw new ScriptError(`print: to is a player (P1 … P${PLAYER_SLOTS}), CurrentPlayer, AllPlayers or a force.`);
+        } else if (key === "position") {
+          if (value !== "chat" && value !== "center") throw new ScriptError(`print: position is "chat" or "center", got ${describe(value)}.`);
+          position = value;
+        } else throw new ScriptError(`print: unknown option "${key}".`);
+      }
+    }
+    return { __trigscript: "print", text, to, position };
+  };
+
   /* ── Programs ── */
   rt.program = (body: unknown, options?: unknown, at?: unknown) => {
     if (!isProgramDescriptor(body)) {
@@ -326,7 +463,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     }
     collector.entries.push({ kind: "program", descriptor: body, options: out, at: isAt(at) ? at : null });
   };
-  rt.random = () => { throw new ScriptError("random() is a coin toss the game makes: use it inside program(), in an if, a while or an assignment."); };
+  rt.random = () => { throw new ScriptError("random() is a coin toss and random(n) a number from 0 to n − 1, both made by the game: use them inside program()."); };
 
   /* ── Game functions ── */
   rt.game = (body: unknown): GameFunctionValue => {
@@ -352,5 +489,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "rose", "once", "shared", "clamp");
+  out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   return out;
 }

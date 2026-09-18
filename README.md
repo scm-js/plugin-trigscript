@@ -99,8 +99,10 @@ a built-in interpreter and lists, in the panel's Simulate view, every action tha
 with its frame and source line, plus each program variable's final value. The `trigger()` records run in a trigger
 interpreter (death counters, switches, preserve, list order) and the programs in a
 program interpreter that computes every number the way the game will, the two sharing one
-world, so a program's `setDeaths` is seen by a trigger and the other way round. Unit
-conditions answer "false". The same interpreters are what the test suite uses to prove
+world, so a program's `setDeaths` is seen by a trigger and the other way round. Reads
+find what the simulation holds — death counters, the resources the programs themselves
+set, the clock — and 0 for what it does not (unit counts, kills, scores); a printed text
+shows with its numbers filled in and "Player 1" for a name. Unit conditions answer "false". The same interpreters are what the test suite uses to prove
 programs behave.
 
 A script with programs shows, at the right of the status bar, whether the eudplib plugin
@@ -250,7 +252,9 @@ compared, and `Math.abs(a - b)` is the distance whichever is larger. The one thi
 `a` at 4 294 967 295 wraps at the `+`.
 
 **Arithmetic**: `+ − * / %` between variables and constants, `*=` `/=` `%=`, `++` `--`,
-`Math.min`, `Math.max`, `Math.abs`, `clamp(x, lo, hi)`. `/` is whole division (there are
+`Math.min`, `Math.max`, `Math.abs`, `clamp(x, lo, hi)`, and the bitwise `& | ^ << >>`
+(with `&=` and the rest) over the same 32 unsigned bits — `>>` and `>>>` are one, and a
+shift by 32 or more leaves 0. `/` is whole division (there are
 no fractions in the game; `Math.floor`, `Math.trunc`, `Math.round` and `Math.ceil` around
 it are accepted and change nothing), `*` wraps at 2³², and dividing by a variable that is
 0 in the game gives 0. Dividing by a constant 0 is a compile error.
@@ -260,13 +264,16 @@ work. `switch (x)` over a variable tests its cases in order and falls through wi
 `break` as TypeScript does; the case values are known when the script is applied. `&&`,
 `||` and `!` short-circuit as in TypeScript: `n >= 1 && once(…)` consumes the edge only
 once `n` is 1. Conditions of the game go where a boolean goes — `if (bring(P1,
-units.AnyUnit, locations.Beacon, ">=", 1) && !alarm)` — and `random()` is a coin toss.
+units.AnyUnit, locations.Beacon, ">=", 1) && !alarm)` — `random()` is a coin toss, and
+`random(n)` a whole number from 0 to n − 1 (`n` may be a variable; 0 gives 0). The game's
+own randomness seeds them, so two games differ.
 
 **Loops run to completion within the frame.** `while (i < 10) { …; i++; }` does all ten
 rounds at once, which is what the source says. That has one consequence to keep in mind:
 a loop that never ends and never sleeps would never give the frame back, and the game
 would freeze. The compiler refuses one — a loop with no `sleep()` on some path around it,
-whose condition never mentions a variable the body changes — and says where to put a
+whose condition never mentions a variable the body changes (or, for a condition or a read
+of the game, whose body takes no action that could change it) — and says where to put a
 `sleep(frames(1))`. The simulator has a guard of its own for what the check cannot see.
 
 A `for` whose start, bound and step are known when the script is applied —
@@ -330,9 +337,59 @@ works with `spawn(P2, 4)`.
 `setDeaths(…, "add", n)`, `setScore(…)`, `setCountdownTimer("set", n + 1)` take a
 variable where the amount goes, one action each. `createUnit`, `killUnitAt`,
 `removeUnitAt` and `giveUnits` take a variable *count*: that many units, 0 being none.
-Nothing else does yet: a text, a location, a unit type or a player is known when the
-script is applied, and a *condition* cannot be tested against a variable — compare
-variables in the program's own statements instead.
+A location, a unit type or a player is known when the script is applied, and a
+*condition's* amount is too — to compare against a variable, read the value and compare
+it yourself, as below.
+
+**Reads: every quantity a condition compares is also a value.** Leave the comparison and
+the amount out of the call and it is a read, a number like any other:
+
+```ts
+if (deaths(P1, units.TerranMarine, ">=", 10)) …        // a condition, as ever
+let lost = deaths(P1, units.TerranMarine);             // a read
+if (minerals(CurrentPlayer) > price * 2) …             // compared with a variable
+setResources(P2, "set", minerals(P1) / 2, "ore");      // as an action's amount
+let here = bring(P2, units.ZergZergling, locations.Pen);
+```
+
+That works for `deaths`, `kill`, `bring`, `command`, `accumulate`, `score`, `opponents`,
+`countdownTimer` and `elapsedTime`, and there are plainer names for the common ones:
+`minerals(p)`, `gas(p)`, `resources(p, "oreAndGas")`, `countUnits(p, unit, location?)`,
+`kills(p, unit)`, `countdown()`, `elapsed()` (both in the game's own seconds, sixteen
+frames each: at Fastest they run about one and a half times as fast as `sleep(seconds())`,
+so `elapsed()` reads 21 after fourteen seconds of sleeping). A read means exactly what the condition
+means — a force's minerals are the force's sum, `units.Men` counts what Bring counts —
+because where the game keeps no table of the value, the program asks the condition
+itself, a bit at a time. What to read (the player, the unit, the location) is known when
+the script is applied; `CurrentPlayer` is the player the program is running as. A read is
+taken when the line runs, each time it runs: `let ore = minerals(P1)` keeps the number,
+`minerals(P1)` written twice reads twice.
+
+**Player facts** are reads too: `race(p)` against `races.Zerg` / `.Terran` / `.Protoss`,
+`slot(p)` against `slots.Human` / `.Computer` / `.Empty` / `.Rescuable` / `.Neutral`,
+`isHuman(p)`, `hasLeft(p)` (P1 … P8: a human or computer slot of the map whose player
+is gone — which a slot nobody took also is; a computer never leaves), and `supply(p, "used" |
+"max" | "provided", race?)` as the top bar shows it, of the race the player plays unless
+one is given.
+
+**A text can hold the program's values.** `displayText` takes a template literal (or
+texts joined with `+`) with numbers of the program in it, `name(p)` and `color(p)`:
+
+```ts
+displayText(`${color(P2)}${name(P2)}\x01 has ${minerals(P2)} ore — wave ${wave + 1}`);
+print(`Wave ${wave}`, { to: AllPlayers, position: "center" });
+```
+
+`name(p)` is the player's name and `color(p)` the colour code of their colour, both
+filled in by the game; the ordinary colour codes work as ever. `displayText` shows it to
+the current player, as it always has; `print(text, { to, position })` is the way to
+show it to someone else — a player, `AllPlayers`, a force — or, with `position:
+"center"`, on the line in the middle of the screen where the game's own messages ("Not
+enough minerals") appear. Only `displayText` and `print` do this: every other text (a
+mission objective, a leaderboard's label, a transmission) is fixed when the script is
+applied. A boolean has no text of its own, and text is shown, not stored: there are no
+string variables. A text with nothing of the program in it stays the plain Display Text
+action it was. None of a program's texts enter the map's string table.
 
 **Time is `sleep`.** `sleep(seconds(15))` gives the frame back and resumes that much
 later; other programs and the map's triggers go on meanwhile. `frames(n)` is the game's
@@ -524,5 +581,12 @@ other; `abs` is the distance between the two totals. A per-player program loops 
 slots its owners name (All Players and a force resolved from the map's player settings)
 who are in the game, its variables and state as twelve-slot arrays. `EUDVariable(n)` is a
 cell's value at map load, not per run, so everything the lowering writes to starts from
-`fresh()`; `tests/python.test.ts` refuses an unmarked one. `simulateIr.ts` mirrors all of
+`fresh()`; `tests/python.test.ts` refuses an unmarked one. A read is one `f_dwread_epd`
+where a table of the game is the value (a player's deaths, kills, ore, gas; the player
+bytes and the supply tables Magenta's probes verified; `hasLeft` is `f_playerexist`) and otherwise a search with the
+condition itself, "at least" a bit at a time from the top, so it means what the condition
+means. A text with values in it goes through eudplib's string buffer, or `f_eprintln` for
+the middle of the screen — both show only on the computer of the player the text is for —
+with the current player moved to each addressee and back. `random(n)` is `f_dwrand() % n`,
+seeded once with `f_randomize()` when a program uses it. `simulateIr.ts` mirrors all of
 it, wrap included, so that what Simulate shows is what the game does.

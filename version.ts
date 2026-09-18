@@ -5,4 +5,4 @@
  * has been compiled into the editor (`compile.ts`). `tests/script.test.ts` keeps this
  * equal to the manifest's.
  */
-export const VERSION = "3.1.1";
+export const VERSION = "3.2.0";

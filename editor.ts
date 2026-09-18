@@ -423,7 +423,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (!simulation) { simulateView.body.replaceChildren(el("div", { className: "tsd-empty" }, `Simulate (${MOD}+F5) runs the script's first ${SIMULATE_FRAMES / 24} seconds in a built-in interpreter and lists what happened. A change to the script clears the list.`)); return; }
     const { sim, programs: ps, result: r } = simulation;
     const list = el("ul", { className: "tsd-list" });
-    list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}. Unit conditions (bring, command, …) count as false; wait takes no time.`)));
+    list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}. Unit conditions (bring, command, …) count as false and reads of what the simulation does not hold (units, kills, scores) give 0; wait takes no time.`)));
     // Hand triggers' events (trigger interpreter) and the programs' (program interpreter), in time order.
     const rows: { cycle: number; order: number; line: () => HTMLElement }[] = [];
     sim.events.forEach((e, i) => {

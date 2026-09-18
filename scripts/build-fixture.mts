@@ -62,6 +62,17 @@ for (const [owner, base, troop] of [[0, COMMAND_CENTER, MARINE], [1, HATCHERY, Z
   for (let i = 0; i < 4; i++) placed.push(makeUnit(null, troop, owner, start.x - 48 + i * 32, start.y + 96, serial++));
 }
 applyUnitChanges(scn, addUnits(scn, placed));
+// Location 1, "Home": the ground next to Player 1's base, so a probe can make something happen in sight
+// (`createUnit(P2, unit, 4, 1)` — a location is its number where the map's names are not known).
+const home = scn.units.find((u: { unitId: number; owner: number }) => u.unitId === START_LOCATION && u.owner === 0);
+if (home && scn.locations?.[0] && !scn.locations[0].nameIndex && scn.locations[0].right === 0) {
+  // Below the base where the map has room, else above it; kept inside the map.
+  const w = scn.width * 32, h = scn.height * 32;
+  const top = home.y + 320 <= h ? home.y + 128 : home.y - 320;
+  const left = Math.max(0, Math.min(w - 384, home.x - 192));
+  scn.locations[0] = { ...scn.locations[0], left, top, right: left + 384, bottom: top + 192, nameIndex: internString(scn, "Home") };
+  markDirty(scn, "MRGN");
+}
 markDirty(scn, "TRIG", "UNIT");
 const ir = serializeIr(r.ir, r.strings);
 const extras = loaded.archive ? await readExtras(loaded.archive, loaded.files) : new Map();

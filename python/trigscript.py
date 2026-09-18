@@ -20,6 +20,13 @@ Text is written out in the IR: an action's `text` or `wav` is the string itself,
 eudplib adds to the built map's string table, or a number when the script named an index
 of the map's own. The map the user edits never holds a program's strings.
 
+A read is a value of the game taken when the expression is evaluated. What a condition compares
+is read from the game's tables where the table is that value (a player's deaths, kills, ore, gas)
+and otherwise found by asking the condition itself — "at least 2^31? at least that plus 2^30? …" —
+so a read means what the condition means, for a force's minerals or the units at a location alike.
+Player facts are bytes of the player tables. Text with values in it is printed through eudplib's
+string buffer, for the player it is for and nobody else.
+
 Numbers keep one contract with the simulator: 32-bit unsigned, an expression's exact value stored
 below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
 """
@@ -27,8 +34,19 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 2
+IR_VERSION = 3
 FRAMES_PER_SECOND = 24
+# Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
+# tables are the ones Magenta's probes 5 and 8 read in the game.
+DEATHS_TABLE = 0x58A364
+KILLS_TABLE = 0x5878A4
+ORE_TABLE = 0x57F0F0
+GAS_TABLE = 0x57F120
+PLAYER_BYTES = {"slot": 0x57F1B4, "race": 0x57F1C0}
+# Per race (144 bytes apart: Zerg, Terran, Protoss), a dword per player, in half supplies.
+SUPPLY_TABLES = {"provided": 0x582144, "used": 0x582174, "max": 0x5821A4}
+COND_COMMAND, COND_BRING, COND_ACCUMULATE, COND_KILL, COND_OPPONENTS, COND_DEATHS = 2, 3, 4, 5, 14, 15
+CURRENT_PLAYER = 13
 # The state of a program whose body ended: nothing resumes it.
 DONE = 0xFFFFFFFF
 U32 = 0xFFFFFFFF
@@ -216,6 +234,8 @@ class Lowering:
         if k == "binary":
             a, b = self.num(e["left"]), self.num(e["right"])
             op = e["op"]
+            if op in BITWISE:
+                return self.bitwise(op, a, b)
             if isinstance(a, int) and isinstance(b, int):
                 if op == "*":
                     return (a * b) & U32
@@ -239,6 +259,20 @@ class Lowering:
             return out
         if k == "unary":
             return self.num(e)
+        if k == "read":
+            return self.read(e)
+        if k == "randomInt":
+            # 0 … n - 1; an n of 0 gives 0, as a 0 divisor does.
+            n = self.num(e["bound"])
+            if isinstance(n, int):
+                if n <= 1:
+                    return 0
+                return f_div(f_dwrand(), n)[1]
+            out = fresh(0)
+            if EUDIf()(n >= 1):
+                out << f_div(f_dwrand(), n)[1]
+            EUDEndIf()
+            return out
         if k == "ternary":
             t = EUDVariable()
             if EUDIf()(self.cond(e["cond"])):
@@ -269,6 +303,113 @@ class Lowering:
         if k == "call":
             return self.call(e["call"])
         raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))
+
+    @staticmethod
+    def bitwise(op, a, b):
+        """& | ^ << >> over 32 bits; a shift by 32 or more leaves nothing."""
+        if isinstance(a, int) and isinstance(b, int):
+            if op in ("<<", ">>"):
+                return 0 if b >= 32 else ((a << b) & U32 if op == "<<" else a >> b)
+            return {"&": a & b, "|": a | b, "^": a ^ b}[op]
+        if op in ("<<", ">>"):
+            if isinstance(b, int) and b >= 32:
+                return 0
+            return (f_bitlshift if op == "<<" else f_bitrshift)(fresh(a), b)
+        # Copies: eudplib computes in place into an operand nothing else refers to, and ours may be a variable's own cell.
+        x, y = fresh(a), fresh(b)
+        return x & y if op == "&" else x | y if op == "|" else x ^ y
+
+    # ── reads: a value of the game ──
+    def current(self):
+        """The player the program is running as: a slot, or the player loop's variable."""
+        return self.player if self.per_player else self.slots[0]
+
+    def one_player(self, p, node):
+        if p == CURRENT_PLAYER:
+            return self.current()
+        if 0 <= p < 12:
+            return p
+        raise Fail("trigscript: a read takes one player%s" % where(node))
+
+    def read(self, e):
+        r = e["read"]
+        source = r.get("source")
+        if source == "condition":
+            return self.read_condition(r["record"], e)
+        if source == "player" and r.get("fact") == "left":
+            return self.read_left(r, e)
+        if source == "player":
+            base = PLAYER_BYTES.get(r.get("fact"))
+            if base is None:
+                raise Fail("trigscript: unknown player fact %r%s" % (r.get("fact"), where(e)))
+            value = f_bread(base + self.one_player(r["player"], e))
+            if r.get("fact") == "slot":
+                # A computer of a Use Map Settings game keeps the map's own number, 5; a melee computer is 1
+                # (the slice 2 probe read 5 for one). Both are "a computer": one number for the script.
+                kind = fresh(value)
+                if EUDIf()(kind == 5):
+                    kind << 1
+                EUDEndIf()
+                return kind
+            return value
+        if source == "supply":
+            return self.read_supply(r, e)
+        raise Fail("trigscript: unknown read %r%s" % (source, where(e)))
+
+    def read_left(self, r, e):
+        """1 once a player who was in the map's settings as a human or a computer is gone. Asked the way
+        eudplib's f_playerexist asks (the player's trigger list), which the player loop already relies on.
+        The byte table at 0x581D62 read 0 for players who were there, as it should, but nobody has seen it
+        turn 1 in a game — a computer never leaves — so it is not what this rests on."""
+        p = self.one_player(r["player"], e)
+        if isinstance(p, int) and (p >= 8 or GetPlayerInfo(p).typestr not in ("Human", "Computer")):
+            return 0
+        gone = fresh(1)
+        if EUDIf()(f_playerexist(p)):
+            gone << 0
+        EUDEndIf()
+        return gone
+
+    def read_supply(self, r, e):
+        base = SUPPLY_TABLES.get(r.get("of"))
+        if base is None:
+            raise Fail("trigscript: unknown supply %r%s" % (r.get("of"), where(e)))
+        p = self.one_player(r["player"], e)
+        half = fresh(0)
+        if r.get("race") is None:
+            # The race the player plays; a slot with none (neutral, empty) has no supply.
+            race = f_bread(PLAYER_BYTES["race"] + p)
+            if EUDIf()(race <= 2):
+                half << f_dwread_epd(EPD(base) + race * 36 + p)
+            EUDEndIf()
+        else:
+            half << f_dwread_epd(EPD(base) + int(r["race"]) * 36 + p)
+        # As the top bar shows it: half a supply in use counts as one.
+        if r["of"] == "used":
+            half += 1
+        return half // 2
+
+    def read_condition(self, rec, e):
+        t, player, unit = rec["type"], rec["player"], rec["unitId"]
+        one = player == CURRENT_PLAYER or not 12 <= player <= 26  # not a group; beyond 26 is an EUD offset, read as it stands
+        table = None
+        if one and t in (COND_DEATHS, COND_KILL) and not 229 <= unit <= 232:
+            table = (DEATHS_TABLE if t == COND_DEATHS else KILLS_TABLE, unit * 12)
+        elif one and t == COND_ACCUMULATE and rec["resource"] in (0, 1):
+            table = (ORE_TABLE if rec["resource"] == 0 else GAS_TABLE, 0)
+        if table is not None:
+            p = self.current() if player == CURRENT_PLAYER else player
+            return f_dwread_epd(EPD(table[0]) + table[1] + p)
+        # No table holds it (a group's sum, units counted at a location, a score, a clock): ask the
+        # condition, a bit at a time from the top. A unit count stays under 2^12, a number of players under 2^4.
+        bits = 12 if t in (COND_BRING, COND_COMMAND) else 4 if t == COND_OPPONENTS else 32
+        found = fresh(0)
+        for bit in reversed(range(bits)):
+            probe = found + (1 << bit)
+            if EUDIf()(Condition(rec["location"], player, probe, unit, 0, t, rec["resource"], rec["flags"], eudx=rec.get("mask", 0) or 0)):
+                found << probe
+            EUDEndIf()
+        return found
 
     # ── booleans: an eudplib condition ──
     def cond(self, e):
@@ -419,6 +560,8 @@ class Lowering:
             self.sleep(st)
         elif k == "action":
             self.action(st)
+        elif k == "print":
+            self.print_(st)
         elif k == "call":
             self.call(st["call"])
         elif k == "block":
@@ -536,6 +679,35 @@ class Lowering:
         fields[name] = value
         DoActions(Action(**fields))
 
+    def print_(self, st):
+        """Text with values in it: every value first, then the text, shown only on the screen of the player it is for."""
+        args = []
+        for part in st["parts"]:
+            k = part["kind"]
+            if k == "text":
+                args.append(part["text"])
+            elif k == "number":
+                v = self.num(part["expr"])
+                args.append(str(v) if isinstance(v, int) else v)
+            elif k == "name":
+                args.append(PName(self.one_player(part["player"], st)))
+            elif k == "color":
+                args.append(PColor(self.one_player(part["player"], st)))
+            else:
+                raise Fail("trigscript: unknown text part %r%s" % (k, where(st)))
+        if not args:
+            return
+        # eudplib prints for the current player, and only on that player's own computer.
+        show = (lambda: f_eprintln(*args)) if st.get("position") == "center" else (lambda: GetGlobalStringBuffer().print(*args))
+        to = int(st.get("to", CURRENT_PLAYER))
+        if to == CURRENT_PLAYER:
+            show()
+            return
+        for p in group_slots(to, st):
+            f_setcurpl(p)
+            show()
+        f_setcurpl(self.current())
+
     def call(self, call):
         result = self.declare(call["result"]["decl"]) if call.get("result") else None
         if result is not None:
@@ -598,22 +770,24 @@ def string_of(value):
     return int(value or 0)
 
 
+def group_slots(group, node):
+    """The player slots a player number stands for: a slot is itself, All Players and a force their human and computer players."""
+    playing = lambda p: GetPlayerInfo(p).typestr in ("Human", "Computer")
+    if 0 <= group < 8:
+        return [group]
+    if group == 17:
+        return [p for p in range(8) if playing(p)]
+    if 18 <= group <= 21:
+        return [p for p in range(8) if playing(p) and GetPlayerInfo(p).force == group - 18]
+    raise Fail("trigscript: expected players 1 to 8, All Players or a force%s" % where(node))
+
+
 def owner_slots(program):
     """The player slots a program runs for, from its owners and the map's player settings: a slot is
     itself, All Players and a force are their human and computer players — who a trigger runs for."""
-    playing = lambda p: GetPlayerInfo(p).typestr in ("Human", "Computer")
     slots = []
     for o in program.get("owners", [program.get("owner", 0)]):
-        o = int(o)
-        if o < 8:
-            found = [o]
-        elif o == 17:
-            found = [p for p in range(8) if playing(p)]
-        elif 18 <= o <= 21:
-            found = [p for p in range(8) if playing(p) and GetPlayerInfo(p).force == o - 18]
-        else:
-            raise Fail("trigscript: a program runs for players 1 to 8, All Players or a force%s" % where(program))
-        for p in found:
+        for p in group_slots(int(o), program):
             if p not in slots:
                 slots.append(p)
     if not slots:
@@ -637,6 +811,15 @@ def loop_players(slots):
     EUDEndWhile()
 
 
+BITWISE = ("&", "|", "^", "<<", ">>")
+
+
+def uses_random(node):
+    if isinstance(node, dict):
+        return node.get("kind") in ("random", "randomInt") or any(uses_random(v) for v in node.values())
+    return isinstance(node, list) and any(uses_random(v) for v in node)
+
+
 def compare(a, op, b):
     return {"==": a == b, "!=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]
 
@@ -646,6 +829,12 @@ def condition(r):
 
 
 PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
+
+
+def onPluginStart():
+    # eudplib's generator starts from the same seed in every game; the game's own randomness (a switch randomized) seeds it.
+    if uses_random(IR.get("programs", [])):
+        f_randomize()
 
 
 def afterTriggerExec():

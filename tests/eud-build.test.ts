@@ -60,6 +60,34 @@ const FIXTURES: Record<string, string> = {
       sleep(seconds(5));
     }
   }, { owner: players.Force1 });`,
+  reads: `program(() => {
+    let price = 50;
+    while (true) {
+      let ore = minerals(P1);
+      let lost = deaths(CurrentPlayer, units.TerranMarine);
+      let here = countUnits(P1, units.AnyUnit, locations.Anywhere) + countUnits(players.Force1, units.TerranMarine);
+      let team = resources(players.Force1, "oreAndGas") + kills(P1, units.ZergZergling) + score(P1, "kills") + countdown() + elapsed() + opponents(P1);
+      if (minerals(P1) > price * 2 && isHuman(P1) && !hasLeft(P2) && race(P1) == races.Terran && slot(P2) != slots.Empty) {
+        setResources(P1, "set", minerals(P1) - price + supply(P1, "used") + supply(P1, "max", races.Zerg) + supply(P1, "provided"), "gas");
+      }
+      let pick = random(3) + random(price) + ((ore & 255) | (lost << 2)) + ((here ^ team) >> price);
+      createUnit(P1, units.TerranMarine, pick % 3, locations.Anywhere);
+      sleep(seconds(1));
+    }
+  });`,
+  text: `program(() => {
+    let wave = 0;
+    const banner = (p: Player) => \`\${color(p)}\${name(p)}\\x01 is here\`;
+    while (true) {
+      wave += 1;
+      displayText(\`Wave \${wave}: \${minerals(CurrentPlayer)} ore, \${name(CurrentPlayer)}\`);
+      displayText(banner(P2));
+      print(\`Wave \${wave}\`, { to: AllPlayers, position: "center" });
+      print("plain, to the others", { to: players.Force2 });
+      print(\`\${color(P1)}\${wave * 2}\`, { to: P1 });
+      sleep(seconds(2));
+    }
+  }, { owner: AllPlayers });`,
   perPlayer: `program(() => {
     let mine = 0;
     let total = shared(0);
@@ -109,6 +137,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(2);
+    expect(ir.version).toBe(3);
   });
 });

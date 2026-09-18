@@ -13,6 +13,7 @@
  * first sixteen switches and every named one, AI scripts as an index signature.
  */
 import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
+import { READ_ARITY } from "./runtime";
 import { ACTION_IDENTS, argType, CHOICE_TYPES, choiceWords, CONDITION_IDENTS, MODULE_NAME, propertyKey, scriptParams, TRIGGER_OPTION_NAMES } from "./api";
 import type { ActionDef, ArgKind, ConditionDef } from "../vendor/triggerDefs";
 import { defaultScriptNames, type NameTable, type ScriptNames } from "./names";
@@ -29,7 +30,7 @@ const HEADER = `// ── TrigScript ──────────────�
 //
 // A script is ordinary TypeScript that runs when you build: every trigger() it calls
 // becomes one trigger of the map, in order. Code inside program(() => { … }) runs in
-// the game instead, as a state machine of death counters.
+// the game instead (StarCraft: Remastered), built into the map when it is saved.
 `;
 
 function types(kw: string): string {
@@ -45,6 +46,10 @@ ${kw}type Location<N extends number = number> = N & Brand<"location">;
 ${kw}type Switch<N extends number = number> = N & Brand<"switch">;
 /** An AI script (aiScripts.*; a four-character code or StarEdit name as a string also works). */
 ${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
+/** A race (races.*), as race() returns it. */
+${kw}type Race<N extends number = number> = N & Brand<"race">;
+/** What holds a player's slot (slots.*), as slot() returns it. */
+${kw}type Slot<N extends number = number> = N & Brand<"slot">;
 /** A unit count: a number, or "All". */
 ${kw}type Count = number | "All";
 /**
@@ -122,7 +127,8 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
  * conditions, actions) is computed when you build — the editor underlines those parts — so
  * it cannot depend on the variables, except the amount of setResources / setDeaths /
  * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
- * giveUnits, which can be a variable.
+ * giveUnits, which can be a variable, and the text of displayText() / print(), which can hold
+ * numbers of the program. The game's own values are reads: minerals(P1), deaths(P1, unit), …
  *
  * A map with a program in it needs StarCraft: Remastered: the programs are built into the
  * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
@@ -139,6 +145,8 @@ ${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction
 ${kw}function hyperTriggers(owner?: Player): void;
 /** A coin toss, inside program() only: \`flag = random()\`, \`if (random() && …)\`. */
 ${kw}function random(): boolean;
+/** A whole number from 0 to n − 1, picked by the game; inside program() only: \`let lane = random(3)\`. n may be a variable; 0 gives 0. */
+${kw}function random(n: number): number;
 /** A length of time in seconds, for sleep(): twenty-four frames a second at Fastest. */
 ${kw}function seconds(n: number): Duration;
 /** A length of time in minutes, for sleep(). */
@@ -162,6 +170,58 @@ ${kw}function shared(initial: number): number;
 ${kw}function shared(initial: boolean): boolean;
 /** The value kept within low … high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
 ${kw}function clamp(value: number, low: number, high: number): number;
+/**
+ * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
+ * number goes — \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,
+ * \`setResources(P2, "set", minerals(P1), "ore")\`. Every condition that compares a quantity is
+ * also a read when called without its comparison and amount: \`deaths(P1, units.TerranMarine)\`,
+ * \`bring(P1, units.AnyUnit, locations.Base)\`, \`score(P1, "kills")\`, \`countdownTimer()\`.
+ * What to read — the player, the unit, the location — is known when you build.
+ */
+/** A player's minerals. */
+${kw}function minerals(player: Player): number;
+/** A player's gas. */
+${kw}function gas(player: Player): number;
+/** A player's minerals, gas, or both added up: what accumulate() compares. */
+${kw}function resources(player: Player, resource: ResourceKind | number): number;
+/** How many units of a type a player has — at a location (what bring() compares) or anywhere (what command() compares). */
+${kw}function countUnits(player: Player, unit: Unit, location?: Location): number;
+/** How many units of a type a player has killed: what kill() compares. */
+${kw}function kills(player: Player, unit: Unit): number;
+/** The countdown timer, in game seconds: what countdownTimer() compares. A game second is sixteen frames, so at Fastest the timer runs about one and a half times as fast as sleep(seconds()). */
+${kw}function countdown(): number;
+/** Game seconds since the start: what elapsedTime() compares. A game second is sixteen frames: after sleep(seconds(14)) at Fastest it reads about 21. */
+${kw}function elapsed(): number;
+/** The race a player is playing, as one of races.*: \`if (race(CurrentPlayer) == races.Zerg)\`. */
+${kw}function race(player: Player): Race;
+/** What holds a player's slot, as one of slots.*: \`if (slot(P3) == slots.Computer)\` — a melee computer and a Use Map Settings one alike. */
+${kw}function slot(player: Player): Slot;
+/** Whether a person plays this slot. */
+${kw}function isHuman(player: Player): boolean;
+/** Whether the player has left the game (P1 … P8). A computer never does. */
+${kw}function hasLeft(player: Player): boolean;
+/**
+ * A player's supply as the top bar shows it: "used", "max" (the cap, 200 unless the map changed it)
+ * or "provided" (by depots, overlords, pylons). Of the race the player plays unless one is given.
+ */
+${kw}function supply(player: Player, of?: "used" | "max" | "provided", race?: Race): number;
+/** The races, as race() returns them and supply() takes them. */
+${kw}const races: { readonly Zerg: Race<0>; readonly Terran: Race<1>; readonly Protoss: Race<2> };
+/** What a slot can hold, as slot() returns it. */
+${kw}const slots: { readonly Empty: Slot<0>; readonly Computer: Slot<1>; readonly Human: Slot<2>; readonly Rescuable: Slot<3>; readonly Neutral: Slot<7> };
+/**
+ * A player's name, for a text a program shows: displayText(\`\${name(CurrentPlayer)} wins\`). The game
+ * fills it in when the text is shown, so it works inside program() only.
+ */
+${kw}function name(player: Player): string;
+/** The colour code of a player's colour, for a text a program shows: \`\${color(P2)}\${name(P2)}\`. Inside program() only. */
+${kw}function color(player: Player): string;
+/**
+ * Show text, inside program() only. Like displayText(), whose text may hold the program's numbers too —
+ * displayText(\`\${gold} gold left\`) — but for someone else, or in the middle of the screen where the
+ * game's own messages ("Not enough minerals") appear: print(\`Wave \${wave}\`, { to: AllPlayers, position: "center" }).
+ */
+${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -184,9 +244,14 @@ ${kw}function preserve(): Action;
 }
 
 function signature(kw: string, ident: string, def: ConditionDef | ActionDef, returns: "Condition" | "Action"): string {
-  const params = scriptParams(def).map((p) => `${p.name}${p.optional ? "?" : ""}: ${argType(p.arg.kind)}`);
+  const all = scriptParams(def);
+  const params = all.map((p) => `${p.name}${p.optional ? "?" : ""}: ${argType(p.arg.kind)}`);
   const doc = def.args.length ? `${def.name} — ${def.args.map((a) => a.label).join(", ")}` : def.name;
-  return `/** ${doc} */\n${kw}function ${ident}(${params.join(", ")}): ${returns};`;
+  const out = `/** ${doc} */\n${kw}function ${ident}(${params.join(", ")}): ${returns};`;
+  if (returns !== "Condition" || !READ_ARITY.has(ident)) return out;
+  // Without the comparison and the amount, the quantity itself: a read, inside program().
+  const read = all.filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount").map((p) => `${p.name}: ${argType(p.arg.kind)}`);
+  return `${out}\n/** ${def.name}, as a number: what the condition compares, read inside program(). */\n${kw}function ${ident}(${read.join(", ")}): number;`;
 }
 
 function tableDecl(kw: string, t: NameTable, keep: (key: string, index: number) => boolean = () => true, note?: string): string {

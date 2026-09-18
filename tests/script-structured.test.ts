@@ -82,7 +82,7 @@ describe("structured: loops and branches", () => {
     expect(r.triggers).toEqual([]);
     expect(r.strings).toEqual([]);
     expect(r.ir).toHaveLength(1);
-    expect(r.ir[0]).toMatchObject({ version: 2, owner: 0, owners: [0], perPlayer: false });
+    expect(r.ir[0]).toMatchObject({ version: 3, owner: 0, owners: [0], perPlayer: false });
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, "n")).toBe(6);
@@ -522,12 +522,13 @@ describe("structured: diagnostics", () => {
     });`);
     // Dividing by a variable is fine now.
     expect(msgs.some((m) => m.startsWith("4:"))).toBe(false);
-    expect(msgs).toContain("5:Expected a number: variables add, subtract, multiply, divide and take the remainder.");
+    expect(msgs).toContain("5:Expected a number: variables take + - * / % and the bitwise & | ^ << >>.");
     expect(msgs).toContain("6:wait's milliseconds must be known when the script is built. Only an amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer) and a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) can be a variable of the program.");
     expect(msgs.some((m) => m.startsWith("7:Variables hold numbers, booleans or records of them ({ lives: 3 }); s is string"))).toBe(true);
     expect(msgs).toContain("8:Functions nest too deeply (recursion is not possible: a call is inlined).");
-    expect(msgs).toContain("10:The game cannot test a condition against a variable of the program: a condition's amount is known when the script is built. Compare variables in the program's own statements.");
-    expect(msgs).toContain("11:displayText's text must be known when the script is built. Only an amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer) and a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) can be a variable of the program.");
+    expect(msgs).toContain("10:A condition's amount is known when the script is built. To compare with a variable of the program, read the value and compare it yourself: bring(…) >= x, without the comparison and the amount inside the call.");
+    // A text with a number of the program in it is printed.
+    expect(msgs.some((m) => m.startsWith("11:"))).toBe(false);
     expect(msgs).toContain("13:A case value must be known when the script is built, but y is a variable of the program. Compare or assign variables in the program's own statements instead.");
   });
 
@@ -615,8 +616,8 @@ describe("structured: diagnostics", () => {
     expect(messages(`program(() => {}, { owner: players.Foes });`)).toEqual(["1:program: the owner is a player (P1 … P12), AllPlayers, a force (players.Force1), or a list of players — the program runs once for each of them, with CurrentPlayer as that player."]);
     expect(messages(`const body = () => {};\nprogram(body);`)).toEqual(["2:program() takes an arrow function written directly in the call: program(() => { … })."]);
     expect(messages(`program(() => {\n  const f = () => { let n = 0; n++; };\n  let m = 0;\n  const g = () => m;\n  [1].forEach(() => m++);\n});`)).toEqual(["4:g is a function that uses the program's variables; declare it with function so it is inlined at each call.", "5:A function written inside program() cannot use the program's variables; declare it with function so it is inlined, or move it outside."]);
-    expect(messages(`program(() => {\n  displayText("x");\n  random();\n});`)).toEqual(["3:random() does nothing on its own; test it in an if, or assign it to a boolean."]);
-    expect(messages(`trigger(P1, [random() as any], []);`)).toEqual(["1:random() is a coin toss the game makes: use it inside program(), in an if, a while or an assignment."]);
+    expect(messages(`program(() => {\n  displayText("x");\n  random();\n});`)).toEqual(["3:random() does nothing on its own; test it in an if, or assign it to a variable."]);
+    expect(messages(`trigger(P1, [random() as any], []);`)).toEqual(["1:random() is a coin toss and random(n) a number from 0 to n − 1, both made by the game: use them inside program()."]);
   });
 
   it("type errors still come from TypeScript", () => {

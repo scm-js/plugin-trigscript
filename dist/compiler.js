@@ -616,6 +616,400 @@ var MODULE_NAME = "trigscript";
 var CONDITION_FIELDS = ["type", "location", "player", "amount", "unitId", "comparison", "resource"];
 var ACTION_FIELDS = ["type", "location", "text", "wav", "time", "player", "target", "unitId", "modifier"];
 
+// compiler/lower.ts
+var PLAYER_SLOTS = 12;
+var U32_MAX = 4294967295;
+var LowerError = class extends Error {
+};
+var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
+function negateCondition(c2) {
+  if (c2.type === ConditionType.Always) return [{ ...c2, type: ConditionType.Never }];
+  if (c2.type === ConditionType.Never) return [{ ...c2, type: ConditionType.Always }];
+  if (c2.type === ConditionType.Switch) {
+    if (c2.comparison === SwitchState.Set) return [{ ...c2, comparison: SwitchState.Cleared }];
+    if (c2.comparison === SwitchState.Cleared) return [{ ...c2, comparison: SwitchState.Set }];
+    return null;
+  }
+  const def = conditionDef(c2.type);
+  if (!def?.args.some((a2) => a2.kind === "comparison" && a2.field === "comparison") || !def.args.some((a2) => a2.kind === "amount" && a2.field === "amount")) return null;
+  const n = c2.amount >>> 0;
+  switch (c2.comparison) {
+    case Comparison.AtLeast:
+      return n === 0 ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtMost, amount: n - 1 }];
+    case Comparison.AtMost:
+      return n === U32_MAX ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtLeast, amount: n + 1 }];
+    case Comparison.Exactly: {
+      const out = [];
+      if (n > 0) out.push({ ...c2, comparison: Comparison.AtMost, amount: n - 1 });
+      if (n < U32_MAX) out.push({ ...c2, comparison: Comparison.AtLeast, amount: n + 1 });
+      return out;
+    }
+    default:
+      return null;
+  }
+}
+function hyperTriggers(owner, comment) {
+  return [0, 1, 2].map(() => {
+    const t = emptyTrigger();
+    t.players[owner] = 1;
+    t.flags = TriggerFlag.Preserve;
+    t.conditions.push({ ...emptyCondition(), type: ConditionType.Always });
+    if (comment) t.actions.push({ ...emptyAction(), type: ActionType.Comment, text: comment("Hyper trigger") });
+    while (t.actions.length < MAX_ACTIONS - 1) t.actions.push({ ...emptyAction(), type: ActionType.Wait, time: 0 });
+    t.actions.push({ ...emptyAction(), type: ActionType.PreserveTrigger });
+    return t;
+  });
+}
+
+// compiler/runtime.ts
+var DEATHS_TABLE_ADDRESS = 5808996;
+var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
+var isRead = (v) => typeof v === "object" && v !== null && v.__trigscript === "read";
+var isPrint = (v) => typeof v === "object" && v !== null && v.__trigscript === "print";
+var isReader = (v) => typeof v === "function" && v.__trigscript === "reader";
+var MARK_OPEN = "\uE000";
+var MARK_CLOSE = "\uE001";
+var MARK = /\uE000([nc])(\d+)\uE001/g;
+var hasTextMark = (text) => text.includes(MARK_OPEN);
+var textMark = (letter, player) => `${MARK_OPEN}${letter}${player}${MARK_CLOSE}`;
+function textParts(text) {
+  const out = [];
+  let from = 0;
+  for (const m of text.matchAll(MARK)) {
+    if (m.index > from) out.push({ kind: "text", text: text.slice(from, m.index) });
+    out.push({ kind: m[1] === "n" ? "name" : "color", player: Number(m[2]) });
+    from = m.index + m[0].length;
+  }
+  if (from < text.length) out.push({ kind: "text", text: text.slice(from) });
+  return out;
+}
+var READ_ARITY = new Map(
+  [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
+);
+var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
+var ScriptError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ScriptError";
+  }
+};
+var Collector = class {
+  entries = [];
+  strings = [];
+  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
+  hyper = false;
+  localString(s) {
+    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
+    if (at >= 0) return at + 1;
+    this.strings.push(s);
+    return this.strings.length;
+  }
+};
+var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript === "condition";
+var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
+var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
+var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
+var isGameFunction = (v) => typeof v === "function" && v.__trigscript === "gamefn";
+var isBuilder = (v) => typeof v === "function" && v.__trigscript === "builder";
+var condition = (record) => ({ __trigscript: "condition", record });
+var action = (record) => ({ __trigscript: "action", record });
+function describe(v) {
+  if (typeof v === "string") return JSON.stringify(v.length > 40 ? `${v.slice(0, 39)}\u2026` : v);
+  if (typeof v === "number" || typeof v === "boolean" || v === null || v === void 0) return String(v);
+  if (isCondition(v)) return "a condition";
+  if (isAction(v)) return "an action";
+  if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isPrint(v)) return "a print()";
+  if (Array.isArray(v)) return "an array";
+  if (typeof v === "function") return "a function";
+  return "an object";
+}
+function integer(v, what) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (isRead(v)) throw new ScriptError(`${what}: ${v.ident}() is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it; a trigger's condition or action takes numbers known when the script is built.`);
+  throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+}
+function flatten(v, out = []) {
+  if (Array.isArray(v)) for (const x of v) flatten(x, out);
+  else if (v !== void 0 && v !== null && v !== false) out.push(v);
+  return out;
+}
+function createRuntime(names, collector, options = {}) {
+  const rt = {};
+  const comment = options.comments === false ? void 0 : (text) => collector.localString({ text });
+  for (const t of [names.players, names.units, names.locations, names.switches, names.aiScripts]) {
+    const table2 = {};
+    for (const e of t.entries) for (const k of e.keys) table2[k] = e.value;
+    rt[t.object] = Object.freeze(table2);
+  }
+  for (let i = 0; i < PLAYER_SLOTS; i++) rt[`P${i + 1}`] = i;
+  rt.CurrentPlayer = PlayerGroup.CurrentPlayer;
+  rt.AllPlayers = PlayerGroup.AllPlayers;
+  const argValue = (kind, v, what) => {
+    switch (kind) {
+      case "text":
+      case "wav":
+        if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
+        if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
+        throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
+      case "count":
+        if (typeof v === "string") {
+          if (v.trim().toLowerCase() === "all") return 0;
+          throw new ScriptError(`${what}: expected a count or "All", got ${describe(v)}.`);
+        }
+        return integer(v, what);
+      case "aiScript":
+        if (typeof v === "string") {
+          const code = aiScriptByName(v);
+          if (code === void 0) throw new ScriptError(`${what}: unknown AI script ${describe(v)}.`);
+          return code;
+        }
+        return integer(v, what);
+      case "textFlags":
+        return v === void 0 || v === true ? ActionFlag.AlwaysDisplay : v === false ? 0 : integer(v, what) & ActionFlag.AlwaysDisplay;
+      default:
+        if (typeof v === "string") {
+          if (!CANONICAL[kind]) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+          const n = choiceOf(kind, v);
+          if (n === void 0) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
+          return n;
+        }
+        return integer(v, what);
+    }
+  };
+  const fromDef = (ident, def, kind) => Object.assign((...args) => {
+    const params = scriptParams(def);
+    const required = params.filter((p) => !p.optional).length;
+    if (kind === "condition" && READ_ARITY.get(ident) === args.length) return readOf(ident, def, args);
+    if (args.length < required || args.length > params.length) {
+      throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
+    }
+    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
+    params.forEach((p, i) => {
+      const v = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
+      if (p.arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v;
+      else record[p.arg.field] = v;
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
+    return kind === "condition" ? condition(record) : action(record);
+  }, { __trigscript: "builder", kind, def, ident });
+  const read = (ident, source, equals) => {
+    const fail = () => {
+      throw new ScriptError(`${ident}() is a value the game holds, read while the game runs: it has no value when the script is built. Inside program(), assign it to a let or use it in the program's own arithmetic and comparisons.`);
+    };
+    return { __trigscript: "read", read: source, ident, ...equals !== void 0 ? { equals } : {}, valueOf: fail, toString: fail };
+  };
+  const readOf = (ident, def, args) => {
+    const record = { ...emptyCondition(), type: def.type, comparison: Comparison.AtLeast };
+    const params = scriptParams(def).filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount");
+    params.forEach((p, i) => {
+      record[p.arg.field] = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= ConditionFlag.UnitTypeUsed;
+    return read(ident, { source: "condition", record });
+  };
+  for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
+  for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
+  rt.preserve = rt.preserveTrigger;
+  const raw = (kind) => (...args) => {
+    const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
+    const record = kind === "condition" ? emptyCondition() : emptyAction();
+    args.forEach((a2, i) => {
+      if (i < fields.length) record[fields[i]] = integer(a2, `${kind}(): ${fields[i]}`);
+    });
+    if (kind === "action") {
+      for (const f of ["text", "wav"]) if (record[f]) record[f] = collector.localString({ index: record[f] });
+    }
+    return kind === "condition" ? condition(record) : action(record);
+  };
+  rt.condition = raw("condition");
+  rt.action = raw("action");
+  const epd = (address, what) => {
+    const n = integer(address, what);
+    if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
+    return (n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
+  };
+  rt.memory = (address, comparison, value) => condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
+  rt.setMemory = (address, modifier, value) => action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
+  rt.disabled = (item) => {
+    if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
+    if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
+    throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
+  };
+  rt.not = (item) => {
+    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
+    const flipped = negateCondition(item.record);
+    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!\u2026) can test it.");
+    return condition(flipped[0]);
+  };
+  const playersOf = (v, what) => {
+    if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
+    return flatten(v).map((p) => {
+      const n = integer(p, what);
+      if (n >= PLAYER_GROUP_COUNT) throw new ScriptError(`${what}: player group ${n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
+      return n;
+    });
+  };
+  const items = (v, test, what, wrong, wrongName) => flatten(v).map((x) => {
+    if (test(x)) return x;
+    if (isRead(x)) throw new ScriptError(`${what}: ${x.ident}() without a comparison reads the value, which only a program can do. In a trigger, give the comparison and the amount: ${x.ident}(\u2026, ">=", 1).`);
+    if (isPrint(x)) throw new ScriptError(`${what}: print() is a statement of a program; a trigger shows text with displayText().`);
+    if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
+    throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
+  });
+  rt.trigger = (players, conditions, actions, options2, at) => {
+    const t = emptyTrigger();
+    for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
+    t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c2) => ({ ...c2.record }));
+    t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a2) => ({ ...a2.record }));
+    for (const a2 of t.actions) {
+      const s = a2.text > 0 ? collector.strings[a2.text - 1] : void 0;
+      if (s && "text" in s && hasTextMark(s.text)) throw new ScriptError("name() and color() are filled in by a program while the game runs; a trigger's text is fixed when the script is built. Show this text from inside program().");
+    }
+    if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
+    if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`trigger: options is an object such as { preserve: true }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "flags") {
+          t.flags |= integer(value, "trigger: flags");
+          continue;
+        }
+        const hit = TRIGGER_OPTION_NAMES.find(([, name]) => name === key);
+        if (!hit) throw new ScriptError(`trigger: unknown option "${key}".`);
+        if (value) t.flags |= hit[0];
+      }
+    }
+    collector.entries.push({ kind: "trigger", record: t, at: isAt(at) ? at : null });
+    return { __trigscript: "trigger", record: t };
+  };
+  rt.hyperTriggers = (owner = 0) => {
+    const p = integer(owner, "hyperTriggers: owner");
+    if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
+    for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
+    collector.hyper = true;
+  };
+  const number = (v, what) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
+    return v;
+  };
+  rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
+  rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
+  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
+  rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
+  rt.sleep = () => {
+    throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
+  };
+  rt.rose = () => {
+    throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if.");
+  };
+  rt.once = () => {
+    throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if.");
+  };
+  rt.shared = () => {
+    throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
+  };
+  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
+  const reader = (fn) => Object.assign(fn, { __trigscript: "reader" });
+  const onePlayer = (v, what, slots = PLAYER_SLOTS) => {
+    const n = integer(v, what);
+    if (n !== PlayerGroup.CurrentPlayer && n >= slots) throw new ScriptError(`${what}: expected one player, P1 \u2026 P${slots} or CurrentPlayer.`);
+    return n;
+  };
+  const conditionRead = (ident, type, fields) => read(ident, { source: "condition", record: { ...emptyCondition(), type, comparison: Comparison.AtLeast, ...fields } });
+  const resourceRead = (ident, player, kind) => conditionRead(ident, ConditionType.Accumulate, { player: argValue("player", player, `${ident}: player`), resource: argValue("resource", kind, `${ident}: resource`) });
+  rt.minerals = reader((player) => resourceRead("minerals", player, "ore"));
+  rt.gas = reader((player) => resourceRead("gas", player, "gas"));
+  rt.resources = reader((player, kind) => resourceRead("resources", player, kind));
+  rt.countUnits = reader((player, unit, location) => {
+    const fields = { player: argValue("player", player, "countUnits: player"), unitId: argValue("unit", unit, "countUnits: unit"), flags: ConditionFlag.UnitTypeUsed };
+    return location === void 0 ? conditionRead("countUnits", ConditionType.Command, fields) : conditionRead("countUnits", ConditionType.Bring, { ...fields, location: argValue("location", location, "countUnits: location") });
+  });
+  rt.kills = reader((player, unit) => conditionRead("kills", ConditionType.Kill, { player: argValue("player", player, "kills: player"), unitId: argValue("unit", unit, "kills: unit"), flags: ConditionFlag.UnitTypeUsed }));
+  rt.countdown = reader(() => conditionRead("countdown", ConditionType.CountdownTimer, {}));
+  rt.elapsed = reader(() => conditionRead("elapsed", ConditionType.ElapsedTime, {}));
+  rt.races = Object.freeze({ Zerg: 0, Terran: 1, Protoss: 2 });
+  rt.slots = Object.freeze({ Empty: 0, Computer: 1, Human: 2, Rescuable: 3, Neutral: 7 });
+  rt.race = reader((player) => read("race", { source: "player", fact: "race", player: onePlayer(player, "race: player", 12) }));
+  rt.slot = reader((player) => read("slot", { source: "player", fact: "slot", player: onePlayer(player, "slot: player", 12) }));
+  rt.isHuman = reader((player) => read("isHuman", { source: "player", fact: "slot", player: onePlayer(player, "isHuman: player", 12) }, 2));
+  rt.hasLeft = reader((player) => read("hasLeft", { source: "player", fact: "left", player: onePlayer(player, "hasLeft: player") }, 1));
+  rt.supply = reader((player, of = "used", race) => {
+    if (of !== "used" && of !== "max" && of !== "provided") throw new ScriptError(`supply: expected "used", "max" or "provided", got ${describe(of)}.`);
+    let r = null;
+    if (race !== void 0 && race !== null) {
+      const n = typeof race === "string" ? ["zerg", "terran", "protoss"].indexOf(race.trim().toLowerCase()) : integer(race, "supply: race");
+      if (n !== 0 && n !== 1 && n !== 2) throw new ScriptError(`supply: the race is races.Zerg, races.Terran or races.Protoss, got ${describe(race)}.`);
+      r = n;
+    }
+    return read("supply", { source: "supply", of, race: r, player: onePlayer(player, "supply: player", 12) });
+  });
+  rt.name = (player) => textMark("n", onePlayer(player, "name: player", 12));
+  rt.color = (player) => textMark("c", onePlayer(player, "color: player", 12));
+  rt.print = (text, options2) => {
+    if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
+    let to = PlayerGroup.CurrentPlayer;
+    let position = "chat";
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`print: options is an object such as { to: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "to") {
+          to = integer(value, "print: to");
+          const groups = [PlayerGroup.CurrentPlayer, PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+          if (to >= PLAYER_SLOTS && !groups.includes(to)) throw new ScriptError(`print: to is a player (P1 \u2026 P${PLAYER_SLOTS}), CurrentPlayer, AllPlayers or a force.`);
+        } else if (key === "position") {
+          if (value !== "chat" && value !== "center") throw new ScriptError(`print: position is "chat" or "center", got ${describe(value)}.`);
+          position = value;
+        } else throw new ScriptError(`print: unknown option "${key}".`);
+      }
+    }
+    return { __trigscript: "print", text, to, position };
+  };
+  rt.program = (body2, options2, at) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const out = { owners: [0], perPlayer: false };
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        switch (key) {
+          case "owner": {
+            const owners = playersOf(value, "program: owner");
+            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
+            const groups = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 \u2026 P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players \u2014 the program runs once for each of them, with CurrentPlayer as that player.`);
+            out.owners = [...new Set(owners)];
+            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
+            break;
+          }
+          case "comments":
+          case "variableUnits":
+            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
+          default:
+            throw new ScriptError(`program: unknown option "${key}".`);
+        }
+      }
+    }
+    collector.entries.push({ kind: "program", descriptor: body2, options: out, at: isAt(at) ? at : null });
+  };
+  rt.random = () => {
+    throw new ScriptError("random() is a coin toss and random(n) a number from 0 to n \u2212 1, both made by the game: use them inside program().");
+  };
+  rt.game = (body2) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { \u2026 })." : `game() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const fn = () => {
+      throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built.");
+    };
+    return Object.assign(fn, { __trigscript: "gamefn", descriptor: body2 });
+  };
+  return rt;
+}
+var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
+
 // vendor/units.ts
 var UNIT_NAMES = [
   "Terran Marine",
@@ -940,51 +1334,6 @@ function defaultScriptNames() {
   return scriptNames();
 }
 
-// compiler/lower.ts
-var PLAYER_SLOTS = 12;
-var U32_MAX = 4294967295;
-var LowerError = class extends Error {
-};
-var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
-function negateCondition(c2) {
-  if (c2.type === ConditionType.Always) return [{ ...c2, type: ConditionType.Never }];
-  if (c2.type === ConditionType.Never) return [{ ...c2, type: ConditionType.Always }];
-  if (c2.type === ConditionType.Switch) {
-    if (c2.comparison === SwitchState.Set) return [{ ...c2, comparison: SwitchState.Cleared }];
-    if (c2.comparison === SwitchState.Cleared) return [{ ...c2, comparison: SwitchState.Set }];
-    return null;
-  }
-  const def = conditionDef(c2.type);
-  if (!def?.args.some((a2) => a2.kind === "comparison" && a2.field === "comparison") || !def.args.some((a2) => a2.kind === "amount" && a2.field === "amount")) return null;
-  const n = c2.amount >>> 0;
-  switch (c2.comparison) {
-    case Comparison.AtLeast:
-      return n === 0 ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtMost, amount: n - 1 }];
-    case Comparison.AtMost:
-      return n === U32_MAX ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtLeast, amount: n + 1 }];
-    case Comparison.Exactly: {
-      const out = [];
-      if (n > 0) out.push({ ...c2, comparison: Comparison.AtMost, amount: n - 1 });
-      if (n < U32_MAX) out.push({ ...c2, comparison: Comparison.AtLeast, amount: n + 1 });
-      return out;
-    }
-    default:
-      return null;
-  }
-}
-function hyperTriggers(owner, comment) {
-  return [0, 1, 2].map(() => {
-    const t = emptyTrigger();
-    t.players[owner] = 1;
-    t.flags = TriggerFlag.Preserve;
-    t.conditions.push({ ...emptyCondition(), type: ConditionType.Always });
-    if (comment) t.actions.push({ ...emptyAction(), type: ActionType.Comment, text: comment("Hyper trigger") });
-    while (t.actions.length < MAX_ACTIONS - 1) t.actions.push({ ...emptyAction(), type: ActionType.Wait, time: 0 });
-    t.actions.push({ ...emptyAction(), type: ActionType.PreserveTrigger });
-    return t;
-  });
-}
-
 // compiler/declarations.ts
 var DECLARATIONS_FILE = "trigscript.d.ts";
 var HEADER = `// \u2500\u2500 TrigScript \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -992,7 +1341,7 @@ var HEADER = `// \u2500\u2500 TrigScript \u2500\u2500\u2500\u2500\u2500\u2500\u2
 //
 // A script is ordinary TypeScript that runs when you build: every trigger() it calls
 // becomes one trigger of the map, in order. Code inside program(() => { \u2026 }) runs in
-// the game instead, as a state machine of death counters.
+// the game instead (StarCraft: Remastered), built into the map when it is saved.
 `;
 function types(kw) {
   return `
@@ -1007,6 +1356,10 @@ ${kw}type Location<N extends number = number> = N & Brand<"location">;
 ${kw}type Switch<N extends number = number> = N & Brand<"switch">;
 /** An AI script (aiScripts.*; a four-character code or StarEdit name as a string also works). */
 ${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
+/** A race (races.*), as race() returns it. */
+${kw}type Race<N extends number = number> = N & Brand<"race">;
+/** What holds a player's slot (slots.*), as slot() returns it. */
+${kw}type Slot<N extends number = number> = N & Brand<"slot">;
 /** A unit count: a number, or "All". */
 ${kw}type Count = number | "All";
 /**
@@ -1082,7 +1435,8 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
  * conditions, actions) is computed when you build \u2014 the editor underlines those parts \u2014 so
  * it cannot depend on the variables, except the amount of setResources / setDeaths /
  * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
- * giveUnits, which can be a variable.
+ * giveUnits, which can be a variable, and the text of displayText() / print(), which can hold
+ * numbers of the program. The game's own values are reads: minerals(P1), deaths(P1, unit), \u2026
  *
  * A map with a program in it needs StarCraft: Remastered: the programs are built into the
  * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
@@ -1099,6 +1453,8 @@ ${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction
 ${kw}function hyperTriggers(owner?: Player): void;
 /** A coin toss, inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
 ${kw}function random(): boolean;
+/** A whole number from 0 to n \u2212 1, picked by the game; inside program() only: \`let lane = random(3)\`. n may be a variable; 0 gives 0. */
+${kw}function random(n: number): number;
 /** A length of time in seconds, for sleep(): twenty-four frames a second at Fastest. */
 ${kw}function seconds(n: number): Duration;
 /** A length of time in minutes, for sleep(). */
@@ -1122,6 +1478,58 @@ ${kw}function shared(initial: number): number;
 ${kw}function shared(initial: boolean): boolean;
 /** The value kept within low \u2026 high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
 ${kw}function clamp(value: number, low: number, high: number): number;
+/**
+ * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
+ * number goes \u2014 \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,
+ * \`setResources(P2, "set", minerals(P1), "ore")\`. Every condition that compares a quantity is
+ * also a read when called without its comparison and amount: \`deaths(P1, units.TerranMarine)\`,
+ * \`bring(P1, units.AnyUnit, locations.Base)\`, \`score(P1, "kills")\`, \`countdownTimer()\`.
+ * What to read \u2014 the player, the unit, the location \u2014 is known when you build.
+ */
+/** A player's minerals. */
+${kw}function minerals(player: Player): number;
+/** A player's gas. */
+${kw}function gas(player: Player): number;
+/** A player's minerals, gas, or both added up: what accumulate() compares. */
+${kw}function resources(player: Player, resource: ResourceKind | number): number;
+/** How many units of a type a player has \u2014 at a location (what bring() compares) or anywhere (what command() compares). */
+${kw}function countUnits(player: Player, unit: Unit, location?: Location): number;
+/** How many units of a type a player has killed: what kill() compares. */
+${kw}function kills(player: Player, unit: Unit): number;
+/** The countdown timer, in game seconds: what countdownTimer() compares. A game second is sixteen frames, so at Fastest the timer runs about one and a half times as fast as sleep(seconds()). */
+${kw}function countdown(): number;
+/** Game seconds since the start: what elapsedTime() compares. A game second is sixteen frames: after sleep(seconds(14)) at Fastest it reads about 21. */
+${kw}function elapsed(): number;
+/** The race a player is playing, as one of races.*: \`if (race(CurrentPlayer) == races.Zerg)\`. */
+${kw}function race(player: Player): Race;
+/** What holds a player's slot, as one of slots.*: \`if (slot(P3) == slots.Computer)\` \u2014 a melee computer and a Use Map Settings one alike. */
+${kw}function slot(player: Player): Slot;
+/** Whether a person plays this slot. */
+${kw}function isHuman(player: Player): boolean;
+/** Whether the player has left the game (P1 \u2026 P8). A computer never does. */
+${kw}function hasLeft(player: Player): boolean;
+/**
+ * A player's supply as the top bar shows it: "used", "max" (the cap, 200 unless the map changed it)
+ * or "provided" (by depots, overlords, pylons). Of the race the player plays unless one is given.
+ */
+${kw}function supply(player: Player, of?: "used" | "max" | "provided", race?: Race): number;
+/** The races, as race() returns them and supply() takes them. */
+${kw}const races: { readonly Zerg: Race<0>; readonly Terran: Race<1>; readonly Protoss: Race<2> };
+/** What a slot can hold, as slot() returns it. */
+${kw}const slots: { readonly Empty: Slot<0>; readonly Computer: Slot<1>; readonly Human: Slot<2>; readonly Rescuable: Slot<3>; readonly Neutral: Slot<7> };
+/**
+ * A player's name, for a text a program shows: displayText(\`\${name(CurrentPlayer)} wins\`). The game
+ * fills it in when the text is shown, so it works inside program() only.
+ */
+${kw}function name(player: Player): string;
+/** The colour code of a player's colour, for a text a program shows: \`\${color(P2)}\${name(P2)}\`. Inside program() only. */
+${kw}function color(player: Player): string;
+/**
+ * Show text, inside program() only. Like displayText(), whose text may hold the program's numbers too \u2014
+ * displayText(\`\${gold} gold left\`) \u2014 but for someone else, or in the middle of the screen where the
+ * game's own messages ("Not enough minerals") appear: print(\`Wave \${wave}\`, { to: AllPlayers, position: "center" }).
+ */
+${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -1143,10 +1551,16 @@ ${kw}function preserve(): Action;
 `;
 }
 function signature(kw, ident, def, returns) {
-  const params = scriptParams(def).map((p) => `${p.name}${p.optional ? "?" : ""}: ${argType(p.arg.kind)}`);
+  const all = scriptParams(def);
+  const params = all.map((p) => `${p.name}${p.optional ? "?" : ""}: ${argType(p.arg.kind)}`);
   const doc = def.args.length ? `${def.name} \u2014 ${def.args.map((a2) => a2.label).join(", ")}` : def.name;
-  return `/** ${doc} */
+  const out = `/** ${doc} */
 ${kw}function ${ident}(${params.join(", ")}): ${returns};`;
+  if (returns !== "Condition" || !READ_ARITY.has(ident)) return out;
+  const read = all.filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount").map((p) => `${p.name}: ${argType(p.arg.kind)}`);
+  return `${out}
+/** ${def.name}, as a number: what the condition compares, read inside program(). */
+${kw}function ${ident}(${read.join(", ")}): number;`;
 }
 function tableDecl(kw, t, keep = () => true, note) {
   const lines = [`/** ${t.doc} */`, `${kw}const ${t.object}: {`];
@@ -1245,6 +1659,8 @@ function owningDeclaration(ts, decl) {
 }
 var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers", "game"]);
 var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "rose", "once", "shared"]);
+var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, "print"]);
+var isReadCall = (lib, args) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 function planProgram(ts, checker, arrow, options = {}) {
   const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Map(), constList: [], tree: [], errors: [] };
   const error = (node, message) => plan.errors.push({ node, message });
@@ -1340,6 +1756,10 @@ function planProgram(ts, checker, arrow, options = {}) {
         return;
       }
       if (ts.isCallExpression(n) && isGame(n)) {
+        ok = false;
+        return;
+      }
+      if (ts.isCallExpression(n) && isReadCall(libraryCallName(ts, checker, n), n.arguments.length)) {
         ok = false;
         return;
       }
@@ -1770,7 +2190,7 @@ function mapPosition(mapJson, line, column) {
 }
 
 // compiler/ir.ts
-var IR_VERSION = 2;
+var IR_VERSION = 3;
 var isNumExpr = (e) => {
   switch (e.kind) {
     case "const":
@@ -1781,6 +2201,8 @@ var isNumExpr = (e) => {
     case "unary":
     case "binary":
     case "intrinsic":
+    case "read":
+    case "randomInt":
       return true;
     case "ternary":
       return isNumExpr(e.whenTrue);
@@ -1835,6 +2257,9 @@ function declarations(body2) {
       case "action":
         if (s.variable) expr(s.variable.expr);
         break;
+      case "print":
+        for (const p of s.parts) if (p.kind === "number") expr(p.expr);
+        break;
       case "call":
         call(s.call);
         break;
@@ -1870,6 +2295,9 @@ function declarations(body2) {
         break;
       case "intrinsic":
         e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
         break;
       case "call":
         call(e.call);
@@ -1943,6 +2371,9 @@ function expressions(body2, visit) {
       case "intrinsic":
         e.args.forEach(expr);
         break;
+      case "randomInt":
+        expr(e.bound);
+        break;
       case "and":
       case "or":
         e.items.forEach(expr);
@@ -2006,6 +2437,9 @@ function expressions(body2, visit) {
         break;
       case "action":
         if (s.variable) expr(s.variable.expr);
+        break;
+      case "print":
+        for (const p of s.parts) if (p.kind === "number") expr(p.expr);
         break;
       case "call":
         call(s.call);
@@ -2111,6 +2545,9 @@ function remarks(body2, out) {
 function assigned(body2, into = /* @__PURE__ */ new Set()) {
   const stmt = (s) => {
     switch (s.kind) {
+      case "action":
+        into.add(THE_GAME);
+        break;
       case "declare":
         into.add(s.decl.id);
         break;
@@ -2154,10 +2591,18 @@ function assigned(body2, into = /* @__PURE__ */ new Set()) {
   body2.forEach(stmt);
   return into;
 }
+var THE_GAME = "(the game)";
 function reads(e, into = /* @__PURE__ */ new Set()) {
   switch (e.kind) {
     case "var":
       into.add(e.id);
+      break;
+    case "read":
+    case "cond":
+      into.add(THE_GAME);
+      break;
+    case "randomInt":
+      reads(e.bound, into);
       break;
     case "unary":
       reads(e.expr, into);
@@ -2269,252 +2714,6 @@ function checkSleeps(body2, out) {
   body2.forEach(stmt);
 }
 
-// compiler/runtime.ts
-var DEATHS_TABLE_ADDRESS = 5808996;
-var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
-var ScriptError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "ScriptError";
-  }
-};
-var Collector = class {
-  entries = [];
-  strings = [];
-  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
-  hyper = false;
-  localString(s) {
-    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
-    if (at >= 0) return at + 1;
-    this.strings.push(s);
-    return this.strings.length;
-  }
-};
-var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript === "condition";
-var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
-var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
-var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
-var isGameFunction = (v) => typeof v === "function" && v.__trigscript === "gamefn";
-var isBuilder = (v) => typeof v === "function" && v.__trigscript === "builder";
-var condition = (record) => ({ __trigscript: "condition", record });
-var action = (record) => ({ __trigscript: "action", record });
-function describe(v) {
-  if (typeof v === "string") return JSON.stringify(v.length > 40 ? `${v.slice(0, 39)}\u2026` : v);
-  if (typeof v === "number" || typeof v === "boolean" || v === null || v === void 0) return String(v);
-  if (isCondition(v)) return "a condition";
-  if (isAction(v)) return "an action";
-  if (Array.isArray(v)) return "an array";
-  if (typeof v === "function") return "a function";
-  return "an object";
-}
-function integer(v, what) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
-  if (typeof v === "boolean") return v ? 1 : 0;
-  throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
-}
-function flatten(v, out = []) {
-  if (Array.isArray(v)) for (const x of v) flatten(x, out);
-  else if (v !== void 0 && v !== null && v !== false) out.push(v);
-  return out;
-}
-function createRuntime(names, collector, options = {}) {
-  const rt = {};
-  const comment = options.comments === false ? void 0 : (text) => collector.localString({ text });
-  for (const t of [names.players, names.units, names.locations, names.switches, names.aiScripts]) {
-    const table2 = {};
-    for (const e of t.entries) for (const k of e.keys) table2[k] = e.value;
-    rt[t.object] = Object.freeze(table2);
-  }
-  for (let i = 0; i < PLAYER_SLOTS; i++) rt[`P${i + 1}`] = i;
-  rt.CurrentPlayer = PlayerGroup.CurrentPlayer;
-  rt.AllPlayers = PlayerGroup.AllPlayers;
-  const argValue = (kind, v, what) => {
-    switch (kind) {
-      case "text":
-      case "wav":
-        if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
-        if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
-        throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
-      case "count":
-        if (typeof v === "string") {
-          if (v.trim().toLowerCase() === "all") return 0;
-          throw new ScriptError(`${what}: expected a count or "All", got ${describe(v)}.`);
-        }
-        return integer(v, what);
-      case "aiScript":
-        if (typeof v === "string") {
-          const code = aiScriptByName(v);
-          if (code === void 0) throw new ScriptError(`${what}: unknown AI script ${describe(v)}.`);
-          return code;
-        }
-        return integer(v, what);
-      case "textFlags":
-        return v === void 0 || v === true ? ActionFlag.AlwaysDisplay : v === false ? 0 : integer(v, what) & ActionFlag.AlwaysDisplay;
-      default:
-        if (typeof v === "string") {
-          if (!CANONICAL[kind]) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
-          const n = choiceOf(kind, v);
-          if (n === void 0) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
-          return n;
-        }
-        return integer(v, what);
-    }
-  };
-  const fromDef = (ident, def, kind) => Object.assign((...args) => {
-    const params = scriptParams(def);
-    const required = params.filter((p) => !p.optional).length;
-    if (args.length < required || args.length > params.length) {
-      throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
-    }
-    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
-    params.forEach((p, i) => {
-      const v = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
-      if (p.arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v;
-      else record[p.arg.field] = v;
-    });
-    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
-    return kind === "condition" ? condition(record) : action(record);
-  }, { __trigscript: "builder", kind, def, ident });
-  for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
-  for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
-  rt.preserve = rt.preserveTrigger;
-  const raw = (kind) => (...args) => {
-    const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
-    const record = kind === "condition" ? emptyCondition() : emptyAction();
-    args.forEach((a2, i) => {
-      if (i < fields.length) record[fields[i]] = integer(a2, `${kind}(): ${fields[i]}`);
-    });
-    if (kind === "action") {
-      for (const f of ["text", "wav"]) if (record[f]) record[f] = collector.localString({ index: record[f] });
-    }
-    return kind === "condition" ? condition(record) : action(record);
-  };
-  rt.condition = raw("condition");
-  rt.action = raw("action");
-  const epd = (address, what) => {
-    const n = integer(address, what);
-    if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
-    return (n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
-  };
-  rt.memory = (address, comparison, value) => condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
-  rt.setMemory = (address, modifier, value) => action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
-  rt.disabled = (item) => {
-    if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
-    if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
-    throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
-  };
-  rt.not = (item) => {
-    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
-    const flipped = negateCondition(item.record);
-    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!\u2026) can test it.");
-    return condition(flipped[0]);
-  };
-  const playersOf = (v, what) => {
-    if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
-    return flatten(v).map((p) => {
-      const n = integer(p, what);
-      if (n >= PLAYER_GROUP_COUNT) throw new ScriptError(`${what}: player group ${n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
-      return n;
-    });
-  };
-  const items = (v, test, what, wrong, wrongName) => flatten(v).map((x) => {
-    if (test(x)) return x;
-    if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
-    throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
-  });
-  rt.trigger = (players, conditions, actions, options2, at) => {
-    const t = emptyTrigger();
-    for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
-    t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c2) => ({ ...c2.record }));
-    t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a2) => ({ ...a2.record }));
-    if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
-    if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
-    if (options2 !== void 0 && options2 !== null) {
-      if (typeof options2 !== "object") throw new ScriptError(`trigger: options is an object such as { preserve: true }, got ${describe(options2)}.`);
-      for (const [key, value] of Object.entries(options2)) {
-        if (key === "flags") {
-          t.flags |= integer(value, "trigger: flags");
-          continue;
-        }
-        const hit = TRIGGER_OPTION_NAMES.find(([, name]) => name === key);
-        if (!hit) throw new ScriptError(`trigger: unknown option "${key}".`);
-        if (value) t.flags |= hit[0];
-      }
-    }
-    collector.entries.push({ kind: "trigger", record: t, at: isAt(at) ? at : null });
-    return { __trigscript: "trigger", record: t };
-  };
-  rt.hyperTriggers = (owner = 0) => {
-    const p = integer(owner, "hyperTriggers: owner");
-    if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
-    for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
-    collector.hyper = true;
-  };
-  const number = (v, what) => {
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
-    return v;
-  };
-  rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
-  rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
-  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
-  rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
-  rt.sleep = () => {
-    throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
-  };
-  rt.rose = () => {
-    throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if.");
-  };
-  rt.once = () => {
-    throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if.");
-  };
-  rt.shared = () => {
-    throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
-  };
-  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
-  rt.program = (body2, options2, at) => {
-    if (!isProgramDescriptor(body2)) {
-      throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
-    }
-    const out = { owners: [0], perPlayer: false };
-    if (options2 !== void 0 && options2 !== null) {
-      if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
-      for (const [key, value] of Object.entries(options2)) {
-        switch (key) {
-          case "owner": {
-            const owners = playersOf(value, "program: owner");
-            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
-            const groups = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
-            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 \u2026 P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players \u2014 the program runs once for each of them, with CurrentPlayer as that player.`);
-            out.owners = [...new Set(owners)];
-            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
-            break;
-          }
-          case "comments":
-          case "variableUnits":
-            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
-          default:
-            throw new ScriptError(`program: unknown option "${key}".`);
-        }
-      }
-    }
-    collector.entries.push({ kind: "program", descriptor: body2, options: out, at: isAt(at) ? at : null });
-  };
-  rt.random = () => {
-    throw new ScriptError("random() is a coin toss the game makes: use it inside program(), in an if, a while or an assignment.");
-  };
-  rt.game = (body2) => {
-    if (!isProgramDescriptor(body2)) {
-      throw new ScriptError(typeof body2 === "function" ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { \u2026 })." : `game() takes an arrow function, got ${describe(body2)}.`);
-    }
-    const fn = () => {
-      throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built.");
-    };
-    return Object.assign(fn, { __trigscript: "gamefn", descriptor: body2 });
-  };
-  return rt;
-}
-var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
-
 // compiler/scope.ts
 var Scope = class {
   map = /* @__PURE__ */ new Map();
@@ -2550,12 +2749,24 @@ function describe2(v) {
   if (isAction(v)) return "an action";
   if (isTrigger(v)) return "a trigger";
   if (isDuration(v)) return "a duration";
+  if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isPrint(v)) return "a print()";
   if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "string") return "text";
   if (typeof v === "function") return "a function";
   if (v === null || v === void 0) return String(v);
   return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
+}
+var CURRENT_PLAYER = 13;
+function mergeText(parts) {
+  const out = [];
+  for (const p of parts) {
+    const last = out[out.length - 1];
+    if (p.kind === "text" && last?.kind === "text") out[out.length - 1] = { kind: "text", text: last.text + p.text };
+    else out.push(p);
+  }
+  return out;
 }
 var TRUE = { kind: "const", value: true };
 var FALSE = { kind: "const", value: false };
@@ -2726,7 +2937,7 @@ var Structured = class {
           continue;
         }
         const v = sub(a2);
-        if (!v) return void 0;
+        if (!v || isRead(v.value)) return void 0;
         args.push(v.value);
       }
       try {
@@ -2739,7 +2950,7 @@ var Structured = class {
       let out = e.head.text;
       for (const span of e.templateSpans) {
         const v = sub(span.expression);
-        if (!v) return void 0;
+        if (!v || isRead(v.value)) return void 0;
         out += String(v.value) + span.literal.text;
       }
       return { value: out };
@@ -2765,7 +2976,7 @@ var Structured = class {
     }
     if (ts.isPrefixUnaryExpression(e)) {
       const v = sub(e.operand);
-      if (!v) return void 0;
+      if (!v || isRead(v.value)) return void 0;
       switch (e.operator) {
         case ts.SyntaxKind.MinusToken:
           return { value: -v.value };
@@ -2780,7 +2991,7 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const l = sub(e.left);
       const r = sub(e.right);
-      if (!l || !r) return void 0;
+      if (!l || !r || isRead(l.value) || isRead(r.value)) return void 0;
       const a2 = l.value;
       const b = r.value;
       switch (e.operatorToken.kind) {
@@ -2814,7 +3025,7 @@ var Structured = class {
     }
     if (ts.isConditionalExpression(e)) {
       const c2 = sub(e.condition);
-      if (!c2) return void 0;
+      if (!c2 || isRead(c2.value)) return void 0;
       return c2.value ? sub(e.whenTrue) : sub(e.whenFalse);
     }
     return void 0;
@@ -3110,6 +3321,14 @@ var Structured = class {
       this.emitAction(v.record, expr);
       return;
     }
+    if (isPrint(v)) {
+      this.emitPrint(textParts(v.text), v.to, v.position, expr);
+      return;
+    }
+    if (isRead(v)) {
+      this.c.error(expr, `${v.ident}() reads a value and does nothing on its own: assign it to a variable, or compare it in an if.`);
+      return;
+    }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) {
       for (const a2 of v) this.emitAction(a2.record, expr);
       return;
@@ -3123,7 +3342,83 @@ var Structured = class {
   }
   emitAction(a2, at) {
     if (a2.type === ActionType.PreserveTrigger) return;
+    const s = a2.text > 0 ? this.c.strings[a2.text - 1] : void 0;
+    if (s && "text" in s && hasTextMark(s.text)) {
+      if (a2.type !== ActionType.DisplayText) {
+        this.c.error(at, "name() and color() are filled in while the game runs, which displayText() and print() can do; this action's text is fixed when the script is built.");
+        return;
+      }
+      this.emitPrint(textParts(s.text), CURRENT_PLAYER, "chat", at);
+      return;
+    }
     this.emit({ kind: "action", record: { ...a2 }, at: this.at(at), label: this.label(at) }, at);
+  }
+  emitPrint(parts, to, position, at) {
+    if (!parts.length) return;
+    this.emit({ kind: "print", parts: mergeText(parts), to, position, at: this.at(at), label: this.label(at) }, at);
+  }
+  /**
+   * A text with the program's values in it, as parts: a template literal, texts joined with +,
+   * and in them numbers of the program (their digits), name(p), color(p) and anything known
+   * when the script is built. Null, with a diagnostic, when a piece is none of those.
+   */
+  textOf(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h && !isRead(h.value)) {
+      const v = h.value;
+      if (typeof v === "string") return textParts(v);
+      if (typeof v === "number" || typeof v === "boolean") return [{ kind: "text", text: String(v) }];
+      this.c.error(e, `Expected text or a number, got ${describe2(v)}.`);
+      return null;
+    }
+    if (ts.isTemplateExpression(e)) {
+      const out = e.head.text ? [{ kind: "text", text: e.head.text }] : [];
+      for (const span of e.templateSpans) {
+        const part = this.textOf(span.expression);
+        if (!part) return null;
+        out.push(...part);
+        if (span.literal.text) out.push({ kind: "text", text: span.literal.text });
+      }
+      return out;
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken && this.isText(e)) {
+      const l = this.textOf(e.left);
+      const r = this.textOf(e.right);
+      return l && r ? [...l, ...r] : null;
+    }
+    if (this.kindOf(this.c.checker.getTypeAtLocation(e)) === "boolean") {
+      this.c.error(e, 'A boolean has no text of its own: write flag ? "yes" : "no" with both texts known when the script is built, or show a number.');
+      return null;
+    }
+    const value = this.num(e);
+    return value ? [{ kind: "number", expr: value }] : null;
+  }
+  isText(e) {
+    return (this.c.checker.getTypeAtLocation(e).flags & this.ts.TypeFlags.StringLike) !== 0;
+  }
+  /** `print(text, { to: P2, position: "center" })` with the program's values in the text. */
+  printStatement(e) {
+    if (e.arguments.length < 1 || e.arguments.length > 2) {
+      this.c.error(e, "print() takes the text and, optionally, { to, position }.");
+      return;
+    }
+    let to = CURRENT_PLAYER;
+    let position = "chat";
+    if (e.arguments[1]) {
+      const h = this.evaluate(e.arguments[1]);
+      if (!h) {
+        this.notConstant(e.arguments[1], "print()'s options");
+        return;
+      }
+      const probe = this.evaluate(e.expression).value("", h.value);
+      if (!isPrint(probe)) return;
+      to = probe.to;
+      position = probe.position;
+    }
+    const parts = this.textOf(e.arguments[0]);
+    if (parts) this.emitPrint(parts, to, position, e);
   }
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   sleepStatement(call) {
@@ -3177,7 +3472,7 @@ var Structured = class {
         }
         const arith = compoundOp(ts, op);
         if (!arith) {
-          this.c.error(e, "Only = += -= *= /= %= assign a number.");
+          this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
           return;
         }
         const rhs = this.num(e.right);
@@ -3220,7 +3515,7 @@ var Structured = class {
       }
     }
     if (this.isLibraryCall(e, "random")) {
-      this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a boolean.");
+      this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a variable.");
       return;
     }
     if (this.isLibraryCall(e, "sleep")) {
@@ -3235,13 +3530,26 @@ var Structured = class {
       this.c.error(e, "shared() goes on a declaration: let total = shared(0).");
       return;
     }
+    if (this.isLibraryCall(e, "print")) {
+      this.printStatement(e);
+      return;
+    }
     const callee = this.evaluate(e.expression)?.value;
     if (isGameFunction(callee)) {
       const call = this.gameCall(e, callee);
       if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
       return;
     }
+    if (isReader(callee) || isBuilder(callee) && callee.kind === "condition" && READ_ARITY.get(callee.ident) === e.arguments.length) {
+      this.c.error(e, "This reads a value and does nothing on its own: assign it to a variable, or compare it in an if.");
+      return;
+    }
     if (isBuilder(callee)) {
+      if (callee.kind === "action" && callee.def.type === ActionType.DisplayText && e.arguments[0] && !this.evaluate(e.arguments[0])) {
+        const parts = this.textOf(e.arguments[0]);
+        if (parts) this.emitPrint(parts, CURRENT_PLAYER, "chat", e);
+        return;
+      }
       if (callee.kind === "action") {
         this.actionWithVars(e, callee.ident, callee.def);
         return;
@@ -3515,7 +3823,7 @@ var Structured = class {
         return;
       }
       const h = this.evaluate(arg);
-      if (h) {
+      if (h && !isRead(h.value)) {
         scope.bind(p, { kind: "value", value: h.value });
         return;
       }
@@ -3655,6 +3963,7 @@ var Structured = class {
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
     if (h) {
+      if (isRead(h.value)) return this.readValue(h.value, e);
       const n = this.asInteger(h, e);
       return n === null ? null : num(n);
     }
@@ -3686,7 +3995,7 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
       if (!op) {
-        this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder.");
+        this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >>.");
         return null;
       }
       const l = this.num(e.left);
@@ -3704,6 +4013,49 @@ var Structured = class {
     if (ts.isCallExpression(e)) return this.callValue(e);
     this.c.error(e, "Expected a number: a value, a variable, or arithmetic over them.");
     return null;
+  }
+  /** A read as a number of the program; one that is a boolean of its own (`isHuman`) counts 1 or 0. */
+  readValue(v, at) {
+    const read = this.mark({ kind: "read", read: v.read, at: this.at(at), label: this.label(at) }, at);
+    if (v.equals === void 0) return read;
+    const cond = this.mark({ kind: "compare", op: "==", left: read, right: num(v.equals), at: this.at(at), label: this.label(at) }, at);
+    return this.mark({ kind: "ternary", cond, whenTrue: num(1), whenFalse: num(0), at: this.at(at), label: this.label(at) }, at);
+  }
+  /** A read as a condition: `isHuman(p)` is its byte being 2, a number is tested `!= 0`. */
+  readBool(v, at) {
+    const read = this.mark({ kind: "read", read: v.read, at: this.at(at), label: this.label(at) }, at);
+    if (v.equals === void 0) return this.mark({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at);
+    return this.mark({ kind: "compare", op: "==", left: read, right: num(v.equals), at: this.at(at), label: this.label(at) }, at);
+  }
+  /**
+   * A call that reads the game — `minerals(P1)`, `deaths(P1, unit)` without its comparison — made
+   * now, with its arguments, which are known when the script is built; what it returns says where
+   * the value is. Undefined when the call is not one; null, with a diagnostic, when it failed.
+   */
+  readCall(e) {
+    const callee = this.evaluate(e.expression)?.value;
+    const reads2 = isReader(callee) || isBuilder(callee) && callee.kind === "condition" && READ_ARITY.get(callee.ident) === e.arguments.length;
+    if (!reads2) return void 0;
+    const args = [];
+    for (const a2 of e.arguments) {
+      const h = this.evaluate(a2);
+      if (!h || isRead(h.value)) {
+        this.notConstant(a2, "What to read");
+        return null;
+      }
+      args.push(h.value);
+    }
+    let out;
+    try {
+      out = callee(...args);
+    } catch (err) {
+      throw new ValueError(e, err instanceof Error ? err.message : String(err));
+    }
+    if (!isRead(out)) {
+      this.c.error(e, "Expected a read.");
+      return null;
+    }
+    return out;
   }
   /** A call as a number: a function of the body or a game function (its result), or an intrinsic over variables. */
   callValue(e) {
@@ -3734,6 +4086,16 @@ var Structured = class {
       return out;
     };
     const intrinsic = (name, list) => this.mark({ kind: "intrinsic", name, args: list, at: this.at(e), label: this.label(e) }, e);
+    if (this.isLibraryCall(e, "random")) {
+      if (e.arguments.length !== 1) {
+        this.c.error(e, "random() is a coin toss, a boolean; random(n) is a number from 0 to n \u2212 1.");
+        return null;
+      }
+      const bound = this.num(e.arguments[0]);
+      return bound ? this.mark({ kind: "randomInt", bound, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    const read = this.readCall(e);
+    if (read !== void 0) return read ? this.readValue(read, e) : null;
     if (this.isLibraryCall(e, "clamp")) {
       const a2 = args(3, "clamp()");
       if (!a2) return null;
@@ -3793,7 +4155,7 @@ var Structured = class {
     for (let i = 0; i < e.arguments.length; i++) {
       const a2 = e.arguments[i];
       const h = this.evaluate(a2);
-      if (h) {
+      if (h && !isRead(h.value)) {
         values.push(h.value);
         continue;
       }
@@ -3841,7 +4203,7 @@ var Structured = class {
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
     if (h && typeof h.value === "boolean") return { kind: "const", value: h.value };
-    if (this.isLibraryCall(e, "random")) return this.mark({ kind: "random", at: this.at(e) }, e);
+    if (this.isLibraryCall(e, "random") && e.arguments.length === 0) return this.mark({ kind: "random", at: this.at(e) }, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
       const v = this.varOf(e.operand);
       if (v && v.kind === "boolean") return { kind: "not", expr: boolRef(v) };
@@ -3863,6 +4225,7 @@ var Structured = class {
     if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
     if (typeof v === "string") return v !== "" ? TRUE : FALSE;
     if (isCondition(v)) return this.mark({ kind: "cond", record: { ...v.record } }, at);
+    if (isRead(v)) return this.readBool(v, at);
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
@@ -3916,17 +4279,23 @@ var Structured = class {
         const decl = this.gameDeclaration(e.expression);
         if (decl && ts.isFunctionDeclaration(decl)) return this.callBool(e, () => this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl));
       }
-      if (this.isLibraryCall(e, "random")) return this.mark({ kind: "random", at: this.at(e) }, e);
+      if (this.isLibraryCall(e, "random")) {
+        if (e.arguments.length === 0) return this.mark({ kind: "random", at: this.at(e) }, e);
+        const n = this.callValue(e);
+        return n ? this.mark({ kind: "test", expr: n, at: this.at(e), label: this.label(e) }, e) : FALSE;
+      }
       if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose");
       if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
       if (this.isLibraryCall(e, "sleep")) {
         this.c.error(e, "sleep() is a statement, not a condition.");
         return FALSE;
       }
+      const read = this.readCall(e);
+      if (read !== void 0) return read ? this.readBool(read, e) : FALSE;
       const callee = this.evaluate(e.expression)?.value;
       if (isGameFunction(callee)) return this.callBool(e, () => this.gameCall(e, callee));
       if (isBuilder(callee) && callee.kind === "condition") {
-        this.c.error(e, "The game cannot test a condition against a variable of the program: a condition's amount is known when the script is built. Compare variables in the program's own statements.");
+        this.c.error(e, `A condition's amount is known when the script is built. To compare with a variable of the program, read the value and compare it yourself: ${callee.ident}(\u2026) >= x, without the comparison and the amount inside the call.`);
         return FALSE;
       }
       if (isBuilder(callee)) {
@@ -3952,7 +4321,7 @@ var Structured = class {
   comparison(e, op, depth) {
     const isBool = (x) => {
       const h = this.evaluate(x);
-      if (h) return typeof h.value === "boolean" || isCondition(h.value);
+      if (h) return typeof h.value === "boolean" || isCondition(h.value) || isRead(h.value) && h.value.equals !== void 0;
       const v = this.varOf(x);
       if (v !== void 0) return v.kind !== "number";
       return this.kindOf(this.c.checker.getTypeAtLocation(x)) === "boolean";
@@ -4019,6 +4388,18 @@ function arithOp(ts, kind) {
       return "/";
     case ts.SyntaxKind.PercentToken:
       return "%";
+    case ts.SyntaxKind.AmpersandToken:
+      return "&";
+    case ts.SyntaxKind.BarToken:
+      return "|";
+    case ts.SyntaxKind.CaretToken:
+      return "^";
+    case ts.SyntaxKind.LessThanLessThanToken:
+      return "<<";
+    // Numbers are unsigned, so the two right shifts are one.
+    case ts.SyntaxKind.GreaterThanGreaterThanToken:
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+      return ">>";
     default:
       return null;
   }
@@ -4035,6 +4416,17 @@ function compoundOp(ts, kind) {
       return "/";
     case ts.SyntaxKind.PercentEqualsToken:
       return "%";
+    case ts.SyntaxKind.AmpersandEqualsToken:
+      return "&";
+    case ts.SyntaxKind.BarEqualsToken:
+      return "|";
+    case ts.SyntaxKind.CaretEqualsToken:
+      return "^";
+    case ts.SyntaxKind.LessThanLessThanEqualsToken:
+      return "<<";
+    case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken:
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
+      return ">>";
     default:
       return null;
   }
@@ -4236,7 +4628,7 @@ function compileScript(ts, files, names, options) {
     }
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
-    const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
     const index = programs.length;
     ir.push(emitted2.program);
     programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
