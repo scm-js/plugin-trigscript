@@ -6,6 +6,14 @@
  * itself, and that is also when the programs are built — into the file, by the eudplib
  * plugin. Test does both and hands the result to Test Map.
  *
+ * It is laid out as VS Code is (`shell.ts`): the files in an Explorer with the programs
+ * and their variables under them, tabs over the editor with the run controls at their
+ * right, Problems / Output / Simulate as views of a panel under it, the state of the
+ * script in a status bar, and what needs an answer as a notification in the corner.
+ * Every command is also in Monaco's command palette (F1) with VS Code's own keys where
+ * it has one: F5 tests, Ctrl+Shift+B applies, Ctrl+J is the panel, Ctrl+B the Explorer.
+ * Nothing that appears moves the text.
+ *
  * It opens two ways. As a full-screen dialog, for a long session on the script; or
  * *beside the map*, as a resizable panel that blocks nothing, so the map and the code
  * are worked on together: Ctrl+click on `locations.Beacon` shows the location, *Pick
@@ -15,8 +23,8 @@
  *
  * The files are the map's: every edit is written straight into the archive (they are
  * members of the .scx, like a WAV), so closing loses nothing — only applying changes
- * triggers. A list at the left holds the files; `main.ts` is where the script starts and
- * cannot be renamed or removed. Monaco and TypeScript come from the CDN on first open.
+ * triggers. `main.ts` is where the script starts and cannot be renamed or removed.
+ * Monaco and TypeScript come from the CDN on first open.
  */
 import type { PluginApi } from "@scm-js/plugin-api";
 import { CompileSuperseded, retainCompileWorker } from "./compile";
@@ -34,6 +42,7 @@ import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./re
 import { FILE_NAME } from "./script";
 import { ProgramSimulation, type ProgramEvent } from "./compiler/simulateIr";
 import { positionIn, type BuildRefusal, type MapNames, type ScriptArtifact, type ScriptService } from "./service";
+import { COMPACT_LAYOUT, DEFAULT_LAYOUT, SHELL_STYLE, createShell, type ShellLayout } from "./shell";
 import type { EudplibBuildEvent, EudplibService } from "./vendor/eudplib";
 
 export const TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
@@ -78,48 +87,29 @@ export const SIMULATE_FRAMES = 480;
 const SIMULATE_ROWS = 200;
 
 const CHECK_DELAY_MS = 350;
+/** Lines the Output view keeps. */
+const OUTPUT_LINES = 2000;
+/** How long a good outcome stays in the status bar, and an answer in the corner. */
+const STATUS_MS = 10_000;
+const NOTICE_MS = 8_000;
+/** The key the shortcuts are written with. */
+const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl";
 
 /** The panel beside the map starts this big; the user resizes it and the size is kept for the session. */
 export const PANEL_WIDTH = 760;
 export const PANEL_HEIGHT = 540;
 
-const STYLE = `
-.tsd { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
-.tsd .tsd-editor { flex: 1; min-height: 0; display: flex; border: 1px solid var(--border); box-shadow: var(--bevel-sunken); border-radius: var(--radius); overflow: hidden; background: var(--bg-0); }
-.tsd .tsd-side { flex: none; width: 168px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg-1); }
-.tsd.tsd-panel .tsd-side { width: 132px; }
-.tsd .tsd-files { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 4px 0; list-style: none; font-family: var(--font-mono); font-size: var(--fs-sm); }
-.tsd .tsd-files li { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; cursor: pointer; color: var(--text-dim); white-space: nowrap; }
-.tsd .tsd-files li:hover { background: var(--bg-3); }
-.tsd .tsd-files li.active { background: var(--bg-0); color: var(--text); }
-.tsd .tsd-files li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-.tsd .tsd-files li .name.problem { color: var(--danger); }
-.tsd .tsd-files li button { flex: none; border: none; background: none; padding: 0 3px; font: inherit; color: var(--text-faint); cursor: pointer; visibility: hidden; }
-.tsd .tsd-files li.active button { visibility: visible; }
-.tsd .tsd-files li button:hover { color: var(--text); }
-.tsd .tsd-side .tsd-new { margin: 4px 6px 6px; }
-.tsd .tsd-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.tsd .tsd-host { flex: 1; min-height: 0; }
-.tsd .tsd-problems { flex: none; max-height: 132px; overflow: auto; margin: 0; padding: 2px 0; list-style: none; border-top: 1px solid var(--border); background: var(--bg-1); font-family: var(--font-mono); font-size: var(--fs-sm); }
-.tsd.tsd-panel .tsd-problems { max-height: 96px; }
-.tsd .tsd-problems li { display: flex; gap: 10px; padding: 2px 10px; cursor: pointer; align-items: baseline; }
-.tsd .tsd-problems li:hover { background: var(--bg-3); }
-.tsd .tsd-problems .where { flex: none; min-width: 48px; color: var(--text-faint); }
-.tsd .tsd-problems .msg { flex: 1; color: var(--danger); white-space: pre-wrap; }
-.tsd .tsd-problems .src { flex: none; color: var(--text-faint); font-size: var(--fs-xs); text-transform: uppercase; }
-.tsd .tsd-run .msg { color: var(--text); }
-.tsd .tsd-run li { cursor: default; }
-.tsd .tsd-program { border: none; background: none; padding: 0; font: inherit; font-size: var(--fs-sm); color: var(--gold); cursor: pointer; }
-.tsd .tsd-program:hover { text-decoration: underline; }
-.tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
-.tsd .tsd-variables .internal { color: var(--text-faint); }
-.tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
-.tsd .tsd-notice .grow { flex: 1; }
-.tsd .tsd-mode { margin-left: 4px; }
-.tsd .tsd-target { margin-left: 4px; }
-.tsd .tsd-library { font-size: var(--fs-xs); color: var(--text-faint); white-space: nowrap; }
-.tsd .tsd-eud { margin: 0; }
-.tsd .tsd-eud pre { max-height: 160px; overflow: auto; margin: 4px 0 0; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-xs); background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--radius); white-space: pre-wrap; }
+const STYLE = `${SHELL_STYLE}
+.tsd .tsd-list { margin: 0; padding: 2px 0; list-style: none; font-size: var(--fs-md); }
+.tsd .tsd-list li { display: flex; align-items: baseline; gap: 8px; padding: 2px 12px 2px 20px; line-height: 18px; cursor: pointer; }
+.tsd .tsd-list li:hover { background: var(--bg-3); }
+.tsd .tsd-list li.tsd-plain { cursor: default; }
+.tsd .tsd-list .tsd-i { align-self: center; font-size: 14px; color: var(--danger); }
+.tsd .tsd-list .msg { flex: 0 1 auto; min-width: 0; white-space: pre-wrap; }
+.tsd .tsd-list .src, .tsd .tsd-list .where { flex: none; color: var(--text-faint); font-size: var(--fs-sm); }
+.tsd .tsd-list .frame { flex: none; min-width: 72px; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.tsd .tsd-list .note { color: var(--text-dim); }
+.tsd .tsd-output { margin: 0; padding: 4px 20px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 
@@ -179,18 +169,15 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
       title: "TrigScript",
       size: "full",
       tall: true,
-      // Escape inside the editor dismisses its own popups (suggestions, parameter hints); it must not close the dialog.
-      keepOpenOnEscape: (target) => target instanceof Node && ws.host.contains(target),
+      // The workspace is the whole dialog, edge to edge, with its own status bar for a footer.
+      flush: true,
+      buttons: [],
+      // Escape inside the workspace dismisses its own popups (suggestions, a menu, the palette); it must not close the dialog.
+      keepOpenOnEscape: (target) => target instanceof Node && ws.root.contains(target),
       mount(body, dialog) {
         body.append(ws.root);
         return ws.attach(() => dialog.close());
       },
-      buttons: [
-        { label: "Apply & Close", primary: true, run: async () => ((await ws.build()) ? undefined : false) },
-        { label: "Close" },
-        // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
-        { label: "Apply", closes: false, run: async () => { await ws.build(); } },
-      ],
     });
     current = { mode, isOpen: () => handle.isOpen(), close: () => handle.close(), reveal: ws.reveal, cursor: ws.cursor };
   } else {
@@ -199,6 +186,7 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
       width: PANEL_WIDTH,
       height: PANEL_HEIGHT,
       resizable: true,
+      flush: true,
       mount(body, panel) {
         body.append(ws.root);
         return ws.attach(() => panel.close());
@@ -210,11 +198,8 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
 
 interface Workspace {
   root: HTMLElement;
-  /** Where Monaco lives, for the dialog's Escape guard. */
-  host: HTMLElement;
   /** Subscribe, load Monaco, and hand back the cleanup; `close` shuts the shell (the map went away). */
   attach(close: () => void): () => void;
-  build(): Promise<boolean>;
   reveal(file?: string, line?: number): void;
   cursor(): { file: string; line: number } | null;
 }
@@ -232,14 +217,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   let monaco: MonacoApi | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let ready = false;
+  /** Monaco could not be loaded: there is nothing to wait for. */
+  let failed = false;
   let building = false;
-  /** The build under way was started by Import map triggers, so that is the button wearing the ring. */
-  let importing = false;
   let picking = false;
   let diagnostics: ScriptDiagnostic[] = [];
   let result: CompileResult | null = null;
   let simulation: { sim: Simulation; programs: ProgramSimulation | null; result: CompileResult } | null = null;
-  let showVariables = false;
+  /** The programs and variables of the last compile that went through: a typo does not empty the Explorer. */
+  let outline: Pick<CompileResult, "programs" | "variables"> | null = null;
   /** The eudplib plugin's service, followed while the workspace is open. */
   let library: EudplibService | null = svc.library();
   /** Test is under way: the script applied, the map built as Save would, handed to Test Map. */
@@ -250,92 +236,232 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /** With a stale block that can be taken apart: the user chose to append a fresh block instead of replacing what is still the build's. */
   let appendInstead = false;
 
-  /* ── DOM ── */
-  const style = el("style", undefined, STYLE);
-  const buildButton = w.button("Apply", { onClick: () => { void build(); } });
-  buildButton.title = "Run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list";
-  const importButton = w.button("Import map triggers", { onClick: () => { void importHand(); } });
-  importButton.title = "Rewrite the map's hand-made triggers as script, appended around the block, and apply it";
-  const simulateButton = w.button("Simulate", { onClick: () => { void simulateNow(); } });
-  simulateButton.title = `Run the script's triggers and programs for ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} seconds of the game) in a built-in interpreter and list what happened`;
-  const pickButton = w.button("Pick from map", { ghost: true, onClick: () => { void pickFromMap(); } });
-  pickButton.title = "Click a location or a unit on the map to put its name at the cursor";
-  const testButton = w.button("Test", { onClick: () => { void test(); } });
-  testButton.title = "Apply the script, build the map as Save would and hand it to Test Map";
-  const libraryLine = el("span", { className: "tsd-library" });
-  const modeButton = w.button(mode === "dialog" ? "Beside the map" : "In a window", { ghost: true, onClick: () => switchMode() });
-  modeButton.className += " tsd-mode";
-  modeButton.title = mode === "dialog" ? "Open the script as a panel beside the map, so the map stays in reach" : "Open the script in a full-screen window";
-  const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "The programs' variables", onClick: () => { showVariables = !showVariables; render(); } });
-  const problemsCount = el("span", { className: "hint" }, "");
-  const variables = el("div", { className: "tsd-variables", hidden: true });
-  const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale });
-  /** The last build of the programs (Save, Test Map or Test ran it): its log, shown while and after one runs. */
-  const eudFold = w.fold({ text: "Build", className: "tsd-eud" });
-  eudFold.hidden = true;
-  const buildLogEl = el("pre", {});
-  let buildLog: string[] = [];
-  const renameNotice = el("div", { className: "tsd-notice tsd-renames", hidden: true });
-  const hostEl = el("div", { className: "tsd-host" });
-  const problems = el("ul", { className: "tsd-problems", hidden: true });
-  const fileList = el("ul", { className: "tsd-files" });
-  const newButton = w.button("New file", { ghost: true, onClick: () => { void newFile(); } });
-  newButton.className += " tsd-new";
-  newButton.title = "Add a file to the script; main.ts imports it with import { … } from \"./name\"";
-  const statusLine = w.statusLine();
-  const root = el("div", { className: mode === "panel" ? "tsd tsd-panel" : "tsd" },
-    style,
-    el("div", { className: "row" }, buildButton, testButton, importButton, simulateButton, pickButton, libraryLine, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
-    variables,
-    notice,
-    eudFold,
-    renameNotice,
-    el("div", { className: "tsd-editor" },
-      el("div", { className: "tsd-side" }, fileList, newButton),
-      el("div", { className: "tsd-main" }, hostEl, problems),
-    ),
-    statusLine,
-  );
+  /* ── The frame ── */
+  const layoutKey = mode === "panel" ? "layout.panel" : "layout.dialog";
+  const shell = createShell({
+    el,
+    compact: mode === "panel",
+    layout: { ...(mode === "panel" ? COMPACT_LAYOUT : DEFAULT_LAYOUT), ...api.storage.get<Partial<ShellLayout>>(layoutKey, {}) },
+    onLayout: (layout) => { api.storage.set(layoutKey, layout); },
+    onTabSelect: (id) => openFile(id),
+    onTabClose: (id) => closeTab(id),
+  });
+  const root = shell.root;
+  root.prepend(el("style", undefined, STYLE));
+  const hostEl = shell.editorHost;
 
-  let status: { kind: "info" | "ok" | "error" | "busy"; text: string } = { kind: "info", text: "" };
-  const setStatus = (kind: "info" | "ok" | "error" | "busy", text: string) => { status = { kind, text }; render(); };
+  const testAction = shell.action({ icon: "play", title: `Test (F5): apply the script, build the map as Save would and hand it to Test Map`, run: () => { void test(); } });
+  const simulateAction = shell.action({ icon: "beaker", title: `Simulate (${MOD}+F5): run the script's triggers and programs for ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} seconds of the game) in a built-in interpreter and list what happened`, run: () => { void simulateNow(); } });
+  const applyAction = shell.action({ icon: "check", title: `Apply (${MOD}+Shift+B): run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list`, run: () => { void build(); } });
+  const pickAction = shell.action({ icon: "target", title: "Pick from map: click a location or a unit on the map to put its name at the cursor", run: () => { void pickFromMap(); } });
+  shell.action(mode === "dialog"
+    ? { icon: "multiple-windows", title: "Beside the map: open the script as a panel, so the map stays in reach", run: () => switchMode() }
+    : { icon: "screen-full", title: "In a window: open the script full-screen", run: () => switchMode() });
+  const moreAction = shell.action({ icon: "ellipsis", title: "More actions…", run: () => shell.menu(moreAction.element, [
+    menuItem("save"),
+    null,
+    ...["import", "newFile"].map(menuItem),
+    null,
+    ...["problems", "output", "panel", "explorer"].map(menuItem),
+    null,
+    { label: "Command Palette…", keys: "F1", disabled: !ready, run: () => palette() },
+  ]) });
+
+  const fileList = el("ul", { className: "tsd-rows" });
+  shell.section({ title: "Script", actions: [{ icon: "new-file", title: "New file…: main.ts imports it with import { … } from \"./name\"", run: () => { void newFile(); } }] }).body.append(fileList);
+  const programList = el("ul", { className: "tsd-rows" });
+  const programsSection = shell.section({ title: "Programs" });
+  programsSection.body.append(programList);
+  programsSection.setHidden(true);
+
+  const problemsView = shell.view({ id: "problems", title: "Problems" });
+  const outputEl = el("pre", { className: "tsd-output" });
+  const outputView = shell.view({ id: "output", title: "Output", onShow: () => renderOutput(true), actions: [{ icon: "clear-all", title: "Clear the output", run: () => { output = []; renderOutput(); } }] });
+  const simulateView = shell.view({ id: "simulate", title: "Simulate" });
+
+  const problemsItem = shell.statusItem("left");
+  const blockItem = shell.statusItem("left");
+  const staleItem = shell.statusItem("left");
+  const renamesItem = shell.statusItem("left");
+  const messageItem = shell.statusItem("left");
+  const buildItem = shell.statusItem("right");
+  const libraryItem = shell.statusItem("right");
+  const programsItem = shell.statusItem("right");
+  const cursorItem = shell.statusItem("right");
+
+  /** The files with a tab, in the order they were opened. */
+  let openTabs: string[] = [normalizePath(options.file ?? ENTRY_FILE)];
+  /** What Apply, Test and the builds of the programs reported, oldest first. */
+  let output: string[] = [];
+  /** The last build of the programs (Save, Test Map or Test ran it), for the status bar. */
+  let buildState: { kind: "busy" | "ok" | "error"; text: string } | null = null;
+  /** Lines the build under way has streamed; a build that streams none hands its log over at the end. */
+  let streamed = 0;
+
+  /** The log, kept at its end unless the user has scrolled up to read. */
+  const renderOutput = (toEnd = false) => {
+    if (output.length === 0) { outputView.body.replaceChildren(el("div", { className: "tsd-empty" }, "What Apply, Test and the builds of the programs report is kept here.")); return; }
+    const scroller = outputView.body.parentElement;
+    const atEnd = toEnd || !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+    outputEl.textContent = output.join("\n");
+    if (outputEl.parentElement !== outputView.body) outputView.body.replaceChildren(outputEl);
+    if (scroller && atEnd) scroller.scrollTop = scroller.scrollHeight;
+  };
+  const log = (text: string, stamped = true) => {
+    output.push(stamped ? `[${new Date().toLocaleTimeString()}] ${text}` : text);
+    if (output.length > OUTPUT_LINES) output = output.slice(-OUTPUT_LINES);
+    renderOutput();
+  };
+
+  /**
+   * What just happened. Work under way and its good outcome are a line of the status bar;
+   * a failure, or an answer to something the user asked for, is a notification — a failure
+   * stays until it is dismissed or the next piece of work starts. All of it is kept in Output.
+   */
+  let status: { kind: "ok" | "busy"; text: string } | null = null;
+  let statusTimer: ReturnType<typeof setTimeout> | null = null;
+  const setStatus = (kind: "info" | "ok" | "error" | "busy", text: string, timeout?: number) => {
+    if (cancelled) return;
+    if (statusTimer !== null) { clearTimeout(statusTimer); statusTimer = null; }
+    if (kind === "busy" || kind === "ok") {
+      status = { kind, text };
+      shell.dismiss("status");
+      if (kind === "ok") statusTimer = setTimeout(() => { statusTimer = null; status = null; render(); }, STATUS_MS);
+    } else {
+      status = null;
+      shell.notify({ key: "status", kind: kind === "error" ? "error" : "info", text, timeout: timeout ?? (kind === "info" ? NOTICE_MS : undefined) });
+    }
+    if (kind !== "busy") log(text);
+    render();
+  };
 
   const goTo = (file: string, line: number, column = 1) => {
     if (!editor) return;
-    editor.show(file);
+    openFile(file);
     editor.editor.revealLineInCenter(line);
     editor.editor.setPosition({ lineNumber: line, column });
     editor.editor.focus();
-    renderFiles();
   };
 
-  const where = (s: TriggerSource | null | undefined) => (s ? (Object.keys(files).length > 1 ? `${s.file}:${s.line}` : `L${s.line}`) : "?");
+  const where = (s: TriggerSource | null | undefined) => (s ? (Object.keys(files).length > 1 ? `${s.file}:${s.line}` : `Ln ${s.line}`) : "?");
+
+  /** Show a file, in a tab of its own. */
+  const openFile = (path: string) => {
+    if (!editor) return;
+    const p = normalizePath(path);
+    if (files[p] === undefined) return;
+    if (!openTabs.includes(p)) openTabs.push(p);
+    editor.show(p);
+    renderFiles();
+    editor.editor.focus();
+  };
+
+  /** Closing a tab closes nothing but the tab: the file stays in the Explorer. The last one stays open. */
+  const closeTab = (path: string) => {
+    if (!editor || openTabs.length < 2) return;
+    const at = openTabs.indexOf(path);
+    if (at < 0) return;
+    openTabs.splice(at, 1);
+    if (editor.active() === path) editor.show(openTabs[Math.min(at, openTabs.length - 1)]);
+    renderFiles();
+    editor.editor.focus();
+  };
 
   const renderFiles = () => {
-    const active = editor?.active() ?? ENTRY_FILE;
+    const active = editor?.active() ?? openTabs[0] ?? ENTRY_FILE;
     const paths = Object.keys(files).sort((a, b) => (a === ENTRY_FILE ? -1 : b === ENTRY_FILE ? 1 : a.localeCompare(b)));
-    const broken = new Set(diagnostics.map((d) => normalizePath(d.file)));
-    fileList.replaceChildren(...paths.map((path) => {
-      const row = el("li", { className: path === active ? "active" : undefined, title: path, onClick: () => { if (editor) { editor.show(path); renderFiles(); editor.editor.focus(); } } },
-        el("span", { className: broken.has(path) ? "name problem" : "name" }, path));
-      if (path !== ENTRY_FILE) {
-        row.append(
-          el("button", { type: "button", title: "Rename", onClick: (e: MouseEvent) => { e.stopPropagation(); void renameFile(path); } }, "✎"),
-          el("button", { type: "button", title: "Remove", onClick: (e: MouseEvent) => { e.stopPropagation(); void removeFile(path); } }, "×"),
-        );
-      }
-      return row;
-    }));
+    const broken = new Map<string, number>();
+    for (const d of diagnostics) { const p = normalizePath(d.file); broken.set(p, (broken.get(p) ?? 0) + 1); }
+    openTabs = openTabs.filter((p) => files[p] !== undefined);
+    if (!openTabs.includes(active)) openTabs.push(active);
+    shell.setTabs(openTabs.map((p) => ({ id: p, label: p.split("/").pop() ?? p, title: p, problems: broken.get(p), closable: openTabs.length > 1 })), active);
+    fileList.replaceChildren(...paths.map((path) => el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: path, onClick: () => openFile(path) },
+      el("span", { className: "tsd-ts" }, "TS"),
+      el("span", { className: broken.has(path) ? "tsd-name tsd-problem" : "tsd-name" }, path),
+      el("span", { className: "tsd-row-actions" },
+        path !== ENTRY_FILE ? shell.iconButton({ icon: "edit", title: "Rename…", run: () => { void renameFile(path); } }).element : undefined,
+        path !== ENTRY_FILE ? shell.iconButton({ icon: "trash", title: "Remove…", run: () => { void removeFile(path); } }).element : undefined,
+        broken.has(path) ? el("span", { className: "tsd-count" }, String(broken.get(path))) : undefined,
+      ),
+    )));
   };
 
-  /** The block was edited outside the script: what the next Build does about it, and the other choice. */
-  const renderStale = (state: { stale: boolean; edited: { unchanged: number; changed: number } | null } | null) => {
-    const stale = state?.stale ?? false;
-    notice.hidden = !stale;
-    if (!stale) return;
-    const e = state?.edited ?? null;
+  const typeOf = (v: { kind: "number" | "boolean"; bits?: number }) => (v.kind === "number" ? (v.bits ? `u${v.bits}` : "number") : "boolean");
+
+  /** The programs and, under each, the variables it keeps in the game. */
+  const renderPrograms = () => {
+    const programs = outline?.programs ?? [];
+    programsSection.setHidden(programs.length === 0);
+    programList.replaceChildren(...programs.flatMap((p, i) => [
+      el("li", { className: "tsd-row", title: `${p.name ?? `Program ${i + 1}`}, run as ${ownerLabel(p)}`, onClick: () => goTo(p.source.file, p.source.line) },
+        shell.icon("symbol-method"),
+        el("span", { className: "tsd-name" }, p.name ?? `program ${i + 1}`),
+        el("span", { className: "tsd-about" }, `${ownerLabel(p)}${p.perPlayer ? " · per player" : ""}`),
+      ),
+      ...(outline?.variables ?? []).filter((v) => v.program === i).map((v) =>
+        el("li", { className: "tsd-row tsd-child", title: `${v.name}: ${typeOf(v)}${v.shared ? ", one value shared by every player" : p.perPlayer ? ", one per player" : ""}`, onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
+          shell.icon("symbol-variable"),
+          el("span", { className: "tsd-name" }, v.name),
+          el("span", { className: "tsd-about" }, `${typeOf(v)}${v.shared ? " · shared" : ""}`),
+        )),
+    ]));
+  };
+
+  const renderProblems = () => {
+    problemsView.badge(diagnostics.length);
+    if (diagnostics.length === 0) { problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? "No problems have been detected in the script." : "Checking…")); return; }
+    problemsView.body.replaceChildren(el("ul", { className: "tsd-list" }, ...diagnostics.map((d) =>
+      el("li", { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
+        shell.icon("error"),
+        el("span", { className: "msg" }, d.message.split("\n")[0]),
+        el("span", { className: "src" }, d.source === "typescript" ? "types" : d.source === "script" ? "script" : "compiler"),
+        el("span", { className: "where" }, `${d.file} [Ln ${d.line}, Col ${d.column}]`),
+      ))));
+  };
+
+  const renderSimulation = () => {
+    if (!simulation) { simulateView.body.replaceChildren(el("div", { className: "tsd-empty" }, `Simulate (${MOD}+F5) runs the script's first ${SIMULATE_FRAMES / 24} seconds in a built-in interpreter and lists what happened. A change to the script clears the list.`)); return; }
+    const { sim, programs: ps, result: r } = simulation;
+    const list = el("ul", { className: "tsd-list" });
+    list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}. Unit conditions (bring, command, …) count as false; wait takes no time.`)));
+    // Hand triggers' events (trigger interpreter) and the programs' (program interpreter), in time order.
+    const rows: { cycle: number; order: number; line: () => HTMLElement }[] = [];
+    sim.events.forEach((e, i) => {
+      const at = r.sources[e.trigger];
+      rows.push({ cycle: e.cycle, order: i, line: () => el("li", { title: `Trigger #${e.trigger + 1}`, onClick: () => { if (at) goTo(at.file, at.line); } },
+        el("span", { className: "frame" }, `frame ${e.cycle + 1}`), el("span", { className: "msg" }, describeEvent(e)), el("span", { className: "where" }, where(at))) });
+    });
+    ps?.events.forEach((e, i) => {
+      rows.push({ cycle: e.cycle, order: sim.events.length + i, line: () => el("li", { title: `Program ${e.program + 1}`, onClick: () => goTo(e.at.file, e.at.line, e.at.column) },
+        el("span", { className: "frame" }, `frame ${e.cycle + 1}`), el("span", { className: "msg" }, describeEvent(e)), el("span", { className: "where" }, where({ file: e.at.file, line: e.at.line }))) });
+    });
+    rows.sort((a, b) => a.cycle - b.cycle || a.order - b.order);
+    if (rows.length === 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "—"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} frames.`)));
+    for (const row of rows.slice(0, SIMULATE_ROWS)) list.append(row.line());
+    if (rows.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));
+    const shownVars = new Set<string>();
+    for (const v of r.variables) {
+      if (shownVars.has(v.name)) continue;
+      shownVars.add(v.name);
+      const value = ps?.value(v.name);
+      const shown = value === undefined ? "?" : typeof value === "boolean" ? (value ? "true" : "false") : String(value);
+      list.append(el("li", { title: "The variable's value when the run ended", onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
+        el("span", { className: "frame" }, "after"), el("span", { className: "msg" }, `${v.name} = ${shown}`), el("span", { className: "where" }, typeOf(v))));
+    }
+    simulateView.body.replaceChildren(list);
+  };
+
+  /** The block was edited outside the script: what the next Apply does about it, and the other choice. Said once per state; the status bar brings it back. */
+  let staleShown = "";
+  const showStale = (again = false) => {
+    const state = svc.state();
+    if (!state?.stale) { staleShown = ""; shell.dismiss("stale"); return; }
+    const e = state.edited ?? null;
+    const signature = JSON.stringify([e, appendInstead]);
+    if (!again && signature === staleShown) return;
+    staleShown = signature;
     if (!e) {
-      notice.replaceChildren(el("span", { className: "grow" }, "The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled."));
+      shell.notify({ key: "stale", kind: "warn", text: "The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled." });
       return;
     }
     const n = (k: number, what: string) => `${k} ${what}${k === 1 ? "" : "s"}`;
@@ -343,123 +469,86 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const plan = appendInstead
       ? "The next Apply leaves them all as hand-made triggers and appends a fresh block."
       : `The next Apply replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
-    notice.replaceChildren(
-      el("span", { className: "grow" }, `${facts} ${plan}`),
-      w.button(appendInstead ? "Replace instead" : "Append instead", { ghost: true, onClick: () => { appendInstead = !appendInstead; render(); } }),
-    );
+    shell.notify({ key: "stale", kind: "warn", text: `${facts} ${plan}`, actions: [
+      { label: appendInstead ? "Replace instead" : "Append instead", keep: true, run: () => { appendInstead = !appendInstead; render(); } },
+      { label: "Apply", primary: true, run: () => { void build(); } },
+    ] });
   };
 
-  const renderRenames = () => {
-    const all = renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} → ${r.object}.${x.to}`));
-    renameNotice.hidden = all.length === 0;
-    if (all.length === 0) return;
-    renameNotice.replaceChildren(
-      el("span", { className: "grow" }, `The map renamed ${all.length === 1 ? "something the script names" : `${all.length} things the script names`}: ${all.join(", ")}.`),
-      w.button("Update references", { onClick: () => { void applyRenames(); } }),
-      w.button("Leave", { ghost: true, onClick: () => { renames = []; renderRenames(); } }),
-    );
+  const renamedNow = () => renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} → ${r.object}.${x.to}`));
+  let renamesShown = "";
+  const showRenames = (again = false) => {
+    const all = renamedNow();
+    if (all.length === 0) { renamesShown = ""; shell.dismiss("renames"); return; }
+    const signature = all.join("\n");
+    if (!again && signature === renamesShown) return;
+    renamesShown = signature;
+    shell.notify({ key: "renames", kind: "info", text: `The map renamed ${all.length === 1 ? "something the script names" : `${all.length} things the script names`}: ${all.join(", ")}.`, actions: [
+      { label: "Leave", run: () => { renames = []; render(); } },
+      { label: "Update references", primary: true, run: () => { void applyRenames(); } },
+    ] });
+  };
+
+  const renderCursor = () => {
+    const at = editor?.editor.getPosition();
+    cursorItem.set(at ? { text: `Ln ${at.lineNumber}, Col ${at.column}`, title: "Go to line…", onClick: () => { editor?.editor.focus(); editor?.editor.trigger("trigscript", "editor.action.gotoLine", null); } } : null);
   };
 
   const render = () => {
     const errors = diagnostics.length;
-    buildButton.setBusy(building && !importing);
-    importButton.setBusy(importing);
-    pickButton.setBusy(picking);
-    buildButton.disabled = importButton.disabled = !ready || building;
-    testButton.disabled = !ready || building || testing;
-    testButton.setBusy(testing);
-    // The library matters only to a script with programs: it is what builds them into the saved map.
-    const needsLibrary = (result?.programs.length ?? 0) > 0;
-    libraryLine.hidden = !needsLibrary;
-    if (needsLibrary) {
-      libraryLine.textContent = !library
-        ? "eudplib plugin not running: the programs will not be built"
-        : !library.contribute
-          ? "the eudplib plugin is older than 0.4: update it to build the programs"
-          : `eudplib ${library.versions.eudplib} · ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading…" : library.state() === "failed" ? "runtime failed" : "runtime downloads on the first save"}`;
-      libraryLine.title = library ? "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time" : "Install or turn on the eudplib plugin under Plugins ▸ Manage Plugins…";
-    }
-    simulateButton.disabled = !ready || building || errors > 0;
-    pickButton.disabled = !ready || picking;
-    newButton.disabled = !ready;
-    if (!ready) problemsCount.replaceChildren(w.spinner({ size: "sm", label: "Loading the editor…" }));
-    else if (!result) problemsCount.textContent = "Checking…";
-    else problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : "No problems";
-    const programs = result?.programs ?? [];
-    const userVariables = result?.variables ?? [];
-    programButton.hidden = programs.length === 0;
-    if (programs.length) {
-      const owners = [...new Set(programs.map(ownerLabel))].join(", ");
-      programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`} as ${owners} · ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"} · needs Remastered`;
-    }
-    variables.hidden = !(showVariables && result && result.variables.length > 0);
-    variables.replaceChildren(...userVariables.map((v) => el("span", undefined, el("b", undefined, v.name), ` ${v.kind === "number" ? (v.bits ? `u${v.bits}` : "number") : "boolean"}${programs.length > 1 ? ` · program ${v.program + 1}` : ""}${v.shared ? " · shared" : programs[v.program]?.perPlayer ? " · per player" : ""}`)));
+    testAction.set({ disabled: !ready || building || testing, busy: testing });
+    simulateAction.set({ disabled: !ready || building || errors > 0 });
+    applyAction.set({ disabled: !ready || building, busy: building && !testing });
+    pickAction.set({ disabled: !ready || picking, busy: picking });
+
     // Read live, not cached: the block's state belongs to the map and other editors change it.
     const state = svc.state();
     const block = state?.block ?? null;
     const stale = state?.stale ?? false;
-    renderStale(state);
+    const programs = outline ? outline.programs.length : state?.programs ?? 0;
+
+    problemsItem.set(ready ? { icon: errors ? "error" : "pass", text: String(errors), kind: errors ? "error" : undefined, title: errors ? `${errors} problem${errors === 1 ? "" : "s"}` : result ? "No problems" : "Checking…", onClick: () => shell.togglePanel("problems") } : null);
+    const onSave = "saving or testing the map applies the script by itself";
+    blockItem.set(stale ? null : block && !state?.unbuilt
+      ? { icon: "check", text: `${block.count} trigger${block.count === 1 ? "" : "s"} at #${block.start + 1}`, title: `The script's triggers are in the map's trigger list, from #${block.start + 1}. Click to apply the script again`, onClick: () => { void build(); } }
+      : { icon: "circle-filled", text: block ? "Changes not applied" : "Not applied yet", title: `${block ? "The script changed since it was applied" : "The script's triggers are not in the map yet"}: ${onSave}. Click to apply it now (${MOD}+Shift+B)`, onClick: () => { void build(); } });
+    staleItem.set(stale ? { icon: "warning", kind: "warn", text: "Triggers edited outside the script", title: "What the next Apply does about it", onClick: () => showStale(true) } : null);
+    const renamed = renamedNow().length;
+    renamesItem.set(renamed ? { icon: "sync", kind: "warn", text: `${renamed} renamed`, title: "The map renamed things the script names", onClick: () => showRenames(true) } : null);
+    messageItem.set(status ? { text: status.text, busy: status.kind === "busy" } : !ready && !failed ? { text: "Loading the editor…", busy: true } : null);
+
+    buildItem.set(buildState ? { text: buildState.text, busy: buildState.kind === "busy", icon: buildState.kind === "error" ? "error" : "package", kind: buildState.kind === "error" ? "error" : undefined, title: "The last build of the programs. Click for its log", onClick: () => shell.showPanel("output") } : null);
+    // The library matters only to a script with programs: it is what builds them into the saved map.
+    const needsLibrary = programs > 0;
+    const libraryOk = !!library?.contribute && library.state() !== "failed";
+    libraryItem.set(!needsLibrary ? null : {
+      kind: libraryOk ? undefined : "warn",
+      icon: libraryOk ? undefined : "warning",
+      text: !library
+        ? "eudplib plugin not running"
+        : !library.contribute
+          ? "eudplib plugin older than 0.4"
+          : `eudplib ${library.versions.eudplib} · ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading…" : library.state() === "failed" ? "runtime failed" : "runtime downloads on the first save"}`,
+      title: !library
+        ? "The programs will not be built: install or turn on the eudplib plugin under Plugins ▸ Manage Plugins…"
+        : !library.contribute
+          ? "Update the eudplib plugin to build the programs"
+          : "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time",
+    });
+    programsItem.set(programs ? { text: `${programs === 1 ? "1 program" : `${programs} programs`} · Remastered`, title: "Programs are built into the saved map, which then needs StarCraft: Remastered. Click for the programs and their variables", onClick: () => { shell.toggleSidebar(true); programsSection.expand(); } } : null);
+
     renderFiles();
-    renderRenames();
-
-    problems.replaceChildren();
-    problems.className = "tsd-problems";
-    if (errors > 0) {
-      problems.hidden = false;
-      for (const d of diagnostics) {
-        problems.append(el("li", { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
-          el("span", { className: "where" }, `${Object.keys(files).length > 1 ? `${d.file}:` : ""}${d.line}:${d.column}`),
-          el("span", { className: "msg" }, d.message.split("\n")[0]),
-          el("span", { className: "src" }, d.source === "typescript" ? "types" : d.source === "script" ? "script" : "compiler"),
-        ));
-      }
-    } else if (simulation) {
-      problems.hidden = false;
-      problems.className = "tsd-problems tsd-run";
-      const { sim, programs: ps, result: r } = simulation;
-      const unit = "frame";
-      // Hand triggers' events (trigger interpreter) and the programs' (program interpreter), in time order.
-      const rows: { cycle: number; order: number; line: () => HTMLElement }[] = [];
-      sim.events.forEach((e, i) => {
-        const at = r.sources[e.trigger];
-        rows.push({ cycle: e.cycle, order: i, line: () => el("li", { title: `Trigger #${e.trigger + 1}`, onClick: () => { if (at) goTo(at.file, at.line); } },
-          el("span", { className: "where" }, `${unit} ${e.cycle + 1}`), el("span", { className: "msg" }, describeEvent(e)), el("span", { className: "src" }, where(at))) });
-      });
-      ps?.events.forEach((e, i) => {
-        rows.push({ cycle: e.cycle, order: sim.events.length + i, line: () => el("li", { title: `Program ${e.program + 1}`, onClick: () => goTo(e.at.file, e.at.line, e.at.column) },
-          el("span", { className: "where" }, `${unit} ${e.cycle + 1}`), el("span", { className: "msg" }, describeEvent(e)), el("span", { className: "src" }, where({ file: e.at.file, line: e.at.line }))) });
-      });
-      rows.sort((a, b) => a.cycle - b.cycle || a.order - b.order);
-      if (rows.length === 0) problems.append(el("li", undefined, el("span", { className: "where" }, "—"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} ${unit}s.`)));
-      for (const row of rows.slice(0, SIMULATE_ROWS)) problems.append(row.line());
-      if (rows.length > SIMULATE_ROWS) problems.append(el("li", undefined, el("span", { className: "where" }, "…"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));
-      const shownVars = new Set<string>();
-      for (const v of r.variables) {
-        if (shownVars.has(v.name)) continue;
-        shownVars.add(v.name);
-        const value = ps?.value(v.name);
-        const shown = value === undefined ? "?" : typeof value === "boolean" ? (value ? "true" : "false") : String(value);
-        problems.append(el("li", undefined,
-          el("span", { className: "where" }, "after"),
-          el("span", { className: "msg" }, `${v.name} = ${shown}`),
-          el("span", { className: "src" }, v.kind === "number" ? (v.bits ? `u${v.bits}` : "number") : "boolean"),
-        ));
-      }
-    } else {
-      problems.hidden = true;
-    }
-
-    const remastered = (result ? result.programs.length : state?.programs ?? 0) > 0 ? " · programs are built into the saved map, which needs StarCraft: Remastered" : "";
-    const line = status.text || (block
-      ? `${block.count} trigger${block.count === 1 ? "" : "s"} of the script at #${block.start + 1}${state?.unbuilt ? " · changes not applied yet: saving the map applies them" : ""}${remastered}`
-      : stale ? "The script's triggers were edited outside the script" : `Not applied yet: saving the map applies the script${remastered}`);
-    if (status.kind === "busy") statusLine.busy(line);
-    else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : undefined);
+    renderPrograms();
+    renderProblems();
+    renderSimulation();
+    showStale();
+    showRenames();
   };
 
   const applyResult = (r: CompileResult) => {
     diagnostics = r.diagnostics;
     result = r;
+    if (r.ok) outline = { programs: r.programs, variables: r.variables };
     simulation = null;
     if (editor && monaco) { setCompilerMarkers(monaco, files, diagnostics); editor.decorate(r.buildTime); refreshLineHints(); }
     render();
@@ -540,7 +629,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         if (!a || cancelled) return false;
         if (!a.compiled.ok || diagnostics.length) {
           const n = diagnostics.length || a.compiled.diagnostics.length;
-          setStatus("error", `Not applied: ${n} error${n === 1 ? "" : "s"}.`);
+          setStatus("error", `Not applied: ${n} problem${n === 1 ? "" : "s"} in the script.`, NOTICE_MS);
+          shell.showPanel("problems");
           return false;
         }
         const wasStale = svc.state()?.stale ?? false;
@@ -578,14 +668,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    */
   const test = async () => {
     if (building || testing || !ready) return;
-    if (!(await build())) return;
-    if (cancelled) return;
     testing = true;
     render();
     // The library's events say how the build of the programs went; the export itself falls back to the plain map without a word.
     let failure: string | null = null;
     const heard = svc.onBuild((e) => { if (e.kind === "failed") failure = e.from && e.from !== "trigscript" ? `${e.from}: ${e.message}` : e.message; });
     try {
+      if (!(await build()) || cancelled) return;
       setStatus("busy", "Building the map…");
       const file = await api.document.export({ format: "scx" });
       if (!file) { setStatus("error", "No map is open."); return; }
@@ -608,36 +697,36 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     }
   };
 
-  /** A build of the programs, whoever started it (Save, Test Map, Test): its log in the fold, a failure on its line. */
+  /** A build of the programs, whoever started it (Save, Test Map, Test): its state in the status bar, its log in Output, a failure on its line. */
   const onLibraryBuild = (e: EudplibBuildEvent) => {
     if (cancelled || (e.kind !== "log" && !e.contributors.includes("trigscript"))) return;
     if (e.kind === "start") {
-      buildLog = [];
-      eudFold.hidden = false;
-      eudFold.mark("…");
-      eudFold.set(`Build for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"} — ${new Date().toLocaleTimeString()}`);
-      eudFold.body.replaceChildren(buildLogEl);
-      buildLogEl.textContent = "";
+      streamed = 0;
+      shell.dismiss("build");
+      buildState = { kind: "busy", text: `Building for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}…` };
+      log(`Building the programs for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}`);
     } else if (e.kind === "log") {
-      buildLog.push(e.line);
-      buildLogEl.textContent = buildLog.join("\n");
+      streamed++;
+      log(e.line, false);
     } else if (e.kind === "done") {
-      eudFold.mark("✓", "ok");
-      buildLogEl.textContent = e.log || buildLog.join("\n");
-      eudFold.set(`Built: ${Math.round(e.chkBytes / 1024)} KB of scenario in ${(e.ms / 1000).toFixed(1)} s — ${new Date().toLocaleTimeString()}`);
+      if (!streamed && e.log) log(e.log, false);
+      const kb = Math.round(e.chkBytes / 1024), seconds = (e.ms / 1000).toFixed(1);
+      buildState = { kind: "ok", text: `Built ${kb} KB · ${seconds} s` };
+      log(`Built: ${kb} KB of scenario in ${seconds} s`);
     } else {
-      eudFold.mark("×", "error");
-      eudFold.open = true;
-      eudFold.set(`Build failed: ${e.message}`);
+      if (!streamed && e.log) log(e.log, false);
+      buildState = { kind: "error", text: "Build failed" };
+      log(`Build failed: ${e.message}`);
+      shell.notify({ key: "build", kind: "error", text: `The programs were not built: ${e.message}`, actions: [{ label: "Show the log", run: () => shell.showPanel("output") }] });
       const at = positionIn(e.message);
       if (at) {
         // The lowering named a node of the IR: the error lands on its line like a compiler error.
         diagnostics = [...diagnostics, { file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: e.message, source: "compiler" }];
         if (editor && monaco) setCompilerMarkers(monaco, files, diagnostics);
         goTo(at.file, at.line, at.column);
-        render();
       }
     }
+    render();
   };
 
   /** Move the hand-made triggers into the script (in their list order around the script's own) and rebuild from it. */
@@ -657,11 +746,9 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
           after.length ? printScript(after, ctx, { header: "" }).trimStart() : "",
         ].filter((s) => s !== "").join("\n");
     editor.set(ENTRY_FILE, text);
-    editor.show(ENTRY_FILE);
+    openFile(ENTRY_FILE);
     files = { ...files, [ENTRY_FILE]: text };
-    importing = true;
-    let ok = false;
-    try { ok = (await build(true)) !== false; } finally { importing = false; }
+    const ok = (await build(true)) !== false;
     const n = before.length + after.length;
     if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
   };
@@ -670,7 +757,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const simulateNow = async () => {
     const r = (await compileNow())?.compiled;
     if (!r) return;
-    if (!r.ok) { setStatus("error", `Not simulated: ${r.diagnostics.length} error${r.diagnostics.length === 1 ? "" : "s"}.`); return; }
+    if (!r.ok) { setStatus("error", `Not simulated: ${r.diagnostics.length} problem${r.diagnostics.length === 1 ? "" : "s"} in the script.`, NOTICE_MS); shell.showPanel("problems"); return; }
     try {
       // The programs run from the IR; the trigger() records through the trigger interpreter, sharing one world.
       const player = r.programs[0]?.owner;
@@ -679,7 +766,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       for (let i = 0; i < SIMULATE_FRAMES; i++) { sim.step(); programs?.step(); }
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
-      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran. Unit conditions (bring, command, …) count as false; wait takes no time.`);
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.`);
+      shell.showPanel("simulate");
     } catch (err) {
       setStatus("error", `Simulation stopped: ${(err as Error).message}`);
     }
@@ -757,8 +845,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const name = await askName("Name of the new file:", "helpers.ts");
     if (!name) return;
     editor.add(name, FILE_TEMPLATE);
-    renderFiles();
-    editor.editor.focus();
+    openFile(name);
   };
 
   const renameFile = async (path: string) => {
@@ -766,6 +853,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const name = await askName(`Rename ${path} to:`, path);
     if (!name) return;
     editor.rename(path, name);
+    openTabs = openTabs.map((p) => (p === path ? name : p));
     const next = { ...files };
     next[name] = next[path];
     delete next[path];
@@ -807,7 +895,52 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     check();
   };
 
-  const reveal = (file?: string, line?: number) => { if (line) goTo(file ?? ENTRY_FILE, line); else if (file) { editor?.show(file); renderFiles(); } };
+  const reveal = (file?: string, line?: number) => { if (line) goTo(file ?? ENTRY_FILE, line); else if (file) openFile(file); };
+
+  /* ── Commands ── */
+
+  /** Everything the workspace does, once: the keys, the More menu and Monaco's command palette are all read from here. */
+  interface Command { id: string; label: string; key?: { code: string; mod?: boolean; shift?: boolean }; context?: boolean; run(): void }
+  const commands: Command[] = [
+    // The editor's own Ctrl+S does not reach a map under a dialog, and a browser would offer to save the page.
+    { id: "save", label: "Save the Map", key: { code: "KeyS", mod: true }, run: () => { void api.document.save(); } },
+    { id: "test", label: "Test the Map", key: { code: "F5" }, run: () => { void test(); } },
+    { id: "simulate", label: "Simulate", key: { code: "F5", mod: true }, run: () => { void simulateNow(); } },
+    { id: "apply", label: "Apply the Script to the Map", key: { code: "KeyB", mod: true, shift: true }, run: () => { void build(); } },
+    { id: "pick", label: "Pick a Location or Unit from the Map", context: true, run: () => { void pickFromMap(); } },
+    { id: "import", label: "Import the Map's Triggers", run: () => { void importHand(); } },
+    { id: "newFile", label: "New File…", run: () => { void newFile(); } },
+    { id: "mode", label: mode === "dialog" ? "Open Beside the Map" : "Open in a Window", run: () => switchMode() },
+    { id: "problems", label: "Show Problems", key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
+    { id: "output", label: "Show Output", key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },
+    { id: "panel", label: "Toggle Panel", key: { code: "KeyJ", mod: true }, run: () => shell.togglePanel() },
+    { id: "explorer", label: "Toggle Explorer", key: { code: "KeyB", mod: true }, run: () => shell.toggleSidebar() },
+  ];
+  const keysOf = (c: Command) => (c.key ? `${c.key.mod ? `${MOD}+` : ""}${c.key.shift ? "Shift+" : ""}${c.key.code.replace(/^Key/, "")}` : undefined);
+  const menuItem = (id: string) => {
+    const c = commands.find((x) => x.id === id)!;
+    return { label: c.label, keys: keysOf(c), disabled: !ready, run: c.run };
+  };
+  const palette = () => { editor?.editor.focus(); editor?.editor.trigger("trigscript", "editor.action.quickCommand", null); };
+
+  /**
+   * The keys, wherever in the workspace the focus is — the Explorer, the panel, Monaco.
+   * Taken on the way down and stopped, so neither Monaco (which knows the same keys, for
+   * the palette to list) nor the editor's own hotkeys act on them a second time.
+   */
+  const onKey = (e: KeyboardEvent) => {
+    if (e.altKey) return;
+    const mod = e.ctrlKey || e.metaKey;
+    // F1 is the editor's list of shortcuts outside the workspace; inside it, it is the palette, as it is in VS Code.
+    const c = (mod && e.shiftKey && e.code === "KeyP") || (!mod && !e.shiftKey && e.code === "F1")
+      ? { run: palette }
+      : commands.find((x) => x.key && x.key.code === e.code && !!x.key.mod === mod && !!x.key.shift === e.shiftKey);
+    if (!c) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (ready) c.run();
+  };
+  root.addEventListener("keydown", onKey, true);
 
   const attach = (close: () => void) => {
     render();
@@ -834,11 +967,37 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         setMapRefs(m, mapRefs);
         // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
         loadingCover.done();
+        // Monaco's stylesheet brought the icons' font.
+        shell.ready();
         editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
           files = { ...files, [path]: text };
           svc.writeFiles(files);
           check();
         });
+        const code = editor.editor;
+        for (const c of commands) {
+          code.addAction({
+            id: `trigscript.${c.id}`,
+            label: `TrigScript: ${c.label}`,
+            keybindings: c.key ? [(c.key.mod ? m.KeyMod.CtrlCmd : 0) | (c.key.shift ? m.KeyMod.Shift : 0) | m.KeyCode[c.key.code as keyof typeof m.KeyCode]] : undefined,
+            ...(c.context ? { contextMenuGroupId: "navigation", contextMenuOrder: 9 } : {}),
+            run: () => c.run(),
+          });
+        }
+        code.onDidChangeCursorPosition(renderCursor);
+        code.onDidChangeModel(() => { renderFiles(); renderCursor(); });
+        // Go to Definition on a name another file exports goes to that file, in its tab.
+        subs.push(m.editor.registerEditorOpener({
+          openCodeEditor(_source, resource, at) {
+            const path = normalizePath(resource.path.replace(/^\/+/, ""));
+            if (resource.scheme !== "file" || files[path] === undefined) return false;
+            const line = at ? ("startLineNumber" in at ? at.startLineNumber : at.lineNumber) : 1;
+            const column = at ? ("startColumn" in at ? at.startColumn : at.column) : 1;
+            goTo(path, line, column);
+            return true;
+          },
+        }));
+        renderCursor();
         // A fresh script's template is the map's from now on.
         if (fresh) svc.writeFiles(files);
         reveal(options.file, options.line);
@@ -848,12 +1007,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         check();
         if (options.pick) void pickFromMap();
       },
-      (err: Error) => { if (!cancelled) { loadingCover.done(); problemsCount.textContent = ""; setStatus("error", `The editor failed to load: ${err.message}`); } },
+      (err: Error) => { if (!cancelled) { loadingCover.done(); failed = true; setStatus("error", `The editor failed to load: ${err.message}`); } },
     );
     return () => {
       cancelled = true;
       loadingCover.done();
       if (timer !== null) clearTimeout(timer);
+      if (statusTimer !== null) clearTimeout(statusTimer);
+      root.removeEventListener("keydown", onKey, true);
+      shell.dispose();
       editor?.dispose();
       editor = null;
       if (monaco) releaseScriptEditor(monaco);
@@ -865,9 +1027,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   return {
     root,
-    host: hostEl,
     attach,
-    build: async () => (await build()) !== false,
     reveal,
     cursor: () => editor?.cursor() ?? null,
   };

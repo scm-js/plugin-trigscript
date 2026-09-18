@@ -4621,7 +4621,32 @@ function configure(monaco) {
       "scrollbarSlider.background": "#353c4b80",
       "scrollbarSlider.hoverBackground": "#3b4453a0",
       "editorGutter.background": "#0a0c10",
-      "minimap.background": "#0a0c10"
+      "minimap.background": "#0a0c10",
+      // The command palette, Go to Line and the context menu are Monaco's own widgets; the workspace around them is tokens.css.
+      "focusBorder": "#3a68a8",
+      "widget.shadow": "#000000a0",
+      "input.background": "#0a0c10",
+      "input.foreground": "#dde2ea",
+      "input.border": "#2c3341",
+      "quickInput.background": "#191d25",
+      "quickInput.foreground": "#dde2ea",
+      "quickInputList.focusBackground": "#2b4f80",
+      "quickInputList.focusForeground": "#dde2ea",
+      "list.hoverBackground": "#222732",
+      "list.highlightForeground": "#e6b95c",
+      "list.focusHighlightForeground": "#f4d08a",
+      "pickerGroup.border": "#2c3341",
+      "pickerGroup.foreground": "#99a2b3",
+      "keybindingLabel.background": "#222732",
+      "keybindingLabel.foreground": "#dde2ea",
+      "keybindingLabel.border": "#3b4453",
+      "keybindingLabel.bottomBorder": "#3b4453",
+      "menu.background": "#191d25",
+      "menu.foreground": "#dde2ea",
+      "menu.selectionBackground": "#2b4f80",
+      "menu.selectionForeground": "#dde2ea",
+      "menu.separatorBackground": "#2c3341",
+      "menu.border": "#3b4453"
     }
   });
 }
@@ -4911,7 +4936,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "3.0.0";
+var VERSION = "3.1.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -6239,6 +6264,462 @@ function readManifestBytes(api) {
   return null;
 }
 
+// shell.ts
+var ICONS = {
+  play: "eb2c",
+  check: "eab2",
+  beaker: "ea79",
+  target: "ebf8",
+  ellipsis: "ea7c",
+  "new-file": "ea7f",
+  edit: "ea73",
+  trash: "ea81",
+  close: "ea76",
+  error: "ea87",
+  warning: "ea6c",
+  info: "ea74",
+  "chevron-down": "eab4",
+  "chevron-right": "eab6",
+  "screen-full": "eb4c",
+  "multiple-windows": "eb23",
+  sync: "ea77",
+  loading: "eb19",
+  pass: "eba4",
+  "symbol-variable": "ea88",
+  "symbol-method": "ea8c",
+  "clear-all": "eabf",
+  "circle-filled": "ea71",
+  package: "eb29"
+};
+var DEFAULT_LAYOUT = { sidebar: true, sidebarWidth: 180, panel: false, panelHeight: 180, panelView: "problems" };
+var COMPACT_LAYOUT = { sidebar: true, sidebarWidth: 136, panel: false, panelHeight: 130, panelView: "problems" };
+var SIDEBAR_MIN = 100;
+var SIDEBAR_MAX = 420;
+var PANEL_MIN = 64;
+var SHELL_STYLE = `
+.tsd { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; background: var(--bg-0); color: var(--text); font-family: var(--font-ui); font-size: var(--fs-md); user-select: none; }
+.tsd button { font: inherit; color: inherit; }
+.tsd-i { display: inline-block; flex: none; font: normal normal normal 16px/1 codicon; text-align: center; -webkit-font-smoothing: antialiased; }
+.tsd:not(.tsd-ready) .tsd-i { visibility: hidden; }
+${Object.entries(ICONS).map(([name, code]) => `.tsd-i-${name}::before { content: "\\${code}"; }`).join("\n")}
+.tsd-spin { animation: tsd-spin 1.2s steps(30) infinite; }
+@keyframes tsd-spin { to { transform: rotate(360deg); } }
+
+.tsd-body { flex: 1; min-height: 0; display: flex; }
+.tsd-sidebar { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg-1); overflow: hidden; }
+.tsd-sidebar-title { flex: none; height: 32px; display: flex; align-items: center; padding: 0 12px 0 16px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); }
+.tsd-sections { flex: 1; min-height: 0; overflow: auto; }
+.tsd-section-head { display: flex; align-items: center; gap: 2px; height: 22px; padding: 0 6px 0 2px; border-top: 1px solid var(--border); font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text); cursor: pointer; }
+.tsd-section-head .tsd-grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tsd-section-head .tsd-icon-button { visibility: hidden; }
+.tsd-section:hover .tsd-icon-button, .tsd-section:focus-within .tsd-icon-button { visibility: visible; }
+.tsd-section.tsd-collapsed .tsd-section-body { display: none; }
+.tsd-section-body { padding-bottom: 6px; }
+.tsd-rows { margin: 0; padding: 0; list-style: none; }
+.tsd-row { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 6px 0 20px; color: var(--text-dim); white-space: nowrap; cursor: pointer; }
+.tsd-row.tsd-child { padding-left: 34px; }
+.tsd-row:hover { background: var(--bg-3); color: var(--text); }
+.tsd-row.tsd-active { background: var(--bg-4); color: var(--text); }
+.tsd-row .tsd-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.tsd-row .tsd-about { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); font-size: var(--fs-sm); }
+.tsd-row .tsd-problem, .tsd-tab .tsd-problem { color: var(--danger); }
+.tsd-row .tsd-count { flex: none; margin-left: auto; color: var(--danger); font-size: var(--fs-sm); }
+.tsd-row .tsd-icon-button { display: none; margin-left: 0; }
+.tsd-row .tsd-row-actions { display: flex; margin-left: auto; }
+.tsd-row:hover .tsd-icon-button, .tsd-row.tsd-active .tsd-icon-button { display: inline-flex; }
+.tsd-row .tsd-i { font-size: 14px; }
+.tsd-ts { flex: none; font-size: 9px; font-weight: 700; letter-spacing: -0.02em; color: var(--sel-hi); }
+
+.tsd-icon-button { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: none; border-radius: var(--radius-lg); background: none; color: var(--text-dim); cursor: pointer; }
+.tsd-icon-button:hover:not(:disabled) { background: var(--bg-4); color: var(--text); }
+.tsd-icon-button:disabled { opacity: 0.4; cursor: default; }
+.tsd-icon-button:focus-visible { outline: none; box-shadow: var(--focus); }
+
+.tsd-sash { flex: none; position: relative; z-index: 3; background: var(--border); }
+.tsd-sash::after { content: ""; position: absolute; transition: background 0.1s 0.2s; }
+.tsd-sash:hover::after, .tsd-sash.tsd-dragging::after { background: var(--sel-hi); }
+.tsd-sash-v { width: 1px; cursor: ew-resize; }
+.tsd-sash-v::after { top: 0; bottom: 0; left: -2px; width: 5px; }
+.tsd-sash-h { height: 1px; cursor: ns-resize; }
+.tsd-sash-h::after { left: 0; right: 0; top: -2px; height: 5px; }
+
+.tsd-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.tsd-titlebar { flex: none; display: flex; align-items: stretch; height: 33px; background: var(--bg-2); border-bottom: 1px solid var(--border); }
+.tsd-tabs { flex: 1; min-width: 0; display: flex; overflow-x: auto; scrollbar-width: none; }
+.tsd-tabs::-webkit-scrollbar { display: none; }
+.tsd-tab { flex: none; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px; border-right: 1px solid var(--border); border-top: 1px solid transparent; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
+.tsd-tab:hover { color: var(--text); }
+.tsd-tab.tsd-active { background: var(--bg-0); color: var(--text); border-top-color: var(--gold); margin-bottom: -1px; padding-bottom: 1px; }
+.tsd-tab .tsd-icon-button { width: 20px; height: 20px; visibility: hidden; }
+.tsd-tab .tsd-icon-button .tsd-i { font-size: 14px; }
+.tsd-tab:hover .tsd-icon-button, .tsd-tab.tsd-active .tsd-icon-button { visibility: visible; }
+.tsd-tab .tsd-pad { width: 6px; }
+.tsd-actions { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; }
+.tsd-editor { flex: 1; min-height: 0; position: relative; }
+
+.tsd-panel-area { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg-1); }
+.tsd-panel-head { flex: none; display: flex; align-items: center; height: 30px; padding: 0 8px 0 4px; }
+.tsd-panel-tabs { flex: 1; min-width: 0; display: flex; gap: 2px; overflow: hidden; }
+.tsd-panel-tab { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: none; background: none; font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--text-dim); cursor: pointer; border-bottom: 1px solid transparent; }
+.tsd-panel-tab:hover { color: var(--text); }
+.tsd-panel-tab.tsd-active { color: var(--text); border-bottom-color: var(--gold); }
+.tsd-badge { min-width: 16px; padding: 1px 5px; border-radius: 9px; background: var(--bg-5); color: var(--text); font-size: 10px; line-height: 14px; text-align: center; }
+.tsd-panel-actions { flex: none; display: flex; gap: 2px; }
+.tsd-view { flex: 1; min-height: 0; overflow: auto; user-select: text; }
+.tsd-empty { padding: 6px 20px; color: var(--text-dim); }
+
+.tsd-statusbar { flex: none; display: flex; align-items: stretch; height: 22px; background: var(--bg-2); border-top: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text-dim); overflow: hidden; }
+.tsd-compact .tsd-statusbar { padding-right: 16px; }
+.tsd-status-left { flex: 1 1 auto; min-width: 0; display: flex; overflow: hidden; }
+.tsd-status-right { flex: 0 1 auto; display: flex; overflow: hidden; }
+.tsd-status-item { flex: none; display: flex; align-items: center; gap: 4px; padding: 0 7px; border: none; background: none; white-space: nowrap; cursor: default; }
+.tsd-status-item.tsd-shrink { flex: 0 1 auto; min-width: 0; }
+.tsd-status-item.tsd-shrink span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.tsd-status-item .tsd-i { font-size: 13px; }
+button.tsd-status-item { cursor: pointer; }
+button.tsd-status-item:hover { background: var(--bg-4); color: var(--text); }
+.tsd-status-item.tsd-warn { background: color-mix(in srgb, var(--warn) 22%, var(--bg-2)); color: var(--warn); }
+.tsd-status-item.tsd-error { color: var(--danger); }
+
+.tsd-notifications { position: absolute; right: 10px; bottom: 30px; z-index: 20; display: flex; flex-direction: column; gap: 6px; width: min(440px, calc(100% - 20px)); pointer-events: none; }
+.tsd-notification { pointer-events: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 8px 10px 10px; background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); user-select: text; }
+.tsd-notification-row { display: flex; align-items: flex-start; gap: 8px; }
+.tsd-notification-row .tsd-text { flex: 1; min-width: 0; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tsd-notification .tsd-i-info { color: var(--sel-hi); }
+.tsd-notification .tsd-i-warning { color: var(--warn); }
+.tsd-notification .tsd-i-error { color: var(--danger); }
+.tsd-notification-actions { display: flex; justify-content: flex-end; gap: 6px; padding-right: 2px; }
+.tsd-button { height: 24px; padding: 0 10px; border: none; border-radius: var(--radius); background: var(--bg-5); color: var(--text); cursor: pointer; }
+.tsd-button:hover { background: var(--border-strong); }
+.tsd-button.tsd-primary { background: var(--sel); }
+.tsd-button.tsd-primary:hover { background: var(--sel-hi); }
+
+.tsd-menu { position: absolute; z-index: 30; min-width: 220px; padding: 4px; background: var(--bg-2); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow-pop); }
+.tsd-menu button { display: flex; align-items: center; gap: 24px; width: 100%; height: 24px; padding: 0 10px 0 22px; border: none; border-radius: var(--radius); background: none; text-align: left; white-space: nowrap; cursor: pointer; }
+.tsd-menu button:hover:not(:disabled), .tsd-menu button:focus-visible { background: var(--sel); outline: none; }
+.tsd-menu button:disabled { color: var(--text-faint); cursor: default; }
+.tsd-menu .tsd-grow { flex: 1; }
+.tsd-menu .tsd-keys { color: var(--text-dim); font-size: var(--fs-sm); }
+.tsd-menu hr { margin: 4px 0; border: none; border-top: 1px solid var(--border); }
+`;
+function createShell(options) {
+  const { el } = options;
+  const layout = { ...options.layout };
+  const icon = (name, spin = false) => el("span", { className: `tsd-i tsd-i-${name}${spin ? " tsd-spin" : ""}`, ariaHidden: "true" });
+  const iconButton = (spec) => {
+    let name = spec.icon;
+    let busy2 = false;
+    const glyph = icon(name);
+    const element = el("button", { type: "button", className: "tsd-icon-button", title: spec.title, ariaLabel: spec.title, onClick: (e) => {
+      e.stopPropagation();
+      spec.run();
+    } }, glyph);
+    return {
+      element,
+      set(state) {
+        if (state.icon) name = state.icon;
+        if (state.busy !== void 0) busy2 = state.busy;
+        if (state.disabled !== void 0) element.disabled = state.disabled;
+        if (state.title !== void 0) {
+          element.title = state.title;
+          element.ariaLabel = state.title;
+        }
+        glyph.className = busy2 ? "tsd-i tsd-i-loading tsd-spin" : `tsd-i tsd-i-${name}`;
+      }
+    };
+  };
+  const tabsEl = el("div", { className: "tsd-tabs", role: "tablist" });
+  const actionsEl = el("div", { className: "tsd-actions" });
+  const editorHost = el("div", { className: "tsd-editor" });
+  const sectionsEl = el("div", { className: "tsd-sections" });
+  const sidebar = el("div", { className: "tsd-sidebar" }, el("div", { className: "tsd-sidebar-title" }, "Explorer"), sectionsEl);
+  const sidebarSash = el("div", { className: "tsd-sash tsd-sash-v" });
+  const panelTabs = el("div", { className: "tsd-panel-tabs", role: "tablist" });
+  const panelActions = el("div", { className: "tsd-panel-actions" });
+  const panelBody = el("div", { className: "tsd-view" });
+  const panelSash = el("div", { className: "tsd-sash tsd-sash-h" });
+  const panel = el("div", { className: "tsd-panel-area" }, el("div", { className: "tsd-panel-head" }, panelTabs, panelActions), panelBody);
+  const statusLeft = el("div", { className: "tsd-status-left" });
+  const statusRight = el("div", { className: "tsd-status-right" });
+  const notifications = el("div", { className: "tsd-notifications" });
+  const main = el(
+    "div",
+    { className: "tsd-main" },
+    el("div", { className: "tsd-titlebar" }, tabsEl, actionsEl),
+    editorHost,
+    panelSash,
+    panel
+  );
+  const root = el(
+    "div",
+    { className: options.compact ? "tsd tsd-compact" : "tsd" },
+    el("div", { className: "tsd-body" }, sidebar, sidebarSash, main),
+    el("div", { className: "tsd-statusbar", role: "status" }, statusLeft, statusRight),
+    notifications
+  );
+  const applyLayout = () => {
+    sidebar.hidden = sidebarSash.hidden = !layout.sidebar;
+    sidebar.style.width = `${layout.sidebarWidth}px`;
+    panel.hidden = panelSash.hidden = !layout.panel;
+    panel.style.height = `${layout.panelHeight}px`;
+  };
+  const saveLayout = () => options.onLayout({ ...layout });
+  const drag = (sash, start, move) => {
+    const down = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const from = start();
+      const x = e.clientX, y = e.clientY;
+      sash.setPointerCapture(e.pointerId);
+      sash.classList.add("tsd-dragging");
+      const onMove = (m) => {
+        move(from, m.clientX - x, m.clientY - y);
+        applyLayout();
+      };
+      const onUp = () => {
+        sash.classList.remove("tsd-dragging");
+        sash.removeEventListener("pointermove", onMove);
+        sash.removeEventListener("pointerup", onUp);
+        sash.removeEventListener("pointercancel", onUp);
+        saveLayout();
+      };
+      sash.addEventListener("pointermove", onMove);
+      sash.addEventListener("pointerup", onUp);
+      sash.addEventListener("pointercancel", onUp);
+    };
+    sash.addEventListener("pointerdown", down);
+  };
+  drag(sidebarSash, () => layout.sidebarWidth, (from, dx) => {
+    layout.sidebarWidth = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Math.min(root.clientWidth - 200, from + dx)));
+  });
+  drag(panelSash, () => layout.panelHeight, (from, _dx, dy) => {
+    layout.panelHeight = Math.max(PANEL_MIN, Math.min(main.clientHeight - 120, from - dy));
+  });
+  const views = /* @__PURE__ */ new Map();
+  const closePanel = iconButton({ icon: "close", title: "Hide the panel (Ctrl+J)", run: () => togglePanel() });
+  const showView = (id, announce = true) => {
+    const wanted = views.has(id) ? id : [...views.keys()][0];
+    if (!wanted) return;
+    layout.panelView = wanted;
+    for (const [key, v2] of views) {
+      v2.tab.classList.toggle("tsd-active", key === wanted);
+      v2.tab.ariaSelected = String(key === wanted);
+    }
+    const v = views.get(wanted);
+    panelBody.replaceChildren(v.body);
+    panelActions.replaceChildren(...v.actions, closePanel.element);
+    if (layout.panel && announce) v.onShow?.();
+  };
+  const showPanel = (id) => {
+    layout.panel = true;
+    applyLayout();
+    showView(id ?? layout.panelView);
+    saveLayout();
+  };
+  const togglePanel = (id) => {
+    if (layout.panel && (id === void 0 || id === layout.panelView)) {
+      layout.panel = false;
+      applyLayout();
+      saveLayout();
+      return;
+    }
+    showPanel(id);
+  };
+  let closeMenu = null;
+  const menu = (anchor, items) => {
+    closeMenu?.();
+    const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const box = el("div", { className: "tsd-menu", role: "menu" });
+    const close = () => {
+      if (closeMenu !== close) return;
+      closeMenu = null;
+      box.remove();
+      document.removeEventListener("pointerdown", outside, true);
+    };
+    const outside = (e) => {
+      if (!(e.target instanceof Node && box.contains(e.target))) close();
+    };
+    for (const item of items) {
+      if (!item) {
+        box.append(el("hr"));
+        continue;
+      }
+      box.append(el(
+        "button",
+        { type: "button", role: "menuitem", disabled: !!item.disabled, onClick: () => {
+          close();
+          item.run();
+        } },
+        el("span", { className: "tsd-grow" }, item.label),
+        item.keys ? el("span", { className: "tsd-keys" }, item.keys) : void 0
+      ));
+    }
+    box.addEventListener("keydown", (e) => {
+      const buttons = [...box.querySelectorAll("button:not(:disabled)")];
+      const at = buttons.indexOf(document.activeElement);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+        back?.focus();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        buttons[(at + 1) % buttons.length]?.focus();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        buttons[(at - 1 + buttons.length) % buttons.length]?.focus();
+      }
+    });
+    root.append(box);
+    const r = anchor.getBoundingClientRect();
+    const o = root.getBoundingClientRect();
+    box.style.top = `${r.bottom - o.top + 2}px`;
+    box.style.left = `${Math.max(4, Math.min(r.right - o.left - box.offsetWidth, o.width - box.offsetWidth - 4))}px`;
+    closeMenu = close;
+    document.addEventListener("pointerdown", outside, true);
+    box.querySelector("button:not(:disabled)")?.focus();
+  };
+  const shown = /* @__PURE__ */ new Map();
+  const dismiss = (key) => {
+    const n = shown.get(key);
+    if (!n) return;
+    if (n.timer !== null) clearTimeout(n.timer);
+    n.element.remove();
+    shown.delete(key);
+  };
+  const notify = (spec) => {
+    dismiss(spec.key);
+    const element = el(
+      "div",
+      { className: "tsd-notification", role: spec.kind === "error" ? "alert" : "status" },
+      el(
+        "div",
+        { className: "tsd-notification-row" },
+        icon(spec.kind === "warn" ? "warning" : spec.kind),
+        el("span", { className: "tsd-text" }, spec.text),
+        iconButton({ icon: "close", title: "Dismiss", run: () => dismiss(spec.key) }).element
+      ),
+      spec.actions?.length ? el("div", { className: "tsd-notification-actions" }, ...spec.actions.map((a2) => el("button", { type: "button", className: a2.primary ? "tsd-button tsd-primary" : "tsd-button", onClick: () => {
+        if (!a2.keep) dismiss(spec.key);
+        a2.run();
+      } }, a2.label))) : void 0
+    );
+    notifications.append(element);
+    shown.set(spec.key, { element, timer: spec.timeout ? setTimeout(() => dismiss(spec.key), spec.timeout) : null });
+  };
+  applyLayout();
+  return {
+    root,
+    editorHost,
+    ready: () => root.classList.add("tsd-ready"),
+    icon: (name) => icon(name),
+    iconButton,
+    setTabs(tabs, active) {
+      tabsEl.replaceChildren(...tabs.map((t) => {
+        const on = t.id === active;
+        const tab = el(
+          "div",
+          {
+            className: on ? "tsd-tab tsd-active" : "tsd-tab",
+            role: "tab",
+            ariaSelected: String(on),
+            title: t.title ?? t.label,
+            onClick: () => options.onTabSelect(t.id),
+            // The middle button closes a tab, as it does everywhere else.
+            onAuxClick: (e) => {
+              if (e.button === 1 && t.closable) {
+                e.preventDefault();
+                options.onTabClose(t.id);
+              }
+            }
+          },
+          el("span", { className: "tsd-ts" }, "TS"),
+          el("span", { className: t.problems ? "tsd-problem" : void 0 }, t.problems ? `${t.label} ${t.problems}` : t.label),
+          t.closable ? iconButton({ icon: "close", title: "Close", run: () => options.onTabClose(t.id) }).element : el("span", { className: "tsd-pad" })
+        );
+        if (on) queueMicrotask(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
+        return tab;
+      }));
+    },
+    action(spec) {
+      const handle = iconButton(spec);
+      actionsEl.append(handle.element);
+      return handle;
+    },
+    section(spec) {
+      const body2 = el("div", { className: "tsd-section-body" });
+      const chevron = icon("chevron-down");
+      const section = el("div", { className: "tsd-section" });
+      const head = el(
+        "div",
+        { className: "tsd-section-head", role: "button", tabIndex: 0, ariaExpanded: "true" },
+        chevron,
+        el("span", { className: "tsd-grow" }, spec.title),
+        ...(spec.actions ?? []).map((a2) => iconButton(a2).element)
+      );
+      const setCollapsed = (collapsed) => {
+        section.classList.toggle("tsd-collapsed", collapsed);
+        chevron.className = `tsd-i tsd-i-${collapsed ? "chevron-right" : "chevron-down"}`;
+        head.ariaExpanded = String(!collapsed);
+      };
+      head.addEventListener("click", () => setCollapsed(!section.classList.contains("tsd-collapsed")));
+      head.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          head.click();
+        }
+      });
+      section.append(head, body2);
+      sectionsEl.append(section);
+      return { body: body2, setHidden: (hidden) => {
+        section.hidden = hidden;
+      }, expand: () => setCollapsed(false) };
+    },
+    toggleSidebar(show) {
+      layout.sidebar = show ?? !layout.sidebar;
+      applyLayout();
+      saveLayout();
+    },
+    view(spec) {
+      const badge = el("span", { className: "tsd-badge", hidden: true });
+      const tab = el("button", { type: "button", className: "tsd-panel-tab", role: "tab", onClick: () => showPanel(spec.id) }, spec.title, badge);
+      const body2 = el("div");
+      views.set(spec.id, { tab, badge, body: body2, actions: (spec.actions ?? []).map((a2) => iconButton(a2).element), onShow: spec.onShow });
+      panelTabs.append(tab);
+      if (views.size === 1 || spec.id === layout.panelView) showView(spec.id, false);
+      return { body: body2, badge: (count) => {
+        badge.hidden = !count;
+        badge.textContent = count ? String(count) : "";
+      } };
+    },
+    showPanel,
+    togglePanel,
+    statusItem(side) {
+      const slot = el("span", { hidden: true, style: "display: contents" });
+      (side === "left" ? statusLeft : statusRight).append(slot);
+      return {
+        set(state) {
+          slot.hidden = !state;
+          if (!state) {
+            slot.replaceChildren();
+            return;
+          }
+          const kind = state.kind ? ` tsd-${state.kind}` : "";
+          const children = [state.busy ? icon("loading", true) : state.icon ? icon(state.icon) : void 0, state.text ? el("span", void 0, state.text) : void 0];
+          slot.replaceChildren(state.onClick ? el("button", { type: "button", className: `tsd-status-item${kind}`, title: state.title ?? "", onClick: state.onClick }, ...children) : el("span", { className: `tsd-status-item tsd-shrink${kind}`, title: state.title ?? state.text }, ...children));
+        }
+      };
+    },
+    notify,
+    dismiss,
+    menu,
+    dispose() {
+      closeMenu?.();
+      for (const key of [...shown.keys()]) dismiss(key);
+    }
+  };
+}
+
 // editor.ts
 var TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
 // one trigger of the map, in order; code inside program(() => { \u2026 }) runs in the game.
@@ -6275,45 +6756,23 @@ var FILE_TEMPLATE = `import { trigger, units, locations, P1 } from "trigscript";
 var SIMULATE_FRAMES = 480;
 var SIMULATE_ROWS = 200;
 var CHECK_DELAY_MS = 350;
+var OUTPUT_LINES = 2e3;
+var STATUS_MS = 1e4;
+var NOTICE_MS = 8e3;
+var MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl";
 var PANEL_WIDTH = 760;
 var PANEL_HEIGHT = 540;
-var STYLE = `
-.tsd { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
-.tsd .tsd-editor { flex: 1; min-height: 0; display: flex; border: 1px solid var(--border); box-shadow: var(--bevel-sunken); border-radius: var(--radius); overflow: hidden; background: var(--bg-0); }
-.tsd .tsd-side { flex: none; width: 168px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--bg-1); }
-.tsd.tsd-panel .tsd-side { width: 132px; }
-.tsd .tsd-files { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 4px 0; list-style: none; font-family: var(--font-mono); font-size: var(--fs-sm); }
-.tsd .tsd-files li { display: flex; align-items: center; gap: 4px; padding: 3px 6px 3px 10px; cursor: pointer; color: var(--text-dim); white-space: nowrap; }
-.tsd .tsd-files li:hover { background: var(--bg-3); }
-.tsd .tsd-files li.active { background: var(--bg-0); color: var(--text); }
-.tsd .tsd-files li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-.tsd .tsd-files li .name.problem { color: var(--danger); }
-.tsd .tsd-files li button { flex: none; border: none; background: none; padding: 0 3px; font: inherit; color: var(--text-faint); cursor: pointer; visibility: hidden; }
-.tsd .tsd-files li.active button { visibility: visible; }
-.tsd .tsd-files li button:hover { color: var(--text); }
-.tsd .tsd-side .tsd-new { margin: 4px 6px 6px; }
-.tsd .tsd-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.tsd .tsd-host { flex: 1; min-height: 0; }
-.tsd .tsd-problems { flex: none; max-height: 132px; overflow: auto; margin: 0; padding: 2px 0; list-style: none; border-top: 1px solid var(--border); background: var(--bg-1); font-family: var(--font-mono); font-size: var(--fs-sm); }
-.tsd.tsd-panel .tsd-problems { max-height: 96px; }
-.tsd .tsd-problems li { display: flex; gap: 10px; padding: 2px 10px; cursor: pointer; align-items: baseline; }
-.tsd .tsd-problems li:hover { background: var(--bg-3); }
-.tsd .tsd-problems .where { flex: none; min-width: 48px; color: var(--text-faint); }
-.tsd .tsd-problems .msg { flex: 1; color: var(--danger); white-space: pre-wrap; }
-.tsd .tsd-problems .src { flex: none; color: var(--text-faint); font-size: var(--fs-xs); text-transform: uppercase; }
-.tsd .tsd-run .msg { color: var(--text); }
-.tsd .tsd-run li { cursor: default; }
-.tsd .tsd-program { border: none; background: none; padding: 0; font: inherit; font-size: var(--fs-sm); color: var(--gold); cursor: pointer; }
-.tsd .tsd-program:hover { text-decoration: underline; }
-.tsd .tsd-variables { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-1); }
-.tsd .tsd-variables .internal { color: var(--text-faint); }
-.tsd .tsd-notice { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: color-mix(in srgb, var(--warn) 10%, var(--bg-2)); border-radius: var(--radius); color: var(--warn); font-size: var(--fs-sm); }
-.tsd .tsd-notice .grow { flex: 1; }
-.tsd .tsd-mode { margin-left: 4px; }
-.tsd .tsd-target { margin-left: 4px; }
-.tsd .tsd-library { font-size: var(--fs-xs); color: var(--text-faint); white-space: nowrap; }
-.tsd .tsd-eud { margin: 0; }
-.tsd .tsd-eud pre { max-height: 160px; overflow: auto; margin: 4px 0 0; padding: 4px 8px; font-family: var(--font-mono); font-size: var(--fs-xs); background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--radius); white-space: pre-wrap; }
+var STYLE = `${SHELL_STYLE}
+.tsd .tsd-list { margin: 0; padding: 2px 0; list-style: none; font-size: var(--fs-md); }
+.tsd .tsd-list li { display: flex; align-items: baseline; gap: 8px; padding: 2px 12px 2px 20px; line-height: 18px; cursor: pointer; }
+.tsd .tsd-list li:hover { background: var(--bg-3); }
+.tsd .tsd-list li.tsd-plain { cursor: default; }
+.tsd .tsd-list .tsd-i { align-self: center; font-size: 14px; color: var(--danger); }
+.tsd .tsd-list .msg { flex: 0 1 auto; min-width: 0; white-space: pre-wrap; }
+.tsd .tsd-list .src, .tsd .tsd-list .where { flex: none; color: var(--text-faint); font-size: var(--fs-sm); }
+.tsd .tsd-list .frame { flex: none; min-width: 72px; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-sm); }
+.tsd .tsd-list .note { color: var(--text-dim); }
+.tsd .tsd-output { margin: 0; padding: 4px 20px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 function ownerLabel(p) {
@@ -6350,20 +6809,15 @@ function openScriptEditor(svc, options = {}) {
       title: "TrigScript",
       size: "full",
       tall: true,
-      // Escape inside the editor dismisses its own popups (suggestions, parameter hints); it must not close the dialog.
-      keepOpenOnEscape: (target) => target instanceof Node && ws.host.contains(target),
+      // The workspace is the whole dialog, edge to edge, with its own status bar for a footer.
+      flush: true,
+      buttons: [],
+      // Escape inside the workspace dismisses its own popups (suggestions, a menu, the palette); it must not close the dialog.
+      keepOpenOnEscape: (target) => target instanceof Node && ws.root.contains(target),
       mount(body2, dialog) {
         body2.append(ws.root);
         return ws.attach(() => dialog.close());
-      },
-      buttons: [
-        { label: "Apply & Close", primary: true, run: async () => await ws.build() ? void 0 : false },
-        { label: "Close" },
-        // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
-        { label: "Apply", closes: false, run: async () => {
-          await ws.build();
-        } }
-      ]
+      }
     });
     current = { mode, isOpen: () => handle.isOpen(), close: () => handle.close(), reveal: ws.reveal, cursor: ws.cursor };
   } else {
@@ -6372,6 +6826,7 @@ function openScriptEditor(svc, options = {}) {
       width: PANEL_WIDTH,
       height: PANEL_HEIGHT,
       resizable: true,
+      flush: true,
       mount(body2, panel) {
         body2.append(ws.root);
         return ws.attach(() => panel.close());
@@ -6392,265 +6847,365 @@ function createWorkspace(svc, options, mode) {
   let monaco = null;
   let timer = null;
   let ready = false;
+  let failed = false;
   let building = false;
-  let importing = false;
   let picking = false;
   let diagnostics = [];
   let result = null;
   let simulation = null;
-  let showVariables = false;
+  let outline = null;
   let library = svc.library();
   let testing = false;
   let cancelled = false;
   let renames = [];
   let appendInstead = false;
-  const style = el("style", void 0, STYLE);
-  const buildButton = w.button("Apply", { onClick: () => {
-    void build();
-  } });
-  buildButton.title = "Run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list";
-  const importButton = w.button("Import map triggers", { onClick: () => {
-    void importHand();
-  } });
-  importButton.title = "Rewrite the map's hand-made triggers as script, appended around the block, and apply it";
-  const simulateButton = w.button("Simulate", { onClick: () => {
-    void simulateNow();
-  } });
-  simulateButton.title = `Run the script's triggers and programs for ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} seconds of the game) in a built-in interpreter and list what happened`;
-  const pickButton = w.button("Pick from map", { ghost: true, onClick: () => {
-    void pickFromMap();
-  } });
-  pickButton.title = "Click a location or a unit on the map to put its name at the cursor";
-  const testButton = w.button("Test", { onClick: () => {
+  const layoutKey = mode === "panel" ? "layout.panel" : "layout.dialog";
+  const shell = createShell({
+    el,
+    compact: mode === "panel",
+    layout: { ...mode === "panel" ? COMPACT_LAYOUT : DEFAULT_LAYOUT, ...api.storage.get(layoutKey, {}) },
+    onLayout: (layout) => {
+      api.storage.set(layoutKey, layout);
+    },
+    onTabSelect: (id) => openFile(id),
+    onTabClose: (id) => closeTab(id)
+  });
+  const root = shell.root;
+  root.prepend(el("style", void 0, STYLE));
+  const hostEl = shell.editorHost;
+  const testAction = shell.action({ icon: "play", title: `Test (F5): apply the script, build the map as Save would and hand it to Test Map`, run: () => {
     void test();
   } });
-  testButton.title = "Apply the script, build the map as Save would and hand it to Test Map";
-  const libraryLine = el("span", { className: "tsd-library" });
-  const modeButton = w.button(mode === "dialog" ? "Beside the map" : "In a window", { ghost: true, onClick: () => switchMode() });
-  modeButton.className += " tsd-mode";
-  modeButton.title = mode === "dialog" ? "Open the script as a panel beside the map, so the map stays in reach" : "Open the script in a full-screen window";
-  const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "The programs' variables", onClick: () => {
-    showVariables = !showVariables;
-    render();
+  const simulateAction = shell.action({ icon: "beaker", title: `Simulate (${MOD}+F5): run the script's triggers and programs for ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} seconds of the game) in a built-in interpreter and list what happened`, run: () => {
+    void simulateNow();
   } });
-  const problemsCount = el("span", { className: "hint" }, "");
-  const variables = el("div", { className: "tsd-variables", hidden: true });
-  const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale });
-  const eudFold = w.fold({ text: "Build", className: "tsd-eud" });
-  eudFold.hidden = true;
-  const buildLogEl = el("pre", {});
-  let buildLog = [];
-  const renameNotice = el("div", { className: "tsd-notice tsd-renames", hidden: true });
-  const hostEl = el("div", { className: "tsd-host" });
-  const problems = el("ul", { className: "tsd-problems", hidden: true });
-  const fileList = el("ul", { className: "tsd-files" });
-  const newButton = w.button("New file", { ghost: true, onClick: () => {
+  const applyAction = shell.action({ icon: "check", title: `Apply (${MOD}+Shift+B): run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list`, run: () => {
+    void build();
+  } });
+  const pickAction = shell.action({ icon: "target", title: "Pick from map: click a location or a unit on the map to put its name at the cursor", run: () => {
+    void pickFromMap();
+  } });
+  shell.action(mode === "dialog" ? { icon: "multiple-windows", title: "Beside the map: open the script as a panel, so the map stays in reach", run: () => switchMode() } : { icon: "screen-full", title: "In a window: open the script full-screen", run: () => switchMode() });
+  const moreAction = shell.action({ icon: "ellipsis", title: "More actions\u2026", run: () => shell.menu(moreAction.element, [
+    menuItem("save"),
+    null,
+    ...["import", "newFile"].map(menuItem),
+    null,
+    ...["problems", "output", "panel", "explorer"].map(menuItem),
+    null,
+    { label: "Command Palette\u2026", keys: "F1", disabled: !ready, run: () => palette() }
+  ]) });
+  const fileList = el("ul", { className: "tsd-rows" });
+  shell.section({ title: "Script", actions: [{ icon: "new-file", title: 'New file\u2026: main.ts imports it with import { \u2026 } from "./name"', run: () => {
     void newFile();
-  } });
-  newButton.className += " tsd-new";
-  newButton.title = 'Add a file to the script; main.ts imports it with import { \u2026 } from "./name"';
-  const statusLine = w.statusLine();
-  const root = el(
-    "div",
-    { className: mode === "panel" ? "tsd tsd-panel" : "tsd" },
-    style,
-    el("div", { className: "row" }, buildButton, testButton, importButton, simulateButton, pickButton, libraryLine, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
-    variables,
-    notice,
-    eudFold,
-    renameNotice,
-    el(
-      "div",
-      { className: "tsd-editor" },
-      el("div", { className: "tsd-side" }, fileList, newButton),
-      el("div", { className: "tsd-main" }, hostEl, problems)
-    ),
-    statusLine
-  );
-  let status = { kind: "info", text: "" };
-  const setStatus = (kind, text) => {
-    status = { kind, text };
+  } }] }).body.append(fileList);
+  const programList = el("ul", { className: "tsd-rows" });
+  const programsSection = shell.section({ title: "Programs" });
+  programsSection.body.append(programList);
+  programsSection.setHidden(true);
+  const problemsView = shell.view({ id: "problems", title: "Problems" });
+  const outputEl = el("pre", { className: "tsd-output" });
+  const outputView = shell.view({ id: "output", title: "Output", onShow: () => renderOutput(true), actions: [{ icon: "clear-all", title: "Clear the output", run: () => {
+    output = [];
+    renderOutput();
+  } }] });
+  const simulateView = shell.view({ id: "simulate", title: "Simulate" });
+  const problemsItem = shell.statusItem("left");
+  const blockItem = shell.statusItem("left");
+  const staleItem = shell.statusItem("left");
+  const renamesItem = shell.statusItem("left");
+  const messageItem = shell.statusItem("left");
+  const buildItem = shell.statusItem("right");
+  const libraryItem = shell.statusItem("right");
+  const programsItem = shell.statusItem("right");
+  const cursorItem = shell.statusItem("right");
+  let openTabs = [normalizePath(options.file ?? ENTRY_FILE)];
+  let output = [];
+  let buildState = null;
+  let streamed = 0;
+  const renderOutput = (toEnd = false) => {
+    if (output.length === 0) {
+      outputView.body.replaceChildren(el("div", { className: "tsd-empty" }, "What Apply, Test and the builds of the programs report is kept here."));
+      return;
+    }
+    const scroller = outputView.body.parentElement;
+    const atEnd = toEnd || !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+    outputEl.textContent = output.join("\n");
+    if (outputEl.parentElement !== outputView.body) outputView.body.replaceChildren(outputEl);
+    if (scroller && atEnd) scroller.scrollTop = scroller.scrollHeight;
+  };
+  const log = (text, stamped = true) => {
+    output.push(stamped ? `[${(/* @__PURE__ */ new Date()).toLocaleTimeString()}] ${text}` : text);
+    if (output.length > OUTPUT_LINES) output = output.slice(-OUTPUT_LINES);
+    renderOutput();
+  };
+  let status = null;
+  let statusTimer = null;
+  const setStatus = (kind, text, timeout) => {
+    if (cancelled) return;
+    if (statusTimer !== null) {
+      clearTimeout(statusTimer);
+      statusTimer = null;
+    }
+    if (kind === "busy" || kind === "ok") {
+      status = { kind, text };
+      shell.dismiss("status");
+      if (kind === "ok") statusTimer = setTimeout(() => {
+        statusTimer = null;
+        status = null;
+        render();
+      }, STATUS_MS);
+    } else {
+      status = null;
+      shell.notify({ key: "status", kind: kind === "error" ? "error" : "info", text, timeout: timeout ?? (kind === "info" ? NOTICE_MS : void 0) });
+    }
+    if (kind !== "busy") log(text);
     render();
   };
   const goTo = (file, line, column = 1) => {
     if (!editor) return;
-    editor.show(file);
+    openFile(file);
     editor.editor.revealLineInCenter(line);
     editor.editor.setPosition({ lineNumber: line, column });
     editor.editor.focus();
+  };
+  const where = (s) => s ? Object.keys(files).length > 1 ? `${s.file}:${s.line}` : `Ln ${s.line}` : "?";
+  const openFile = (path) => {
+    if (!editor) return;
+    const p = normalizePath(path);
+    if (files[p] === void 0) return;
+    if (!openTabs.includes(p)) openTabs.push(p);
+    editor.show(p);
     renderFiles();
+    editor.editor.focus();
   };
-  const where = (s) => s ? Object.keys(files).length > 1 ? `${s.file}:${s.line}` : `L${s.line}` : "?";
+  const closeTab = (path) => {
+    if (!editor || openTabs.length < 2) return;
+    const at = openTabs.indexOf(path);
+    if (at < 0) return;
+    openTabs.splice(at, 1);
+    if (editor.active() === path) editor.show(openTabs[Math.min(at, openTabs.length - 1)]);
+    renderFiles();
+    editor.editor.focus();
+  };
   const renderFiles = () => {
-    const active = editor?.active() ?? ENTRY_FILE;
+    const active = editor?.active() ?? openTabs[0] ?? ENTRY_FILE;
     const paths = Object.keys(files).sort((a2, b) => a2 === ENTRY_FILE ? -1 : b === ENTRY_FILE ? 1 : a2.localeCompare(b));
-    const broken = new Set(diagnostics.map((d) => normalizePath(d.file)));
-    fileList.replaceChildren(...paths.map((path) => {
-      const row = el(
-        "li",
-        { className: path === active ? "active" : void 0, title: path, onClick: () => {
-          if (editor) {
-            editor.show(path);
-            renderFiles();
-            editor.editor.focus();
-          }
-        } },
-        el("span", { className: broken.has(path) ? "name problem" : "name" }, path)
-      );
-      if (path !== ENTRY_FILE) {
-        row.append(
-          el("button", { type: "button", title: "Rename", onClick: (e) => {
-            e.stopPropagation();
-            void renameFile(path);
-          } }, "\u270E"),
-          el("button", { type: "button", title: "Remove", onClick: (e) => {
-            e.stopPropagation();
-            void removeFile(path);
-          } }, "\xD7")
-        );
-      }
-      return row;
-    }));
+    const broken = /* @__PURE__ */ new Map();
+    for (const d of diagnostics) {
+      const p = normalizePath(d.file);
+      broken.set(p, (broken.get(p) ?? 0) + 1);
+    }
+    openTabs = openTabs.filter((p) => files[p] !== void 0);
+    if (!openTabs.includes(active)) openTabs.push(active);
+    shell.setTabs(openTabs.map((p) => ({ id: p, label: p.split("/").pop() ?? p, title: p, problems: broken.get(p), closable: openTabs.length > 1 })), active);
+    fileList.replaceChildren(...paths.map((path) => el(
+      "li",
+      { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: path, onClick: () => openFile(path) },
+      el("span", { className: "tsd-ts" }, "TS"),
+      el("span", { className: broken.has(path) ? "tsd-name tsd-problem" : "tsd-name" }, path),
+      el(
+        "span",
+        { className: "tsd-row-actions" },
+        path !== ENTRY_FILE ? shell.iconButton({ icon: "edit", title: "Rename\u2026", run: () => {
+          void renameFile(path);
+        } }).element : void 0,
+        path !== ENTRY_FILE ? shell.iconButton({ icon: "trash", title: "Remove\u2026", run: () => {
+          void removeFile(path);
+        } }).element : void 0,
+        broken.has(path) ? el("span", { className: "tsd-count" }, String(broken.get(path))) : void 0
+      )
+    )));
   };
-  const renderStale = (state) => {
-    const stale = state?.stale ?? false;
-    notice.hidden = !stale;
-    if (!stale) return;
-    const e = state?.edited ?? null;
+  const typeOf = (v) => v.kind === "number" ? v.bits ? `u${v.bits}` : "number" : "boolean";
+  const renderPrograms = () => {
+    const programs = outline?.programs ?? [];
+    programsSection.setHidden(programs.length === 0);
+    programList.replaceChildren(...programs.flatMap((p, i) => [
+      el(
+        "li",
+        { className: "tsd-row", title: `${p.name ?? `Program ${i + 1}`}, run as ${ownerLabel(p)}`, onClick: () => goTo(p.source.file, p.source.line) },
+        shell.icon("symbol-method"),
+        el("span", { className: "tsd-name" }, p.name ?? `program ${i + 1}`),
+        el("span", { className: "tsd-about" }, `${ownerLabel(p)}${p.perPlayer ? " \xB7 per player" : ""}`)
+      ),
+      ...(outline?.variables ?? []).filter((v) => v.program === i).map((v) => el(
+        "li",
+        { className: "tsd-row tsd-child", title: `${v.name}: ${typeOf(v)}${v.shared ? ", one value shared by every player" : p.perPlayer ? ", one per player" : ""}`, onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
+        shell.icon("symbol-variable"),
+        el("span", { className: "tsd-name" }, v.name),
+        el("span", { className: "tsd-about" }, `${typeOf(v)}${v.shared ? " \xB7 shared" : ""}`)
+      ))
+    ]));
+  };
+  const renderProblems = () => {
+    problemsView.badge(diagnostics.length);
+    if (diagnostics.length === 0) {
+      problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? "No problems have been detected in the script." : "Checking\u2026"));
+      return;
+    }
+    problemsView.body.replaceChildren(el("ul", { className: "tsd-list" }, ...diagnostics.map((d) => el(
+      "li",
+      { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
+      shell.icon("error"),
+      el("span", { className: "msg" }, d.message.split("\n")[0]),
+      el("span", { className: "src" }, d.source === "typescript" ? "types" : d.source === "script" ? "script" : "compiler"),
+      el("span", { className: "where" }, `${d.file} [Ln ${d.line}, Col ${d.column}]`)
+    ))));
+  };
+  const renderSimulation = () => {
+    if (!simulation) {
+      simulateView.body.replaceChildren(el("div", { className: "tsd-empty" }, `Simulate (${MOD}+F5) runs the script's first ${SIMULATE_FRAMES / 24} seconds in a built-in interpreter and lists what happened. A change to the script clears the list.`));
+      return;
+    }
+    const { sim, programs: ps, result: r } = simulation;
+    const list = el("ul", { className: "tsd-list" });
+    list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}. Unit conditions (bring, command, \u2026) count as false; wait takes no time.`)));
+    const rows = [];
+    sim.events.forEach((e, i) => {
+      const at = r.sources[e.trigger];
+      rows.push({ cycle: e.cycle, order: i, line: () => el(
+        "li",
+        { title: `Trigger #${e.trigger + 1}`, onClick: () => {
+          if (at) goTo(at.file, at.line);
+        } },
+        el("span", { className: "frame" }, `frame ${e.cycle + 1}`),
+        el("span", { className: "msg" }, describeEvent(e)),
+        el("span", { className: "where" }, where(at))
+      ) });
+    });
+    ps?.events.forEach((e, i) => {
+      rows.push({ cycle: e.cycle, order: sim.events.length + i, line: () => el(
+        "li",
+        { title: `Program ${e.program + 1}`, onClick: () => goTo(e.at.file, e.at.line, e.at.column) },
+        el("span", { className: "frame" }, `frame ${e.cycle + 1}`),
+        el("span", { className: "msg" }, describeEvent(e)),
+        el("span", { className: "where" }, where({ file: e.at.file, line: e.at.line }))
+      ) });
+    });
+    rows.sort((a2, b) => a2.cycle - b.cycle || a2.order - b.order);
+    if (rows.length === 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} frames.`)));
+    for (const row of rows.slice(0, SIMULATE_ROWS)) list.append(row.line());
+    if (rows.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));
+    const shownVars = /* @__PURE__ */ new Set();
+    for (const v of r.variables) {
+      if (shownVars.has(v.name)) continue;
+      shownVars.add(v.name);
+      const value = ps?.value(v.name);
+      const shown = value === void 0 ? "?" : typeof value === "boolean" ? value ? "true" : "false" : String(value);
+      list.append(el(
+        "li",
+        { title: "The variable's value when the run ended", onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
+        el("span", { className: "frame" }, "after"),
+        el("span", { className: "msg" }, `${v.name} = ${shown}`),
+        el("span", { className: "where" }, typeOf(v))
+      ));
+    }
+    simulateView.body.replaceChildren(list);
+  };
+  let staleShown = "";
+  const showStale = (again = false) => {
+    const state = svc.state();
+    if (!state?.stale) {
+      staleShown = "";
+      shell.dismiss("stale");
+      return;
+    }
+    const e = state.edited ?? null;
+    const signature2 = JSON.stringify([e, appendInstead]);
+    if (!again && signature2 === staleShown) return;
+    staleShown = signature2;
     if (!e) {
-      notice.replaceChildren(el("span", { className: "grow" }, "The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled."));
+      shell.notify({ key: "stale", kind: "warn", text: "The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled." });
       return;
     }
     const n = (k, what) => `${k} ${what}${k === 1 ? "" : "s"}`;
     const facts = `The script's triggers were edited outside the script: ${n(e.unchanged, "trigger")} ${e.unchanged === 1 ? "is" : "are"} still the script's, ${n(e.changed, "trigger")} ${e.changed === 1 ? "was" : "were"} changed.`;
     const plan = appendInstead ? "The next Apply leaves them all as hand-made triggers and appends a fresh block." : `The next Apply replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
-    notice.replaceChildren(
-      el("span", { className: "grow" }, `${facts} ${plan}`),
-      w.button(appendInstead ? "Replace instead" : "Append instead", { ghost: true, onClick: () => {
+    shell.notify({ key: "stale", kind: "warn", text: `${facts} ${plan}`, actions: [
+      { label: appendInstead ? "Replace instead" : "Append instead", keep: true, run: () => {
         appendInstead = !appendInstead;
         render();
-      } })
-    );
+      } },
+      { label: "Apply", primary: true, run: () => {
+        void build();
+      } }
+    ] });
   };
-  const renderRenames = () => {
-    const all = renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} \u2192 ${r.object}.${x.to}`));
-    renameNotice.hidden = all.length === 0;
-    if (all.length === 0) return;
-    renameNotice.replaceChildren(
-      el("span", { className: "grow" }, `The map renamed ${all.length === 1 ? "something the script names" : `${all.length} things the script names`}: ${all.join(", ")}.`),
-      w.button("Update references", { onClick: () => {
-        void applyRenames();
-      } }),
-      w.button("Leave", { ghost: true, onClick: () => {
+  const renamedNow = () => renames.flatMap((r) => r.list.map((x) => `${r.object}.${x.from} \u2192 ${r.object}.${x.to}`));
+  let renamesShown = "";
+  const showRenames = (again = false) => {
+    const all = renamedNow();
+    if (all.length === 0) {
+      renamesShown = "";
+      shell.dismiss("renames");
+      return;
+    }
+    const signature2 = all.join("\n");
+    if (!again && signature2 === renamesShown) return;
+    renamesShown = signature2;
+    shell.notify({ key: "renames", kind: "info", text: `The map renamed ${all.length === 1 ? "something the script names" : `${all.length} things the script names`}: ${all.join(", ")}.`, actions: [
+      { label: "Leave", run: () => {
         renames = [];
-        renderRenames();
-      } })
-    );
+        render();
+      } },
+      { label: "Update references", primary: true, run: () => {
+        void applyRenames();
+      } }
+    ] });
+  };
+  const renderCursor = () => {
+    const at = editor?.editor.getPosition();
+    cursorItem.set(at ? { text: `Ln ${at.lineNumber}, Col ${at.column}`, title: "Go to line\u2026", onClick: () => {
+      editor?.editor.focus();
+      editor?.editor.trigger("trigscript", "editor.action.gotoLine", null);
+    } } : null);
   };
   const render = () => {
     const errors = diagnostics.length;
-    buildButton.setBusy(building && !importing);
-    importButton.setBusy(importing);
-    pickButton.setBusy(picking);
-    buildButton.disabled = importButton.disabled = !ready || building;
-    testButton.disabled = !ready || building || testing;
-    testButton.setBusy(testing);
-    const needsLibrary = (result?.programs.length ?? 0) > 0;
-    libraryLine.hidden = !needsLibrary;
-    if (needsLibrary) {
-      libraryLine.textContent = !library ? "eudplib plugin not running: the programs will not be built" : !library.contribute ? "the eudplib plugin is older than 0.4: update it to build the programs" : `eudplib ${library.versions.eudplib} \xB7 ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading\u2026" : library.state() === "failed" ? "runtime failed" : "runtime downloads on the first save"}`;
-      libraryLine.title = library ? "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time" : "Install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026";
-    }
-    simulateButton.disabled = !ready || building || errors > 0;
-    pickButton.disabled = !ready || picking;
-    newButton.disabled = !ready;
-    if (!ready) problemsCount.replaceChildren(w.spinner({ size: "sm", label: "Loading the editor\u2026" }));
-    else if (!result) problemsCount.textContent = "Checking\u2026";
-    else problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : "No problems";
-    const programs = result?.programs ?? [];
-    const userVariables = result?.variables ?? [];
-    programButton.hidden = programs.length === 0;
-    if (programs.length) {
-      const owners = [...new Set(programs.map(ownerLabel))].join(", ");
-      programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`} as ${owners} \xB7 ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"} \xB7 needs Remastered`;
-    }
-    variables.hidden = !(showVariables && result && result.variables.length > 0);
-    variables.replaceChildren(...userVariables.map((v) => el("span", void 0, el("b", void 0, v.name), ` ${v.kind === "number" ? v.bits ? `u${v.bits}` : "number" : "boolean"}${programs.length > 1 ? ` \xB7 program ${v.program + 1}` : ""}${v.shared ? " \xB7 shared" : programs[v.program]?.perPlayer ? " \xB7 per player" : ""}`)));
+    testAction.set({ disabled: !ready || building || testing, busy: testing });
+    simulateAction.set({ disabled: !ready || building || errors > 0 });
+    applyAction.set({ disabled: !ready || building, busy: building && !testing });
+    pickAction.set({ disabled: !ready || picking, busy: picking });
     const state = svc.state();
     const block2 = state?.block ?? null;
     const stale = state?.stale ?? false;
-    renderStale(state);
+    const programs = outline ? outline.programs.length : state?.programs ?? 0;
+    problemsItem.set(ready ? { icon: errors ? "error" : "pass", text: String(errors), kind: errors ? "error" : void 0, title: errors ? `${errors} problem${errors === 1 ? "" : "s"}` : result ? "No problems" : "Checking\u2026", onClick: () => shell.togglePanel("problems") } : null);
+    const onSave = "saving or testing the map applies the script by itself";
+    blockItem.set(stale ? null : block2 && !state?.unbuilt ? { icon: "check", text: `${block2.count} trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}`, title: `The script's triggers are in the map's trigger list, from #${block2.start + 1}. Click to apply the script again`, onClick: () => {
+      void build();
+    } } : { icon: "circle-filled", text: block2 ? "Changes not applied" : "Not applied yet", title: `${block2 ? "The script changed since it was applied" : "The script's triggers are not in the map yet"}: ${onSave}. Click to apply it now (${MOD}+Shift+B)`, onClick: () => {
+      void build();
+    } });
+    staleItem.set(stale ? { icon: "warning", kind: "warn", text: "Triggers edited outside the script", title: "What the next Apply does about it", onClick: () => showStale(true) } : null);
+    const renamed = renamedNow().length;
+    renamesItem.set(renamed ? { icon: "sync", kind: "warn", text: `${renamed} renamed`, title: "The map renamed things the script names", onClick: () => showRenames(true) } : null);
+    messageItem.set(status ? { text: status.text, busy: status.kind === "busy" } : !ready && !failed ? { text: "Loading the editor\u2026", busy: true } : null);
+    buildItem.set(buildState ? { text: buildState.text, busy: buildState.kind === "busy", icon: buildState.kind === "error" ? "error" : "package", kind: buildState.kind === "error" ? "error" : void 0, title: "The last build of the programs. Click for its log", onClick: () => shell.showPanel("output") } : null);
+    const needsLibrary = programs > 0;
+    const libraryOk = !!library?.contribute && library.state() !== "failed";
+    libraryItem.set(!needsLibrary ? null : {
+      kind: libraryOk ? void 0 : "warn",
+      icon: libraryOk ? void 0 : "warning",
+      text: !library ? "eudplib plugin not running" : !library.contribute ? "eudplib plugin older than 0.4" : `eudplib ${library.versions.eudplib} \xB7 ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading\u2026" : library.state() === "failed" ? "runtime failed" : "runtime downloads on the first save"}`,
+      title: !library ? "The programs will not be built: install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026" : !library.contribute ? "Update the eudplib plugin to build the programs" : "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time"
+    });
+    programsItem.set(programs ? { text: `${programs === 1 ? "1 program" : `${programs} programs`} \xB7 Remastered`, title: "Programs are built into the saved map, which then needs StarCraft: Remastered. Click for the programs and their variables", onClick: () => {
+      shell.toggleSidebar(true);
+      programsSection.expand();
+    } } : null);
     renderFiles();
-    renderRenames();
-    problems.replaceChildren();
-    problems.className = "tsd-problems";
-    if (errors > 0) {
-      problems.hidden = false;
-      for (const d of diagnostics) {
-        problems.append(el(
-          "li",
-          { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
-          el("span", { className: "where" }, `${Object.keys(files).length > 1 ? `${d.file}:` : ""}${d.line}:${d.column}`),
-          el("span", { className: "msg" }, d.message.split("\n")[0]),
-          el("span", { className: "src" }, d.source === "typescript" ? "types" : d.source === "script" ? "script" : "compiler")
-        ));
-      }
-    } else if (simulation) {
-      problems.hidden = false;
-      problems.className = "tsd-problems tsd-run";
-      const { sim, programs: ps, result: r } = simulation;
-      const unit = "frame";
-      const rows = [];
-      sim.events.forEach((e, i) => {
-        const at = r.sources[e.trigger];
-        rows.push({ cycle: e.cycle, order: i, line: () => el(
-          "li",
-          { title: `Trigger #${e.trigger + 1}`, onClick: () => {
-            if (at) goTo(at.file, at.line);
-          } },
-          el("span", { className: "where" }, `${unit} ${e.cycle + 1}`),
-          el("span", { className: "msg" }, describeEvent(e)),
-          el("span", { className: "src" }, where(at))
-        ) });
-      });
-      ps?.events.forEach((e, i) => {
-        rows.push({ cycle: e.cycle, order: sim.events.length + i, line: () => el(
-          "li",
-          { title: `Program ${e.program + 1}`, onClick: () => goTo(e.at.file, e.at.line, e.at.column) },
-          el("span", { className: "where" }, `${unit} ${e.cycle + 1}`),
-          el("span", { className: "msg" }, describeEvent(e)),
-          el("span", { className: "src" }, where({ file: e.at.file, line: e.at.line }))
-        ) });
-      });
-      rows.sort((a2, b) => a2.cycle - b.cycle || a2.order - b.order);
-      if (rows.length === 0) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} ${unit}s.`)));
-      for (const row of rows.slice(0, SIMULATE_ROWS)) problems.append(row.line());
-      if (rows.length > SIMULATE_ROWS) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2026"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));
-      const shownVars = /* @__PURE__ */ new Set();
-      for (const v of r.variables) {
-        if (shownVars.has(v.name)) continue;
-        shownVars.add(v.name);
-        const value = ps?.value(v.name);
-        const shown = value === void 0 ? "?" : typeof value === "boolean" ? value ? "true" : "false" : String(value);
-        problems.append(el(
-          "li",
-          void 0,
-          el("span", { className: "where" }, "after"),
-          el("span", { className: "msg" }, `${v.name} = ${shown}`),
-          el("span", { className: "src" }, v.kind === "number" ? v.bits ? `u${v.bits}` : "number" : "boolean")
-        ));
-      }
-    } else {
-      problems.hidden = true;
-    }
-    const remastered = (result ? result.programs.length : state?.programs ?? 0) > 0 ? " \xB7 programs are built into the saved map, which needs StarCraft: Remastered" : "";
-    const line = status.text || (block2 ? `${block2.count} trigger${block2.count === 1 ? "" : "s"} of the script at #${block2.start + 1}${state?.unbuilt ? " \xB7 changes not applied yet: saving the map applies them" : ""}${remastered}` : stale ? "The script's triggers were edited outside the script" : `Not applied yet: saving the map applies the script${remastered}`);
-    if (status.kind === "busy") statusLine.busy(line);
-    else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : void 0);
+    renderPrograms();
+    renderProblems();
+    renderSimulation();
+    showStale();
+    showRenames();
   };
   const applyResult = (r) => {
     diagnostics = r.diagnostics;
     result = r;
+    if (r.ok) outline = { programs: r.programs, variables: r.variables };
     simulation = null;
     if (editor && monaco) {
       setCompilerMarkers(monaco, files, diagnostics);
@@ -6732,7 +7287,8 @@ function createWorkspace(svc, options, mode) {
         if (!a2 || cancelled) return false;
         if (!a2.compiled.ok || diagnostics.length) {
           const n = diagnostics.length || a2.compiled.diagnostics.length;
-          setStatus("error", `Not applied: ${n} error${n === 1 ? "" : "s"}.`);
+          setStatus("error", `Not applied: ${n} problem${n === 1 ? "" : "s"} in the script.`, NOTICE_MS);
+          shell.showPanel("problems");
           return false;
         }
         const wasStale = svc.state()?.stale ?? false;
@@ -6760,8 +7316,6 @@ function createWorkspace(svc, options, mode) {
   };
   const test = async () => {
     if (building || testing || !ready) return;
-    if (!await build()) return;
-    if (cancelled) return;
     testing = true;
     render();
     let failure = null;
@@ -6769,6 +7323,7 @@ function createWorkspace(svc, options, mode) {
       if (e.kind === "failed") failure = e.from && e.from !== "trigscript" ? `${e.from}: ${e.message}` : e.message;
     });
     try {
+      if (!await build() || cancelled) return;
       setStatus("busy", "Building the map\u2026");
       const file = await api.document.export({ format: "scx" });
       if (!file) {
@@ -6798,31 +7353,31 @@ function createWorkspace(svc, options, mode) {
   const onLibraryBuild = (e) => {
     if (cancelled || e.kind !== "log" && !e.contributors.includes("trigscript")) return;
     if (e.kind === "start") {
-      buildLog = [];
-      eudFold.hidden = false;
-      eudFold.mark("\u2026");
-      eudFold.set(`Build for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"} \u2014 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
-      eudFold.body.replaceChildren(buildLogEl);
-      buildLogEl.textContent = "";
+      streamed = 0;
+      shell.dismiss("build");
+      buildState = { kind: "busy", text: `Building for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}\u2026` };
+      log(`Building the programs for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}`);
     } else if (e.kind === "log") {
-      buildLog.push(e.line);
-      buildLogEl.textContent = buildLog.join("\n");
+      streamed++;
+      log(e.line, false);
     } else if (e.kind === "done") {
-      eudFold.mark("\u2713", "ok");
-      buildLogEl.textContent = e.log || buildLog.join("\n");
-      eudFold.set(`Built: ${Math.round(e.chkBytes / 1024)} KB of scenario in ${(e.ms / 1e3).toFixed(1)} s \u2014 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
+      if (!streamed && e.log) log(e.log, false);
+      const kb = Math.round(e.chkBytes / 1024), seconds = (e.ms / 1e3).toFixed(1);
+      buildState = { kind: "ok", text: `Built ${kb} KB \xB7 ${seconds} s` };
+      log(`Built: ${kb} KB of scenario in ${seconds} s`);
     } else {
-      eudFold.mark("\xD7", "error");
-      eudFold.open = true;
-      eudFold.set(`Build failed: ${e.message}`);
+      if (!streamed && e.log) log(e.log, false);
+      buildState = { kind: "error", text: "Build failed" };
+      log(`Build failed: ${e.message}`);
+      shell.notify({ key: "build", kind: "error", text: `The programs were not built: ${e.message}`, actions: [{ label: "Show the log", run: () => shell.showPanel("output") }] });
       const at = positionIn(e.message);
       if (at) {
         diagnostics = [...diagnostics, { file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: e.message, source: "compiler" }];
         if (editor && monaco) setCompilerMarkers(monaco, files, diagnostics);
         goTo(at.file, at.line, at.column);
-        render();
       }
     }
+    render();
   };
   const importHand = async () => {
     if (!editor || !generated) return;
@@ -6840,15 +7395,9 @@ function createWorkspace(svc, options, mode) {
       after.length ? printScript(after, ctx, { header: "" }).trimStart() : ""
     ].filter((s) => s !== "").join("\n");
     editor.set(ENTRY_FILE, text);
-    editor.show(ENTRY_FILE);
+    openFile(ENTRY_FILE);
     files = { ...files, [ENTRY_FILE]: text };
-    importing = true;
-    let ok = false;
-    try {
-      ok = await build(true) !== false;
-    } finally {
-      importing = false;
-    }
+    const ok = await build(true) !== false;
     const n = before.length + after.length;
     if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
   };
@@ -6856,7 +7405,8 @@ function createWorkspace(svc, options, mode) {
     const r = (await compileNow())?.compiled;
     if (!r) return;
     if (!r.ok) {
-      setStatus("error", `Not simulated: ${r.diagnostics.length} error${r.diagnostics.length === 1 ? "" : "s"}.`);
+      setStatus("error", `Not simulated: ${r.diagnostics.length} problem${r.diagnostics.length === 1 ? "" : "s"} in the script.`, NOTICE_MS);
+      shell.showPanel("problems");
       return;
     }
     try {
@@ -6869,7 +7419,8 @@ function createWorkspace(svc, options, mode) {
       }
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
-      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran. Unit conditions (bring, command, \u2026) count as false; wait takes no time.`);
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.`);
+      shell.showPanel("simulate");
     } catch (err) {
       setStatus("error", `Simulation stopped: ${err.message}`);
     }
@@ -6947,14 +7498,14 @@ function createWorkspace(svc, options, mode) {
     const name = await askName("Name of the new file:", "helpers.ts");
     if (!name) return;
     editor.add(name, FILE_TEMPLATE);
-    renderFiles();
-    editor.editor.focus();
+    openFile(name);
   };
   const renameFile = async (path) => {
     if (!editor || path === ENTRY_FILE) return;
     const name = await askName(`Rename ${path} to:`, path);
     if (!name) return;
     editor.rename(path, name);
+    openTabs = openTabs.map((p) => p === path ? name : p);
     const next = { ...files };
     next[name] = next[path];
     delete next[path];
@@ -6994,11 +7545,56 @@ function createWorkspace(svc, options, mode) {
   };
   const reveal = (file, line) => {
     if (line) goTo(file ?? ENTRY_FILE, line);
-    else if (file) {
-      editor?.show(file);
-      renderFiles();
-    }
+    else if (file) openFile(file);
   };
+  const commands = [
+    // The editor's own Ctrl+S does not reach a map under a dialog, and a browser would offer to save the page.
+    { id: "save", label: "Save the Map", key: { code: "KeyS", mod: true }, run: () => {
+      void api.document.save();
+    } },
+    { id: "test", label: "Test the Map", key: { code: "F5" }, run: () => {
+      void test();
+    } },
+    { id: "simulate", label: "Simulate", key: { code: "F5", mod: true }, run: () => {
+      void simulateNow();
+    } },
+    { id: "apply", label: "Apply the Script to the Map", key: { code: "KeyB", mod: true, shift: true }, run: () => {
+      void build();
+    } },
+    { id: "pick", label: "Pick a Location or Unit from the Map", context: true, run: () => {
+      void pickFromMap();
+    } },
+    { id: "import", label: "Import the Map's Triggers", run: () => {
+      void importHand();
+    } },
+    { id: "newFile", label: "New File\u2026", run: () => {
+      void newFile();
+    } },
+    { id: "mode", label: mode === "dialog" ? "Open Beside the Map" : "Open in a Window", run: () => switchMode() },
+    { id: "problems", label: "Show Problems", key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
+    { id: "output", label: "Show Output", key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },
+    { id: "panel", label: "Toggle Panel", key: { code: "KeyJ", mod: true }, run: () => shell.togglePanel() },
+    { id: "explorer", label: "Toggle Explorer", key: { code: "KeyB", mod: true }, run: () => shell.toggleSidebar() }
+  ];
+  const keysOf = (c2) => c2.key ? `${c2.key.mod ? `${MOD}+` : ""}${c2.key.shift ? "Shift+" : ""}${c2.key.code.replace(/^Key/, "")}` : void 0;
+  const menuItem = (id) => {
+    const c2 = commands.find((x) => x.id === id);
+    return { label: c2.label, keys: keysOf(c2), disabled: !ready, run: c2.run };
+  };
+  const palette = () => {
+    editor?.editor.focus();
+    editor?.editor.trigger("trigscript", "editor.action.quickCommand", null);
+  };
+  const onKey = (e) => {
+    if (e.altKey) return;
+    const mod = e.ctrlKey || e.metaKey;
+    const c2 = mod && e.shiftKey && e.code === "KeyP" || !mod && !e.shiftKey && e.code === "F1" ? { run: palette } : commands.find((x) => x.key && x.key.code === e.code && !!x.key.mod === mod && !!x.key.shift === e.shiftKey);
+    if (!c2) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (ready) c2.run();
+  };
+  root.addEventListener("keydown", onKey, true);
   const attach = (close) => {
     render();
     const loadingCover = w.busy(hostEl, "Loading the editor\u2026");
@@ -7024,11 +7620,38 @@ function createWorkspace(svc, options, mode) {
         setLineHints(m, () => result?.hints ?? []);
         setMapRefs(m, mapRefs2);
         loadingCover.done();
+        shell.ready();
         editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
           files = { ...files, [path]: text };
           svc.writeFiles(files);
           check();
         });
+        const code = editor.editor;
+        for (const c2 of commands) {
+          code.addAction({
+            id: `trigscript.${c2.id}`,
+            label: `TrigScript: ${c2.label}`,
+            keybindings: c2.key ? [(c2.key.mod ? m.KeyMod.CtrlCmd : 0) | (c2.key.shift ? m.KeyMod.Shift : 0) | m.KeyCode[c2.key.code]] : void 0,
+            ...c2.context ? { contextMenuGroupId: "navigation", contextMenuOrder: 9 } : {},
+            run: () => c2.run()
+          });
+        }
+        code.onDidChangeCursorPosition(renderCursor);
+        code.onDidChangeModel(() => {
+          renderFiles();
+          renderCursor();
+        });
+        subs.push(m.editor.registerEditorOpener({
+          openCodeEditor(_source, resource, at) {
+            const path = normalizePath(resource.path.replace(/^\/+/, ""));
+            if (resource.scheme !== "file" || files[path] === void 0) return false;
+            const line = at ? "startLineNumber" in at ? at.startLineNumber : at.lineNumber : 1;
+            const column = at ? "startColumn" in at ? at.startColumn : at.column : 1;
+            goTo(path, line, column);
+            return true;
+          }
+        }));
+        renderCursor();
         if (fresh) svc.writeFiles(files);
         reveal(options.file, options.line);
         editor.editor.focus();
@@ -7040,7 +7663,7 @@ function createWorkspace(svc, options, mode) {
       (err) => {
         if (!cancelled) {
           loadingCover.done();
-          problemsCount.textContent = "";
+          failed = true;
           setStatus("error", `The editor failed to load: ${err.message}`);
         }
       }
@@ -7049,6 +7672,9 @@ function createWorkspace(svc, options, mode) {
       cancelled = true;
       loadingCover.done();
       if (timer !== null) clearTimeout(timer);
+      if (statusTimer !== null) clearTimeout(statusTimer);
+      root.removeEventListener("keydown", onKey, true);
+      shell.dispose();
       editor?.dispose();
       editor = null;
       if (monaco) releaseScriptEditor(monaco);
@@ -7059,9 +7685,7 @@ function createWorkspace(svc, options, mode) {
   };
   return {
     root,
-    host: hostEl,
     attach,
-    build: async () => await build() !== false,
     reveal,
     cursor: () => editor?.cursor() ?? null
   };

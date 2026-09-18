@@ -227,6 +227,17 @@ string, as today.
 
 ## The tooling
 
+**The workspace (3.1).** Everything below lives in a frame laid out as VS Code is
+(`shell.ts`): the Explorer with the files and the programs' variables, tabs with the run
+controls at their right, a panel of views under the editor (Problems, Output, Simulate), a
+status bar, notifications in the corner, and every command in Monaco's palette with VS
+Code's keys. Nothing that appears moves the text. So where this plan says a *panel* — the
+Tests panel, the Run panel, the world table — it means a view of that bottom panel (and,
+once there are two things to switch between at the left, an activity bar over the
+Explorer); where it says a *status line*, an item of the status bar; breakpoints are
+Monaco's glyph margin, F5 starts what VS Code would start, and the debugger's controls are
+a floating strip over the editor's top edge, as VS Code's are.
+
 **Target switch.** A toolbar control, *Classic* / *Remastered (EUD)*, stored in
 `build.json`. Switching regenerates the declarations, so completion shows only what the
 target has; a script using Remastered names on the classic target gets one error per use
@@ -345,6 +356,7 @@ before the slice is called done, in the Magenta manner.
 | --- | --- | --- | --- |
 | 0 | Spike: hand-written IR → eudplib plugin → map; a counter, a sleep, a dynamic print, per-player (built 2026-09-17, played 2026-09-18: all pass) | frames, eudTurbo, prints, per-player arrays work; a number for build time and payload size | 1 day |
 | 1 | IR refactor + Remastered backend for today's language + Build & Test + simulator on IR | every existing test program simulates identically on both targets; `a = b` and `if (a < b)` cost nothing; loops run in-frame; the sleep rule | the big one, ~1 week |
+| 1½ | The workspace as VS Code lays one out (3.1.0) | the frame slices 5 and 6 put their panels in: no banner moves the text, every command in the palette, the keys people already know | 2 days, no probe: nothing about the game changes |
 | 2 | Reads and text | `deaths(P1, u)` as a value, `minerals()`, `countUnits()`, template literals with numbers and names; on classic, reads by decomposition with hints | 2–3 days |
 | 3 | `Unit` objects, unit loops, picks, `stats()` | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
 | 4 | Input | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |

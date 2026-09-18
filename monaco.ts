@@ -8,7 +8,8 @@
  * The script's files are one model each under `file:///`, so `import { x } from
  * "./bases"` resolves between them in Monaco's own TypeScript worker; the generated
  * declarations are the one extra lib, and the standard library is the worker's own.
- * The theme is the editor's own palette (tokens.css) rather than VS Code's.
+ * The theme is the editor's own palette (tokens.css) rather than VS Code's, down to
+ * Monaco's own widgets (the command palette, the context menu).
  *
  * The URL is not a static import on purpose: the editor's plugin loader follows every
  * literal import specifier and would try to fetch and transpile the bundle. A dynamic
@@ -101,6 +102,31 @@ function configure(monaco: MonacoApi) {
       "scrollbarSlider.hoverBackground": "#3b4453a0",
       "editorGutter.background": "#0a0c10",
       "minimap.background": "#0a0c10",
+      // The command palette, Go to Line and the context menu are Monaco's own widgets; the workspace around them is tokens.css.
+      "focusBorder": "#3a68a8",
+      "widget.shadow": "#000000a0",
+      "input.background": "#0a0c10",
+      "input.foreground": "#dde2ea",
+      "input.border": "#2c3341",
+      "quickInput.background": "#191d25",
+      "quickInput.foreground": "#dde2ea",
+      "quickInputList.focusBackground": "#2b4f80",
+      "quickInputList.focusForeground": "#dde2ea",
+      "list.hoverBackground": "#222732",
+      "list.highlightForeground": "#e6b95c",
+      "list.focusHighlightForeground": "#f4d08a",
+      "pickerGroup.border": "#2c3341",
+      "pickerGroup.foreground": "#99a2b3",
+      "keybindingLabel.background": "#222732",
+      "keybindingLabel.foreground": "#dde2ea",
+      "keybindingLabel.border": "#3b4453",
+      "keybindingLabel.bottomBorder": "#3b4453",
+      "menu.background": "#191d25",
+      "menu.foreground": "#dde2ea",
+      "menu.selectionBackground": "#2b4f80",
+      "menu.selectionForeground": "#dde2ea",
+      "menu.separatorBackground": "#2c3341",
+      "menu.border": "#3b4453",
     },
   });
 }

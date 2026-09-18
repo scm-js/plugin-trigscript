@@ -30,7 +30,7 @@ https://github.com/scm-js/plugin-trigscript
 ```
 
 into **Manage Plugins…** and press **Add**. To pin a version, add a ref:
-`github:scm-js/plugin-trigscript@v3.0.0`. The map maker's guide to the language is
+`github:scm-js/plugin-trigscript@v3.1.0`. The map maker's guide to the language is
 scmJS's own [user guide](https://docs.scmjs.dev/guide/trigscript/); the reference below
 is the full one.
 
@@ -44,10 +44,24 @@ afterwards, which is also what the desktop build relies on when it is offline.
 
 ## Use
 
-**Triggers ▸ TrigScript…** opens the map's script. The list at the left is its files:
-`main.ts` is where the script starts, **New file** adds another, and a file's ✎ and ×
-rename and remove it. Edits are saved into the map as you type (the files are members of
-the archive, like a sound).
+**Triggers ▸ TrigScript…** opens the map's script in a workspace laid out the way VS Code
+is, with the same keys where it has one:
+
+| Where | What is there |
+| --- | --- |
+| **Explorer**, at the left (Ctrl+B) | The script's files — `main.ts` is where the script starts, the *New file* icon on the section adds another, and a file's pencil and bin rename and remove it — and under them the **programs** with the variables each keeps in the game. A click goes to the line. |
+| **Tabs**, over the editor | One per open file; a file with problems is red, with their count. Go to Definition on a name another file exports opens that file. |
+| **Run controls**, right of the tabs | Test (F5), Simulate (Ctrl+F5), Apply (Ctrl+Shift+B), Pick from map, the switch between the window and the panel beside the map, and **…** for the rest. |
+| **Panel**, under the editor (Ctrl+J) | **Problems** (Ctrl+Shift+M), **Output** (Ctrl+Shift+U) — what Apply, Test and the builds of the programs reported, with the build log — and **Simulate**. It takes its room from the bottom, and only when asked for or when something failed. |
+| **Status bar** | The problem count, whether the script's triggers are in the map (a click applies it), the last build of the programs, the eudplib plugin's state, the cursor. |
+| **Command palette** (F1 or Ctrl+Shift+P) | Every command above under *TrigScript:*, beside Monaco's own. |
+
+Something that needs an answer — the triggers were edited outside the script, the map
+renamed a location — is a notification in the corner, and an item of the status bar brings
+it back after it was dismissed. Nothing that appears moves the text.
+
+Edits are saved into the map as you type (the files are members of the archive, like a
+sound), and Ctrl+S saves the map from inside the editor too.
 
 There is no build step to remember. **Saving the map applies the script**, and so do
 Tools ▸ Test Map and anything that exports the map: the script runs, its `trigger()`
@@ -73,29 +87,29 @@ Editing a generated trigger from outside makes the block *stale*. The script rem
 every trigger it made on its own, so the editor can say how many are still the script's
 and how many were changed, and the next Apply replaces the unchanged ones with the new
 block and keeps the edited ones as hand-made triggers right after it — a wave system
-edited in one trigger does not come back twice. *Append instead* on the notice leaves them
+edited in one trigger does not come back twice. *Append instead* on the notification leaves them
 all in place and adds a fresh block after them, which is also what happens when the block
 was moved or removed rather than edited. While a block is stale, saving does not apply
-the script; the notice on Save says so. **Import map triggers** goes the other way,
+the script; the notice on Save says so. **Import the Map's Triggers** (under **…**) goes the other way,
 rewriting the hand-made triggers as script in their existing order around the block, so
 the whole list becomes script-generated.
 
 **Simulate** runs the script for 480 frames — twenty seconds of the game at Fastest — in
-a built-in interpreter and lists every action that ran, with its frame and source line,
-plus each program variable's final value. The `trigger()` records run in a trigger
+a built-in interpreter and lists, in the panel's Simulate view, every action that ran,
+with its frame and source line, plus each program variable's final value. The `trigger()` records run in a trigger
 interpreter (death counters, switches, preserve, list order) and the programs in a
 program interpreter that computes every number the way the game will, the two sharing one
 world, so a program's `setDeaths` is seen by a trigger and the other way round. Unit
 conditions answer "false". The same interpreters are what the test suite uses to prove
 programs behave.
 
-A script with programs shows a line beside the toolbar saying whether the eudplib plugin
+A script with programs shows, at the right of the status bar, whether the eudplib plugin
 is running and whether its runtime is on this machine yet. The runtime — Pyodide, a
 Python for the browser, and eudplib — is downloaded once, about 15 MB, after asking, the
 first time a map with a program is saved; the desktop app and the container image carry
-it. Every build after that runs on this machine and nothing about the map leaves it. A
-fold under the toolbar keeps the last build's log, and a failure that names a line puts a
-marker on it.
+it. Every build after that runs on this machine and nothing about the map leaves it. The
+status bar says how the last build went, Output keeps its log, and a failure that names a
+line puts a marker on it.
 
 The files and a build manifest live in the map archive itself, under `trigscript\`
 (`trigscript\main.ts`, `trigscript\build.json`, …) next to `staredit\scenario.chk`, so
@@ -171,17 +185,17 @@ modifier, value)` are the standard `deaths`-at-`EPD(address)` forms.
 ### Beside the map
 
 The editor opens two ways: Triggers ▸ TrigScript… is a full-screen window, and
-*Beside the map* (a button on its toolbar, or Triggers ▸ TrigScript beside the map) is a
+*Beside the map* (an icon right of the tabs, or Triggers ▸ TrigScript beside the map) is a
 panel over the map that blocks nothing — drag it by its title, resize it by its corner,
 and keep placing units while the code sits next to them. Beside the map:
 
 - **Ctrl+click** on `locations.Beacon` scrolls the map to the location and flashes it;
   hovering the name says where it is and how big.
-- **Pick from map** on the toolbar: click a location or a unit on the map, and its name
-  (`locations.Beacon`, `units.TerranMarine`) lands at the cursor. From the window, the
-  button first moves the editor beside the map.
+- **Pick from map** (the target icon, or the editor's right-click menu): click a location
+  or a unit on the map, and its name (`locations.Beacon`, `units.TerranMarine`) lands at
+  the cursor. From the window, it first moves the editor beside the map.
 - When the map renames a location or a switch the script mentions — its custom name,
-  for a switch — a notice offers to **update the references** in every file. The
+  for a switch — a notification offers to **update the references** in every file. The
   references are the compiler's, resolved like the code: `locations["Beacon"]`, an alias
   from `import { locations as L }` and `ts.locations.Beacon` follow the rename; a
   comment, a string, or a parameter that happens to be called `locations` is left alone.
