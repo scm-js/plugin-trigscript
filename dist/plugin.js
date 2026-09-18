@@ -4936,7 +4936,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "3.1.0";
+var VERSION = "3.1.1";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -6370,8 +6370,9 @@ ${Object.entries(ICONS).map(([name, code]) => `.tsd-i-${name}::before { content:
 
 .tsd-statusbar { flex: none; display: flex; align-items: stretch; height: 22px; background: var(--bg-2); border-top: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text-dim); overflow: hidden; }
 .tsd-compact .tsd-statusbar { padding-right: 16px; }
-.tsd-status-left { flex: 1 1 auto; min-width: 0; display: flex; overflow: hidden; }
-.tsd-status-right { flex: 0 1 auto; display: flex; overflow: hidden; }
+/* The left side says what state the script is in and keeps its words; the right side gives way first, its long items by an ellipsis. */
+.tsd-status-left { flex: 0 0 auto; max-width: 72%; display: flex; overflow: hidden; }
+.tsd-status-right { flex: 1 1 0; min-width: 0; display: flex; justify-content: flex-end; overflow: hidden; }
 .tsd-status-item { flex: none; display: flex; align-items: center; gap: 4px; padding: 0 7px; border: none; background: none; white-space: nowrap; cursor: default; }
 .tsd-status-item.tsd-shrink { flex: 0 1 auto; min-width: 0; }
 .tsd-status-item.tsd-shrink span:last-child { overflow: hidden; text-overflow: ellipsis; }

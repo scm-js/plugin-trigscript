@@ -30,7 +30,7 @@ https://github.com/scm-js/plugin-trigscript
 ```
 
 into **Manage Plugins…** and press **Add**. To pin a version, add a ref:
-`github:scm-js/plugin-trigscript@v3.1.0`. The map maker's guide to the language is
+`github:scm-js/plugin-trigscript@v3.1.1`. The map maker's guide to the language is
 scmJS's own [user guide](https://docs.scmjs.dev/guide/trigscript/); the reference below
 is the full one.
 
