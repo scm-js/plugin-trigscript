@@ -2,13 +2,14 @@
  * The intermediate representation: what a `program(() => { … })` body means, with
  * everything TypeScript-specific already settled — build-time values evaluated, records
  * split into their fields, functions inlined at their calls, `for…of` unrolled — and
- * nothing target-specific decided yet. `structured.ts` emits it from the TS AST;
- * `classic.ts` lowers it to death-counter triggers, `python/trigscript.py` to eudplib.
+ * nothing about eudplib decided yet. `structured.ts` emits it from the TS AST,
+ * `python/trigscript.py` lowers it to eudplib, `simulateIr.ts` interprets it.
  * Plain data, JSON-serialisable (`eud.ts#serializeIr`); `docs/ir.md` is the reference.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 
-export const IR_VERSION = 1;
+/** 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone. */
+export const IR_VERSION = 2;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -89,13 +90,14 @@ export type Stmt =
   | { kind: "continue"; at: At; label: string }
   /** Inside an inlined call: leaves it, writing the result first when there is one. */
   | { kind: "return"; value?: NumExpr | BoolExpr; at: At; label: string }
+  /** `cycles` is a count of frames (`frames(n)`; `cycles(n)` is the older word for the same). */
   | { kind: "sleep"; ms?: number; cycles?: number; at: At; label: string }
   /** A trigger action; `variable` names a field that takes an expression's value instead of the record's. */
   | { kind: "action"; record: ActionRecord; variable?: { field: keyof ActionRecord; bits: 8 | 32; name: string; expr: NumExpr }; at: At; label: string }
   | { kind: "call"; call: Call; at: At; label: string }
   /** A block only for scoping; nothing of its own. */
   | { kind: "block"; body: Stmt[]; at: At }
-  /** A cost hint for the editor, tied to a line. */
+  /** A word for the editor about a line: a loop unrolled when the script was built. */
   | { kind: "remark"; text: string; short?: string; at: At };
 
 export interface Program {
@@ -104,8 +106,6 @@ export interface Program {
   owner: number;
   owners: number[];
   perPlayer: boolean;
-  /** How many trigger cycles a second the classic target has (hyper triggers or not), for `sleep(seconds(n))`. */
-  cyclesPerSecond: number;
   body: Stmt[];
   at: At;
 }

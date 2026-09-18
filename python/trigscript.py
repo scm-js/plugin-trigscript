@@ -2,27 +2,32 @@
 [trigscript]
 ir : /work/files/trigscript.json
 
-TrigScript's Remastered target: the euddraft plugin that lowers the compiler's IR — data,
-never code — into eudplib. The IR file is what the plugin's compiler wrote (docs/ir.md);
+TrigScript's programs: the euddraft plugin that lowers the compiler's IR — data, never
+code — into eudplib. The IR file is what the plugin's compiler wrote (docs/ir.md);
 this module is handed to the eudplib library plugin as a source with every build, so the
 two halves of the IR version are always the same build.
 
 A program is a coroutine the game runs every frame. Its body is lowered to straight-line
-eudplib triggers with jumps between labels (the same shape the classic backend's state
-machine has): `if` / `while` / `switch` become conditional jumps, and `sleep` stores the
-label to resume at in a state variable, sets a frame counter, and leaves the frame. The
-frame's entry counts the wait down, then jumps to the stored label. A per-player program
-runs once per human player each frame with CurrentPlayer set, its variables and its state
-as 12-slot arrays indexed by the player.
+eudplib triggers with jumps between labels: `if` / `while` / `switch` become conditional
+jumps, and `sleep` stores the label to resume at in a state variable, sets a frame counter,
+and leaves the frame. The frame's entry counts the wait down, then jumps to the stored
+label. A program runs for the players it is owned by, as a trigger would: one owner runs
+it as that player while that player is in the game; several owners, All Players or a force
+run it once each frame for every such player who is in the game, CurrentPlayer set, its
+variables and its state as 12-slot arrays indexed by the player.
 
-Numbers keep the classic contract: 32-bit unsigned, an expression's exact value stored
+Text is written out in the IR: an action's `text` or `wav` is the string itself, which
+eudplib adds to the built map's string table, or a number when the script named an index
+of the map's own. The map the user edits never holds a program's strings.
+
+Numbers keep one contract with the simulator: 32-bit unsigned, an expression's exact value stored
 below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
 """
 import json
 
 from eudplib import *
 
-IR_VERSION = 1
+IR_VERSION = 2
 FRAMES_PER_SECOND = 24
 # The state of a program whose body ended: nothing resumes it.
 DONE = 0xFFFFFFFF
@@ -107,6 +112,7 @@ class Lowering:
         self.p = program
         self.per_player = bool(program.get("perPlayer"))
         self.owner = int(program.get("owner", 0))
+        self.slots = owner_slots(program)
         self.player = None
         self.vars = {}
         self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
@@ -152,45 +158,53 @@ class Lowering:
 
     # ── numbers: an int or an EUDVariable ──
     def linear(self, e, pos, neg, sign):
-        """Flatten + and - into positive and negative terms; anything else is one term."""
+        """Flatten + and - into positive and negative terms; anything else is one term. A constant
+        below zero is a term of the other sign: -1 is "subtract 1", never 0xFFFFFFFF."""
         k = e["kind"]
         if k == "binary" and e["op"] in ("+", "-"):
             self.linear(e["left"], pos, neg, sign)
             self.linear(e["right"], pos, neg, sign if e["op"] == "+" else -sign)
         elif k == "unary":
             self.linear(e["expr"], pos, neg, -sign)
+        elif k == "const" and e["value"] < 0:
+            (neg if sign > 0 else pos).append(int(-e["value"]))
         else:
             (pos if sign > 0 else neg).append(self.term(e))
 
+    @staticmethod
+    def total(terms):
+        """The sum of a side: an int when every term is one, else a variable (additions wrap at 2^32)."""
+        const = sum(t for t in terms if isinstance(t, int))
+        variables = [t for t in terms if not isinstance(t, int)]
+        if not variables:
+            return const
+        acc = fresh(const & U32)
+        for t in variables:
+            acc += t
+        return acc
+
+    def difference(self, pos, neg, absolute=False):
+        """sum(pos) - sum(neg), stopping at 0 — or, with `absolute`, the distance between the two."""
+        p, n = self.total(pos), self.total(neg)
+        if isinstance(p, int) and isinstance(n, int):
+            return (abs(p - n) if absolute else max(p - n, 0)) & U32
+        if isinstance(n, int) and n == 0:
+            return p
+        r = EUDVariable()
+        pv, nv = as_var(p), as_var(n)
+        if EUDIf()(pv >= nv):
+            r << pv - nv
+        if EUDElse()():
+            r << (nv - pv if absolute else 0)
+        EUDEndIf()
+        return r
+
     def num(self, e):
         k = e["kind"]
-        if k == "unary" or (k == "binary" and e["op"] in ("+", "-")):
+        if k == "unary" or (k == "binary" and e["op"] in ("+", "-")) or (k == "const" and e["value"] < 0):
             pos, neg = [], []
             self.linear(e, pos, neg, 1)
-            cp = sum(t for t in pos if isinstance(t, int))
-            cn = sum(t for t in neg if isinstance(t, int))
-            vp = [t for t in pos if not isinstance(t, int)]
-            vn = [t for t in neg if not isinstance(t, int)]
-            if not vp and not vn:
-                return max(cp - cn, 0) & U32
-            if not vn and cn == 0:
-                acc = fresh(cp & U32)
-                for t in vp:
-                    acc += t
-                return acc
-            acc = fresh(cp & U32)
-            for t in vp:
-                acc += t
-            sub = fresh(cn & U32)
-            for t in vn:
-                sub += t
-            r = EUDVariable()
-            if EUDIf()(acc >= sub):
-                r << acc - sub
-            if EUDElse()():
-                r << 0
-            EUDEndIf()
-            return r
+            return self.difference(pos, neg)
         return self.term(e)
 
     def term(self, e):
@@ -210,8 +224,19 @@ class Lowering:
                 return (a // b if op == "/" else a % b) & U32
             if op == "*":
                 return f_mul(as_var(a), as_var(b))
-            q, r = f_div(as_var(a), as_var(b))
-            return q if op == "/" else r
+            if isinstance(b, int):
+                if b == 0:
+                    raise Fail("trigscript: division by zero%s" % where(e))
+                q, r = f_div(as_var(a), b)
+                return q if op == "/" else r
+            # A divisor that is 0 in the game gives 0, as the simulator does; f_div alone would answer 0xFFFFFFFF.
+            out = fresh(0)
+            bv = as_var(b)
+            if EUDIf()(bv >= 1):
+                q, r = f_div(as_var(a), bv)
+                out << (q if op == "/" else r)
+            EUDEndIf()
+            return out
         if k == "unary":
             return self.num(e)
         if k == "ternary":
@@ -222,11 +247,14 @@ class Lowering:
                 t << self.num(e["whenFalse"])
             EUDEndIf()
             return t
+        if k == "intrinsic" and e["name"] == "abs":
+            # The distance between what the expression adds and what it subtracts: abs(b - a) is |b - a|, not 0 when a is larger.
+            pos, neg = [], []
+            self.linear(e["args"][0], pos, neg, 1)
+            return self.difference(pos, neg, absolute=True)
         if k == "intrinsic":
             args = [self.num(a) for a in e["args"]]
             name = e["name"]
-            if name == "abs":
-                return args[0]  # unsigned: a stored value is never negative
             a, b = args
             if isinstance(a, int) and isinstance(b, int):
                 return min(a, b) if name == "min" else max(a, b)
@@ -254,12 +282,19 @@ class Lowering:
         if k == "test":
             return as_var(self.num(e["expr"])) >= 1
         if k == "compare":
-            a, b = self.num(e["left"]), self.num(e["right"])
+            # What either side subtracts is added to the other, so a - b == 0 asks whether a == b
+            # and x >= -1 is true: neither side stops at 0 on its own, as it would were it stored.
+            left, right = [], []
+            self.linear(e["left"], left, right, 1)
+            self.linear(e["right"], right, left, 1)
+            a, b = self.total(left), self.total(right)
             op = e["op"]
             if isinstance(a, int) and isinstance(b, int):
                 return EUDVariable(1 if compare(a, op, b) else 0) >= 1  # initial: a constant, never written
             # One comparison, built once: a comparison between variables writes into its own
             # condition, and one that is built and dropped is an orphan eudplib refuses.
+            if isinstance(b, int):
+                b &= U32
             av = as_var(a)
             if op == "==":
                 return av == b
@@ -482,14 +517,15 @@ class Lowering:
     def action(self, st):
         r = st["record"]
         variable = st.get("variable")
-        fields = dict(locid1=r["location"], strid=r["text"], wavid=r["wav"], time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])
+        fields = dict(locid1=r["location"], strid=string_of(r["text"]), wavid=string_of(r["wav"]), time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])
         if variable is None:
             DoActions(Action(**fields))
             return
         value = as_var(self.num(variable["expr"]))
         field = variable["field"]
         if field == "modifier":
-            # A unit count: the byte field is not a variable's place, so the action is done once per unit.
+            # A unit count: the byte field is not a variable's place, so the action is done once per
+            # unit — as many as the variable says, 0 being none (in the record, 0 means "all").
             fields["amount"] = 1
             for _ in EUDLoopRange(0, value):
                 DoActions(Action(**fields))
@@ -542,14 +578,63 @@ class Lowering:
 
     def run(self):
         if self.per_player:
-            for p in EUDLoopPlayer("Human"):
+            for p in loop_players(self.slots):
                 self.player = p
                 f_setcurpl(p)
                 self.frame()
             self.player = None
         else:
-            f_setcurpl(self.owner if self.owner < 12 else 0)
-            self.frame()
+            # As a trigger owned by that player would: not at all once the player has left.
+            if EUDIf()(f_playerexist(self.slots[0])):
+                f_setcurpl(self.slots[0])
+                self.frame()
+            EUDEndIf()
+
+
+def string_of(value):
+    """An action's text or sound: the string itself (eudplib adds it to the map), or an index the script named."""
+    if isinstance(value, str):
+        return EncodeString(value) if value else 0
+    return int(value or 0)
+
+
+def owner_slots(program):
+    """The player slots a program runs for, from its owners and the map's player settings: a slot is
+    itself, All Players and a force are their human and computer players — who a trigger runs for."""
+    playing = lambda p: GetPlayerInfo(p).typestr in ("Human", "Computer")
+    slots = []
+    for o in program.get("owners", [program.get("owner", 0)]):
+        o = int(o)
+        if o < 8:
+            found = [o]
+        elif o == 17:
+            found = [p for p in range(8) if playing(p)]
+        elif 18 <= o <= 21:
+            found = [p for p in range(8) if playing(p) and GetPlayerInfo(p).force == o - 18]
+        else:
+            raise Fail("trigscript: a program runs for players 1 to 8, All Players or a force%s" % where(program))
+        for p in found:
+            if p not in slots:
+                slots.append(p)
+    if not slots:
+        raise Fail("trigscript: no human or computer player of this map is among the program's owners%s" % where(program))
+    return slots
+
+
+def loop_players(slots):
+    """Each of `slots` who is in the game, as an EUDVariable: EUDLoopPlayer, for a list of our own."""
+    start, end = min(slots), max(slots)
+    v = EUDVariable()
+    v << start
+    if EUDWhile()(v <= end):
+        for i in range(start, end):
+            if i not in slots:
+                EUDContinueIf(v == i)
+        EUDContinueIfNot(f_playerexist(v))
+        yield v
+        EUDSetContinuePoint()
+        v += 1
+    EUDEndWhile()
 
 
 def compare(a, op, b):

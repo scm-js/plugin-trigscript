@@ -1,8 +1,8 @@
 {
   "name": "TrigScript",
   "id": "trigscript",
-  "version": "2.6.1",
-  "description": "TypeScript kept inside the map and built into its triggers. Ordinary TypeScript — files, imports, helpers, loops — runs when you build and records one trigger per trigger() call; code inside program(() => { … }) runs in the game as a state machine of death counters, or, on the Remastered target, as EUD code built by eudplib through the eudplib plugin. Checked as you type against the map's own names, with a built-in simulator.",
+  "version": "3.0.0",
+  "description": "TypeScript kept inside the map. Ordinary TypeScript — files, imports, helpers, loops — runs when the script is applied and records one trigger per trigger() call: ordinary triggers that play on every version. Code inside program(() => { … }) runs in the game — variables, loops, functions, sleep — and is built into the map by the eudplib plugin when you save; a map with a program needs StarCraft: Remastered. Checked as you type against the map's own names, with a built-in simulator.",
   "author": "Jeany",
   "homepage": "https://github.com/scm-js/plugin-trigscript",
   "entry": "plugin.ts",

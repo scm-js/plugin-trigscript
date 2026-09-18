@@ -1,5 +1,5 @@
 /**
- * The Remastered target end to end under Node: fixture scripts compiled to IR, the IR
+ * Programs end to end under Node: fixture scripts compiled to IR, the IR
  * and the map handed to the eudplib plugin's command-line builder (the same worker the
  * editor runs), the built map opened again. Skipped unless a plugin-eudplib checkout is
  * at `EUDPLIB_DIR` or beside this repository.
@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { compileScript } from "../compiler/compiler";
-import { checkForTarget, serializeIr } from "../compiler/eud";
+import { serializeIr } from "../compiler/eud";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 
@@ -29,8 +29,8 @@ const FIXTURES: Record<string, string> = {
     while (true) {
       n += 1;
       gold = n * 5;
-      if (gold >= 50 && n % 2 == 0) { setResources(P1, "add", gold, "ore"); }
-      sleep(cycles(24));
+      if (gold >= 50 && n % 2 == 0) { setResources(P1, "add", gold, "ore"); displayText("paid"); }
+      sleep(frames(24));
     }
   });`,
   nested: `program(() => {
@@ -40,7 +40,7 @@ const FIXTURES: Record<string, string> = {
     while (true) {
       i = 0;
       while (i < 3) {
-        if (lives > 0) { sleep(cycles(2)); lives -= 1; }
+        if (lives > 0) { sleep(frames(2)); lives -= 1; }
         else { lives = heal(lives); }
         i++;
       }
@@ -49,13 +49,24 @@ const FIXTURES: Record<string, string> = {
       sleep(seconds(1));
     }
   });`,
+  arithmetic: `program(() => {
+    let a = 7; let b = 3; let q = 0;
+    while (true) {
+      q = a / b + a % b + a * b;
+      if (a - b == 0 || Math.abs(b - a) > 3 || a >= -1) { q = Math.min(q, a) + Math.max(b, 2); }
+      b = q / (b - b);
+      createUnit(P1, units.TerranMarine, a, locations.Anywhere);
+      playWav("sound\\\\glue\\\\mousedown2.wav", 0);
+      sleep(seconds(5));
+    }
+  }, { owner: players.Force1 });`,
   perPlayer: `program(() => {
     let mine = 0;
     let total = shared(0);
     while (true) {
       mine += 1; total += 1;
       if (mine > total / 2) { mine = 0; }
-      sleep(cycles(12));
+      sleep(frames(12));
     }
   }, { owner: AllPlayers });`,
 };
@@ -64,8 +75,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   expect(r.ir.length).toBe(1);
-  expect(checkForTarget(r.ir[0], "remastered")).toEqual([]);
-  const ir = serializeIr(r.ir, (local) => local); // No text in these fixtures.
+  const ir = serializeIr(r.ir, r.strings);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
   const pluginsPath = join(dir, "plugins.json");
@@ -81,7 +91,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   return { out, triggers: m ? Number(m[1]) : 0 };
 }
 
-describe.skipIf(!have)("the Remastered target builds through the eudplib plugin", () => {
+describe.skipIf(!have)("programs build through the eudplib plugin", () => {
   for (const [name, src] of Object.entries(FIXTURES)) {
     it(`${name}: compiles to IR, builds, and the output opens with the payload's triggers`, () => {
       const { out, triggers } = build(name, src);
@@ -92,18 +102,13 @@ describe.skipIf(!have)("the Remastered target builds through the eudplib plugin"
   }
 });
 
-describe("the Remastered target's checks", () => {
-  it("refuses a loop that never sleeps and never moves", () => {
-    const r = compileScript(ts, { "main.ts": `program(() => { let n = 0; while (true) { n += 1; } });` }, NAMES, { lib: LIB });
+describe("the IR as the lowering reads it", () => {
+  it("writes a program's text and sounds out, and keeps an index the script named", () => {
+    const r = compileScript(ts, { "main.ts": `program(() => { displayText("hello"); playWav("sound\\\\x.wav", 0); });` }, NAMES, { lib: LIB });
     expect(r.diagnostics).toEqual([]);
-    const problems = checkForTarget(r.ir[0], "remastered");
-    expect(problems.length).toBe(1);
-    expect(problems[0].message).toMatch(/sleep/);
-    expect(problems[0].at.line).toBe(1);
-  });
-  it("accepts a loop over a variable the body changes, and a loop that sleeps on every path", () => {
-    const r = compileScript(ts, { "main.ts": `program(() => { let i = 0; while (i < 3) { i++; } while (true) { if (i > 5) { sleep(cycles(1)); } else { sleep(cycles(2)); } } });` }, NAMES, { lib: LIB });
-    expect(r.diagnostics).toEqual([]);
-    expect(checkForTarget(r.ir[0], "remastered")).toEqual([]);
+    const ir = JSON.parse(serializeIr(r.ir, r.strings));
+    const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
+    expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
+    expect(ir.version).toBe(2);
   });
 });

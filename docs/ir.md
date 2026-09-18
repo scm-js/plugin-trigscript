@@ -1,11 +1,12 @@
 # The TrigScript IR
 
-What a `program(() => { … })` body means, written down as data so that more than one
-backend can build it. The compiler's front end (`compiler/structured.ts`) turns the
-TypeScript into this; the classic backend (`compiler/classic.ts`) lowers it to
-death-counter triggers, and `python/trigscript.py` lowers it to eudplib for the
-Remastered target. Version 1. The types are in `compiler/ir.ts`; this is the reference
-for anyone reading or writing a backend.
+What a `program(() => { … })` body means, written down as data. The compiler's front end
+(`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
+it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
+Simulate and the tests. **Version 2** (1 had the map's string indices in the records and a
+`cyclesPerSecond` on the program, for the death-counter backend 3.0 removed). The types
+are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
+another.
 
 ## What is settled before the IR
 
@@ -25,23 +26,23 @@ Everything TypeScript-specific is gone by the time a program reaches the IR:
 - `once()` / `rose()` are `edge` expressions; `random()` is a `random` expression;
   `clamp(a, lo, hi)` is `min(max(a, lo), hi)`.
 
-What is *not* settled is anything a target decides: the width a temp needs, what a
-division by a variable costs (the classic target refuses it, eudplib divides), how a
-`sleep` parks the program, what a loop's back edge costs.
+What is *not* settled is anything the lowering decides: what a temporary is, how a
+`sleep` parks the program, how a per-player program finds its players.
 
 ## Programs
 
 ```
-Program { version, name?, owner, owners, perPlayer, cyclesPerSecond, body: Stmt[], at }
+Program { version, name?, owner, owners, perPlayer, body: Stmt[], at }
 ```
 
-`owner` is the player the classic target's triggers run as; `owners` every player group
-the program was declared for; `perPlayer` whether each player has variables of their own.
-`cyclesPerSecond` is what the classic target makes of `sleep(seconds(n))` (12 with hyper
-triggers, ½ without); the Remastered target runs every frame.
+`owner` is the first player slot among the owners (what a simulation runs the program
+as); `owners` every player group the program was declared for — slots 0–7, All Players
+(17) or a force (18–21), which the lowering resolves to the map's human and computer
+players; `perPlayer` whether each player has variables of their own. A program runs every
+frame; `sleep`'s `cycles` counts frames and its `ms` is twenty-four frames a second.
 
 Every node carries `at: { file, line, column }`, 1-based, and most statements a `label`,
-the text a generated trigger's comment shows ("L12: while (x < 3)").
+the statement as the source has it ("L12: while (x < 3)"), for a log or a debugger.
 
 ## Variables
 
@@ -74,7 +75,7 @@ storage in that order.
 | `action` | `record`, `variable?` | A trigger action. `variable` names a field of the record that takes an expression's value: `{ field, bits: 8 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, an amount with a modifier a 32-bit one. |
 | `call` | `call` | An inlined function as a statement (its result, if any, unused). |
 | `block` | `body` | Scoping only. |
-| `remark` | `text`, `short?` | A cost hint for the editor, tied to the line. |
+| `remark` | `text`, `short?` | A word for the editor about the line: a loop unrolled when the script was applied. |
 
 ## Expressions
 
@@ -118,15 +119,30 @@ Call { name?, at, label, params: { decl, init, label }[], result?: { decl, kind 
 initialised from the argument; a parameter the function only reads is the caller's own
 variable, already substituted in the body. `result` is the variable `return` writes.
 
-## Numbers, on every target
+## Numbers
 
-Unsigned 32-bit. An expression is its exact value; stored below zero it is 0, at 2³² or
-above it wraps. A `u8` / `u16` variable saturates at its maximum. `/` and `%` are whole
-division; the classic target takes a constant divisor only. Booleans are 0 or 1.
+Unsigned 32-bit, and the lowering and the interpreter agree on every case:
+
+- A run of `+` and `−` (unary minus and constants below zero included) is flattened into
+  what it adds and what it subtracts. Each side is totalled — exactly while every term is
+  a constant, wrapping at 2³² once a variable is part of it — and the value is the
+  difference, stopping at 0.
+- A comparison flattens both sides together: what the left subtracts is added to the
+  right and the other way round, then the two totals are compared. `a - b < 0` is true
+  when `b` is larger; `x >= -1` is true.
+- `abs(e)` is the distance between what `e` adds and what it subtracts.
+- `*` wraps at 2³². `/` and `%` round down; a constant divisor must be a whole number of
+  at least 1 (the compiler checks), a variable divisor that is 0 in the game gives 0.
+- Stored into a variable, a value at 2³² or above wraps and a `u8` / `u16` stops at its
+  maximum. Booleans are 0 or 1.
+- An action's variable `modifier` (a unit count) means that many units: the lowering does
+  the action once for each, so 0 is none and 300 is 300.
 
 ## Records
 
 `ActionRecord` and `ConditionRecord` are the map's own trigger records, as
 `vendor/triggers.ts` names their fields. Inside the compiler an action's `text` and
 `wav` hold *local* string ids (into the compile's `strings`); `serializeIr` in
-`compiler/eud.ts` writes the JSON with the map's indices in their place.
+`compiler/eud.ts` writes the JSON with the text itself in their place — eudplib adds it
+to the built map's string table, so a program's strings never enter the map the user
+edits — or a number where the script named an index of the map's own.

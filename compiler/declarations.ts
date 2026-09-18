@@ -65,7 +65,7 @@ ${kw}interface Condition { readonly __condition: true; }
 ${kw}interface Action { readonly __action: true; }
 /** A trigger, as returned by trigger(). */
 ${kw}interface Trigger { readonly __trigger: true; }
-/** A length of time, from seconds(), minutes() or cycles(): what sleep() takes. */
+/** A length of time, from seconds(), minutes() or frames(): what sleep() takes. */
 ${kw}interface Duration { readonly __duration: true; }
 /** Conditions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
 ${kw}type Conditions = readonly (Condition | Conditions | false | null | undefined)[];
@@ -86,10 +86,6 @@ ${kw}interface ProgramOptions {
    * their own copy (a variable declared with shared() is one cell they all share).
    */
   owner?: Player | readonly Player[];
-  /** Put a Comment action naming the source line on every generated trigger (default true). */
-  comments?: boolean;
-  /** Unit types whose death counters hold the variables (default: the "(Unused)" units, Cantina first). */
-  variableUnits?: readonly Unit[];
 }
 `;
 }
@@ -114,20 +110,22 @@ function functions(kw: string): string {
  */
 ${kw}function trigger(players: Player | readonly Player[], conditions: Conditions, actions: Actions, options?: TriggerOptions): Trigger;
 /**
- * Code that runs in the game: a state machine built from death counters. Inside the arrow,
- * variables holding numbers are death counters and booleans are switches (a const computed
- * from them is one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them);
- * if / else, while, do, for, switch, break, continue, ?: and functions (inlined per call,
- * arguments passed by value, return values allowed) all work; conditions go in an if or
- * while and actions stand as statements. One iteration of a while loop per trigger cycle; a
- * for with bounds known when you build is unrolled and runs at once; sleep(seconds(n))
- * pauses. A for…of over a list known when you build is unrolled too. Arithmetic: + −, × by a
- * constant, / and % by a constant, Math.min / max / abs, clamp(); × between variables is
- * possible but costly. Everything the body reads from outside (constants, helpers,
+ * Code that runs in the game, every frame, from where it left off. Inside the arrow,
+ * variables hold numbers (32-bit, never below 0) and booleans (a const computed from them is
+ * one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them); if / else,
+ * while, do, for, switch, break, continue, ?: and functions (inlined per call, arguments
+ * passed by value, return values allowed) all work; conditions go in an if or while and
+ * actions stand as statements. The body runs until it sleeps or ends, all within one frame:
+ * a loop runs to completion at once, so a loop that goes on for ever needs a sleep() inside
+ * it — \`while (true) { …; sleep(frames(1)); }\` is a game loop. Arithmetic: + − × / %,
+ * Math.min / max / abs, clamp(). Everything the body reads from outside (constants, helpers,
  * conditions, actions) is computed when you build — the editor underlines those parts — so
  * it cannot depend on the variables, except the amount of setResources / setDeaths /
  * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
  * giveUnits, which can be a variable.
+ *
+ * A map with a program in it needs StarCraft: Remastered: the programs are built into the
+ * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
  */
 ${kw}function program(body: () => void, options?: ProgramOptions): void;
 /**
@@ -139,13 +137,15 @@ ${kw}function program(body: () => void, options?: ProgramOptions): void;
 ${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
 /** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
 ${kw}function hyperTriggers(owner?: Player): void;
-/** A coin toss (Randomize Switch), inside program() only: \`flag = random()\`, \`if (random() && …)\`. */
+/** A coin toss, inside program() only: \`flag = random()\`, \`if (random() && …)\`. */
 ${kw}function random(): boolean;
-/** A length of time in seconds, for sleep(). Turned into trigger cycles when the program is built: twelve a second with hyper triggers on the map, one every two seconds without (at Fastest). */
+/** A length of time in seconds, for sleep(): twenty-four frames a second at Fastest. */
 ${kw}function seconds(n: number): Duration;
 /** A length of time in minutes, for sleep(). */
 ${kw}function minutes(n: number): Duration;
-/** A length of time in trigger cycles, for sleep(): one cycle is one pass over the trigger list. */
+/** A length of time in frames of the game, for sleep(): sleep(frames(1)) ends this frame's turn and goes on in the next. */
+${kw}function frames(n: number): Duration;
+/** @deprecated The same as frames(): a program's clock is the frame. */
 ${kw}function cycles(n: number): Duration;
 /**
  * Pause the program, inside program() only: the statements after it run that much later, and nothing
@@ -153,7 +153,7 @@ ${kw}function cycles(n: number): Duration;
  * is a wave every fifteen seconds. Unlike wait(), it stalls no other trigger.
  */
 ${kw}function sleep(duration: Duration): void;
-/** True on the cycle its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(…)))\`. */
+/** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(…)))\`. */
 ${kw}function rose(condition: Condition | boolean): boolean;
 /** True the first time its condition holds, never again. Inside program(), in an if. */
 ${kw}function once(condition: Condition | boolean): boolean;

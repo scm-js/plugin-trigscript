@@ -2,8 +2,8 @@
  * The structured level's front end: walks a `program(() => { … })` body — `let`
  * variables and records, assignments, `if` / `while` / `do` / `for` / `switch`,
  * `break` / `continue`, action statements, calls to functions declared in the body and
- * to `game()` functions from any file — and emits the IR (`ir.ts`) a backend lowers:
- * `classic.ts` to death-counter triggers, `python/trigscript.py` to eudplib.
+ * to `game()` functions from any file — and emits the IR (`ir.ts`), which
+ * `python/trigscript.py` lowers to eudplib when the map is saved.
  *
  * What the language means, in the game's terms:
  *
@@ -12,19 +12,18 @@
  *   field a variable of its own. A `const` is computed when the script is built when it
  *   can be, and is a variable like a `let` (one the checker keeps from being reassigned)
  *   when its value needs the program's variables.
- * - Statements run in order; on the classic target a `while` loop's back edge waits for
- *   the next trigger cycle, so `while (true) { … }` is a game loop running once per
- *   cycle. A `for` whose start, bound and step are known when the script is built is
- *   unrolled and runs in the cycle it is reached in, as the source reads.
+ * - Statements run in order, within one frame, until a `sleep()` or the end of the body;
+ *   `while (true) { …; sleep(frames(1)); }` is a game loop running once per frame. A `for`
+ *   whose start, bound and step are known when the script is built is unrolled, the loop
+ *   variable a value and not a variable of the program.
  * - `if (bring(…) && x >= 3 || !flag)`: conditions are trigger conditions, comparisons
  *   of variables with constants, comparisons between variables, `&&`, `||`, `!`,
  *   `random()`, `rose()`, `once()`. `&&` and `||` short-circuit: when the right side has
  *   an effect (an edge, a call of a game function), it is lowered as control flow and
  *   only runs when the left side has not decided.
  * - `x = y + 3`, `x += y`, `x++`, `x = y * 3`, `x = y / 4`, `y % 4`, `Math.min`, `Math.max`,
- *   `Math.abs`, `clamp()`, `c ? a : b`: arithmetic over variables; what each costs, and
- *   what a target cannot do (the classic target divides by constants only), is the
- *   backend's to say.
+ *   `Math.abs`, `clamp()`, `c ? a : b`: arithmetic over variables, each one call of
+ *   eudplib's underneath.
  * - Functions declared in the body, and `game()` functions, are inlined at each call.
  *   Arguments pass by value, as in TypeScript: a parameter bound to a build-time value
  *   is that value, one bound to a variable reads that variable directly when the
@@ -79,8 +78,6 @@ export interface StructuredContext {
   owner: number;
   owners: readonly number[];
   perPlayer: boolean;
-  /** How many trigger cycles a second is, for `sleep(seconds(n))`: twelve with hyper triggers, a half without. */
-  cyclesPerSecond: number;
   error(node: TS.Node, message: string, source?: "compiler" | "script"): void;
   /** The body of a `game()` function, from the value the run made for it; undefined when the compiler cannot place it. */
   resolve(fn: GameFunctionValue): Body | undefined;
@@ -161,7 +158,7 @@ export class Structured {
   run(): Emitted {
     const statements = this.body.plan.body.statements;
     const at = this.at(this.body.plan.body);
-    const program: Program = { version: IR_VERSION, ...(this.body.name ? { name: this.body.name } : {}), owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, cyclesPerSecond: this.c.cyclesPerSecond, body: [], at };
+    const program: Program = { version: IR_VERSION, ...(this.body.name ? { name: this.body.name } : {}), owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, body: [], at };
     this.nodes.set(program, this.body.plan.body);
     this.out = program.body;
     try {
@@ -518,7 +515,7 @@ export class Structured {
       }
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
-      if (!kind) { this.c.error(d, `Variables hold numbers (death counters), booleans (switches) or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
+      if (!kind) { this.c.error(d, `Variables hold numbers, booleans or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
       // `let total = shared(0)`: one cell for every player of a per-player program, initialised with the argument.
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
       if (shared && shared.arguments.length !== 1) { this.c.error(init, "shared() takes the initial value: shared(0) or shared(false)."); continue; }
@@ -616,10 +613,10 @@ export class Structured {
 
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   private sleepStatement(call: TS.CallExpression) {
-    if (call.arguments.length !== 1) { this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(cycles(5))."); return; }
+    if (call.arguments.length !== 1) { this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(frames(5))."); return; }
     const h = this.evaluate(call.arguments[0]);
     if (!h) { this.notConstant(call.arguments[0], "A duration"); return; }
-    if (!isDuration(h.value)) { this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or cycles(), got ${describe(h.value)}.`); return; }
+    if (!isDuration(h.value)) { this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or frames(), got ${describe(h.value)}.`); return; }
     const d = h.value;
     this.emit({ kind: "sleep", ...(d.cycles !== undefined ? { cycles: d.cycles } : {}), ...(d.ms !== undefined ? { ms: d.ms } : {}), at: this.at(call), label: this.label(call) }, call);
   }
@@ -761,7 +758,7 @@ export class Structured {
    * `for (let i = 0; i < 3; i++)` with the start, the bound and the step known when the
    * script is built, and `i` never assigned in the body: unrolled like a `for…of`, `i`
    * bound to each value in turn — the loop runs in the cycle it is reached in, as the
-   * source reads, and `i` costs no death counter. Null when the loop is not of that form.
+   * source reads, and `i` is no variable of the program. Null when the loop is not of that form.
    */
   private unrollable(s: TS.ForStatement): { decl: TS.VariableDeclaration; values: number[] } | null {
     const { ts } = this;
@@ -793,7 +790,7 @@ export class Structured {
     const values: number[] = [];
     for (let i = start; compareNumbers(i, op, bound); i += step) {
       values.push(i);
-      if (values.length > MAX_UNROLL) throw new LowerError(`This for loop unrolls to more than ${MAX_UNROLL} iterations. Loop over a variable instead — let i = 0; while (i < ${bound}) { …; i++ } runs one iteration per trigger cycle — or make the bound smaller.`);
+      if (values.length > MAX_UNROLL) throw new LowerError(`This for loop unrolls to more than ${MAX_UNROLL} iterations. Loop over a variable instead — let i = 0; while (i < ${bound}) { …; i++ } is a loop in the game, not ${MAX_UNROLL} copies of its body — or make the bound smaller.`);
     }
     return { decl, values };
   }
@@ -802,7 +799,7 @@ export class Structured {
     const { ts } = this;
     const unrolled = this.unrollable(s);
     if (unrolled) {
-      this.emit({ kind: "remark", text: `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"} in one trigger cycle, the loop variable a value known when the script is built.`, short: `unrolled ×${unrolled.values.length}`, at: this.at(s) }, s);
+      this.emit({ kind: "remark", text: `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"}, the loop variable a value known when the script is built.`, short: `unrolled ×${unrolled.values.length}`, at: this.at(s) }, s);
       this.unrolledLoop(unrolled.decl, unrolled.values, s.statement, s, ctx);
       return;
     }
@@ -1068,7 +1065,7 @@ export class Structured {
     }
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
-      if (!op) { this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder by a constant."); return null; }
+      if (!op) { this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder."); return null; }
       const l = this.num(e.left);
       const r = this.num(e.right);
       if (!l || !r) return null;

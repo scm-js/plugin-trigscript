@@ -973,9 +973,6 @@ var UNIT_NAMES = [
   "Terran Vespene Gas Tank Type 1",
   "Terran Vespene Gas Tank Type 2"
 ];
-function unitName(id) {
-  return UNIT_NAMES[id] ?? `Unit #${id}`;
-}
 
 // compiler/names.ts
 var ANYWHERE_INDEX = 63;
@@ -1073,116 +1070,11 @@ function entryFor(t, value) {
 }
 
 // compiler/lower.ts
-var EACH_PLAYER = PlayerGroup.CurrentPlayer;
-var flagCell = (v) => ({ kind: "dc", name: v.name, player: EACH_PLAYER, unit: v.unit });
-var VARIABLE_UNITS = [181, 179, 180, 182, 183, 184, 185, 186, 187, 204, 91, 92, 119, 121, 145, 153, 158, 161];
 var PLAYER_SLOTS = 12;
-var dcKey = (player, unit) => unit * PLAYER_SLOTS + player;
-var Allocator = class {
-  usedDc = /* @__PURE__ */ new Set();
-  usedSw = /* @__PURE__ */ new Set();
-  variables = [];
-  constructor(options = {}) {
-    this.reserve(options.reservedDeaths ?? [], options.reservedSwitches ?? []);
-  }
-  /** Take cells out of the pool: something else uses them. */
-  reserve(deaths, switches) {
-    for (const [p, u] of deaths) this.usedDc.add(dcKey(p, u));
-    for (const s of switches) this.usedSw.add(s);
-  }
-  /** The first free death counter of the pool (the default pool when none is given). */
-  dc(name, units = VARIABLE_UNITS) {
-    for (const unit of units.length ? units : VARIABLE_UNITS) {
-      for (let player = 0; player < PLAYER_SLOTS; player++) {
-        const key = dcKey(player, unit);
-        if (this.usedDc.has(key)) continue;
-        this.usedDc.add(key);
-        const v = { kind: "dc", name, player, unit };
-        this.variables.push(v);
-        return v;
-      }
-    }
-    return null;
-  }
-  switch(name) {
-    for (let index = SWITCH_COUNT - 1; index >= 0; index--) {
-      if (this.usedSw.has(index)) continue;
-      this.usedSw.add(index);
-      const v = { kind: "switch", name, index };
-      this.variables.push(v);
-      return v;
-    }
-    return null;
-  }
-  /** A unit of the pool none of whose twelve cells is taken, all of them taken now; undefined when there is none. */
-  freeRow(units) {
-    for (const unit of units.length ? units : VARIABLE_UNITS) {
-      let free = true;
-      for (let player = 0; player < PLAYER_SLOTS && free; player++) if (this.usedDc.has(dcKey(player, unit))) free = false;
-      if (!free) continue;
-      for (let player = 0; player < PLAYER_SLOTS; player++) this.usedDc.add(dcKey(player, unit));
-      return unit;
-    }
-    return void 0;
-  }
-  /** A per-player number: a whole row of the pool, read and written as CurrentPlayer. */
-  row(name, units = VARIABLE_UNITS) {
-    const unit = this.freeRow(units);
-    if (unit === void 0) return null;
-    const v = { kind: "dc", name, player: EACH_PLAYER, unit };
-    this.variables.push(v);
-    return v;
-  }
-  /** A per-player boolean: a row too. */
-  flag(name, units = VARIABLE_UNITS) {
-    const unit = this.freeRow(units);
-    if (unit === void 0) return null;
-    const v = { kind: "flag", name, unit };
-    this.variables.push(v);
-    return v;
-  }
-};
-function storageLabel(v) {
-  if (v.kind === "switch") return `Switch ${v.index + 1}`;
-  if (v.kind === "flag" || v.player === EACH_PLAYER) return `each player \xB7 ${unitName(v.unit)}`;
-  return `P${v.player + 1} \xB7 ${unitName(v.unit)}`;
-}
-function deathsCondition(v, comparison, amount) {
-  return { ...emptyCondition(), type: ConditionType.Deaths, player: v.player, unitId: v.unit, comparison, amount: amount >>> 0, flags: ConditionFlag.UnitTypeUsed };
-}
-function setDeaths(v, modifier, amount) {
-  return { ...emptyAction(), type: ActionType.SetDeaths, player: v.player, unitId: v.unit, modifier, target: amount >>> 0, flags: ActionFlag.UnitTypeUsed };
-}
-function switchCondition(v, set) {
-  return { ...emptyCondition(), type: ConditionType.Switch, resource: v.index, comparison: set ? SwitchState.Set : SwitchState.Cleared };
-}
-function setSwitch(v, action2) {
-  return { ...emptyAction(), type: ActionType.SetSwitch, target: v.index, modifier: action2 };
-}
-function boolCondition(v, set) {
-  if (v.kind === "switch") return switchCondition(v, set);
-  return deathsCondition(flagCell(v), set ? Comparison.AtLeast : Comparison.Exactly, set ? 1 : 0);
-}
-function setBool(v, on) {
-  if (v.kind === "switch") return setSwitch(v, on ? SwitchAction.Set : SwitchAction.Clear);
-  return setDeaths(flagCell(v), SetModifier.SetTo, on ? 1 : 0);
-}
 var U32_MAX = 4294967295;
-var bitsOf = (v) => v.bits ?? 32;
-var maxOf = (bits) => bits >= 32 ? U32_MAX : 2 ** bits - 1;
-var bitLength = (n) => n <= 0 ? 0 : Math.min(32, Math.floor(Math.log2(n)) + 1);
-function widthOf(expr) {
-  const widths = expr.terms.filter((t) => t.k > 0).map((t) => bitsOf(t.v) + bitLength(t.k) - 1);
-  if (expr.c > 0) widths.push(bitLength(expr.c));
-  if (widths.length === 0) return 32;
-  return Math.min(32, Math.max(...widths) + bitLength(widths.length - 1));
-}
-var TRUE = { kind: "const", value: true };
-var FALSE = { kind: "const", value: false };
-var cond = (c2) => ({ kind: "cond", cond: c2 });
-var not = (expr) => ({ kind: "not", expr });
-var and = (items) => ({ kind: "and", items });
-var or = (items) => ({ kind: "or", items });
+var LowerError = class extends Error {
+};
+var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
 function negateCondition(c2) {
   if (c2.type === ConditionType.Always) return [{ ...c2, type: ConditionType.Never }];
   if (c2.type === ConditionType.Never) return [{ ...c2, type: ConditionType.Always }];
@@ -1207,507 +1099,6 @@ function negateCondition(c2) {
     }
     default:
       return null;
-  }
-}
-var MAX_PRODUCTS = 256;
-function toDnf(b) {
-  switch (b.kind) {
-    case "const":
-      return b.value ? [[]] : [];
-    case "cond":
-      return [[{ cond: b.cond, negative: false }]];
-    case "or":
-      return b.items.flatMap(toDnf);
-    case "and": {
-      let out = [[]];
-      for (const item of b.items) {
-        const rhs = toDnf(item);
-        const next = [];
-        for (const p of out) for (const q of rhs) next.push([...p, ...q]);
-        if (next.length > MAX_PRODUCTS) throw new LowerError(`This condition expands to more than ${MAX_PRODUCTS} cases; split it into nested ifs.`);
-        out = next;
-      }
-      return out;
-    }
-    case "not": {
-      const e = b.expr;
-      switch (e.kind) {
-        case "const":
-          return e.value ? [] : [[]];
-        case "not":
-          return toDnf(e.expr);
-        case "and":
-          return toDnf(or(e.items.map(not)));
-        case "or":
-          return toDnf(and(e.items.map(not)));
-        case "cond": {
-          const flipped = negateCondition(e.cond);
-          return flipped ? flipped.map((c2) => [{ cond: c2, negative: false }]) : [[{ cond: e.cond, negative: true }]];
-        }
-      }
-    }
-  }
-}
-var LowerError = class extends Error {
-};
-var DECOMPOSITION_NOTE = "A variable-to-variable operation is the binary decomposition: 32 steps in and 32 back per variable. Declare the variable u8 or u16 for 8 + 8 or 16 + 16.";
-var STEP_ACTIONS = MAX_ACTIONS - 2;
-var STEP_CONDITIONS = MAX_CONDITIONS - 1;
-var Machine = class {
-  owners;
-  perPlayer;
-  allocator;
-  units;
-  triggers = [];
-  /** Per trigger, the source file and line it came from. */
-  sources = [];
-  /** The file the statements being lowered are in: the program's, or an inlined game function's. */
-  file = "";
-  pc;
-  /** Per source line (`file\0line`), a note on why it costs what it costs (a decomposition) and, for a loop, a short label, for the editor's cost hints. */
-  notes = /* @__PURE__ */ new Map();
-  /** The state whose steps are being emitted. State 0 is the entry: every counter is 0 at game start. */
-  state = 0;
-  nextState = 1;
-  stepsInState = 0;
-  pending = [];
-  pendingLine = 0;
-  pendingLabel = "";
-  comment;
-  temps = [];
-  tempsInUse = 0;
-  scratches = [];
-  constructor(options) {
-    this.owners = options.owners;
-    this.perPlayer = options.perPlayer;
-    this.allocator = options.allocator;
-    this.units = options.units ?? [];
-    this.comment = options.comment;
-    const pc = this.dc("(program counter)");
-    if (!pc) throw new LowerError(this.perPlayer ? "No unit of the pool has all twelve death counters free for the program counter." : "No death counter is free for the program counter.");
-    this.pc = pc;
-  }
-  /** A number for this program, from its own pool: a row when the program runs per player. */
-  dc(name) {
-    return this.perPlayer ? this.allocator.row(name, this.units) : this.allocator.dc(name, this.units);
-  }
-  /** A number every player of a per-player program shares: one cell. */
-  shared(name) {
-    return this.allocator.dc(name, this.units);
-  }
-  /** A boolean for this program: a switch, or a flag row when the program runs per player. */
-  bool(name) {
-    return this.perPlayer ? this.allocator.flag(name, this.units) : this.allocator.switch(name);
-  }
-  /** A switch for this program, whoever it runs for (scratch for `random()`, and `shared` booleans). */
-  switch(name) {
-    return this.allocator.switch(name);
-  }
-  fresh() {
-    return this.nextState++;
-  }
-  /** The state that runs when the program has finished: nothing tests it. */
-  get halt() {
-    return 4294967295;
-  }
-  enter(state) {
-    this.state = state;
-    this.stepsInState = 0;
-  }
-  /**
-   * Scratch counters for arithmetic: acquired in a stack, zeroed on acquisition by the
-   * caller. `bits` is what the caller knows the value will fit in — the width a later
-   * decomposition of the temp uses — 32 when nothing is known.
-   */
-  temp(bits = 32) {
-    if (this.tempsInUse === this.temps.length) {
-      const t2 = this.dc(`(temporary ${this.temps.length + 1})`);
-      if (!t2) throw new LowerError("Out of death counters for temporaries.");
-      this.temps.push(t2);
-    }
-    const t = this.temps[this.tempsInUse++];
-    if (bits < 32) t.bits = bits;
-    else delete t.bits;
-    return t;
-  }
-  /**
-   * A note on a source line for the editor's cost hints, with a short label when the line
-   * is worth one on its own. The first note stays, except that a specific one (a division,
-   * a product, an action with a variable amount) replaces the general decomposition note.
-   */
-  remark(line, text, label, specific = false) {
-    const key = `${this.file}\0${line}`;
-    const had = this.notes.get(key);
-    if (had && !(specific && had.note === DECOMPOSITION_NOTE)) return;
-    this.notes.set(key, { note: text, ...label ? { label } : {} });
-  }
-  release(n = 1) {
-    this.tempsInUse -= n;
-  }
-  /** Scratch switches for `random()`: one per use within an expression, so two draws are independent. */
-  scratch(i) {
-    while (this.scratches.length <= i) {
-      const s = this.switch(`(scratch switch ${this.scratches.length + 1})`);
-      if (!s) throw new LowerError("Out of switches for a scratch switch.");
-      this.scratches.push(s);
-    }
-    return this.scratches[i];
-  }
-  raw(conds, actions, next, line, label) {
-    const t = emptyTrigger();
-    for (const o of this.owners) t.players[o] = 1;
-    t.flags = TriggerFlag.Preserve;
-    t.conditions = [deathsCondition(this.pc, Comparison.Exactly, this.state), ...conds];
-    if (this.comment && label) t.actions.push({ ...emptyAction(), type: ActionType.Comment, text: this.comment(label) });
-    t.actions.push(...actions);
-    if (next !== null) t.actions.push(setDeaths(this.pc, SetModifier.SetTo, next));
-    if (t.conditions.length > MAX_CONDITIONS) throw new LowerError(`A branch tests more than ${STEP_CONDITIONS} conditions at once; split it.`);
-    this.triggers.push(t);
-    this.sources.push({ file: this.file, line });
-    this.stepsInState++;
-  }
-  /** Queue an action for the current state; it is written out with the next step. */
-  action(a2, line, label) {
-    if (this.pending.length === 0) {
-      this.pendingLine = line;
-      this.pendingLabel = label;
-    } else if (this.pendingLabel !== label && !this.pendingLabel.endsWith(" \u2026")) this.pendingLabel += " \u2026";
-    this.pending.push(a2);
-    if (this.pending.length >= STEP_ACTIONS) this.flush();
-  }
-  flush() {
-    while (this.pending.length) this.raw([], this.pending.splice(0, STEP_ACTIONS), null, this.pendingLine, this.pendingLabel);
-  }
-  /** One trigger in the current state: extra conditions, actions, and optionally a jump. Pending actions go first. */
-  step(conds, actions, next, line, label) {
-    this.flush();
-    this.raw(conds, actions, next, line, label);
-  }
-  /** End the current state: write the pending actions and move to `target`. */
-  jump(target, line, label) {
-    while (this.pending.length > STEP_ACTIONS) this.raw([], this.pending.splice(0, STEP_ACTIONS), null, this.pendingLine, this.pendingLabel);
-    const carried = this.pending.length > 0;
-    this.raw([], this.pending.splice(0), target, carried ? this.pendingLine : line, carried ? `${this.pendingLabel} \u2192 ${label}` : label);
-  }
-  /** Jump to a fresh state and continue there. */
-  next(line, label) {
-    const s = this.fresh();
-    this.jump(s, line, label);
-    this.enter(s);
-    return s;
-  }
-  /**
-   * A loop header: the state a back edge returns to. When the current state is still empty
-   * it is the header itself — the common `while (true)` at the top of a program then needs
-   * no extra trigger.
-   */
-  loopHeader(line, label) {
-    if (this.stepsInState === 0 && this.pending.length === 0) return this.state;
-    return this.next(line, label);
-  }
-  /**
-   * Pause the program for `cycles` trigger cycles: a countdown in a temp, in a state of
-   * its own so nothing else of the program runs meanwhile. The finished test stands
-   * before the decrement, so `sleep(1)` resumes one cycle later, not at once.
-   */
-  sleep(cycles, line, label) {
-    const t = this.temp();
-    this.set(t, cycles, line, label);
-    this.next(line, label);
-    const after = this.fresh();
-    this.raw([deathsCondition(t, Comparison.Exactly, 0)], [], after, line, label);
-    this.raw([deathsCondition(t, Comparison.AtLeast, 1)], [setDeaths(t, SetModifier.Subtract, 1)], null, line, label);
-    this.enter(after);
-    this.release();
-  }
-  /* ── Arithmetic ── */
-  set(v, n, line, label) {
-    if (n > maxOf(bitsOf(v))) throw new LowerError(`${v.name} is a u${bitsOf(v)} and holds 0 \u2026 ${maxOf(bitsOf(v))}, not ${n}.`);
-    this.action(setDeaths(v, SetModifier.SetTo, n), line, label);
-  }
-  addConst(v, n, line, label) {
-    if (n === 0) return;
-    this.action(setDeaths(v, n > 0 ? SetModifier.Add : SetModifier.Subtract, Math.min(U32_MAX, Math.abs(n))), line, label);
-  }
-  /**
-   * After an expression was stored in a narrow variable: one trigger that saturates it at
-   * its maximum. Only the stored result is narrowed, never a running value — `a = a + b - 10`
-   * over `u8`s is the exact sum first, then 255 at most — so between the store and the
-   * guard the cell may briefly hold more, which nothing reads.
-   */
-  clamp(v, line, label) {
-    const bits = bitsOf(v);
-    if (bits >= 32) return;
-    this.step([deathsCondition(v, Comparison.AtLeast, 2 ** bits)], [setDeaths(v, SetModifier.SetTo, maxOf(bits))], null, line, label);
-  }
-  note(line, bits) {
-    if (bits >= 32) this.remark(line, DECOMPOSITION_NOTE);
-  }
-  /**
-   * `dst += k·src`: the binary decomposition of `src` over `bits` bits (its width, or what
-   * the caller knows the value fits in), each step adding `k` times the bit to `dst` — a
-   * negative `k` subtracts. `src` is intact afterwards, moved through a temp and back,
-   * unless the caller `consume`s it (a temp that is dead afterwards): then it is 0 and the
-   * operation costs half.
-   */
-  addVar(dst, src, k, line, label, bits = bitsOf(src), consume = false) {
-    if (k === 0) return;
-    this.note(line, bits);
-    if (dst.player === src.player && dst.unit === src.unit) {
-      const t2 = this.temp();
-      this.set(t2, 0, line, label);
-      this.addVar(t2, src, k, line, label, bits, false);
-      this.addVar(dst, t2, 1, line, label, Math.min(32, bits + bitLength(Math.abs(k))), true);
-      this.release();
-      return;
-    }
-    const mod = k > 0 ? SetModifier.Add : SetModifier.Subtract;
-    const amount = (bit) => k > 0 ? bit * k >>> 0 : Math.min(U32_MAX, bit * -k);
-    if (consume) {
-      for (let b = bits - 1; b >= 0; b--) {
-        const bit = 2 ** b;
-        this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, amount(bit))], null, line, label);
-      }
-      return;
-    }
-    const t = this.temp();
-    this.set(t, 0, line, label);
-    for (let b = bits - 1; b >= 0; b--) {
-      const bit = 2 ** b;
-      this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, amount(bit)), setDeaths(t, SetModifier.Add, bit)], null, line, label);
-    }
-    this.addVar(src, t, 1, line, label, bits, true);
-    this.release();
-  }
-  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. */
-  move(src, dst, line, label, bits = bitsOf(src)) {
-    this.addVar(dst, src, 1, line, label, bits, true);
-  }
-  /**
-   * `x = c + Σ k·v`, with the meaning the source has: the sum worked out exactly, then
-   * stored — below zero it is 0, at 2³² and above it wraps, and a `u8` / `u16` is
-   * saturated at its maximum *after* the whole sum. Every addition goes first and every
-   * subtraction after, whatever order the source wrote them in: the running value then only
-   * ever decreases through the subtractions, so it cannot touch zero unless the exact
-   * result is below zero, and the game's saturating subtraction bites exactly when the
-   * store would clamp. (`a = a + b - 5` with `a = 0`, `b = 10` is 5, not 10: subtracting
-   * the 5 first would saturate.) The one thing this cannot promise is a running sum of the
-   * additions past 2³² — the cell is 32 bits and there is no wider one — which wraps.
-   * Through a temp when `x` itself is a term anywhere but as the single leading `+x`.
-   */
-  assign(x, expr, line, label) {
-    const sameAs = (a2, b) => a2.player === b.player && a2.unit === b.unit;
-    const self = expr.terms.filter((t) => sameAs(t.v, x));
-    const others = expr.terms.filter((t) => !sameAs(t.v, x));
-    if (self.length === 1 && self[0].k === 1) {
-      this.accumulate(x, { c: expr.c, terms: others }, line, label);
-    } else if (self.length === 0) {
-      this.set(x, Math.max(0, expr.c), line, label);
-      this.accumulate(x, { c: Math.min(0, expr.c), terms: others }, line, label);
-    } else {
-      const t = this.temp();
-      this.evaluate(t, expr, line, label);
-      this.set(x, 0, line, label);
-      this.move(t, x, line, label, widthOf(expr));
-      this.release();
-    }
-    if (widthOf(expr) > bitsOf(x)) this.clamp(x, line, label);
-  }
-  /** Compute a linear expression into a temp (zeroed first); a temp is never narrowed. */
-  evaluate(t, expr, line, label) {
-    this.set(t, Math.max(0, expr.c), line, label);
-    this.accumulate(t, { c: Math.min(0, expr.c), terms: expr.terms }, line, label);
-  }
-  /** `v += expr` in the order `assign` describes: the additions, then the subtractions; no narrowing. */
-  accumulate(v, expr, line, label) {
-    if (expr.c > 0) this.addConst(v, expr.c, line, label);
-    for (const t of expr.terms) if (t.k > 0) this.addVar(v, t.v, t.k, line, label);
-    if (expr.c < 0) this.addConst(v, expr.c, line, label);
-    for (const t of expr.terms) if (t.k < 0) this.addVar(v, t.v, t.k, line, label);
-  }
-  /**
-   * `q = n / d`, `n = n % d` for a constant `d ≥ 1`: long division in binary, high bit
-   * first — `[n ≥ d·2ᵇ] → n −= d·2ᵇ, q += 2ᵇ` for every b where d·2ᵇ fits in 32 bits.
-   * `n` is consumed (a temp holding the dividend) and holds the remainder afterwards;
-   * `q` must be 0 before.
-   */
-  divConst(n, q, d, line, label, bits = bitsOf(n)) {
-    this.remark(line, `Division by a constant is a binary long division: one step per bit of the dividend (${bits}).`, void 0, true);
-    for (let b = bits - 1; b >= 0; b--) {
-      const chunk = d * 2 ** b;
-      if (chunk > U32_MAX) continue;
-      this.step([deathsCondition(n, Comparison.AtLeast, chunk)], [setDeaths(n, SetModifier.Subtract, chunk), setDeaths(q, SetModifier.Add, 2 ** b)], null, line, label);
-    }
-  }
-  /**
-   * `dst += a · b` between two variables: for every bit of `b` that is set, `dst += a·2ᵇ`
-   * (a decomposition of `a` each time), so it costs `bits(b) · (2·bits(a) + 3)` triggers —
-   * declare the variables `u8` or `u16` to keep it small. `a` and `b` are intact afterwards.
-   */
-  mulVar(dst, a2, b, line, label) {
-    const ba = bitsOf(a2);
-    const bb = bitsOf(b);
-    this.remark(line, `Multiplying two variables adds a\xB72\u1D47 once per set bit of b: ${bb} \xD7 (2\xB7${ba} + 3) triggers. Declare them u8 or u16 to keep it small.`, void 0, true);
-    let copy = null;
-    if (a2.player === b.player && a2.unit === b.unit) {
-      copy = this.temp(bb);
-      this.set(copy, 0, line, label);
-      this.addVar(copy, b, 1, line, label, bb);
-      b = copy;
-    }
-    const t = this.temp();
-    this.set(t, 0, line, label);
-    for (let k = bb - 1; k >= 0; k--) {
-      const bit = 2 ** k;
-      const add = this.fresh();
-      const next = this.fresh();
-      this.step([deathsCondition(b, Comparison.AtLeast, bit)], [setDeaths(b, SetModifier.Subtract, bit), setDeaths(t, SetModifier.Add, bit)], add, line, label);
-      this.jump(next, line, label);
-      this.enter(add);
-      this.addVar(dst, a2, bit, line, label, ba);
-      this.jump(next, line, label);
-      this.enter(next);
-    }
-    this.addVar(b, t, 1, line, label, bb, true);
-    this.release(copy ? 2 : 1);
-  }
-  /**
-   * An action done with a variable amount: the decomposition of `src` where each step's
-   * action is `record` with `field` set to `k·bit` — `setResources(P1, "add", n, "ore")`
-   * adds n ore; `createUnit(P2, unit, n, at)` creates n units, bit by bit (128, 64, …).
-   * A "set" modifier sets the field to 0 first and adds from there. `src` is intact
-   * afterwards unless `consume`d.
-   */
-  actionWithVar(record, field, src, bits, consume, line, label) {
-    let rec = { ...record };
-    const hasModifier = ACTIONS_WITH_MODIFIER.has(rec.type);
-    if (hasModifier && rec.modifier === SetModifier.SetTo) {
-      this.action({ ...rec, [field]: 0 }, line, label);
-      rec = { ...rec, modifier: SetModifier.Add };
-    }
-    this.remark(line, `An action with a variable amount is the binary decomposition of the variable: one step per bit (${bits}), each doing the action with that bit's share${consume ? "" : ", then the variable is restored"}.`, void 0, true);
-    const t = consume ? null : this.temp();
-    if (t) this.set(t, 0, line, label);
-    for (let b = bits - 1; b >= 0; b--) {
-      const bit = 2 ** b;
-      const actions = [setDeaths(src, SetModifier.Subtract, bit), { ...rec, [field]: bit }];
-      if (t) actions.push(setDeaths(t, SetModifier.Add, bit));
-      this.step([deathsCondition(src, Comparison.AtLeast, bit)], actions, null, line, label);
-    }
-    if (t) {
-      this.addVar(src, t, 1, line, label, bits, true);
-      this.release();
-    }
-  }
-  /**
-   * `a op b` for two counters as a `Bool` over saturating differences computed now, into
-   * temps the caller releases after the branch (`releaseAfterCompare`).
-   */
-  compareVars(a2, op, b, line, label) {
-    const diff = (p, q) => {
-      const t = this.temp();
-      this.set(t, 0, line, label);
-      this.addVar(t, p, 1, line, label);
-      this.addVar(t, q, -1, line, label);
-      return t;
-    };
-    const zero = (t) => cond(deathsCondition(t, Comparison.Exactly, 0));
-    const positive = (t) => cond(deathsCondition(t, Comparison.AtLeast, 1));
-    switch (op) {
-      case "<=":
-        return { bool: zero(diff(a2, b)), temps: 1 };
-      case ">=":
-        return { bool: zero(diff(b, a2)), temps: 1 };
-      case "<":
-        return { bool: positive(diff(b, a2)), temps: 1 };
-      case ">":
-        return { bool: positive(diff(a2, b)), temps: 1 };
-      case "==": {
-        const d1 = diff(a2, b);
-        const d2 = diff(b, a2);
-        return { bool: and([zero(d1), zero(d2)]), temps: 2 };
-      }
-      case "!=": {
-        const d1 = diff(a2, b);
-        const d2 = diff(b, a2);
-        return { bool: or([positive(d1), positive(d2)]), temps: 2 };
-      }
-    }
-  }
-  /* ── Control flow ── */
-  /**
-   * End the current state with a conditional jump. Each product of the condition's DNF is
-   * one trigger; negative literals are "skip" steps to the next product's state; the last
-   * fallthrough goes to `elseState`.
-   */
-  branch(b, thenState, elseState, line, label) {
-    const products = toDnf(b);
-    this.flush();
-    if (thenState === this.state || elseState === this.state) throw new LowerError("internal: a branch cannot target the state it is tested in.");
-    if (products.length === 0) {
-      this.jump(elseState, line, label);
-      return;
-    }
-    for (let i = 0; i < products.length; i++) {
-      const p = products[i];
-      const last = i === products.length - 1;
-      const positives = p.filter((l) => !l.negative).map((l) => l.cond);
-      const negatives = p.filter((l) => l.negative).map((l) => l.cond);
-      if (positives.length > STEP_CONDITIONS) throw new LowerError(`A branch tests ${positives.length} conditions at once; at most ${STEP_CONDITIONS} fit in one trigger. Split it into nested ifs.`);
-      if (positives.length === 0 && negatives.length === 0) {
-        this.raw([], [], thenState, line, label);
-        return;
-      }
-      if (negatives.length) {
-        const after = last ? elseState : this.fresh();
-        for (const c2 of negatives) this.raw([c2], [], after, line, label);
-        this.raw(positives, [], thenState, line, label);
-        this.raw([], [], after, line, label);
-        this.enter(after);
-      } else {
-        this.raw(positives, [], thenState, line, label);
-        if (last) this.raw([], [], elseState, line, label);
-      }
-    }
-  }
-  /** How many temps are held right now; `releaseTo` gives them back after a branch has read them. */
-  get tempsHeld() {
-    return this.tempsInUse;
-  }
-  releaseTo(n) {
-    this.tempsInUse = n;
-  }
-};
-var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
-function flipOp(op) {
-  switch (op) {
-    case "<":
-      return ">";
-    case ">":
-      return "<";
-    case "<=":
-      return ">=";
-    case ">=":
-      return "<=";
-    default:
-      return op;
-  }
-}
-function compareConst(v, op, n) {
-  const c2 = (comparison, amount) => cond(deathsCondition(v, comparison, amount));
-  switch (op) {
-    case ">=":
-      return n <= 0 ? TRUE : n > U32_MAX ? FALSE : c2(Comparison.AtLeast, n);
-    case ">":
-      return n < 0 ? TRUE : n >= U32_MAX ? FALSE : c2(Comparison.AtLeast, n + 1);
-    case "<=":
-      return n < 0 ? FALSE : n >= U32_MAX ? TRUE : c2(Comparison.AtMost, n);
-    case "<":
-      return n <= 0 ? FALSE : n > U32_MAX ? TRUE : c2(Comparison.AtMost, n - 1);
-    case "==":
-      return n < 0 || n > U32_MAX ? FALSE : c2(Comparison.Exactly, n);
-    case "!=":
-      return n < 0 || n > U32_MAX ? TRUE : not(c2(Comparison.Exactly, n));
   }
 }
 function hyperTriggers(owner, comment) {
@@ -1765,7 +1156,7 @@ ${kw}interface Condition { readonly __condition: true; }
 ${kw}interface Action { readonly __action: true; }
 /** A trigger, as returned by trigger(). */
 ${kw}interface Trigger { readonly __trigger: true; }
-/** A length of time, from seconds(), minutes() or cycles(): what sleep() takes. */
+/** A length of time, from seconds(), minutes() or frames(): what sleep() takes. */
 ${kw}interface Duration { readonly __duration: true; }
 /** Conditions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
 ${kw}type Conditions = readonly (Condition | Conditions | false | null | undefined)[];
@@ -1786,10 +1177,6 @@ ${kw}interface ProgramOptions {
    * their own copy (a variable declared with shared() is one cell they all share).
    */
   owner?: Player | readonly Player[];
-  /** Put a Comment action naming the source line on every generated trigger (default true). */
-  comments?: boolean;
-  /** Unit types whose death counters hold the variables (default: the "(Unused)" units, Cantina first). */
-  variableUnits?: readonly Unit[];
 }
 `;
 }
@@ -1812,20 +1199,22 @@ function functions(kw) {
  */
 ${kw}function trigger(players: Player | readonly Player[], conditions: Conditions, actions: Actions, options?: TriggerOptions): Trigger;
 /**
- * Code that runs in the game: a state machine built from death counters. Inside the arrow,
- * variables holding numbers are death counters and booleans are switches (a const computed
- * from them is one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them);
- * if / else, while, do, for, switch, break, continue, ?: and functions (inlined per call,
- * arguments passed by value, return values allowed) all work; conditions go in an if or
- * while and actions stand as statements. One iteration of a while loop per trigger cycle; a
- * for with bounds known when you build is unrolled and runs at once; sleep(seconds(n))
- * pauses. A for\u2026of over a list known when you build is unrolled too. Arithmetic: + \u2212, \xD7 by a
- * constant, / and % by a constant, Math.min / max / abs, clamp(); \xD7 between variables is
- * possible but costly. Everything the body reads from outside (constants, helpers,
+ * Code that runs in the game, every frame, from where it left off. Inside the arrow,
+ * variables hold numbers (32-bit, never below 0) and booleans (a const computed from them is
+ * one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them); if / else,
+ * while, do, for, switch, break, continue, ?: and functions (inlined per call, arguments
+ * passed by value, return values allowed) all work; conditions go in an if or while and
+ * actions stand as statements. The body runs until it sleeps or ends, all within one frame:
+ * a loop runs to completion at once, so a loop that goes on for ever needs a sleep() inside
+ * it \u2014 \`while (true) { \u2026; sleep(frames(1)); }\` is a game loop. Arithmetic: + \u2212 \xD7 / %,
+ * Math.min / max / abs, clamp(). Everything the body reads from outside (constants, helpers,
  * conditions, actions) is computed when you build \u2014 the editor underlines those parts \u2014 so
  * it cannot depend on the variables, except the amount of setResources / setDeaths /
  * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
  * giveUnits, which can be a variable.
+ *
+ * A map with a program in it needs StarCraft: Remastered: the programs are built into the
+ * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
  */
 ${kw}function program(body: () => void, options?: ProgramOptions): void;
 /**
@@ -1837,13 +1226,15 @@ ${kw}function program(body: () => void, options?: ProgramOptions): void;
 ${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
 /** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
 ${kw}function hyperTriggers(owner?: Player): void;
-/** A coin toss (Randomize Switch), inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
+/** A coin toss, inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
 ${kw}function random(): boolean;
-/** A length of time in seconds, for sleep(). Turned into trigger cycles when the program is built: twelve a second with hyper triggers on the map, one every two seconds without (at Fastest). */
+/** A length of time in seconds, for sleep(): twenty-four frames a second at Fastest. */
 ${kw}function seconds(n: number): Duration;
 /** A length of time in minutes, for sleep(). */
 ${kw}function minutes(n: number): Duration;
-/** A length of time in trigger cycles, for sleep(): one cycle is one pass over the trigger list. */
+/** A length of time in frames of the game, for sleep(): sleep(frames(1)) ends this frame's turn and goes on in the next. */
+${kw}function frames(n: number): Duration;
+/** @deprecated The same as frames(): a program's clock is the frame. */
 ${kw}function cycles(n: number): Duration;
 /**
  * Pause the program, inside program() only: the statements after it run that much later, and nothing
@@ -1851,7 +1242,7 @@ ${kw}function cycles(n: number): Duration;
  * is a wave every fifteen seconds. Unlike wait(), it stalls no other trigger.
  */
 ${kw}function sleep(duration: Duration): void;
-/** True on the cycle its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(\u2026)))\`. */
+/** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(\u2026)))\`. */
 ${kw}function rose(condition: Condition | boolean): boolean;
 /** True the first time its condition holds, never again. Inside program(), in an if. */
 ${kw}function once(condition: Condition | boolean): boolean;
@@ -2179,7 +1570,7 @@ function planProgram(ts, checker, arrow, options = {}) {
   };
   const statement = (s, items, deferred) => {
     if (ts.isVariableStatement(s)) {
-      declarations(s.declarationList, items);
+      declarations2(s.declarationList, items);
       return;
     }
     if (ts.isExpressionStatement(s)) {
@@ -2209,7 +1600,7 @@ function planProgram(ts, checker, arrow, options = {}) {
     if (ts.isForStatement(s)) {
       const inner = [];
       if (s.initializer) {
-        if (ts.isVariableDeclarationList(s.initializer)) declarations(s.initializer, inner);
+        if (ts.isVariableDeclarationList(s.initializer)) declarations2(s.initializer, inner);
         else value(s.initializer, inner);
       }
       value(s.condition, inner);
@@ -2248,10 +1639,10 @@ function planProgram(ts, checker, arrow, options = {}) {
       return;
     }
   };
-  const declarations = (list, items) => {
-    const isConst2 = (list.flags & ts.NodeFlags.Const) !== 0;
+  const declarations2 = (list, items) => {
+    const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     for (const d of list.declarations) {
-      if (isConst2) {
+      if (isConst) {
         if (!d.initializer) {
           error(d, "A constant needs a value.");
           continue;
@@ -2507,44 +1898,575 @@ function mapPosition(mapJson, line, column) {
   return best;
 }
 
-// compiler/reserve.ts
-var UNIT_CLASS_FIRST = 228;
-function playerSlots(player, owners) {
-  if (player < PLAYER_SLOTS) return [player];
-  if (player >= PLAYER_GROUP_COUNT) return [player];
-  if (player === PlayerGroup.None) return [];
-  if (player === PlayerGroup.CurrentPlayer) {
-    const out = /* @__PURE__ */ new Set();
-    for (const o of owners) for (const p of playerSlots(o, [])) if (p < PLAYER_SLOTS) out.add(p);
-    return [...out].sort((a2, b) => a2 - b);
+// compiler/ir.ts
+var IR_VERSION = 2;
+var isNumExpr = (e) => {
+  switch (e.kind) {
+    case "const":
+      return typeof e.value === "number";
+    case "var":
+      return false;
+    // ambiguous by shape; callers know the variable's kind
+    case "unary":
+    case "binary":
+    case "intrinsic":
+      return true;
+    case "ternary":
+      return isNumExpr(e.whenTrue);
+    case "call":
+      return e.call.result?.kind === "number";
+    default:
+      return false;
   }
-  return Array.from({ length: PLAYER_SLOTS }, (_, i) => i);
+};
+function declarations(body2) {
+  const out = [];
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        out.push(s.decl);
+        init(s.init);
+        break;
+      case "assign":
+        expr(s.value);
+        break;
+      case "assignBool":
+        init(s.value);
+        break;
+      case "if":
+        init(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) init(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        init(s.cond);
+        break;
+      case "for":
+        if (s.cond) init(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) init(s.value);
+        break;
+      case "action":
+        if (s.variable) expr(s.variable.expr);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    if (c2.result) out.push(c2.result.decl);
+    for (const p of c2.params) {
+      out.push(p.decl);
+      init(p.init);
+    }
+    c2.body.forEach(stmt);
+  };
+  const init = (e) => isNumExpr(e) ? expr(e) : bool(e);
+  const expr = (e) => {
+    switch (e.kind) {
+      case "unary":
+        expr(e.expr);
+        break;
+      case "binary":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        bool(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const bool = (b) => {
+    switch (b.kind) {
+      case "test":
+        expr(b.expr);
+        break;
+      case "compare":
+        expr(b.left);
+        expr(b.right);
+        break;
+      case "and":
+      case "or":
+        b.items.forEach(bool);
+        break;
+      case "not":
+        bool(b.expr);
+        break;
+      case "edge":
+        bool(b.cond);
+        break;
+      case "ternary":
+        bool(b.cond);
+        bool(b.whenTrue);
+        bool(b.whenFalse);
+        break;
+      case "call":
+        call(b.call);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+  return out;
 }
-function storageOf(triggers) {
-  const deaths = /* @__PURE__ */ new Map();
-  const switches = /* @__PURE__ */ new Set();
-  const cell = (player, unit, owners) => {
-    if (unit >= UNIT_CLASS_FIRST) return;
-    for (const p of playerSlots(player, owners)) deaths.set(unit * PLAYER_SLOTS + p, [p, unit]);
-  };
-  const sw = (index) => {
-    if (index >= 0 && index < SWITCH_COUNT) switches.add(index);
-  };
-  for (const t of triggers) {
-    const owners = [];
-    t.players.forEach((on, i) => {
-      if (on) owners.push(i);
-    });
-    for (const c2 of t.conditions) {
-      if (c2.type === ConditionType.Deaths) cell(c2.player, c2.unitId, owners);
-      else if (c2.type === ConditionType.Switch) sw(c2.resource);
+
+// compiler/eud.ts
+function checkProgram(program) {
+  const errors = [];
+  checkSleeps(program.body, errors);
+  checkDivisions(program.body, errors);
+  checkWidths(program.body, errors);
+  const hints = [];
+  remarks(program.body, hints);
+  return { errors, hints };
+}
+function expressions(body2, visit) {
+  const expr = (e) => {
+    visit(e);
+    switch (e.kind) {
+      case "unary":
+        expr(e.expr);
+        break;
+      case "binary":
+      case "compare":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        expr(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "and":
+      case "or":
+        e.items.forEach(expr);
+        break;
+      case "not":
+        expr(e.expr);
+        break;
+      case "test":
+        expr(e.expr);
+        break;
+      case "edge":
+        expr(e.cond);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
     }
-    for (const a2 of t.actions) {
-      if (a2.type === ActionType.SetDeaths) cell(a2.player, a2.unitId, owners);
-      else if (a2.type === ActionType.SetSwitch) sw(a2.target);
+  };
+  const call = (c2) => {
+    for (const p of c2.params) expr(p.init);
+    c2.body.forEach(stmt);
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) expr(s.init);
+        break;
+      case "assign":
+      case "assignBool":
+        expr(s.value);
+        break;
+      case "if":
+        expr(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) expr(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        expr(s.cond);
+        break;
+      case "for":
+        if (s.cond) expr(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) expr(s.value);
+        break;
+      case "action":
+        if (s.variable) expr(s.variable.expr);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function checkDivisions(body2, out) {
+  expressions(body2, (e) => {
+    if (e.kind !== "binary" || e.op !== "/" && e.op !== "%" || e.right.kind !== "const") return;
+    const d = e.right.value;
+    if (!Number.isInteger(d) || d <= 0) out.push({ at: e.at, message: `Divide by a whole number of at least 1, not ${d}.` });
+  });
+}
+function checkWidths(body2, out) {
+  const decls = new Map(declarations(body2).map((d) => [d.id, d]));
+  const fits = (id, value, at) => {
+    const d = decls.get(id);
+    if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
+    const max = 2 ** d.bits - 1;
+    if (value.value > max) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 \u2026 ${max}, not ${value.value}.` });
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) fits(s.decl.id, s.init, s.at);
+        break;
+      case "assign":
+        fits(s.target, s.value, s.at);
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function remarks(body2, out) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "remark":
+        if (s.short) out.push({ file: s.at.file, line: s.at.line, label: s.short, note: s.text });
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function assigned(body2, into = /* @__PURE__ */ new Set()) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        into.add(s.decl.id);
+        break;
+      case "assign":
+      case "assignBool":
+        into.add(s.target);
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "for":
+        s.body.forEach(stmt);
+        if (s.kind === "for") s.update.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) into.add(p.decl.id);
+    if (c2.result) into.add(c2.result.decl.id);
+    c2.body.forEach(stmt);
+  };
+  body2.forEach(stmt);
+  return into;
+}
+function reads(e, into = /* @__PURE__ */ new Set()) {
+  switch (e.kind) {
+    case "var":
+      into.add(e.id);
+      break;
+    case "unary":
+      reads(e.expr, into);
+      break;
+    case "binary":
+    case "compare":
+      reads(e.left, into);
+      reads(e.right, into);
+      break;
+    case "ternary":
+      reads(e.cond, into);
+      reads(e.whenTrue, into);
+      reads(e.whenFalse, into);
+      break;
+    case "intrinsic":
+      e.args.forEach((a2) => reads(a2, into));
+      break;
+    case "and":
+    case "or":
+      e.items.forEach((i) => reads(i, into));
+      break;
+    case "not":
+      reads(e.expr, into);
+      break;
+    case "test":
+      reads(e.expr, into);
+      break;
+    case "edge":
+      reads(e.cond, into);
+      break;
+    case "call":
+      break;
+    default:
+      break;
+  }
+  return into;
+}
+function sleepsOnEveryPath(body2) {
+  for (const s of body2) {
+    switch (s.kind) {
+      case "sleep":
+        return true;
+      case "break":
+      case "return":
+        return true;
+      // Leaves the loop: no freeze on this path.
+      case "continue":
+        return false;
+      case "if":
+        if (s.else && sleepsOnEveryPath(s.then) && sleepsOnEveryPath(s.else)) return true;
+        break;
+      case "block":
+        if (sleepsOnEveryPath(s.body)) return true;
+        break;
+      case "unrolled":
+        if (s.iterations.some(sleepsOnEveryPath)) return true;
+        break;
+      case "switch": {
+        const hasDefault = s.cases.some((c2) => c2.value === null);
+        if (hasDefault && s.cases.every((c2) => sleepsOnEveryPath(c2.body))) return true;
+        break;
+      }
+      case "while":
+      case "do":
+      case "for":
+        if (sleepsOnEveryPath(s.body)) return true;
+        break;
+      case "call":
+        if (sleepsOnEveryPath(s.call.body)) return true;
+        break;
+      default:
+        break;
     }
   }
-  return { deaths: [...deaths.values()], switches: [...switches].sort((a2, b) => a2 - b) };
+  return false;
+}
+function checkSleeps(body2, out) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "while":
+      case "for":
+      case "do": {
+        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body).has(id)) : false;
+        if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond ? "This loop's condition never changes inside it, and no path around it sleeps. A program runs until it sleeps or ends, all within one frame of the game, so this loop would never give the frame back and the game would freeze. Add sleep(frames(1)) inside it, or change what it tests." : "A loop without an end needs a sleep() on every path around it. A program runs until it sleeps or ends, all within one frame of the game, so this loop would freeze the game. Add sleep(frames(1)) at the end of its body." });
+        s.body.forEach(stmt);
+        if (s.kind === "for") s.update.forEach(stmt);
+        break;
+      }
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function serializeIr(programs, strings) {
+  const resolve = (local) => {
+    if (local <= 0) return 0;
+    const s = strings[local - 1];
+    return !s ? 0 : "index" in s ? s.index : s.text;
+  };
+  const action2 = (r) => ({ ...r, text: resolve(r.text), wav: resolve(r.wav) });
+  const condition2 = (r) => ({ ...r });
+  const expr = (e) => {
+    switch (e.kind) {
+      case "unary":
+        return { ...e, expr: expr(e.expr) };
+      case "binary":
+      case "compare":
+        return { ...e, left: expr(e.left), right: expr(e.right) };
+      case "ternary":
+        return { ...e, cond: expr(e.cond), whenTrue: expr(e.whenTrue), whenFalse: expr(e.whenFalse) };
+      case "intrinsic":
+        return { ...e, args: e.args.map(expr) };
+      case "call":
+        return { ...e, call: call(e.call) };
+      case "cond":
+        return { ...e, record: condition2(e.record) };
+      case "test":
+        return { ...e, expr: expr(e.expr) };
+      case "and":
+      case "or":
+        return { ...e, items: e.items.map(expr) };
+      case "not":
+        return { ...e, expr: expr(e.expr) };
+      case "edge":
+        return { ...e, cond: expr(e.cond) };
+      default:
+        return e;
+    }
+  };
+  const call = (c2) => ({ ...c2, params: c2.params.map((p) => ({ ...p, init: expr(p.init) })), body: c2.body.map(stmt) });
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        return { ...s, init: expr(s.init) };
+      case "assign":
+        return { ...s, value: expr(s.value) };
+      case "assignBool":
+        return { ...s, value: expr(s.value) };
+      case "if":
+        return { ...s, cond: expr(s.cond), then: s.then.map(stmt), ...s.else ? { else: s.else.map(stmt) } : {} };
+      case "while":
+        return { ...s, ...s.cond ? { cond: expr(s.cond) } : {}, body: s.body.map(stmt) };
+      case "do":
+        return { ...s, body: s.body.map(stmt), cond: expr(s.cond) };
+      case "for":
+        return { ...s, ...s.cond ? { cond: expr(s.cond) } : {}, update: s.update.map(stmt), body: s.body.map(stmt) };
+      case "unrolled":
+        return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
+      case "switch":
+        return { ...s, value: expr(s.value), cases: s.cases.map((c2) => ({ ...c2, body: c2.body.map(stmt) })) };
+      case "return":
+        return s.value ? { ...s, value: expr(s.value) } : s;
+      case "action":
+        return { ...s, record: action2(s.record), ...s.variable ? { variable: { ...s.variable, expr: expr(s.variable.expr) } } : {} };
+      case "call":
+        return { ...s, call: call(s.call) };
+      case "block":
+        return { ...s, body: s.body.map(stmt) };
+      default:
+        return s;
+    }
+  };
+  return JSON.stringify({ version: programs[0]?.version ?? 1, programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
 }
 
 // compiler/runtime.ts
@@ -2734,6 +2656,7 @@ function createRuntime(names, collector, options = {}) {
   };
   rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
   rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
+  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
   rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
   rt.sleep = () => {
     throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
@@ -2752,7 +2675,7 @@ function createRuntime(names, collector, options = {}) {
     if (!isProgramDescriptor(body2)) {
       throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
     }
-    const out = { owners: [0], perPlayer: false, comments: comment !== void 0, variableUnits: [] };
+    const out = { owners: [0], perPlayer: false };
     if (options2 !== void 0 && options2 !== null) {
       if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
       for (const [key, value] of Object.entries(options2)) {
@@ -2767,12 +2690,8 @@ function createRuntime(names, collector, options = {}) {
             break;
           }
           case "comments":
-            if (typeof value !== "boolean") throw new ScriptError("program: comments is true or false.");
-            out.comments = value;
-            break;
           case "variableUnits":
-            out.variableUnits = flatten(value).map((u) => integer(u, "program: variableUnits"));
-            break;
+            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
           default:
             throw new ScriptError(`program: unknown option "${key}".`);
         }
@@ -2811,9 +2730,6 @@ var Scope = class {
   }
 };
 
-// compiler/ir.ts
-var IR_VERSION = 1;
-
 // compiler/structured.ts
 function newBody(plan, sf, values, name) {
   return { plan, sf, values, memo: /* @__PURE__ */ new Map(), constMemo: /* @__PURE__ */ new Map(), ...name ? { name } : {} };
@@ -2841,8 +2757,8 @@ function describe2(v) {
   if (v === null || v === void 0) return String(v);
   return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
 }
-var TRUE2 = { kind: "const", value: true };
-var FALSE2 = { kind: "const", value: false };
+var TRUE = { kind: "const", value: true };
+var FALSE = { kind: "const", value: false };
 var num = (value) => ({ kind: "const", value });
 var varRef = (v) => ({ kind: "var", id: v.id });
 var boolRef = (v) => ({ kind: "var", id: v.id });
@@ -2867,7 +2783,7 @@ var Structured = class {
   run() {
     const statements = this.body.plan.body.statements;
     const at = this.at(this.body.plan.body);
-    const program = { version: IR_VERSION, ...this.body.name ? { name: this.body.name } : {}, owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, cyclesPerSecond: this.c.cyclesPerSecond, body: [], at };
+    const program = { version: IR_VERSION, ...this.body.name ? { name: this.body.name } : {}, owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, body: [], at };
     this.nodes.set(program, this.body.plan.body);
     this.out = program.body;
     try {
@@ -3294,7 +3210,7 @@ var Structured = class {
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) {
-        this.c.error(d, `Variables hold numbers (death counters), booleans (switches) or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
+        this.c.error(d, `Variables hold numbers, booleans or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
         continue;
       }
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
@@ -3412,7 +3328,7 @@ var Structured = class {
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   sleepStatement(call) {
     if (call.arguments.length !== 1) {
-      this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(cycles(5)).");
+      this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(frames(5)).");
       return;
     }
     const h = this.evaluate(call.arguments[0]);
@@ -3421,7 +3337,7 @@ var Structured = class {
       return;
     }
     if (!isDuration(h.value)) {
-      this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or cycles(), got ${describe2(h.value)}.`);
+      this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or frames(), got ${describe2(h.value)}.`);
       return;
     }
     const d = h.value;
@@ -3553,14 +3469,14 @@ var Structured = class {
       if (live) this.statement(live, ctx);
       return;
     }
-    const cond2 = this.bool(s.expression);
-    if (cond2.kind === "const" && !cond2.value) {
+    const cond = this.bool(s.expression);
+    if (cond.kind === "const" && !cond.value) {
       if (s.elseStatement) this.statement(s.elseStatement, ctx);
       return;
     }
     const then = this.sub(s.thenStatement, ctx);
     const otherwise = s.elseStatement ? this.sub(s.elseStatement, ctx) : void 0;
-    this.emit({ kind: "if", cond: cond2, then, ...otherwise ? { else: otherwise } : {}, at: this.at(s), label: this.label(s) }, s);
+    this.emit({ kind: "if", cond, then, ...otherwise ? { else: otherwise } : {}, at: this.at(s), label: this.label(s) }, s);
   }
   /** A loop condition known false when the script is built: the loop is not compiled at all. */
   neverRuns(condition2) {
@@ -3577,21 +3493,21 @@ var Structured = class {
   }
   whileStatement(s, ctx) {
     if (this.neverRuns(s.expression)) return;
-    const cond2 = this.loopCondition(s.expression);
+    const cond = this.loopCondition(s.expression);
     const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
-    this.emit({ kind: "while", ...cond2 ? { cond: cond2 } : {}, body: body2, at: this.at(s), label: this.label(s) }, s);
+    this.emit({ kind: "while", ...cond ? { cond } : {}, body: body2, at: this.at(s), label: this.label(s) }, s);
   }
   doStatement(s, ctx) {
     const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
-    const cond2 = this.bool(s.expression);
+    const cond = this.bool(s.expression);
     const condLabel = `L${this.line(s)}: while (${s.expression.getText(this.body.sf).replace(/\s+/g, " ")})`;
-    this.emit({ kind: "do", body: body2, cond: cond2, at: this.at(s), label: this.label(s), condLabel }, s);
+    this.emit({ kind: "do", body: body2, cond, at: this.at(s), label: this.label(s), condLabel }, s);
   }
   /**
    * `for (let i = 0; i < 3; i++)` with the start, the bound and the step known when the
    * script is built, and `i` never assigned in the body: unrolled like a `for…of`, `i`
    * bound to each value in turn — the loop runs in the cycle it is reached in, as the
-   * source reads, and `i` costs no death counter. Null when the loop is not of that form.
+   * source reads, and `i` is no variable of the program. Null when the loop is not of that form.
    */
   unrollable(s) {
     const { ts } = this;
@@ -3608,15 +3524,15 @@ var Structured = class {
     };
     const start = integer2(decl.initializer);
     if (start === null) return null;
-    const cond2 = this.unwrap(s.condition);
-    if (!ts.isBinaryExpression(cond2)) return null;
-    let op = compareOp(ts, cond2.operatorToken.kind);
+    const cond = this.unwrap(s.condition);
+    if (!ts.isBinaryExpression(cond)) return null;
+    let op = compareOp(ts, cond.operatorToken.kind);
     if (!op) return null;
     let bound;
-    if (isVar(cond2.left)) bound = integer2(cond2.right);
-    else if (isVar(cond2.right)) {
-      bound = integer2(cond2.left);
-      op = flipOp2(op);
+    if (isVar(cond.left)) bound = integer2(cond.right);
+    else if (isVar(cond.right)) {
+      bound = integer2(cond.left);
+      op = flipOp(op);
     } else return null;
     if (bound === null) return null;
     const inc = this.unwrap(s.incrementor);
@@ -3631,7 +3547,7 @@ var Structured = class {
     const values = [];
     for (let i = start; compareNumbers(i, op, bound); i += step) {
       values.push(i);
-      if (values.length > MAX_UNROLL) throw new LowerError(`This for loop unrolls to more than ${MAX_UNROLL} iterations. Loop over a variable instead \u2014 let i = 0; while (i < ${bound}) { \u2026; i++ } runs one iteration per trigger cycle \u2014 or make the bound smaller.`);
+      if (values.length > MAX_UNROLL) throw new LowerError(`This for loop unrolls to more than ${MAX_UNROLL} iterations. Loop over a variable instead \u2014 let i = 0; while (i < ${bound}) { \u2026; i++ } is a loop in the game, not ${MAX_UNROLL} copies of its body \u2014 or make the bound smaller.`);
     }
     return { decl, values };
   }
@@ -3639,7 +3555,7 @@ var Structured = class {
     const { ts } = this;
     const unrolled = this.unrollable(s);
     if (unrolled) {
-      this.emit({ kind: "remark", text: `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"} in one trigger cycle, the loop variable a value known when the script is built.`, short: `unrolled \xD7${unrolled.values.length}`, at: this.at(s) }, s);
+      this.emit({ kind: "remark", text: `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"}, the loop variable a value known when the script is built.`, short: `unrolled \xD7${unrolled.values.length}`, at: this.at(s) }, s);
       this.unrolledLoop(unrolled.decl, unrolled.values, s.statement, s, ctx);
       return;
     }
@@ -3653,11 +3569,11 @@ var Structured = class {
       this.scope = outer;
       return;
     }
-    const cond2 = this.loopCondition(s.condition);
+    const cond = this.loopCondition(s.condition);
     const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
     const update = s.incrementor ? this.collect(() => this.expressionStatement(s.incrementor)) : [];
     this.scope = outer;
-    this.emit({ kind: "for", ...cond2 ? { cond: cond2 } : {}, update, body: body2, at: this.at(s), label: this.label(s) }, s);
+    this.emit({ kind: "for", ...cond ? { cond } : {}, update, body: body2, at: this.at(s), label: this.label(s) }, s);
   }
   /** The body compiled once per value, the declaration bound to that value; `break` leaves, `continue` goes on with the next. */
   unrolledLoop(decl, values, body2, s, ctx) {
@@ -3970,7 +3886,7 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
       if (!op) {
-        this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder by a constant.");
+        this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder.");
         return null;
       }
       const l = this.num(e.left);
@@ -3979,11 +3895,11 @@ var Structured = class {
       return this.mark({ kind: "binary", op, left: l, right: r, at: this.at(e), label: this.label(e) }, e);
     }
     if (ts.isConditionalExpression(e)) {
-      const cond2 = this.bool(e.condition);
+      const cond = this.bool(e.condition);
       const whenTrue = this.num(e.whenTrue);
       const whenFalse = this.num(e.whenFalse);
       if (!whenTrue || !whenFalse) return null;
-      return this.mark({ kind: "ternary", cond: cond2, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+      return this.mark({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
     }
     if (ts.isCallExpression(e)) return this.callValue(e);
     this.c.error(e, "Expected a number: a value, a variable, or arithmetic over them.");
@@ -4136,24 +4052,24 @@ var Structured = class {
   edge(call, kind) {
     if (call.arguments.length !== 1) {
       this.c.error(call, `${kind}() takes one condition.`);
-      return FALSE2;
+      return FALSE;
     }
     return this.mark({ kind: "edge", edge: kind, cond: this.bool(call.arguments[0]), at: this.at(call), label: this.label(call) }, call);
   }
   /** A hoisted value as a condition. */
   hoistedBool(h, at) {
     const v = h.value;
-    if (typeof v === "boolean") return v ? TRUE2 : FALSE2;
-    if (typeof v === "number") return v !== 0 ? TRUE2 : FALSE2;
-    if (typeof v === "string") return v !== "" ? TRUE2 : FALSE2;
+    if (typeof v === "boolean") return v ? TRUE : FALSE;
+    if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
+    if (typeof v === "string") return v !== "" ? TRUE : FALSE;
     if (isCondition(v)) return this.mark({ kind: "cond", record: { ...v.record } }, at);
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
-      return FALSE2;
+      return FALSE;
     }
     this.c.error(at, `Expected a condition, got ${describe2(v)}.`);
-    return FALSE2;
+    return FALSE;
   }
   /** A condition as a `BoolExpr` tree. */
   bool(expr) {
@@ -4164,7 +4080,7 @@ var Structured = class {
     const e = this.unwrap(expr);
     if (depth > 64) {
       this.c.error(e, "The condition nests too deeply.");
-      return FALSE2;
+      return FALSE;
     }
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
@@ -4176,24 +4092,24 @@ var Structured = class {
       const cmp = compareOp(ts, op);
       if (cmp) return this.comparison(e, cmp, depth);
       this.c.error(e, "Expected a condition.");
-      return FALSE2;
+      return FALSE;
     }
     if (ts.isConditionalExpression(e)) {
-      const cond2 = this.bool(e.condition);
+      const cond = this.bool(e.condition);
       const whenTrue = this.boolValue(e.whenTrue);
       const whenFalse = this.boolValue(e.whenFalse);
-      return this.mark({ kind: "ternary", cond: cond2, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+      return this.mark({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") return b.v.kind !== "number" ? boolRef(b.v) : this.mark({ kind: "test", expr: varRef(b.v), at: this.at(e), label: this.label(e) }, e);
       if (b?.kind === "record") {
         this.c.error(e, "This is a record; test one of its fields.");
-        return FALSE2;
+        return FALSE;
       }
       if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       else this.notConstant(e, "A condition");
-      return FALSE2;
+      return FALSE;
     }
     if (ts.isCallExpression(e)) {
       if (ts.isIdentifier(e.expression)) {
@@ -4205,33 +4121,33 @@ var Structured = class {
       if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
       if (this.isLibraryCall(e, "sleep")) {
         this.c.error(e, "sleep() is a statement, not a condition.");
-        return FALSE2;
+        return FALSE;
       }
       const callee = this.evaluate(e.expression)?.value;
       if (isGameFunction(callee)) return this.callBool(e, () => this.gameCall(e, callee));
       if (isBuilder(callee) && callee.kind === "condition") {
         this.c.error(e, "The game cannot test a condition against a variable of the program: a condition's amount is known when the script is built. Compare variables in the program's own statements.");
-        return FALSE2;
+        return FALSE;
       }
       if (isBuilder(callee)) {
         this.c.error(e, "This is an action, not a condition.");
-        return FALSE2;
+        return FALSE;
       }
       this.notConstant(e, "A condition's arguments");
-      return FALSE2;
+      return FALSE;
     }
     this.c.error(e, "Expected a condition: a trigger condition, a comparison, a boolean variable, or a combination with && || !.");
-    return FALSE2;
+    return FALSE;
   }
   /** A call whose result is tested: a boolean result, or a number's `!= 0`. */
   callBool(e, run) {
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
     if (!kind) {
       this.c.error(e, "This function returns nothing to test; test a variable it sets instead.");
-      return FALSE2;
+      return FALSE;
     }
     const call = run();
-    return call?.result ? this.mark({ kind: "call", call }, e) : FALSE2;
+    return call?.result ? this.mark({ kind: "call", call }, e) : FALSE;
   }
   comparison(e, op, depth) {
     const isBool = (x) => {
@@ -4244,7 +4160,7 @@ var Structured = class {
     if (isBool(e.left) || isBool(e.right)) {
       if (op !== "==" && op !== "!=") {
         this.c.error(e, "Booleans compare with == and != only.");
-        return FALSE2;
+        return FALSE;
       }
       const l2 = this.boolInner(e.left, depth + 1);
       const r2 = this.boolInner(e.right, depth + 1);
@@ -4253,7 +4169,7 @@ var Structured = class {
     }
     const l = this.num(e.left);
     const r = this.num(e.right);
-    if (!l || !r) return FALSE2;
+    if (!l || !r) return FALSE;
     return this.mark({ kind: "compare", op, left: l, right: r, at: this.at(e), label: `L${this.line(e)}: ${e.getText(this.body.sf).replace(/\s+/g, " ")}` }, e);
   }
 };
@@ -4277,7 +4193,7 @@ function compareOp(ts, kind) {
       return null;
   }
 }
-function flipOp2(op) {
+function flipOp(op) {
   switch (op) {
     case "<":
       return ">";
@@ -4340,859 +4256,7 @@ function compareNumbers(a2, op, b) {
   }
 }
 
-// compiler/classic.ts
-var sameCell = (a2, b) => a2.player === b.player && a2.unit === b.unit;
-function scale(l, k) {
-  if (k === 0) return { c: 0, terms: [] };
-  return { c: l.c * k, terms: l.terms.map((t) => ({ v: t.v, k: t.k * k })) };
-}
-function merge(l, r) {
-  const terms = [];
-  for (const t of [...l.terms, ...r.terms]) {
-    const hit = terms.find((x) => sameCell(x.v, t.v));
-    if (hit) hit.k += t.k;
-    else terms.push({ v: t.v, k: t.k });
-  }
-  return { c: l.c + r.c, terms: terms.filter((t) => t.k !== 0) };
-}
-var isConst = (l) => l.terms.length === 0;
-var single = (l) => l.c === 0 && l.terms.length === 1 && l.terms[0].k === 1 ? l.terms[0].v : null;
-var ofVar = (v) => ({ c: 0, terms: [{ v, k: 1 }] });
-var Classic = class {
-  c;
-  m;
-  vars = /* @__PURE__ */ new Map();
-  /** After `break` / `continue` / `return` / an endless loop: the next statement needs a state of its own. */
-  dead = false;
-  scratchUsed = 0;
-  /** The statement being lowered, where an error with no node of its own lands. */
-  current;
-  constructor(c2) {
-    this.c = c2;
-    this.m = c2.machine;
-    this.current = c2.program;
-    this.m.file = c2.program.at.file;
-  }
-  run() {
-    const { body: body2 } = this.c.program;
-    try {
-      this.block(body2, {});
-      if (!this.dead) this.m.jump(this.m.halt, this.lastLine(body2), "end of program");
-    } catch (err) {
-      if (!(err instanceof LowerError)) throw err;
-      this.c.error(body2[body2.length - 1] ?? this.c.program, err.message);
-    }
-  }
-  lastLine(body2) {
-    const last = body2[body2.length - 1];
-    return last ? last.at.line : this.c.program.at.line;
-  }
-  live() {
-    if (this.dead) {
-      this.m.enter(this.m.fresh());
-      this.dead = false;
-    }
-  }
-  error(node, message) {
-    this.c.error(node ?? this.current, message);
-  }
-  dc(id, node) {
-    const v = this.vars.get(id);
-    if (!v) {
-      this.error(node, "A variable was used before it was declared.");
-      return null;
-    }
-    if (v.kind !== "dc") {
-      this.error(node, `${v.name} is a boolean.`);
-      return null;
-    }
-    return v;
-  }
-  boolVar(id, node) {
-    const v = this.vars.get(id);
-    if (!v) {
-      this.error(node, "A variable was used before it was declared.");
-      return null;
-    }
-    return v;
-  }
-  /* ── Statements ── */
-  block(statements, ctx) {
-    for (const s of statements) {
-      const held = this.m.tempsHeld;
-      try {
-        this.statement(s, ctx);
-      } catch (err) {
-        if (!(err instanceof LowerError)) throw err;
-        this.c.error(s, err.message);
-      }
-      this.m.releaseTo(held);
-    }
-  }
-  statement(s, ctx) {
-    this.current = s;
-    this.m.file = s.at.file;
-    this.live();
-    switch (s.kind) {
-      case "declare":
-        this.declare(s);
-        return;
-      case "assign": {
-        const v = this.dc(s.target, s);
-        if (!v) return;
-        const rhs = this.linear(s.value);
-        if (rhs) this.m.assign(v, rhs, s.at.line, s.label);
-        return;
-      }
-      case "assignBool": {
-        const v = this.boolVar(s.target, s);
-        if (v) this.storeBool(v, s.value, s.at.line, s.label);
-        return;
-      }
-      case "if":
-        this.ifStatement(s, ctx);
-        return;
-      case "while":
-        this.whileStatement(s, ctx);
-        return;
-      case "do":
-        this.doStatement(s, ctx);
-        return;
-      case "for":
-        this.forStatement(s, ctx);
-        return;
-      case "unrolled":
-        this.unrolledLoop(s, ctx);
-        return;
-      case "switch":
-        this.switchStatement(s, ctx);
-        return;
-      case "break":
-      case "continue": {
-        const target = s.kind === "break" ? ctx.breakTo : ctx.continueTo;
-        if (!target) {
-          this.error(s, `${s.kind} outside a loop.`);
-          return;
-        }
-        this.m.jump(target(), s.at.line, s.label);
-        this.dead = true;
-        return;
-      }
-      case "return":
-        this.returnStatement(s, ctx);
-        return;
-      case "sleep": {
-        const n = s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * this.c.program.cyclesPerSecond));
-        this.m.sleep(n, s.at.line, s.label);
-        return;
-      }
-      case "action":
-        this.action(s);
-        return;
-      case "call":
-        this.inline(s.call);
-        return;
-      case "block":
-        this.block(s.body, ctx);
-        return;
-      case "remark":
-        this.m.remark(s.at.line, s.text, s.short);
-        return;
-    }
-  }
-  declare(s) {
-    const { decl } = s;
-    const v = decl.kind === "number" ? decl.shared ? this.m.shared(decl.name) : this.m.dc(decl.name) : decl.shared ? this.m.switch(decl.name) : this.m.bool(decl.name);
-    if (!v) {
-      const note = this.m.perPlayer && !decl.name.includes(".") ? " (a per-player variable needs a unit with all twelve free)" : "";
-      this.error(s, `No ${decl.kind === "number" ? "death counter" : "switch"} is free for ${decl.name}${note}.`);
-      return;
-    }
-    v.at = decl.at;
-    if (v.kind === "dc" && decl.bits) v.bits = decl.bits;
-    if (v.kind === "dc") {
-      if (!s.failed) {
-        const rhs = this.linear(s.init);
-        if (rhs) this.m.assign(v, rhs, s.at.line, s.label);
-      }
-    } else {
-      this.storeBool(v, s.init, s.at.line, s.label);
-    }
-    this.vars.set(decl.id, v);
-  }
-  returnStatement(s, ctx) {
-    if (!ctx.fn) {
-      this.error(s, "return outside a function.");
-      return;
-    }
-    const { fn } = ctx;
-    if (s.value && fn.result) {
-      if (fn.kind === "number") {
-        const rhs = this.linear(s.value);
-        if (rhs) this.m.assign(fn.result, rhs, s.at.line, s.label);
-      } else this.storeBool(fn.result, s.value, s.at.line, s.label);
-    }
-    if (!this.dead) this.m.jump(fn.end(), s.at.line, s.label);
-    this.dead = true;
-  }
-  action(s) {
-    const line = s.at.line;
-    const { label } = s;
-    if (!s.variable) {
-      this.c.touched?.push(s.record);
-      this.m.action({ ...s.record }, line, label);
-      return;
-    }
-    const { variable } = s;
-    const fieldBits = variable.bits;
-    const lin = this.linear(variable.expr);
-    if (!lin) return;
-    const v = single(lin);
-    let src;
-    let consume;
-    let bits;
-    if (v && bitsOf(v) <= fieldBits) {
-      src = v;
-      consume = false;
-      bits = bitsOf(v);
-    } else {
-      src = this.m.temp(widthOf(lin));
-      this.m.evaluate(src, lin, line, label);
-      if (widthOf(lin) > fieldBits) {
-        this.m.step([deathsCondition(src, Comparison.AtLeast, 2 ** fieldBits)], [setDeaths(src, SetModifier.SetTo, maxOf(fieldBits))], null, line, label);
-        this.m.remark(line, `A ${variable.name} larger than ${maxOf(fieldBits)} is done as ${maxOf(fieldBits)}: that is what the action's field holds.`);
-      }
-      consume = true;
-      bits = Math.min(widthOf(lin), fieldBits);
-    }
-    this.c.touched?.push(s.record);
-    this.m.actionWithVar(s.record, variable.field, src, bits, consume, line, label);
-  }
-  /* ── Conditions as control flow ── */
-  /** Whether lowering an expression as a condition emits anything: an edge, a call of a function, a ternary. */
-  hasEffects(e) {
-    switch (e.kind) {
-      case "edge":
-      case "call":
-      case "ternary":
-        return true;
-      case "and":
-      case "or":
-        return e.items.some((i) => this.hasEffects(i));
-      case "not":
-        return this.hasEffects(e.expr);
-      case "test":
-        return this.hasEffects(e.expr);
-      case "compare":
-      case "binary":
-        return this.hasEffects(e.left) || this.hasEffects(e.right);
-      case "unary":
-        return this.hasEffects(e.expr);
-      case "intrinsic":
-        return e.args.some((a2) => this.hasEffects(a2));
-      default:
-        return false;
-    }
-  }
-  /** `a && b` / `a || b` / `!…` where a right side has effects: the DNF would run them whether or not the left side decided. */
-  shortCircuits(e) {
-    if ((e.kind === "and" || e.kind === "or") && e.items.length === 2) return this.hasEffects(e.items[1]) || this.shortCircuits(e.items[0]) || this.shortCircuits(e.items[1]);
-    if (e.kind === "not") return this.shortCircuits(e.expr);
-    return false;
-  }
-  /**
-   * End the current state with a conditional jump on an expression. `&&` and `||` with an
-   * effectful right side are lowered as control flow — the left side first, the right in
-   * a state only reached when the left has not decided — so `n >= 1 && once(…)` consumes
-   * the edge only when `n >= 1`; everything else goes through the DNF branch.
-   */
-  branchOn(e, thenState, elseState, line, label) {
-    if ((e.kind === "and" || e.kind === "or") && e.items.length === 2 && this.shortCircuits(e)) {
-      const mid = this.m.fresh();
-      if (e.kind === "and") this.branchOn(e.items[0], mid, elseState, line, label);
-      else this.branchOn(e.items[0], thenState, mid, line, label);
-      this.m.enter(mid);
-      this.dead = false;
-      this.branchOn(e.items[1], thenState, elseState, line, label);
-      return;
-    }
-    if (e.kind === "not" && this.shortCircuits(e)) {
-      this.branchOn(e.expr, elseState, thenState, line, label);
-      return;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(e);
-    this.m.branch(b, thenState, elseState, line, label);
-    this.m.releaseTo(held);
-  }
-  ifStatement(s, ctx) {
-    const join = this.m.fresh();
-    const thenState = this.m.fresh();
-    const elseState = s.else ? this.m.fresh() : join;
-    if (this.shortCircuits(s.cond)) {
-      this.branchOn(s.cond, thenState, elseState, s.at.line, s.label);
-    } else {
-      const held = this.m.tempsHeld;
-      const b = this.bool(s.cond);
-      if (b.kind === "const") {
-        this.m.releaseTo(held);
-        const live = b.value ? s.then : s.else;
-        if (live) this.block(live, ctx);
-        return;
-      }
-      this.m.branch(b, thenState, elseState, s.at.line, s.label);
-      this.m.releaseTo(held);
-    }
-    this.m.enter(thenState);
-    this.dead = false;
-    this.block(s.then, ctx);
-    if (!this.dead) this.m.jump(join, s.at.line, `L${s.at.line}: end if`);
-    if (s.else) {
-      this.m.enter(elseState);
-      this.dead = false;
-      this.block(s.else, ctx);
-      if (!this.dead) this.m.jump(join, s.at.line, `L${s.at.line}: end else`);
-    }
-    this.m.enter(join);
-    this.dead = false;
-  }
-  /**
-   * A loop's test at its header: the body state and the exit. Returns the body state,
-   * which is the header itself for a condition known true (no trigger spent), or the
-   * fresh state the test branched to.
-   */
-  loopTest(condition2, header, exit, line, label) {
-    if (!condition2) return header;
-    if (this.shortCircuits(condition2)) {
-      const body3 = this.m.fresh();
-      this.branchOn(condition2, body3, exit, line, label);
-      this.m.enter(body3);
-      return body3;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(condition2);
-    let body2 = header;
-    if (!(b.kind === "const" && b.value)) {
-      body2 = this.m.fresh();
-      this.m.branch(b, body2, exit, line, label);
-      this.m.enter(body2);
-    }
-    this.m.releaseTo(held);
-    return body2;
-  }
-  whileStatement(s, ctx) {
-    const line = s.at.line;
-    this.m.remark(line, "A while loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
-    const header = this.m.loopHeader(line, s.label);
-    const exit = this.m.fresh();
-    let broke = false;
-    const body2 = this.loopTest(s.cond, header, exit, line, s.label);
-    this.dead = false;
-    this.block(s.body, { fn: ctx.fn, breakTo: () => {
-      broke = true;
-      return exit;
-    }, continueTo: () => header });
-    if (!this.dead) this.m.jump(header, line, `L${line}: loop`);
-    if (body2 === header && !broke) {
-      this.dead = true;
-      return;
-    }
-    this.m.enter(exit);
-    this.dead = false;
-  }
-  doStatement(s, ctx) {
-    const line = s.at.line;
-    this.m.remark(line, "A do loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
-    const body2 = this.m.loopHeader(line, s.label);
-    const check = this.m.fresh();
-    const exit = this.m.fresh();
-    this.dead = false;
-    this.block(s.body, { fn: ctx.fn, breakTo: () => exit, continueTo: () => check });
-    if (!this.dead) this.m.jump(check, line, `L${line}: while`);
-    this.m.enter(check);
-    this.dead = false;
-    if (this.shortCircuits(s.cond)) this.branchOn(s.cond, body2, exit, line, s.condLabel);
-    else {
-      const held = this.m.tempsHeld;
-      const b = this.bool(s.cond);
-      this.m.branch(b, body2, exit, line, s.condLabel);
-      this.m.releaseTo(held);
-    }
-    this.m.enter(exit);
-  }
-  forStatement(s, ctx) {
-    const line = s.at.line;
-    this.m.remark(line, "This for loop runs one iteration per trigger cycle: its bound or step is not known when the script is built, so it is a while over a variable.", "one iteration per cycle");
-    const header = this.m.loopHeader(line, s.label);
-    const exit = this.m.fresh();
-    let broke = false;
-    let incr = null;
-    const body2 = this.loopTest(s.cond, header, exit, line, s.label);
-    this.dead = false;
-    this.block(s.body, { fn: ctx.fn, breakTo: () => {
-      broke = true;
-      return exit;
-    }, continueTo: () => s.update.length ? incr ??= this.m.fresh() : header });
-    if (incr !== null) {
-      if (!this.dead) this.m.jump(incr, line, `L${line}: continue`);
-      this.m.enter(incr);
-      this.dead = false;
-    }
-    if (!this.dead) {
-      for (const u of s.update) {
-        try {
-          this.statement(u, ctx);
-        } catch (err) {
-          if (!(err instanceof LowerError)) throw err;
-          this.c.error(u, err.message);
-        }
-      }
-      this.m.jump(header, line, `L${line}: loop`);
-    }
-    if (body2 === header && !broke) {
-      this.dead = true;
-      return;
-    }
-    this.m.enter(exit);
-    this.dead = false;
-  }
-  /** The body compiled once per value; `break` leaves, `continue` goes on with the next. */
-  unrolledLoop(s, ctx) {
-    const line = s.at.line;
-    const exit = this.m.fresh();
-    let broke = false;
-    for (const iteration of s.iterations) {
-      let next = null;
-      this.block(iteration, { fn: ctx.fn, breakTo: () => {
-        broke = true;
-        return exit;
-      }, continueTo: () => next ??= this.m.fresh() });
-      if (next !== null) {
-        if (!this.dead) this.m.jump(next, line, `L${line}: continue`);
-        this.m.enter(next);
-        this.dead = false;
-      }
-      if (this.dead) break;
-    }
-    if (broke) {
-      if (!this.dead) this.m.jump(exit, line, `L${line}: end of loop`);
-      this.m.enter(exit);
-      this.dead = false;
-    }
-  }
-  /**
-   * `switch (x) { case 1: … break; case 2: … default: … }` over a number: the cases
-   * tested in order, each one trigger, then the bodies in source order — a body without
-   * `break` falls through to the next, as in TypeScript.
-   */
-  switchStatement(s, ctx) {
-    const line = s.at.line;
-    const held = this.m.tempsHeld;
-    const lin = this.linear(s.value);
-    if (!lin) return;
-    if (isConst(lin)) {
-      this.error(s.value, "switch over a value known when the script is built: write the case that applies.");
-      return;
-    }
-    const v = single(lin) ?? (() => {
-      const t = this.m.temp(widthOf(lin));
-      this.m.evaluate(t, lin, line, s.label);
-      return t;
-    })();
-    const exit = this.m.fresh();
-    const states = s.cases.map(() => this.m.fresh());
-    let fallback = exit;
-    s.cases.forEach((c2, i) => {
-      if (c2.value === null) {
-        fallback = states[i];
-        return;
-      }
-      const n = c2.value;
-      if (Number.isNaN(n) || n < 0 || n > U32_MAX) return;
-      this.m.step([deathsCondition(v, Comparison.Exactly, n)], [], states[i], line, `L${line}: case ${n}`);
-    });
-    this.m.jump(fallback, line, `L${line}: ${fallback === exit ? "end switch" : "default"}`);
-    this.m.releaseTo(held);
-    s.cases.forEach((c2, i) => {
-      this.m.enter(states[i]);
-      this.dead = false;
-      this.block(c2.body, { fn: ctx.fn, continueTo: ctx.continueTo, breakTo: () => exit });
-      if (!this.dead) this.m.jump(i + 1 < states.length ? states[i + 1] : exit, line, `L${line}: fall through`);
-    });
-    this.m.enter(exit);
-    this.dead = false;
-  }
-  /* ── Functions ── */
-  /**
-   * An inlined call: the result temp first, then the parameter copies, then the body in
-   * the current state, `return` jumping to a state after it. The result comes back in a
-   * temp the caller reads (0 / 1 for a boolean) and releases with its statement.
-   */
-  inline(call) {
-    const line = call.at.line;
-    const result = call.result ? this.m.temp() : void 0;
-    if (result) this.m.set(result, 0, line, call.label);
-    for (const p of call.params) {
-      const copy = p.decl.kind === "number" ? this.m.dc(p.decl.name) : this.m.bool(p.decl.name);
-      if (!copy) {
-        this.error(call, `No ${p.decl.kind === "number" ? "death counter" : "switch"} is free for ${p.decl.name}.`);
-        return result;
-      }
-      copy.at = p.decl.at;
-      if (copy.kind === "dc" && p.decl.bits) copy.bits = p.decl.bits;
-      if (copy.kind === "dc") {
-        const rhs = this.linear(p.init);
-        if (rhs) this.m.assign(copy, rhs, line, p.label);
-      } else this.storeBool(copy, p.init, line, p.label);
-      this.vars.set(p.decl.id, copy);
-    }
-    if (call.result && result) this.vars.set(call.result.decl.id, result);
-    const file = this.m.file;
-    let end = null;
-    const fn = { end: () => end ??= this.m.fresh(), kind: call.result?.kind ?? "void", result };
-    this.block(call.body, { fn });
-    this.m.file = file;
-    if (end !== null) {
-      if (!this.dead) this.m.jump(end, line, `L${line}: end of ${call.name ?? "function"}`);
-      this.m.enter(end);
-      this.dead = false;
-    }
-    return result;
-  }
-  /* ── Numbers ── */
-  /** A variable holding a linear expression's value: the variable itself when it is one, else a temp computed now. */
-  sideVar(l, line, label) {
-    const v = single(l);
-    if (v) return v;
-    const t = this.m.temp(widthOf(l));
-    this.m.evaluate(t, l, line, label);
-    return t;
-  }
-  /** `l op r` for `*`, `/`, `%` (and `+`, `-`) over linear expressions, emitting what needs a temp. */
-  linearOp(op, l, r, at, line, label) {
-    switch (op) {
-      case "+":
-        return merge(l, r);
-      case "-":
-        return merge(l, scale(r, -1));
-      case "*": {
-        if (isConst(r)) return scale(l, r.c);
-        if (isConst(l)) return scale(r, l.c);
-        const a2 = this.sideVar(l, line, label);
-        const b = this.sideVar(r, line, label);
-        const t = this.m.temp(Math.min(32, bitsOf(a2) + bitsOf(b)));
-        this.m.set(t, 0, line, label);
-        this.m.mulVar(t, a2, b, line, label);
-        return ofVar(t);
-      }
-      case "/":
-      case "%": {
-        if (!isConst(r)) {
-          this.error(at, "Division is by a constant: the game has no instruction for dividing by a variable.");
-          return null;
-        }
-        const d = r.c;
-        if (!Number.isInteger(d) || d <= 0) {
-          this.error(at, `Divide by a whole number of at least 1, not ${d}.`);
-          return null;
-        }
-        if (isConst(l)) return { c: op === "/" ? Math.trunc(l.c / d) : l.c % d, terms: [] };
-        const n = this.m.temp(widthOf(l));
-        this.m.evaluate(n, l, line, label);
-        const q = this.m.temp(Math.max(1, widthOf(l) - bitLength(d) + 1));
-        this.m.set(q, 0, line, label);
-        this.m.divConst(n, q, d, line, label, widthOf(l));
-        return ofVar(op === "/" ? q : n);
-      }
-    }
-  }
-  /** `Math.min(a, b)` / `Math.max(a, b)`: against a constant, a copy and one guard; between variables, saturating differences. */
-  minMax(kind, l, r, line, label) {
-    if (isConst(l) && isConst(r)) return { c: kind === "min" ? Math.min(l.c, r.c) : Math.max(l.c, r.c), terms: [] };
-    if (isConst(l) || isConst(r)) {
-      const c2 = isConst(l) ? l.c : r.c;
-      const x = isConst(l) ? r : l;
-      const t2 = this.m.temp(kind === "min" ? Math.min(widthOf(x), bitLength(Math.max(0, c2))) : Math.max(widthOf(x), bitLength(Math.max(0, c2))));
-      if (kind === "min" && c2 <= 0) {
-        this.m.set(t2, 0, line, label);
-        return ofVar(t2);
-      }
-      this.m.evaluate(t2, x, line, label);
-      if (kind === "min") {
-        if (c2 < U32_MAX) this.m.step([deathsCondition(t2, Comparison.AtLeast, c2 + 1)], [setDeaths(t2, SetModifier.SetTo, c2)], null, line, label);
-      } else if (c2 > 0) this.m.step([deathsCondition(t2, Comparison.AtMost, c2 - 1)], [setDeaths(t2, SetModifier.SetTo, Math.min(c2, U32_MAX))], null, line, label);
-      return ofVar(t2);
-    }
-    const t = this.m.temp(kind === "min" ? Math.min(widthOf(l), widthOf(r)) : Math.max(widthOf(l), widthOf(r)));
-    const u = this.m.temp(kind === "min" ? widthOf(l) : widthOf(r));
-    this.m.evaluate(u, kind === "min" ? merge(l, scale(r, -1)) : merge(r, scale(l, -1)), line, label);
-    this.m.evaluate(t, l, line, label);
-    this.m.addVar(t, u, kind === "min" ? -1 : 1, line, label, bitsOf(u), true);
-    this.m.release();
-    return ofVar(t);
-  }
-  /** `Math.abs(l)` = (l −̇ 0) + (−l −̇ 0). */
-  abs(l, line, label) {
-    if (isConst(l)) return { c: Math.abs(l.c), terms: [] };
-    const t = this.m.temp(widthOf(l));
-    const u = this.m.temp(widthOf(scale(l, -1)));
-    this.m.evaluate(t, l, line, label);
-    this.m.evaluate(u, scale(l, -1), line, label);
-    this.m.addVar(t, u, 1, line, label, bitsOf(u), true);
-    this.m.release();
-    return ofVar(t);
-  }
-  /** `c ? a : b` as a number: a temp assigned on either side of a branch. */
-  ternary(e) {
-    const line = e.at.line;
-    const { label } = e;
-    const t = this.m.temp();
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    const join = this.m.fresh();
-    this.branchOn(e.cond, on, off, line, label);
-    this.m.enter(on);
-    this.dead = false;
-    const a2 = this.linear(e.whenTrue);
-    if (a2) this.m.assign(t, a2, line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(off);
-    this.dead = false;
-    const b = this.linear(e.whenFalse);
-    if (b) this.m.assign(t, b, line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-    return ofVar(t);
-  }
-  /** `c + Σ k·v` over death counters, or null (with a diagnostic). Emits what needs a temp: a quotient, a product, a call's result. */
-  linear(e) {
-    switch (e.kind) {
-      case "const":
-        return { c: e.value, terms: [] };
-      case "var": {
-        const v = this.dc(e.id, e);
-        return v ? ofVar(v) : null;
-      }
-      case "unary": {
-        const inner = this.linear(e.expr);
-        return inner ? scale(inner, -1) : null;
-      }
-      case "binary": {
-        const l = this.linear(e.left);
-        const r = this.linear(e.right);
-        if (!l || !r) return null;
-        return this.linearOp(e.op, l, r, e, e.at.line, e.label);
-      }
-      case "ternary":
-        return this.ternary(e);
-      case "intrinsic": {
-        const args = [];
-        for (const a2 of e.args) {
-          const l = this.linear(a2);
-          if (!l) return null;
-          args.push(l);
-        }
-        if (e.name === "abs") return this.abs(args[0], e.at.line, e.label);
-        return this.minMax(e.name, args[0], args[1], e.at.line, e.label);
-      }
-      case "call": {
-        const r = this.inline(e.call);
-        return r ? ofVar(r) : null;
-      }
-    }
-  }
-  /* ── Booleans ── */
-  /** `v = expr` for a boolean: a constant, a toggle, a coin toss, or a branch that sets one side and clears the other. */
-  storeBool(v, e, line, label) {
-    if (e.kind === "const") {
-      this.m.action(setTruth(v, e.value), line, label);
-      return;
-    }
-    if (v.kind === "switch" && e.kind === "not" && e.expr.kind === "var" && this.vars.get(e.expr.id) === v) {
-      this.m.action(setSwitch(v, SwitchAction.Toggle), line, label);
-      return;
-    }
-    if (v.kind === "switch" && e.kind === "random") {
-      this.m.action(setSwitch(v, SwitchAction.Randomize), line, label);
-      return;
-    }
-    if (this.shortCircuits(e)) {
-      const on = this.m.fresh();
-      const off = this.m.fresh();
-      this.branchOn(e, on, off, line, label);
-      this.storeSides(v, on, off, line, label);
-      return;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(e);
-    if (b.kind === "const") {
-      this.m.action(setTruth(v, b.value), line, label);
-      this.m.releaseTo(held);
-      return;
-    }
-    this.storeBoolTree(v, b, line, label);
-    this.m.releaseTo(held);
-  }
-  /** `v = b` for a condition tree: branch, set on one side, clear on the other. */
-  storeBoolTree(v, b, line, label) {
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    this.m.branch(b, on, off, line, label);
-    this.storeSides(v, on, off, line, label);
-  }
-  storeSides(v, on, off, line, label) {
-    const join = this.m.fresh();
-    this.m.enter(on);
-    this.m.action(setTruth(v, true), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(off);
-    this.m.action(setTruth(v, false), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-  }
-  /**
-   * `rose(c)`: true on the cycle `c` becomes true; `once(c)`: true the first time it holds.
-   * A latch remembers whether `c` held last time; `fired` is what the caller tests. Five
-   * triggers: the branch on `c`, two in the true state (the latch clear → fire and set the
-   * latch, jumping on; else clear `fired`), one in the false state.
-   */
-  edge(e) {
-    const kind = e.edge;
-    const latch = this.m.bool(`(${kind} latch)`);
-    const fired = this.m.bool(`(${kind} fired)`);
-    if (!latch || !fired) {
-      this.error(e, `No switch is free for ${kind}().`);
-      return FALSE;
-    }
-    const line = e.at.line;
-    const { label } = e;
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    const join = this.m.fresh();
-    this.branchOn(e.cond, on, off, line, label);
-    this.m.enter(on);
-    this.m.step([boolCondition(latch, false)], [setBool(fired, true), setBool(latch, true)], join, line, label);
-    this.m.step([], [setBool(fired, false)], join, line, label);
-    this.m.enter(off);
-    if (kind === "rose") this.m.action(setBool(latch, false), line, label);
-    this.m.action(setBool(fired, false), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-    return cond(boolCondition(fired, true));
-  }
-  /** A condition as a `Bool` tree; may emit steps (temps for variable comparisons, a randomize, an edge, a call). */
-  bool(e) {
-    this.scratchUsed = 0;
-    return this.boolInner(e);
-  }
-  boolInner(e) {
-    switch (e.kind) {
-      case "const":
-        return e.value ? TRUE : FALSE;
-      case "cond":
-        this.c.touched?.push(e.record);
-        return cond(e.record);
-      case "var": {
-        const v = this.boolVar(e.id, e);
-        if (!v) return FALSE;
-        return v.kind !== "dc" ? cond(boolCondition(v, true)) : compareConst(v, ">=", 1);
-      }
-      case "test": {
-        if (e.expr.kind === "var") {
-          const v = this.dc(e.expr.id, e);
-          return v ? compareConst(v, ">=", 1) : FALSE;
-        }
-        const l = this.linear(e.expr);
-        if (!l) return FALSE;
-        return cond(deathsCondition(this.sideVar(l, e.at.line, e.label), Comparison.AtLeast, 1));
-      }
-      case "not":
-        return not(this.boolInner(e.expr));
-      case "and":
-        return and(e.items.map((i) => this.boolInner(i)));
-      case "or":
-        return or(e.items.map((i) => this.boolInner(i)));
-      case "compare":
-        return this.comparison(e);
-      case "random": {
-        const s = this.m.scratch(this.scratchUsed++);
-        this.m.action(setSwitch(s, SwitchAction.Randomize), e.at.line, `L${e.at.line}: random()`);
-        return cond(switchCondition(s, true));
-      }
-      case "edge":
-        return this.edge(e);
-      case "ternary": {
-        const line = e.at.line;
-        const t = this.m.temp(1);
-        const on = this.m.fresh();
-        const off = this.m.fresh();
-        this.branchOn(e.cond, on, off, line, e.label);
-        const join = this.m.fresh();
-        this.m.enter(on);
-        this.dead = false;
-        this.storeBool(t, e.whenTrue, line, e.label);
-        this.m.jump(join, line, e.label);
-        this.m.enter(off);
-        this.dead = false;
-        this.storeBool(t, e.whenFalse, line, e.label);
-        this.m.jump(join, line, e.label);
-        this.m.enter(join);
-        this.dead = false;
-        return cond(deathsCondition(t, Comparison.AtLeast, 1));
-      }
-      case "call": {
-        const r = this.inline(e.call);
-        return r ? cond(deathsCondition(r, Comparison.AtLeast, 1)) : FALSE;
-      }
-    }
-  }
-  comparison(e) {
-    const l = this.linear(e.left);
-    const r = this.linear(e.right);
-    if (!l || !r) return FALSE;
-    const d = merge(l, scale(r, -1));
-    if (d.terms.length === 0) return compareNumbers(d.c, e.op, 0) ? TRUE : FALSE;
-    if (d.terms.length === 1) {
-      const t = d.terms[0];
-      return compareScaled(t.v, t.k, e.op, -d.c);
-    }
-    const line = e.at.line;
-    const { label } = e;
-    const left = { c: Math.max(0, d.c), terms: d.terms.filter((t) => t.k > 0) };
-    const right = { c: Math.max(0, -d.c), terms: d.terms.filter((t) => t.k < 0).map((t) => ({ v: t.v, k: -t.k })) };
-    const a2 = this.sideVar(left, line, label);
-    const b = this.sideVar(right, line, label);
-    return this.m.compareVars(a2, e.op, b, line, label).bool;
-  }
-};
-function setTruth(v, on) {
-  return v.kind === "dc" ? setDeaths(v, SetModifier.SetTo, on ? 1 : 0) : setBool(v, on);
-}
-function compareScaled(v, k, op, n) {
-  if (k < 0) return compareScaled(v, -k, flipOp(op), -n);
-  if (k === 1) return compareConst(v, op, n);
-  switch (op) {
-    case ">=":
-      return compareConst(v, ">=", Math.ceil(n / k));
-    case ">":
-      return compareConst(v, ">=", Math.ceil((n + 1) / k));
-    case "<=":
-      return compareConst(v, "<=", Math.floor(n / k));
-    case "<":
-      return compareConst(v, "<=", Math.floor((n - 1) / k));
-    case "==":
-      return n % k === 0 ? compareConst(v, "==", n / k) : FALSE;
-    case "!=":
-      return n % k === 0 ? compareConst(v, "!=", n / k) : TRUE;
-  }
-}
-
 // compiler/compiler.ts
-var HYPER_CYCLES_PER_SECOND = 12;
-var PLAIN_CYCLES_PER_SECOND = 0.5;
 var ENTRY_FILE = "main.ts";
 var LIB_FILE = "lib.d.ts";
 function normalizePath(path) {
@@ -5202,7 +4266,7 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
   const refs = [];
   const scripts = /* @__PURE__ */ new Map();
@@ -5333,7 +4397,6 @@ function compileScript(ts, files, names, options) {
     diagnostics.push({ file: failure.file ?? ENTRY_FILE, line, column: failure.column ?? 1, endLine: line, endColumn: (failure.column ?? 1) + 1, message: failure.message, source: "script" });
     return result();
   }
-  const raw = storageOf(collector.entries.flatMap((e) => e.kind === "trigger" ? [e.record] : []));
   const sourceOf = (at) => at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null;
   const bodies = /* @__PURE__ */ new Map();
   const bodyOf = (d) => {
@@ -5352,80 +4415,40 @@ function compileScript(ts, files, names, options) {
     return b;
   };
   const resolve = (fn) => bodyOf(fn.descriptor) ?? void 0;
-  const cyclesPerSecond = collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND;
-  const lower = (allocator2, report, touched2) => {
-    const out = { triggers: [], sources: [], programs: [], notes: /* @__PURE__ */ new Map(), ir: [] };
-    const error = report ? nodeError : () => {
-    };
-    for (const entry of collector.entries) {
-      if (entry.kind === "trigger") {
-        out.triggers.push(entry.record);
-        out.sources.push(sourceOf(entry.at));
-        continue;
-      }
-      const file = fileNames[entry.descriptor.at[0]];
-      const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
-      const body2 = bodyOf(entry.descriptor);
-      if (!body2) {
-        if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
-        continue;
-      }
-      let machine;
-      try {
-        const comment = entry.options.comments ? (text) => collector.localString({ text }) : void 0;
-        machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator: allocator2, units: entry.options.variableUnits, comment });
-      } catch (err) {
-        if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: err.message, source: "compiler" });
-        continue;
-      }
-      const start = out.triggers.length;
-      const records2 = [];
-      const owner = entry.options.owners.find((o) => o < PLAYER_SLOTS) ?? 0;
-      const emitted2 = new Structured({ ts, checker, body: body2, owner, owners: entry.options.owners, perPlayer: entry.options.perPlayer, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve }).run();
-      out.ir.push(emitted2.program);
-      new Classic({ machine, program: emitted2.program, error: (node, message) => error(emitted2.nodeOf(node) ?? body2.plan.body, message), ...touched2 ? { touched: records2 } : {} }).run();
-      if (touched2 && records2.length) {
-        const t = emptyTrigger();
-        for (const o of entry.options.owners) t.players[o] = 1;
-        t.conditions = records2.filter((r) => "unitId" in r && !("modifier" in r));
-        t.actions = records2.filter((r) => "modifier" in r);
-        touched2.push(t);
-      }
-      out.triggers.push(...machine.triggers);
-      for (const s of machine.sources) out.sources.push(s);
-      for (const [key, note] of machine.notes) out.notes.set(key, note);
-      const owners = entry.options.owners;
-      out.programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
+  const triggers = [];
+  const sources = [];
+  const programs = [];
+  const variables = [];
+  const hints = [];
+  const ir = [];
+  for (const entry of collector.entries) {
+    if (entry.kind === "trigger") {
+      triggers.push(entry.record);
+      sources.push(sourceOf(entry.at));
+      continue;
     }
-    return out;
-  };
-  const touched = [];
-  const scratch = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
-  scratch.reserve(raw.deaths, raw.switches);
-  if (collector.entries.some((e) => e.kind === "program")) lower(scratch, false, touched);
-  const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
-  allocator.reserve(raw.deaths, raw.switches);
-  const inBodies = storageOf(touched);
-  allocator.reserve(inBodies.deaths, inBodies.switches);
-  const { triggers, sources, programs, notes, ir } = lower(allocator, true);
-  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {}, ...v.bits ? { bits: v.bits } : {} } : v.kind === "switch" ? { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), flag: v.unit, ...v.at ? { at: v.at } : {} });
-  const costs = /* @__PURE__ */ new Map();
-  const costOf = (file, line) => {
-    const key = `${file}\0${line}`;
-    let c2 = costs.get(key);
-    if (!c2) {
-      const n = notes.get(key);
-      c2 = { file, line, triggers: 0, ...n ? { note: n.note, ...n.label ? { label: n.label } : {} } : {} };
-      costs.set(key, c2);
+    const file = fileNames[entry.descriptor.at[0]];
+    const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
+    const body2 = bodyOf(entry.descriptor);
+    if (!body2) {
+      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
+      continue;
     }
-    return c2;
-  };
-  for (const s of sources) if (s) costOf(s.file, s.line).triggers++;
-  for (const [key, n] of notes) if (n.label) {
-    const [file, line] = key.split("\0");
-    costOf(file, Number(line));
+    const owners = entry.options.owners;
+    const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
+    const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    const index = programs.length;
+    ir.push(emitted2.program);
+    programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
+    for (const d of declarations(emitted2.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {} });
+    const check = checkProgram(emitted2.program);
+    for (const d of check.errors) {
+      if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
+      diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
+    }
+    hints.push(...check.hints);
   }
-  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
+  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
 }
 function checkValuesAsBooleans(ts, checker, sf, programs, error) {
   const isLibraryType = (t, name) => {
@@ -5651,45 +4674,45 @@ function setHoverVariables(monaco, variables) {
         const path = pathOfUri(m.uri);
         const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
         if (!v) continue;
-        const what = v.kind === "boolean" ? "a switch" : v.bits ? `a u${v.bits} death counter (0 \u2026 ${2 ** v.bits - 1})` : "a death counter";
+        const what = v.kind === "boolean" ? "a boolean" : v.bits ? `a u${v.bits} number (0 \u2026 ${2 ** v.bits - 1}, stopping at either end)` : "a number (0 \u2026 4 294 967 295, never below 0)";
         return {
           range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-          contents: [{ value: `**${v.name}** is a variable of the program: ${what}, ${v.storage}.` }]
+          contents: [{ value: `**${v.name}** is a variable of the program: ${what}${v.shared ? ", one value shared by every player the program runs for" : ""}. It lives in the game while the map is played.` }]
         };
       }
       return null;
     }
   });
 }
-var costHints = () => [];
-var costChanged = null;
-function setCostHints(monaco, costs) {
-  costHints = costs;
-  if (costChanged) {
-    costChanged.fire();
+var lineHints = () => [];
+var hintsChanged = null;
+function setLineHints(monaco, hints) {
+  lineHints = hints;
+  if (hintsChanged) {
+    hintsChanged.fire();
     return;
   }
   const changed = new monaco.Emitter();
-  costChanged = changed;
+  hintsChanged = changed;
   monaco.languages.registerInlayHintsProvider("typescript", {
     onDidChangeInlayHints: changed.event,
     provideInlayHints(model, range) {
       if (model.uri.scheme !== "file") return null;
       const path = pathOfUri(model.uri);
-      const hints = costHints().filter((c2) => normalizePath(c2.file) === path && c2.line >= range.startLineNumber && c2.line <= range.endLineNumber && c2.line <= model.getLineCount()).map((c2) => ({
+      const hints2 = lineHints().filter((c2) => normalizePath(c2.file) === path && c2.line >= range.startLineNumber && c2.line <= range.endLineNumber && c2.line <= model.getLineCount()).map((c2) => ({
         position: { lineNumber: c2.line, column: model.getLineMaxColumn(c2.line) },
-        label: c2.label ? c2.triggers >= 2 ? `${c2.label}, ${c2.triggers} triggers` : c2.label : `${c2.triggers} trigger${c2.triggers === 1 ? "" : "s"}`,
+        label: c2.label,
         kind: monaco.languages.InlayHintKind.Type,
         paddingLeft: true,
-        ...c2.note ? { tooltip: c2.note } : {}
+        tooltip: c2.note
       }));
-      return { hints, dispose() {
+      return { hints: hints2, dispose() {
       } };
     }
   });
 }
-function refreshCostHints() {
-  costChanged?.fire();
+function refreshLineHints() {
+  hintsChanged?.fire();
 }
 var mapRefs = () => null;
 var mapRefsRegistered = false;
@@ -5888,7 +4911,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "2.6.1";
+var VERSION = "3.0.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -5901,7 +4924,7 @@ importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, libUrl, files, names, reservedDeaths, reservedSwitches } = e.data;
+  const { id, moduleUrl, libUrl, files, names } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
@@ -5911,7 +4934,7 @@ self.onmessage = async (e) => {
       if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
       lib = await r.text();
     }
-    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib, reservedDeaths, reservedSwitches }) });
+    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib }) });
   } catch (err) {
     postMessage({ id, error: String((err && err.message) || err) });
   }
@@ -6030,7 +5053,7 @@ function loadLib(url) {
 }
 async function compileHere(input, lib) {
   const [ts, text] = await Promise.all([loadTypeScript(), loadLib(lib)]);
-  return compileScript(ts, input.files, input.names, { lib: text, reservedDeaths: input.reservedDeaths, reservedSwitches: input.reservedSwitches });
+  return compileScript(ts, input.files, input.names, { lib: text });
 }
 var CompileSuperseded = class extends Error {
   constructor() {
@@ -6050,7 +5073,7 @@ function compileInBackground(input, dist = DEFAULT_DIST) {
   }
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
-    const req = { id, moduleUrl: workerModuleUrl(dist), libUrl: lib, files: input.files, names: input.names, reservedDeaths: input.reservedDeaths, reservedSwitches: input.reservedSwitches };
+    const req = { id, moduleUrl: workerModuleUrl(dist), libUrl: lib, files: input.files, names: input.names };
     w.postMessage(req);
   }).catch((err) => {
     if (err.message === "worker unavailable") return compileHere(input, lib);
@@ -6346,37 +5369,17 @@ function readManifest(extras) {
   try {
     const m = JSON.parse(decoder.decode(bytes));
     if (m.version !== 2 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
-    const target = m.target === "remastered" ? { target: m.target } : {};
+    const programs = typeof m.programs === "number" && m.programs >= 0 ? { programs: Math.floor(m.programs) } : {};
     const sources = Array.isArray(m.sources) ? m.sources.map((s) => s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null) : [];
     const files = Array.isArray(m.files) ? m.files.filter((f) => typeof f === "string") : [];
     const records2 = Array.isArray(m.records) && m.records.length === m.count && m.records.every((r) => typeof r === "string") ? m.records : void 0;
-    return { version: 2, ...target, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...records2 ? { records: records2 } : {} };
+    return { version: 2, ...programs, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...records2 ? { records: records2 } : {} };
   } catch {
     return null;
   }
 }
 function withManifest(extras, manifest) {
   return withMember(extras, MANIFEST_MEMBER, manifest ? encoder.encode(JSON.stringify(manifest)) : null);
-}
-function readTarget(extras) {
-  const bytes = member(extras, MANIFEST_MEMBER);
-  if (!bytes) return "classic";
-  try {
-    const m = JSON.parse(decoder.decode(bytes));
-    return m.target === "remastered" ? "remastered" : "classic";
-  } catch {
-    return "classic";
-  }
-}
-function withTarget(extras, target) {
-  const manifest = readManifest(extras);
-  if (manifest) {
-    const next = { ...manifest };
-    if (target === "remastered") next.target = target;
-    else delete next.target;
-    return withManifest(extras, next);
-  }
-  return withMember(extras, MANIFEST_MEMBER, target === "remastered" ? encoder.encode(JSON.stringify({ version: 2, target })) : null);
 }
 function fnv1a(bytes) {
   let h = 2166136261;
@@ -6425,7 +5428,7 @@ function scriptState(triggers, extras) {
   const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
   const stale = !!manifest && !block2;
   const parts = stale && triggers ? staleRecords(triggers, manifest) : null;
-  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, target: readTarget(extras) };
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block: block2, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, programs: manifest?.programs ?? 0 };
 }
 function relocateManifest(triggers, extras) {
   const manifest = readManifest(extras);
@@ -6433,15 +5436,6 @@ function relocateManifest(triggers, extras) {
   const block2 = findBlock(triggers, manifest);
   if (!block2 || block2.start === manifest.start) return null;
   return withManifest(extras, { ...manifest, start: block2.start });
-}
-function reservedStorage(triggers, switchNames, block2) {
-  const hand = triggers.filter((_, i) => !(block2 && i >= block2.start && i < block2.start + block2.count));
-  const used = storageOf(hand);
-  const switches = new Set(used.switches);
-  switchNames.forEach((s, i) => {
-    if (s && s.trim() && s.trim() !== defaultSwitchName(i)) switches.add(i);
-  });
-  return { reservedDeaths: used.deaths, reservedSwitches: [...switches].sort((a2, b) => a2 - b) };
 }
 function stringResolver(compiled, intern) {
   const cache = /* @__PURE__ */ new Map();
@@ -6493,8 +5487,7 @@ function buildScript(triggers, extras, files, compiled, intern, options = {}) {
     before = triggers.slice();
     after = [];
   }
-  const target = options.target ?? readTarget(extras);
-  const manifest = { version: 2, ...target === "remastered" ? { target } : {}, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records2.map(hashRecord) };
+  const manifest = { version: 2, programs: compiled.ir.length, start, count: records2.length, hash: hashTriggers(records2), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records2.map(hashRecord) };
   return { list: [...before, ...records2, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records2.length, sources: manifest.sources }, ...replaced ? { replaced } : {} };
 }
 function triggerAtLine(block2, file, line) {
@@ -6509,6 +5502,39 @@ function triggerAtLine(block2, file, line) {
 // compiler/simulateIr.ts
 var FRAMES_PER_SECOND = 24;
 var U32 = 4294967296;
+var newSides = () => ({ plus: 0, minus: 0, plusConst: 0, minusConst: 0, variable: false });
+function add(sides, sign, value, buildTime) {
+  if (buildTime) {
+    if (sign > 0) sides.plusConst += value;
+    else sides.minusConst += value;
+    return;
+  }
+  sides.variable = true;
+  if (sign > 0) sides.plus = (sides.plus + value) % U32;
+  else sides.minus = (sides.minus + value) % U32;
+}
+function totals(sides) {
+  if (!sides.variable) return [sides.plusConst, sides.minusConst];
+  return [(sides.plusConst % U32 + sides.plus) % U32, (sides.minusConst % U32 + sides.minus) % U32];
+}
+function difference(sides, absolute = false) {
+  const [p, n] = totals(sides);
+  return (absolute ? Math.abs(p - n) : Math.max(p - n, 0)) % U32;
+}
+function isBuildTime(e) {
+  switch (e.kind) {
+    case "const":
+      return true;
+    case "unary":
+      return isBuildTime(e.expr);
+    case "binary":
+      return isBuildTime(e.left) && isBuildTime(e.right);
+    case "intrinsic":
+      return e.args.every(isBuildTime);
+    default:
+      return false;
+  }
+}
 var Halt = class extends Error {
 };
 var ProgramRun = class {
@@ -6532,7 +5558,7 @@ var ProgramRun = class {
     void flow;
     return "next";
   }
-  /** One cycle's worth: resume the body until it gives the cycle back or ends. */
+  /** One frame: resume the body until it gives the frame back or ends. */
   tick() {
     if (this.done || !this.body) return;
     this.steps = 0;
@@ -6543,7 +5569,7 @@ var ProgramRun = class {
     }
   }
   step() {
-    if (++this.steps > this.sim.maxSteps) throw new Halt(`A program ran more than ${this.sim.maxSteps} statements in one ${this.sim.target === "classic" ? "cycle" : "frame"}: is there a loop with no sleep() in it?`);
+    if (++this.steps > this.sim.maxSteps) throw new Halt(`A program ran more than ${this.sim.maxSteps} statements in one frame: is there a loop with no sleep() in it?`);
   }
   /* ── storage ── */
   read(id, at) {
@@ -6568,45 +5594,66 @@ var ProgramRun = class {
     this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
   }
   /* ── expressions ── */
+  /**
+   * A number, the way the game computes it (`python/trigscript.py`): + and − are flattened
+   * into what is added and what is subtracted, each side summed — wrapping at 2³² once a
+   * variable is part of it — and the difference stops at 0. Everything else is a term:
+   * × wraps, ÷ and % round down and give 0 for a divisor of 0.
+   */
   *num(e) {
+    if (e.kind === "unary" || e.kind === "binary" && (e.op === "+" || e.op === "-") || e.kind === "const" && e.value < 0) {
+      const sides = newSides();
+      yield* this.linear(e, sides, 1);
+      return difference(sides);
+    }
+    return yield* this.term(e);
+  }
+  *linear(e, sides, sign) {
+    if (e.kind === "binary" && (e.op === "+" || e.op === "-")) {
+      yield* this.linear(e.left, sides, sign);
+      yield* this.linear(e.right, sides, e.op === "+" ? sign : -sign);
+    } else if (e.kind === "unary") {
+      yield* this.linear(e.expr, sides, -sign);
+    } else if (e.kind === "const" && e.value < 0) {
+      add(sides, -sign, -e.value, true);
+    } else {
+      add(sides, sign, yield* this.term(e), isBuildTime(e));
+    }
+  }
+  *term(e) {
     switch (e.kind) {
+      // A constant below zero as a factor or a divisor is its 32-bit pattern, as it is in the game.
       case "const":
-        return e.value;
+        return (Math.trunc(e.value) % U32 + U32) % U32;
       case "var":
         return Number(this.read(e.id));
       case "unary":
-        return -(yield* this.num(e.expr));
+        return yield* this.num(e);
       case "binary": {
         const a2 = yield* this.num(e.left);
         const b = yield* this.num(e.right);
         switch (e.op) {
-          case "+":
-            return a2 + b;
-          case "-":
-            return a2 - b;
           case "*":
-            return a2 * b;
+            return Number(BigInt(a2) * BigInt(b) % BigInt(U32));
           case "/":
-            return b === 0 ? 0 : Math.trunc(a2 / b);
+            return b === 0 ? 0 : Math.floor(a2 / b);
           case "%":
             return b === 0 ? 0 : a2 % b;
+          default:
+            return yield* this.num(e);
         }
-        return 0;
       }
       case "ternary":
         return (yield* this.bool(e.cond)) ? yield* this.num(e.whenTrue) : yield* this.num(e.whenFalse);
       case "intrinsic": {
+        if (e.name === "abs") {
+          const sides = newSides();
+          yield* this.linear(e.args[0], sides, 1);
+          return difference(sides, true);
+        }
         const args = [];
         for (const a2 of e.args) args.push(yield* this.num(a2));
-        switch (e.name) {
-          case "min":
-            return Math.min(...args);
-          case "max":
-            return Math.max(...args);
-          case "abs":
-            return Math.abs(args[0] ?? 0);
-        }
-        return 0;
+        return e.name === "min" ? Math.min(...args) : Math.max(...args);
       }
       case "call":
         return Number(yield* this.call(e.call));
@@ -6623,8 +5670,10 @@ var ProgramRun = class {
       case "test":
         return (yield* this.num(e.expr)) !== 0;
       case "compare": {
-        const a2 = yield* this.num(e.left);
-        const b = yield* this.num(e.right);
+        const sides = newSides();
+        yield* this.linear(e.left, sides, 1);
+        yield* this.linear(e.right, sides, -1);
+        const [a2, b] = totals(sides);
         switch (e.op) {
           case "<":
             return a2 < b;
@@ -6691,11 +5740,6 @@ var ProgramRun = class {
     }
     return "next";
   }
-  /** The back edge of a loop: a cycle on the classic target, nothing on Remastered. */
-  *backEdge() {
-    if (this.sim.target === "classic") yield;
-    return "next";
-  }
   *stmt(s, ctx) {
     this.step();
     switch (s.kind) {
@@ -6720,7 +5764,6 @@ var ProgramRun = class {
           const flow = yield* this.block(s.body, ctx);
           if (flow === "break") return "next";
           if (flow === "return") return flow;
-          yield* this.backEdge();
         }
       }
       case "do": {
@@ -6729,7 +5772,6 @@ var ProgramRun = class {
           if (flow === "break") return "next";
           if (flow === "return") return flow;
           if (!(yield* this.bool(s.cond))) return "next";
-          yield* this.backEdge();
         }
       }
       case "for": {
@@ -6740,7 +5782,6 @@ var ProgramRun = class {
           if (flow === "return") return flow;
           const up = yield* this.block(s.update, ctx);
           if (up === "return") return up;
-          yield* this.backEdge();
         }
       }
       case "unrolled": {
@@ -6772,16 +5813,14 @@ var ProgramRun = class {
         return "return";
       }
       case "sleep": {
-        const n = this.sim.target === "classic" ? s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * this.program.cyclesPerSecond)) : s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * FRAMES_PER_SECOND));
+        const n = s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * FRAMES_PER_SECOND));
         for (let i = 0; i < n; i++) yield;
         return "next";
       }
       case "action": {
         const record = { ...s.record };
         if (s.variable) {
-          const v = yield* this.num(s.variable.expr);
-          const stored = Math.max(0, Math.min(v, 2 ** s.variable.bits - 1));
-          record[s.variable.field] = stored;
+          record[s.variable.field] = yield* this.num(s.variable.expr);
         }
         this.sim.act(this, record, s.at);
         return "next";
@@ -6804,7 +5843,6 @@ var ProgramRun = class {
   }
 };
 var ProgramSimulation = class {
-  target;
   world;
   runs;
   events = [];
@@ -6813,7 +5851,6 @@ var ProgramSimulation = class {
   conditionOf;
   cycle = 0;
   constructor(programs, options) {
-    this.target = options.target;
     this.world = options.world ?? new Simulation([], { player: options.player ?? programs[0]?.owner ?? 0, condition: options.condition, random: options.random, strings: options.strings });
     this.maxSteps = options.maxStepsPerCycle ?? 1e5;
     this.random = options.random ?? Math.random;
@@ -6880,7 +5917,7 @@ var ProgramSimulation = class {
       }
     }
   }
-  /** One cycle (or frame): every program in order, from where it left off. */
+  /** One frame: every program in order, from where it left off. */
   step() {
     for (const run of this.runs) {
       try {
@@ -6906,255 +5943,23 @@ var ProgramSimulation = class {
   }
 };
 
-// compiler/eud.ts
-function checkForTarget(program, target) {
-  const out = [];
-  if (target === "remastered") checkSleeps(program.body, out);
-  return out;
-}
-function assigned(body2, into = /* @__PURE__ */ new Set()) {
-  const stmt = (s) => {
-    switch (s.kind) {
-      case "declare":
-        into.add(s.decl.id);
-        break;
-      case "assign":
-      case "assignBool":
-        into.add(s.target);
-        break;
-      case "if":
-        s.then.forEach(stmt);
-        s.else?.forEach(stmt);
-        break;
-      case "while":
-      case "for":
-        s.body.forEach(stmt);
-        if (s.kind === "for") s.update.forEach(stmt);
-        break;
-      case "do":
-        s.body.forEach(stmt);
-        break;
-      case "unrolled":
-        s.iterations.forEach((i) => i.forEach(stmt));
-        break;
-      case "switch":
-        s.cases.forEach((c2) => c2.body.forEach(stmt));
-        break;
-      case "call":
-        call(s.call);
-        break;
-      case "block":
-        s.body.forEach(stmt);
-        break;
-      default:
-        break;
-    }
-  };
-  const call = (c2) => {
-    for (const p of c2.params) into.add(p.decl.id);
-    if (c2.result) into.add(c2.result.decl.id);
-    c2.body.forEach(stmt);
-  };
-  body2.forEach(stmt);
-  return into;
-}
-function reads(e, into = /* @__PURE__ */ new Set()) {
-  switch (e.kind) {
-    case "var":
-      into.add(e.id);
-      break;
-    case "unary":
-      reads(e.expr, into);
-      break;
-    case "binary":
-    case "compare":
-      reads(e.left, into);
-      reads(e.right, into);
-      break;
-    case "ternary":
-      reads(e.cond, into);
-      reads(e.whenTrue, into);
-      reads(e.whenFalse, into);
-      break;
-    case "intrinsic":
-      e.args.forEach((a2) => reads(a2, into));
-      break;
-    case "and":
-    case "or":
-      e.items.forEach((i) => reads(i, into));
-      break;
-    case "not":
-      reads(e.expr, into);
-      break;
-    case "test":
-      reads(e.expr, into);
-      break;
-    case "edge":
-      reads(e.cond, into);
-      break;
-    case "call":
-      break;
-    default:
-      break;
-  }
-  return into;
-}
-function sleepsOnEveryPath(body2) {
-  for (const s of body2) {
-    switch (s.kind) {
-      case "sleep":
-        return true;
-      case "break":
-      case "return":
-        return true;
-      // Leaves the loop: no freeze on this path.
-      case "continue":
-        return false;
-      case "if":
-        if (s.else && sleepsOnEveryPath(s.then) && sleepsOnEveryPath(s.else)) return true;
-        break;
-      case "block":
-        if (sleepsOnEveryPath(s.body)) return true;
-        break;
-      case "unrolled":
-        if (s.iterations.some(sleepsOnEveryPath)) return true;
-        break;
-      case "switch": {
-        const hasDefault = s.cases.some((c2) => c2.value === null);
-        if (hasDefault && s.cases.every((c2) => sleepsOnEveryPath(c2.body))) return true;
-        break;
-      }
-      case "while":
-      case "do":
-      case "for":
-        if (sleepsOnEveryPath(s.body)) return true;
-        break;
-      case "call":
-        if (sleepsOnEveryPath(s.call.body)) return true;
-        break;
-      default:
-        break;
-    }
-  }
-  return false;
-}
-function checkSleeps(body2, out) {
-  const stmt = (s) => {
-    switch (s.kind) {
-      case "while":
-      case "for":
-      case "do": {
-        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body).has(id)) : false;
-        if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond ? "This loop's condition never changes inside it, and no path around it sleeps: on the Remastered target the body runs to completion within a frame, so this loop would never give the frame back. Add sleep(frames(1)) inside it, or change what it tests." : "A loop without an end needs a sleep() on every path around it: on the Remastered target the body runs to completion within a frame, so this loop would freeze the game. Add sleep(frames(1)) inside it." });
-        s.body.forEach(stmt);
-        if (s.kind === "for") s.update.forEach(stmt);
-        break;
-      }
-      case "if":
-        s.then.forEach(stmt);
-        s.else?.forEach(stmt);
-        break;
-      case "unrolled":
-        s.iterations.forEach((i) => i.forEach(stmt));
-        break;
-      case "switch":
-        s.cases.forEach((c2) => c2.body.forEach(stmt));
-        break;
-      case "call":
-        s.call.body.forEach(stmt);
-        break;
-      case "block":
-        s.body.forEach(stmt);
-        break;
-      default:
-        break;
-    }
-  };
-  body2.forEach(stmt);
-}
-function serializeIr(programs, resolve) {
-  const action2 = (r) => ({ ...r, text: resolve(r.text), wav: resolve(r.wav) });
-  const condition2 = (r) => ({ ...r });
-  const expr = (e) => {
-    switch (e.kind) {
-      case "unary":
-        return { ...e, expr: expr(e.expr) };
-      case "binary":
-      case "compare":
-        return { ...e, left: expr(e.left), right: expr(e.right) };
-      case "ternary":
-        return { ...e, cond: expr(e.cond), whenTrue: expr(e.whenTrue), whenFalse: expr(e.whenFalse) };
-      case "intrinsic":
-        return { ...e, args: e.args.map(expr) };
-      case "call":
-        return { ...e, call: call(e.call) };
-      case "cond":
-        return { ...e, record: condition2(e.record) };
-      case "test":
-        return { ...e, expr: expr(e.expr) };
-      case "and":
-      case "or":
-        return { ...e, items: e.items.map(expr) };
-      case "not":
-        return { ...e, expr: expr(e.expr) };
-      case "edge":
-        return { ...e, cond: expr(e.cond) };
-      default:
-        return e;
-    }
-  };
-  const call = (c2) => ({ ...c2, params: c2.params.map((p) => ({ ...p, init: expr(p.init) })), body: c2.body.map(stmt) });
-  const stmt = (s) => {
-    switch (s.kind) {
-      case "declare":
-        return { ...s, init: expr(s.init) };
-      case "assign":
-        return { ...s, value: expr(s.value) };
-      case "assignBool":
-        return { ...s, value: expr(s.value) };
-      case "if":
-        return { ...s, cond: expr(s.cond), then: s.then.map(stmt), ...s.else ? { else: s.else.map(stmt) } : {} };
-      case "while":
-        return { ...s, ...s.cond ? { cond: expr(s.cond) } : {}, body: s.body.map(stmt) };
-      case "do":
-        return { ...s, body: s.body.map(stmt), cond: expr(s.cond) };
-      case "for":
-        return { ...s, ...s.cond ? { cond: expr(s.cond) } : {}, update: s.update.map(stmt), body: s.body.map(stmt) };
-      case "unrolled":
-        return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
-      case "switch":
-        return { ...s, value: expr(s.value), cases: s.cases.map((c2) => ({ ...c2, body: c2.body.map(stmt) })) };
-      case "return":
-        return s.value ? { ...s, value: expr(s.value) } : s;
-      case "action":
-        return { ...s, record: action2(s.record), ...s.variable ? { variable: { ...s.variable, expr: expr(s.variable.expr) } } : {} };
-      case "call":
-        return { ...s, call: call(s.call) };
-      case "block":
-        return { ...s, body: s.body.map(stmt) };
-      default:
-        return s;
-    }
-  };
-  return JSON.stringify({ version: programs[0]?.version ?? 1, programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
-}
-
 // compiler/generated/trigscriptPy.ts
-var TRIGSCRIPT_PY = '"""\n[trigscript]\nir : /work/files/trigscript.json\n\nTrigScript\'s Remastered target: the euddraft plugin that lowers the compiler\'s IR \u2014 data,\nnever code \u2014 into eudplib. The IR file is what the plugin\'s compiler wrote (docs/ir.md);\nthis module is handed to the eudplib library plugin as a source with every build, so the\ntwo halves of the IR version are always the same build.\n\nA program is a coroutine the game runs every frame. Its body is lowered to straight-line\neudplib triggers with jumps between labels (the same shape the classic backend\'s state\nmachine has): `if` / `while` / `switch` become conditional jumps, and `sleep` stores the\nlabel to resume at in a state variable, sets a frame counter, and leaves the frame. The\nframe\'s entry counts the wait down, then jumps to the stored label. A per-player program\nruns once per human player each frame with CurrentPlayer set, its variables and its state\nas 12-slot arrays indexed by the player.\n\nNumbers keep the classic contract: 32-bit unsigned, an expression\'s exact value stored\nbelow zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.\n"""\nimport json\n\nfrom eudplib import *\n\nIR_VERSION = 1\nFRAMES_PER_SECOND = 24\n# The state of a program whose body ended: nothing resumes it.\nDONE = 0xFFFFFFFF\nU32 = 0xFFFFFFFF\n\nwith open(settings["ir"], encoding="utf-8") as _f:\n    IR = json.load(_f)\nif IR.get("version") != IR_VERSION:\n    raise RuntimeError("trigscript: the IR is version %r; this plugin reads version %d" % (IR.get("version"), IR_VERSION))\n\n\ndef where(node):\n    """" at main.ts:12:5" for a node with a position \u2014 what the editor parses back into a marker."""\n    at = node.get("at") if isinstance(node, dict) else None\n    if not at:\n        return ""\n    if at.get("file"):\n        return " at %s:%s:%s" % (at.get("file"), at.get("line"), at.get("column"))\n    return " at %s:%s" % (at.get("line"), at.get("column"))\n\n\nclass Fail(RuntimeError):\n    pass\n\n\nclass Leave(Exception):\n    """Raised through the lowering when a statement ends the straight line (break / continue / return)."""\n\n\nclass Storage:\n    """A variable\'s cell: plain, or a 12-slot row of a per-player program."""\n\n    def __init__(self, decl, per_player, player_of):\n        self.decl = decl\n        self.bits = decl.get("bits")\n        self.rowed = per_player and not decl.get("shared")\n        self.player_of = player_of\n        self.store = EUDArray([0] * 12) if self.rowed else EUDVariable(0)  # initial: the variable\'s own cell\n\n    def get(self):\n        return self.store[self.player_of()] if self.rowed else self.store\n\n    def set(self, value):\n        if self.bits:\n            value = saturate(value, self.bits)\n        if self.rowed:\n            self.store[self.player_of()] = value\n        else:\n            self.store << value\n\n\ndef saturate(value, bits):\n    top = (1 << bits) - 1\n    if isinstance(value, int):\n        return min(value, top)\n    v = EUDVariable()\n    v << value\n    if EUDIf()(v >= top + 1):\n        v << top\n    EUDEndIf()\n    return v\n\n\ndef as_var(value):\n    if isinstance(value, int):\n        return EUDVariable(value & U32)  # initial: a constant, never written\n    return value\n\n\ndef fresh(value=0):\n    """A temporary that starts from `value` every time the code runs. `EUDVariable(n)` is not\n    that: n is the cell\'s value when the map loads, so a temporary built that way and then\n    written keeps what the last run left in it \u2014 `ticks + 1` went 1, 2, 4, 8 (found in the\n    first played probe, 2026-09-18). Anything the lowering writes to starts here."""\n    v = EUDVariable()\n    v << value\n    return v\n\n\nclass Lowering:\n    def __init__(self, program):\n        self.p = program\n        self.per_player = bool(program.get("perPlayer"))\n        self.owner = int(program.get("owner", 0))\n        self.player = None\n        self.vars = {}\n        self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state\n        self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state\n        self.resumes = []  # (index, Forward) for every sleep\n        self.frame_end = None\n        self.latches = {}\n\n    # \u2500\u2500 storage \u2500\u2500\n    def player_of(self):\n        if self.player is None:\n            raise Fail("trigscript: a per-player variable outside the player loop")\n        return self.player\n\n    def declare(self, decl):\n        s = Storage(decl, self.per_player, self.player_of)\n        self.vars[decl["id"]] = s\n        return s\n\n    def var(self, id_, node=None):\n        s = self.vars.get(id_)\n        if s is None:\n            raise Fail("trigscript: unknown variable %r%s" % (id_, where(node)))\n        return s\n\n    def get_state(self):\n        return self.state[self.player] if self.per_player else self.state\n\n    def set_state(self, value):\n        if self.per_player:\n            self.state[self.player] = value\n        else:\n            self.state << value\n\n    def get_wait(self):\n        return self.wait[self.player] if self.per_player else self.wait\n\n    def set_wait(self, value):\n        if self.per_player:\n            self.wait[self.player] = value\n        else:\n            self.wait << value\n\n    # \u2500\u2500 numbers: an int or an EUDVariable \u2500\u2500\n    def linear(self, e, pos, neg, sign):\n        """Flatten + and - into positive and negative terms; anything else is one term."""\n        k = e["kind"]\n        if k == "binary" and e["op"] in ("+", "-"):\n            self.linear(e["left"], pos, neg, sign)\n            self.linear(e["right"], pos, neg, sign if e["op"] == "+" else -sign)\n        elif k == "unary":\n            self.linear(e["expr"], pos, neg, -sign)\n        else:\n            (pos if sign > 0 else neg).append(self.term(e))\n\n    def num(self, e):\n        k = e["kind"]\n        if k == "unary" or (k == "binary" and e["op"] in ("+", "-")):\n            pos, neg = [], []\n            self.linear(e, pos, neg, 1)\n            cp = sum(t for t in pos if isinstance(t, int))\n            cn = sum(t for t in neg if isinstance(t, int))\n            vp = [t for t in pos if not isinstance(t, int)]\n            vn = [t for t in neg if not isinstance(t, int)]\n            if not vp and not vn:\n                return max(cp - cn, 0) & U32\n            if not vn and cn == 0:\n                acc = fresh(cp & U32)\n                for t in vp:\n                    acc += t\n                return acc\n            acc = fresh(cp & U32)\n            for t in vp:\n                acc += t\n            sub = fresh(cn & U32)\n            for t in vn:\n                sub += t\n            r = EUDVariable()\n            if EUDIf()(acc >= sub):\n                r << acc - sub\n            if EUDElse()():\n                r << 0\n            EUDEndIf()\n            return r\n        return self.term(e)\n\n    def term(self, e):\n        k = e["kind"]\n        if k == "const":\n            return int(e["value"]) & U32\n        if k == "var":\n            return self.var(e["id"], e).get()\n        if k == "binary":\n            a, b = self.num(e["left"]), self.num(e["right"])\n            op = e["op"]\n            if isinstance(a, int) and isinstance(b, int):\n                if op == "*":\n                    return (a * b) & U32\n                if b == 0:\n                    raise Fail("trigscript: division by zero%s" % where(e))\n                return (a // b if op == "/" else a % b) & U32\n            if op == "*":\n                return f_mul(as_var(a), as_var(b))\n            q, r = f_div(as_var(a), as_var(b))\n            return q if op == "/" else r\n        if k == "unary":\n            return self.num(e)\n        if k == "ternary":\n            t = EUDVariable()\n            if EUDIf()(self.cond(e["cond"])):\n                t << self.num(e["whenTrue"])\n            if EUDElse()():\n                t << self.num(e["whenFalse"])\n            EUDEndIf()\n            return t\n        if k == "intrinsic":\n            args = [self.num(a) for a in e["args"]]\n            name = e["name"]\n            if name == "abs":\n                return args[0]  # unsigned: a stored value is never negative\n            a, b = args\n            if isinstance(a, int) and isinstance(b, int):\n                return min(a, b) if name == "min" else max(a, b)\n            t = EUDVariable()\n            av, bv = as_var(a), as_var(b)\n            if EUDIf()(av <= bv if name == "min" else av >= bv):\n                t << av\n            if EUDElse()():\n                t << bv\n            EUDEndIf()\n            return t\n        if k == "call":\n            return self.call(e["call"])\n        raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))\n\n    # \u2500\u2500 booleans: an eudplib condition \u2500\u2500\n    def cond(self, e):\n        k = e["kind"]\n        if k == "const":\n            return EUDVariable(1 if e["value"] else 0) >= 1  # initial: a constant, never written\n        if k == "cond":\n            return condition(e["record"])\n        if k == "var":\n            return as_var(self.var(e["id"], e).get()) >= 1\n        if k == "test":\n            return as_var(self.num(e["expr"])) >= 1\n        if k == "compare":\n            a, b = self.num(e["left"]), self.num(e["right"])\n            op = e["op"]\n            if isinstance(a, int) and isinstance(b, int):\n                return EUDVariable(1 if compare(a, op, b) else 0) >= 1  # initial: a constant, never written\n            # One comparison, built once: a comparison between variables writes into its own\n            # condition, and one that is built and dropped is an orphan eudplib refuses.\n            av = as_var(a)\n            if op == "==":\n                return av == b\n            if op == "!=":\n                return av != b\n            if op == "<":\n                return av < b\n            if op == "<=":\n                return av <= b\n            if op == ">":\n                return av > b\n            return av >= b\n        if k == "and":\n            return EUDAnd(*[self.cond(c) for c in e["items"]])\n        if k == "or":\n            return EUDOr(*[self.cond(c) for c in e["items"]])\n        if k == "not":\n            return EUDNot(self.cond(e["expr"]))\n        if k == "random":\n            return (f_rand() & 1) >= 1\n        if k == "edge":\n            return self.edge(e)\n        if k == "ternary":\n            t = EUDVariable()\n            if EUDIf()(self.cond(e["cond"])):\n                t << self.truth(e["whenTrue"])\n            if EUDElse()():\n                t << self.truth(e["whenFalse"])\n            EUDEndIf()\n            return t >= 1\n        if k == "call":\n            return as_var(self.call(e["call"])) >= 1\n        raise Fail("trigscript: unknown condition %r%s" % (k, where(e)))\n\n    def truth(self, e):\n        """A boolean expression as 0 / 1."""\n        if e["kind"] == "const":\n            return 1 if e["value"] else 0\n        if e["kind"] == "var":\n            return self.var(e["id"], e).get()\n        t = fresh(0)\n        if EUDIf()(self.cond(e)):\n            t << 1\n        EUDEndIf()\n        return t\n\n    def edge(self, e):\n        """rose(c): true on the frame c becomes true; once(c): true the first time it holds."""\n        key = id(e)\n        if key not in self.latches:\n            self.latches[key] = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: the latch\n        latch = self.latches[key]\n\n        def get():\n            return latch[self.player] if self.per_player else latch\n\n        def put(v):\n            if self.per_player:\n                latch[self.player] = v\n            else:\n                latch << v\n\n        fired = fresh(0)\n        held = self.truth(e["cond"])\n        if EUDIf()(as_var(held) >= 1):\n            if EUDIf()(as_var(get()) == 0):\n                fired << 1\n                put(1)\n            EUDEndIf()\n        if EUDElse()():\n            if e["edge"] == "rose":\n                put(0)\n        EUDEndIf()\n        return fired >= 1\n\n    # \u2500\u2500 statements \u2500\u2500\n    def block(self, statements, ctx):\n        for st in statements:\n            self.statement(st, ctx)\n\n    def statement(self, st, ctx):\n        k = st["kind"]\n        if k == "declare":\n            s = self.declare(st["decl"])\n            if not st.get("failed"):\n                s.set(self.num(st["init"]) if st["decl"]["kind"] == "number" else self.truth(st["init"]))\n        elif k == "assign":\n            self.var(st["target"], st).set(self.num(st["value"]))\n        elif k == "assignBool":\n            self.var(st["target"], st).set(self.truth(st["value"]))\n        elif k == "if":\n            self.if_(st, ctx)\n        elif k == "while":\n            self.while_(st, ctx)\n        elif k == "do":\n            self.do_(st, ctx)\n        elif k == "for":\n            self.for_(st, ctx)\n        elif k == "unrolled":\n            self.unrolled(st, ctx)\n        elif k == "switch":\n            self.switch(st, ctx)\n        elif k == "break":\n            if "break" not in ctx:\n                raise Fail("trigscript: break outside a loop%s" % where(st))\n            EUDJump(ctx["break"])\n            raise Leave()\n        elif k == "continue":\n            if "continue" not in ctx:\n                raise Fail("trigscript: continue outside a loop%s" % where(st))\n            EUDJump(ctx["continue"])\n            raise Leave()\n        elif k == "return":\n            fn = ctx.get("fn")\n            if fn is None:\n                raise Fail("trigscript: return outside a function%s" % where(st))\n            if st.get("value") is not None and fn["result"] is not None:\n                fn["result"].set(self.num(st["value"]) if fn["kind"] == "number" else self.truth(st["value"]))\n            EUDJump(fn["end"])\n            raise Leave()\n        elif k == "sleep":\n            self.sleep(st)\n        elif k == "action":\n            self.action(st)\n        elif k == "call":\n            self.call(st["call"])\n        elif k == "block":\n            self.block(st["body"], ctx)\n        elif k == "remark":\n            pass\n        else:\n            raise Fail("trigscript: unknown statement %r%s" % (k, where(st)))\n\n    def straight(self, statements, ctx):\n        """A statement list whose end may not be reached (a break inside): Leave stops it. True when the end was reached."""\n        try:\n            self.block(statements, ctx)\n            return True\n        except Leave:\n            return False\n\n    def if_(self, st, ctx):\n        else_l, end = Forward(), Forward()\n        EUDJumpIfNot(self.cond(st["cond"]), else_l)\n        if self.straight(st["then"], ctx):\n            EUDJump(end)\n        else_l << NextTrigger()\n        if st.get("else"):\n            self.straight(st["else"], ctx)\n        end << NextTrigger()\n\n    def while_(self, st, ctx):\n        head, exit_ = Forward(), Forward()\n        head << NextTrigger()\n        if st.get("cond") is not None:\n            EUDJumpIfNot(self.cond(st["cond"]), exit_)\n        if self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": head})):\n            EUDJump(head)\n        exit_ << NextTrigger()\n\n    def do_(self, st, ctx):\n        body, check, exit_ = Forward(), Forward(), Forward()\n        body << NextTrigger()\n        self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": check}))\n        check << NextTrigger()\n        EUDJumpIf(self.cond(st["cond"]), body)\n        exit_ << NextTrigger()\n\n    def for_(self, st, ctx):\n        head, update, exit_ = Forward(), Forward(), Forward()\n        head << NextTrigger()\n        if st.get("cond") is not None:\n            EUDJumpIfNot(self.cond(st["cond"]), exit_)\n        self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": update}))\n        update << NextTrigger()\n        if self.straight(st["update"], ctx):\n            EUDJump(head)\n        exit_ << NextTrigger()\n\n    def unrolled(self, st, ctx):\n        exit_ = Forward()\n        for statements in st["iterations"]:\n            nxt = Forward()\n            self.straight(statements, dict(ctx, **{"break": exit_, "continue": nxt}))\n            nxt << NextTrigger()\n        exit_ << NextTrigger()\n\n    def switch(self, st, ctx):\n        v = as_var(self.num(st["value"]))\n        exit_ = Forward()\n        labels = [Forward() for _ in st["cases"]]\n        default = None\n        for c, label in zip(st["cases"], labels):\n            if c["value"] is None:\n                default = label\n                continue\n            n = c["value"]\n            if n != n or n < 0 or n > U32:  # NaN, or a value the variable never holds\n                continue\n            EUDJumpIf(v == int(n), label)\n        EUDJump(default if default is not None else exit_)\n        for c, label in zip(st["cases"], labels):\n            label << NextTrigger()\n            self.straight(c["body"], dict(ctx, **{"break": exit_}))\n        exit_ << NextTrigger()\n\n    def sleep(self, st):\n        if st.get("cycles") is not None:\n            frames = int(st["cycles"])\n        else:\n            frames = max(1, int(round(float(st.get("ms", 0)) * FRAMES_PER_SECOND / 1000)))\n        index = len(self.resumes) + 1\n        resume = Forward()\n        self.resumes.append((index, resume))\n        self.set_state(index)\n        self.set_wait(frames)\n        EUDJump(self.frame_end)\n        resume << NextTrigger()\n\n    def action(self, st):\n        r = st["record"]\n        variable = st.get("variable")\n        fields = dict(locid1=r["location"], strid=r["text"], wavid=r["wav"], time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])\n        if variable is None:\n            DoActions(Action(**fields))\n            return\n        value = as_var(self.num(variable["expr"]))\n        field = variable["field"]\n        if field == "modifier":\n            # A unit count: the byte field is not a variable\'s place, so the action is done once per unit.\n            fields["amount"] = 1\n            for _ in EUDLoopRange(0, value):\n                DoActions(Action(**fields))\n            return\n        name = {"target": "player2", "time": "time", "player": "player1", "location": "locid1", "text": "strid", "wav": "wavid", "unitId": "unitid"}.get(field)\n        if name is None:\n            raise Fail("trigscript: no variable can stand in the %s field%s" % (field, where(st)))\n        fields[name] = value\n        DoActions(Action(**fields))\n\n    def call(self, call):\n        result = self.declare(call["result"]["decl"]) if call.get("result") else None\n        if result is not None:\n            result.set(0)\n        for p in call["params"]:\n            s = self.declare(p["decl"])\n            s.set(self.num(p["init"]) if p["decl"]["kind"] == "number" else self.truth(p["init"]))\n        end = Forward()\n        self.straight(call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}})\n        end << NextTrigger()\n        return result.get() if result is not None else 0\n\n    # \u2500\u2500 one frame \u2500\u2500\n    def frame(self):\n        self.frame_end = Forward()\n        start = Forward()\n        skip = Forward()\n        # Still waiting: count down and leave.\n        EUDJumpIfNot(as_var(self.get_wait()) >= 1, skip)\n        self.set_wait(as_var(self.get_wait()) - 1)\n        EUDJump(self.frame_end)\n        skip << NextTrigger()\n        # The body once, resumes recorded as sleeps are met; the jump table is filled in after.\n        table = Forward()\n        EUDJump(table)\n        start << NextTrigger()\n        try:\n            self.block(self.p["body"], {})\n        except Leave:\n            pass\n        # The body ended: the program stops for good, as the classic backend\'s does.\n        self.set_state(DONE)\n        EUDJump(self.frame_end)\n        table << NextTrigger()\n        EUDJumpIf(as_var(self.get_state()) == DONE, self.frame_end)\n        for index, resume in self.resumes:\n            EUDJumpIf(as_var(self.get_state()) == index, resume)\n        EUDJump(start)\n        self.frame_end << NextTrigger()\n\n    def run(self):\n        if self.per_player:\n            for p in EUDLoopPlayer("Human"):\n                self.player = p\n                f_setcurpl(p)\n                self.frame()\n            self.player = None\n        else:\n            f_setcurpl(self.owner if self.owner < 12 else 0)\n            self.frame()\n\n\ndef compare(a, op, b):\n    return {"==": a == b, "!=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]\n\n\ndef condition(r):\n    return Condition(r["location"], r["player"], r["amount"], r["unitId"], r["comparison"], r["type"], r["resource"], r["flags"], eudx=r.get("mask", 0) or 0)\n\n\nPROGRAMS = [Lowering(p) for p in IR.get("programs", [])]\n\n\ndef afterTriggerExec():\n    for prog in PROGRAMS:\n        prog.run()\n';
+var TRIGSCRIPT_PY = '"""\n[trigscript]\nir : /work/files/trigscript.json\n\nTrigScript\'s programs: the euddraft plugin that lowers the compiler\'s IR \u2014 data, never\ncode \u2014 into eudplib. The IR file is what the plugin\'s compiler wrote (docs/ir.md);\nthis module is handed to the eudplib library plugin as a source with every build, so the\ntwo halves of the IR version are always the same build.\n\nA program is a coroutine the game runs every frame. Its body is lowered to straight-line\neudplib triggers with jumps between labels: `if` / `while` / `switch` become conditional\njumps, and `sleep` stores the label to resume at in a state variable, sets a frame counter,\nand leaves the frame. The frame\'s entry counts the wait down, then jumps to the stored\nlabel. A program runs for the players it is owned by, as a trigger would: one owner runs\nit as that player while that player is in the game; several owners, All Players or a force\nrun it once each frame for every such player who is in the game, CurrentPlayer set, its\nvariables and its state as 12-slot arrays indexed by the player.\n\nText is written out in the IR: an action\'s `text` or `wav` is the string itself, which\neudplib adds to the built map\'s string table, or a number when the script named an index\nof the map\'s own. The map the user edits never holds a program\'s strings.\n\nNumbers keep one contract with the simulator: 32-bit unsigned, an expression\'s exact value stored\nbelow zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.\n"""\nimport json\n\nfrom eudplib import *\n\nIR_VERSION = 2\nFRAMES_PER_SECOND = 24\n# The state of a program whose body ended: nothing resumes it.\nDONE = 0xFFFFFFFF\nU32 = 0xFFFFFFFF\n\nwith open(settings["ir"], encoding="utf-8") as _f:\n    IR = json.load(_f)\nif IR.get("version") != IR_VERSION:\n    raise RuntimeError("trigscript: the IR is version %r; this plugin reads version %d" % (IR.get("version"), IR_VERSION))\n\n\ndef where(node):\n    """" at main.ts:12:5" for a node with a position \u2014 what the editor parses back into a marker."""\n    at = node.get("at") if isinstance(node, dict) else None\n    if not at:\n        return ""\n    if at.get("file"):\n        return " at %s:%s:%s" % (at.get("file"), at.get("line"), at.get("column"))\n    return " at %s:%s" % (at.get("line"), at.get("column"))\n\n\nclass Fail(RuntimeError):\n    pass\n\n\nclass Leave(Exception):\n    """Raised through the lowering when a statement ends the straight line (break / continue / return)."""\n\n\nclass Storage:\n    """A variable\'s cell: plain, or a 12-slot row of a per-player program."""\n\n    def __init__(self, decl, per_player, player_of):\n        self.decl = decl\n        self.bits = decl.get("bits")\n        self.rowed = per_player and not decl.get("shared")\n        self.player_of = player_of\n        self.store = EUDArray([0] * 12) if self.rowed else EUDVariable(0)  # initial: the variable\'s own cell\n\n    def get(self):\n        return self.store[self.player_of()] if self.rowed else self.store\n\n    def set(self, value):\n        if self.bits:\n            value = saturate(value, self.bits)\n        if self.rowed:\n            self.store[self.player_of()] = value\n        else:\n            self.store << value\n\n\ndef saturate(value, bits):\n    top = (1 << bits) - 1\n    if isinstance(value, int):\n        return min(value, top)\n    v = EUDVariable()\n    v << value\n    if EUDIf()(v >= top + 1):\n        v << top\n    EUDEndIf()\n    return v\n\n\ndef as_var(value):\n    if isinstance(value, int):\n        return EUDVariable(value & U32)  # initial: a constant, never written\n    return value\n\n\ndef fresh(value=0):\n    """A temporary that starts from `value` every time the code runs. `EUDVariable(n)` is not\n    that: n is the cell\'s value when the map loads, so a temporary built that way and then\n    written keeps what the last run left in it \u2014 `ticks + 1` went 1, 2, 4, 8 (found in the\n    first played probe, 2026-09-18). Anything the lowering writes to starts here."""\n    v = EUDVariable()\n    v << value\n    return v\n\n\nclass Lowering:\n    def __init__(self, program):\n        self.p = program\n        self.per_player = bool(program.get("perPlayer"))\n        self.owner = int(program.get("owner", 0))\n        self.slots = owner_slots(program)\n        self.player = None\n        self.vars = {}\n        self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state\n        self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state\n        self.resumes = []  # (index, Forward) for every sleep\n        self.frame_end = None\n        self.latches = {}\n\n    # \u2500\u2500 storage \u2500\u2500\n    def player_of(self):\n        if self.player is None:\n            raise Fail("trigscript: a per-player variable outside the player loop")\n        return self.player\n\n    def declare(self, decl):\n        s = Storage(decl, self.per_player, self.player_of)\n        self.vars[decl["id"]] = s\n        return s\n\n    def var(self, id_, node=None):\n        s = self.vars.get(id_)\n        if s is None:\n            raise Fail("trigscript: unknown variable %r%s" % (id_, where(node)))\n        return s\n\n    def get_state(self):\n        return self.state[self.player] if self.per_player else self.state\n\n    def set_state(self, value):\n        if self.per_player:\n            self.state[self.player] = value\n        else:\n            self.state << value\n\n    def get_wait(self):\n        return self.wait[self.player] if self.per_player else self.wait\n\n    def set_wait(self, value):\n        if self.per_player:\n            self.wait[self.player] = value\n        else:\n            self.wait << value\n\n    # \u2500\u2500 numbers: an int or an EUDVariable \u2500\u2500\n    def linear(self, e, pos, neg, sign):\n        """Flatten + and - into positive and negative terms; anything else is one term. A constant\n        below zero is a term of the other sign: -1 is "subtract 1", never 0xFFFFFFFF."""\n        k = e["kind"]\n        if k == "binary" and e["op"] in ("+", "-"):\n            self.linear(e["left"], pos, neg, sign)\n            self.linear(e["right"], pos, neg, sign if e["op"] == "+" else -sign)\n        elif k == "unary":\n            self.linear(e["expr"], pos, neg, -sign)\n        elif k == "const" and e["value"] < 0:\n            (neg if sign > 0 else pos).append(int(-e["value"]))\n        else:\n            (pos if sign > 0 else neg).append(self.term(e))\n\n    @staticmethod\n    def total(terms):\n        """The sum of a side: an int when every term is one, else a variable (additions wrap at 2^32)."""\n        const = sum(t for t in terms if isinstance(t, int))\n        variables = [t for t in terms if not isinstance(t, int)]\n        if not variables:\n            return const\n        acc = fresh(const & U32)\n        for t in variables:\n            acc += t\n        return acc\n\n    def difference(self, pos, neg, absolute=False):\n        """sum(pos) - sum(neg), stopping at 0 \u2014 or, with `absolute`, the distance between the two."""\n        p, n = self.total(pos), self.total(neg)\n        if isinstance(p, int) and isinstance(n, int):\n            return (abs(p - n) if absolute else max(p - n, 0)) & U32\n        if isinstance(n, int) and n == 0:\n            return p\n        r = EUDVariable()\n        pv, nv = as_var(p), as_var(n)\n        if EUDIf()(pv >= nv):\n            r << pv - nv\n        if EUDElse()():\n            r << (nv - pv if absolute else 0)\n        EUDEndIf()\n        return r\n\n    def num(self, e):\n        k = e["kind"]\n        if k == "unary" or (k == "binary" and e["op"] in ("+", "-")) or (k == "const" and e["value"] < 0):\n            pos, neg = [], []\n            self.linear(e, pos, neg, 1)\n            return self.difference(pos, neg)\n        return self.term(e)\n\n    def term(self, e):\n        k = e["kind"]\n        if k == "const":\n            return int(e["value"]) & U32\n        if k == "var":\n            return self.var(e["id"], e).get()\n        if k == "binary":\n            a, b = self.num(e["left"]), self.num(e["right"])\n            op = e["op"]\n            if isinstance(a, int) and isinstance(b, int):\n                if op == "*":\n                    return (a * b) & U32\n                if b == 0:\n                    raise Fail("trigscript: division by zero%s" % where(e))\n                return (a // b if op == "/" else a % b) & U32\n            if op == "*":\n                return f_mul(as_var(a), as_var(b))\n            if isinstance(b, int):\n                if b == 0:\n                    raise Fail("trigscript: division by zero%s" % where(e))\n                q, r = f_div(as_var(a), b)\n                return q if op == "/" else r\n            # A divisor that is 0 in the game gives 0, as the simulator does; f_div alone would answer 0xFFFFFFFF.\n            out = fresh(0)\n            bv = as_var(b)\n            if EUDIf()(bv >= 1):\n                q, r = f_div(as_var(a), bv)\n                out << (q if op == "/" else r)\n            EUDEndIf()\n            return out\n        if k == "unary":\n            return self.num(e)\n        if k == "ternary":\n            t = EUDVariable()\n            if EUDIf()(self.cond(e["cond"])):\n                t << self.num(e["whenTrue"])\n            if EUDElse()():\n                t << self.num(e["whenFalse"])\n            EUDEndIf()\n            return t\n        if k == "intrinsic" and e["name"] == "abs":\n            # The distance between what the expression adds and what it subtracts: abs(b - a) is |b - a|, not 0 when a is larger.\n            pos, neg = [], []\n            self.linear(e["args"][0], pos, neg, 1)\n            return self.difference(pos, neg, absolute=True)\n        if k == "intrinsic":\n            args = [self.num(a) for a in e["args"]]\n            name = e["name"]\n            a, b = args\n            if isinstance(a, int) and isinstance(b, int):\n                return min(a, b) if name == "min" else max(a, b)\n            t = EUDVariable()\n            av, bv = as_var(a), as_var(b)\n            if EUDIf()(av <= bv if name == "min" else av >= bv):\n                t << av\n            if EUDElse()():\n                t << bv\n            EUDEndIf()\n            return t\n        if k == "call":\n            return self.call(e["call"])\n        raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))\n\n    # \u2500\u2500 booleans: an eudplib condition \u2500\u2500\n    def cond(self, e):\n        k = e["kind"]\n        if k == "const":\n            return EUDVariable(1 if e["value"] else 0) >= 1  # initial: a constant, never written\n        if k == "cond":\n            return condition(e["record"])\n        if k == "var":\n            return as_var(self.var(e["id"], e).get()) >= 1\n        if k == "test":\n            return as_var(self.num(e["expr"])) >= 1\n        if k == "compare":\n            # What either side subtracts is added to the other, so a - b == 0 asks whether a == b\n            # and x >= -1 is true: neither side stops at 0 on its own, as it would were it stored.\n            left, right = [], []\n            self.linear(e["left"], left, right, 1)\n            self.linear(e["right"], right, left, 1)\n            a, b = self.total(left), self.total(right)\n            op = e["op"]\n            if isinstance(a, int) and isinstance(b, int):\n                return EUDVariable(1 if compare(a, op, b) else 0) >= 1  # initial: a constant, never written\n            # One comparison, built once: a comparison between variables writes into its own\n            # condition, and one that is built and dropped is an orphan eudplib refuses.\n            if isinstance(b, int):\n                b &= U32\n            av = as_var(a)\n            if op == "==":\n                return av == b\n            if op == "!=":\n                return av != b\n            if op == "<":\n                return av < b\n            if op == "<=":\n                return av <= b\n            if op == ">":\n                return av > b\n            return av >= b\n        if k == "and":\n            return EUDAnd(*[self.cond(c) for c in e["items"]])\n        if k == "or":\n            return EUDOr(*[self.cond(c) for c in e["items"]])\n        if k == "not":\n            return EUDNot(self.cond(e["expr"]))\n        if k == "random":\n            return (f_rand() & 1) >= 1\n        if k == "edge":\n            return self.edge(e)\n        if k == "ternary":\n            t = EUDVariable()\n            if EUDIf()(self.cond(e["cond"])):\n                t << self.truth(e["whenTrue"])\n            if EUDElse()():\n                t << self.truth(e["whenFalse"])\n            EUDEndIf()\n            return t >= 1\n        if k == "call":\n            return as_var(self.call(e["call"])) >= 1\n        raise Fail("trigscript: unknown condition %r%s" % (k, where(e)))\n\n    def truth(self, e):\n        """A boolean expression as 0 / 1."""\n        if e["kind"] == "const":\n            return 1 if e["value"] else 0\n        if e["kind"] == "var":\n            return self.var(e["id"], e).get()\n        t = fresh(0)\n        if EUDIf()(self.cond(e)):\n            t << 1\n        EUDEndIf()\n        return t\n\n    def edge(self, e):\n        """rose(c): true on the frame c becomes true; once(c): true the first time it holds."""\n        key = id(e)\n        if key not in self.latches:\n            self.latches[key] = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: the latch\n        latch = self.latches[key]\n\n        def get():\n            return latch[self.player] if self.per_player else latch\n\n        def put(v):\n            if self.per_player:\n                latch[self.player] = v\n            else:\n                latch << v\n\n        fired = fresh(0)\n        held = self.truth(e["cond"])\n        if EUDIf()(as_var(held) >= 1):\n            if EUDIf()(as_var(get()) == 0):\n                fired << 1\n                put(1)\n            EUDEndIf()\n        if EUDElse()():\n            if e["edge"] == "rose":\n                put(0)\n        EUDEndIf()\n        return fired >= 1\n\n    # \u2500\u2500 statements \u2500\u2500\n    def block(self, statements, ctx):\n        for st in statements:\n            self.statement(st, ctx)\n\n    def statement(self, st, ctx):\n        k = st["kind"]\n        if k == "declare":\n            s = self.declare(st["decl"])\n            if not st.get("failed"):\n                s.set(self.num(st["init"]) if st["decl"]["kind"] == "number" else self.truth(st["init"]))\n        elif k == "assign":\n            self.var(st["target"], st).set(self.num(st["value"]))\n        elif k == "assignBool":\n            self.var(st["target"], st).set(self.truth(st["value"]))\n        elif k == "if":\n            self.if_(st, ctx)\n        elif k == "while":\n            self.while_(st, ctx)\n        elif k == "do":\n            self.do_(st, ctx)\n        elif k == "for":\n            self.for_(st, ctx)\n        elif k == "unrolled":\n            self.unrolled(st, ctx)\n        elif k == "switch":\n            self.switch(st, ctx)\n        elif k == "break":\n            if "break" not in ctx:\n                raise Fail("trigscript: break outside a loop%s" % where(st))\n            EUDJump(ctx["break"])\n            raise Leave()\n        elif k == "continue":\n            if "continue" not in ctx:\n                raise Fail("trigscript: continue outside a loop%s" % where(st))\n            EUDJump(ctx["continue"])\n            raise Leave()\n        elif k == "return":\n            fn = ctx.get("fn")\n            if fn is None:\n                raise Fail("trigscript: return outside a function%s" % where(st))\n            if st.get("value") is not None and fn["result"] is not None:\n                fn["result"].set(self.num(st["value"]) if fn["kind"] == "number" else self.truth(st["value"]))\n            EUDJump(fn["end"])\n            raise Leave()\n        elif k == "sleep":\n            self.sleep(st)\n        elif k == "action":\n            self.action(st)\n        elif k == "call":\n            self.call(st["call"])\n        elif k == "block":\n            self.block(st["body"], ctx)\n        elif k == "remark":\n            pass\n        else:\n            raise Fail("trigscript: unknown statement %r%s" % (k, where(st)))\n\n    def straight(self, statements, ctx):\n        """A statement list whose end may not be reached (a break inside): Leave stops it. True when the end was reached."""\n        try:\n            self.block(statements, ctx)\n            return True\n        except Leave:\n            return False\n\n    def if_(self, st, ctx):\n        else_l, end = Forward(), Forward()\n        EUDJumpIfNot(self.cond(st["cond"]), else_l)\n        if self.straight(st["then"], ctx):\n            EUDJump(end)\n        else_l << NextTrigger()\n        if st.get("else"):\n            self.straight(st["else"], ctx)\n        end << NextTrigger()\n\n    def while_(self, st, ctx):\n        head, exit_ = Forward(), Forward()\n        head << NextTrigger()\n        if st.get("cond") is not None:\n            EUDJumpIfNot(self.cond(st["cond"]), exit_)\n        if self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": head})):\n            EUDJump(head)\n        exit_ << NextTrigger()\n\n    def do_(self, st, ctx):\n        body, check, exit_ = Forward(), Forward(), Forward()\n        body << NextTrigger()\n        self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": check}))\n        check << NextTrigger()\n        EUDJumpIf(self.cond(st["cond"]), body)\n        exit_ << NextTrigger()\n\n    def for_(self, st, ctx):\n        head, update, exit_ = Forward(), Forward(), Forward()\n        head << NextTrigger()\n        if st.get("cond") is not None:\n            EUDJumpIfNot(self.cond(st["cond"]), exit_)\n        self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": update}))\n        update << NextTrigger()\n        if self.straight(st["update"], ctx):\n            EUDJump(head)\n        exit_ << NextTrigger()\n\n    def unrolled(self, st, ctx):\n        exit_ = Forward()\n        for statements in st["iterations"]:\n            nxt = Forward()\n            self.straight(statements, dict(ctx, **{"break": exit_, "continue": nxt}))\n            nxt << NextTrigger()\n        exit_ << NextTrigger()\n\n    def switch(self, st, ctx):\n        v = as_var(self.num(st["value"]))\n        exit_ = Forward()\n        labels = [Forward() for _ in st["cases"]]\n        default = None\n        for c, label in zip(st["cases"], labels):\n            if c["value"] is None:\n                default = label\n                continue\n            n = c["value"]\n            if n != n or n < 0 or n > U32:  # NaN, or a value the variable never holds\n                continue\n            EUDJumpIf(v == int(n), label)\n        EUDJump(default if default is not None else exit_)\n        for c, label in zip(st["cases"], labels):\n            label << NextTrigger()\n            self.straight(c["body"], dict(ctx, **{"break": exit_}))\n        exit_ << NextTrigger()\n\n    def sleep(self, st):\n        if st.get("cycles") is not None:\n            frames = int(st["cycles"])\n        else:\n            frames = max(1, int(round(float(st.get("ms", 0)) * FRAMES_PER_SECOND / 1000)))\n        index = len(self.resumes) + 1\n        resume = Forward()\n        self.resumes.append((index, resume))\n        self.set_state(index)\n        self.set_wait(frames)\n        EUDJump(self.frame_end)\n        resume << NextTrigger()\n\n    def action(self, st):\n        r = st["record"]\n        variable = st.get("variable")\n        fields = dict(locid1=r["location"], strid=string_of(r["text"]), wavid=string_of(r["wav"]), time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])\n        if variable is None:\n            DoActions(Action(**fields))\n            return\n        value = as_var(self.num(variable["expr"]))\n        field = variable["field"]\n        if field == "modifier":\n            # A unit count: the byte field is not a variable\'s place, so the action is done once per\n            # unit \u2014 as many as the variable says, 0 being none (in the record, 0 means "all").\n            fields["amount"] = 1\n            for _ in EUDLoopRange(0, value):\n                DoActions(Action(**fields))\n            return\n        name = {"target": "player2", "time": "time", "player": "player1", "location": "locid1", "text": "strid", "wav": "wavid", "unitId": "unitid"}.get(field)\n        if name is None:\n            raise Fail("trigscript: no variable can stand in the %s field%s" % (field, where(st)))\n        fields[name] = value\n        DoActions(Action(**fields))\n\n    def call(self, call):\n        result = self.declare(call["result"]["decl"]) if call.get("result") else None\n        if result is not None:\n            result.set(0)\n        for p in call["params"]:\n            s = self.declare(p["decl"])\n            s.set(self.num(p["init"]) if p["decl"]["kind"] == "number" else self.truth(p["init"]))\n        end = Forward()\n        self.straight(call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}})\n        end << NextTrigger()\n        return result.get() if result is not None else 0\n\n    # \u2500\u2500 one frame \u2500\u2500\n    def frame(self):\n        self.frame_end = Forward()\n        start = Forward()\n        skip = Forward()\n        # Still waiting: count down and leave.\n        EUDJumpIfNot(as_var(self.get_wait()) >= 1, skip)\n        self.set_wait(as_var(self.get_wait()) - 1)\n        EUDJump(self.frame_end)\n        skip << NextTrigger()\n        # The body once, resumes recorded as sleeps are met; the jump table is filled in after.\n        table = Forward()\n        EUDJump(table)\n        start << NextTrigger()\n        try:\n            self.block(self.p["body"], {})\n        except Leave:\n            pass\n        # The body ended: the program stops for good, as the classic backend\'s does.\n        self.set_state(DONE)\n        EUDJump(self.frame_end)\n        table << NextTrigger()\n        EUDJumpIf(as_var(self.get_state()) == DONE, self.frame_end)\n        for index, resume in self.resumes:\n            EUDJumpIf(as_var(self.get_state()) == index, resume)\n        EUDJump(start)\n        self.frame_end << NextTrigger()\n\n    def run(self):\n        if self.per_player:\n            for p in loop_players(self.slots):\n                self.player = p\n                f_setcurpl(p)\n                self.frame()\n            self.player = None\n        else:\n            # As a trigger owned by that player would: not at all once the player has left.\n            if EUDIf()(f_playerexist(self.slots[0])):\n                f_setcurpl(self.slots[0])\n                self.frame()\n            EUDEndIf()\n\n\ndef string_of(value):\n    """An action\'s text or sound: the string itself (eudplib adds it to the map), or an index the script named."""\n    if isinstance(value, str):\n        return EncodeString(value) if value else 0\n    return int(value or 0)\n\n\ndef owner_slots(program):\n    """The player slots a program runs for, from its owners and the map\'s player settings: a slot is\n    itself, All Players and a force are their human and computer players \u2014 who a trigger runs for."""\n    playing = lambda p: GetPlayerInfo(p).typestr in ("Human", "Computer")\n    slots = []\n    for o in program.get("owners", [program.get("owner", 0)]):\n        o = int(o)\n        if o < 8:\n            found = [o]\n        elif o == 17:\n            found = [p for p in range(8) if playing(p)]\n        elif 18 <= o <= 21:\n            found = [p for p in range(8) if playing(p) and GetPlayerInfo(p).force == o - 18]\n        else:\n            raise Fail("trigscript: a program runs for players 1 to 8, All Players or a force%s" % where(program))\n        for p in found:\n            if p not in slots:\n                slots.append(p)\n    if not slots:\n        raise Fail("trigscript: no human or computer player of this map is among the program\'s owners%s" % where(program))\n    return slots\n\n\ndef loop_players(slots):\n    """Each of `slots` who is in the game, as an EUDVariable: EUDLoopPlayer, for a list of our own."""\n    start, end = min(slots), max(slots)\n    v = EUDVariable()\n    v << start\n    if EUDWhile()(v <= end):\n        for i in range(start, end):\n            if i not in slots:\n                EUDContinueIf(v == i)\n        EUDContinueIfNot(f_playerexist(v))\n        yield v\n        EUDSetContinuePoint()\n        v += 1\n    EUDEndWhile()\n\n\ndef compare(a, op, b):\n    return {"==": a == b, "!=": a != b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b}[op]\n\n\ndef condition(r):\n    return Condition(r["location"], r["player"], r["amount"], r["unitId"], r["comparison"], r["type"], r["resource"], r["flags"], eudx=r.get("mask", 0) or 0)\n\n\nPROGRAMS = [Lowering(p) for p in IR.get("programs", [])]\n\n\ndef afterTriggerExec():\n    for prog in PROGRAMS:\n        prog.run()\n';
 
 // vendor/eudplib.ts
 var EUDPLIB_SERVICE = "eudplib.build";
 
 // service.ts
-var EudBuildError = class extends Error {
-  at;
-  constructor(message) {
-    super(message);
-    this.name = "EudBuildError";
-    const m = /\bat (?:([^\s:]+\.ts):)?(\d+):(\d+)\b/.exec(message);
-    this.at = m ? { file: m[1] ?? ENTRY_FILE, line: Number(m[2]), column: Number(m[3]) } : null;
-  }
-};
+function positionIn(message) {
+  const m = /\bat (?:([^\s:]+\.ts):)?(\d+):(\d+)\b/.exec(message);
+  return m ? { file: m[1] ?? ENTRY_FILE, line: Number(m[2]), column: Number(m[3]) } : null;
+}
+function firstFault(diagnostics) {
+  const d = diagnostics[0];
+  if (!d) return "The script has errors.";
+  return `${d.file}:${d.line} \u2014 ${d.message.split("\n")[0]}${diagnostics.length > 1 ? ` (and ${diagnostics.length - 1} more)` : ""}`;
+}
+var LABEL2 = "TrigScript";
 function snapshotExtras(api) {
   const out = /* @__PURE__ */ new Map();
   for (const name of api.document.extras.list()) {
@@ -7173,6 +5978,8 @@ var ScriptService = class {
   claim;
   compiler;
   lastManifest;
+  /** The last compile, for a save that comes right after an apply: the same files against the same names need no second compile. */
+  lastArtifact = null;
   constructor(api, open, compiler = compileInBackground) {
     this.api = api;
     this.compiler = compiler;
@@ -7185,7 +5992,7 @@ var ScriptService = class {
       },
       describe: (index, list) => {
         const at = this.sourceOf(index, list);
-        return `This trigger is generated by the map's TrigScript${at ? ` (${at.file}, line ${at.line})` : ""}. Edit the source instead; a Build replaces the whole block.`;
+        return `This trigger is generated by the map's TrigScript${at ? ` (${at.file}, line ${at.line})` : ""}. Edit the source instead; applying the script (saving the map does it) replaces the whole block.`;
       },
       open: (index, list) => {
         const at = this.sourceOf(index, list);
@@ -7208,17 +6015,6 @@ var ScriptService = class {
     if (!this.api.document.isOpen()) return null;
     return scriptState(this.api.triggers.list(), snapshotExtras(this.api));
   }
-  /** The target the open map's script is written for; classic with no map. */
-  target() {
-    if (!this.api.document.isOpen()) return "classic";
-    return readTarget(snapshotExtras(this.api));
-  }
-  /** Record the target in `build.json` (marks the map modified when it changes). */
-  setTarget(target) {
-    if (!this.api.document.isOpen() || this.target() === target) return;
-    const before = snapshotExtras(this.api);
-    commitExtras(this.api, before, withTarget(before, target));
-  }
   /** The eudplib plugin's service, or null when it is not installed or is off. */
   library() {
     return this.api.services.get(EUDPLIB_SERVICE);
@@ -7227,36 +6023,71 @@ var ScriptService = class {
   watchLibrary(listener) {
     return this.api.services.watch(EUDPLIB_SERVICE, (s) => listener(s));
   }
-  /** What a target cannot take in a compile's programs, as diagnostics the editor shows like the compiler's own. */
-  targetDiagnostics(compiled, target) {
-    const out = [];
-    for (const p of compiled.ir) {
-      for (const d of checkForTarget(p, target)) out.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
-    }
-    return out;
+  /**
+   * Take part in saving: bring the map's block up to date before its bytes are produced,
+   * and hand the programs to the eudplib plugin's build. Dispose when the plugin goes.
+   */
+  attach() {
+    const before = this.api.document.buildSteps?.before({
+      id: "apply",
+      label: LABEL2,
+      applies: () => this.api.document.isOpen() && snapshotExtras(this.api).size > 0,
+      run: () => this.bringUpToDate()
+    });
+    let mine = null;
+    const watch = this.watchLibrary((library) => {
+      mine?.dispose();
+      mine = library?.contribute?.({ id: "trigscript", label: LABEL2, applies: () => this.hasPrograms(), collect: () => this.collect() }) ?? null;
+    });
+    return { dispose: () => {
+      before?.dispose();
+      mine?.dispose();
+      watch.dispose();
+    } };
+  }
+  /** Whether the map's script, as last applied, has programs — read off the manifest, so it costs a save nothing. */
+  hasPrograms() {
+    if (!this.api.document.isOpen()) return false;
+    return (readManifest(snapshotExtras(this.api))?.programs ?? 0) > 0;
   }
   /**
-   * The Remastered build: the map as it stands (the classic block just installed, so
-   * every text the IR names is in it), the IR, and `python/trigscript.py` to the eudplib
-   * plugin's service. The library asks to download its runtime the first time. Throws
-   * `EudBuildError`, with the IR node's position when the lowering named one.
+   * Apply the script when its files are newer than the block: what Save, Test Map and an
+   * export do first. Throws, worded for the editor's notice, when the script does not
+   * compile or its block was edited by hand — the map is then saved as it stands.
    */
-  async buildRemastered(ir, options = {}) {
-    const svc = this.library();
-    if (!svc) throw new EudBuildError("The eudplib plugin is not running; install or turn it on under Plugins \u25B8 Manage Plugins\u2026.");
-    if (!await svc.ensure({ reason: "TrigScript needs it to build this map for StarCraft: Remastered." })) throw new EudBuildError("Not built: the build runtime was not installed.");
-    const file = await this.api.document.export();
-    if (!file) throw new EudBuildError("No map is open.");
-    const map = new Uint8Array(await file.arrayBuffer());
-    try {
-      const r = await svc.build(
-        { map, plugins: { trigscript: { ir: "/work/files/trigscript.json" }, eudTurbo: {} }, sources: { trigscript: TRIGSCRIPT_PY }, files: { "trigscript.json": ir } },
-        { onLog: options.onLog, signal: options.signal }
-      );
-      return { map: r.map, log: r.log, chkBytes: r.chkBytes, ms: r.ms };
-    } catch (err) {
-      throw err instanceof EudBuildError ? err : new EudBuildError(String(err.message ?? err));
-    }
+  async bringUpToDate() {
+    const state = this.state();
+    if (!state?.files || !state.unbuilt) return;
+    if (state.stale) throw new Error("The script's triggers were edited or removed outside the script, so it was not applied. Open Triggers \u25B8 TrigScript\u2026 and press Apply to choose what becomes of them.");
+    const out = await this.build(state.files);
+    if (out.refused === "errors") throw new Error(firstFault(out.compiled.diagnostics));
+    if (out.refused) throw new Error("The map changed while the script was compiling; save again.");
+  }
+  /** The programs for the library's build: the IR as a data file, the lowering as a source, eudTurbo so the game runs them every frame. */
+  async collect() {
+    const state = this.state();
+    if (!state?.files) throw new Error("The map has no script.");
+    const map = this.names();
+    const cached = this.lastArtifact;
+    const artifact = cached && map && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) ? cached : await this.prepare(state.files, map);
+    if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
+    return {
+      plugins: { trigscript: { ir: "/work/files/trigscript.json" }, eudTurbo: {} },
+      sources: { trigscript: TRIGSCRIPT_PY },
+      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings) }
+    };
+  }
+  /** Hear about the library's builds (it runs them on Save, Test Map and export): the log, and where a failure points. */
+  onBuild(listener) {
+    let mine = null;
+    const watch = this.watchLibrary((library) => {
+      mine?.dispose();
+      mine = library?.onBuild?.(listener) ?? null;
+    });
+    return { dispose: () => {
+      mine?.dispose();
+      watch.dispose();
+    } };
   }
   /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names and custom unit names. Null with no map. */
   names() {
@@ -7272,13 +6103,8 @@ var ScriptService = class {
       switchNames,
       unitCustomName: (id) => custom.get(id) || null
     });
-    const triggers = api.triggers.list();
-    const state = scriptState(triggers, snapshotExtras(api));
-    const reserved = reservedStorage(triggers, switchNames, state.block);
     const decls = generateDeclarations(names);
-    const reservedDeaths = reserved.reservedDeaths ?? [];
-    const reservedSwitches = reserved.reservedSwitches ?? [];
-    return { names, decls, reservedDeaths, reservedSwitches, context: hashText(`${decls}\0${JSON.stringify([reservedDeaths, reservedSwitches])}`) };
+    return { names, decls, context: hashText(decls) };
   }
   /** The id of the map in front, or null on a host without ids (every map then compares equal). */
   documentId() {
@@ -7310,8 +6136,10 @@ var ScriptService = class {
     const files = this.filesOf(input);
     const document2 = this.documentId();
     const archived = hashFiles(this.state()?.files ?? {});
-    const compiled = await this.compiler({ files, names: map.names, reservedDeaths: map.reservedDeaths, reservedSwitches: map.reservedSwitches }, this.dist());
-    return { files, compiled, document: document2, context: map.context, archived };
+    const compiled = await this.compiler({ files, names: map.names }, this.dist());
+    const artifact = { files, compiled, document: document2, context: map.context, archived };
+    this.lastArtifact = artifact;
+    return artifact;
   }
   /**
    * Install an artifact as the block — replacing the previous one, or appending when the
@@ -7332,8 +6160,7 @@ var ScriptService = class {
     const keepFiles = hashFiles(this.state()?.files ?? {}) !== artifact.archived;
     let block2 = null;
     let replaced;
-    let ir;
-    this.api.document.update("Build TrigScript", (tx) => {
+    this.api.document.update("Apply TrigScript", (tx) => {
       const before = snapshotExtras(this.api);
       const intern = (text) => tx.strings.intern(text);
       const plan = buildScript(tx.triggers.list(), before, files, compiled, intern, { ...options, keepFiles });
@@ -7341,14 +6168,15 @@ var ScriptService = class {
       commitExtras(this.api, before, plan.extras);
       block2 = plan.block;
       replaced = plan.replaced;
-      if (options.ir) ir = serializeIr(compiled.ir, stringResolver(compiled, intern));
     });
     this.claim.refresh();
     if (block2) {
       const b = block2;
-      this.api.ui.status(b.count === 0 ? "Built: the script defines no triggers." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}.`);
+      const n = compiled.ir.length;
+      const programs = n ? ` ${n} program${n === 1 ? "" : "s"} will be built into the saved map (StarCraft: Remastered).` : "";
+      this.api.ui.status((b.count === 0 ? "Applied: the script defines no triggers." : `Applied ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}.`) + programs);
     }
-    return { compiled, block: block2, ...replaced ? { replaced } : {}, ...ir !== void 0 ? { ir } : {} };
+    return { compiled, block: block2, ...replaced ? { replaced } : {} };
   }
   /**
    * `prepare` then `install`. When the map changed under the compile, it is compiled
@@ -7379,7 +6207,7 @@ var ScriptService = class {
     const state = this.state();
     return state?.block && !state.stale ? triggerAtLine(state.block, file, line) : null;
   }
-  /** The files as typed, straight into the archive (the map is modified; only Build changes triggers). */
+  /** The files as typed, straight into the archive (the map is modified; only applying changes triggers). */
   writeFiles(files) {
     if (!this.api.document.isOpen()) return;
     const before = snapshotExtras(this.api);
@@ -7424,22 +6252,28 @@ trigger(AllPlayers, [
   preserve(),
 ]);
 
-// A program: its variables are death counters and switches; if, while, for and
-// functions work. It runs as one player, one loop iteration per trigger cycle. The
-// underlined parts are computed when you build, everything else runs in the game.
-program(() => {
-  let cycles = 0;
-  while (true) {
-    cycles++;
-    if (cycles == 10) displayText("Ten trigger cycles have passed.");
-  }
-}, { owner: P1 });
+// A program is code that runs in the game: variables, if, while, for, functions.
+// It runs every frame from where it left off, until it sleeps. The underlined parts
+// are computed when the script is applied, everything else runs in the game.
+//
+// A map with a program is built by the eudplib plugin when you save it, and needs
+// StarCraft: Remastered to play. trigger() alone plays on every version.
+//
+// program(() => {
+//   let elapsed = 0;
+//   while (true) {
+//     elapsed++;
+//     if (elapsed == 10) displayText("Ten seconds have passed.");
+//     sleep(seconds(1));
+//   }
+// }, { owner: P1 });
 `;
 var FILE_TEMPLATE = `import { trigger, units, locations, P1 } from "trigscript";
 
 // Helpers this file exports are imported by main.ts: import { \u2026 } from "./name";
 `;
-var SIMULATE_CYCLES = 30;
+var SIMULATE_FRAMES = 480;
+var SIMULATE_ROWS = 200;
 var CHECK_DELAY_MS = 350;
 var PANEL_WIDTH = 760;
 var PANEL_HEIGHT = 540;
@@ -7489,7 +6323,6 @@ function describeEvent(e) {
   const name = actionDef(e.action.type)?.name ?? `Action ${e.action.type}`;
   return e.text !== void 0 ? `${name} \u2014 ${e.text}` : name;
 }
-var targetLabel = (t) => t === "remastered" ? "Remastered (EUD)" : "Classic";
 var current = null;
 function openScriptEditor(svc, options = {}) {
   const api = svc.api;
@@ -7524,10 +6357,10 @@ function openScriptEditor(svc, options = {}) {
         return ws.attach(() => dialog.close());
       },
       buttons: [
-        { label: "Build & Close", primary: true, run: async () => await ws.build() ? void 0 : false },
+        { label: "Apply & Close", primary: true, run: async () => await ws.build() ? void 0 : false },
         { label: "Close" },
         // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
-        { label: "Build", closes: false, run: async () => {
+        { label: "Apply", closes: false, run: async () => {
           await ws.build();
         } }
       ]
@@ -7566,52 +6399,47 @@ function createWorkspace(svc, options, mode) {
   let result = null;
   let simulation = null;
   let showVariables = false;
-  let target = initial?.target ?? "classic";
   let library = svc.library();
-  let eudAbort = null;
+  let testing = false;
   let cancelled = false;
   let renames = [];
   let appendInstead = false;
   const style = el("style", void 0, STYLE);
-  const buildButton = w.button("Build", { onClick: () => {
+  const buildButton = w.button("Apply", { onClick: () => {
     void build();
   } });
-  buildButton.title = "Run the script and install its triggers as the map's generated block";
+  buildButton.title = "Run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list";
   const importButton = w.button("Import map triggers", { onClick: () => {
     void importHand();
   } });
-  importButton.title = "Rewrite the map's hand-made triggers as script, appended around the block, and rebuild";
+  importButton.title = "Rewrite the map's hand-made triggers as script, appended around the block, and apply it";
   const simulateButton = w.button("Simulate", { onClick: () => {
     void simulateNow();
   } });
-  simulateButton.title = `Run the compiled triggers for ${SIMULATE_CYCLES} trigger cycles in a built-in interpreter and list what happened`;
+  simulateButton.title = `Run the script's triggers and programs for ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} seconds of the game) in a built-in interpreter and list what happened`;
   const pickButton = w.button("Pick from map", { ghost: true, onClick: () => {
     void pickFromMap();
   } });
   pickButton.title = "Click a location or a unit on the map to put its name at the cursor";
-  const testButton = w.button("Build & Test", { onClick: () => {
-    void buildAndTest();
+  const testButton = w.button("Test", { onClick: () => {
+    void test();
   } });
-  testButton.title = "Build the classic block, then the Remastered map through the eudplib plugin, saved beside the source as <name>-eud.scx";
-  testButton.hidden = target !== "remastered";
-  const targetSelect = w.select([{ value: "classic", label: "Classic" }, { value: "remastered", label: "Remastered (EUD)" }], { value: target, onChange: (v) => {
-    void setTarget(v === "remastered" ? "remastered" : "classic");
-  } });
-  targetSelect.className += " tsd-target";
-  targetSelect.title = "Which game the built map is for: Classic runs on every version as death-counter triggers; Remastered (EUD) builds the programs with eudplib through the eudplib plugin and needs StarCraft: Remastered";
+  testButton.title = "Apply the script, build the map as Save would and hand it to Test Map";
   const libraryLine = el("span", { className: "tsd-library" });
   const modeButton = w.button(mode === "dialog" ? "Beside the map" : "In a window", { ghost: true, onClick: () => switchMode() });
   modeButton.className += " tsd-mode";
   modeButton.title = mode === "dialog" ? "Open the script as a panel beside the map, so the map stays in reach" : "Open the script in a full-screen window";
-  const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "Where the programs' variables are stored (death counters and switches)", onClick: () => {
+  const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "The programs' variables", onClick: () => {
     showVariables = !showVariables;
     render();
   } });
   const problemsCount = el("span", { className: "hint" }, "");
   const variables = el("div", { className: "tsd-variables", hidden: true });
   const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale });
-  const eudFold = w.fold({ text: "Remastered build", className: "tsd-eud" });
+  const eudFold = w.fold({ text: "Build", className: "tsd-eud" });
   eudFold.hidden = true;
+  const buildLogEl = el("pre", {});
+  let buildLog = [];
   const renameNotice = el("div", { className: "tsd-notice tsd-renames", hidden: true });
   const hostEl = el("div", { className: "tsd-host" });
   const problems = el("ul", { className: "tsd-problems", hidden: true });
@@ -7626,7 +6454,7 @@ function createWorkspace(svc, options, mode) {
     "div",
     { className: mode === "panel" ? "tsd tsd-panel" : "tsd" },
     style,
-    el("div", { className: "row" }, buildButton, testButton, importButton, simulateButton, pickButton, targetSelect, libraryLine, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
+    el("div", { className: "row" }, buildButton, testButton, importButton, simulateButton, pickButton, libraryLine, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
     variables,
     notice,
     eudFold,
@@ -7690,12 +6518,12 @@ function createWorkspace(svc, options, mode) {
     if (!stale) return;
     const e = state?.edited ?? null;
     if (!e) {
-      notice.replaceChildren(el("span", { className: "grow" }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block."));
+      notice.replaceChildren(el("span", { className: "grow" }, "The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled."));
       return;
     }
     const n = (k, what) => `${k} ${what}${k === 1 ? "" : "s"}`;
-    const facts = `The block from the last build was edited outside the script: ${n(e.unchanged, "trigger")} ${e.unchanged === 1 ? "is" : "are"} still the build's, ${n(e.changed, "trigger")} ${e.changed === 1 ? "was" : "were"} changed.`;
-    const plan = appendInstead ? "The next Build leaves them all as hand-made triggers and appends a fresh block." : `The next Build replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
+    const facts = `The script's triggers were edited outside the script: ${n(e.unchanged, "trigger")} ${e.unchanged === 1 ? "is" : "are"} still the script's, ${n(e.changed, "trigger")} ${e.changed === 1 ? "was" : "were"} changed.`;
+    const plan = appendInstead ? "The next Apply leaves them all as hand-made triggers and appends a fresh block." : `The next Apply replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
     notice.replaceChildren(
       el("span", { className: "grow" }, `${facts} ${plan}`),
       w.button(appendInstead ? "Replace instead" : "Append instead", { ghost: true, onClick: () => {
@@ -7725,17 +6553,13 @@ function createWorkspace(svc, options, mode) {
     importButton.setBusy(importing);
     pickButton.setBusy(picking);
     buildButton.disabled = importButton.disabled = !ready || building;
-    testButton.hidden = target !== "remastered";
-    testButton.disabled = !ready || building || !library;
-    testButton.setBusy(building && eudAbort !== null);
-    targetSelect.disabled = !ready || building;
-    targetSelect.value = target;
-    if (target === "remastered") {
-      libraryLine.hidden = false;
-      libraryLine.textContent = library ? `eudplib ${library.versions.eudplib} \xB7 ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading\u2026" : library.state() === "failed" ? "runtime failed" : "runtime not downloaded yet"}` : "eudplib plugin not running";
-      libraryLine.title = library ? "The eudplib plugin builds the Remastered map inside the editor; its runtime is downloaded once, on the first build" : "Install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026";
-    } else {
-      libraryLine.hidden = true;
+    testButton.disabled = !ready || building || testing;
+    testButton.setBusy(testing);
+    const needsLibrary = (result?.programs.length ?? 0) > 0;
+    libraryLine.hidden = !needsLibrary;
+    if (needsLibrary) {
+      libraryLine.textContent = !library ? "eudplib plugin not running: the programs will not be built" : !library.contribute ? "the eudplib plugin is older than 0.4: update it to build the programs" : `eudplib ${library.versions.eudplib} \xB7 ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading\u2026" : library.state() === "failed" ? "runtime failed" : "runtime downloads on the first save"}`;
+      libraryLine.title = library ? "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time" : "Install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026";
     }
     simulateButton.disabled = !ready || building || errors > 0;
     pickButton.disabled = !ready || picking;
@@ -7744,15 +6568,14 @@ function createWorkspace(svc, options, mode) {
     else if (!result) problemsCount.textContent = "Checking\u2026";
     else problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : "No problems";
     const programs = result?.programs ?? [];
-    const userVariables = result?.variables.filter((v) => !v.name.startsWith("(")) ?? [];
+    const userVariables = result?.variables ?? [];
     programButton.hidden = programs.length === 0;
     if (programs.length) {
-      const count = programs.reduce((n, p) => n + p.count, 0);
       const owners = [...new Set(programs.map(ownerLabel))].join(", ");
-      programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`}: ${count} trigger${count === 1 ? "" : "s"} as ${owners} \xB7 ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"}`;
+      programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`} as ${owners} \xB7 ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"} \xB7 needs Remastered`;
     }
     variables.hidden = !(showVariables && result && result.variables.length > 0);
-    variables.replaceChildren(...(result?.variables ?? []).map((v) => el("span", { className: v.name.startsWith("(") ? "internal" : void 0 }, el("b", void 0, v.name), ` ${v.kind === "number" ? "number" : "boolean"} \u2192 ${v.storage}`)));
+    variables.replaceChildren(...userVariables.map((v) => el("span", void 0, el("b", void 0, v.name), ` ${v.kind === "number" ? v.bits ? `u${v.bits}` : "number" : "boolean"}${programs.length > 1 ? ` \xB7 program ${v.program + 1}` : ""}${v.shared ? " \xB7 shared" : programs[v.program]?.perPlayer ? " \xB7 per player" : ""}`)));
     const state = svc.state();
     const block2 = state?.block ?? null;
     const stale = state?.stale ?? false;
@@ -7775,8 +6598,8 @@ function createWorkspace(svc, options, mode) {
     } else if (simulation) {
       problems.hidden = false;
       problems.className = "tsd-problems tsd-run";
-      const { sim, programs: ps, result: r, target: t } = simulation;
-      const unit = t === "remastered" ? "frame" : "cycle";
+      const { sim, programs: ps, result: r } = simulation;
+      const unit = "frame";
       const rows = [];
       sim.events.forEach((e, i) => {
         const at = r.sources[e.trigger];
@@ -7800,10 +6623,11 @@ function createWorkspace(svc, options, mode) {
         ) });
       });
       rows.sort((a2, b) => a2.cycle - b.cycle || a2.order - b.order);
-      if (rows.length === 0) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_CYCLES} ${unit}s.`)));
-      for (const row of rows) problems.append(row.line());
+      if (rows.length === 0) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} ${unit}s.`)));
+      for (const row of rows.slice(0, SIMULATE_ROWS)) problems.append(row.line());
+      if (rows.length > SIMULATE_ROWS) problems.append(el("li", void 0, el("span", { className: "where" }, "\u2026"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));
       const shownVars = /* @__PURE__ */ new Set();
-      for (const v of r.variables.filter((x) => !x.name.startsWith("("))) {
+      for (const v of r.variables) {
         if (shownVars.has(v.name)) continue;
         shownVars.add(v.name);
         const value = ps?.value(v.name);
@@ -7813,40 +6637,27 @@ function createWorkspace(svc, options, mode) {
           void 0,
           el("span", { className: "where" }, "after"),
           el("span", { className: "msg" }, `${v.name} = ${shown}`),
-          el("span", { className: "src" }, t === "remastered" ? "eudplib variable" : v.storage)
+          el("span", { className: "src" }, v.kind === "number" ? v.bits ? `u${v.bits}` : "number" : "boolean")
         ));
       }
     } else {
       problems.hidden = true;
     }
-    const line = status.text || (block2 ? `Block: ${block2.count} generated trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}${state?.unbuilt ? " \xB7 unbuilt changes" : ""}${target === "remastered" ? " \xB7 Remastered target: the built map needs StarCraft: Remastered" : ""}` : stale ? "The last build's triggers were edited outside the script" : target === "remastered" ? "Not built yet \xB7 Remastered target: the built map needs StarCraft: Remastered" : "Not built yet");
+    const remastered = (result ? result.programs.length : state?.programs ?? 0) > 0 ? " \xB7 programs are built into the saved map, which needs StarCraft: Remastered" : "";
+    const line = status.text || (block2 ? `${block2.count} trigger${block2.count === 1 ? "" : "s"} of the script at #${block2.start + 1}${state?.unbuilt ? " \xB7 changes not applied yet: saving the map applies them" : ""}${remastered}` : stale ? "The script's triggers were edited outside the script" : `Not applied yet: saving the map applies the script${remastered}`);
     if (status.kind === "busy") statusLine.busy(line);
     else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : void 0);
   };
   const applyResult = (r) => {
-    diagnostics = r.ok && target === "remastered" ? [...r.diagnostics, ...svc.targetDiagnostics(r, target)] : r.diagnostics;
+    diagnostics = r.diagnostics;
     result = r;
     simulation = null;
     if (editor && monaco) {
       setCompilerMarkers(monaco, files, diagnostics);
       editor.decorate(r.buildTime);
-      refreshCostHints();
+      refreshLineHints();
     }
     render();
-  };
-  const setTarget = async (t) => {
-    if (t === target) return;
-    target = t;
-    svc.setTarget(t);
-    if (result) applyResult(result);
-    render();
-    check();
-  };
-  const costHints2 = () => {
-    if (!result) return [];
-    const out = result.costs.filter((c2) => c2.triggers >= 2 || c2.label);
-    for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as ${ownerLabel(p)}.` });
-    return out;
   };
   const mapRefs2 = () => {
     if (!generated) return null;
@@ -7902,16 +6713,16 @@ function createWorkspace(svc, options, mode) {
   const refusal = (why) => {
     switch (why) {
       case "closed":
-        return "Not built: the map closed.";
+        return "Not applied: the map closed.";
       case "switched":
-        return "Not built: another map is in front now.";
+        return "Not applied: another map is in front now.";
       case "changed":
-        return "Not built: the map changed while the script was running. Build again.";
+        return "Not applied: the map changed while the script was running. Apply again.";
       default:
-        return "Not built.";
+        return "Not applied.";
     }
   };
-  const build = async (takeOver = false, withIr = false) => {
+  const build = async (takeOver = false) => {
     if (building || !ready) return false;
     building = true;
     setStatus("busy", "Running the script\u2026");
@@ -7921,17 +6732,19 @@ function createWorkspace(svc, options, mode) {
         if (!a2 || cancelled) return false;
         if (!a2.compiled.ok || diagnostics.length) {
           const n = diagnostics.length || a2.compiled.diagnostics.length;
-          setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
+          setStatus("error", `Not applied: ${n} error${n === 1 ? "" : "s"}.`);
           return false;
         }
         const wasStale = svc.state()?.stale ?? false;
-        setStatus("busy", "Installing the triggers\u2026");
-        const out = svc.install(a2, { takeOver, replaceStale: wasStale && !appendInstead, target, ir: withIr });
+        setStatus("busy", "Writing the triggers\u2026");
+        const out = svc.install(a2, { takeOver, replaceStale: wasStale && !appendInstead });
         if (out.block) {
           const b = out.block;
           const tail = out.replaced ? ` (replaced the previous block's ${out.replaced.removed} unchanged trigger${out.replaced.removed === 1 ? "" : "s"}; ${out.replaced.kept} edited one${out.replaced.kept === 1 ? "" : "s"} kept after it)` : wasStale ? " (appended: the previous block had been edited outside the script)" : "";
-          setStatus("ok", b.count === 0 ? "Built: the script defines no triggers; the block is empty." : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${tail}.`);
-          return withIr ? out.ir ?? true : true;
+          const n = a2.compiled.ir.length;
+          const built = n ? ` ${n === 1 ? "The program is" : `The ${n} programs are`} built into the map when it is saved or tested.` : "";
+          setStatus("ok", (b.count === 0 ? `Applied: the script defines no triggers${n ? "" : "; its block is empty"}.` : `Applied ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${tail}.`) + built);
+          return true;
         }
         if (out.refused === "changed" && attempt < 2) {
           setStatus("busy", "The map changed while the script ran; running it again\u2026");
@@ -7945,81 +6758,70 @@ function createWorkspace(svc, options, mode) {
       render();
     }
   };
-  const buildAndTest = async () => {
-    if (building || !ready || target !== "remastered") return;
-    const built = await build(false, true);
-    if (typeof built !== "string" || cancelled) return;
-    building = true;
-    eudAbort = new AbortController();
-    const steps = w.steps();
-    const log = el("pre", {});
-    log.hidden = true;
-    eudFold.hidden = false;
-    eudFold.open = true;
-    eudFold.mark("\u2026");
-    eudFold.set(`Remastered build \u2014 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
-    eudFold.body.replaceChildren(steps, log);
-    steps.running(true);
-    const s1 = steps.add("Classic triggers installed");
-    s1.done();
-    const s2 = steps.add("eudplib build", { running: true });
-    const s3 = steps.add("Save the built map");
+  const test = async () => {
+    if (building || testing || !ready) return;
+    if (!await build()) return;
+    if (cancelled) return;
+    testing = true;
     render();
-    const lines = [];
+    let failure = null;
+    const heard = svc.onBuild((e) => {
+      if (e.kind === "failed") failure = e.from && e.from !== "trigscript" ? `${e.from}: ${e.message}` : e.message;
+    });
     try {
-      setStatus("busy", "Building the Remastered map\u2026");
-      const eud = await svc.buildRemastered(built, { signal: eudAbort.signal, onLog: (line) => {
-        lines.push(line);
-        log.textContent = lines.join("\n");
-        log.hidden = false;
-      } });
-      s2.done(`${Math.round(eud.chkBytes / 1024)} KB of scenario in ${(eud.ms / 1e3).toFixed(1)} s`);
-      if (eud.log) {
-        log.textContent = eud.log;
-        log.hidden = false;
+      setStatus("busy", "Building the map\u2026");
+      const file = await api.document.export({ format: "scx" });
+      if (!file) {
+        setStatus("error", "No map is open.");
+        return;
       }
-      s3.start();
-      const info = api.document.info();
-      const stem = (info?.fileName ?? "map").replace(/\.(scx|scm|chk)$/i, "");
-      const saved = await api.ui.saveFile(eud.map, `${stem}-eud.scx`);
-      if (saved) {
-        s3.done(saved.fileName);
-        const test = api.document.test;
-        const s4 = test ? steps.add("Test Map", { running: true }) : null;
-        const outcome = test ? await test(eud.map, saved.fileName).catch((e) => {
-          s4?.fail(e.message);
-          return null;
-        }) : null;
-        if (outcome) s4?.done(outcome.launched ? `started the game with ${outcome.path}` : `written to ${outcome.path}${outcome.message ? ` \u2014 ${outcome.message}` : ""}`);
-        else s4?.skip("no test folder here");
-        eudFold.mark("\u2713", "ok");
-        const kb = Math.round(eud.map.length / 1024);
-        setStatus("ok", outcome?.launched ? `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered and started the game; keep this map as the source.` : outcome ? `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered, written to ${outcome.path}; keep this map as the source.` : `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered. Open it with Test Map to play it; keep this map as the source.`);
-      } else {
-        s3.skip("not saved");
-        eudFold.mark("!", "warn");
-        setStatus("info", "Built for Remastered, but the file was not saved.");
+      if (failure) {
+        setStatus("error", `Not tested: ${failure}`);
+        return;
       }
+      if (result?.programs.length && !library?.contribute) {
+        setStatus("error", "Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins \u25B8 Manage Plugins\u2026.");
+        return;
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const outcome = await api.document.test(bytes, file.name);
+      const kb = Math.round(bytes.length / 1024);
+      setStatus(outcome ? "ok" : "info", outcome?.launched ? `Started the game with ${outcome.path} (${kb} KB).` : outcome ? `Written to ${outcome.path} (${kb} KB)${outcome.message ? ` \u2014 ${outcome.message}` : ""}.` : "The map is built, but this browser has no test folder yet: pick one once under Tools \u25B8 Test Map\u2026, which builds the map the same way.");
     } catch (err) {
-      const e = err instanceof EudBuildError ? err : new EudBuildError(String(err.message ?? err));
-      s2.fail(e.message);
-      s3.skip();
-      eudFold.mark("\xD7", "error");
-      if (lines.length) {
-        log.textContent = lines.join("\n");
-        log.hidden = false;
-      }
-      if (e.at) {
-        diagnostics = [...diagnostics, { file: e.at.file, line: e.at.line, column: e.at.column, endLine: e.at.line, endColumn: e.at.column + 1, message: e.message, source: "compiler" }];
-        if (editor && monaco) setCompilerMarkers(monaco, files, diagnostics);
-        goTo(e.at.file, e.at.line, e.at.column);
-      }
-      setStatus("error", `Remastered build failed: ${e.message}`);
+      setStatus("error", `Not tested: ${err.message}`);
     } finally {
-      steps.running(false);
-      eudAbort = null;
-      building = false;
+      heard.dispose();
+      testing = false;
       render();
+    }
+  };
+  const onLibraryBuild = (e) => {
+    if (cancelled || e.kind !== "log" && !e.contributors.includes("trigscript")) return;
+    if (e.kind === "start") {
+      buildLog = [];
+      eudFold.hidden = false;
+      eudFold.mark("\u2026");
+      eudFold.set(`Build for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"} \u2014 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
+      eudFold.body.replaceChildren(buildLogEl);
+      buildLogEl.textContent = "";
+    } else if (e.kind === "log") {
+      buildLog.push(e.line);
+      buildLogEl.textContent = buildLog.join("\n");
+    } else if (e.kind === "done") {
+      eudFold.mark("\u2713", "ok");
+      buildLogEl.textContent = e.log || buildLog.join("\n");
+      eudFold.set(`Built: ${Math.round(e.chkBytes / 1024)} KB of scenario in ${(e.ms / 1e3).toFixed(1)} s \u2014 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
+    } else {
+      eudFold.mark("\xD7", "error");
+      eudFold.open = true;
+      eudFold.set(`Build failed: ${e.message}`);
+      const at = positionIn(e.message);
+      if (at) {
+        diagnostics = [...diagnostics, { file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: e.message, source: "compiler" }];
+        if (editor && monaco) setCompilerMarkers(monaco, files, diagnostics);
+        goTo(at.file, at.line, at.column);
+        render();
+      }
     }
   };
   const importHand = async () => {
@@ -8058,22 +6860,16 @@ function createWorkspace(svc, options, mode) {
       return;
     }
     try {
-      const generated2 = /* @__PURE__ */ new Set();
-      r.programs.forEach((p) => {
-        for (let i = p.start; i < p.start + p.count; i++) generated2.add(i);
-      });
-      const hand = r.triggers.filter((_, i) => !generated2.has(i));
       const player = r.programs[0]?.owner;
-      const sim = new Simulation(hand, { strings: r.strings, player });
-      const programs = r.ir.length ? new ProgramSimulation(r.ir, { target, world: sim, strings: r.strings, player }) : null;
-      for (let i = 0; i < SIMULATE_CYCLES; i++) {
+      const sim = new Simulation(r.triggers, { strings: r.strings, player });
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player }) : null;
+      for (let i = 0; i < SIMULATE_FRAMES; i++) {
         sim.step();
         programs?.step();
       }
-      simulation = { sim, programs, result: r, target };
+      simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
-      const unit = target === "remastered" ? "frames" : "trigger cycles";
-      setStatus("ok", `Simulated ${SIMULATE_CYCLES} ${unit} as P${sim.player + 1} on the ${targetLabel(target)} target: ${count} action${count === 1 ? "" : "s"} ran. Unit conditions (bring, command, \u2026) count as false; wait takes no time.`);
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran. Unit conditions (bring, command, \u2026) count as false; wait takes no time.`);
     } catch (err) {
       setStatus("error", `Simulation stopped: ${err.message}`);
     }
@@ -8099,7 +6895,7 @@ function createWorkspace(svc, options, mode) {
       const value = picked.kind === "unit" ? scn?.units[picked.index]?.unitId : picked.index + 1;
       const entry = value === void 0 ? void 0 : entryFor(table2, value);
       if (!entry) {
-        setStatus("info", picked.kind === "unit" ? "That unit's type has no name in the script's tables." : "That location is not in the script's tables yet; build again after the map's names refresh.");
+        setStatus("info", picked.kind === "unit" ? "That unit's type has no name in the script's tables." : "That location is not in the script's tables yet; try again after the map's names refresh.");
         return;
       }
       editor.insert(`${table2.object}.${entry.keys[0]}`);
@@ -8212,6 +7008,7 @@ function createWorkspace(svc, options, mode) {
         library = s;
         if (!cancelled) render();
       }),
+      svc.onBuild(onLibraryBuild),
       api.events.on("settings", refreshNames),
       api.events.on("locations", refreshNames),
       api.events.on("triggers", refreshNames),
@@ -8224,7 +7021,7 @@ function createWorkspace(svc, options, mode) {
         monaco = m;
         if (generated) setDeclarations(m, generated.decls);
         setHoverVariables(m, () => result?.variables ?? []);
-        setCostHints(m, costHints2);
+        setLineHints(m, () => result?.hints ?? []);
         setMapRefs(m, mapRefs2);
         loadingCover.done();
         editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
@@ -8250,7 +7047,6 @@ function createWorkspace(svc, options, mode) {
     );
     return () => {
       cancelled = true;
-      eudAbort?.abort();
       loadingCover.done();
       if (timer !== null) clearTimeout(timer);
       editor?.dispose();
@@ -8296,6 +7092,8 @@ function activate(api) {
   api.commands.register({ id: "print", title: "TrigScript: print records as script", run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : void 0) });
   api.commands.register({ id: "simulate", title: "TrigScript: simulate records", run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
   api.commands.register({ id: "triggerAt", title: "TrigScript: trigger at a source line", run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
+  const attached = svc.attach();
+  return () => attached.dispose();
 }
 var isRecord = (v) => typeof v === "object" && v !== null;
 var str = (v) => typeof v === "string" ? v : void 0;

@@ -1,9 +1,11 @@
 /**
- * TrigScript: TypeScript kept as files inside the map and built into a block of its
- * trigger list. This is the activation: the editor under Triggers, a claim on the
- * generated block so the editor's own trigger editors show it badged and locked, and
- * the commands other plugins call (`trigscript.compile`, `.build`, …). The language and
- * the compiler are documented in the README.
+ * TrigScript: TypeScript kept as files inside the map. Its `trigger()` calls become a block
+ * of the map's trigger list; its `program()`s are built into the saved map by the eudplib
+ * plugin. This is the activation: the editor under Triggers, a claim on the generated block
+ * so the editor's own trigger editors show it badged and locked, the part it takes in
+ * saving (`ScriptService.attach`), and the commands other plugins call
+ * (`trigscript.compile`, `.build`, …). The language and the compiler are documented in the
+ * README.
  */
 import type { PluginApi } from "@scm-js/plugin-api";
 import type { TriggerRecord } from "./vendor/triggers";
@@ -31,6 +33,10 @@ export default function activate(api: PluginApi) {
   api.commands.register({ id: "print", title: "TrigScript: print records as script", run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : undefined) });
   api.commands.register({ id: "simulate", title: "TrigScript: simulate records", run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : undefined }) });
   api.commands.register({ id: "triggerAt", title: "TrigScript: trigger at a source line", run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
+
+  // Save, Test Map and export apply the script first and build its programs; the library's list is not the host's to sweep.
+  const attached = svc.attach();
+  return () => attached.dispose();
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;

@@ -38,13 +38,11 @@ export interface TriggerValue { readonly __trigscript: "trigger"; readonly recor
 export interface ProgramOptions {
   /** The player groups the program runs for: one slot, or All Players, a force, several slots. */
   owners: number[];
-  /** Runs for several players at once: every variable is per player (see `Machine`). */
+  /** Runs for several players at once: every variable is per player. */
   perPlayer: boolean;
-  comments: boolean;
-  variableUnits: number[];
 }
 
-/** What `seconds(2)`, `minutes(1)` and `cycles(5)` return: a length of time `sleep()` turns into trigger cycles when the program is compiled. */
+/** What `seconds(2)`, `minutes(1)` and `frames(5)` return: a length of time for `sleep()`; `cycles` counts frames. */
 export interface DurationValue { readonly __trigscript: "duration"; readonly ms?: number; readonly cycles?: number }
 export const isDuration = (v: unknown): v is DurationValue => typeof v === "object" && v !== null && (v as DurationValue).__trigscript === "duration";
 
@@ -141,7 +139,7 @@ function flatten(v: unknown, out: unknown[] = []): unknown[] {
 }
 
 export interface RuntimeOptions {
-  /** Comment actions on the hyper triggers (and, for programs, every generated trigger); default true. */
+  /** Comment actions on the hyper triggers; default true. */
   comments?: boolean;
 }
 
@@ -288,6 +286,8 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   };
   rt.seconds = (n: unknown): DurationValue => ({ __trigscript: "duration", ms: number(n, "seconds") * 1000 });
   rt.minutes = (n: unknown): DurationValue => ({ __trigscript: "duration", ms: number(n, "minutes") * 60_000 });
+  rt.frames = (n: unknown): DurationValue => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
+  // The word from before 3.0, when a program's clock was the trigger cycle; a program's clock is the frame now.
   rt.cycles = (n: unknown): DurationValue => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
   rt.sleep = () => { throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement — sleep(seconds(2))."); };
   rt.rose = () => { throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if."); };
@@ -302,7 +302,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
         ? "program() takes an arrow function written directly in the call: program(() => { … })."
         : `program() takes an arrow function, got ${describe(body)}.`);
     }
-    const out: ProgramOptions = { owners: [0], perPlayer: false, comments: comment !== undefined, variableUnits: [] };
+    const out: ProgramOptions = { owners: [0], perPlayer: false };
     if (options !== undefined && options !== null) {
       if (typeof options !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options)}.`);
       for (const [key, value] of Object.entries(options as Record<string, unknown>)) {
@@ -317,12 +317,8 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
             break;
           }
           case "comments":
-            if (typeof value !== "boolean") throw new ScriptError("program: comments is true or false.");
-            out.comments = value;
-            break;
           case "variableUnits":
-            out.variableUnits = flatten(value).map((u) => integer(u, "program: variableUnits"));
-            break;
+            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
           default:
             throw new ScriptError(`program: unknown option "${key}".`);
         }
@@ -355,6 +351,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
-  out.push("seconds", "minutes", "cycles", "sleep", "rose", "once", "shared", "clamp");
+  out.push("seconds", "minutes", "frames", "cycles", "sleep", "rose", "once", "shared", "clamp");
   return out;
 }

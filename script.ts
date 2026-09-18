@@ -9,7 +9,7 @@
  * trigger inserted before the block in the Trigger Editor moves the block without
  * breaking it (`relocateManifest` then rewrites the manifest). Only an edit *inside*
  * the block makes it stale. The manifest also hashes every record on its own, so a
- * stale block can still be told apart record by record: the next Build can replace the
+ * stale block can still be told apart record by record: the next Apply can replace the
  * records that are still the build's and keep only the edited ones as hand triggers
  * (`replaceStale`), or append a fresh block and leave them all.
  *
@@ -18,9 +18,7 @@
  * the tests hand lists and maps in directly.
  */
 import { cloneTrigger, encodeTriggers, type TriggerRecord } from "./vendor/triggers";
-import { ENTRY_FILE, normalizePath, type CompileOptions, type CompileResult, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
-import { defaultSwitchName } from "./compiler/names";
-import { storageOf } from "./compiler/reserve";
+import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 
 /** The archive folder the script's files live in, next to `staredit\`. */
 export const SCRIPT_FOLDER = "trigscript\\";
@@ -30,13 +28,14 @@ export const ENTRY_MEMBER = `${SCRIPT_FOLDER}${ENTRY_FILE}`;
 
 export type Extras = ReadonlyMap<string, Uint8Array>;
 
-/** Which triggers a build makes: the classic death-counter machine, or eudplib's through the eudplib plugin. */
-export type BuildTarget = "classic" | "remastered";
-
 export interface ScriptManifest {
   version: 2;
-  /** The target the map is written for; classic when absent. Kept in `build.json` even before the first build. */
-  target?: BuildTarget;
+  /**
+   * How many `program()`s the script had when it was last applied: what tells the eudplib
+   * contribution, without compiling, whether the map has anything to build. Absent in a
+   * manifest from before 3.0, whose programs were triggers of the block.
+   */
+  programs?: number;
   /** Index of the first generated trigger. */
   start: number;
   count: number;
@@ -122,11 +121,11 @@ export function readManifest(extras: Extras): ScriptManifest | null {
   try {
     const m = JSON.parse(decoder.decode(bytes)) as Partial<ScriptManifest>;
     if (m.version !== 2 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
-    const target = m.target === "remastered" ? { target: m.target } : {};
+    const programs = typeof m.programs === "number" && m.programs >= 0 ? { programs: Math.floor(m.programs) } : {};
     const sources = Array.isArray(m.sources) ? m.sources.map((s) => (s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null)) : [];
     const files = Array.isArray(m.files) ? m.files.filter((f): f is string => typeof f === "string") : [];
     const records = Array.isArray(m.records) && m.records.length === m.count && m.records.every((r) => typeof r === "string") ? m.records : undefined;
-    return { version: 2, ...target, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...(records ? { records } : {}) };
+    return { version: 2, ...programs, start: m.start, count: m.count, hash: m.hash, sources, files, sourceHash: typeof m.sourceHash === "string" ? m.sourceHash : "", ...(records ? { records } : {}) };
   } catch {
     return null;
   }
@@ -134,33 +133,6 @@ export function readManifest(extras: Extras): ScriptManifest | null {
 
 export function withManifest(extras: Extras, manifest: ScriptManifest | null): Map<string, Uint8Array> {
   return withMember(extras, MANIFEST_MEMBER, manifest ? encoder.encode(JSON.stringify(manifest)) : null);
-}
-
-/**
- * The target `build.json` names, block or no block: before the first build the member
- * holds `{ "version": 2, "target": … }` alone, which `readManifest` does not count as a
- * block. Classic when the member is absent or says nothing.
- */
-export function readTarget(extras: Extras): BuildTarget {
-  const bytes = member(extras, MANIFEST_MEMBER);
-  if (!bytes) return "classic";
-  try {
-    const m = JSON.parse(decoder.decode(bytes)) as { target?: unknown };
-    return m.target === "remastered" ? "remastered" : "classic";
-  } catch {
-    return "classic";
-  }
-}
-
-/** The members with the target written into `build.json`, the block's record kept as it is. */
-export function withTarget(extras: Extras, target: BuildTarget): Map<string, Uint8Array> {
-  const manifest = readManifest(extras);
-  if (manifest) {
-    const next = { ...manifest };
-    if (target === "remastered") next.target = target; else delete next.target;
-    return withManifest(extras, next);
-  }
-  return withMember(extras, MANIFEST_MEMBER, target === "remastered" ? encoder.encode(JSON.stringify({ version: 2, target })) : null);
 }
 
 function fnv1a(bytes: Uint8Array): string {
@@ -238,8 +210,8 @@ export interface ScriptState {
   edited: { unchanged: number; changed: number } | null;
   /** The files differ from what the block was built from (or were never built). */
   unbuilt: boolean;
-  /** The target `build.json` names. */
-  target: BuildTarget;
+  /** The script had programs when it was last applied: the saved map is built by eudplib and needs StarCraft: Remastered. */
+  programs: number;
 }
 
 export function scriptState(triggers: TriggerRecord[] | null, extras: Extras): ScriptState {
@@ -250,7 +222,7 @@ export function scriptState(triggers: TriggerRecord[] | null, extras: Extras): S
   const unbuilt = files !== null && (!manifest || manifest.sourceHash !== hashFiles(files));
   const stale = !!manifest && !block;
   const parts = stale && triggers ? staleRecords(triggers, manifest!) : null;
-  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, target: readTarget(extras) };
+  return { files, source: files?.[ENTRY_FILE] ?? null, manifest, block, stale, edited: parts ? { unchanged: parts.unchanged.length, changed: parts.changed.length } : null, unbuilt, programs: manifest?.programs ?? 0 };
 }
 
 export function isGenerated(state: ScriptState, index: number): boolean {
@@ -264,22 +236,6 @@ export function relocateManifest(triggers: TriggerRecord[], extras: Extras): Map
   const block = findBlock(triggers, manifest);
   if (!block || block.start === manifest.start) return null;
   return withManifest(extras, { ...manifest, start: block.start });
-}
-
-/**
- * The death counters and switches the map's hand triggers (those outside the script's
- * block) and its switch names already use, so the programs' variables are allocated
- * around them. The previous block's own records are not counted: a rebuild replaces
- * them. A player group in a record stands for every slot it can mean (`storageOf`).
- * `switchNames` is the map's table with StarEdit's defaults in the blanks (what
- * `api.triggers.switchNames()` answers); a slot named anything else counts as used.
- */
-export function reservedStorage(triggers: TriggerRecord[], switchNames: readonly (string | null)[], block: ScriptBlock | null): Pick<CompileOptions, "reservedDeaths" | "reservedSwitches"> {
-  const hand = triggers.filter((_, i) => !(block && i >= block.start && i < block.start + block.count));
-  const used = storageOf(hand);
-  const switches = new Set<number>(used.switches);
-  switchNames.forEach((s, i) => { if (s && s.trim() && s.trim() !== defaultSwitchName(i)) switches.add(i); });
-  return { reservedDeaths: used.deaths, reservedSwitches: [...switches].sort((a, b) => a - b) };
 }
 
 /** The compiled records with their local string ids resolved through `intern` (the map's string table). */
@@ -310,8 +266,6 @@ export function resolveStrings(compiled: CompileResult, intern: (text: string) =
 }
 
 export interface BuildOptions {
-  /** The target to record in the manifest; the one `build.json` already names by default. */
-  target?: BuildTarget;
   /** Replace the *whole* list with the script's triggers (ejecting every hand trigger into the block). */
   takeOver?: boolean;
   /**
@@ -368,8 +322,7 @@ export function buildScript(triggers: TriggerRecord[], extras: Extras, files: Sc
   } else {
     start = triggers.length; before = triggers.slice(); after = [];
   }
-  const target = options.target ?? readTarget(extras);
-  const manifest: ScriptManifest = { version: 2, ...(target === "remastered" ? { target } : {}), start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
+  const manifest: ScriptManifest = { version: 2, programs: compiled.ir.length, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
   return { list: [...before, ...records, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
 }
 

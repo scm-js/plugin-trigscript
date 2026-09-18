@@ -7,6 +7,29 @@ editor. Status: slice 0 built (`python/trigscript.py` lowers a hand-written IR,
 question it answers: what does TrigScript become when eudplib can assemble its output,
 and how do we get the best developer experience out of that.
 
+> **Revised 2026-09-18, for TrigScript 3.0.** Two decisions changed the shape of this plan,
+> and the sections below are to be read through them:
+>
+> 1. **Programs are Remastered only.** There is no Classic target for `program()` any more:
+>    the death-counter backend, the target switch, cost hints and the parity suite are gone.
+>    `trigger()` is untouched and plays on every version. Every "on the classic target…"
+>    clause below is void, including *Reads on the classic target* and *The classic install
+>    on the Remastered target* under Open decisions (the second is what forced the choice:
+>    no limit could be lifted while every script also had to fit Classic).
+> 2. **One file, built on save.** No `<name>-eud.scx` beside the map and no Build & Test.
+>    The editor has build steps now (`api.document.buildSteps`); the eudplib plugin owns the
+>    one eudplib step and TrigScript *contributes* its IR to it, so Save, Test Map and an
+>    export write the built map, with the map as the user edits it kept inside the file and
+>    given back on open. *Where the built map goes* under Open decisions is settled by this.
+>
+> Also settled in 3.0: the IR is version 2 (a program's text is written out in the IR and
+> added to the built map by eudplib, never interned into the source map); a program's
+> owners are honoured (All Players and forces resolved from the map's player settings,
+> human and computer); `frames(n)` is the unit of `sleep`, `cycles(n)` its old name; the
+> lowering's arithmetic was brought to the contract the simulator states (whole sums,
+> exact comparisons, `abs` as a distance, a 0 divisor gives 0), and the simulator mirrors
+> the lowering down to the 32-bit wrap. Slices 2–6 below stand as written.
+
 ## What we are aiming for
 
 TrigScript today is TypeScript that runs when you build, with `program()` bodies compiled

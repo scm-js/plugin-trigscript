@@ -847,9 +847,6 @@ var UNIT_NAMES = [
   "Terran Vespene Gas Tank Type 1",
   "Terran Vespene Gas Tank Type 2"
 ];
-function unitName(id) {
-  return UNIT_NAMES[id] ?? `Unit #${id}`;
-}
 
 // compiler/names.ts
 var ANYWHERE_INDEX = 63;
@@ -944,116 +941,11 @@ function defaultScriptNames() {
 }
 
 // compiler/lower.ts
-var EACH_PLAYER = PlayerGroup.CurrentPlayer;
-var flagCell = (v) => ({ kind: "dc", name: v.name, player: EACH_PLAYER, unit: v.unit });
-var VARIABLE_UNITS = [181, 179, 180, 182, 183, 184, 185, 186, 187, 204, 91, 92, 119, 121, 145, 153, 158, 161];
 var PLAYER_SLOTS = 12;
-var dcKey = (player, unit) => unit * PLAYER_SLOTS + player;
-var Allocator = class {
-  usedDc = /* @__PURE__ */ new Set();
-  usedSw = /* @__PURE__ */ new Set();
-  variables = [];
-  constructor(options = {}) {
-    this.reserve(options.reservedDeaths ?? [], options.reservedSwitches ?? []);
-  }
-  /** Take cells out of the pool: something else uses them. */
-  reserve(deaths, switches) {
-    for (const [p, u] of deaths) this.usedDc.add(dcKey(p, u));
-    for (const s of switches) this.usedSw.add(s);
-  }
-  /** The first free death counter of the pool (the default pool when none is given). */
-  dc(name, units = VARIABLE_UNITS) {
-    for (const unit of units.length ? units : VARIABLE_UNITS) {
-      for (let player = 0; player < PLAYER_SLOTS; player++) {
-        const key = dcKey(player, unit);
-        if (this.usedDc.has(key)) continue;
-        this.usedDc.add(key);
-        const v = { kind: "dc", name, player, unit };
-        this.variables.push(v);
-        return v;
-      }
-    }
-    return null;
-  }
-  switch(name) {
-    for (let index = SWITCH_COUNT - 1; index >= 0; index--) {
-      if (this.usedSw.has(index)) continue;
-      this.usedSw.add(index);
-      const v = { kind: "switch", name, index };
-      this.variables.push(v);
-      return v;
-    }
-    return null;
-  }
-  /** A unit of the pool none of whose twelve cells is taken, all of them taken now; undefined when there is none. */
-  freeRow(units) {
-    for (const unit of units.length ? units : VARIABLE_UNITS) {
-      let free = true;
-      for (let player = 0; player < PLAYER_SLOTS && free; player++) if (this.usedDc.has(dcKey(player, unit))) free = false;
-      if (!free) continue;
-      for (let player = 0; player < PLAYER_SLOTS; player++) this.usedDc.add(dcKey(player, unit));
-      return unit;
-    }
-    return void 0;
-  }
-  /** A per-player number: a whole row of the pool, read and written as CurrentPlayer. */
-  row(name, units = VARIABLE_UNITS) {
-    const unit = this.freeRow(units);
-    if (unit === void 0) return null;
-    const v = { kind: "dc", name, player: EACH_PLAYER, unit };
-    this.variables.push(v);
-    return v;
-  }
-  /** A per-player boolean: a row too. */
-  flag(name, units = VARIABLE_UNITS) {
-    const unit = this.freeRow(units);
-    if (unit === void 0) return null;
-    const v = { kind: "flag", name, unit };
-    this.variables.push(v);
-    return v;
-  }
-};
-function storageLabel(v) {
-  if (v.kind === "switch") return `Switch ${v.index + 1}`;
-  if (v.kind === "flag" || v.player === EACH_PLAYER) return `each player \xB7 ${unitName(v.unit)}`;
-  return `P${v.player + 1} \xB7 ${unitName(v.unit)}`;
-}
-function deathsCondition(v, comparison, amount) {
-  return { ...emptyCondition(), type: ConditionType.Deaths, player: v.player, unitId: v.unit, comparison, amount: amount >>> 0, flags: ConditionFlag.UnitTypeUsed };
-}
-function setDeaths(v, modifier, amount) {
-  return { ...emptyAction(), type: ActionType.SetDeaths, player: v.player, unitId: v.unit, modifier, target: amount >>> 0, flags: ActionFlag.UnitTypeUsed };
-}
-function switchCondition(v, set) {
-  return { ...emptyCondition(), type: ConditionType.Switch, resource: v.index, comparison: set ? SwitchState.Set : SwitchState.Cleared };
-}
-function setSwitch(v, action2) {
-  return { ...emptyAction(), type: ActionType.SetSwitch, target: v.index, modifier: action2 };
-}
-function boolCondition(v, set) {
-  if (v.kind === "switch") return switchCondition(v, set);
-  return deathsCondition(flagCell(v), set ? Comparison.AtLeast : Comparison.Exactly, set ? 1 : 0);
-}
-function setBool(v, on) {
-  if (v.kind === "switch") return setSwitch(v, on ? SwitchAction.Set : SwitchAction.Clear);
-  return setDeaths(flagCell(v), SetModifier.SetTo, on ? 1 : 0);
-}
 var U32_MAX = 4294967295;
-var bitsOf = (v) => v.bits ?? 32;
-var maxOf = (bits) => bits >= 32 ? U32_MAX : 2 ** bits - 1;
-var bitLength = (n) => n <= 0 ? 0 : Math.min(32, Math.floor(Math.log2(n)) + 1);
-function widthOf(expr) {
-  const widths = expr.terms.filter((t) => t.k > 0).map((t) => bitsOf(t.v) + bitLength(t.k) - 1);
-  if (expr.c > 0) widths.push(bitLength(expr.c));
-  if (widths.length === 0) return 32;
-  return Math.min(32, Math.max(...widths) + bitLength(widths.length - 1));
-}
-var TRUE = { kind: "const", value: true };
-var FALSE = { kind: "const", value: false };
-var cond = (c2) => ({ kind: "cond", cond: c2 });
-var not = (expr) => ({ kind: "not", expr });
-var and = (items) => ({ kind: "and", items });
-var or = (items) => ({ kind: "or", items });
+var LowerError = class extends Error {
+};
+var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
 function negateCondition(c2) {
   if (c2.type === ConditionType.Always) return [{ ...c2, type: ConditionType.Never }];
   if (c2.type === ConditionType.Never) return [{ ...c2, type: ConditionType.Always }];
@@ -1078,507 +970,6 @@ function negateCondition(c2) {
     }
     default:
       return null;
-  }
-}
-var MAX_PRODUCTS = 256;
-function toDnf(b) {
-  switch (b.kind) {
-    case "const":
-      return b.value ? [[]] : [];
-    case "cond":
-      return [[{ cond: b.cond, negative: false }]];
-    case "or":
-      return b.items.flatMap(toDnf);
-    case "and": {
-      let out = [[]];
-      for (const item of b.items) {
-        const rhs = toDnf(item);
-        const next = [];
-        for (const p of out) for (const q of rhs) next.push([...p, ...q]);
-        if (next.length > MAX_PRODUCTS) throw new LowerError(`This condition expands to more than ${MAX_PRODUCTS} cases; split it into nested ifs.`);
-        out = next;
-      }
-      return out;
-    }
-    case "not": {
-      const e = b.expr;
-      switch (e.kind) {
-        case "const":
-          return e.value ? [] : [[]];
-        case "not":
-          return toDnf(e.expr);
-        case "and":
-          return toDnf(or(e.items.map(not)));
-        case "or":
-          return toDnf(and(e.items.map(not)));
-        case "cond": {
-          const flipped = negateCondition(e.cond);
-          return flipped ? flipped.map((c2) => [{ cond: c2, negative: false }]) : [[{ cond: e.cond, negative: true }]];
-        }
-      }
-    }
-  }
-}
-var LowerError = class extends Error {
-};
-var DECOMPOSITION_NOTE = "A variable-to-variable operation is the binary decomposition: 32 steps in and 32 back per variable. Declare the variable u8 or u16 for 8 + 8 or 16 + 16.";
-var STEP_ACTIONS = MAX_ACTIONS - 2;
-var STEP_CONDITIONS = MAX_CONDITIONS - 1;
-var Machine = class {
-  owners;
-  perPlayer;
-  allocator;
-  units;
-  triggers = [];
-  /** Per trigger, the source file and line it came from. */
-  sources = [];
-  /** The file the statements being lowered are in: the program's, or an inlined game function's. */
-  file = "";
-  pc;
-  /** Per source line (`file\0line`), a note on why it costs what it costs (a decomposition) and, for a loop, a short label, for the editor's cost hints. */
-  notes = /* @__PURE__ */ new Map();
-  /** The state whose steps are being emitted. State 0 is the entry: every counter is 0 at game start. */
-  state = 0;
-  nextState = 1;
-  stepsInState = 0;
-  pending = [];
-  pendingLine = 0;
-  pendingLabel = "";
-  comment;
-  temps = [];
-  tempsInUse = 0;
-  scratches = [];
-  constructor(options) {
-    this.owners = options.owners;
-    this.perPlayer = options.perPlayer;
-    this.allocator = options.allocator;
-    this.units = options.units ?? [];
-    this.comment = options.comment;
-    const pc = this.dc("(program counter)");
-    if (!pc) throw new LowerError(this.perPlayer ? "No unit of the pool has all twelve death counters free for the program counter." : "No death counter is free for the program counter.");
-    this.pc = pc;
-  }
-  /** A number for this program, from its own pool: a row when the program runs per player. */
-  dc(name) {
-    return this.perPlayer ? this.allocator.row(name, this.units) : this.allocator.dc(name, this.units);
-  }
-  /** A number every player of a per-player program shares: one cell. */
-  shared(name) {
-    return this.allocator.dc(name, this.units);
-  }
-  /** A boolean for this program: a switch, or a flag row when the program runs per player. */
-  bool(name) {
-    return this.perPlayer ? this.allocator.flag(name, this.units) : this.allocator.switch(name);
-  }
-  /** A switch for this program, whoever it runs for (scratch for `random()`, and `shared` booleans). */
-  switch(name) {
-    return this.allocator.switch(name);
-  }
-  fresh() {
-    return this.nextState++;
-  }
-  /** The state that runs when the program has finished: nothing tests it. */
-  get halt() {
-    return 4294967295;
-  }
-  enter(state) {
-    this.state = state;
-    this.stepsInState = 0;
-  }
-  /**
-   * Scratch counters for arithmetic: acquired in a stack, zeroed on acquisition by the
-   * caller. `bits` is what the caller knows the value will fit in — the width a later
-   * decomposition of the temp uses — 32 when nothing is known.
-   */
-  temp(bits = 32) {
-    if (this.tempsInUse === this.temps.length) {
-      const t2 = this.dc(`(temporary ${this.temps.length + 1})`);
-      if (!t2) throw new LowerError("Out of death counters for temporaries.");
-      this.temps.push(t2);
-    }
-    const t = this.temps[this.tempsInUse++];
-    if (bits < 32) t.bits = bits;
-    else delete t.bits;
-    return t;
-  }
-  /**
-   * A note on a source line for the editor's cost hints, with a short label when the line
-   * is worth one on its own. The first note stays, except that a specific one (a division,
-   * a product, an action with a variable amount) replaces the general decomposition note.
-   */
-  remark(line, text, label, specific = false) {
-    const key = `${this.file}\0${line}`;
-    const had = this.notes.get(key);
-    if (had && !(specific && had.note === DECOMPOSITION_NOTE)) return;
-    this.notes.set(key, { note: text, ...label ? { label } : {} });
-  }
-  release(n = 1) {
-    this.tempsInUse -= n;
-  }
-  /** Scratch switches for `random()`: one per use within an expression, so two draws are independent. */
-  scratch(i) {
-    while (this.scratches.length <= i) {
-      const s = this.switch(`(scratch switch ${this.scratches.length + 1})`);
-      if (!s) throw new LowerError("Out of switches for a scratch switch.");
-      this.scratches.push(s);
-    }
-    return this.scratches[i];
-  }
-  raw(conds, actions, next, line, label) {
-    const t = emptyTrigger();
-    for (const o of this.owners) t.players[o] = 1;
-    t.flags = TriggerFlag.Preserve;
-    t.conditions = [deathsCondition(this.pc, Comparison.Exactly, this.state), ...conds];
-    if (this.comment && label) t.actions.push({ ...emptyAction(), type: ActionType.Comment, text: this.comment(label) });
-    t.actions.push(...actions);
-    if (next !== null) t.actions.push(setDeaths(this.pc, SetModifier.SetTo, next));
-    if (t.conditions.length > MAX_CONDITIONS) throw new LowerError(`A branch tests more than ${STEP_CONDITIONS} conditions at once; split it.`);
-    this.triggers.push(t);
-    this.sources.push({ file: this.file, line });
-    this.stepsInState++;
-  }
-  /** Queue an action for the current state; it is written out with the next step. */
-  action(a2, line, label) {
-    if (this.pending.length === 0) {
-      this.pendingLine = line;
-      this.pendingLabel = label;
-    } else if (this.pendingLabel !== label && !this.pendingLabel.endsWith(" \u2026")) this.pendingLabel += " \u2026";
-    this.pending.push(a2);
-    if (this.pending.length >= STEP_ACTIONS) this.flush();
-  }
-  flush() {
-    while (this.pending.length) this.raw([], this.pending.splice(0, STEP_ACTIONS), null, this.pendingLine, this.pendingLabel);
-  }
-  /** One trigger in the current state: extra conditions, actions, and optionally a jump. Pending actions go first. */
-  step(conds, actions, next, line, label) {
-    this.flush();
-    this.raw(conds, actions, next, line, label);
-  }
-  /** End the current state: write the pending actions and move to `target`. */
-  jump(target, line, label) {
-    while (this.pending.length > STEP_ACTIONS) this.raw([], this.pending.splice(0, STEP_ACTIONS), null, this.pendingLine, this.pendingLabel);
-    const carried = this.pending.length > 0;
-    this.raw([], this.pending.splice(0), target, carried ? this.pendingLine : line, carried ? `${this.pendingLabel} \u2192 ${label}` : label);
-  }
-  /** Jump to a fresh state and continue there. */
-  next(line, label) {
-    const s = this.fresh();
-    this.jump(s, line, label);
-    this.enter(s);
-    return s;
-  }
-  /**
-   * A loop header: the state a back edge returns to. When the current state is still empty
-   * it is the header itself — the common `while (true)` at the top of a program then needs
-   * no extra trigger.
-   */
-  loopHeader(line, label) {
-    if (this.stepsInState === 0 && this.pending.length === 0) return this.state;
-    return this.next(line, label);
-  }
-  /**
-   * Pause the program for `cycles` trigger cycles: a countdown in a temp, in a state of
-   * its own so nothing else of the program runs meanwhile. The finished test stands
-   * before the decrement, so `sleep(1)` resumes one cycle later, not at once.
-   */
-  sleep(cycles, line, label) {
-    const t = this.temp();
-    this.set(t, cycles, line, label);
-    this.next(line, label);
-    const after = this.fresh();
-    this.raw([deathsCondition(t, Comparison.Exactly, 0)], [], after, line, label);
-    this.raw([deathsCondition(t, Comparison.AtLeast, 1)], [setDeaths(t, SetModifier.Subtract, 1)], null, line, label);
-    this.enter(after);
-    this.release();
-  }
-  /* ── Arithmetic ── */
-  set(v, n, line, label) {
-    if (n > maxOf(bitsOf(v))) throw new LowerError(`${v.name} is a u${bitsOf(v)} and holds 0 \u2026 ${maxOf(bitsOf(v))}, not ${n}.`);
-    this.action(setDeaths(v, SetModifier.SetTo, n), line, label);
-  }
-  addConst(v, n, line, label) {
-    if (n === 0) return;
-    this.action(setDeaths(v, n > 0 ? SetModifier.Add : SetModifier.Subtract, Math.min(U32_MAX, Math.abs(n))), line, label);
-  }
-  /**
-   * After an expression was stored in a narrow variable: one trigger that saturates it at
-   * its maximum. Only the stored result is narrowed, never a running value — `a = a + b - 10`
-   * over `u8`s is the exact sum first, then 255 at most — so between the store and the
-   * guard the cell may briefly hold more, which nothing reads.
-   */
-  clamp(v, line, label) {
-    const bits = bitsOf(v);
-    if (bits >= 32) return;
-    this.step([deathsCondition(v, Comparison.AtLeast, 2 ** bits)], [setDeaths(v, SetModifier.SetTo, maxOf(bits))], null, line, label);
-  }
-  note(line, bits) {
-    if (bits >= 32) this.remark(line, DECOMPOSITION_NOTE);
-  }
-  /**
-   * `dst += k·src`: the binary decomposition of `src` over `bits` bits (its width, or what
-   * the caller knows the value fits in), each step adding `k` times the bit to `dst` — a
-   * negative `k` subtracts. `src` is intact afterwards, moved through a temp and back,
-   * unless the caller `consume`s it (a temp that is dead afterwards): then it is 0 and the
-   * operation costs half.
-   */
-  addVar(dst, src, k, line, label, bits = bitsOf(src), consume = false) {
-    if (k === 0) return;
-    this.note(line, bits);
-    if (dst.player === src.player && dst.unit === src.unit) {
-      const t2 = this.temp();
-      this.set(t2, 0, line, label);
-      this.addVar(t2, src, k, line, label, bits, false);
-      this.addVar(dst, t2, 1, line, label, Math.min(32, bits + bitLength(Math.abs(k))), true);
-      this.release();
-      return;
-    }
-    const mod = k > 0 ? SetModifier.Add : SetModifier.Subtract;
-    const amount = (bit) => k > 0 ? bit * k >>> 0 : Math.min(U32_MAX, bit * -k);
-    if (consume) {
-      for (let b = bits - 1; b >= 0; b--) {
-        const bit = 2 ** b;
-        this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, amount(bit))], null, line, label);
-      }
-      return;
-    }
-    const t = this.temp();
-    this.set(t, 0, line, label);
-    for (let b = bits - 1; b >= 0; b--) {
-      const bit = 2 ** b;
-      this.step([deathsCondition(src, Comparison.AtLeast, bit)], [setDeaths(src, SetModifier.Subtract, bit), setDeaths(dst, mod, amount(bit)), setDeaths(t, SetModifier.Add, bit)], null, line, label);
-    }
-    this.addVar(src, t, 1, line, label, bits, true);
-    this.release();
-  }
-  /** `dst += src; src = 0` — half the price of `addVar` when `src` is dead afterwards. */
-  move(src, dst, line, label, bits = bitsOf(src)) {
-    this.addVar(dst, src, 1, line, label, bits, true);
-  }
-  /**
-   * `x = c + Σ k·v`, with the meaning the source has: the sum worked out exactly, then
-   * stored — below zero it is 0, at 2³² and above it wraps, and a `u8` / `u16` is
-   * saturated at its maximum *after* the whole sum. Every addition goes first and every
-   * subtraction after, whatever order the source wrote them in: the running value then only
-   * ever decreases through the subtractions, so it cannot touch zero unless the exact
-   * result is below zero, and the game's saturating subtraction bites exactly when the
-   * store would clamp. (`a = a + b - 5` with `a = 0`, `b = 10` is 5, not 10: subtracting
-   * the 5 first would saturate.) The one thing this cannot promise is a running sum of the
-   * additions past 2³² — the cell is 32 bits and there is no wider one — which wraps.
-   * Through a temp when `x` itself is a term anywhere but as the single leading `+x`.
-   */
-  assign(x, expr, line, label) {
-    const sameAs = (a2, b) => a2.player === b.player && a2.unit === b.unit;
-    const self = expr.terms.filter((t) => sameAs(t.v, x));
-    const others = expr.terms.filter((t) => !sameAs(t.v, x));
-    if (self.length === 1 && self[0].k === 1) {
-      this.accumulate(x, { c: expr.c, terms: others }, line, label);
-    } else if (self.length === 0) {
-      this.set(x, Math.max(0, expr.c), line, label);
-      this.accumulate(x, { c: Math.min(0, expr.c), terms: others }, line, label);
-    } else {
-      const t = this.temp();
-      this.evaluate(t, expr, line, label);
-      this.set(x, 0, line, label);
-      this.move(t, x, line, label, widthOf(expr));
-      this.release();
-    }
-    if (widthOf(expr) > bitsOf(x)) this.clamp(x, line, label);
-  }
-  /** Compute a linear expression into a temp (zeroed first); a temp is never narrowed. */
-  evaluate(t, expr, line, label) {
-    this.set(t, Math.max(0, expr.c), line, label);
-    this.accumulate(t, { c: Math.min(0, expr.c), terms: expr.terms }, line, label);
-  }
-  /** `v += expr` in the order `assign` describes: the additions, then the subtractions; no narrowing. */
-  accumulate(v, expr, line, label) {
-    if (expr.c > 0) this.addConst(v, expr.c, line, label);
-    for (const t of expr.terms) if (t.k > 0) this.addVar(v, t.v, t.k, line, label);
-    if (expr.c < 0) this.addConst(v, expr.c, line, label);
-    for (const t of expr.terms) if (t.k < 0) this.addVar(v, t.v, t.k, line, label);
-  }
-  /**
-   * `q = n / d`, `n = n % d` for a constant `d ≥ 1`: long division in binary, high bit
-   * first — `[n ≥ d·2ᵇ] → n −= d·2ᵇ, q += 2ᵇ` for every b where d·2ᵇ fits in 32 bits.
-   * `n` is consumed (a temp holding the dividend) and holds the remainder afterwards;
-   * `q` must be 0 before.
-   */
-  divConst(n, q, d, line, label, bits = bitsOf(n)) {
-    this.remark(line, `Division by a constant is a binary long division: one step per bit of the dividend (${bits}).`, void 0, true);
-    for (let b = bits - 1; b >= 0; b--) {
-      const chunk = d * 2 ** b;
-      if (chunk > U32_MAX) continue;
-      this.step([deathsCondition(n, Comparison.AtLeast, chunk)], [setDeaths(n, SetModifier.Subtract, chunk), setDeaths(q, SetModifier.Add, 2 ** b)], null, line, label);
-    }
-  }
-  /**
-   * `dst += a · b` between two variables: for every bit of `b` that is set, `dst += a·2ᵇ`
-   * (a decomposition of `a` each time), so it costs `bits(b) · (2·bits(a) + 3)` triggers —
-   * declare the variables `u8` or `u16` to keep it small. `a` and `b` are intact afterwards.
-   */
-  mulVar(dst, a2, b, line, label) {
-    const ba = bitsOf(a2);
-    const bb = bitsOf(b);
-    this.remark(line, `Multiplying two variables adds a\xB72\u1D47 once per set bit of b: ${bb} \xD7 (2\xB7${ba} + 3) triggers. Declare them u8 or u16 to keep it small.`, void 0, true);
-    let copy = null;
-    if (a2.player === b.player && a2.unit === b.unit) {
-      copy = this.temp(bb);
-      this.set(copy, 0, line, label);
-      this.addVar(copy, b, 1, line, label, bb);
-      b = copy;
-    }
-    const t = this.temp();
-    this.set(t, 0, line, label);
-    for (let k = bb - 1; k >= 0; k--) {
-      const bit = 2 ** k;
-      const add = this.fresh();
-      const next = this.fresh();
-      this.step([deathsCondition(b, Comparison.AtLeast, bit)], [setDeaths(b, SetModifier.Subtract, bit), setDeaths(t, SetModifier.Add, bit)], add, line, label);
-      this.jump(next, line, label);
-      this.enter(add);
-      this.addVar(dst, a2, bit, line, label, ba);
-      this.jump(next, line, label);
-      this.enter(next);
-    }
-    this.addVar(b, t, 1, line, label, bb, true);
-    this.release(copy ? 2 : 1);
-  }
-  /**
-   * An action done with a variable amount: the decomposition of `src` where each step's
-   * action is `record` with `field` set to `k·bit` — `setResources(P1, "add", n, "ore")`
-   * adds n ore; `createUnit(P2, unit, n, at)` creates n units, bit by bit (128, 64, …).
-   * A "set" modifier sets the field to 0 first and adds from there. `src` is intact
-   * afterwards unless `consume`d.
-   */
-  actionWithVar(record, field, src, bits, consume, line, label) {
-    let rec = { ...record };
-    const hasModifier = ACTIONS_WITH_MODIFIER.has(rec.type);
-    if (hasModifier && rec.modifier === SetModifier.SetTo) {
-      this.action({ ...rec, [field]: 0 }, line, label);
-      rec = { ...rec, modifier: SetModifier.Add };
-    }
-    this.remark(line, `An action with a variable amount is the binary decomposition of the variable: one step per bit (${bits}), each doing the action with that bit's share${consume ? "" : ", then the variable is restored"}.`, void 0, true);
-    const t = consume ? null : this.temp();
-    if (t) this.set(t, 0, line, label);
-    for (let b = bits - 1; b >= 0; b--) {
-      const bit = 2 ** b;
-      const actions = [setDeaths(src, SetModifier.Subtract, bit), { ...rec, [field]: bit }];
-      if (t) actions.push(setDeaths(t, SetModifier.Add, bit));
-      this.step([deathsCondition(src, Comparison.AtLeast, bit)], actions, null, line, label);
-    }
-    if (t) {
-      this.addVar(src, t, 1, line, label, bits, true);
-      this.release();
-    }
-  }
-  /**
-   * `a op b` for two counters as a `Bool` over saturating differences computed now, into
-   * temps the caller releases after the branch (`releaseAfterCompare`).
-   */
-  compareVars(a2, op, b, line, label) {
-    const diff = (p, q) => {
-      const t = this.temp();
-      this.set(t, 0, line, label);
-      this.addVar(t, p, 1, line, label);
-      this.addVar(t, q, -1, line, label);
-      return t;
-    };
-    const zero = (t) => cond(deathsCondition(t, Comparison.Exactly, 0));
-    const positive = (t) => cond(deathsCondition(t, Comparison.AtLeast, 1));
-    switch (op) {
-      case "<=":
-        return { bool: zero(diff(a2, b)), temps: 1 };
-      case ">=":
-        return { bool: zero(diff(b, a2)), temps: 1 };
-      case "<":
-        return { bool: positive(diff(b, a2)), temps: 1 };
-      case ">":
-        return { bool: positive(diff(a2, b)), temps: 1 };
-      case "==": {
-        const d1 = diff(a2, b);
-        const d2 = diff(b, a2);
-        return { bool: and([zero(d1), zero(d2)]), temps: 2 };
-      }
-      case "!=": {
-        const d1 = diff(a2, b);
-        const d2 = diff(b, a2);
-        return { bool: or([positive(d1), positive(d2)]), temps: 2 };
-      }
-    }
-  }
-  /* ── Control flow ── */
-  /**
-   * End the current state with a conditional jump. Each product of the condition's DNF is
-   * one trigger; negative literals are "skip" steps to the next product's state; the last
-   * fallthrough goes to `elseState`.
-   */
-  branch(b, thenState, elseState, line, label) {
-    const products = toDnf(b);
-    this.flush();
-    if (thenState === this.state || elseState === this.state) throw new LowerError("internal: a branch cannot target the state it is tested in.");
-    if (products.length === 0) {
-      this.jump(elseState, line, label);
-      return;
-    }
-    for (let i = 0; i < products.length; i++) {
-      const p = products[i];
-      const last = i === products.length - 1;
-      const positives = p.filter((l) => !l.negative).map((l) => l.cond);
-      const negatives = p.filter((l) => l.negative).map((l) => l.cond);
-      if (positives.length > STEP_CONDITIONS) throw new LowerError(`A branch tests ${positives.length} conditions at once; at most ${STEP_CONDITIONS} fit in one trigger. Split it into nested ifs.`);
-      if (positives.length === 0 && negatives.length === 0) {
-        this.raw([], [], thenState, line, label);
-        return;
-      }
-      if (negatives.length) {
-        const after = last ? elseState : this.fresh();
-        for (const c2 of negatives) this.raw([c2], [], after, line, label);
-        this.raw(positives, [], thenState, line, label);
-        this.raw([], [], after, line, label);
-        this.enter(after);
-      } else {
-        this.raw(positives, [], thenState, line, label);
-        if (last) this.raw([], [], elseState, line, label);
-      }
-    }
-  }
-  /** How many temps are held right now; `releaseTo` gives them back after a branch has read them. */
-  get tempsHeld() {
-    return this.tempsInUse;
-  }
-  releaseTo(n) {
-    this.tempsInUse = n;
-  }
-};
-var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
-function flipOp(op) {
-  switch (op) {
-    case "<":
-      return ">";
-    case ">":
-      return "<";
-    case "<=":
-      return ">=";
-    case ">=":
-      return "<=";
-    default:
-      return op;
-  }
-}
-function compareConst(v, op, n) {
-  const c2 = (comparison, amount) => cond(deathsCondition(v, comparison, amount));
-  switch (op) {
-    case ">=":
-      return n <= 0 ? TRUE : n > U32_MAX ? FALSE : c2(Comparison.AtLeast, n);
-    case ">":
-      return n < 0 ? TRUE : n >= U32_MAX ? FALSE : c2(Comparison.AtLeast, n + 1);
-    case "<=":
-      return n < 0 ? FALSE : n >= U32_MAX ? TRUE : c2(Comparison.AtMost, n);
-    case "<":
-      return n <= 0 ? FALSE : n > U32_MAX ? TRUE : c2(Comparison.AtMost, n - 1);
-    case "==":
-      return n < 0 || n > U32_MAX ? FALSE : c2(Comparison.Exactly, n);
-    case "!=":
-      return n < 0 || n > U32_MAX ? TRUE : not(c2(Comparison.Exactly, n));
   }
 }
 function hyperTriggers(owner, comment) {
@@ -1636,7 +1027,7 @@ ${kw}interface Condition { readonly __condition: true; }
 ${kw}interface Action { readonly __action: true; }
 /** A trigger, as returned by trigger(). */
 ${kw}interface Trigger { readonly __trigger: true; }
-/** A length of time, from seconds(), minutes() or cycles(): what sleep() takes. */
+/** A length of time, from seconds(), minutes() or frames(): what sleep() takes. */
 ${kw}interface Duration { readonly __duration: true; }
 /** Conditions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
 ${kw}type Conditions = readonly (Condition | Conditions | false | null | undefined)[];
@@ -1657,10 +1048,6 @@ ${kw}interface ProgramOptions {
    * their own copy (a variable declared with shared() is one cell they all share).
    */
   owner?: Player | readonly Player[];
-  /** Put a Comment action naming the source line on every generated trigger (default true). */
-  comments?: boolean;
-  /** Unit types whose death counters hold the variables (default: the "(Unused)" units, Cantina first). */
-  variableUnits?: readonly Unit[];
 }
 `;
 }
@@ -1683,20 +1070,22 @@ function functions(kw) {
  */
 ${kw}function trigger(players: Player | readonly Player[], conditions: Conditions, actions: Actions, options?: TriggerOptions): Trigger;
 /**
- * Code that runs in the game: a state machine built from death counters. Inside the arrow,
- * variables holding numbers are death counters and booleans are switches (a const computed
- * from them is one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them);
- * if / else, while, do, for, switch, break, continue, ?: and functions (inlined per call,
- * arguments passed by value, return values allowed) all work; conditions go in an if or
- * while and actions stand as statements. One iteration of a while loop per trigger cycle; a
- * for with bounds known when you build is unrolled and runs at once; sleep(seconds(n))
- * pauses. A for\u2026of over a list known when you build is unrolled too. Arithmetic: + \u2212, \xD7 by a
- * constant, / and % by a constant, Math.min / max / abs, clamp(); \xD7 between variables is
- * possible but costly. Everything the body reads from outside (constants, helpers,
+ * Code that runs in the game, every frame, from where it left off. Inside the arrow,
+ * variables hold numbers (32-bit, never below 0) and booleans (a const computed from them is
+ * one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them); if / else,
+ * while, do, for, switch, break, continue, ?: and functions (inlined per call, arguments
+ * passed by value, return values allowed) all work; conditions go in an if or while and
+ * actions stand as statements. The body runs until it sleeps or ends, all within one frame:
+ * a loop runs to completion at once, so a loop that goes on for ever needs a sleep() inside
+ * it \u2014 \`while (true) { \u2026; sleep(frames(1)); }\` is a game loop. Arithmetic: + \u2212 \xD7 / %,
+ * Math.min / max / abs, clamp(). Everything the body reads from outside (constants, helpers,
  * conditions, actions) is computed when you build \u2014 the editor underlines those parts \u2014 so
  * it cannot depend on the variables, except the amount of setResources / setDeaths /
  * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
  * giveUnits, which can be a variable.
+ *
+ * A map with a program in it needs StarCraft: Remastered: the programs are built into the
+ * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
  */
 ${kw}function program(body: () => void, options?: ProgramOptions): void;
 /**
@@ -1708,13 +1097,15 @@ ${kw}function program(body: () => void, options?: ProgramOptions): void;
 ${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
 /** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
 ${kw}function hyperTriggers(owner?: Player): void;
-/** A coin toss (Randomize Switch), inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
+/** A coin toss, inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
 ${kw}function random(): boolean;
-/** A length of time in seconds, for sleep(). Turned into trigger cycles when the program is built: twelve a second with hyper triggers on the map, one every two seconds without (at Fastest). */
+/** A length of time in seconds, for sleep(): twenty-four frames a second at Fastest. */
 ${kw}function seconds(n: number): Duration;
 /** A length of time in minutes, for sleep(). */
 ${kw}function minutes(n: number): Duration;
-/** A length of time in trigger cycles, for sleep(): one cycle is one pass over the trigger list. */
+/** A length of time in frames of the game, for sleep(): sleep(frames(1)) ends this frame's turn and goes on in the next. */
+${kw}function frames(n: number): Duration;
+/** @deprecated The same as frames(): a program's clock is the frame. */
 ${kw}function cycles(n: number): Duration;
 /**
  * Pause the program, inside program() only: the statements after it run that much later, and nothing
@@ -1722,7 +1113,7 @@ ${kw}function cycles(n: number): Duration;
  * is a wave every fifteen seconds. Unlike wait(), it stalls no other trigger.
  */
 ${kw}function sleep(duration: Duration): void;
-/** True on the cycle its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(\u2026)))\`. */
+/** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(\u2026)))\`. */
 ${kw}function rose(condition: Condition | boolean): boolean;
 /** True the first time its condition holds, never again. Inside program(), in an if. */
 ${kw}function once(condition: Condition | boolean): boolean;
@@ -2050,7 +1441,7 @@ function planProgram(ts, checker, arrow, options = {}) {
   };
   const statement = (s, items, deferred) => {
     if (ts.isVariableStatement(s)) {
-      declarations(s.declarationList, items);
+      declarations2(s.declarationList, items);
       return;
     }
     if (ts.isExpressionStatement(s)) {
@@ -2080,7 +1471,7 @@ function planProgram(ts, checker, arrow, options = {}) {
     if (ts.isForStatement(s)) {
       const inner = [];
       if (s.initializer) {
-        if (ts.isVariableDeclarationList(s.initializer)) declarations(s.initializer, inner);
+        if (ts.isVariableDeclarationList(s.initializer)) declarations2(s.initializer, inner);
         else value(s.initializer, inner);
       }
       value(s.condition, inner);
@@ -2119,10 +1510,10 @@ function planProgram(ts, checker, arrow, options = {}) {
       return;
     }
   };
-  const declarations = (list, items) => {
-    const isConst2 = (list.flags & ts.NodeFlags.Const) !== 0;
+  const declarations2 = (list, items) => {
+    const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     for (const d of list.declarations) {
-      if (isConst2) {
+      if (isConst) {
         if (!d.initializer) {
           error(d, "A constant needs a value.");
           continue;
@@ -2378,44 +1769,504 @@ function mapPosition(mapJson, line, column) {
   return best;
 }
 
-// compiler/reserve.ts
-var UNIT_CLASS_FIRST = 228;
-function playerSlots(player, owners) {
-  if (player < PLAYER_SLOTS) return [player];
-  if (player >= PLAYER_GROUP_COUNT) return [player];
-  if (player === PlayerGroup.None) return [];
-  if (player === PlayerGroup.CurrentPlayer) {
-    const out = /* @__PURE__ */ new Set();
-    for (const o of owners) for (const p of playerSlots(o, [])) if (p < PLAYER_SLOTS) out.add(p);
-    return [...out].sort((a2, b) => a2 - b);
+// compiler/ir.ts
+var IR_VERSION = 2;
+var isNumExpr = (e) => {
+  switch (e.kind) {
+    case "const":
+      return typeof e.value === "number";
+    case "var":
+      return false;
+    // ambiguous by shape; callers know the variable's kind
+    case "unary":
+    case "binary":
+    case "intrinsic":
+      return true;
+    case "ternary":
+      return isNumExpr(e.whenTrue);
+    case "call":
+      return e.call.result?.kind === "number";
+    default:
+      return false;
   }
-  return Array.from({ length: PLAYER_SLOTS }, (_, i) => i);
+};
+function declarations(body2) {
+  const out = [];
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        out.push(s.decl);
+        init(s.init);
+        break;
+      case "assign":
+        expr(s.value);
+        break;
+      case "assignBool":
+        init(s.value);
+        break;
+      case "if":
+        init(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) init(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        init(s.cond);
+        break;
+      case "for":
+        if (s.cond) init(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) init(s.value);
+        break;
+      case "action":
+        if (s.variable) expr(s.variable.expr);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    if (c2.result) out.push(c2.result.decl);
+    for (const p of c2.params) {
+      out.push(p.decl);
+      init(p.init);
+    }
+    c2.body.forEach(stmt);
+  };
+  const init = (e) => isNumExpr(e) ? expr(e) : bool(e);
+  const expr = (e) => {
+    switch (e.kind) {
+      case "unary":
+        expr(e.expr);
+        break;
+      case "binary":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        bool(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const bool = (b) => {
+    switch (b.kind) {
+      case "test":
+        expr(b.expr);
+        break;
+      case "compare":
+        expr(b.left);
+        expr(b.right);
+        break;
+      case "and":
+      case "or":
+        b.items.forEach(bool);
+        break;
+      case "not":
+        bool(b.expr);
+        break;
+      case "edge":
+        bool(b.cond);
+        break;
+      case "ternary":
+        bool(b.cond);
+        bool(b.whenTrue);
+        bool(b.whenFalse);
+        break;
+      case "call":
+        call(b.call);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+  return out;
 }
-function storageOf(triggers) {
-  const deaths = /* @__PURE__ */ new Map();
-  const switches = /* @__PURE__ */ new Set();
-  const cell = (player, unit, owners) => {
-    if (unit >= UNIT_CLASS_FIRST) return;
-    for (const p of playerSlots(player, owners)) deaths.set(unit * PLAYER_SLOTS + p, [p, unit]);
-  };
-  const sw = (index) => {
-    if (index >= 0 && index < SWITCH_COUNT) switches.add(index);
-  };
-  for (const t of triggers) {
-    const owners = [];
-    t.players.forEach((on, i) => {
-      if (on) owners.push(i);
-    });
-    for (const c2 of t.conditions) {
-      if (c2.type === ConditionType.Deaths) cell(c2.player, c2.unitId, owners);
-      else if (c2.type === ConditionType.Switch) sw(c2.resource);
+
+// compiler/eud.ts
+function checkProgram(program) {
+  const errors = [];
+  checkSleeps(program.body, errors);
+  checkDivisions(program.body, errors);
+  checkWidths(program.body, errors);
+  const hints = [];
+  remarks(program.body, hints);
+  return { errors, hints };
+}
+function expressions(body2, visit) {
+  const expr = (e) => {
+    visit(e);
+    switch (e.kind) {
+      case "unary":
+        expr(e.expr);
+        break;
+      case "binary":
+      case "compare":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        expr(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "and":
+      case "or":
+        e.items.forEach(expr);
+        break;
+      case "not":
+        expr(e.expr);
+        break;
+      case "test":
+        expr(e.expr);
+        break;
+      case "edge":
+        expr(e.cond);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
     }
-    for (const a2 of t.actions) {
-      if (a2.type === ActionType.SetDeaths) cell(a2.player, a2.unitId, owners);
-      else if (a2.type === ActionType.SetSwitch) sw(a2.target);
+  };
+  const call = (c2) => {
+    for (const p of c2.params) expr(p.init);
+    c2.body.forEach(stmt);
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) expr(s.init);
+        break;
+      case "assign":
+      case "assignBool":
+        expr(s.value);
+        break;
+      case "if":
+        expr(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) expr(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        expr(s.cond);
+        break;
+      case "for":
+        if (s.cond) expr(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) expr(s.value);
+        break;
+      case "action":
+        if (s.variable) expr(s.variable.expr);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function checkDivisions(body2, out) {
+  expressions(body2, (e) => {
+    if (e.kind !== "binary" || e.op !== "/" && e.op !== "%" || e.right.kind !== "const") return;
+    const d = e.right.value;
+    if (!Number.isInteger(d) || d <= 0) out.push({ at: e.at, message: `Divide by a whole number of at least 1, not ${d}.` });
+  });
+}
+function checkWidths(body2, out) {
+  const decls = new Map(declarations(body2).map((d) => [d.id, d]));
+  const fits = (id, value, at) => {
+    const d = decls.get(id);
+    if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
+    const max = 2 ** d.bits - 1;
+    if (value.value > max) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 \u2026 ${max}, not ${value.value}.` });
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) fits(s.decl.id, s.init, s.at);
+        break;
+      case "assign":
+        fits(s.target, s.value, s.at);
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function remarks(body2, out) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "remark":
+        if (s.short) out.push({ file: s.at.file, line: s.at.line, label: s.short, note: s.text });
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function assigned(body2, into = /* @__PURE__ */ new Set()) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        into.add(s.decl.id);
+        break;
+      case "assign":
+      case "assignBool":
+        into.add(s.target);
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "for":
+        s.body.forEach(stmt);
+        if (s.kind === "for") s.update.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) into.add(p.decl.id);
+    if (c2.result) into.add(c2.result.decl.id);
+    c2.body.forEach(stmt);
+  };
+  body2.forEach(stmt);
+  return into;
+}
+function reads(e, into = /* @__PURE__ */ new Set()) {
+  switch (e.kind) {
+    case "var":
+      into.add(e.id);
+      break;
+    case "unary":
+      reads(e.expr, into);
+      break;
+    case "binary":
+    case "compare":
+      reads(e.left, into);
+      reads(e.right, into);
+      break;
+    case "ternary":
+      reads(e.cond, into);
+      reads(e.whenTrue, into);
+      reads(e.whenFalse, into);
+      break;
+    case "intrinsic":
+      e.args.forEach((a2) => reads(a2, into));
+      break;
+    case "and":
+    case "or":
+      e.items.forEach((i) => reads(i, into));
+      break;
+    case "not":
+      reads(e.expr, into);
+      break;
+    case "test":
+      reads(e.expr, into);
+      break;
+    case "edge":
+      reads(e.cond, into);
+      break;
+    case "call":
+      break;
+    default:
+      break;
+  }
+  return into;
+}
+function sleepsOnEveryPath(body2) {
+  for (const s of body2) {
+    switch (s.kind) {
+      case "sleep":
+        return true;
+      case "break":
+      case "return":
+        return true;
+      // Leaves the loop: no freeze on this path.
+      case "continue":
+        return false;
+      case "if":
+        if (s.else && sleepsOnEveryPath(s.then) && sleepsOnEveryPath(s.else)) return true;
+        break;
+      case "block":
+        if (sleepsOnEveryPath(s.body)) return true;
+        break;
+      case "unrolled":
+        if (s.iterations.some(sleepsOnEveryPath)) return true;
+        break;
+      case "switch": {
+        const hasDefault = s.cases.some((c2) => c2.value === null);
+        if (hasDefault && s.cases.every((c2) => sleepsOnEveryPath(c2.body))) return true;
+        break;
+      }
+      case "while":
+      case "do":
+      case "for":
+        if (sleepsOnEveryPath(s.body)) return true;
+        break;
+      case "call":
+        if (sleepsOnEveryPath(s.call.body)) return true;
+        break;
+      default:
+        break;
     }
   }
-  return { deaths: [...deaths.values()], switches: [...switches].sort((a2, b) => a2 - b) };
+  return false;
+}
+function checkSleeps(body2, out) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "while":
+      case "for":
+      case "do": {
+        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body).has(id)) : false;
+        if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond ? "This loop's condition never changes inside it, and no path around it sleeps. A program runs until it sleeps or ends, all within one frame of the game, so this loop would never give the frame back and the game would freeze. Add sleep(frames(1)) inside it, or change what it tests." : "A loop without an end needs a sleep() on every path around it. A program runs until it sleeps or ends, all within one frame of the game, so this loop would freeze the game. Add sleep(frames(1)) at the end of its body." });
+        s.body.forEach(stmt);
+        if (s.kind === "for") s.update.forEach(stmt);
+        break;
+      }
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
 }
 
 // compiler/runtime.ts
@@ -2605,6 +2456,7 @@ function createRuntime(names, collector, options = {}) {
   };
   rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
   rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
+  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
   rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
   rt.sleep = () => {
     throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
@@ -2623,7 +2475,7 @@ function createRuntime(names, collector, options = {}) {
     if (!isProgramDescriptor(body2)) {
       throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
     }
-    const out = { owners: [0], perPlayer: false, comments: comment !== void 0, variableUnits: [] };
+    const out = { owners: [0], perPlayer: false };
     if (options2 !== void 0 && options2 !== null) {
       if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
       for (const [key, value] of Object.entries(options2)) {
@@ -2638,12 +2490,8 @@ function createRuntime(names, collector, options = {}) {
             break;
           }
           case "comments":
-            if (typeof value !== "boolean") throw new ScriptError("program: comments is true or false.");
-            out.comments = value;
-            break;
           case "variableUnits":
-            out.variableUnits = flatten(value).map((u) => integer(u, "program: variableUnits"));
-            break;
+            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
           default:
             throw new ScriptError(`program: unknown option "${key}".`);
         }
@@ -2682,9 +2530,6 @@ var Scope = class {
   }
 };
 
-// compiler/ir.ts
-var IR_VERSION = 1;
-
 // compiler/structured.ts
 function newBody(plan, sf, values, name) {
   return { plan, sf, values, memo: /* @__PURE__ */ new Map(), constMemo: /* @__PURE__ */ new Map(), ...name ? { name } : {} };
@@ -2712,8 +2557,8 @@ function describe2(v) {
   if (v === null || v === void 0) return String(v);
   return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
 }
-var TRUE2 = { kind: "const", value: true };
-var FALSE2 = { kind: "const", value: false };
+var TRUE = { kind: "const", value: true };
+var FALSE = { kind: "const", value: false };
 var num = (value) => ({ kind: "const", value });
 var varRef = (v) => ({ kind: "var", id: v.id });
 var boolRef = (v) => ({ kind: "var", id: v.id });
@@ -2738,7 +2583,7 @@ var Structured = class {
   run() {
     const statements = this.body.plan.body.statements;
     const at = this.at(this.body.plan.body);
-    const program = { version: IR_VERSION, ...this.body.name ? { name: this.body.name } : {}, owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, cyclesPerSecond: this.c.cyclesPerSecond, body: [], at };
+    const program = { version: IR_VERSION, ...this.body.name ? { name: this.body.name } : {}, owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, body: [], at };
     this.nodes.set(program, this.body.plan.body);
     this.out = program.body;
     try {
@@ -3165,7 +3010,7 @@ var Structured = class {
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) {
-        this.c.error(d, `Variables hold numbers (death counters), booleans (switches) or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
+        this.c.error(d, `Variables hold numbers, booleans or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
         continue;
       }
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
@@ -3283,7 +3128,7 @@ var Structured = class {
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   sleepStatement(call) {
     if (call.arguments.length !== 1) {
-      this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(cycles(5)).");
+      this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(frames(5)).");
       return;
     }
     const h = this.evaluate(call.arguments[0]);
@@ -3292,7 +3137,7 @@ var Structured = class {
       return;
     }
     if (!isDuration(h.value)) {
-      this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or cycles(), got ${describe2(h.value)}.`);
+      this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or frames(), got ${describe2(h.value)}.`);
       return;
     }
     const d = h.value;
@@ -3424,14 +3269,14 @@ var Structured = class {
       if (live) this.statement(live, ctx);
       return;
     }
-    const cond2 = this.bool(s.expression);
-    if (cond2.kind === "const" && !cond2.value) {
+    const cond = this.bool(s.expression);
+    if (cond.kind === "const" && !cond.value) {
       if (s.elseStatement) this.statement(s.elseStatement, ctx);
       return;
     }
     const then = this.sub(s.thenStatement, ctx);
     const otherwise = s.elseStatement ? this.sub(s.elseStatement, ctx) : void 0;
-    this.emit({ kind: "if", cond: cond2, then, ...otherwise ? { else: otherwise } : {}, at: this.at(s), label: this.label(s) }, s);
+    this.emit({ kind: "if", cond, then, ...otherwise ? { else: otherwise } : {}, at: this.at(s), label: this.label(s) }, s);
   }
   /** A loop condition known false when the script is built: the loop is not compiled at all. */
   neverRuns(condition2) {
@@ -3448,21 +3293,21 @@ var Structured = class {
   }
   whileStatement(s, ctx) {
     if (this.neverRuns(s.expression)) return;
-    const cond2 = this.loopCondition(s.expression);
+    const cond = this.loopCondition(s.expression);
     const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
-    this.emit({ kind: "while", ...cond2 ? { cond: cond2 } : {}, body: body2, at: this.at(s), label: this.label(s) }, s);
+    this.emit({ kind: "while", ...cond ? { cond } : {}, body: body2, at: this.at(s), label: this.label(s) }, s);
   }
   doStatement(s, ctx) {
     const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
-    const cond2 = this.bool(s.expression);
+    const cond = this.bool(s.expression);
     const condLabel = `L${this.line(s)}: while (${s.expression.getText(this.body.sf).replace(/\s+/g, " ")})`;
-    this.emit({ kind: "do", body: body2, cond: cond2, at: this.at(s), label: this.label(s), condLabel }, s);
+    this.emit({ kind: "do", body: body2, cond, at: this.at(s), label: this.label(s), condLabel }, s);
   }
   /**
    * `for (let i = 0; i < 3; i++)` with the start, the bound and the step known when the
    * script is built, and `i` never assigned in the body: unrolled like a `for…of`, `i`
    * bound to each value in turn — the loop runs in the cycle it is reached in, as the
-   * source reads, and `i` costs no death counter. Null when the loop is not of that form.
+   * source reads, and `i` is no variable of the program. Null when the loop is not of that form.
    */
   unrollable(s) {
     const { ts } = this;
@@ -3479,15 +3324,15 @@ var Structured = class {
     };
     const start = integer2(decl.initializer);
     if (start === null) return null;
-    const cond2 = this.unwrap(s.condition);
-    if (!ts.isBinaryExpression(cond2)) return null;
-    let op = compareOp(ts, cond2.operatorToken.kind);
+    const cond = this.unwrap(s.condition);
+    if (!ts.isBinaryExpression(cond)) return null;
+    let op = compareOp(ts, cond.operatorToken.kind);
     if (!op) return null;
     let bound;
-    if (isVar(cond2.left)) bound = integer2(cond2.right);
-    else if (isVar(cond2.right)) {
-      bound = integer2(cond2.left);
-      op = flipOp2(op);
+    if (isVar(cond.left)) bound = integer2(cond.right);
+    else if (isVar(cond.right)) {
+      bound = integer2(cond.left);
+      op = flipOp(op);
     } else return null;
     if (bound === null) return null;
     const inc = this.unwrap(s.incrementor);
@@ -3502,7 +3347,7 @@ var Structured = class {
     const values = [];
     for (let i = start; compareNumbers(i, op, bound); i += step) {
       values.push(i);
-      if (values.length > MAX_UNROLL) throw new LowerError(`This for loop unrolls to more than ${MAX_UNROLL} iterations. Loop over a variable instead \u2014 let i = 0; while (i < ${bound}) { \u2026; i++ } runs one iteration per trigger cycle \u2014 or make the bound smaller.`);
+      if (values.length > MAX_UNROLL) throw new LowerError(`This for loop unrolls to more than ${MAX_UNROLL} iterations. Loop over a variable instead \u2014 let i = 0; while (i < ${bound}) { \u2026; i++ } is a loop in the game, not ${MAX_UNROLL} copies of its body \u2014 or make the bound smaller.`);
     }
     return { decl, values };
   }
@@ -3510,7 +3355,7 @@ var Structured = class {
     const { ts } = this;
     const unrolled = this.unrollable(s);
     if (unrolled) {
-      this.emit({ kind: "remark", text: `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"} in one trigger cycle, the loop variable a value known when the script is built.`, short: `unrolled \xD7${unrolled.values.length}`, at: this.at(s) }, s);
+      this.emit({ kind: "remark", text: `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"}, the loop variable a value known when the script is built.`, short: `unrolled \xD7${unrolled.values.length}`, at: this.at(s) }, s);
       this.unrolledLoop(unrolled.decl, unrolled.values, s.statement, s, ctx);
       return;
     }
@@ -3524,11 +3369,11 @@ var Structured = class {
       this.scope = outer;
       return;
     }
-    const cond2 = this.loopCondition(s.condition);
+    const cond = this.loopCondition(s.condition);
     const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
     const update = s.incrementor ? this.collect(() => this.expressionStatement(s.incrementor)) : [];
     this.scope = outer;
-    this.emit({ kind: "for", ...cond2 ? { cond: cond2 } : {}, update, body: body2, at: this.at(s), label: this.label(s) }, s);
+    this.emit({ kind: "for", ...cond ? { cond } : {}, update, body: body2, at: this.at(s), label: this.label(s) }, s);
   }
   /** The body compiled once per value, the declaration bound to that value; `break` leaves, `continue` goes on with the next. */
   unrolledLoop(decl, values, body2, s, ctx) {
@@ -3841,7 +3686,7 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
       if (!op) {
-        this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder by a constant.");
+        this.c.error(e, "Expected a number: variables add, subtract, multiply, divide and take the remainder.");
         return null;
       }
       const l = this.num(e.left);
@@ -3850,11 +3695,11 @@ var Structured = class {
       return this.mark({ kind: "binary", op, left: l, right: r, at: this.at(e), label: this.label(e) }, e);
     }
     if (ts.isConditionalExpression(e)) {
-      const cond2 = this.bool(e.condition);
+      const cond = this.bool(e.condition);
       const whenTrue = this.num(e.whenTrue);
       const whenFalse = this.num(e.whenFalse);
       if (!whenTrue || !whenFalse) return null;
-      return this.mark({ kind: "ternary", cond: cond2, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+      return this.mark({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
     }
     if (ts.isCallExpression(e)) return this.callValue(e);
     this.c.error(e, "Expected a number: a value, a variable, or arithmetic over them.");
@@ -4007,24 +3852,24 @@ var Structured = class {
   edge(call, kind) {
     if (call.arguments.length !== 1) {
       this.c.error(call, `${kind}() takes one condition.`);
-      return FALSE2;
+      return FALSE;
     }
     return this.mark({ kind: "edge", edge: kind, cond: this.bool(call.arguments[0]), at: this.at(call), label: this.label(call) }, call);
   }
   /** A hoisted value as a condition. */
   hoistedBool(h, at) {
     const v = h.value;
-    if (typeof v === "boolean") return v ? TRUE2 : FALSE2;
-    if (typeof v === "number") return v !== 0 ? TRUE2 : FALSE2;
-    if (typeof v === "string") return v !== "" ? TRUE2 : FALSE2;
+    if (typeof v === "boolean") return v ? TRUE : FALSE;
+    if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
+    if (typeof v === "string") return v !== "" ? TRUE : FALSE;
     if (isCondition(v)) return this.mark({ kind: "cond", record: { ...v.record } }, at);
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
-      return FALSE2;
+      return FALSE;
     }
     this.c.error(at, `Expected a condition, got ${describe2(v)}.`);
-    return FALSE2;
+    return FALSE;
   }
   /** A condition as a `BoolExpr` tree. */
   bool(expr) {
@@ -4035,7 +3880,7 @@ var Structured = class {
     const e = this.unwrap(expr);
     if (depth > 64) {
       this.c.error(e, "The condition nests too deeply.");
-      return FALSE2;
+      return FALSE;
     }
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
@@ -4047,24 +3892,24 @@ var Structured = class {
       const cmp = compareOp(ts, op);
       if (cmp) return this.comparison(e, cmp, depth);
       this.c.error(e, "Expected a condition.");
-      return FALSE2;
+      return FALSE;
     }
     if (ts.isConditionalExpression(e)) {
-      const cond2 = this.bool(e.condition);
+      const cond = this.bool(e.condition);
       const whenTrue = this.boolValue(e.whenTrue);
       const whenFalse = this.boolValue(e.whenFalse);
-      return this.mark({ kind: "ternary", cond: cond2, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+      return this.mark({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") return b.v.kind !== "number" ? boolRef(b.v) : this.mark({ kind: "test", expr: varRef(b.v), at: this.at(e), label: this.label(e) }, e);
       if (b?.kind === "record") {
         this.c.error(e, "This is a record; test one of its fields.");
-        return FALSE2;
+        return FALSE;
       }
       if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       else this.notConstant(e, "A condition");
-      return FALSE2;
+      return FALSE;
     }
     if (ts.isCallExpression(e)) {
       if (ts.isIdentifier(e.expression)) {
@@ -4076,33 +3921,33 @@ var Structured = class {
       if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
       if (this.isLibraryCall(e, "sleep")) {
         this.c.error(e, "sleep() is a statement, not a condition.");
-        return FALSE2;
+        return FALSE;
       }
       const callee = this.evaluate(e.expression)?.value;
       if (isGameFunction(callee)) return this.callBool(e, () => this.gameCall(e, callee));
       if (isBuilder(callee) && callee.kind === "condition") {
         this.c.error(e, "The game cannot test a condition against a variable of the program: a condition's amount is known when the script is built. Compare variables in the program's own statements.");
-        return FALSE2;
+        return FALSE;
       }
       if (isBuilder(callee)) {
         this.c.error(e, "This is an action, not a condition.");
-        return FALSE2;
+        return FALSE;
       }
       this.notConstant(e, "A condition's arguments");
-      return FALSE2;
+      return FALSE;
     }
     this.c.error(e, "Expected a condition: a trigger condition, a comparison, a boolean variable, or a combination with && || !.");
-    return FALSE2;
+    return FALSE;
   }
   /** A call whose result is tested: a boolean result, or a number's `!= 0`. */
   callBool(e, run) {
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
     if (!kind) {
       this.c.error(e, "This function returns nothing to test; test a variable it sets instead.");
-      return FALSE2;
+      return FALSE;
     }
     const call = run();
-    return call?.result ? this.mark({ kind: "call", call }, e) : FALSE2;
+    return call?.result ? this.mark({ kind: "call", call }, e) : FALSE;
   }
   comparison(e, op, depth) {
     const isBool = (x) => {
@@ -4115,7 +3960,7 @@ var Structured = class {
     if (isBool(e.left) || isBool(e.right)) {
       if (op !== "==" && op !== "!=") {
         this.c.error(e, "Booleans compare with == and != only.");
-        return FALSE2;
+        return FALSE;
       }
       const l2 = this.boolInner(e.left, depth + 1);
       const r2 = this.boolInner(e.right, depth + 1);
@@ -4124,7 +3969,7 @@ var Structured = class {
     }
     const l = this.num(e.left);
     const r = this.num(e.right);
-    if (!l || !r) return FALSE2;
+    if (!l || !r) return FALSE;
     return this.mark({ kind: "compare", op, left: l, right: r, at: this.at(e), label: `L${this.line(e)}: ${e.getText(this.body.sf).replace(/\s+/g, " ")}` }, e);
   }
 };
@@ -4148,7 +3993,7 @@ function compareOp(ts, kind) {
       return null;
   }
 }
-function flipOp2(op) {
+function flipOp(op) {
   switch (op) {
     case "<":
       return ">";
@@ -4211,859 +4056,7 @@ function compareNumbers(a2, op, b) {
   }
 }
 
-// compiler/classic.ts
-var sameCell = (a2, b) => a2.player === b.player && a2.unit === b.unit;
-function scale(l, k) {
-  if (k === 0) return { c: 0, terms: [] };
-  return { c: l.c * k, terms: l.terms.map((t) => ({ v: t.v, k: t.k * k })) };
-}
-function merge(l, r) {
-  const terms = [];
-  for (const t of [...l.terms, ...r.terms]) {
-    const hit = terms.find((x) => sameCell(x.v, t.v));
-    if (hit) hit.k += t.k;
-    else terms.push({ v: t.v, k: t.k });
-  }
-  return { c: l.c + r.c, terms: terms.filter((t) => t.k !== 0) };
-}
-var isConst = (l) => l.terms.length === 0;
-var single = (l) => l.c === 0 && l.terms.length === 1 && l.terms[0].k === 1 ? l.terms[0].v : null;
-var ofVar = (v) => ({ c: 0, terms: [{ v, k: 1 }] });
-var Classic = class {
-  c;
-  m;
-  vars = /* @__PURE__ */ new Map();
-  /** After `break` / `continue` / `return` / an endless loop: the next statement needs a state of its own. */
-  dead = false;
-  scratchUsed = 0;
-  /** The statement being lowered, where an error with no node of its own lands. */
-  current;
-  constructor(c2) {
-    this.c = c2;
-    this.m = c2.machine;
-    this.current = c2.program;
-    this.m.file = c2.program.at.file;
-  }
-  run() {
-    const { body: body2 } = this.c.program;
-    try {
-      this.block(body2, {});
-      if (!this.dead) this.m.jump(this.m.halt, this.lastLine(body2), "end of program");
-    } catch (err) {
-      if (!(err instanceof LowerError)) throw err;
-      this.c.error(body2[body2.length - 1] ?? this.c.program, err.message);
-    }
-  }
-  lastLine(body2) {
-    const last = body2[body2.length - 1];
-    return last ? last.at.line : this.c.program.at.line;
-  }
-  live() {
-    if (this.dead) {
-      this.m.enter(this.m.fresh());
-      this.dead = false;
-    }
-  }
-  error(node, message) {
-    this.c.error(node ?? this.current, message);
-  }
-  dc(id, node) {
-    const v = this.vars.get(id);
-    if (!v) {
-      this.error(node, "A variable was used before it was declared.");
-      return null;
-    }
-    if (v.kind !== "dc") {
-      this.error(node, `${v.name} is a boolean.`);
-      return null;
-    }
-    return v;
-  }
-  boolVar(id, node) {
-    const v = this.vars.get(id);
-    if (!v) {
-      this.error(node, "A variable was used before it was declared.");
-      return null;
-    }
-    return v;
-  }
-  /* ── Statements ── */
-  block(statements, ctx) {
-    for (const s of statements) {
-      const held = this.m.tempsHeld;
-      try {
-        this.statement(s, ctx);
-      } catch (err) {
-        if (!(err instanceof LowerError)) throw err;
-        this.c.error(s, err.message);
-      }
-      this.m.releaseTo(held);
-    }
-  }
-  statement(s, ctx) {
-    this.current = s;
-    this.m.file = s.at.file;
-    this.live();
-    switch (s.kind) {
-      case "declare":
-        this.declare(s);
-        return;
-      case "assign": {
-        const v = this.dc(s.target, s);
-        if (!v) return;
-        const rhs = this.linear(s.value);
-        if (rhs) this.m.assign(v, rhs, s.at.line, s.label);
-        return;
-      }
-      case "assignBool": {
-        const v = this.boolVar(s.target, s);
-        if (v) this.storeBool(v, s.value, s.at.line, s.label);
-        return;
-      }
-      case "if":
-        this.ifStatement(s, ctx);
-        return;
-      case "while":
-        this.whileStatement(s, ctx);
-        return;
-      case "do":
-        this.doStatement(s, ctx);
-        return;
-      case "for":
-        this.forStatement(s, ctx);
-        return;
-      case "unrolled":
-        this.unrolledLoop(s, ctx);
-        return;
-      case "switch":
-        this.switchStatement(s, ctx);
-        return;
-      case "break":
-      case "continue": {
-        const target = s.kind === "break" ? ctx.breakTo : ctx.continueTo;
-        if (!target) {
-          this.error(s, `${s.kind} outside a loop.`);
-          return;
-        }
-        this.m.jump(target(), s.at.line, s.label);
-        this.dead = true;
-        return;
-      }
-      case "return":
-        this.returnStatement(s, ctx);
-        return;
-      case "sleep": {
-        const n = s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * this.c.program.cyclesPerSecond));
-        this.m.sleep(n, s.at.line, s.label);
-        return;
-      }
-      case "action":
-        this.action(s);
-        return;
-      case "call":
-        this.inline(s.call);
-        return;
-      case "block":
-        this.block(s.body, ctx);
-        return;
-      case "remark":
-        this.m.remark(s.at.line, s.text, s.short);
-        return;
-    }
-  }
-  declare(s) {
-    const { decl } = s;
-    const v = decl.kind === "number" ? decl.shared ? this.m.shared(decl.name) : this.m.dc(decl.name) : decl.shared ? this.m.switch(decl.name) : this.m.bool(decl.name);
-    if (!v) {
-      const note = this.m.perPlayer && !decl.name.includes(".") ? " (a per-player variable needs a unit with all twelve free)" : "";
-      this.error(s, `No ${decl.kind === "number" ? "death counter" : "switch"} is free for ${decl.name}${note}.`);
-      return;
-    }
-    v.at = decl.at;
-    if (v.kind === "dc" && decl.bits) v.bits = decl.bits;
-    if (v.kind === "dc") {
-      if (!s.failed) {
-        const rhs = this.linear(s.init);
-        if (rhs) this.m.assign(v, rhs, s.at.line, s.label);
-      }
-    } else {
-      this.storeBool(v, s.init, s.at.line, s.label);
-    }
-    this.vars.set(decl.id, v);
-  }
-  returnStatement(s, ctx) {
-    if (!ctx.fn) {
-      this.error(s, "return outside a function.");
-      return;
-    }
-    const { fn } = ctx;
-    if (s.value && fn.result) {
-      if (fn.kind === "number") {
-        const rhs = this.linear(s.value);
-        if (rhs) this.m.assign(fn.result, rhs, s.at.line, s.label);
-      } else this.storeBool(fn.result, s.value, s.at.line, s.label);
-    }
-    if (!this.dead) this.m.jump(fn.end(), s.at.line, s.label);
-    this.dead = true;
-  }
-  action(s) {
-    const line = s.at.line;
-    const { label } = s;
-    if (!s.variable) {
-      this.c.touched?.push(s.record);
-      this.m.action({ ...s.record }, line, label);
-      return;
-    }
-    const { variable } = s;
-    const fieldBits = variable.bits;
-    const lin = this.linear(variable.expr);
-    if (!lin) return;
-    const v = single(lin);
-    let src;
-    let consume;
-    let bits;
-    if (v && bitsOf(v) <= fieldBits) {
-      src = v;
-      consume = false;
-      bits = bitsOf(v);
-    } else {
-      src = this.m.temp(widthOf(lin));
-      this.m.evaluate(src, lin, line, label);
-      if (widthOf(lin) > fieldBits) {
-        this.m.step([deathsCondition(src, Comparison.AtLeast, 2 ** fieldBits)], [setDeaths(src, SetModifier.SetTo, maxOf(fieldBits))], null, line, label);
-        this.m.remark(line, `A ${variable.name} larger than ${maxOf(fieldBits)} is done as ${maxOf(fieldBits)}: that is what the action's field holds.`);
-      }
-      consume = true;
-      bits = Math.min(widthOf(lin), fieldBits);
-    }
-    this.c.touched?.push(s.record);
-    this.m.actionWithVar(s.record, variable.field, src, bits, consume, line, label);
-  }
-  /* ── Conditions as control flow ── */
-  /** Whether lowering an expression as a condition emits anything: an edge, a call of a function, a ternary. */
-  hasEffects(e) {
-    switch (e.kind) {
-      case "edge":
-      case "call":
-      case "ternary":
-        return true;
-      case "and":
-      case "or":
-        return e.items.some((i) => this.hasEffects(i));
-      case "not":
-        return this.hasEffects(e.expr);
-      case "test":
-        return this.hasEffects(e.expr);
-      case "compare":
-      case "binary":
-        return this.hasEffects(e.left) || this.hasEffects(e.right);
-      case "unary":
-        return this.hasEffects(e.expr);
-      case "intrinsic":
-        return e.args.some((a2) => this.hasEffects(a2));
-      default:
-        return false;
-    }
-  }
-  /** `a && b` / `a || b` / `!…` where a right side has effects: the DNF would run them whether or not the left side decided. */
-  shortCircuits(e) {
-    if ((e.kind === "and" || e.kind === "or") && e.items.length === 2) return this.hasEffects(e.items[1]) || this.shortCircuits(e.items[0]) || this.shortCircuits(e.items[1]);
-    if (e.kind === "not") return this.shortCircuits(e.expr);
-    return false;
-  }
-  /**
-   * End the current state with a conditional jump on an expression. `&&` and `||` with an
-   * effectful right side are lowered as control flow — the left side first, the right in
-   * a state only reached when the left has not decided — so `n >= 1 && once(…)` consumes
-   * the edge only when `n >= 1`; everything else goes through the DNF branch.
-   */
-  branchOn(e, thenState, elseState, line, label) {
-    if ((e.kind === "and" || e.kind === "or") && e.items.length === 2 && this.shortCircuits(e)) {
-      const mid = this.m.fresh();
-      if (e.kind === "and") this.branchOn(e.items[0], mid, elseState, line, label);
-      else this.branchOn(e.items[0], thenState, mid, line, label);
-      this.m.enter(mid);
-      this.dead = false;
-      this.branchOn(e.items[1], thenState, elseState, line, label);
-      return;
-    }
-    if (e.kind === "not" && this.shortCircuits(e)) {
-      this.branchOn(e.expr, elseState, thenState, line, label);
-      return;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(e);
-    this.m.branch(b, thenState, elseState, line, label);
-    this.m.releaseTo(held);
-  }
-  ifStatement(s, ctx) {
-    const join = this.m.fresh();
-    const thenState = this.m.fresh();
-    const elseState = s.else ? this.m.fresh() : join;
-    if (this.shortCircuits(s.cond)) {
-      this.branchOn(s.cond, thenState, elseState, s.at.line, s.label);
-    } else {
-      const held = this.m.tempsHeld;
-      const b = this.bool(s.cond);
-      if (b.kind === "const") {
-        this.m.releaseTo(held);
-        const live = b.value ? s.then : s.else;
-        if (live) this.block(live, ctx);
-        return;
-      }
-      this.m.branch(b, thenState, elseState, s.at.line, s.label);
-      this.m.releaseTo(held);
-    }
-    this.m.enter(thenState);
-    this.dead = false;
-    this.block(s.then, ctx);
-    if (!this.dead) this.m.jump(join, s.at.line, `L${s.at.line}: end if`);
-    if (s.else) {
-      this.m.enter(elseState);
-      this.dead = false;
-      this.block(s.else, ctx);
-      if (!this.dead) this.m.jump(join, s.at.line, `L${s.at.line}: end else`);
-    }
-    this.m.enter(join);
-    this.dead = false;
-  }
-  /**
-   * A loop's test at its header: the body state and the exit. Returns the body state,
-   * which is the header itself for a condition known true (no trigger spent), or the
-   * fresh state the test branched to.
-   */
-  loopTest(condition2, header, exit, line, label) {
-    if (!condition2) return header;
-    if (this.shortCircuits(condition2)) {
-      const body3 = this.m.fresh();
-      this.branchOn(condition2, body3, exit, line, label);
-      this.m.enter(body3);
-      return body3;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(condition2);
-    let body2 = header;
-    if (!(b.kind === "const" && b.value)) {
-      body2 = this.m.fresh();
-      this.m.branch(b, body2, exit, line, label);
-      this.m.enter(body2);
-    }
-    this.m.releaseTo(held);
-    return body2;
-  }
-  whileStatement(s, ctx) {
-    const line = s.at.line;
-    this.m.remark(line, "A while loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
-    const header = this.m.loopHeader(line, s.label);
-    const exit = this.m.fresh();
-    let broke = false;
-    const body2 = this.loopTest(s.cond, header, exit, line, s.label);
-    this.dead = false;
-    this.block(s.body, { fn: ctx.fn, breakTo: () => {
-      broke = true;
-      return exit;
-    }, continueTo: () => header });
-    if (!this.dead) this.m.jump(header, line, `L${line}: loop`);
-    if (body2 === header && !broke) {
-      this.dead = true;
-      return;
-    }
-    this.m.enter(exit);
-    this.dead = false;
-  }
-  doStatement(s, ctx) {
-    const line = s.at.line;
-    this.m.remark(line, "A do loop runs one iteration per trigger cycle: its back edge waits for the next pass over the triggers.", "one iteration per cycle");
-    const body2 = this.m.loopHeader(line, s.label);
-    const check = this.m.fresh();
-    const exit = this.m.fresh();
-    this.dead = false;
-    this.block(s.body, { fn: ctx.fn, breakTo: () => exit, continueTo: () => check });
-    if (!this.dead) this.m.jump(check, line, `L${line}: while`);
-    this.m.enter(check);
-    this.dead = false;
-    if (this.shortCircuits(s.cond)) this.branchOn(s.cond, body2, exit, line, s.condLabel);
-    else {
-      const held = this.m.tempsHeld;
-      const b = this.bool(s.cond);
-      this.m.branch(b, body2, exit, line, s.condLabel);
-      this.m.releaseTo(held);
-    }
-    this.m.enter(exit);
-  }
-  forStatement(s, ctx) {
-    const line = s.at.line;
-    this.m.remark(line, "This for loop runs one iteration per trigger cycle: its bound or step is not known when the script is built, so it is a while over a variable.", "one iteration per cycle");
-    const header = this.m.loopHeader(line, s.label);
-    const exit = this.m.fresh();
-    let broke = false;
-    let incr = null;
-    const body2 = this.loopTest(s.cond, header, exit, line, s.label);
-    this.dead = false;
-    this.block(s.body, { fn: ctx.fn, breakTo: () => {
-      broke = true;
-      return exit;
-    }, continueTo: () => s.update.length ? incr ??= this.m.fresh() : header });
-    if (incr !== null) {
-      if (!this.dead) this.m.jump(incr, line, `L${line}: continue`);
-      this.m.enter(incr);
-      this.dead = false;
-    }
-    if (!this.dead) {
-      for (const u of s.update) {
-        try {
-          this.statement(u, ctx);
-        } catch (err) {
-          if (!(err instanceof LowerError)) throw err;
-          this.c.error(u, err.message);
-        }
-      }
-      this.m.jump(header, line, `L${line}: loop`);
-    }
-    if (body2 === header && !broke) {
-      this.dead = true;
-      return;
-    }
-    this.m.enter(exit);
-    this.dead = false;
-  }
-  /** The body compiled once per value; `break` leaves, `continue` goes on with the next. */
-  unrolledLoop(s, ctx) {
-    const line = s.at.line;
-    const exit = this.m.fresh();
-    let broke = false;
-    for (const iteration of s.iterations) {
-      let next = null;
-      this.block(iteration, { fn: ctx.fn, breakTo: () => {
-        broke = true;
-        return exit;
-      }, continueTo: () => next ??= this.m.fresh() });
-      if (next !== null) {
-        if (!this.dead) this.m.jump(next, line, `L${line}: continue`);
-        this.m.enter(next);
-        this.dead = false;
-      }
-      if (this.dead) break;
-    }
-    if (broke) {
-      if (!this.dead) this.m.jump(exit, line, `L${line}: end of loop`);
-      this.m.enter(exit);
-      this.dead = false;
-    }
-  }
-  /**
-   * `switch (x) { case 1: … break; case 2: … default: … }` over a number: the cases
-   * tested in order, each one trigger, then the bodies in source order — a body without
-   * `break` falls through to the next, as in TypeScript.
-   */
-  switchStatement(s, ctx) {
-    const line = s.at.line;
-    const held = this.m.tempsHeld;
-    const lin = this.linear(s.value);
-    if (!lin) return;
-    if (isConst(lin)) {
-      this.error(s.value, "switch over a value known when the script is built: write the case that applies.");
-      return;
-    }
-    const v = single(lin) ?? (() => {
-      const t = this.m.temp(widthOf(lin));
-      this.m.evaluate(t, lin, line, s.label);
-      return t;
-    })();
-    const exit = this.m.fresh();
-    const states = s.cases.map(() => this.m.fresh());
-    let fallback = exit;
-    s.cases.forEach((c2, i) => {
-      if (c2.value === null) {
-        fallback = states[i];
-        return;
-      }
-      const n = c2.value;
-      if (Number.isNaN(n) || n < 0 || n > U32_MAX) return;
-      this.m.step([deathsCondition(v, Comparison.Exactly, n)], [], states[i], line, `L${line}: case ${n}`);
-    });
-    this.m.jump(fallback, line, `L${line}: ${fallback === exit ? "end switch" : "default"}`);
-    this.m.releaseTo(held);
-    s.cases.forEach((c2, i) => {
-      this.m.enter(states[i]);
-      this.dead = false;
-      this.block(c2.body, { fn: ctx.fn, continueTo: ctx.continueTo, breakTo: () => exit });
-      if (!this.dead) this.m.jump(i + 1 < states.length ? states[i + 1] : exit, line, `L${line}: fall through`);
-    });
-    this.m.enter(exit);
-    this.dead = false;
-  }
-  /* ── Functions ── */
-  /**
-   * An inlined call: the result temp first, then the parameter copies, then the body in
-   * the current state, `return` jumping to a state after it. The result comes back in a
-   * temp the caller reads (0 / 1 for a boolean) and releases with its statement.
-   */
-  inline(call) {
-    const line = call.at.line;
-    const result = call.result ? this.m.temp() : void 0;
-    if (result) this.m.set(result, 0, line, call.label);
-    for (const p of call.params) {
-      const copy = p.decl.kind === "number" ? this.m.dc(p.decl.name) : this.m.bool(p.decl.name);
-      if (!copy) {
-        this.error(call, `No ${p.decl.kind === "number" ? "death counter" : "switch"} is free for ${p.decl.name}.`);
-        return result;
-      }
-      copy.at = p.decl.at;
-      if (copy.kind === "dc" && p.decl.bits) copy.bits = p.decl.bits;
-      if (copy.kind === "dc") {
-        const rhs = this.linear(p.init);
-        if (rhs) this.m.assign(copy, rhs, line, p.label);
-      } else this.storeBool(copy, p.init, line, p.label);
-      this.vars.set(p.decl.id, copy);
-    }
-    if (call.result && result) this.vars.set(call.result.decl.id, result);
-    const file = this.m.file;
-    let end = null;
-    const fn = { end: () => end ??= this.m.fresh(), kind: call.result?.kind ?? "void", result };
-    this.block(call.body, { fn });
-    this.m.file = file;
-    if (end !== null) {
-      if (!this.dead) this.m.jump(end, line, `L${line}: end of ${call.name ?? "function"}`);
-      this.m.enter(end);
-      this.dead = false;
-    }
-    return result;
-  }
-  /* ── Numbers ── */
-  /** A variable holding a linear expression's value: the variable itself when it is one, else a temp computed now. */
-  sideVar(l, line, label) {
-    const v = single(l);
-    if (v) return v;
-    const t = this.m.temp(widthOf(l));
-    this.m.evaluate(t, l, line, label);
-    return t;
-  }
-  /** `l op r` for `*`, `/`, `%` (and `+`, `-`) over linear expressions, emitting what needs a temp. */
-  linearOp(op, l, r, at, line, label) {
-    switch (op) {
-      case "+":
-        return merge(l, r);
-      case "-":
-        return merge(l, scale(r, -1));
-      case "*": {
-        if (isConst(r)) return scale(l, r.c);
-        if (isConst(l)) return scale(r, l.c);
-        const a2 = this.sideVar(l, line, label);
-        const b = this.sideVar(r, line, label);
-        const t = this.m.temp(Math.min(32, bitsOf(a2) + bitsOf(b)));
-        this.m.set(t, 0, line, label);
-        this.m.mulVar(t, a2, b, line, label);
-        return ofVar(t);
-      }
-      case "/":
-      case "%": {
-        if (!isConst(r)) {
-          this.error(at, "Division is by a constant: the game has no instruction for dividing by a variable.");
-          return null;
-        }
-        const d = r.c;
-        if (!Number.isInteger(d) || d <= 0) {
-          this.error(at, `Divide by a whole number of at least 1, not ${d}.`);
-          return null;
-        }
-        if (isConst(l)) return { c: op === "/" ? Math.trunc(l.c / d) : l.c % d, terms: [] };
-        const n = this.m.temp(widthOf(l));
-        this.m.evaluate(n, l, line, label);
-        const q = this.m.temp(Math.max(1, widthOf(l) - bitLength(d) + 1));
-        this.m.set(q, 0, line, label);
-        this.m.divConst(n, q, d, line, label, widthOf(l));
-        return ofVar(op === "/" ? q : n);
-      }
-    }
-  }
-  /** `Math.min(a, b)` / `Math.max(a, b)`: against a constant, a copy and one guard; between variables, saturating differences. */
-  minMax(kind, l, r, line, label) {
-    if (isConst(l) && isConst(r)) return { c: kind === "min" ? Math.min(l.c, r.c) : Math.max(l.c, r.c), terms: [] };
-    if (isConst(l) || isConst(r)) {
-      const c2 = isConst(l) ? l.c : r.c;
-      const x = isConst(l) ? r : l;
-      const t2 = this.m.temp(kind === "min" ? Math.min(widthOf(x), bitLength(Math.max(0, c2))) : Math.max(widthOf(x), bitLength(Math.max(0, c2))));
-      if (kind === "min" && c2 <= 0) {
-        this.m.set(t2, 0, line, label);
-        return ofVar(t2);
-      }
-      this.m.evaluate(t2, x, line, label);
-      if (kind === "min") {
-        if (c2 < U32_MAX) this.m.step([deathsCondition(t2, Comparison.AtLeast, c2 + 1)], [setDeaths(t2, SetModifier.SetTo, c2)], null, line, label);
-      } else if (c2 > 0) this.m.step([deathsCondition(t2, Comparison.AtMost, c2 - 1)], [setDeaths(t2, SetModifier.SetTo, Math.min(c2, U32_MAX))], null, line, label);
-      return ofVar(t2);
-    }
-    const t = this.m.temp(kind === "min" ? Math.min(widthOf(l), widthOf(r)) : Math.max(widthOf(l), widthOf(r)));
-    const u = this.m.temp(kind === "min" ? widthOf(l) : widthOf(r));
-    this.m.evaluate(u, kind === "min" ? merge(l, scale(r, -1)) : merge(r, scale(l, -1)), line, label);
-    this.m.evaluate(t, l, line, label);
-    this.m.addVar(t, u, kind === "min" ? -1 : 1, line, label, bitsOf(u), true);
-    this.m.release();
-    return ofVar(t);
-  }
-  /** `Math.abs(l)` = (l −̇ 0) + (−l −̇ 0). */
-  abs(l, line, label) {
-    if (isConst(l)) return { c: Math.abs(l.c), terms: [] };
-    const t = this.m.temp(widthOf(l));
-    const u = this.m.temp(widthOf(scale(l, -1)));
-    this.m.evaluate(t, l, line, label);
-    this.m.evaluate(u, scale(l, -1), line, label);
-    this.m.addVar(t, u, 1, line, label, bitsOf(u), true);
-    this.m.release();
-    return ofVar(t);
-  }
-  /** `c ? a : b` as a number: a temp assigned on either side of a branch. */
-  ternary(e) {
-    const line = e.at.line;
-    const { label } = e;
-    const t = this.m.temp();
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    const join = this.m.fresh();
-    this.branchOn(e.cond, on, off, line, label);
-    this.m.enter(on);
-    this.dead = false;
-    const a2 = this.linear(e.whenTrue);
-    if (a2) this.m.assign(t, a2, line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(off);
-    this.dead = false;
-    const b = this.linear(e.whenFalse);
-    if (b) this.m.assign(t, b, line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-    return ofVar(t);
-  }
-  /** `c + Σ k·v` over death counters, or null (with a diagnostic). Emits what needs a temp: a quotient, a product, a call's result. */
-  linear(e) {
-    switch (e.kind) {
-      case "const":
-        return { c: e.value, terms: [] };
-      case "var": {
-        const v = this.dc(e.id, e);
-        return v ? ofVar(v) : null;
-      }
-      case "unary": {
-        const inner = this.linear(e.expr);
-        return inner ? scale(inner, -1) : null;
-      }
-      case "binary": {
-        const l = this.linear(e.left);
-        const r = this.linear(e.right);
-        if (!l || !r) return null;
-        return this.linearOp(e.op, l, r, e, e.at.line, e.label);
-      }
-      case "ternary":
-        return this.ternary(e);
-      case "intrinsic": {
-        const args = [];
-        for (const a2 of e.args) {
-          const l = this.linear(a2);
-          if (!l) return null;
-          args.push(l);
-        }
-        if (e.name === "abs") return this.abs(args[0], e.at.line, e.label);
-        return this.minMax(e.name, args[0], args[1], e.at.line, e.label);
-      }
-      case "call": {
-        const r = this.inline(e.call);
-        return r ? ofVar(r) : null;
-      }
-    }
-  }
-  /* ── Booleans ── */
-  /** `v = expr` for a boolean: a constant, a toggle, a coin toss, or a branch that sets one side and clears the other. */
-  storeBool(v, e, line, label) {
-    if (e.kind === "const") {
-      this.m.action(setTruth(v, e.value), line, label);
-      return;
-    }
-    if (v.kind === "switch" && e.kind === "not" && e.expr.kind === "var" && this.vars.get(e.expr.id) === v) {
-      this.m.action(setSwitch(v, SwitchAction.Toggle), line, label);
-      return;
-    }
-    if (v.kind === "switch" && e.kind === "random") {
-      this.m.action(setSwitch(v, SwitchAction.Randomize), line, label);
-      return;
-    }
-    if (this.shortCircuits(e)) {
-      const on = this.m.fresh();
-      const off = this.m.fresh();
-      this.branchOn(e, on, off, line, label);
-      this.storeSides(v, on, off, line, label);
-      return;
-    }
-    const held = this.m.tempsHeld;
-    const b = this.bool(e);
-    if (b.kind === "const") {
-      this.m.action(setTruth(v, b.value), line, label);
-      this.m.releaseTo(held);
-      return;
-    }
-    this.storeBoolTree(v, b, line, label);
-    this.m.releaseTo(held);
-  }
-  /** `v = b` for a condition tree: branch, set on one side, clear on the other. */
-  storeBoolTree(v, b, line, label) {
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    this.m.branch(b, on, off, line, label);
-    this.storeSides(v, on, off, line, label);
-  }
-  storeSides(v, on, off, line, label) {
-    const join = this.m.fresh();
-    this.m.enter(on);
-    this.m.action(setTruth(v, true), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(off);
-    this.m.action(setTruth(v, false), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-  }
-  /**
-   * `rose(c)`: true on the cycle `c` becomes true; `once(c)`: true the first time it holds.
-   * A latch remembers whether `c` held last time; `fired` is what the caller tests. Five
-   * triggers: the branch on `c`, two in the true state (the latch clear → fire and set the
-   * latch, jumping on; else clear `fired`), one in the false state.
-   */
-  edge(e) {
-    const kind = e.edge;
-    const latch = this.m.bool(`(${kind} latch)`);
-    const fired = this.m.bool(`(${kind} fired)`);
-    if (!latch || !fired) {
-      this.error(e, `No switch is free for ${kind}().`);
-      return FALSE;
-    }
-    const line = e.at.line;
-    const { label } = e;
-    const on = this.m.fresh();
-    const off = this.m.fresh();
-    const join = this.m.fresh();
-    this.branchOn(e.cond, on, off, line, label);
-    this.m.enter(on);
-    this.m.step([boolCondition(latch, false)], [setBool(fired, true), setBool(latch, true)], join, line, label);
-    this.m.step([], [setBool(fired, false)], join, line, label);
-    this.m.enter(off);
-    if (kind === "rose") this.m.action(setBool(latch, false), line, label);
-    this.m.action(setBool(fired, false), line, label);
-    this.m.jump(join, line, label);
-    this.m.enter(join);
-    this.dead = false;
-    return cond(boolCondition(fired, true));
-  }
-  /** A condition as a `Bool` tree; may emit steps (temps for variable comparisons, a randomize, an edge, a call). */
-  bool(e) {
-    this.scratchUsed = 0;
-    return this.boolInner(e);
-  }
-  boolInner(e) {
-    switch (e.kind) {
-      case "const":
-        return e.value ? TRUE : FALSE;
-      case "cond":
-        this.c.touched?.push(e.record);
-        return cond(e.record);
-      case "var": {
-        const v = this.boolVar(e.id, e);
-        if (!v) return FALSE;
-        return v.kind !== "dc" ? cond(boolCondition(v, true)) : compareConst(v, ">=", 1);
-      }
-      case "test": {
-        if (e.expr.kind === "var") {
-          const v = this.dc(e.expr.id, e);
-          return v ? compareConst(v, ">=", 1) : FALSE;
-        }
-        const l = this.linear(e.expr);
-        if (!l) return FALSE;
-        return cond(deathsCondition(this.sideVar(l, e.at.line, e.label), Comparison.AtLeast, 1));
-      }
-      case "not":
-        return not(this.boolInner(e.expr));
-      case "and":
-        return and(e.items.map((i) => this.boolInner(i)));
-      case "or":
-        return or(e.items.map((i) => this.boolInner(i)));
-      case "compare":
-        return this.comparison(e);
-      case "random": {
-        const s = this.m.scratch(this.scratchUsed++);
-        this.m.action(setSwitch(s, SwitchAction.Randomize), e.at.line, `L${e.at.line}: random()`);
-        return cond(switchCondition(s, true));
-      }
-      case "edge":
-        return this.edge(e);
-      case "ternary": {
-        const line = e.at.line;
-        const t = this.m.temp(1);
-        const on = this.m.fresh();
-        const off = this.m.fresh();
-        this.branchOn(e.cond, on, off, line, e.label);
-        const join = this.m.fresh();
-        this.m.enter(on);
-        this.dead = false;
-        this.storeBool(t, e.whenTrue, line, e.label);
-        this.m.jump(join, line, e.label);
-        this.m.enter(off);
-        this.dead = false;
-        this.storeBool(t, e.whenFalse, line, e.label);
-        this.m.jump(join, line, e.label);
-        this.m.enter(join);
-        this.dead = false;
-        return cond(deathsCondition(t, Comparison.AtLeast, 1));
-      }
-      case "call": {
-        const r = this.inline(e.call);
-        return r ? cond(deathsCondition(r, Comparison.AtLeast, 1)) : FALSE;
-      }
-    }
-  }
-  comparison(e) {
-    const l = this.linear(e.left);
-    const r = this.linear(e.right);
-    if (!l || !r) return FALSE;
-    const d = merge(l, scale(r, -1));
-    if (d.terms.length === 0) return compareNumbers(d.c, e.op, 0) ? TRUE : FALSE;
-    if (d.terms.length === 1) {
-      const t = d.terms[0];
-      return compareScaled(t.v, t.k, e.op, -d.c);
-    }
-    const line = e.at.line;
-    const { label } = e;
-    const left = { c: Math.max(0, d.c), terms: d.terms.filter((t) => t.k > 0) };
-    const right = { c: Math.max(0, -d.c), terms: d.terms.filter((t) => t.k < 0).map((t) => ({ v: t.v, k: -t.k })) };
-    const a2 = this.sideVar(left, line, label);
-    const b = this.sideVar(right, line, label);
-    return this.m.compareVars(a2, e.op, b, line, label).bool;
-  }
-};
-function setTruth(v, on) {
-  return v.kind === "dc" ? setDeaths(v, SetModifier.SetTo, on ? 1 : 0) : setBool(v, on);
-}
-function compareScaled(v, k, op, n) {
-  if (k < 0) return compareScaled(v, -k, flipOp(op), -n);
-  if (k === 1) return compareConst(v, op, n);
-  switch (op) {
-    case ">=":
-      return compareConst(v, ">=", Math.ceil(n / k));
-    case ">":
-      return compareConst(v, ">=", Math.ceil((n + 1) / k));
-    case "<=":
-      return compareConst(v, "<=", Math.floor(n / k));
-    case "<":
-      return compareConst(v, "<=", Math.floor((n - 1) / k));
-    case "==":
-      return n % k === 0 ? compareConst(v, "==", n / k) : FALSE;
-    case "!=":
-      return n % k === 0 ? compareConst(v, "!=", n / k) : TRUE;
-  }
-}
-
 // compiler/compiler.ts
-var HYPER_CYCLES_PER_SECOND = 12;
-var PLAIN_CYCLES_PER_SECOND = 0.5;
 var ENTRY_FILE = "main.ts";
 var LIB_FILE = "lib.d.ts";
 function normalizePath(path) {
@@ -5073,7 +4066,7 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
   const refs = [];
   const scripts = /* @__PURE__ */ new Map();
@@ -5204,7 +4197,6 @@ function compileScript(ts, files, names, options) {
     diagnostics.push({ file: failure.file ?? ENTRY_FILE, line, column: failure.column ?? 1, endLine: line, endColumn: (failure.column ?? 1) + 1, message: failure.message, source: "script" });
     return result();
   }
-  const raw = storageOf(collector.entries.flatMap((e) => e.kind === "trigger" ? [e.record] : []));
   const sourceOf = (at) => at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null;
   const bodies = /* @__PURE__ */ new Map();
   const bodyOf = (d) => {
@@ -5223,80 +4215,40 @@ function compileScript(ts, files, names, options) {
     return b;
   };
   const resolve = (fn) => bodyOf(fn.descriptor) ?? void 0;
-  const cyclesPerSecond = collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND;
-  const lower = (allocator2, report, touched2) => {
-    const out = { triggers: [], sources: [], programs: [], notes: /* @__PURE__ */ new Map(), ir: [] };
-    const error = report ? nodeError : () => {
-    };
-    for (const entry of collector.entries) {
-      if (entry.kind === "trigger") {
-        out.triggers.push(entry.record);
-        out.sources.push(sourceOf(entry.at));
-        continue;
-      }
-      const file = fileNames[entry.descriptor.at[0]];
-      const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
-      const body2 = bodyOf(entry.descriptor);
-      if (!body2) {
-        if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
-        continue;
-      }
-      let machine;
-      try {
-        const comment = entry.options.comments ? (text) => collector.localString({ text }) : void 0;
-        machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator: allocator2, units: entry.options.variableUnits, comment });
-      } catch (err) {
-        if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: err.message, source: "compiler" });
-        continue;
-      }
-      const start = out.triggers.length;
-      const records = [];
-      const owner = entry.options.owners.find((o) => o < PLAYER_SLOTS) ?? 0;
-      const emitted2 = new Structured({ ts, checker, body: body2, owner, owners: entry.options.owners, perPlayer: entry.options.perPlayer, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve }).run();
-      out.ir.push(emitted2.program);
-      new Classic({ machine, program: emitted2.program, error: (node, message) => error(emitted2.nodeOf(node) ?? body2.plan.body, message), ...touched2 ? { touched: records } : {} }).run();
-      if (touched2 && records.length) {
-        const t = emptyTrigger();
-        for (const o of entry.options.owners) t.players[o] = 1;
-        t.conditions = records.filter((r) => "unitId" in r && !("modifier" in r));
-        t.actions = records.filter((r) => "modifier" in r);
-        touched2.push(t);
-      }
-      out.triggers.push(...machine.triggers);
-      for (const s of machine.sources) out.sources.push(s);
-      for (const [key, note] of machine.notes) out.notes.set(key, note);
-      const owners = entry.options.owners;
-      out.programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
+  const triggers = [];
+  const sources = [];
+  const programs = [];
+  const variables = [];
+  const hints = [];
+  const ir = [];
+  for (const entry of collector.entries) {
+    if (entry.kind === "trigger") {
+      triggers.push(entry.record);
+      sources.push(sourceOf(entry.at));
+      continue;
     }
-    return out;
-  };
-  const touched = [];
-  const scratch = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
-  scratch.reserve(raw.deaths, raw.switches);
-  if (collector.entries.some((e) => e.kind === "program")) lower(scratch, false, touched);
-  const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
-  allocator.reserve(raw.deaths, raw.switches);
-  const inBodies = storageOf(touched);
-  allocator.reserve(inBodies.deaths, inBodies.switches);
-  const { triggers, sources, programs, notes, ir } = lower(allocator, true);
-  const variables = allocator.variables.map((v) => v.kind === "dc" ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...v.at ? { at: v.at } : {}, ...v.bits ? { bits: v.bits } : {} } : v.kind === "switch" ? { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...v.at ? { at: v.at } : {} } : { name: v.name, kind: "boolean", storage: storageLabel(v), flag: v.unit, ...v.at ? { at: v.at } : {} });
-  const costs = /* @__PURE__ */ new Map();
-  const costOf = (file, line) => {
-    const key = `${file}\0${line}`;
-    let c2 = costs.get(key);
-    if (!c2) {
-      const n = notes.get(key);
-      c2 = { file, line, triggers: 0, ...n ? { note: n.note, ...n.label ? { label: n.label } : {} } : {} };
-      costs.set(key, c2);
+    const file = fileNames[entry.descriptor.at[0]];
+    const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
+    const body2 = bodyOf(entry.descriptor);
+    if (!body2) {
+      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
+      continue;
     }
-    return c2;
-  };
-  for (const s of sources) if (s) costOf(s.file, s.line).triggers++;
-  for (const [key, n] of notes) if (n.label) {
-    const [file, line] = key.split("\0");
-    costOf(file, Number(line));
+    const owners = entry.options.owners;
+    const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
+    const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    const index = programs.length;
+    ir.push(emitted2.program);
+    programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
+    for (const d of declarations(emitted2.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {} });
+    const check = checkProgram(emitted2.program);
+    for (const d of check.errors) {
+      if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
+      diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
+    }
+    hints.push(...check.hints);
   }
-  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
+  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
 }
 function checkValuesAsBooleans(ts, checker, sf, programs, error) {
   const isLibraryType = (t, name) => {

@@ -4,8 +4,10 @@
  * *run*. Running is what defines the raw level — every `trigger()` the script calls,
  * through whatever helpers and loops it likes, records one trigger — and `program()`
  * bodies are the structured level: the run records where each body is and the values
- * of its build-time parts (`hoist.ts`), and `structured.ts` lowers the body to a
- * death-counter state machine through `lower.ts`.
+ * of its build-time parts (`hoist.ts`), and `structured.ts` turns the body into IR
+ * (`ir.ts`). The IR is the output for a program: eudplib builds it into the map when the
+ * map is saved (`python/trigscript.py`), so a program needs StarCraft: Remastered and
+ * costs the map no triggers, death counters or switches of its own.
  *
  * Strings are not interned here (the compiler runs in a worker, away from the map):
  * text/wav fields hold local ids into `strings`, resolved by the build step. The
@@ -14,23 +16,17 @@
  * worker fetches it and the tests read it from node_modules.
  */
 import type * as TS from "typescript";
-import type { ActionRecord, ConditionRecord, TriggerRecord } from "../vendor/triggers";
+import type { TriggerRecord } from "../vendor/triggers";
 import { MODULE_NAME } from "./api";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
 import { libraryCallName, libraryName, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { runModules, type LinkedFile } from "./link";
-import { Allocator, LowerError, Machine, PLAYER_SLOTS, storageLabel } from "./lower";
-import { emptyTrigger } from "../vendor/triggers";
-
-/** Trigger cycles a second at Fastest: with hyper triggers the loop runs every two ticks of twenty-four; without, once in two seconds. */
-export const HYPER_CYCLES_PER_SECOND = 12;
-export const PLAIN_CYCLES_PER_SECOND = 0.5;
+import { checkProgram } from "./eud";
+import { declarations, type Program } from "./ir";
+import { LowerError, PLAYER_SLOTS } from "./lower";
 import type { ScriptNames } from "./names";
-import { storageOf } from "./reserve";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
 import { newBody, Structured, type Body } from "./structured";
-import { Classic } from "./classic";
-import type { Program } from "./ir";
 
 export type { ScriptString } from "./runtime";
 export { DEATHS_TABLE_ADDRESS } from "./runtime";
@@ -72,42 +68,34 @@ export interface SourceRange {
 export interface VariableInfo {
   name: string;
   kind: "number" | "boolean";
-  /** Where it lives: "P3 · Cantina (Unused)" or "Switch 256". */
-  storage: string;
-  /** Death counter (numbers). */
-  player?: number;
-  unit?: number;
-  /** Switch index (booleans held in a switch). */
-  switch?: number;
-  /** A per-player boolean: a death-counter row of this unit (0 false, 1 true), one cell per player. */
-  flag?: number;
-  /** Where the variable is declared; unset for the machine's own counters and temporaries. */
-  at?: { file: string; line: number; column: number };
+  /** Index into `programs` of the program it belongs to. */
+  program: number;
+  /** One value for every player of a per-player program (`shared(…)`); otherwise a per-player program has one per player. */
+  shared: boolean;
+  /** Where the variable is declared. */
+  at: { file: string; line: number; column: number };
   /** A `u8` (8) or `u16` (16) variable; unset for the full 32 bits. */
   bits?: number;
 }
 
-/** What one source line generated, for the editor's cost hints. */
-export interface LineCost {
+/** Something the compiler has to say about a line that is not a fault: a loop unrolled when the script was built. */
+export interface LineHint {
   file: string;
   line: number;
-  triggers: number;
-  /** Why it costs that, when the machine has something to say (a decomposition, a loop's timing). */
-  note?: string;
-  /** A short label for the line's hint in place of the count — a loop's timing ("unrolled ×6"); such a line may have generated no trigger of its own. */
-  label?: string;
+  /** The short form the editor shows at the end of the line ("unrolled ×6"). */
+  label: string;
+  note: string;
 }
 
 export interface ProgramInfo {
+  /** `const award = game(…)`: the name, when the program has one. */
+  name?: string;
   /** A player slot the program runs as (0-based; the first, when it runs for several) — what a simulation runs it as. */
   owner: number;
-  /** The player groups its triggers run for: slots, or All Players / a force. */
+  /** The player groups it runs for: slots, or All Players / a force. */
   owners: number[];
   /** Runs for several players at once, every variable per player. */
   perPlayer: boolean;
-  /** Index into `triggers` of the program's first trigger. */
-  start: number;
-  count: number;
   /** Where the `program(` call is. */
   source: TriggerSource;
 }
@@ -122,37 +110,31 @@ export interface MapReference extends SourceRange {
 }
 
 export interface CompileResult {
+  /** The `trigger()` calls' records, in order — ordinary triggers, written into the map. Programs are not in here: see `ir`. */
   triggers: TriggerRecord[];
   /** Per trigger, where it came from; null for a hyper trigger. */
   sources: (TriggerSource | null)[];
   /** Local string table: a record's `text` / `wav` field `k > 0` means `strings[k - 1]`. */
   strings: ScriptString[];
   diagnostics: ScriptDiagnostic[];
-  /** The programs' variables (temporaries and program counters included), in allocation order. */
+  /** The programs' variables, in declaration order; a function's copies and results are left out. */
   variables: VariableInfo[];
   programs: ProgramInfo[];
   /** Inside the programs, the expressions computed when the script is built rather than in the game — what the editor underlines. */
   buildTime: SourceRange[];
-  /** Triggers per source line, every line that generated one. */
-  costs: LineCost[];
+  /** What the compiler did to a line that is worth a word at its end. */
+  hints: LineHint[];
   /** Every `locations.X` / `switches.X` / … the files mention, whatever else went wrong (a rename is what makes them not type-check). */
   refs: MapReference[];
-  /** The programs as IR (`ir.ts`), one per `program()` in order — what the Remastered target builds from. */
+  /** The programs as IR (`ir.ts`), one per `program()` in order — what eudplib builds into the map on save. A map with any needs StarCraft: Remastered. */
   ir: Program[];
-  /** No errors: `triggers` is the complete output. */
+  /** No errors: `triggers` and `ir` are the complete output. */
   ok: boolean;
 }
 
 export interface CompileOptions {
   /** The standard library's declarations (`lib.es2022.d.ts` and what it references, concatenated). */
   lib: string;
-  /**
-   * Death counters (player, unit) the map's hand triggers use; variables avoid them. The
-   * script's own raw triggers are scanned here and avoided too, whichever comes first.
-   */
-  reservedDeaths?: readonly (readonly [number, number])[];
-  /** Switches the map's hand triggers use or name; variables avoid them. */
-  reservedSwitches?: readonly number[];
 }
 
 export { LowerError };
@@ -167,7 +149,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], costs: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
   const refs: MapReference[] = [];
@@ -305,15 +287,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     return result();
   }
 
-  /* ── Lower the programs into the list ── */
-  // One allocator for the whole compile, and every cell a raw trigger of the script touches
-  // is taken before the first program asks — a program after a `trigger()` in the text is
-  // no different from one before it. What the programs' *bodies* touch (`setDeaths(P2, 181,
-  // …)` as a statement, `deaths(…)` in an if) only shows when they are walked, so they are
-  // walked twice: once against a scratch allocator to collect those records, then for real
-  // with them reserved. Hoisted values are memoised in the bodies, so the script's
-  // build-time parts run once.
-  const raw = storageOf(collector.entries.flatMap((e) => (e.kind === "trigger" ? [e.record] : [])));
+  /* ── The triggers, and the programs as IR ── */
   const sourceOf = (at: [number, number] | null): TriggerSource | null => (at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null);
   const bodies = new Map<ProgramDescriptor, Body | null>();
   const bodyOf = (d: ProgramDescriptor): Body | null => {
@@ -328,73 +302,35 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     return b;
   };
   const resolve = (fn: GameFunctionValue): Body | undefined => bodyOf(fn.descriptor) ?? undefined;
-  const cyclesPerSecond = collector.hyper ? HYPER_CYCLES_PER_SECOND : PLAIN_CYCLES_PER_SECOND;
 
-  interface Lowered { triggers: TriggerRecord[]; sources: (TriggerSource | null)[]; programs: ProgramInfo[]; notes: Map<string, { note: string; label?: string }>; ir: Program[] }
-  const lower = (allocator: Allocator, report: boolean, touched?: TriggerRecord[]): Lowered => {
-    const out: Lowered = { triggers: [], sources: [], programs: [], notes: new Map(), ir: [] };
-    const error = report ? nodeError : () => {};
-    for (const entry of collector.entries) {
-      if (entry.kind === "trigger") { out.triggers.push(entry.record); out.sources.push(sourceOf(entry.at)); continue; }
-      const file = fileNames[entry.descriptor.at[0]];
-      const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
-      const body = bodyOf(entry.descriptor);
-      if (!body) { if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" }); continue; }
-      let machine: Machine;
-      try {
-        const comment = entry.options.comments ? (text: string) => collector.localString({ text }) : undefined;
-        machine = new Machine({ owners: entry.options.owners, perPlayer: entry.options.perPlayer, allocator, units: entry.options.variableUnits, comment });
-      } catch (err) {
-        if (report) diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: (err as LowerError).message, source: "compiler" });
-        continue;
-      }
-      const start = out.triggers.length;
-      const records: (ConditionRecord | ActionRecord)[] = [];
-      const owner = entry.options.owners.find((o) => o < PLAYER_SLOTS) ?? 0;
-      const emitted = new Structured({ ts, checker, body, owner, owners: entry.options.owners, perPlayer: entry.options.perPlayer, cyclesPerSecond, error: (node, message, source) => error(node, message, source), resolve }).run();
-      out.ir.push(emitted.program);
-      new Classic({ machine, program: emitted.program, error: (node, message) => error(emitted.nodeOf(node) ?? body.plan.body, message), ...(touched ? { touched: records } : {}) }).run();
-      if (touched && records.length) {
-        // The body's own records, as a trigger owned by the program's owners, so `storageOf` expands CurrentPlayer to them.
-        const t = emptyTrigger();
-        for (const o of entry.options.owners) t.players[o] = 1;
-        t.conditions = records.filter((r): r is ConditionRecord => "unitId" in r && !("modifier" in r));
-        t.actions = records.filter((r): r is ActionRecord => "modifier" in r);
-        touched.push(t);
-      }
-      out.triggers.push(...machine.triggers);
-      for (const s of machine.sources) out.sources.push(s);
-      for (const [key, note] of machine.notes) out.notes.set(key, note);
-      const owners = entry.options.owners;
-      out.programs.push({ owner: owners.find((o) => o < PLAYER_SLOTS) ?? 0, owners, perPlayer: entry.options.perPlayer, start, count: machine.triggers.length, source: at });
+  const triggers: TriggerRecord[] = [];
+  const sources: (TriggerSource | null)[] = [];
+  const programs: ProgramInfo[] = [];
+  const variables: VariableInfo[] = [];
+  const hints: LineHint[] = [];
+  const ir: Program[] = [];
+  for (const entry of collector.entries) {
+    if (entry.kind === "trigger") { triggers.push(entry.record); sources.push(sourceOf(entry.at)); continue; }
+    const file = fileNames[entry.descriptor.at[0]];
+    const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
+    const body = bodyOf(entry.descriptor);
+    if (!body) { diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" }); continue; }
+    const owners = entry.options.owners;
+    const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
+    const emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    const index = programs.length;
+    ir.push(emitted.program);
+    programs.push({ ...(emitted.program.name ? { name: emitted.program.name } : {}), owner, owners, perPlayer: entry.options.perPlayer, source: at });
+    for (const d of declarations(emitted.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}) });
+    // What would freeze the game or cannot be built is a fault of the script, said where it is.
+    const check = checkProgram(emitted.program);
+    for (const d of check.errors) {
+      if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
+      diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }
-    return out;
-  };
-  const touched: TriggerRecord[] = [];
-  const scratch = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
-  scratch.reserve(raw.deaths, raw.switches);
-  if (collector.entries.some((e) => e.kind === "program")) lower(scratch, false, touched);
-  const allocator = new Allocator({ reservedDeaths: options.reservedDeaths, reservedSwitches: options.reservedSwitches });
-  allocator.reserve(raw.deaths, raw.switches);
-  const inBodies = storageOf(touched);
-  allocator.reserve(inBodies.deaths, inBodies.switches);
-  const { triggers, sources, programs, notes, ir } = lower(allocator, true);
-  const variables: VariableInfo[] = allocator.variables.map((v) => v.kind === "dc"
-    ? { name: v.name, kind: "number", storage: storageLabel(v), player: v.player, unit: v.unit, ...(v.at ? { at: v.at } : {}), ...(v.bits ? { bits: v.bits } : {}) }
-    : v.kind === "switch"
-      ? { name: v.name, kind: "boolean", storage: storageLabel(v), switch: v.index, ...(v.at ? { at: v.at } : {}) }
-      : { name: v.name, kind: "boolean", storage: storageLabel(v), flag: v.unit, ...(v.at ? { at: v.at } : {}) });
-  const costs = new Map<string, LineCost>();
-  const costOf = (file: string, line: number): LineCost => {
-    const key = `${file}\0${line}`;
-    let c = costs.get(key);
-    if (!c) { const n = notes.get(key); c = { file, line, triggers: 0, ...(n ? { note: n.note, ...(n.label ? { label: n.label } : {}) } : {}) }; costs.set(key, c); }
-    return c;
-  };
-  for (const s of sources) if (s) costOf(s.file, s.line).triggers++;
-  // A loop's line may have made no trigger of its own and still have something to say.
-  for (const [key, n] of notes) if (n.label) { const [file, line] = key.split("\0"); costOf(file, Number(line)); }
-  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, costs: [...costs.values()] });
+    hints.push(...check.hints);
+  }
+  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
 }
 
 /**

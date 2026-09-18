@@ -1,17 +1,13 @@
 /**
- * The program interpreter: runs `program()` bodies from the IR, one player, cycle by
- * cycle, for either target. It is what Simulate shows and what the parity suite proves
- * with: the classic model, cycle for cycle, is the trigger interpreter's over the classic
- * backend's own output; the Remastered model is the Python lowering's.
+ * The program interpreter: runs `program()` bodies from the IR, one player, frame by
+ * frame. It is what Simulate shows and what the tests prove programs with; the model is
+ * the Python lowering's (`python/trigscript.py`), which is what the game runs.
  *
- * The two targets differ in *when*, never in *what*:
- *
- * - Classic: a loop's back edge waits for the next trigger cycle (a `while` runs one
- *   iteration per cycle; `continue` goes round through the back edge), `sleep(n)` parks the
- *   program for n cycles and resumes on the nth, and a program whose body ends stops.
- * - Remastered: loops run to completion within the frame, only `sleep` gives the frame
- *   back (`sleep(cycles(n))` is n frames, `seconds` at twenty-four a second), and a
- *   program whose body ends stops the same way.
+ * A program is a coroutine the game resumes every frame. Its body runs until it sleeps or
+ * ends: loops run to completion within the frame, only `sleep` gives the frame back
+ * (`sleep(frames(n))` is n frames, `seconds` at twenty-four a second), and a program whose
+ * body ends stops for good. With eudTurbo the game's own trigger loop runs every frame
+ * too, so a frame here is also one cycle of the `trigger()` records run beside the programs.
  *
  * Numbers keep the one contract: an expression is its exact value; stored below zero as
  * 0, at 2³² or above wrapped, a `u8` / `u16` saturated at its maximum. The world — death
@@ -21,7 +17,6 @@
  * round.
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
-import type { Target } from "./eud";
 import type { At, BoolExpr, Call, NumExpr, Program, Stmt, VarDecl } from "./ir";
 import { Simulation, type SimulationOptions } from "./simulate";
 
@@ -29,7 +24,7 @@ export const FRAMES_PER_SECOND = 24;
 const U32 = 0x1_0000_0000;
 
 export interface ProgramEvent {
-  /** 0-based cycle (classic) or frame (Remastered). */
+  /** 0-based frame. */
   cycle: number;
   /** Index of the program in the list. */
   program: number;
@@ -39,11 +34,38 @@ export interface ProgramEvent {
 }
 
 export interface ProgramSimulationOptions extends Pick<SimulationOptions, "player" | "condition" | "random" | "strings"> {
-  target: Target;
   /** The trigger interpreter holding the world; one is made when absent. */
   world?: Simulation;
-  /** A runaway guard: statements one program may run in one cycle; default 100 000. */
+  /** A runaway guard: statements one program may run in one frame; default 100 000. */
   maxStepsPerCycle?: number;
+}
+
+/** What an expression adds and what it subtracts: the constants exactly, the rest wrapping at 2³² as the game's additions do. */
+interface Sides { plus: number; minus: number; plusConst: number; minusConst: number; variable: boolean }
+const newSides = (): Sides => ({ plus: 0, minus: 0, plusConst: 0, minusConst: 0, variable: false });
+function add(sides: Sides, sign: 1 | -1, value: number, buildTime: boolean) {
+  if (buildTime) { if (sign > 0) sides.plusConst += value; else sides.minusConst += value; return; }
+  sides.variable = true;
+  if (sign > 0) sides.plus = (sides.plus + value) % U32; else sides.minus = (sides.minus + value) % U32;
+}
+/** The two sums as the game has them: exact while every term was known when the script was built, else wrapped. */
+function totals(sides: Sides): [number, number] {
+  if (!sides.variable) return [sides.plusConst, sides.minusConst];
+  return [(sides.plusConst % U32 + sides.plus) % U32, (sides.minusConst % U32 + sides.minus) % U32];
+}
+function difference(sides: Sides, absolute = false): number {
+  const [p, n] = totals(sides);
+  return (absolute ? Math.abs(p - n) : Math.max(p - n, 0)) % U32;
+}
+/** Whether the lowering sees a plain integer here: constants, and arithmetic over nothing but constants. */
+function isBuildTime(e: NumExpr): boolean {
+  switch (e.kind) {
+    case "const": return true;
+    case "unary": return isBuildTime(e.expr);
+    case "binary": return isBuildTime(e.left) && isBuildTime(e.right);
+    case "intrinsic": return e.args.every(isBuildTime);
+    default: return false;
+  }
 }
 
 type Flow = "next" | "break" | "continue" | "return";
@@ -82,7 +104,7 @@ class ProgramRun {
     return "next";
   }
 
-  /** One cycle's worth: resume the body until it gives the cycle back or ends. */
+  /** One frame: resume the body until it gives the frame back or ends. */
   tick(): void {
     if (this.done || !this.body) return;
     this.steps = 0;
@@ -91,7 +113,7 @@ class ProgramRun {
   }
 
   private step(): void {
-    if (++this.steps > this.sim.maxSteps) throw new Halt(`A program ran more than ${this.sim.maxSteps} statements in one ${this.sim.target === "classic" ? "cycle" : "frame"}: is there a loop with no sleep() in it?`);
+    if (++this.steps > this.sim.maxSteps) throw new Halt(`A program ran more than ${this.sim.maxSteps} statements in one frame: is there a loop with no sleep() in it?`);
   }
 
   /* ── storage ── */
@@ -122,33 +144,60 @@ class ProgramRun {
 
   /* ── expressions ── */
 
+  /**
+   * A number, the way the game computes it (`python/trigscript.py`): + and − are flattened
+   * into what is added and what is subtracted, each side summed — wrapping at 2³² once a
+   * variable is part of it — and the difference stops at 0. Everything else is a term:
+   * × wraps, ÷ and % round down and give 0 for a divisor of 0.
+   */
   private *num(e: NumExpr): Generator<undefined, number, undefined> {
+    if (e.kind === "unary" || (e.kind === "binary" && (e.op === "+" || e.op === "-")) || (e.kind === "const" && e.value < 0)) {
+      const sides = newSides();
+      yield* this.linear(e, sides, 1);
+      return difference(sides);
+    }
+    return yield* this.term(e);
+  }
+
+  private *linear(e: NumExpr, sides: Sides, sign: 1 | -1): Generator<undefined, void, undefined> {
+    if (e.kind === "binary" && (e.op === "+" || e.op === "-")) {
+      yield* this.linear(e.left, sides, sign);
+      yield* this.linear(e.right, sides, e.op === "+" ? sign : (-sign as 1 | -1));
+    } else if (e.kind === "unary") {
+      yield* this.linear(e.expr, sides, -sign as 1 | -1);
+    } else if (e.kind === "const" && e.value < 0) {
+      add(sides, -sign as 1 | -1, -e.value, true);
+    } else {
+      add(sides, sign, yield* this.term(e), isBuildTime(e));
+    }
+  }
+
+  private *term(e: NumExpr): Generator<undefined, number, undefined> {
     switch (e.kind) {
-      case "const": return e.value;
+      // A constant below zero as a factor or a divisor is its 32-bit pattern, as it is in the game.
+      case "const": return ((Math.trunc(e.value) % U32) + U32) % U32;
       case "var": return Number(this.read(e.id));
-      case "unary": return -(yield* this.num(e.expr));
+      case "unary": return yield* this.num(e);
       case "binary": {
         const a = yield* this.num(e.left);
         const b = yield* this.num(e.right);
         switch (e.op) {
-          case "+": return a + b;
-          case "-": return a - b;
-          case "*": return a * b;
-          case "/": return b === 0 ? 0 : Math.trunc(a / b);
+          case "*": return Number((BigInt(a) * BigInt(b)) % BigInt(U32));
+          case "/": return b === 0 ? 0 : Math.floor(a / b);
           case "%": return b === 0 ? 0 : a % b;
+          default: return yield* this.num(e);
         }
-        return 0;
       }
       case "ternary": return (yield* this.bool(e.cond)) ? yield* this.num(e.whenTrue) : yield* this.num(e.whenFalse);
       case "intrinsic": {
+        if (e.name === "abs") {
+          const sides = newSides();
+          yield* this.linear(e.args[0], sides, 1);
+          return difference(sides, true);
+        }
         const args: number[] = [];
         for (const a of e.args) args.push(yield* this.num(a));
-        switch (e.name) {
-          case "min": return Math.min(...args);
-          case "max": return Math.max(...args);
-          case "abs": return Math.abs(args[0] ?? 0);
-        }
-        return 0;
+        return e.name === "min" ? Math.min(...args) : Math.max(...args);
       }
       case "call": return Number(yield* this.call(e.call));
     }
@@ -161,8 +210,11 @@ class ProgramRun {
       case "var": return Boolean(this.read(e.id));
       case "test": return (yield* this.num(e.expr)) !== 0;
       case "compare": {
-        const a = yield* this.num(e.left);
-        const b = yield* this.num(e.right);
+        // What either side subtracts is added to the other: a - b == 0 asks whether a == b, and x >= -1 is true.
+        const sides = newSides();
+        yield* this.linear(e.left, sides, 1);
+        yield* this.linear(e.right, sides, -1);
+        const [a, b] = totals(sides);
         switch (e.op) {
           case "<": return a < b;
           case "<=": return a <= b;
@@ -218,12 +270,6 @@ class ProgramRun {
     return "next";
   }
 
-  /** The back edge of a loop: a cycle on the classic target, nothing on Remastered. */
-  private *backEdge(): Exec {
-    if (this.sim.target === "classic") yield;
-    return "next";
-  }
-
   private *stmt(s: Stmt, ctx: Ctx): Exec {
     this.step();
     switch (s.kind) {
@@ -244,7 +290,6 @@ class ProgramRun {
           const flow = yield* this.block(s.body, ctx);
           if (flow === "break") return "next";
           if (flow === "return") return flow;
-          yield* this.backEdge();
         }
       }
       case "do": {
@@ -253,7 +298,6 @@ class ProgramRun {
           if (flow === "break") return "next";
           if (flow === "return") return flow;
           if (!(yield* this.bool(s.cond))) return "next";
-          yield* this.backEdge();
         }
       }
       case "for": {
@@ -264,7 +308,6 @@ class ProgramRun {
           if (flow === "return") return flow;
           const up = yield* this.block(s.update, ctx);
           if (up === "return") return up;
-          yield* this.backEdge();
         }
       }
       case "unrolled": {
@@ -294,18 +337,15 @@ class ProgramRun {
         return "return";
       }
       case "sleep": {
-        const n = this.sim.target === "classic"
-          ? s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1000 * this.program.cyclesPerSecond))
-          : s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1000 * FRAMES_PER_SECOND));
+        const n = s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1000 * FRAMES_PER_SECOND));
         for (let i = 0; i < n; i++) yield;
         return "next";
       }
       case "action": {
         const record: ActionRecord = { ...s.record };
         if (s.variable) {
-          const v = yield* this.num(s.variable.expr);
-          const stored = Math.max(0, Math.min(v, 2 ** s.variable.bits - 1));
-          (record as unknown as Record<string, number>)[s.variable.field as string] = stored;
+          // A unit count is that many units (the game does the action once for each), whatever a byte could hold.
+          (record as unknown as Record<string, number>)[s.variable.field as string] = yield* this.num(s.variable.expr);
         }
         this.sim.act(this, record, s.at);
         return "next";
@@ -325,7 +365,6 @@ class ProgramRun {
 }
 
 export class ProgramSimulation {
-  readonly target: Target;
   readonly world: Simulation;
   readonly runs: ProgramRun[];
   readonly events: ProgramEvent[] = [];
@@ -335,7 +374,6 @@ export class ProgramSimulation {
   cycle = 0;
 
   constructor(programs: Program[], options: ProgramSimulationOptions) {
-    this.target = options.target;
     this.world = options.world ?? new Simulation([], { player: options.player ?? programs[0]?.owner ?? 0, condition: options.condition, random: options.random, strings: options.strings });
     this.maxSteps = options.maxStepsPerCycle ?? 100_000;
     this.random = options.random ?? Math.random;
@@ -390,7 +428,7 @@ export class ProgramSimulation {
     }
   }
 
-  /** One cycle (or frame): every program in order, from where it left off. */
+  /** One frame: every program in order, from where it left off. */
   step(): void {
     for (const run of this.runs) {
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }
@@ -410,7 +448,7 @@ export class ProgramSimulation {
   value(name: string, program = 0): Value | undefined { return this.runs[program]?.value(name); }
 }
 
-/** Run a compile's programs for `cycles` cycles on a target. */
+/** Run a compile's programs for `cycles` frames. */
 export function simulatePrograms(programs: Program[], cycles: number, options: ProgramSimulationOptions): ProgramSimulation {
   return new ProgramSimulation(programs, options).run(cycles);
 }

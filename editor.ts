@@ -1,8 +1,10 @@
 /**
  * The TrigScript workspace: Monaco over the map's script files, checked live against
  * declarations generated from the map (`compiler/declarations.ts`) and compiled — run —
- * in the worker (`compile.ts`). Build installs the result as the script's block of the
- * trigger list (`service.ts`).
+ * in the worker (`compile.ts`). Apply writes the script's `trigger()` records into the
+ * trigger list as its block (`service.ts`); saving or testing the map does the same by
+ * itself, and that is also when the programs are built — into the file, by the eudplib
+ * plugin. Test does both and hands the result to Test Map.
  *
  * It opens two ways. As a full-screen dialog, for a long session on the script; or
  * *beside the map*, as a resizable panel that blocks nothing, so the map and the code
@@ -12,27 +14,27 @@
  * a button switches.
  *
  * The files are the map's: every edit is written straight into the archive (they are
- * members of the .scx, like a WAV), so closing loses nothing — only Build changes
- * triggers. A list at the left holds the files; `main.ts` is where a build starts and
+ * members of the .scx, like a WAV), so closing loses nothing — only applying changes
+ * triggers. A list at the left holds the files; `main.ts` is where the script starts and
  * cannot be renamed or removed. Monaco and TypeScript come from the CDN on first open.
  */
 import type { PluginApi } from "@scm-js/plugin-api";
 import { CompileSuperseded, retainCompileWorker } from "./compile";
-import { ENTRY_FILE, normalizePath, type CompileResult, type LineCost, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
+import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 import { entryFor } from "./compiler/names";
 import { printScript } from "./compiler/print";
 import { Simulation, type SimulationEvent } from "./compiler/simulate";
 import { actionDef } from "./vendor/triggerDefs";
 import { PlayerGroup } from "./vendor/triggers";
 import {
-  BUILD_TIME_CLASS, createScriptEditor, loadMonaco, refreshCostHints, releaseScriptEditor, setCompilerMarkers, setCostHints, setDeclarations, setHoverVariables, setMapRefs,
+  BUILD_TIME_CLASS, createScriptEditor, loadMonaco, refreshLineHints, releaseScriptEditor, setCompilerMarkers, setLineHints, setDeclarations, setHoverVariables, setMapRefs,
   type LocationRef, type MonacoApi, type ScriptEditor,
 } from "./monaco";
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
-import { FILE_NAME, type BuildTarget } from "./script";
+import { FILE_NAME } from "./script";
 import { ProgramSimulation, type ProgramEvent } from "./compiler/simulateIr";
-import { EudBuildError, type BuildRefusal, type MapNames, type ScriptArtifact, type ScriptService } from "./service";
-import type { EudplibService } from "./vendor/eudplib";
+import { positionIn, type BuildRefusal, type MapNames, type ScriptArtifact, type ScriptService } from "./service";
+import type { EudplibBuildEvent, EudplibService } from "./vendor/eudplib";
 
 export const TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
 // one trigger of the map, in order; code inside program(() => { … }) runs in the game.
@@ -46,16 +48,21 @@ trigger(AllPlayers, [
   preserve(),
 ]);
 
-// A program: its variables are death counters and switches; if, while, for and
-// functions work. It runs as one player, one loop iteration per trigger cycle. The
-// underlined parts are computed when you build, everything else runs in the game.
-program(() => {
-  let cycles = 0;
-  while (true) {
-    cycles++;
-    if (cycles == 10) displayText("Ten trigger cycles have passed.");
-  }
-}, { owner: P1 });
+// A program is code that runs in the game: variables, if, while, for, functions.
+// It runs every frame from where it left off, until it sleeps. The underlined parts
+// are computed when the script is applied, everything else runs in the game.
+//
+// A map with a program is built by the eudplib plugin when you save it, and needs
+// StarCraft: Remastered to play. trigger() alone plays on every version.
+//
+// program(() => {
+//   let elapsed = 0;
+//   while (true) {
+//     elapsed++;
+//     if (elapsed == 10) displayText("Ten seconds have passed.");
+//     sleep(seconds(1));
+//   }
+// }, { owner: P1 });
 `;
 
 /** What a new file starts with. */
@@ -64,8 +71,11 @@ export const FILE_TEMPLATE = `import { trigger, units, locations, P1 } from "tri
 // Helpers this file exports are imported by main.ts: import { … } from "./name";
 `;
 
-/** Trigger cycles the Simulate button runs. */
-export const SIMULATE_CYCLES = 30;
+/** Frames the Simulate button runs. */
+/** Twenty seconds of the game at Fastest. */
+export const SIMULATE_FRAMES = 480;
+/** How many of a simulation's events the list shows before it says how many more there were. */
+const SIMULATE_ROWS = 200;
 
 const CHECK_DELAY_MS = 350;
 
@@ -124,8 +134,6 @@ function describeEvent(e: SimulationEvent | ProgramEvent): string {
   return e.text !== undefined ? `${name} — ${e.text}` : name;
 }
 
-/** The target as the toolbar and the status line name it. */
-const targetLabel = (t: BuildTarget) => (t === "remastered" ? "Remastered (EUD)" : "Classic");
 
 /** How the workspace is shown: a full-screen dialog, or a resizable panel beside the map. */
 export type WorkspaceMode = "dialog" | "panel";
@@ -178,10 +186,10 @@ export function openScriptEditor(svc: ScriptService, options: OpenOptions = {}):
         return ws.attach(() => dialog.close());
       },
       buttons: [
-        { label: "Build & Close", primary: true, run: async () => ((await ws.build()) ? undefined : false) },
+        { label: "Apply & Close", primary: true, run: async () => ((await ws.build()) ? undefined : false) },
         { label: "Close" },
         // Returning the promise keeps the footer busy — ring, buttons held — until the build lands.
-        { label: "Build", closes: false, run: async () => { await ws.build(); } },
+        { label: "Apply", closes: false, run: async () => { await ws.build(); } },
       ],
     });
     current = { mode, isOpen: () => handle.isOpen(), close: () => handle.close(), reveal: ws.reveal, cursor: ws.cursor };
@@ -230,14 +238,12 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   let picking = false;
   let diagnostics: ScriptDiagnostic[] = [];
   let result: CompileResult | null = null;
-  let simulation: { sim: Simulation; programs: ProgramSimulation | null; result: CompileResult; target: BuildTarget } | null = null;
+  let simulation: { sim: Simulation; programs: ProgramSimulation | null; result: CompileResult } | null = null;
   let showVariables = false;
-  /** The target `build.json` names; the toolbar's select writes it. */
-  let target: BuildTarget = initial?.target ?? "classic";
   /** The eudplib plugin's service, followed while the workspace is open. */
   let library: EudplibService | null = svc.library();
-  /** The Remastered build under way (Build & Test), stoppable. */
-  let eudAbort: AbortController | null = null;
+  /** Test is under way: the script applied, the map built as Save would, handed to Test Map. */
+  let testing = false;
   let cancelled = false;
   /** Renames the map made to things the script names, waiting for the user's word. */
   let renames: { object: string; list: Renamed[] }[] = [];
@@ -246,31 +252,29 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   /* ── DOM ── */
   const style = el("style", undefined, STYLE);
-  const buildButton = w.button("Build", { onClick: () => { void build(); } });
-  buildButton.title = "Run the script and install its triggers as the map's generated block";
+  const buildButton = w.button("Apply", { onClick: () => { void build(); } });
+  buildButton.title = "Run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list";
   const importButton = w.button("Import map triggers", { onClick: () => { void importHand(); } });
-  importButton.title = "Rewrite the map's hand-made triggers as script, appended around the block, and rebuild";
+  importButton.title = "Rewrite the map's hand-made triggers as script, appended around the block, and apply it";
   const simulateButton = w.button("Simulate", { onClick: () => { void simulateNow(); } });
-  simulateButton.title = `Run the compiled triggers for ${SIMULATE_CYCLES} trigger cycles in a built-in interpreter and list what happened`;
+  simulateButton.title = `Run the script's triggers and programs for ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} seconds of the game) in a built-in interpreter and list what happened`;
   const pickButton = w.button("Pick from map", { ghost: true, onClick: () => { void pickFromMap(); } });
   pickButton.title = "Click a location or a unit on the map to put its name at the cursor";
-  const testButton = w.button("Build & Test", { onClick: () => { void buildAndTest(); } });
-  testButton.title = "Build the classic block, then the Remastered map through the eudplib plugin, saved beside the source as <name>-eud.scx";
-  testButton.hidden = target !== "remastered";
-  const targetSelect = w.select([{ value: "classic", label: "Classic" }, { value: "remastered", label: "Remastered (EUD)" }], { value: target, onChange: (v) => { void setTarget(v === "remastered" ? "remastered" : "classic"); } });
-  targetSelect.className += " tsd-target";
-  targetSelect.title = "Which game the built map is for: Classic runs on every version as death-counter triggers; Remastered (EUD) builds the programs with eudplib through the eudplib plugin and needs StarCraft: Remastered";
+  const testButton = w.button("Test", { onClick: () => { void test(); } });
+  testButton.title = "Apply the script, build the map as Save would and hand it to Test Map";
   const libraryLine = el("span", { className: "tsd-library" });
   const modeButton = w.button(mode === "dialog" ? "Beside the map" : "In a window", { ghost: true, onClick: () => switchMode() });
   modeButton.className += " tsd-mode";
   modeButton.title = mode === "dialog" ? "Open the script as a panel beside the map, so the map stays in reach" : "Open the script in a full-screen window";
-  const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "Where the programs' variables are stored (death counters and switches)", onClick: () => { showVariables = !showVariables; render(); } });
+  const programButton = el("button", { type: "button", className: "tsd-program", hidden: true, title: "The programs' variables", onClick: () => { showVariables = !showVariables; render(); } });
   const problemsCount = el("span", { className: "hint" }, "");
   const variables = el("div", { className: "tsd-variables", hidden: true });
   const notice = el("div", { className: "tsd-notice", hidden: !initial?.stale });
-  /** The Remastered build's steps and log, shown while and after one runs. */
-  const eudFold = w.fold({ text: "Remastered build", className: "tsd-eud" });
+  /** The last build of the programs (Save, Test Map or Test ran it): its log, shown while and after one runs. */
+  const eudFold = w.fold({ text: "Build", className: "tsd-eud" });
   eudFold.hidden = true;
+  const buildLogEl = el("pre", {});
+  let buildLog: string[] = [];
   const renameNotice = el("div", { className: "tsd-notice tsd-renames", hidden: true });
   const hostEl = el("div", { className: "tsd-host" });
   const problems = el("ul", { className: "tsd-problems", hidden: true });
@@ -281,7 +285,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const statusLine = w.statusLine();
   const root = el("div", { className: mode === "panel" ? "tsd tsd-panel" : "tsd" },
     style,
-    el("div", { className: "row" }, buildButton, testButton, importButton, simulateButton, pickButton, targetSelect, libraryLine, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
+    el("div", { className: "row" }, buildButton, testButton, importButton, simulateButton, pickButton, libraryLine, el("span", { className: "grow" }), programButton, problemsCount, modeButton),
     variables,
     notice,
     eudFold,
@@ -331,14 +335,14 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (!stale) return;
     const e = state?.edited ?? null;
     if (!e) {
-      notice.replaceChildren(el("span", { className: "grow" }, "The triggers from the last build were edited or removed outside the script. They stay as hand-made triggers; the next Build appends a fresh block."));
+      notice.replaceChildren(el("span", { className: "grow" }, "The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled."));
       return;
     }
     const n = (k: number, what: string) => `${k} ${what}${k === 1 ? "" : "s"}`;
-    const facts = `The block from the last build was edited outside the script: ${n(e.unchanged, "trigger")} ${e.unchanged === 1 ? "is" : "are"} still the build's, ${n(e.changed, "trigger")} ${e.changed === 1 ? "was" : "were"} changed.`;
+    const facts = `The script's triggers were edited outside the script: ${n(e.unchanged, "trigger")} ${e.unchanged === 1 ? "is" : "are"} still the script's, ${n(e.changed, "trigger")} ${e.changed === 1 ? "was" : "were"} changed.`;
     const plan = appendInstead
-      ? "The next Build leaves them all as hand-made triggers and appends a fresh block."
-      : `The next Build replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
+      ? "The next Apply leaves them all as hand-made triggers and appends a fresh block."
+      : `The next Apply replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
     notice.replaceChildren(
       el("span", { className: "grow" }, `${facts} ${plan}`),
       w.button(appendInstead ? "Replace instead" : "Append instead", { ghost: true, onClick: () => { appendInstead = !appendInstead; render(); } }),
@@ -362,19 +366,18 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     importButton.setBusy(importing);
     pickButton.setBusy(picking);
     buildButton.disabled = importButton.disabled = !ready || building;
-    testButton.hidden = target !== "remastered";
-    testButton.disabled = !ready || building || !library;
-    testButton.setBusy(building && eudAbort !== null);
-    targetSelect.disabled = !ready || building;
-    targetSelect.value = target;
-    if (target === "remastered") {
-      libraryLine.hidden = false;
-      libraryLine.textContent = library
-        ? `eudplib ${library.versions.eudplib} · ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading…" : library.state() === "failed" ? "runtime failed" : "runtime not downloaded yet"}`
-        : "eudplib plugin not running";
-      libraryLine.title = library ? "The eudplib plugin builds the Remastered map inside the editor; its runtime is downloaded once, on the first build" : "Install or turn on the eudplib plugin under Plugins ▸ Manage Plugins…";
-    } else {
-      libraryLine.hidden = true;
+    testButton.disabled = !ready || building || testing;
+    testButton.setBusy(testing);
+    // The library matters only to a script with programs: it is what builds them into the saved map.
+    const needsLibrary = (result?.programs.length ?? 0) > 0;
+    libraryLine.hidden = !needsLibrary;
+    if (needsLibrary) {
+      libraryLine.textContent = !library
+        ? "eudplib plugin not running: the programs will not be built"
+        : !library.contribute
+          ? "the eudplib plugin is older than 0.4: update it to build the programs"
+          : `eudplib ${library.versions.eudplib} · ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading…" : library.state() === "failed" ? "runtime failed" : "runtime downloads on the first save"}`;
+      libraryLine.title = library ? "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time" : "Install or turn on the eudplib plugin under Plugins ▸ Manage Plugins…";
     }
     simulateButton.disabled = !ready || building || errors > 0;
     pickButton.disabled = !ready || picking;
@@ -383,15 +386,14 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     else if (!result) problemsCount.textContent = "Checking…";
     else problemsCount.textContent = errors ? `${errors} problem${errors === 1 ? "" : "s"}` : "No problems";
     const programs = result?.programs ?? [];
-    const userVariables = result?.variables.filter((v) => !v.name.startsWith("(")) ?? [];
+    const userVariables = result?.variables ?? [];
     programButton.hidden = programs.length === 0;
     if (programs.length) {
-      const count = programs.reduce((n, p) => n + p.count, 0);
       const owners = [...new Set(programs.map(ownerLabel))].join(", ");
-      programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`}: ${count} trigger${count === 1 ? "" : "s"} as ${owners} · ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"}`;
+      programButton.textContent = `${programs.length === 1 ? "Program" : `${programs.length} programs`} as ${owners} · ${userVariables.length} variable${userVariables.length === 1 ? "" : "s"} · needs Remastered`;
     }
     variables.hidden = !(showVariables && result && result.variables.length > 0);
-    variables.replaceChildren(...(result?.variables ?? []).map((v) => el("span", { className: v.name.startsWith("(") ? "internal" : undefined }, el("b", undefined, v.name), ` ${v.kind === "number" ? "number" : "boolean"} → ${v.storage}`)));
+    variables.replaceChildren(...userVariables.map((v) => el("span", undefined, el("b", undefined, v.name), ` ${v.kind === "number" ? (v.bits ? `u${v.bits}` : "number") : "boolean"}${programs.length > 1 ? ` · program ${v.program + 1}` : ""}${v.shared ? " · shared" : programs[v.program]?.perPlayer ? " · per player" : ""}`)));
     // Read live, not cached: the block's state belongs to the map and other editors change it.
     const state = svc.state();
     const block = state?.block ?? null;
@@ -414,8 +416,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     } else if (simulation) {
       problems.hidden = false;
       problems.className = "tsd-problems tsd-run";
-      const { sim, programs: ps, result: r, target: t } = simulation;
-      const unit = t === "remastered" ? "frame" : "cycle";
+      const { sim, programs: ps, result: r } = simulation;
+      const unit = "frame";
       // Hand triggers' events (trigger interpreter) and the programs' (program interpreter), in time order.
       const rows: { cycle: number; order: number; line: () => HTMLElement }[] = [];
       sim.events.forEach((e, i) => {
@@ -428,10 +430,11 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
           el("span", { className: "where" }, `${unit} ${e.cycle + 1}`), el("span", { className: "msg" }, describeEvent(e)), el("span", { className: "src" }, where({ file: e.at.file, line: e.at.line }))) });
       });
       rows.sort((a, b) => a.cycle - b.cycle || a.order - b.order);
-      if (rows.length === 0) problems.append(el("li", undefined, el("span", { className: "where" }, "—"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_CYCLES} ${unit}s.`)));
-      for (const row of rows) problems.append(row.line());
+      if (rows.length === 0) problems.append(el("li", undefined, el("span", { className: "where" }, "—"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} ${unit}s.`)));
+      for (const row of rows.slice(0, SIMULATE_ROWS)) problems.append(row.line());
+      if (rows.length > SIMULATE_ROWS) problems.append(el("li", undefined, el("span", { className: "where" }, "…"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));
       const shownVars = new Set<string>();
-      for (const v of r.variables.filter((x) => !x.name.startsWith("("))) {
+      for (const v of r.variables) {
         if (shownVars.has(v.name)) continue;
         shownVars.add(v.name);
         const value = ps?.value(v.name);
@@ -439,45 +442,27 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         problems.append(el("li", undefined,
           el("span", { className: "where" }, "after"),
           el("span", { className: "msg" }, `${v.name} = ${shown}`),
-          el("span", { className: "src" }, t === "remastered" ? "eudplib variable" : v.storage),
+          el("span", { className: "src" }, v.kind === "number" ? (v.bits ? `u${v.bits}` : "number") : "boolean"),
         ));
       }
     } else {
       problems.hidden = true;
     }
 
+    const remastered = (result ? result.programs.length : state?.programs ?? 0) > 0 ? " · programs are built into the saved map, which needs StarCraft: Remastered" : "";
     const line = status.text || (block
-      ? `Block: ${block.count} generated trigger${block.count === 1 ? "" : "s"} at #${block.start + 1}${state?.unbuilt ? " · unbuilt changes" : ""}${target === "remastered" ? " · Remastered target: the built map needs StarCraft: Remastered" : ""}`
-      : stale ? "The last build's triggers were edited outside the script" : target === "remastered" ? "Not built yet · Remastered target: the built map needs StarCraft: Remastered" : "Not built yet");
+      ? `${block.count} trigger${block.count === 1 ? "" : "s"} of the script at #${block.start + 1}${state?.unbuilt ? " · changes not applied yet: saving the map applies them" : ""}${remastered}`
+      : stale ? "The script's triggers were edited outside the script" : `Not applied yet: saving the map applies the script${remastered}`);
     if (status.kind === "busy") statusLine.busy(line);
     else statusLine.set(line, status.kind === "error" ? "error" : status.kind === "ok" ? "ok" : undefined);
   };
 
   const applyResult = (r: CompileResult) => {
-    // The target's own checks (a loop that never sleeps on Remastered) read like the compiler's.
-    diagnostics = r.ok && target === "remastered" ? [...r.diagnostics, ...svc.targetDiagnostics(r, target)] : r.diagnostics;
+    diagnostics = r.diagnostics;
     result = r;
     simulation = null;
-    if (editor && monaco) { setCompilerMarkers(monaco, files, diagnostics); editor.decorate(r.buildTime); refreshCostHints(); }
+    if (editor && monaco) { setCompilerMarkers(monaco, files, diagnostics); editor.decorate(r.buildTime); refreshLineHints(); }
     render();
-  };
-
-  /** The toolbar's target: written into build.json at once, the checks re-run. */
-  const setTarget = async (t: BuildTarget) => {
-    if (t === target) return;
-    target = t;
-    svc.setTarget(t);
-    if (result) applyResult(result);
-    render();
-    check();
-  };
-
-  /** Which lines get a cost at their end: those that made more than one trigger, and each program's own line with its total. */
-  const costHints = (): LineCost[] => {
-    if (!result) return [];
-    const out = result.costs.filter((c) => c.triggers >= 2 || c.label);
-    for (const p of result.programs) out.push({ file: p.source.file, line: p.source.line, triggers: p.count, note: `The whole program: ${p.count} trigger${p.count === 1 ? "" : "s"} as ${ownerLabel(p)}.` });
-    return out;
   };
 
   /** The locations the script can name, by key, for Ctrl+click and the hover. */
@@ -533,10 +518,10 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   const refusal = (why: BuildRefusal | undefined): string => {
     switch (why) {
-      case "closed": return "Not built: the map closed.";
-      case "switched": return "Not built: another map is in front now.";
-      case "changed": return "Not built: the map changed while the script was running. Build again.";
-      default: return "Not built.";
+      case "closed": return "Not applied: the map closed.";
+      case "switched": return "Not applied: another map is in front now.";
+      case "changed": return "Not applied: the map changed while the script was running. Apply again.";
+      default: return "Not applied.";
     }
   };
 
@@ -545,7 +530,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    * whose output could differ from what the problems list and the summary show. The
    * service refuses the install when the map is not the one the compile was made for.
    */
-  const build = async (takeOver = false, withIr = false): Promise<string | boolean> => {
+  const build = async (takeOver = false): Promise<boolean> => {
     if (building || !ready) return false;
     building = true;
     setStatus("busy", "Running the script…");
@@ -555,21 +540,23 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         if (!a || cancelled) return false;
         if (!a.compiled.ok || diagnostics.length) {
           const n = diagnostics.length || a.compiled.diagnostics.length;
-          setStatus("error", `Not built: ${n} error${n === 1 ? "" : "s"}.`);
+          setStatus("error", `Not applied: ${n} error${n === 1 ? "" : "s"}.`);
           return false;
         }
         const wasStale = svc.state()?.stale ?? false;
-        setStatus("busy", "Installing the triggers…");
-        const out = svc.install(a, { takeOver, replaceStale: wasStale && !appendInstead, target, ir: withIr });
+        setStatus("busy", "Writing the triggers…");
+        const out = svc.install(a, { takeOver, replaceStale: wasStale && !appendInstead });
         if (out.block) {
           const b = out.block;
           const tail = out.replaced
             ? ` (replaced the previous block's ${out.replaced.removed} unchanged trigger${out.replaced.removed === 1 ? "" : "s"}; ${out.replaced.kept} edited one${out.replaced.kept === 1 ? "" : "s"} kept after it)`
             : wasStale ? " (appended: the previous block had been edited outside the script)" : "";
-          setStatus("ok", b.count === 0
-            ? "Built: the script defines no triggers; the block is empty."
-            : `Built ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}${tail}.`);
-          return withIr ? out.ir ?? true : true;
+          const n = a.compiled.ir.length;
+          const built = n ? ` ${n === 1 ? "The program is" : `The ${n} programs are`} built into the map when it is saved or tested.` : "";
+          setStatus("ok", (b.count === 0
+            ? `Applied: the script defines no triggers${n ? "" : "; its block is empty"}.`
+            : `Applied ${b.count} trigger${b.count === 1 ? "" : "s"} → #${b.start + 1}–#${b.start + b.count}${tail}.`) + built);
+          return true;
         }
         // The names changed under the compile (a location renamed, a trigger added): once more against the new ones.
         if (out.refused === "changed" && attempt < 2) { setStatus("busy", "The map changed while the script ran; running it again…"); continue; }
@@ -583,81 +570,73 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
 
   /**
-   * Build & Test on the Remastered target: the classic build (the source map keeps
-   * working in any client), then the programs through the eudplib plugin, the built map
-   * saved beside the source as `<name>-eud.scx`, then handed to the editor's Test Map
-   * (`api.document.test`) where the host has it; a host without it just saves.
+   * Test: the script applied, then the map exactly as Save would write it — the editor runs
+   * the build steps, so the programs are in it — handed to Test Map (`api.document.test`):
+   * on the desktop into the game's folder with the game started, in a browser into the
+   * test folder picked once. Nothing is saved beside the map; the map's own file is what
+   * Save writes.
    */
-  const buildAndTest = async () => {
-    if (building || !ready || target !== "remastered") return;
-    const built = await build(false, true);
-    if (typeof built !== "string" || cancelled) return;
-    building = true;
-    eudAbort = new AbortController();
-    const steps = w.steps();
-    const log = el("pre", {});
-    log.hidden = true;
-    eudFold.hidden = false;
-    eudFold.open = true;
-    eudFold.mark("…");
-    eudFold.set(`Remastered build — ${new Date().toLocaleTimeString()}`);
-    eudFold.body.replaceChildren(steps, log);
-    steps.running(true);
-    const s1 = steps.add("Classic triggers installed");
-    s1.done();
-    const s2 = steps.add("eudplib build", { running: true });
-    const s3 = steps.add("Save the built map");
+  const test = async () => {
+    if (building || testing || !ready) return;
+    if (!(await build())) return;
+    if (cancelled) return;
+    testing = true;
     render();
-    const lines: string[] = [];
+    // The library's events say how the build of the programs went; the export itself falls back to the plain map without a word.
+    let failure: string | null = null;
+    const heard = svc.onBuild((e) => { if (e.kind === "failed") failure = e.from && e.from !== "trigscript" ? `${e.from}: ${e.message}` : e.message; });
     try {
-      setStatus("busy", "Building the Remastered map…");
-      const eud = await svc.buildRemastered(built, { signal: eudAbort.signal, onLog: (line) => { lines.push(line); log.textContent = lines.join("\n"); log.hidden = false; } });
-      s2.done(`${Math.round(eud.chkBytes / 1024)} KB of scenario in ${(eud.ms / 1000).toFixed(1)} s`);
-      if (eud.log) { log.textContent = eud.log; log.hidden = false; }
-      s3.start();
-      const info = api.document.info();
-      const stem = (info?.fileName ?? "map").replace(/\.(scx|scm|chk)$/i, "");
-      const saved = await api.ui.saveFile(eud.map, `${stem}-eud.scx`);
-      if (saved) {
-        s3.done(saved.fileName);
-        // The editor's Test Map over the built file: on the desktop into the game's folder and
-        // the game started; in a browser into the test folder picked once, or nothing (null) —
-        // the file is saved already, so the status says what to do with it.
-        const test = (api.document as { test?: (bytes: Uint8Array, name: string, o?: { launch?: boolean }) => Promise<{ route: string; path: string; launched: boolean; message?: string } | null> }).test;
-        const s4 = test ? steps.add("Test Map", { running: true }) : null;
-        const outcome = test ? await test(eud.map, saved.fileName).catch((e: Error) => { s4?.fail(e.message); return null; }) : null;
-        if (outcome) s4?.done(outcome.launched ? `started the game with ${outcome.path}` : `written to ${outcome.path}${outcome.message ? ` — ${outcome.message}` : ""}`);
-        else s4?.skip("no test folder here");
-        eudFold.mark("✓", "ok");
-        const kb = Math.round(eud.map.length / 1024);
-        setStatus("ok", outcome?.launched
-          ? `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered and started the game; keep this map as the source.`
-          : outcome
-            ? `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered, written to ${outcome.path}; keep this map as the source.`
-            : `Built ${saved.fileName} (${kb} KB) for StarCraft: Remastered. Open it with Test Map to play it; keep this map as the source.`);
-      } else {
-        s3.skip("not saved");
-        eudFold.mark("!", "warn");
-        setStatus("info", "Built for Remastered, but the file was not saved.");
-      }
+      setStatus("busy", "Building the map…");
+      const file = await api.document.export({ format: "scx" });
+      if (!file) { setStatus("error", "No map is open."); return; }
+      if (failure) { setStatus("error", `Not tested: ${failure}`); return; }
+      if (result?.programs.length && !library?.contribute) { setStatus("error", "Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins ▸ Manage Plugins…."); return; }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const outcome = await api.document.test(bytes, file.name);
+      const kb = Math.round(bytes.length / 1024);
+      setStatus(outcome ? "ok" : "info", outcome?.launched
+        ? `Started the game with ${outcome.path} (${kb} KB).`
+        : outcome
+          ? `Written to ${outcome.path} (${kb} KB)${outcome.message ? ` — ${outcome.message}` : ""}.`
+          : "The map is built, but this browser has no test folder yet: pick one once under Tools ▸ Test Map…, which builds the map the same way.");
     } catch (err) {
-      const e = err instanceof EudBuildError ? err : new EudBuildError(String((err as Error).message ?? err));
-      s2.fail(e.message);
-      s3.skip();
-      eudFold.mark("×", "error");
-      if (lines.length) { log.textContent = lines.join("\n"); log.hidden = false; }
-      if (e.at) {
-        // The lowering named a node of the IR: the error lands on its line like a compiler error.
-        diagnostics = [...diagnostics, { file: e.at.file, line: e.at.line, column: e.at.column, endLine: e.at.line, endColumn: e.at.column + 1, message: e.message, source: "compiler" }];
-        if (editor && monaco) setCompilerMarkers(monaco, files, diagnostics);
-        goTo(e.at.file, e.at.line, e.at.column);
-      }
-      setStatus("error", `Remastered build failed: ${e.message}`);
+      setStatus("error", `Not tested: ${(err as Error).message}`);
     } finally {
-      steps.running(false);
-      eudAbort = null;
-      building = false;
+      heard.dispose();
+      testing = false;
       render();
+    }
+  };
+
+  /** A build of the programs, whoever started it (Save, Test Map, Test): its log in the fold, a failure on its line. */
+  const onLibraryBuild = (e: EudplibBuildEvent) => {
+    if (cancelled || (e.kind !== "log" && !e.contributors.includes("trigscript"))) return;
+    if (e.kind === "start") {
+      buildLog = [];
+      eudFold.hidden = false;
+      eudFold.mark("…");
+      eudFold.set(`Build for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"} — ${new Date().toLocaleTimeString()}`);
+      eudFold.body.replaceChildren(buildLogEl);
+      buildLogEl.textContent = "";
+    } else if (e.kind === "log") {
+      buildLog.push(e.line);
+      buildLogEl.textContent = buildLog.join("\n");
+    } else if (e.kind === "done") {
+      eudFold.mark("✓", "ok");
+      buildLogEl.textContent = e.log || buildLog.join("\n");
+      eudFold.set(`Built: ${Math.round(e.chkBytes / 1024)} KB of scenario in ${(e.ms / 1000).toFixed(1)} s — ${new Date().toLocaleTimeString()}`);
+    } else {
+      eudFold.mark("×", "error");
+      eudFold.open = true;
+      eudFold.set(`Build failed: ${e.message}`);
+      const at = positionIn(e.message);
+      if (at) {
+        // The lowering named a node of the IR: the error lands on its line like a compiler error.
+        diagnostics = [...diagnostics, { file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: e.message, source: "compiler" }];
+        if (editor && monaco) setCompilerMarkers(monaco, files, diagnostics);
+        goTo(at.file, at.line, at.column);
+        render();
+      }
     }
   };
 
@@ -693,18 +672,14 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (!r) return;
     if (!r.ok) { setStatus("error", `Not simulated: ${r.diagnostics.length} error${r.diagnostics.length === 1 ? "" : "s"}.`); return; }
     try {
-      // The programs run from the IR on the current target; the raw trigger() records through the trigger interpreter, sharing one world.
-      const generated = new Set<number>();
-      r.programs.forEach((p) => { for (let i = p.start; i < p.start + p.count; i++) generated.add(i); });
-      const hand = r.triggers.filter((_, i) => !generated.has(i));
+      // The programs run from the IR; the trigger() records through the trigger interpreter, sharing one world.
       const player = r.programs[0]?.owner;
-      const sim = new Simulation(hand, { strings: r.strings, player });
-      const programs = r.ir.length ? new ProgramSimulation(r.ir, { target, world: sim, strings: r.strings, player }) : null;
-      for (let i = 0; i < SIMULATE_CYCLES; i++) { sim.step(); programs?.step(); }
-      simulation = { sim, programs, result: r, target };
+      const sim = new Simulation(r.triggers, { strings: r.strings, player });
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player }) : null;
+      for (let i = 0; i < SIMULATE_FRAMES; i++) { sim.step(); programs?.step(); }
+      simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
-      const unit = target === "remastered" ? "frames" : "trigger cycles";
-      setStatus("ok", `Simulated ${SIMULATE_CYCLES} ${unit} as P${sim.player + 1} on the ${targetLabel(target)} target: ${count} action${count === 1 ? "" : "s"} ran. Unit conditions (bring, command, …) count as false; wait takes no time.`);
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran. Unit conditions (bring, command, …) count as false; wait takes no time.`);
     } catch (err) {
       setStatus("error", `Simulation stopped: ${(err as Error).message}`);
     }
@@ -734,7 +709,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const table = picked.kind === "unit" ? generated.names.units : generated.names.locations;
       const value = picked.kind === "unit" ? scn?.units[picked.index]?.unitId : picked.index + 1;
       const entry = value === undefined ? undefined : entryFor(table, value);
-      if (!entry) { setStatus("info", picked.kind === "unit" ? "That unit's type has no name in the script's tables." : "That location is not in the script's tables yet; build again after the map's names refresh."); return; }
+      if (!entry) { setStatus("info", picked.kind === "unit" ? "That unit's type has no name in the script's tables." : "That location is not in the script's tables yet; try again after the map's names refresh."); return; }
       editor.insert(`${table.object}.${entry.keys[0]}`);
       setStatus("ok", `Inserted ${table.object}.${entry.keys[0]}.`);
     } finally {
@@ -842,6 +817,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const releaseWorker = retainCompileWorker();
     const subs = [
       svc.watchLibrary((s) => { library = s; if (!cancelled) render(); }),
+      svc.onBuild(onLibraryBuild),
       api.events.on("settings", refreshNames),
       api.events.on("locations", refreshNames),
       api.events.on("triggers", refreshNames),
@@ -854,7 +830,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         monaco = m;
         if (generated) setDeclarations(m, generated.decls);
         setHoverVariables(m, () => result?.variables ?? []);
-        setCostHints(m, costHints);
+        setLineHints(m, () => result?.hints ?? []);
         setMapRefs(m, mapRefs);
         // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
         loadingCover.done();
@@ -876,7 +852,6 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     );
     return () => {
       cancelled = true;
-      eudAbort?.abort();
       loadingCover.done();
       if (timer !== null) clearTimeout(timer);
       editor?.dispose();
