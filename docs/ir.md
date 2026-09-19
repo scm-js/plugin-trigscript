@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 5** (4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 6** (5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -58,12 +58,12 @@ the statement as the source has it ("L12: while (x < 3)"), for a log or a debugg
 ## Variables
 
 ```
-VarDecl { id, name, kind: "number" | "boolean" | "unit", shared, bits?: 8 | 16, temp?, at }
+VarDecl { id, name, kind: "number" | "boolean" | "unit", shared, bits?: 8 | 16, unsigned?, temp?, at }
 ```
 
 `id` is unique within the program (`name#n`); `name` is the source's. `shared` is a
 `shared(…)` variable of a per-player program (one cell for everyone). `bits` is a `u8` /
-`u16` annotation. `temp` marks a backend's scratch value that dies with its statement (a
+`u16` annotation, `unsigned` a `u32`; with neither a number is signed. `temp` marks a backend's scratch value that dies with its statement (a
 call's result). A variable exists from its `declare` statement on; a backend allocates
 storage in that order. A `unit` variable holds a unit of the game or none; its `declare`,
 a parameter's `init` and a `return` carry a unit expression (below).
@@ -89,7 +89,7 @@ a parameter's `init` and a `return` carry a unit expression (below).
 | `break`, `continue` | | Of the nearest loop (`break` also of a `switch`). |
 | `return` | `value?` | Inside a `call` body: writes the result and leaves the call. |
 | `sleep` | `ms?`, `cycles?` | Park the program: a duration in milliseconds, or in frames (`cycles`). `cycles: 1` goes on in the very next frame. |
-| `print` | `parts`, `to`, `position` | Text with values in it. `parts` are `{ kind: "text", text }`, `{ kind: "number", expr }` (its digits), `{ kind: "name", player }` and `{ kind: "color", player }` (the colour code of the player's colour), a player being a slot or 13 for the current player. `to` is who sees it: a slot, 13, All Players (17) or a force (18–21). `position` is `chat` or `center`, the line the game's own errors use. Every number is evaluated before anything is shown. |
+| `print` | `parts`, `to`, `position` | Text with values in it. `parts` are `{ kind: "text", text }`, `{ kind: "number", expr, unsigned? }` (its digits, with a minus sign when it is below zero and not `unsigned`), `{ kind: "name", player }` and `{ kind: "color", player }` (the colour code of the player's colour), a player being a slot or 13 for the current player. `to` is who sees it: a slot, 13, All Players (17) or a force (18–21). `position` is `chat` or `center`, the line the game's own errors use. Every number is evaluated before anything is shown. |
 | `action` | `record`, `variables?` | A trigger action. Each of `variables` names a field of the record that takes an expression's value: `{ field, bits: 8, 16 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, a unit type a 16-bit one (the lowering stops it at 228), an amount with a modifier a 32-bit one. Version 4 had one, as `variable`. |
 | `centerLocation` | `location`, `x`, `y` | Centre a location (1-based) on a point of the map in pixels, its size kept. |
 | `call` | `call` | An inlined function as a statement (its result, if any, unused). |
@@ -105,14 +105,14 @@ Numbers (`NumExpr`):
 | `const` | `value` (a whole number) |
 | `var` | `id` |
 | `unary` | `op: "-"`, `expr` |
-| `binary` | `op: + - * / % & | ^ << >>`, `left`, `right` |
+| `binary` | `op: + - * / % & | ^ << >> >>>`, `left`, `right`, `unsigned?` (on `/` and `%`) |
 | `read` | `read` — a value of the game, taken when the expression is evaluated (below) |
 | `randomInt` | `bound` — a whole number from 0 to `bound` − 1, fresh at every evaluation; 0 when `bound` is 0 |
 | `unitField` | `unit`, `field` — a number of a unit; 0 when the unit is none or gone |
 | `tableRead` | `cell` — a cell of the game's tables in the script's units (stored ÷ `scale`, rounded down); a flag reads 1 or 0 |
 | `input` | `input` — what a player did, as it reached every computer (below): a key, a click and a typed line read 1 on their frame, the mouse its place on the map |
 | `ternary` | `cond`, `whenTrue`, `whenFalse` |
-| `intrinsic` | `name: min | max | abs`, `args` |
+| `intrinsic` | `name: min | max | abs`, `args`, `unsigned?` (on `min` and `max`) |
 | `call` | `call` (its result is the value) |
 
 Booleans (`BoolExpr`):
@@ -123,7 +123,7 @@ Booleans (`BoolExpr`):
 | `cond` | `record` — a trigger condition, fields known |
 | `var` | `id` of a boolean variable |
 | `test` | `expr` — a number tested `!= 0` |
-| `compare` | `op: < <= > >= == !=`, `left`, `right` |
+| `compare` | `op: < <= > >= == !=`, `left`, `right`, `unsigned?: true | "left" | "right"` |
 | `and`, `or` | `items` |
 | `not` | `expr` |
 | `random` | a coin toss, fresh at every evaluation |
@@ -263,24 +263,42 @@ leave alone.
 
 ## Numbers
 
-Unsigned 32-bit, and the lowering and the interpreter agree on every case:
+32 bits. A `number` reads them signed, −2³¹ to 2³¹ − 1; a `u32` (`VarDecl.unsigned`) from 0 up.
+`+ − ×`, `& | ^` and `<<` give the same bits whichever way they are read, so neither backend
+ever works a type out: `compiler/numbers.ts` does, once, over the IR the front end emitted,
+and writes into each operation that cares which reading it takes. The lowering and the
+interpreter agree on every case:
 
-- A run of `+` and `−` (unary minus and constants below zero included) is flattened into
-  what it adds and what it subtracts. Each side is totalled — exactly while every term is
-  a constant, wrapping at 2³² once a variable is part of it — and the value is the
-  difference, stopping at 0.
-- A comparison flattens both sides together: what the left subtracts is added to the
-  right and the other way round, then the two totals are compared. `a - b < 0` is true
-  when `b` is larger; `x >= -1` is true.
-- `abs(e)` is the distance between what `e` adds and what it subtracts.
-- `& | ^` are over the 32 bits; `<<` drops what leaves the top and `>>` fills with zeros;
-  a shift by 32 or more gives 0.
-- `*` wraps at 2³². `/` and `%` round down; a constant divisor must be a whole number of
-  at least 1 (the compiler checks), a variable divisor that is 0 in the game gives 0.
-- Stored into a variable, a value at 2³² or above wraps and a `u8` / `u16` stops at its
-  maximum. Booleans are 0 or 1.
+- `+`, `−`, `×` and unary minus wrap at 32 bits.
+- `/` and `%`: signed unless `unsigned` — towards zero, the remainder with the dividend's
+  sign (eudplib's `f_div_towards_zero`); `unsigned`, both sides from 0 up. A constant
+  divisor is never 0 (the compiler checks); a variable divisor that is 0 in the game gives 0.
+- `>>` keeps the sign of what it shifts, `>>>` fills with zeros (`numbers.ts` turns the `>>`
+  of a `u32` into `>>>`). A count of 32 or more — read from 0 up, so a count below zero too —
+  leaves 0, or −1 for the `>>` of a number below zero.
+- `min` / `max` compare signed unless `unsigned`; `abs` is of a signed number (of a `u32` it
+  is removed).
+- A comparison: `unsigned` absent, both sides signed; `true`, both from 0 up — also written
+  when neither side *can* be below zero, which comes to the same and costs the lowering
+  nothing, where a signed order costs an addition a side (the top bit flipped); `"left"` /
+  `"right"`, that side is a `u32` and the other signed, compared exactly: a number below
+  zero is smaller than any `u32`. `==` and `!=` of two like sides compare the bits.
+- Stored into a variable, the 32 bits are kept; a `u8` / `u16` stops at its maximum, read
+  from 0 up. **Nothing below zero reaches a store that would misread it**: into a `u8` /
+  `u16`, a unit's field, a table's cell, an action's variable field, `damage` / `heal`,
+  `centerLocation` and `random(n)`'s bound, `numbers.ts` has wrapped a signed value in
+  `max(v, 0)` unless it can see that it is never below zero — a constant, a read, a unit's
+  field, an input, a `u8` / `u16`, `x & m`, `x % n`, `x / n` and `x >> n` of such, or a
+  variable into which only such values are ever stored. A backend's stores are therefore
+  what they were in version 5: from 0 up, stopping at the top.
+- There are no casts by the time a backend sees the program: `u32(x)`, `i32(x)` and
+  `x >>> 0` say how bits are read, and `numbers.ts` removes them once the operations around
+  them are marked. (A `cast` node exists in `compiler/ir.ts` between the front end and that
+  pass; a backend that met one would pass its `expr` through.)
+- A `number` and a `u32` in one piece of arithmetic never arrive: that is a compile error.
 - An action's variable `modifier` (a unit count) means that many units: the lowering does
   the action once for each, so 0 is none and 300 is 300.
+- A `switch` compares bits: a case of −1 is 0xFFFFFFFF.
 
 ## Records
 

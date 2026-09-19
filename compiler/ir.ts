@@ -10,12 +10,13 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 6: numbers are signed — `VarDecl.unsigned` marks a `u32`, `>>>` is an operator apart from `>>`, and `unsigned` on a division, a `min` / `max`, a printed number and a comparison says which reading the operation takes. The two-sided reading of `+` and `−` that made an unsigned cell mean a difference is gone.
  * 5: what the players do (`input`: keys, clicks, the mouse, typed lines), a pick near a player's mouse, `centerLocation`, and an action with several fields from the program (`variables`, where 4 had one `variable`).
  * 4: units on the map — `unit` variables, `unitLoop`, picks, unit fields, flags and verbs — and the cells of the game's tables (`tableRead` / `tableWrite`).
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 5;
+export const IR_VERSION = 6;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -30,6 +31,8 @@ export interface VarDecl {
   shared: boolean;
   /** A `u8` / `u16` annotation; unset for the full 32 bits. */
   bits?: 8 | 16;
+  /** A `u32`: the 32 bits read as 0 … 4 294 967 295. Unset, a number is signed (a `u8` / `u16` never goes below zero either way). */
+  unsigned?: boolean;
   /** A backend's scratch value that dies with the statement (a function's result). */
   temp?: boolean;
   at: At;
@@ -114,13 +117,22 @@ export interface TableCell {
   special?: "speed" | "color" | "name";
 }
 
-export type ArithOp = "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>";
+/** `>>` keeps the sign of what it shifts; `>>>` fills with zeros. */
+export type ArithOp = "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "<<" | ">>" | ">>>";
+
+/** The largest and the smallest a `number` holds, and the largest a `u32` does. */
+export const I32_MAX = 0x7fffffff;
+export const I32_MIN = -0x80000000;
+export const U32_MAX = 0xffffffff;
 
 export type NumExpr =
   | { kind: "const"; value: number }
   | { kind: "var"; id: string }
   | { kind: "unary"; op: "-"; expr: NumExpr; at: At }
-  | { kind: "binary"; op: ArithOp; left: NumExpr; right: NumExpr; at: At; label: string }
+  /** `u32(x)` / `i32(x)`: the same 32 bits read the other way. Nothing is computed; it is there for `numbers.ts`, which works out what each operation reads its sides as. */
+  | { kind: "cast"; to: "u32" | "i32"; expr: NumExpr; at: At }
+  /** `unsigned`, on `/` and `%`: both sides are `u32`s. Unset, the division is signed and rounds towards zero, the remainder taking the dividend's sign. */
+  | { kind: "binary"; op: ArithOp; left: NumExpr; right: NumExpr; unsigned?: boolean; at: At; label: string }
   /** A value of the game, read when the expression is evaluated. */
   | { kind: "read"; read: ReadSource; at: At; label: string }
   /** `random(n)`: a whole number from 0 to n − 1, fresh at every evaluation; 0 when n is 0. */
@@ -132,7 +144,8 @@ export type NumExpr =
   /** What a player did, as it reached every computer (`input.ts`): a key or a click reads 1 on its frame, the mouse its place on the map, a typed line 1 or a value it carried. */
   | { kind: "input"; input: InputSource; at: At; label: string }
   | { kind: "ternary"; cond: BoolExpr; whenTrue: NumExpr; whenFalse: NumExpr; at: At; label: string }
-  | { kind: "intrinsic"; name: "min" | "max" | "abs"; args: NumExpr[]; at: At; label: string }
+  /** `unsigned`, on `min` and `max`: the arguments are compared as `u32`s. `abs` is of a signed number. */
+  | { kind: "intrinsic"; name: "min" | "max" | "abs"; args: NumExpr[]; unsigned?: boolean; at: At; label: string }
   /** A call inlined here: its body runs, its result is the number. */
   | { kind: "call"; call: Call };
 
@@ -144,7 +157,11 @@ export type BoolExpr =
   | { kind: "var"; id: string }
   /** A number expression tested as a truth value: `!= 0`. */
   | { kind: "test"; expr: NumExpr; at: At; label: string }
-  | { kind: "compare"; op: CompareOp; left: NumExpr; right: NumExpr; at: At; label: string }
+  /**
+   * `unsigned` true: both sides are read as `u32`s (or neither can be below zero, which comes to the same and costs less).
+   * "left" / "right": that side is a `u32` and the other a signed number, compared exactly — a number below zero is smaller than any `u32`.
+   */
+  | { kind: "compare"; op: CompareOp; left: NumExpr; right: NumExpr; unsigned?: boolean | "left" | "right"; at: At; label: string }
   | { kind: "and"; items: BoolExpr[] }
   | { kind: "or"; items: BoolExpr[] }
   | { kind: "not"; expr: BoolExpr }
@@ -165,7 +182,8 @@ export type BoolExpr =
 /** A piece of a `print`'s text: written text, a number's digits, a player's name, the colour code of a player's colour. */
 export type TextPart =
   | { kind: "text"; text: string }
-  | { kind: "number"; expr: NumExpr }
+  /** `unsigned`: printed as a `u32`; unset, a number below zero has its minus sign. */
+  | { kind: "number"; expr: NumExpr; unsigned?: boolean }
   | { kind: "name"; player: number }
   | { kind: "color"; player: number };
 
@@ -250,7 +268,7 @@ export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr): e is NumExpr => {
   switch (e.kind) {
     case "const": return typeof e.value === "number";
     case "var": return false; // ambiguous by shape; callers know the variable's kind
-    case "unary": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": return true;
+    case "unary": case "cast": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": return true;
     case "ternary": return isNumExpr(e.whenTrue);
     case "call": return e.call.result?.kind === "number";
     default: return false;
@@ -295,7 +313,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
   const expr = (e: NumExpr) => {
     switch (e.kind) {
       case "unitField": unit(e.unit); break;
-      case "unary": expr(e.expr); break;
+      case "unary": case "cast": expr(e.expr); break;
       case "binary": expr(e.left); expr(e.right); break;
       case "ternary": bool(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
       case "intrinsic": e.args.forEach(expr); break;

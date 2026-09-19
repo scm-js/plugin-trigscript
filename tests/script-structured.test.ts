@@ -82,7 +82,7 @@ describe("structured: loops and branches", () => {
     expect(r.triggers).toEqual([]);
     expect(r.strings).toEqual([]);
     expect(r.ir).toHaveLength(1);
-    expect(r.ir[0]).toMatchObject({ version: 5, owner: 0, owners: [0], perPlayer: false });
+    expect(r.ir[0]).toMatchObject({ version: 6, owner: 0, owners: [0], perPlayer: false });
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, "n")).toBe(6);
@@ -204,7 +204,7 @@ describe("structured: arithmetic", () => {
     expect(sim.events.map((e) => e.action.type)).toEqual([ActionType.Victory]);
   });
 
-  it("x += x, x -= x, ++ / --, stopping at 0 and wrapping at 2³²", () => {
+  it("x += x, x -= x, ++ / --, going below zero, a u32 wrapping at 2³²", () => {
     const r = okProgram(`
       let x = 6;
       x += x;
@@ -212,14 +212,14 @@ describe("structured: arithmetic", () => {
       y -= y;
       let z = 3;
       z -= 5;
-      let w = 4294967295;
+      let w: u32 = 4294967295;
       w += 1;
       x++;
       x--;
       x--;
     `);
     const sim = run(r, 1);
-    expect([value(sim, "x"), value(sim, "y"), value(sim, "z"), value(sim, "w")]).toEqual([11, 0, 0, 0]);
+    expect([value(sim, "x"), value(sim, "y"), value(sim, "z"), value(sim, "w")]).toEqual([11, 0, -2, 0]);
   });
 
   it("build-time values fold: consts inside and outside the program, arithmetic, the standard library", () => {
@@ -522,7 +522,7 @@ describe("structured: diagnostics", () => {
     });`);
     // Dividing by a variable is fine now.
     expect(msgs.some((m) => m.startsWith("4:"))).toBe(false);
-    expect(msgs).toContain("5:Expected a number: variables take + - * / % and the bitwise & | ^ << >>.");
+    expect(msgs).toContain("5:Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>.");
     expect(msgs).toContain("6:wait's milliseconds must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.");
     expect(msgs.some((m) => m.startsWith("7:Variables hold numbers, booleans, units of the game or records of them ({ lives: 3 }); s is string"))).toBe(true);
     expect(msgs).toContain("8:Functions nest too deeply (recursion is not possible: a call is inlined).");
@@ -653,11 +653,11 @@ describe("simulator", () => {
 });
 
 describe("structured: arithmetic means what the source says", () => {
-  /** The body run as plain JavaScript, each variable then stored the way the game stores it: below 0 → 0, 2³² and above wraps. */
+  /** The body run as plain JavaScript, each variable then stored the way the game stores a number: the 32 bits, signed, as `x | 0`. */
   function expected(body: string): Record<string, number> {
     const names = [...body.matchAll(/let (\w+)/g)].map((m) => m[1]);
     const values = new Function(`${body}\nreturn { ${names.join(", ")} };`)() as Record<string, number>;
-    return Object.fromEntries(names.map((n) => [n, values[n] < 0 ? 0 : values[n] >>> 0]));
+    return Object.fromEntries(names.map((n) => [n, values[n] | 0]));
   }
   const cases = [
     "let a = 0; let b = 10; a = a + b - 5;",
@@ -669,7 +669,9 @@ describe("structured: arithmetic means what the source says", () => {
     "let a = 3; let b = 7; a = b - a;",
     "let a = 3; a = 3 - 10;",
     "let a = 10; a -= 20;",
-    "let a = 4294967295; a++;",
+    "let a = 2147483647; a++;",
+    "let a = -7; let b = 2; let q = 0; let m = 0; q = a / b; m = a % b; a = a * b;",
+    "let a = -2147483648; a--;",
     "let a = 1; let b = 2; let c = 3; a = a - b + c;",
     "let a = 1; let b = 2; let c = 3; a = c - b - a;",
     "let a = 5; let b = 2; let c = 3; a = a - b - c;",
@@ -684,7 +686,7 @@ describe("structured: arithmetic means what the source says", () => {
     it(body, () => {
       const r = okProgram(body);
       const sim = run(r, 2);
-      const want = expected(body.replace(/(\w+) \/ (\w+)/g, "Math.floor($1 / $2)"));
+      const want = expected(body.replace(/(\w+) \/ (\w+)/g, "Math.trunc($1 / $2)"));
       const got = Object.fromEntries(Object.keys(want).map((n) => [n, value(sim, n)]));
       expect(got).toEqual(want);
     });
@@ -723,10 +725,23 @@ describe("structured: widths", () => {
     expect(value(run(over, 1), "a")).toBe(255);
   });
 
-  it("the running sum of the additions is the one thing a 32-bit cell cannot promise", () => {
-    // Documented: 2³² − 1 + 1 wraps to 0 before the subtraction; the source's exact sum (2³² − 1) fits, the cell does not.
-    const r = okProgram("let a = 4294967295; let b = 1; let out = 0; out = a + b - 1;");
-    expect(value(run(r, 1), "out")).toBe(0);
+  it("a constant its type cannot hold is said, not stored as another number", () => {
+    expect(messagesOf(program("let a = 4294967295;"))).toEqual(["a is a number, which holds −2 147 483 648 … 2 147 483 647, not 4294967295. Declare it a u32 (let a: u32 = …), or write i32(4294967295) for the signed number with those bits."]);
+    expect(messagesOf(program("let a: u32 = 0; a = -1;"))).toEqual(["a is a u32, which holds 0 … 4 294 967 295, not -1. Write u32(-1) for the u32 with those bits."]);
+    expect(messagesOf(program("let a: u8 = 0; a = -1;"))).toEqual(["a is a u8 and holds 0 … 255, not -1."]);
+    const r = okProgram("let a: u32 = u32(-1); let b = i32(4294967295); let c: u32 = 4294967295;");
+    const sim = run(r, 1);
+    expect([value(sim, "a"), value(sim, "b"), value(sim, "c")]).toEqual([4294967295, -1, 4294967295]);
+    expect(r.variables.find((v) => v.name === "a")).toMatchObject({ unsigned: true });
+  });
+
+  it("a number and a u32 do not mix in arithmetic without saying which is meant; a constant that fits is either", () => {
+    const mixed = messagesOf(program("let n = 1; let h: u32 = 2; let out: u32 = 0; out = h + n;"));
+    expect(mixed).toHaveLength(1);
+    expect(mixed[0]).toMatch(/^This sum mixes a number, which is signed, with a u32\. Say which is meant: u32\(x\)/);
+    okProgram("let n = 1; let h: u32 = 2; let out: u32 = 0; out = h + u32(n); out = h * 3 + 1; out += 5; out = h / 2; if (n < h) out = 1; n = i32(h) - n;");
+    expect(messagesOf(program("let n = 1; let h: u32 = 2; let out = 0; out = Math.max(n, h);"))[0]).toMatch(/^Math\.max\(\) mixes/);
+    expect(messagesOf(program("let n = 1; let h: u32 = 2; h += n;"))[0]).toMatch(/^This sum mixes/);
   });
 });
 
@@ -983,7 +998,7 @@ describe("structured: switch, ternaries and arithmetic", () => {
     expect(value(sim2, "m")).toBe(0);
     // A divisor that is 0 in the game gives 0.
     expect(value(sim2, "z")).toBe(1);
-    expect(messagesOf(program("let a = 1; a = a / 0;"))).toEqual(["Divide by a whole number of at least 1, not 0."]);
+    expect(messagesOf(program("let a = 1; a = a / 0;"))).toEqual(["Divide by a whole number other than 0, not 0."]);
     // × wraps at 2³².
     const wrap = okProgram("let a = 65536; let b = 65536; let c = 0; c = a * b + 5;");
     expect(value(run(wrap, 1), "c")).toBe(5);

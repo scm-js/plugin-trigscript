@@ -9,8 +9,8 @@
  * body ends stops for good. With eudTurbo the game's own trigger loop runs every frame
  * too, so a frame here is also one cycle of the `trigger()` records run beside the programs.
  *
- * Numbers keep the one contract: an expression is its exact value; stored below zero as
- * 0, at 2³² or above wrapped, a `u8` / `u16` saturated at its maximum. The world — death
+ * Numbers keep the one contract: 32 bits, signed unless the variable is a `u32`, wrapping
+ * at either end as `x | 0` does; a `u8` / `u16` stops at 0 and at its maximum. The world — death
  * counters the script names, switches, the conditions the interpreter cannot answer,
  * the strings — is a trigger `Simulation`, shared with any `trigger()` records run beside
  * the programs, so an action a program takes is seen by a hand trigger and the other way
@@ -104,34 +104,6 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
   unitByName?: (lower: string) => number | undefined;
 }
 
-/** What an expression adds and what it subtracts: the constants exactly, the rest wrapping at 2³² as the game's additions do. */
-interface Sides { plus: number; minus: number; plusConst: number; minusConst: number; variable: boolean }
-const newSides = (): Sides => ({ plus: 0, minus: 0, plusConst: 0, minusConst: 0, variable: false });
-function add(sides: Sides, sign: 1 | -1, value: number, buildTime: boolean) {
-  if (buildTime) { if (sign > 0) sides.plusConst += value; else sides.minusConst += value; return; }
-  sides.variable = true;
-  if (sign > 0) sides.plus = (sides.plus + value) % U32; else sides.minus = (sides.minus + value) % U32;
-}
-/** The two sums as the game has them: exact while every term was known when the script was built, else wrapped. */
-function totals(sides: Sides): [number, number] {
-  if (!sides.variable) return [sides.plusConst, sides.minusConst];
-  return [(sides.plusConst % U32 + sides.plus) % U32, (sides.minusConst % U32 + sides.minus) % U32];
-}
-function difference(sides: Sides, absolute = false): number {
-  const [p, n] = totals(sides);
-  return (absolute ? Math.abs(p - n) : Math.max(p - n, 0)) % U32;
-}
-/** Whether the lowering sees a plain integer here: constants, and arithmetic over nothing but constants. */
-function isBuildTime(e: NumExpr): boolean {
-  switch (e.kind) {
-    case "const": return true;
-    case "unary": return isBuildTime(e.expr);
-    case "binary": return isBuildTime(e.left) && isBuildTime(e.right);
-    case "intrinsic": return e.args.every(isBuildTime);
-    default: return false;
-  }
-}
-
 type Flow = "next" | "break" | "continue" | "return";
 type Exec = Generator<undefined, Flow, undefined>;
 type Value = number | boolean;
@@ -150,6 +122,8 @@ class ProgramRun {
   /** The variables that hold a unit, or none. */
   readonly unitVars = new Map<string, SimUnit | null>();
   readonly bits = new Map<string, 8 | 16>();
+  /** The `u32` variables. */
+  readonly unsigned = new Set<string>();
   readonly latches = new Map<object, boolean>();
   body: Exec | null;
   done = false;
@@ -191,14 +165,11 @@ class ProgramRun {
     return v;
   }
 
+  /** A number is kept as its type reads the 32 bits: a `u32` 0 and up, a `u8` / `u16` stopped at its top, anything else signed. */
   private store(id: string, value: Value): void {
     if (typeof value === "number") {
-      let v = Math.trunc(value);
-      if (v < 0) v = 0;
-      else if (v >= U32) v = v % U32;
       const bits = this.bits.get(id);
-      if (bits) v = Math.min(v, 2 ** bits - 1);
-      this.vars.set(id, v);
+      this.vars.set(id, bits ? Math.min(value >>> 0, 2 ** bits - 1) : this.unsigned.has(id) ? value >>> 0 : value | 0);
     } else {
       this.vars.set(id, value);
     }
@@ -207,6 +178,7 @@ class ProgramRun {
   private declare(decl: VarDecl): void {
     if (decl.kind === "unit") { this.unitVars.set(decl.id, null); return; }
     if (decl.bits) this.bits.set(decl.id, decl.bits);
+    if (decl.unsigned) this.unsigned.add(decl.id);
     this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
   }
 
@@ -231,7 +203,7 @@ class ProgramRun {
   private *unitDo(e: UnitExpr, verb: UnitVerb, at: At): Gen<void> {
     const u = yield* this.living(e);
     // The amount is computed whether or not there is a unit, as the game computes it.
-    const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.num(verb.amount) : 0;
+    const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
     if (!u) return;
     switch (verb.do) {
       case "kill": case "remove": u.alive = false; this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
@@ -252,76 +224,59 @@ class ProgramRun {
   /* ── expressions ── */
 
   /**
-   * A number, the way the game computes it (`python/trigscript.py`): + and − are flattened
-   * into what is added and what is subtracted, each side summed — wrapping at 2³² once a
-   * variable is part of it — and the difference stops at 0. Everything else is a term:
-   * × wraps, ÷ and % round down and give 0 for a divisor of 0.
+   * A number, the way the game computes it (`python/trigscript.py`): 32 bits, given here as the
+   * signed reading of them (`| 0`). + − × and the bitwise operators are the same bits whichever
+   * way they are read; what reads them one way or the other — ÷, %, a shift right, min and max, a
+   * comparison — says which in the IR. A divisor of 0 gives 0, as `(a / 0) | 0` does.
    */
   private *num(e: NumExpr): Generator<undefined, number, undefined> {
-    if (e.kind === "unary" || (e.kind === "binary" && (e.op === "+" || e.op === "-")) || (e.kind === "const" && e.value < 0)) {
-      const sides = newSides();
-      yield* this.linear(e, sides, 1);
-      return difference(sides);
-    }
-    return yield* this.term(e);
-  }
-
-  private *linear(e: NumExpr, sides: Sides, sign: 1 | -1): Generator<undefined, void, undefined> {
-    if (e.kind === "binary" && (e.op === "+" || e.op === "-")) {
-      yield* this.linear(e.left, sides, sign);
-      yield* this.linear(e.right, sides, e.op === "+" ? sign : (-sign as 1 | -1));
-    } else if (e.kind === "unary") {
-      yield* this.linear(e.expr, sides, -sign as 1 | -1);
-    } else if (e.kind === "const" && e.value < 0) {
-      add(sides, -sign as 1 | -1, -e.value, true);
-    } else {
-      add(sides, sign, yield* this.term(e), isBuildTime(e));
-    }
-  }
-
-  private *term(e: NumExpr): Generator<undefined, number, undefined> {
     switch (e.kind) {
-      // A constant below zero as a factor or a divisor is its 32-bit pattern, as it is in the game.
-      case "const": return ((Math.trunc(e.value) % U32) + U32) % U32;
-      case "var": return Number(this.read(e.id));
-      case "unary": return yield* this.num(e);
+      case "const": return e.value | 0;
+      case "var": return Number(this.read(e.id)) | 0;
+      case "unary": return -(yield* this.num(e.expr)) | 0;
+      case "cast": return yield* this.num(e.expr);
       case "binary": {
         const a = yield* this.num(e.left);
         const b = yield* this.num(e.right);
         switch (e.op) {
-          case "*": return Number((BigInt(a) * BigInt(b)) % BigInt(U32));
-          case "/": return b === 0 ? 0 : Math.floor(a / b);
-          case "%": return b === 0 ? 0 : a % b;
-          case "&": return (a & b) >>> 0;
-          case "|": return (a | b) >>> 0;
-          case "^": return (a ^ b) >>> 0;
-          // A shift by 32 or more leaves nothing, where JavaScript would shift by the remainder.
-          case "<<": return b >= 32 ? 0 : (a << b) >>> 0;
-          case ">>": return b >= 32 ? 0 : a >>> b;
-          default: return yield* this.num(e);
+          case "+": return (a + b) | 0;
+          case "-": return (a - b) | 0;
+          case "*": return Math.imul(a, b);
+          case "/": return b === 0 ? 0 : e.unsigned ? Math.floor((a >>> 0) / (b >>> 0)) | 0 : (a / b) | 0;
+          case "%": return b === 0 ? 0 : e.unsigned ? ((a >>> 0) % (b >>> 0)) | 0 : (a % b) | 0;
+          case "&": return a & b;
+          case "|": return a | b;
+          case "^": return a ^ b;
+          // A shift by 32 or more (or by a number below zero) leaves nothing but the sign, where JavaScript would shift by the remainder.
+          case "<<": return b >>> 0 >= 32 ? 0 : a << b;
+          case ">>": return b >>> 0 >= 32 ? (a < 0 ? -1 : 0) : a >> b;
+          case ">>>": return b >>> 0 >= 32 ? 0 : (a >>> b) | 0;
         }
+        return 0;
       }
-      case "read": return this.sim.read(e.read);
-      case "unitField": { const u = yield* this.living(e.unit); return u ? u[e.field] : 0; }
-      case "tableRead": return this.sim.tableRead(e.cell);
-      case "input": return this.sim.input(e.input);
+      case "read": return this.sim.read(e.read) | 0;
+      case "unitField": { const u = yield* this.living(e.unit); return u ? u[e.field] | 0 : 0; }
+      case "tableRead": return this.sim.tableRead(e.cell) | 0;
+      case "input": return this.sim.input(e.input) | 0;
       case "randomInt": {
-        const n = yield* this.num(e.bound);
-        return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n));
+        const n = (yield* this.num(e.bound)) >>> 0;
+        return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n)) | 0;
       }
       case "ternary": return (yield* this.bool(e.cond)) ? yield* this.num(e.whenTrue) : yield* this.num(e.whenFalse);
       case "intrinsic": {
-        if (e.name === "abs") {
-          const sides = newSides();
-          yield* this.linear(e.args[0], sides, 1);
-          return difference(sides, true);
-        }
         const args: number[] = [];
         for (const a of e.args) args.push(yield* this.num(a));
-        return e.name === "min" ? Math.min(...args) : Math.max(...args);
+        if (e.name === "abs") return Math.abs(args[0]) | 0;
+        const seen = e.unsigned ? args.map((a) => a >>> 0) : args;
+        return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
       }
-      case "call": return Number(yield* this.call(e.call));
+      case "call": return Number(yield* this.call(e.call)) | 0;
     }
+  }
+
+  /** A number as the game takes one: the 32 bits from 0 up. What goes to a unit, a table, an action or the map is never below zero by then (the compiler saw to it). */
+  private *amount(e: NumExpr): Generator<undefined, number, undefined> {
+    return (yield* this.num(e)) >>> 0;
   }
 
   private *bool(e: BoolExpr): Generator<undefined, boolean, undefined> {
@@ -331,11 +286,11 @@ class ProgramRun {
       case "var": return Boolean(this.read(e.id));
       case "test": return (yield* this.num(e.expr)) !== 0;
       case "compare": {
-        // What either side subtracts is added to the other: a - b == 0 asks whether a == b, and x >= -1 is true.
-        const sides = newSides();
-        yield* this.linear(e.left, sides, 1);
-        yield* this.linear(e.right, sides, -1);
-        const [a, b] = totals(sides);
+        let a = yield* this.num(e.left);
+        let b = yield* this.num(e.right);
+        // Each side as its type reads it: a number below zero is smaller than any u32.
+        if (e.unsigned === true || e.unsigned === "left") a = a >>> 0;
+        if (e.unsigned === true || e.unsigned === "right") b = b >>> 0;
         switch (e.op) {
           case "<": return a < b;
           case "<=": return a <= b;
@@ -425,7 +380,7 @@ class ProgramRun {
         const u = yield* this.living(s.unit);
         const field = s.field;
         if (field === "invincible") { const on = yield* this.bool(s.value as BoolExpr); if (u) u.invincible = on; return "next"; }
-        const value = yield* this.num(s.value as NumExpr);
+        const value = yield* this.amount(s.value as NumExpr);
         if (!u) return "next";
         (u as unknown as Record<string, number>)[field] = Math.min(value, UNIT_FIELD_MAX[field as UnitNumField] ?? 0xffff_ffff);
         if (field === "hp" && u.hp === 0) { u.alive = false; this.sim.unitEvent(this, ActionType.KillUnit, u, s.at); }
@@ -434,7 +389,7 @@ class ProgramRun {
       case "unitDo": yield* this.unitDo(s.unit, s.verb, s.at); return "next";
       case "tableWrite": {
         if (s.value.kind === "text") { this.sim.tableWrite(s.cell, 0, false, s.value.text); return "next"; }
-        const value = s.boolean ? ((yield* this.bool(s.value as BoolExpr)) ? 1 : 0) : yield* this.num(s.value as NumExpr);
+        const value = s.boolean ? ((yield* this.bool(s.value as BoolExpr)) ? 1 : 0) : yield* this.amount(s.value as NumExpr);
         this.sim.tableWrite(s.cell, value, s.scaled === true);
         return "next";
       }
@@ -480,7 +435,7 @@ class ProgramRun {
       }
       case "switch": {
         const v = yield* this.num(s.value);
-        let from = s.cases.findIndex((c) => c.value !== null && c.value === v);
+        let from = s.cases.findIndex((c) => c.value !== null && (c.value | 0) === v);
         if (from < 0) from = s.cases.findIndex((c) => c.value === null);
         if (from < 0) return "next";
         for (let i = from; i < s.cases.length; i++) {
@@ -504,17 +459,17 @@ class ProgramRun {
       case "action": {
         const record: ActionRecord = { ...s.record };
         // A unit count is that many units (the game does the action once for each), whatever a byte could hold.
-        for (const v of s.variables ?? []) (record as unknown as Record<string, number>)[v.field as string] = yield* this.num(v.expr);
+        for (const v of s.variables ?? []) (record as unknown as Record<string, number>)[v.field as string] = yield* this.amount(v.expr);
         this.sim.act(this, record, s.at);
         return "next";
       }
       case "print": {
         let text = "";
-        for (const p of s.parts) text += p.kind === "number" ? String(yield* this.num(p.expr)) : this.sim.partText(p);
+        for (const p of s.parts) text += p.kind === "number" ? String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr)) : this.sim.partText(p);
         this.sim.print(this, text, s.to, s.at);
         return "next";
       }
-      case "centerLocation": { const x = yield* this.num(s.x); const y = yield* this.num(s.y); this.sim.centre(s.location, x, y); return "next"; }
+      case "centerLocation": { const x = yield* this.amount(s.x); const y = yield* this.amount(s.y); this.sim.centre(s.location, x, y); return "next"; }
       case "call": { yield* this.call(s.call); return "next"; }
       case "block": return yield* this.block(s.body, ctx);
       case "remark": return "next";

@@ -211,7 +211,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "input": sources.push(e.input); at ??= e.at; if (e.input.source === "mouse") mouse = true; break;
       case "unitField": case "unitAlive": case "unitFlag": unit(e.unit); break;
       case "unitSame": unit(e.left); unit(e.right); break;
-      case "unary": expr(e.expr); break;
+      case "unary": case "cast": expr(e.expr); break;
       case "binary": case "compare": expr(e.left); expr(e.right); break;
       case "ternary": expr(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
       case "intrinsic": e.args.forEach(expr); break;

@@ -22,6 +22,7 @@ import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
 import { libraryCallName, libraryName, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { runModules, type LinkedFile } from "./link";
 import { checkProgram } from "./eud";
+import { typeNumbers } from "./numbers";
 import { inputPlan, inputsOf, type InputPlan } from "./input";
 import { declarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
@@ -78,6 +79,8 @@ export interface VariableInfo {
   at: { file: string; line: number; column: number };
   /** A `u8` (8) or `u16` (16) variable; unset for the full 32 bits. */
   bits?: number;
+  /** A `u32`; unset, a number is signed. */
+  unsigned?: boolean;
 }
 
 /** Something the compiler has to say about a line that is not a fault: a loop unrolled when the script was built. */
@@ -331,13 +334,15 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
     const emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    // What every number is read as, written into the operations that care, before anything looks at the program.
+    const mixes = typeNumbers(emitted.program);
     const index = programs.length;
     ir.push(emitted.program);
     programs.push({ ...(emitted.program.name ? { name: emitted.program.name } : {}), owner, owners, perPlayer: entry.options.perPlayer, source: at });
-    for (const d of declarations(emitted.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}) });
+    for (const d of declarations(emitted.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}) });
     // What would freeze the game or cannot be built is a fault of the script, said where it is.
     const check = checkProgram(emitted.program);
-    for (const d of check.errors) {
+    for (const d of [...mixes, ...check.errors]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }

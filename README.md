@@ -245,23 +245,49 @@ included, declared types (`let p: { n: u8 } = { n: 0 }`) honoured, and a record 
 a function reaches it by reference. They live in the game's memory while the map is
 played and cost the map nothing: no death counters, no switches, no triggers in the list.
 
-**Numbers** are 32-bit and never below zero: 0 to 4 294 967 295. An expression means what
-it says. `a = a + b - 5` is the whole sum, then stored — a result below zero is stored as
-0, one at 2³² or above wraps — and a `u8` or `u16` (`let lives: u8 = 3`) stops at its
-maximum *after* the whole sum, never between its parts; a constant that does not fit one
-is a compile error. A comparison is exact too: `if (a - b < 0)` is true when `b` is
-larger, because what either side subtracts is added to the other before they are
-compared, and `Math.abs(a - b)` is the distance whichever is larger. The one thing a
-32-bit cell cannot promise is a running sum of the additions past 2³²: `a + b - 1` with
-`a` at 4 294 967 295 wraps at the `+`.
+**Numbers** are whole, and a `number` is what it is in TypeScript as far as 32 bits go:
+signed, from −2 147 483 648 to 2 147 483 647. `a - b` is below zero when `b` is larger,
+`while (i >= 0) { …; i--; }` ends, `-x`, `Math.abs`, `Math.min`, `Math.max` and
+`clamp(x, lo, hi)` mean what they say, and a number below zero is printed with its minus
+sign. The one difference from TypeScript is at the ends: a `number` wraps there, as
+`x | 0` does — 2 147 483 647 + 1 is −2 147 483 648 — where TypeScript's would go on.
+
+Beside it there are three types for a number that is never below zero:
+
+| Type | Holds | At its ends |
+| --- | --- | --- |
+| `number` | −2 147 483 648 … 2 147 483 647 | wraps, as `x \| 0` |
+| `u32` | 0 … 4 294 967 295 | wraps, as `x >>> 0` |
+| `u16` | 0 … 65 535 | stops: below zero is 0, above is 65 535 |
+| `u8` | 0 … 255 | stops: below zero is 0, above is 255 |
+
+`let lives: u8 = 3` stops at its ends *after* the whole sum, never between its parts. A
+`u32` is for bit masks, hashes and a count past two thousand million; everything the game
+is asked — `minerals()`, `deaths()`, `u.hp` — is a `number`. A constant its variable
+cannot hold is a compile error (`let mask = 0xffffffff` wants `let mask: u32`).
+
+**A `number` and a `u32` do not mix in arithmetic** without saying which is meant: `h + n`
+is an error that names the two ways out, `u32(n)` and `i32(h)`, which read the same 32
+bits the other way and cost nothing (`n >>> 0` says `u32(n)` too, as in JavaScript). A
+whole-number constant that fits is either, so `h * 31 + 7` needs nothing. A *comparison*
+between the two is no error and is exact: a number below zero is smaller than any `u32`.
+Storing one into a variable of the other keeps the bits.
+
+**Where the game takes nothing below zero** — a `u8` or `u16`, a unit's hit points, an
+action's amount or count, a cell of `stats()`, `random(n)`'s bound, a place on the map — a
+number below zero goes in as 0: `u.hp -= 1000` kills, `createUnit(p, unit, n, at)` with
+`n` at −3 makes none.
 
 **Arithmetic**: `+ − * / %` between variables and constants, `*=` `/=` `%=`, `++` `--`,
-`Math.min`, `Math.max`, `Math.abs`, `clamp(x, lo, hi)`, and the bitwise `& | ^ << >>`
-(with `&=` and the rest) over the same 32 unsigned bits — `>>` and `>>>` are one, and a
-shift by 32 or more leaves 0. `/` is whole division (there are
-no fractions in the game; `Math.floor`, `Math.trunc`, `Math.round` and `Math.ceil` around
-it are accepted and change nothing), `*` wraps at 2³², and dividing by a variable that is
-0 in the game gives 0. Dividing by a constant 0 is a compile error.
+`Math.min`, `Math.max`, `Math.abs`, `clamp(x, lo, hi)`, and the bitwise `& | ^ << >> >>>`
+(with `&=` and the rest) over the 32 bits. `>>` keeps the sign of a `number` and `>>>`
+never does, as in JavaScript; a shift by 32 or more leaves nothing but that sign, where
+JavaScript would shift by the remainder. `/` is whole division towards zero — `-7 / 2` is
+−3, as `Math.trunc(-7 / 2)` — and `%` takes the sign of what is divided, `-7 % 2` is −1,
+as in JavaScript (there are no fractions in the game; `Math.floor`, `Math.trunc`,
+`Math.round` and `Math.ceil` around a division are accepted and change nothing). `*`
+wraps, and dividing by a variable that is 0 in the game gives 0, as `(a / 0) | 0` does.
+Dividing by a constant 0 is a compile error.
 
 `if`/`else`, `while`, `do`, `for`, `switch`, `break`, `continue` and `c ? a : b` all
 work. `switch (x)` over a variable tests its cases in order and falls through without
@@ -598,6 +624,22 @@ the script is applied, as it always was.
 Still to come: `test()` blocks that run a script against the simulator, a debugger that
 steps it, and a gallery of examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
+
+### Coming from 3.4
+
+A `number` is signed. Until 3.5 a program's numbers were never below zero: `3 - 10` stored
+0, and a comparison was made exact by moving what either side subtracted to the other. Now
+`3 - 10` is −7, stored, compared and printed as that. What changes for a script written
+before:
+
+- A value that relied on stopping at 0 — `lives -= 1` meant to rest at 0 — goes below it.
+  Declare it a `u8` or `u16`, which still stop (`let lives: u8 = 3`), or write
+  `Math.max(lives - 1, 0)`.
+- A constant above 2 147 483 647 in a plain variable is an error: declare the variable a
+  `u32`, which is what `number` used to be in all but name.
+- `/` rounds towards zero and `%` takes the dividend's sign. For numbers that are not below
+  zero — every script until now — nothing changes.
+- `>>>` is its own operator; `>>` of a number below zero keeps its sign.
 
 ### Coming from 3.3
 

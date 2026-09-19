@@ -173,7 +173,8 @@ const FIXTURES: Record<string, string> = {
 function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
-  expect(r.ir.length).toBe(1);
+  // One program a fixture, but for the numbers probe, which has a second one for every player.
+  expect(r.ir.length).toBe(name === "numbers" ? 2 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -189,6 +190,10 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const m = /(\d+) triggers/.exec(res.stdout);
   return { out, triggers: m ? Number(m[1]) : 0 };
 }
+
+// The numbers probe whole: every signed path of the lowering — a division towards zero by a variable and by a constant, a shift that
+// keeps the sign, a comparison of a number with a u32, a number printed with its minus sign — is in it.
+FIXTURES.numbers = readFileSync(resolve(import.meta.dirname, "..", "probes", "numbers.ts"), "utf8");
 
 describe.skipIf(!have)("programs build through the eudplib plugin", () => {
   for (const [name, src] of Object.entries(FIXTURES)) {
@@ -208,6 +213,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(5);
+    expect(ir.version).toBe(6);
   });
 });

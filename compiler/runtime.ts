@@ -428,7 +428,14 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.rose = () => { throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if."); };
   rt.once = () => { throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if."); };
   rt.shared = () => { throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program()."); };
-  rt.clamp = (v: unknown, lo: unknown, hi: unknown) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
+  /** A number that may be below zero, as a program's can. */
+  const signed = (v: unknown, what: string) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+    return v;
+  };
+  rt.u32 = (v: unknown) => signed(v, "u32: value") >>> 0;
+  rt.i32 = (v: unknown) => signed(v, "i32: value") | 0;
+  rt.clamp = (v: unknown, lo: unknown, hi: unknown) => Math.min(Math.max(signed(v, "clamp: value"), signed(lo, "clamp: low")), signed(hi, "clamp: high"));
 
   /* ── Reads: what the game holds, as a value of a program ── */
   const reader = (fn: (...args: unknown[]) => ReadValue): ReaderFunction => Object.assign(fn, { __trigscript: "reader" as const });
@@ -678,7 +685,7 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
-  out.push("seconds", "minutes", "frames", "cycles", "sleep", "rose", "once", "shared", "clamp");
+  out.push("seconds", "minutes", "frames", "cycles", "sleep", "rose", "once", "shared", "clamp", "u32", "i32");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
   return out;

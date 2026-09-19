@@ -388,7 +388,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     )));
   };
 
-  const typeOf = (v: { kind: "number" | "boolean" | "unit"; bits?: number }) => (v.kind === "number" ? (v.bits ? `u${v.bits}` : "number") : v.kind === "unit" ? "Unit" : "boolean");
+  const typeOf = (v: { kind: "number" | "boolean" | "unit"; bits?: number; unsigned?: boolean }) => (v.kind === "number" ? (v.bits ? `u${v.bits}` : v.unsigned ? "u32" : "number") : v.kind === "unit" ? "Unit" : "boolean");
 
   /** The programs and, under each, the variables it keeps in the game. */
   const renderPrograms = () => {

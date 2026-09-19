@@ -63,14 +63,15 @@ ${kw}type Race<N extends number = number> = N & Brand<"race">;
 ${kw}type Slot<N extends number = number> = N & Brand<"slot">;
 /** A unit count: a number, or "All". */
 ${kw}type Count = number | "All";
-/**
- * A number of a program that stays within 0 … 255. Operations between variables decompose over
- * 8 bits instead of 32, so \`a += b\` costs 8 + 8 triggers rather than 32 + 32. Saturates at 255.
- */
+/** A number of a program that stays within 0 … 255: stored below zero it is 0, above 255 it is 255. A plain \`number\` is signed and wraps. */
 ${kw}type u8 = number & Brand<"u8">;
-/** A number of a program that stays within 0 … 65 535: 16-bit operations between variables. Saturates at 65 535. */
+/** A number of a program that stays within 0 … 65 535: stored below zero it is 0, above 65 535 it is 65 535. */
 ${kw}type u16 = number & Brand<"u16">;
-/** A number of a program with the full range, 0 … 4 294 967 295 — what a plain \`number\` is. */
+/**
+ * A number of a program read as 0 … 4 294 967 295, wrapping as \`x >>> 0\` does: for bit masks, hashes and a count past
+ * 2 147 483 647. A plain \`number\` is signed. The two do not mix in arithmetic without saying which is meant — u32(x), i32(x) —
+ * but compare exactly: a number below zero is smaller than any u32.
+ */
 ${kw}type u32 = number & Brand<"u32">;
 /** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
 ${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
@@ -262,6 +263,10 @@ ${kw}function shared(initial: number): number;
 ${kw}function shared(initial: boolean): boolean;
 /** The value kept within low … high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
 ${kw}function clamp(value: number, low: number, high: number): number;
+/** The same 32 bits read as a u32: u32(-1) is 4 294 967 295. Costs nothing in a program; \`x >>> 0\` says the same. */
+${kw}function u32(value: number): u32;
+/** The same 32 bits read as a signed number: i32(4294967295) is -1. Costs nothing in a program; \`x | 0\` of a u32 says the same. */
+${kw}function i32(value: number): number;
 /**
  * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
  * number goes — \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,

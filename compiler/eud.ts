@@ -37,7 +37,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
     switch (e.kind) {
       case "unitField": case "unitAlive": case "unitFlag": unit(e.unit); break;
       case "unitSame": unit(e.left); unit(e.right); break;
-      case "unary": expr(e.expr); break;
+      case "unary": case "cast": expr(e.expr); break;
       case "binary": case "compare": expr(e.left); expr(e.right); break;
       case "ternary": expr(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
       case "intrinsic": e.args.forEach(expr); break;
@@ -123,12 +123,12 @@ function scans(program: Program, out: LineHint[]) {
     : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));
 }
 
-/** A divisor known when the script is built has to be a whole number of at least 1; a variable that is 0 in the game gives 0. */
+/** A divisor known when the script is built has to be a whole number other than 0; a variable that is 0 in the game gives 0. */
 function checkDivisions(body: Stmt[], out: ProgramDiagnostic[]) {
   expressions(body, (e) => {
     if (e.kind !== "binary" || (e.op !== "/" && e.op !== "%") || e.right.kind !== "const") return;
     const d = e.right.value;
-    if (!Number.isInteger(d) || d <= 0) out.push({ at: e.at, message: `Divide by a whole number of at least 1, not ${d}.` });
+    if (!Number.isInteger(d) || d === 0) out.push({ at: e.at, message: `Divide by a whole number other than 0, not ${d}.` });
   });
 }
 
@@ -139,7 +139,7 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[]) {
     const d = decls.get(id);
     if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
     const max = 2 ** d.bits - 1;
-    if (value.value > max) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 … ${max}, not ${value.value}.` });
+    if (value.value > max || value.value < 0) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 … ${max}, not ${value.value}.` });
   };
   const stmt = (s: Stmt) => {
     switch (s.kind) {
@@ -212,7 +212,7 @@ function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
     case "unitField": case "unitAlive": case "unitFlag": into.add(THE_GAME); if (e.unit.kind === "unitVar") into.add(e.unit.id); break;
     case "unitSame": for (const u of [e.left, e.right]) if (u.kind === "unitVar") into.add(u.id); break;
     case "randomInt": reads(e.bound, into); break;
-    case "unary": reads(e.expr, into); break;
+    case "unary": case "cast": reads(e.expr, into); break;
     case "binary": case "compare": reads(e.left, into); reads(e.right, into); break;
     case "ternary": reads(e.cond, into); reads(e.whenTrue, into); reads(e.whenFalse, into); break;
     case "intrinsic": e.args.forEach((a) => reads(a, into)); break;
@@ -295,7 +295,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
     switch (e.kind) {
       case "unitField": case "unitAlive": case "unitFlag": return { ...e, unit: unit(e.unit) };
       case "unitSame": return { ...e, left: unit(e.left), right: unit(e.right) };
-      case "unary": return { ...e, expr: expr(e.expr) };
+      case "unary": case "cast": return { ...e, expr: expr(e.expr) };
       case "binary": case "compare": return { ...e, left: expr(e.left), right: expr(e.right) };
       case "ternary": return { ...e, cond: expr(e.cond), whenTrue: expr(e.whenTrue), whenFalse: expr(e.whenFalse) } as E;
       case "intrinsic": return { ...e, args: e.args.map(expr) };

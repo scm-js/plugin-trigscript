@@ -40,6 +40,16 @@ and how do we get the best developer experience out of that.
 > inside a string, so they survive a helper or a `+`, and only `displayText` / `print`
 > take them. `random(n)`, seeded from the game, and `& | ^ << >>`. IR version 3. The probe
 > is `probes/reads.ts`.
+>
+> **Revised 2026-09-18 (evening): the language before the tooling.** The order of what is
+> left changed. `test()` and the debugger were next; they now come after four slices that
+> make a program's language the TypeScript a person already writes — signed numbers,
+> arrays and keyed tables, functions that are really called, recursion — because each of
+> those changes what a debugger and a test's `sim` have to show (a call stack, an array,
+> a number below zero), and because the examples of the last slice should be written in
+> the language as it ends up. The cost is probes: slice 5 as planned needed none, and each
+> of these has one to be played. See *The language slices* under Slices; the *Numbers* and
+> *Arrays* paragraphs of the programming model below are superseded by it.
 
 ## What we are aiming for
 
@@ -371,8 +381,12 @@ before the slice is called done, in the Magenta manner.
 | 2 | Reads and text (3.2.0) | `deaths(P1, u)` as a value, `minerals()`, `countUnits()`, player facts, template literals with numbers and names, `print()`, `random(n)`, the bitwise operators | 2–3 days |
 | 3 | `Unit` objects, unit loops, picks, `stats()` (3.3.0; built 2026-09-18, the probe is `probes/units.ts`) | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
 | 4 | Input (3.4.0; built 2026-09-18, the probe is `probes/input.ts`) | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |
-| 5 | `test()` blocks + debugger | Tests panel, frame stepping, breakpoints, world table | 3–4 days |
-| 6 | Examples, guide, assistant prompts, registry | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers target-aware | 2 days |
+| 5 | Signed numbers (3.5.0; the probe is `probes/numbers.ts`, played 2026-09-18: every line as expected, the ore at 75 at the end) | `number` is a signed 32-bit integer, `u32` the unsigned one beside it, `>>>` apart from `>>`, division towards zero; IR 6 | 2–3 days |
+| 6 | Arrays and keyed tables (3.6.0) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` within a declared capacity; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
+| 7 | Functions that are called (3.7.0) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which | 3 days |
+| 8 | Recursion (3.8.0) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
+| 9 | `test()` blocks + debugger (3.9.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
+| 10 | Examples, guide, assistant prompts, registry (3.10.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
 
 **Slice 3 as built**, where it differs from the sections above: the read of a unit's order is
 `orderId` (a property and a method cannot share the name `order`); `underMouse()` waits for
@@ -416,6 +430,83 @@ passed but F6, which the game never reports (silent first in MSQC's settings and
 third, while F7, F8, `1`, Q, W and E answered), so F6 is not a `Key`. MSQC's unit type (the Valkyrie) and its
 player (12) are fixed for now; a map that uses Valkyries has no way to say so yet.
 
+### The language slices (5–8)
+
+Decided 2026-09-18 with the user. What they share: the source is TypeScript a person would
+write anyway, and where the game cannot follow, the compiler says so at the line.
+
+**5. Numbers (3.5.0).** Programs have been Remastered only since 3.0, so the reason a value
+below zero was stored as 0 — parity with a death counter — is gone, and it was the least
+TypeScript thing in the language.
+
+| Type | Meaning |
+| --- | --- |
+| `number` | A signed 32-bit integer, −2 147 483 648 to 2 147 483 647, wrapping as `x \| 0` does. What everything is unless it says otherwise, and what every read of the game gives (`deaths()`, `minerals()`, `u.hp`). |
+| `u32` | Unsigned, 0 to 4 294 967 295, wrapping as `x >>> 0` does. For bit masks, hashes, and a counter past two thousand million. |
+| `u8`, `u16` | As they were: 0 to 255 / 65 535, stopping at either end when stored. |
+
+- `+ − * & | ^ <<` are the same 32 bits whichever the type. The type decides five things: a
+  comparison, `/` and `%` (towards zero for a `number`, as `Math.trunc(a / b)`; the remainder
+  takes the dividend's sign, as in JavaScript), `>>` (keeps the sign of a `number`) against
+  `>>>` (never does), `Math.min` / `Math.max`, and how a number is printed.
+- **Mixing.** A whole-number constant that fits is either type. A `number` and a `u32` in one
+  piece of arithmetic is a compile error that names `u32(x)` and `i32(x)`, which cost
+  nothing; `x >>> 0` is `u32(x)`, as it is in JavaScript. A *comparison* between the two is
+  not an error: it is computed exactly (a `number` below zero is smaller than any `u32`).
+  Assigning one to a variable of the other keeps the bits, as the conversion functions do.
+- **Where the game takes no number below zero** — a `u8` / `u16`, a unit's hit points, an
+  action's amount, a cell of `stats()`, `random(n)`'s bound, a place on the map — a
+  `number` below zero goes in as 0. The front end writes that as `max(v, 0)` where it cannot
+  see that the value is never below zero (a read, a `u8`, `x & 0xff`, `x % n` of such), so
+  the lowering's stores stay what they were.
+- A signed comparison costs an addition a side (the top bit flipped); `==` and `!=` cost
+  nothing extra, and neither does a comparison both of whose sides are never below zero.
+- The one difference from a TypeScript `number` that is left: ours wraps at ±2³¹ where a
+  double would go on. The README says so in a sentence; the simulator wraps the same way.
+- IR 6: `VarDecl.unsigned`, the `>>>` operator, `unsigned` on `/` `%` `min` `max` and on a
+  printed number, `unsigned: true | "left" | "right"` on a comparison. The flattening of `+`
+  and `−` into two sides, which is how an unsigned cell was made to mean a difference, goes.
+
+**6. Arrays and keyed tables (3.6.0).**
+
+- `let hp = [0, 0, 0]`, `new Array(12).fill(3)`, `u8[]`, arrays of records (an array per
+  field) and of units (three cells each, re-checked on use as a unit variable is). An index
+  is a constant or a variable; `for…of`, `.length`, `indexOf`, `includes`, `fill` run within
+  the frame. A per-player program has twelve of each, as it has of a variable.
+- `push` / `pop` need a capacity: an array that grows is declared with one, and an
+  unbounded `[]` that is pushed to is an error that says how to give it. A read past the
+  end is 0 and a write past it does nothing — in the game; the simulator fails the test
+  and names the line, since it is always a mistake.
+- **Keyed tables.** `Record<K, V>`, `Map<K, V>` and `Set<K>` whose keys are a set known
+  when the script is built — `Player`, `UnitType`, a location, a union of string literals,
+  a small range of numbers — are an array indexed by the key, so `price[u.type]` or
+  `kills.get(CurrentPlayer)` with a key of the game is one read. `get`, `set`, `has`,
+  `delete`, `clear`, `size` and `for…of` over the keys. `let s = {}` with fields added later
+  is refused by TypeScript itself; its typed form, `Record<K, V>`, is this.
+- A `Map<number, number>` over *any* key is a hash table with a capacity, a few probes an
+  operation. Not in this slice; after recursion, if wanted. A key that is a string of the
+  game does not exist: there are no strings when the map is played.
+
+**7. Functions that are called (3.7.0).** Inlining stays the default because two things
+need it: a function that sleeps (the program resumes inside it, through the lowering's own
+jumps), and a parameter that reaches a field only a value known at build time can fill
+(`spawn(P2, 4)`'s player). A function with neither, called from more than one place, becomes
+one copy that is called; the source is the same either way and the end of the line says
+which, as *unrolled ×3* does. What it buys is the size of the built map.
+
+**8. Recursion (3.8.0).** eudplib's functions keep their arguments, results and return
+address in cells of their own (`EUDFuncN`: `_fargs`, `_frets`, one `_nptr`), so a call from
+inside itself overwrites the outer one. A function on a cycle of the call graph — only
+those pay — pushes its parameters, locals, live temporaries and return address on one stack
+array around the call and pops them after; mutual recursion is the same. `fib`, a flood
+fill over an array, a walk of a tree of indices compile as written. Three rules show that
+it is not a JavaScript engine: no `sleep()` in such a function (which is also why one stack
+serves every player — it is empty between frames); a depth limit, with a line in the game
+("stack overflow in fill, line 12"), the program stopped, and the same as a failed test in
+the simulator; and its parameters are variables, so one that reaches a build-time-only
+field is a compile error. Cost: a store and a load a saved cell a call — fine in the tens
+and hundreds, slow for thousands of calls in a frame; the probe times it.
+
 Slice 1 is where the value is and where the risk is; nothing after it is hard once the IR
 and the Python lowering exist. Slices 2–4 can be reordered by what the user wants to play
 with first; 5 and 6 are what make it feel finished.
@@ -424,16 +515,17 @@ with first; 5 and 6 are what make it feel finished.
 
 - ~~The name for a unit on the map.~~ Decided 2026-09-17: `Unit` is the unit on the map,
   `UnitType` the table entry, renamed in slice 1 (no users yet, so no migration).
-- **Signed numbers.** Not planned: 32-bit unsigned on both targets keeps one contract.
-  An `i32` type could come later on the Remastered target only.
+- ~~Signed numbers.~~ Decided 2026-09-18: `number` is signed, `u32` is the unsigned type
+  beside it (slice 5).
 - **Reads on the classic target.** Planned in slice 2 for parity, with cost hints; they
   could be Remastered-only if the decomposition cost makes them a trap.
 - **Where the built map goes.** Beside the source as `<name>-eud.scx`, like Magenta. The
   alternative, writing the payload into the source map, would make the editor's own
   trigger list unreadable and is not recommended.
-- **Functions as real calls.** Inlining stays (it is what the classic target does and
-  what the semantics were written for). eudplib's `EUDFunc` would shrink the payload for
-  a function called from many places; a `{ inline: false }` option could come later.
+- ~~Functions as real calls.~~ Decided 2026-09-18: the compiler chooses (slice 7), and
+  recursion follows (slice 8).
+- **A map over any key.** `Map<number, number>` as a hash table with a capacity; after
+  slice 8, if wanted.
 - **A limit on scans.** A loop over every unit on every frame in a per-player program is
   twelve scans a frame. A hint is planned; a hard cap is not.
 - **The classic install on the Remastered target.** As of 2.6 every compile still runs the

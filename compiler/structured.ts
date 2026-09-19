@@ -55,7 +55,7 @@ import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGa
 import { cellMax } from "./tables";
 import { Scope, type Binding } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { IR_VERSION, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, type ActionVariable, type ArithOp, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { I32_MIN, IR_VERSION, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, type ActionVariable, type ArithOp, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -247,8 +247,8 @@ export class Structured {
     return list;
   }
 
-  private newVar(name: string, kind: Kind, at: At, extra: { shared?: boolean; bits?: 8 | 16; temp?: boolean } = {}): VarDecl {
-    return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.temp ? { temp: true } : {}), at };
+  private newVar(name: string, kind: Kind, at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; temp?: boolean } = {}): VarDecl {
+    return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.temp ? { temp: true } : {}), at };
   }
 
   /* ── Values and bindings ── */
@@ -567,7 +567,7 @@ export class Structured {
       if (shared && shared.arguments.length !== 1) { this.c.error(init, "shared() takes the initial value: shared(0) or shared(false)."); continue; }
       if (shared && kind === "unit") { this.c.error(init, "shared() holds a number or a boolean."); continue; }
       const initializer = shared ? shared.arguments[0] : d.initializer;
-      const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...(kind === "number" ? { bits: this.bitsOf(type) } : {}) });
+      const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...(kind === "number" ? this.widthOf(type) : {}) });
       this.emitDeclare(v, initializer, d);
       // Bound after the initialiser: `let x = x` is the checker's error, not a self-reference here.
       this.scope.bind(d, { kind: "var", v });
@@ -610,7 +610,7 @@ export class Structured {
       }
       const kind = this.kindOf(ft);
       if (!kind) { this.c.error(p, `A record's fields hold numbers, booleans or units; ${full} is ${this.c.checker.typeToString(ft)}.`); ok = false; continue; }
-      const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? { bits: this.bitsOf(ft) } : {});
+      const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? this.widthOf(ft) : {});
       this.emitDeclare(v, init, at);
       fields.set(key, { kind: "var", v });
     }
@@ -660,17 +660,18 @@ export class Structured {
     return { file: this.body.sf.fileName, line: p.line + 1, column: p.character + 1 };
   }
 
-  /** The width a `u8` / `u16` annotation declares, read off the brand in the type; undefined for a plain number. */
-  private bitsOf(type: TS.Type): 8 | 16 | undefined {
+  /** What a `u8` / `u16` / `u32` annotation declares, read off the brand in the type; nothing for a plain number, which is signed. */
+  private widthOf(type: TS.Type): { bits?: 8 | 16; unsigned?: boolean } {
     for (const t of type.isIntersection() ? type.types : [type]) {
       const p = t.getProperty("__kind");
       if (!p) continue;
       const pt = this.c.checker.getTypeOfSymbol(p);
       const names = (pt.isUnion() ? pt.types : [pt]).filter((x): x is TS.StringLiteralType => x.isStringLiteral()).map((x) => x.value);
-      if (names.includes("u8")) return 8;
-      if (names.includes("u16")) return 16;
+      if (names.includes("u8")) return { bits: 8 };
+      if (names.includes("u16")) return { bits: 16 };
+      if (names.includes("u32")) return { unsigned: true };
     }
-    return undefined;
+    return {};
   }
 
   private kindOf(type: TS.Type): Kind | null {
@@ -853,7 +854,7 @@ export class Structured {
           return;
         }
         const arith = compoundOp(ts, op);
-        if (!arith) { this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number."); return; }
+        if (!arith) { this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= >>>= assign a number."); return; }
         const rhs = this.num(e.right);
         if (!rhs) return;
         this.emit({ kind: "assign", target: target.id, value: this.mark({ kind: "binary", op: arith, left: varRef(target), right: rhs, at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
@@ -1139,7 +1140,7 @@ export class Structured {
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? "void";
     const line = this.line(call);
     const out: Call = { ...(name ? { name } : {}), at: this.at(call), label: this.label(call), params: [], body: [] };
-    if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true }), kind };
+    if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true, ...(kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(call)) : {}) }), kind };
     this.mark(out, call);
     // A function of the body closes over the program's variables; a game function sees only its own.
     const scope = new Scope(target === this.body && target === this.c.body ? this.topScope : null);
@@ -1171,7 +1172,7 @@ export class Structured {
       if (variable) {
         // By value, as in TypeScript. A parameter the function never assigns can read the caller's variable directly; one it assigns gets a copy.
         if (!this.assigns(body, p)) { scope.bind(p, { kind: "var", v: variable }); return; }
-        const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), variable.bits ? { bits: variable.bits } : {});
+        const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), { ...(variable.bits ? { bits: variable.bits } : {}), ...(variable.unsigned ? { unsigned: true } : {}) });
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
         out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable), label });
         scope.bind(p, { kind: "var", v: copy });
@@ -1189,7 +1190,7 @@ export class Structured {
       const value = ts.isIdentifier(this.unwrap(arg)) ? null : this.numQuietly(arg);
       if (value) {
         // An expression over variables: computed into a variable of the parameter's own.
-        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name));
+        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name), this.widthOf(this.c.checker.getTypeAtLocation(p.name)));
         out.params.push({ decl: copy, init: value, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
         scope.bind(p, { kind: "var", v: copy });
         return;
@@ -1270,6 +1271,7 @@ export class Structured {
     if (typeof v === "boolean") return v ? 1 : 0;
     if (typeof v !== "number" || !Number.isFinite(v)) { this.c.error(at, `Expected a number, got ${describe(v)}.`); return null; }
     if (!Number.isInteger(v)) { this.c.error(at, `Only whole numbers exist in the game (got ${v}).`); return null; }
+    if (v < I32_MIN || v > U32_MAX) { this.c.error(at, `A number of the game has 32 bits: −2 147 483 648 to 2 147 483 647, or up to 4 294 967 295 as a u32 (got ${v}).`); return null; }
     return v;
   }
 
@@ -1327,7 +1329,7 @@ export class Structured {
     }
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
-      if (!op) { this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >>."); return null; }
+      if (!op) { this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>."); return null; }
       const l = this.num(e.left);
       const r = this.num(e.right);
       if (!l || !r) return null;
@@ -1407,6 +1409,12 @@ export class Structured {
     }
     const read = this.readCall(e);
     if (read !== undefined) return read ? this.readValue(read, e) : null;
+    for (const to of ["u32", "i32"] as const) {
+      if (!this.isLibraryCall(e, to)) continue;
+      // The same 32 bits, read the other way: nothing is computed.
+      const a = args(1, `${to}()`);
+      return a ? this.mark<NumExpr>({ kind: "cast", to, expr: a[0], at: this.at(e) }, e) : null;
+    }
     if (this.isLibraryCall(e, "clamp")) {
       const a = args(3, "clamp()");
       if (!a) return null;
@@ -1893,7 +1901,8 @@ function arithOp(ts: typeof TS, kind: TS.SyntaxKind): ArithOp | null {
     case ts.SyntaxKind.CaretToken: return "^";
     case ts.SyntaxKind.LessThanLessThanToken: return "<<";
     // Numbers are unsigned, so the two right shifts are one.
-    case ts.SyntaxKind.GreaterThanGreaterThanToken: case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanToken: return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken: return ">>>";
     default: return null;
   }
 }
@@ -1909,7 +1918,8 @@ function compoundOp(ts: typeof TS, kind: TS.SyntaxKind): ArithOp | null {
     case ts.SyntaxKind.BarEqualsToken: return "|";
     case ts.SyntaxKind.CaretEqualsToken: return "^";
     case ts.SyntaxKind.LessThanLessThanEqualsToken: return "<<";
-    case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken: case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken: return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken: return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken: return ">>>";
     default: return null;
   }
 }

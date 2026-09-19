@@ -3,6 +3,8 @@
  * gives the frame back, and how a number comes out — the places where the obvious
  * implementation would differ from what eudplib builds.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { compileScript, type CompileResult } from "../compiler/compiler";
@@ -44,13 +46,42 @@ describe("frames", () => {
 describe("numbers come out as the game computes them", () => {
   const value = (body: string, name = "out") => after(body).value(name);
 
-  it("a sum stops at 0 as a whole, not term by term", () => {
+  it("a number goes below zero, as TypeScript's does", () => {
     expect(value("let a = 3; let b = 10; let out = 0; out = a - b + 9;")).toBe(2);
-    expect(value("let a = 3; let b = 10; let out = 0; out = a - b;")).toBe(0);
+    expect(value("let a = 3; let b = 10; let out = 0; out = a - b;")).toBe(-7);
+    expect(value("let a = 3; let out = 0; out = -a * 2;")).toBe(-6);
   });
-  it("what is added wraps at 2³² once a variable is part of it; constants alone are exact", () => {
-    expect(value("let a = 4294967295; let b = 1; let out = 0; out = a + b - 1;")).toBe(0);
-    expect(value("let out = 0; out = 4294967295 + 1 - 1;")).toBe(4294967295);
+  it("a number wraps at 2³¹ as x | 0 does, a u32 at 2³² as x >>> 0 does", () => {
+    expect(value("let a = 2147483647; let b = 1; let out = 0; out = a + b;")).toBe(-2147483648);
+    expect(value("let a: u32 = 4294967295; let out: u32 = 5; out = a + 1;")).toBe(0);
+    expect(value("let a: u32 = 0; let out: u32 = 5; out = a - 1;")).toBe(4294967295);
+  });
+  it("division is towards zero and the remainder takes the dividend's sign; u32s divide from 0 up; a divisor of 0 gives 0", () => {
+    expect(value("let a = -7; let b = 2; let out = 0; out = a / b;")).toBe(-3);
+    expect(value("let a = -7; let b = 2; let out = 0; out = a % b;")).toBe(-1);
+    expect(value("let a = 7; let b = -2; let out = 0; out = a / b * 10 + a % b;")).toBe(-29);
+    expect(value("let a = -7; let out = 0; out = a / 2 * 10 + a % 2;")).toBe(-31);
+    expect(value("let a: u32 = 4294967295; let out: u32 = 0; out = a / 2;")).toBe(2147483647);
+    expect(value("let a = -7; let z = 0; let out = 9; out = a / z + a % z;")).toBe(0);
+  });
+  it("comparisons are signed, exact between a number and a u32, and Math.min / max / abs follow", () => {
+    expect(value("let a = -1; let b = 1; let out = 0; if (a < b) out = 1;")).toBe(1);
+    expect(value("let a: u32 = 4294967295; let b: u32 = 1; let out = 0; if (a > b) out = 1;")).toBe(1);
+    expect(value("let a = -1; let b: u32 = 4294967295; let out = 0; if (a < b) out += 1; if (a != b) out += 2; if (b > a) out += 4; if (a == b) out += 8;")).toBe(7);
+    expect(value("let a = -5; let b = 3; let out = 0; out = Math.min(a, b) * 100 + Math.max(a, b) * 10 + Math.abs(a);")).toBe(-500 + 30 + 5);
+    expect(value("let a: u32 = 4294967295; let b: u32 = 3; let out: u32 = 0; out = Math.min(a, b);")).toBe(3);
+  });
+  it("u32(x), i32(x) and x >>> 0 read the same bits the other way and compute nothing", () => {
+    expect(value("let a = -1; let out: u32 = 0; out = u32(a) / 2;")).toBe(2147483647);
+    expect(value("let a = -1; let out: u32 = 0; out = (a >>> 0) / 2;")).toBe(2147483647);
+    expect(value("let a: u32 = 4294967295; let out = 0; out = i32(a) / 2;")).toBe(0);
+    expect(value("let a: u32 = 4294967294; let out = 0; out = i32(a) - 1;")).toBe(-3);
+    expect(compile("let a = -1; let out: u32 = 0; out = u32(a) / 2;").ir[0].body.some((s) => JSON.stringify(s).includes('"cast"'))).toBe(false);
+  });
+  it("where the game takes nothing below zero, a number below zero goes in as 0", () => {
+    expect(value("let a = -5; let out: u8 = 9; out = a;")).toBe(0);
+    expect(value("let a = 300; let out: u8 = 9; out = a;")).toBe(255);
+    expect(value("let a = -5; let out: u16 = 9; out = a + 2;")).toBe(0);
   });
   it("a comparison moves what a side subtracts to the other side", () => {
     expect(value("let a = 3; let b = 5; let out = 0; if (a - b == 0) out = 1;")).toBe(0);
@@ -124,11 +155,16 @@ describe("random(n) and the bitwise operators", () => {
     const sim = simulatePrograms(r.ir, 1, { strings: r.strings, random: () => rolls.shift() ?? 0 });
     expect([sim.value("out"), sim.value("zero"), sim.value("lane"), sim.value("coin")]).toEqual([5, 0, 1, true]);
   });
-  it("& | ^ << >> work on 32 unsigned bits, and a shift by 32 or more leaves nothing", () => {
+  it("& | ^ << >> >>> work on the 32 bits; >> keeps the sign, >>> does not, and a shift by 32 or more leaves nothing but the sign", () => {
     expect(value("let a = 12; let b = 10; let out = 0; out = (a & b) + (a | b) * 100 + (a ^ b) * 10000;")).toBe(8 + 1400 + 60000);
-    expect(value("let a = 1; let s = 31; let out = 0; out = a << s;")).toBe(2147483648);
-    expect(value("let a = 4294967295; let s = 28; let out = 0; out = a >> s; out = out + (a >>> s);")).toBe(30);
+    expect(value("let a = 1; let s = 31; let out = 0; out = a << s;")).toBe(-2147483648);
+    expect(value("let a: u32 = 1; let s = 31; let out: u32 = 0; out = a << s;")).toBe(2147483648);
+    expect(value("let a: u32 = 4294967295; let s = 28; let out: u32 = 0; out = a >> s; out = out + (a >>> s);")).toBe(30);
+    expect(value("let a = -16; let s = 2; let out = 0; out = a >> s;")).toBe(-4);
+    expect(value("let a = -16; let out = 0; out = a >> 2;")).toBe(-4);
+    expect(value("let a = -16; let s = 28; let out = 0; out = a >>> s;")).toBe(15);
     expect(value("let a = 5; let s = 32; let out = 9; out = (a << s) + (a >> s);")).toBe(0);
+    expect(value("let a = -5; let s = 40; let out = 9; out = a >> s;")).toBe(-1);
     expect(value("let a = 6; let out = 0; a &= 3; a |= 8; a ^= 1; a <<= 2; a >>= 1; out = a;")).toBe(22);
   });
 });
@@ -163,5 +199,30 @@ describe("text with the program's values in it", () => {
     expect(errors("program(() => {\n  let n = 1;\n  setMissionObjectives(`${n} left`);\n});")[0]).toMatch(/^3:setMissionObjectives's text must be known when the script is built/);
     expect(errors("program(() => {\n  print(\"x\", { to: players.Foes });\n});")[0]).toMatch(/print: to is a player/);
     expect(errors("trigger(P1, [always()], [print(\"x\") as any]);")[0]).toMatch(/print\(\) is a statement of a program/);
+  });
+});
+
+describe("the numbers probe (probes/numbers.ts), which is played in the game, says the same here", () => {
+  const r = compileScript(ts, { "main.ts": readFileSync(resolve(import.meta.dirname, "..", "probes", "numbers.ts"), "utf8") }, NAMES, { lib: LIB });
+  const marine = { type: 0, owner: 0, x: 100, y: 100, hp: 40, maxHp: 40 };
+  const sim = simulatePrograms(r.ir, 24 * 58, { strings: r.strings, units: [marine], playerName: () => "Ann" });
+  const lines = sim.events.map((e) => e.text ?? "").filter((t) => /^[A-Z]\d?: /.test(t));
+
+  it("compiles, and every line that states what it expects shows it", () => {
+    expect(r.diagnostics).toEqual([]);
+    const stated = lines.map((t) => /^([A-Z]\d?): ([-\d ]+) \(expect ([-\d ]+)\)$/.exec(t)).filter((m): m is RegExpExecArray => !!m);
+    expect(stated.map((m) => m[1])).toEqual(["A", "B", "C", "D", "D2", "D3", "E", "F", "G", "H", "L"]);
+    for (const m of stated) expect(`${m[1]}: ${m[2]}`).toBe(`${m[1]}: ${m[3]}`);
+  });
+  it("and the lines that say it in words", () => {
+    expect(lines).toContain("I: a u8 of -5 is 0, of 300 is 255 (expect 0 255); your ORE was set from -50: the top bar says 0");
+    expect(lines).toContain("J: while (i >= 0) ran 4 times and left i at -1 (expect 4 and -1)");
+    expect(lines).toContain("K: minus one");
+    expect(lines).toContain("M: one of your Marines lost 1000 hit points: it DIED");
+    expect(lines).toContain("N: Ann owes -5 (expect -5)");
+    // Ore was set from -50, which goes in as 0, then from 75; a count of -3 made no unit and a count of 2 made two.
+    const ore = sim.events.filter((e) => e.action.type === 26).map((e) => e.action.target);
+    expect(ore).toEqual([0, 75]);
+    expect(sim.events.filter((e) => e.action.type === 44).map((e) => e.action.modifier)).toEqual([0, 2]);
   });
 });

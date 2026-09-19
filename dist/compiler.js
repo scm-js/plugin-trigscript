@@ -1233,10 +1233,13 @@ function defaultScriptNames() {
 }
 
 // compiler/ir.ts
-var IR_VERSION = 5;
+var IR_VERSION = 6;
 var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
 var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
 var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var I32_MAX = 2147483647;
+var I32_MIN = -2147483648;
+var U32_MAX2 = 4294967295;
 var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
   switch (e.kind) {
@@ -1246,6 +1249,7 @@ var isNumExpr = (e) => {
       return false;
     // ambiguous by shape; callers know the variable's kind
     case "unary":
+    case "cast":
     case "binary":
     case "intrinsic":
     case "read":
@@ -1360,6 +1364,7 @@ function declarations(body2) {
         unit(e.unit);
         break;
       case "unary":
+      case "cast":
         expr(e.expr);
         break;
       case "binary":
@@ -1542,6 +1547,7 @@ function inputsOf(programs) {
         unit(e.right);
         break;
       case "unary":
+      case "cast":
         expr(e.expr);
         break;
       case "binary":
@@ -2046,7 +2052,13 @@ function createRuntime(names, collector, options = {}) {
   rt.shared = () => {
     throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
   };
-  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
+  const signed = (v, what) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+    return v;
+  };
+  rt.u32 = (v) => signed(v, "u32: value") >>> 0;
+  rt.i32 = (v) => signed(v, "i32: value") | 0;
+  rt.clamp = (v, lo, hi) => Math.min(Math.max(signed(v, "clamp: value"), signed(lo, "clamp: low")), signed(hi, "clamp: high"));
   const reader = (fn) => Object.assign(fn, { __trigscript: "reader" });
   const onePlayer = (v, what, slots = PLAYER_SLOTS) => {
     const n = integer(v, what);
@@ -2326,14 +2338,15 @@ ${kw}type Race<N extends number = number> = N & Brand<"race">;
 ${kw}type Slot<N extends number = number> = N & Brand<"slot">;
 /** A unit count: a number, or "All". */
 ${kw}type Count = number | "All";
-/**
- * A number of a program that stays within 0 \u2026 255. Operations between variables decompose over
- * 8 bits instead of 32, so \`a += b\` costs 8 + 8 triggers rather than 32 + 32. Saturates at 255.
- */
+/** A number of a program that stays within 0 \u2026 255: stored below zero it is 0, above 255 it is 255. A plain \`number\` is signed and wraps. */
 ${kw}type u8 = number & Brand<"u8">;
-/** A number of a program that stays within 0 \u2026 65 535: 16-bit operations between variables. Saturates at 65 535. */
+/** A number of a program that stays within 0 \u2026 65 535: stored below zero it is 0, above 65 535 it is 65 535. */
 ${kw}type u16 = number & Brand<"u16">;
-/** A number of a program with the full range, 0 \u2026 4 294 967 295 \u2014 what a plain \`number\` is. */
+/**
+ * A number of a program read as 0 \u2026 4 294 967 295, wrapping as \`x >>> 0\` does: for bit masks, hashes and a count past
+ * 2 147 483 647. A plain \`number\` is signed. The two do not mix in arithmetic without saying which is meant \u2014 u32(x), i32(x) \u2014
+ * but compare exactly: a number below zero is smaller than any u32.
+ */
 ${kw}type u32 = number & Brand<"u32">;
 /** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
 ${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
@@ -2522,6 +2535,10 @@ ${kw}function shared(initial: number): number;
 ${kw}function shared(initial: boolean): boolean;
 /** The value kept within low \u2026 high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
 ${kw}function clamp(value: number, low: number, high: number): number;
+/** The same 32 bits read as a u32: u32(-1) is 4 294 967 295. Costs nothing in a program; \`x >>> 0\` says the same. */
+${kw}function u32(value: number): u32;
+/** The same 32 bits read as a signed number: i32(4294967295) is -1. Costs nothing in a program; \`x | 0\` of a u32 says the same. */
+${kw}function i32(value: number): number;
 /**
  * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
  * number goes \u2014 \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,
@@ -3346,6 +3363,7 @@ function expressions(body2, visit, pick) {
         unit(e.right);
         break;
       case "unary":
+      case "cast":
         expr(e.expr);
         break;
       case "binary":
@@ -3527,7 +3545,7 @@ function checkDivisions(body2, out) {
   expressions(body2, (e) => {
     if (e.kind !== "binary" || e.op !== "/" && e.op !== "%" || e.right.kind !== "const") return;
     const d = e.right.value;
-    if (!Number.isInteger(d) || d <= 0) out.push({ at: e.at, message: `Divide by a whole number of at least 1, not ${d}.` });
+    if (!Number.isInteger(d) || d === 0) out.push({ at: e.at, message: `Divide by a whole number other than 0, not ${d}.` });
   });
 }
 function checkWidths(body2, out) {
@@ -3536,7 +3554,7 @@ function checkWidths(body2, out) {
     const d = decls.get(id);
     if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
     const max = 2 ** d.bits - 1;
-    if (value.value > max) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 \u2026 ${max}, not ${value.value}.` });
+    if (value.value > max || value.value < 0) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 \u2026 ${max}, not ${value.value}.` });
   };
   const stmt = (s) => {
     switch (s.kind) {
@@ -3699,6 +3717,7 @@ function reads(e, into = /* @__PURE__ */ new Set()) {
       reads(e.bound, into);
       break;
     case "unary":
+    case "cast":
       reads(e.expr, into);
       break;
     case "binary":
@@ -3809,6 +3828,300 @@ function checkSleeps(body2, out) {
     }
   };
   body2.forEach(stmt);
+}
+
+// compiler/numbers.ts
+var FLAGS = new Set(UNIT_FLAGS);
+function typeNumbers(program) {
+  const errors = [];
+  const never = /* @__PURE__ */ new Set();
+  const stores = [];
+  let settled = false;
+  const decls = new Map(declarations(program.body).map((d) => [d.id, d]));
+  const mixed = (at, what) => errors.push({ at, message: `${what} mixes a number, which is signed, with a u32. Say which is meant: u32(x) reads a number's 32 bits from 0 up, i32(x) a u32's as a signed number.` });
+  const unify = (a2, b, at, what) => {
+    if (a2 === "flex") return b;
+    if (b === "flex" || a2 === b) return a2;
+    mixed(at, what);
+    return "i32";
+  };
+  const nonNegative = (e) => {
+    switch (e.kind) {
+      case "const":
+        return e.value >= 0 && e.value <= I32_MAX;
+      case "var":
+        return !!decls.get(e.id)?.bits || never.has(e.id);
+      case "read":
+      case "unitField":
+      case "tableRead":
+      case "input":
+      case "randomInt":
+        return true;
+      case "ternary":
+        return nonNegative(e.whenTrue) && nonNegative(e.whenFalse);
+      case "intrinsic":
+        return e.unsigned ? false : e.name === "min" ? e.args.every(nonNegative) : e.name === "max" ? e.args.some(nonNegative) : false;
+      case "binary":
+        if (e.unsigned) return false;
+        switch (e.op) {
+          case "&":
+            return nonNegative(e.left) || nonNegative(e.right);
+          case "|":
+          case "^":
+          case "/":
+            return nonNegative(e.left) && nonNegative(e.right);
+          case "%":
+          case ">>":
+            return nonNegative(e.left);
+          case ">>>":
+            return e.right.kind === "const" && e.right.value >= 1 && e.right.value <= 31;
+          default:
+            return false;
+        }
+      case "call":
+        return !!e.call.result?.decl.bits;
+      default:
+        return false;
+    }
+  };
+  const num2 = (e) => {
+    switch (e.kind) {
+      case "const":
+        return [e, e.value < 0 ? "i32" : e.value > I32_MAX ? "u32" : "flex"];
+      case "var":
+        return [e, decls.get(e.id)?.unsigned ? "u32" : "i32"];
+      case "cast": {
+        const inner = num2(e.expr)[0];
+        if (settled) return [inner, e.to];
+        e.expr = inner;
+        return [e, e.to];
+      }
+      case "unary": {
+        const [inner, t] = num2(e.expr);
+        e.expr = inner;
+        return [e, t === "u32" ? "u32" : "i32"];
+      }
+      case "binary": {
+        const [left, lt] = num2(e.left);
+        const [right, rt] = num2(e.right);
+        e.left = left;
+        e.right = right;
+        if (e.op === "<<" || e.op === ">>" || e.op === ">>>") {
+          if (e.op === ">>>" && right.kind === "const" && right.value === 0) return [settled ? left : e, "u32"];
+          if (e.op === ">>" && lt === "u32") e.op = ">>>";
+          return [e, lt === "flex" ? "i32" : lt];
+        }
+        const t = unify(lt, rt, e.at, `This ${e.op === "+" ? "sum" : e.op === "-" ? "difference" : e.op === "*" ? "product" : e.op === "/" || e.op === "%" ? "division" : "operation"}`);
+        if ((e.op === "/" || e.op === "%") && t === "u32") e.unsigned = true;
+        return [e, t === "flex" ? "i32" : t];
+      }
+      case "randomInt":
+        e.bound = floor(e.bound, e.at);
+        return [e, "i32"];
+      case "unitField":
+        unit(e.unit);
+        return [e, "i32"];
+      case "ternary": {
+        e.cond = bool(e.cond);
+        const [a2, at] = num2(e.whenTrue);
+        const [b, bt] = num2(e.whenFalse);
+        e.whenTrue = a2;
+        e.whenFalse = b;
+        return [e, unify(at, bt, e.at, "This ? :")];
+      }
+      case "intrinsic": {
+        const typed = e.args.map(num2);
+        e.args = typed.map(([a2]) => a2);
+        if (e.name === "abs") {
+          if (typed[0][1] === "u32") return [e.args[0], "u32"];
+          return [e, "i32"];
+        }
+        const t = typed.map(([, x]) => x).reduce((a2, b) => unify(a2, b, e.at, `Math.${e.name}()`));
+        if (t === "u32") e.unsigned = true;
+        return [e, t === "flex" ? "i32" : t];
+      }
+      case "call":
+        call(e.call);
+        return [e, e.call.result?.decl.unsigned ? "u32" : "i32"];
+      default:
+        return [e, "i32"];
+    }
+  };
+  const floor = (e, at, keepConstant = false) => {
+    const [value, t] = num2(e);
+    if (!settled || t === "u32" || nonNegative(value)) return value;
+    if (value.kind === "const") return keepConstant ? value : { kind: "const", value: 0 };
+    return { kind: "intrinsic", name: "max", args: [value, { kind: "const", value: 0 }], at, label: "label" in value ? value.label : "" };
+  };
+  const bool = (e) => {
+    switch (e.kind) {
+      case "test":
+        e.expr = num2(e.expr)[0];
+        return e;
+      case "compare": {
+        const [left, lt] = num2(e.left);
+        const [right, rt] = num2(e.right);
+        e.left = left;
+        e.right = right;
+        const leftU = lt === "u32" || lt === "flex" && rt === "u32";
+        const rightU = rt === "u32" || rt === "flex" && lt === "u32";
+        if (leftU && rightU) e.unsigned = true;
+        else if (leftU) e.unsigned = nonNegative(right) ? true : "left";
+        else if (rightU) e.unsigned = nonNegative(left) ? true : "right";
+        else if (nonNegative(left) && nonNegative(right)) e.unsigned = true;
+        return e;
+      }
+      case "and":
+      case "or":
+        e.items = e.items.map(bool);
+        return e;
+      case "not":
+        e.expr = bool(e.expr);
+        return e;
+      case "edge":
+        e.cond = bool(e.cond);
+        return e;
+      case "ternary":
+        e.cond = bool(e.cond);
+        e.whenTrue = bool(e.whenTrue);
+        e.whenFalse = bool(e.whenFalse);
+        return e;
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        return e;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        return e;
+      case "call":
+        call(e.call);
+        return e;
+      default:
+        return e;
+    }
+  };
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+  };
+  const stored = (decl, value, at) => {
+    if (decl?.bits) return floor(value, at, true);
+    const [out, t] = num2(value);
+    if (decl && out.kind === "const" && value.kind === "const") {
+      if (!decl.unsigned && t === "u32") errors.push({ at, message: `${decl.name} is a number, which holds \u22122 147 483 648 \u2026 2 147 483 647, not ${out.value}. Declare it a u32 (let ${decl.name}: u32 = \u2026), or write i32(${out.value}) for the signed number with those bits.` });
+      if (decl.unsigned && out.value < 0) errors.push({ at, message: `${decl.name} is a u32, which holds 0 \u2026 4 294 967 295, not ${out.value}. Write u32(${out.value}) for the u32 with those bits.` });
+    }
+    if (!settled && decl && !decl.unsigned) stores.push([decl.id, out]);
+    return out;
+  };
+  const valueFor = (decl, value, at) => {
+    if (decl.kind === "number") return stored(decl, value, at);
+    if (decl.kind === "boolean") return bool(value);
+    unit(value);
+    return value;
+  };
+  let result;
+  const call = (c2) => {
+    for (const p of c2.params) p.init = valueFor(p.decl, p.init, c2.at);
+    const saved = result;
+    result = c2.result?.decl;
+    c2.body.forEach(stmt);
+    result = saved;
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) s.init = valueFor(s.decl, s.init, s.at);
+        break;
+      case "assign":
+        s.value = stored(decls.get(s.target), s.value, s.at);
+        break;
+      case "assignBool":
+        s.value = bool(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        s.value = FLAGS.has(s.field) ? bool(s.value) : floor(s.value, s.at);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = floor(s.verb.amount, s.at);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") s.value = s.boolean ? bool(s.value) : floor(s.value, s.at);
+        break;
+      case "if":
+        s.cond = bool(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) s.cond = bool(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        s.cond = bool(s.cond);
+        break;
+      case "for":
+        if (s.cond) s.cond = bool(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.value = num2(s.value)[0];
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value && result) s.value = valueFor(result, s.value, s.at);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at);
+        break;
+      case "centerLocation":
+        s.x = floor(s.x, s.at);
+        s.y = floor(s.y, s.at);
+        break;
+      case "print":
+        for (const p of s.parts) {
+          if (p.kind !== "number") continue;
+          const [value, t] = num2(p.expr);
+          p.expr = value;
+          if (t === "u32") p.unsigned = true;
+        }
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  program.body.forEach(stmt);
+  for (const [id] of stores) never.add(id);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [id, value] of stores) if (never.has(id) && !nonNegative(value)) {
+      never.delete(id);
+      changed = true;
+    }
+  }
+  settled = true;
+  errors.length = 0;
+  program.body.forEach(stmt);
+  return errors;
 }
 
 // compiler/scope.ts
@@ -3952,7 +4265,7 @@ var Structured = class {
     return list;
   }
   newVar(name, kind, at, extra = {}) {
-    return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...extra.bits ? { bits: extra.bits } : {}, ...extra.temp ? { temp: true } : {}, at };
+    return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...extra.bits ? { bits: extra.bits } : {}, ...extra.unsigned ? { unsigned: true } : {}, ...extra.temp ? { temp: true } : {}, at };
   }
   /* ── Values and bindings ── */
   /** Strip parentheses, `as`, `satisfies`, `!` — the wrappers that change nothing. */
@@ -4349,7 +4662,7 @@ var Structured = class {
         continue;
       }
       const initializer = shared ? shared.arguments[0] : d.initializer;
-      const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...kind === "number" ? { bits: this.bitsOf(type) } : {} });
+      const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...kind === "number" ? this.widthOf(type) : {} });
       this.emitDeclare(v, initializer, d);
       this.scope.bind(d, { kind: "var", v });
     }
@@ -4401,7 +4714,7 @@ var Structured = class {
         ok = false;
         continue;
       }
-      const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? { bits: this.bitsOf(ft) } : {});
+      const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? this.widthOf(ft) : {});
       this.emitDeclare(v, init, at);
       fields.set(key, { kind: "var", v });
     }
@@ -4449,17 +4762,18 @@ var Structured = class {
     const p = this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf));
     return { file: this.body.sf.fileName, line: p.line + 1, column: p.character + 1 };
   }
-  /** The width a `u8` / `u16` annotation declares, read off the brand in the type; undefined for a plain number. */
-  bitsOf(type) {
+  /** What a `u8` / `u16` / `u32` annotation declares, read off the brand in the type; nothing for a plain number, which is signed. */
+  widthOf(type) {
     for (const t of type.isIntersection() ? type.types : [type]) {
       const p = t.getProperty("__kind");
       if (!p) continue;
       const pt = this.c.checker.getTypeOfSymbol(p);
       const names = (pt.isUnion() ? pt.types : [pt]).filter((x) => x.isStringLiteral()).map((x) => x.value);
-      if (names.includes("u8")) return 8;
-      if (names.includes("u16")) return 16;
+      if (names.includes("u8")) return { bits: 8 };
+      if (names.includes("u16")) return { bits: 16 };
+      if (names.includes("u32")) return { unsigned: true };
     }
-    return void 0;
+    return {};
   }
   kindOf(type) {
     const { ts } = this;
@@ -4703,7 +5017,7 @@ var Structured = class {
         }
         const arith = compoundOp(ts, op);
         if (!arith) {
-          this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
+          this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= >>>= assign a number.");
           return;
         }
         const rhs = this.num(e.right);
@@ -5054,7 +5368,7 @@ var Structured = class {
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? "void";
     const line = this.line(call);
     const out = { ...name ? { name } : {}, at: this.at(call), label: this.label(call), params: [], body: [] };
-    if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true }), kind };
+    if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true, ...kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(call)) : {} }), kind };
     this.mark(out, call);
     const scope = new Scope(target === this.body && target === this.c.body ? this.topScope : null);
     let ok = true;
@@ -5108,7 +5422,7 @@ var Structured = class {
           scope.bind(p, { kind: "var", v: variable });
           return;
         }
-        const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), variable.bits ? { bits: variable.bits } : {});
+        const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), { ...variable.bits ? { bits: variable.bits } : {}, ...variable.unsigned ? { unsigned: true } : {} });
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
         out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable), label });
         scope.bind(p, { kind: "var", v: copy });
@@ -5127,7 +5441,7 @@ var Structured = class {
       }
       const value = ts.isIdentifier(this.unwrap(arg)) ? null : this.numQuietly(arg);
       if (value) {
-        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name));
+        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name), this.widthOf(this.c.checker.getTypeAtLocation(p.name)));
         out.params.push({ decl: copy, init: value, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
         scope.bind(p, { kind: "var", v: copy });
         return;
@@ -5220,6 +5534,10 @@ var Structured = class {
       this.c.error(at, `Only whole numbers exist in the game (got ${v}).`);
       return null;
     }
+    if (v < I32_MIN || v > U32_MAX2) {
+      this.c.error(at, `A number of the game has 32 bits: \u22122 147 483 648 to 2 147 483 647, or up to 4 294 967 295 as a u32 (got ${v}).`);
+      return null;
+    }
     return v;
   }
   /** `num` without diagnostics, for a probe that may fail. */
@@ -5296,7 +5614,7 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
       if (!op) {
-        this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >>.");
+        this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>.");
         return null;
       }
       const l = this.num(e.left);
@@ -5397,6 +5715,11 @@ var Structured = class {
     }
     const read = this.readCall(e);
     if (read !== void 0) return read ? this.readValue(read, e) : null;
+    for (const to of ["u32", "i32"]) {
+      if (!this.isLibraryCall(e, to)) continue;
+      const a2 = args(1, `${to}()`);
+      return a2 ? this.mark({ kind: "cast", to, expr: a2[0], at: this.at(e) }, e) : null;
+    }
     if (this.isLibraryCall(e, "clamp")) {
       const a2 = args(3, "clamp()");
       if (!a2) return null;
@@ -6032,8 +6355,9 @@ function arithOp(ts, kind) {
       return "<<";
     // Numbers are unsigned, so the two right shifts are one.
     case ts.SyntaxKind.GreaterThanGreaterThanToken:
-    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
       return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+      return ">>>";
     default:
       return null;
   }
@@ -6059,8 +6383,9 @@ function compoundOp(ts, kind) {
     case ts.SyntaxKind.LessThanLessThanEqualsToken:
       return "<<";
     case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken:
-    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
       return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
+      return ">>>";
     default:
       return null;
   }
@@ -6269,12 +6594,13 @@ function compileScript(ts, files, names, options) {
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
     const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    const mixes = typeNumbers(emitted2.program);
     const index = programs.length;
     ir.push(emitted2.program);
     programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
-    for (const d of declarations(emitted2.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {} });
+    for (const d of declarations(emitted2.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {}, ...d.unsigned ? { unsigned: true } : {} });
     const check = checkProgram(emitted2.program);
-    for (const d of check.errors) {
+    for (const d of [...mixes, ...check.errors]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }

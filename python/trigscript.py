@@ -45,14 +45,18 @@ keeps each player's mouse in a location. They land in arrays registered by name 
 other two plugins' settings reach them — a cell per player, fresh every frame: an input reads 1 on
 the frame it arrives. The IR's `input` lists what is asked for; the editor wrote the settings from it.
 
-Numbers keep one contract with the simulator: 32-bit unsigned, an expression's exact value stored
-below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
+Numbers keep one contract with the simulator: 32 bits, a `number` signed and a `u32` not, wrapping at
+either end. + - * and the bitwise operators are the same bits whichever way they are read; what reads
+them one way or the other - a comparison, a division, a shift right, min and max, a printed number -
+says which in the IR (`unsigned`), so nothing here works a type out. Where the game takes nothing below
+zero the compiler has already written max(v, 0), and a store keeps stopping at the top of what it holds.
+In here a number known when the map is built is a Python int holding the 32 bits, 0 to 2^32 - 1.
 """
 import json
 
 from eudplib import *
 
-IR_VERSION = 5
+IR_VERSION = 6
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -89,6 +93,10 @@ CURRENT_PLAYER = 13
 # The state of a program whose body ended: nothing resumes it.
 DONE = 0xFFFFFFFF
 U32 = 0xFFFFFFFF
+SIGN = 0x80000000
+
+MINUS_SIGN = Db(b"-\0\0\0")
+NO_SIGN = Db(b"\0\0\0\0")
 
 with open(settings["ir"], encoding="utf-8") as _f:
     IR = json.load(_f)
@@ -273,58 +281,8 @@ class Lowering:
         else:
             self.wait << value
 
-    # ── numbers: an int or an EUDVariable ──
-    def linear(self, e, pos, neg, sign):
-        """Flatten + and - into positive and negative terms; anything else is one term. A constant
-        below zero is a term of the other sign: -1 is "subtract 1", never 0xFFFFFFFF."""
-        k = e["kind"]
-        if k == "binary" and e["op"] in ("+", "-"):
-            self.linear(e["left"], pos, neg, sign)
-            self.linear(e["right"], pos, neg, sign if e["op"] == "+" else -sign)
-        elif k == "unary":
-            self.linear(e["expr"], pos, neg, -sign)
-        elif k == "const" and e["value"] < 0:
-            (neg if sign > 0 else pos).append(int(-e["value"]))
-        else:
-            (pos if sign > 0 else neg).append(self.term(e))
-
-    @staticmethod
-    def total(terms):
-        """The sum of a side: an int when every term is one, else a variable (additions wrap at 2^32)."""
-        const = sum(t for t in terms if isinstance(t, int))
-        variables = [t for t in terms if not isinstance(t, int)]
-        if not variables:
-            return const
-        acc = fresh(const & U32)
-        for t in variables:
-            acc += t
-        return acc
-
-    def difference(self, pos, neg, absolute=False):
-        """sum(pos) - sum(neg), stopping at 0 — or, with `absolute`, the distance between the two."""
-        p, n = self.total(pos), self.total(neg)
-        if isinstance(p, int) and isinstance(n, int):
-            return (abs(p - n) if absolute else max(p - n, 0)) & U32
-        if isinstance(n, int) and n == 0:
-            return p
-        r = EUDVariable()
-        pv, nv = as_var(p), as_var(n)
-        if EUDIf()(pv >= nv):
-            r << pv - nv
-        if EUDElse()():
-            r << (nv - pv if absolute else 0)
-        EUDEndIf()
-        return r
-
+    # ── numbers: an int (the 32 bits, 0 … 2^32 - 1) or an EUDVariable ──
     def num(self, e):
-        k = e["kind"]
-        if k == "unary" or (k == "binary" and e["op"] in ("+", "-")) or (k == "const" and e["value"] < 0):
-            pos, neg = [], []
-            self.linear(e, pos, neg, 1)
-            return self.difference(pos, neg)
-        return self.term(e)
-
-    def term(self, e):
         k = e["kind"]
         if k == "input":
             return INPUT.read(e["input"], self, e)
@@ -332,34 +290,13 @@ class Lowering:
             return int(e["value"]) & U32
         if k == "var":
             return self.var(e["id"], e).get()
-        if k == "binary":
-            a, b = self.num(e["left"]), self.num(e["right"])
-            op = e["op"]
-            if op in BITWISE:
-                return self.bitwise(op, a, b)
-            if isinstance(a, int) and isinstance(b, int):
-                if op == "*":
-                    return (a * b) & U32
-                if b == 0:
-                    raise Fail("trigscript: division by zero%s" % where(e))
-                return (a // b if op == "/" else a % b) & U32
-            if op == "*":
-                return f_mul(as_var(a), as_var(b))
-            if isinstance(b, int):
-                if b == 0:
-                    raise Fail("trigscript: division by zero%s" % where(e))
-                q, r = f_div(as_var(a), b)
-                return q if op == "/" else r
-            # A divisor that is 0 in the game gives 0, as the simulator does; f_div alone would answer 0xFFFFFFFF.
-            out = fresh(0)
-            bv = as_var(b)
-            if EUDIf()(bv >= 1):
-                q, r = f_div(as_var(a), bv)
-                out << (q if op == "/" else r)
-            EUDEndIf()
-            return out
+        if k == "cast":
+            return self.num(e["expr"])
         if k == "unary":
-            return self.num(e)
+            x = self.num(e["expr"])
+            return (-x) & U32 if isinstance(x, int) else 0 - x
+        if k == "binary":
+            return self.binary(e)
         if k == "read":
             return self.read(e)
         if k == "randomInt":
@@ -387,39 +324,119 @@ class Lowering:
             EUDEndIf()
             return t
         if k == "intrinsic" and e["name"] == "abs":
-            # The distance between what the expression adds and what it subtracts: abs(b - a) is |b - a|, not 0 when a is larger.
-            pos, neg = [], []
-            self.linear(e["args"][0], pos, neg, 1)
-            return self.difference(pos, neg, absolute=True)
+            x = self.num(e["args"][0])
+            if isinstance(x, int):
+                return abs(signed(x)) & U32
+            t = fresh(x)
+            if EUDIf()(t >= SIGN):
+                t << 0 - t
+            EUDEndIf()
+            return t
         if k == "intrinsic":
-            args = [self.num(a) for a in e["args"]]
+            a, b = [self.num(x) for x in e["args"]]
             name = e["name"]
-            a, b = args
+            unsigned = bool(e.get("unsigned"))
             if isinstance(a, int) and isinstance(b, int):
-                return min(a, b) if name == "min" else max(a, b)
+                key = (lambda v: v) if unsigned else signed
+                return min(a, b, key=key) if name == "min" else max(a, b, key=key)
             t = EUDVariable()
-            av, bv = as_var(a), as_var(b)
-            if EUDIf()(av <= bv if name == "min" else av >= bv):
-                t << av
+            if EUDIf()(self.ordered(a, "<=" if name == "min" else ">=", b, unsigned)):
+                t << a
             if EUDElse()():
-                t << bv
+                t << b
             EUDEndIf()
             return t
         if k == "call":
             return self.call(e["call"])
         raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))
 
+    def binary(self, e):
+        a, b = self.num(e["left"]), self.num(e["right"])
+        op = e["op"]
+        if op in BITWISE:
+            return self.bitwise(op, a, b)
+        both = isinstance(a, int) and isinstance(b, int)
+        if op == "+":
+            return (a + b) & U32 if both else a + b
+        if op == "-":
+            return (a - b) & U32 if both else a - b
+        if op == "*":
+            return (a * b) & U32 if both else f_mul(as_var(a), as_var(b))
+        # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
+        unsigned = bool(e.get("unsigned"))
+        pick = (lambda q, r: q) if op == "/" else (lambda q, r: r)
+        if isinstance(b, int):
+            if b == 0:
+                raise Fail("trigscript: division by zero%s" % where(e))
+            if both:
+                if unsigned:
+                    return pick(a // b, a % b)
+                x, y = signed(a), signed(b)
+                q = abs(x) // abs(y) * (-1 if (x < 0) != (y < 0) else 1)
+                return pick(q, x - q * y) & U32
+            return pick(*(f_div(a, b) if unsigned else f_div_towards_zero(fresh(a), signed(b))))
+        out = fresh(0)
+        if EUDIf()(b >= 1):
+            q, r = f_div(as_var(a), b) if unsigned else f_div_towards_zero(fresh(a), fresh(b))
+            out << pick(q, r)
+        EUDEndIf()
+        return out
+
+    def ordered(self, a, op, b, unsigned):
+        """`a op b` as one condition, the two read as u32s (`unsigned` true), as signed numbers (false), or one of
+        each ("left" / "right" names the u32) - exactly: a number below zero is smaller than any u32. At least one
+        side is a variable. A signed order is the unsigned one with the top bit of both sides flipped."""
+        if unsigned in ("left", "right"):
+            # s is the signed side, u the u32, and the comparison is turned to read s op u.
+            s_, u_ = (b, a) if unsigned == "left" else (a, b)
+            if unsigned == "left":
+                op = FLIPPED[op]
+            if isinstance(s_, int):
+                if s_ >= SIGN:
+                    return always(op in ("<", "<=", "!="))
+                return self.ordered(s_, op, u_, True)
+            sv = as_var(s_)
+            if op in ("<", "<=", "!="):
+                return EUDOr(sv >= SIGN, relation(sv, op, u_))
+            return EUDAnd(sv <= SIGN - 1, relation(sv, op, u_))
+        if isinstance(a, int):
+            a, b, op = b, a, FLIPPED[op]
+        if unsigned or op in ("==", "!="):
+            return relation(as_var(a), op, b)
+        return relation(a + SIGN, op, (b + SIGN) & U32 if isinstance(b, int) else b + SIGN)
+
     @staticmethod
     def bitwise(op, a, b):
-        """& | ^ << >> over 32 bits; a shift by 32 or more leaves nothing."""
-        if isinstance(a, int) and isinstance(b, int):
-            if op in ("<<", ">>"):
-                return 0 if b >= 32 else ((a << b) & U32 if op == "<<" else a >> b)
-            return {"&": a & b, "|": a | b, "^": a ^ b}[op]
-        if op in ("<<", ">>"):
-            if isinstance(b, int) and b >= 32:
+        """& | ^ << >> >>> over 32 bits. `>>` keeps the sign of what it shifts and `>>>` does not; a shift by 32 or
+        more leaves nothing but that sign."""
+        if op in ("<<", ">>", ">>>"):
+            if isinstance(a, int) and isinstance(b, int):
+                if op == "<<":
+                    return 0 if b >= 32 else (a << b) & U32
+                if op == ">>>":
+                    return 0 if b >= 32 else a >> b
+                return (signed(a) >> min(b, 31)) & U32
+            if isinstance(b, int) and b == 0:
+                return a
+            if isinstance(b, int) and b >= 32 and op != ">>":
                 return 0
-            return (f_bitlshift if op == "<<" else f_bitrshift)(fresh(a), b)
+            if op == "<<":
+                return f_bitlshift(fresh(a), b)
+            if op == ">>>":
+                return f_bitrshift(fresh(a), b)
+            # The sign kept: a number below zero is shifted as its complement, which has zeros where it has ones.
+            x, below = fresh(a), fresh(0)
+            if EUDIf()(x >= SIGN):
+                below << 1
+                x << ~x
+            EUDEndIf()
+            r = fresh(f_bitrshift(x, b)) if not (isinstance(b, int) and b >= 32) else fresh(0)
+            if EUDIf()(below >= 1):
+                r << ~r
+            EUDEndIf()
+            return r
+        if isinstance(a, int) and isinstance(b, int):
+            return {"&": a & b, "|": a | b, "^": a ^ b}[op]
         # Copies: eudplib computes in place into an operand nothing else refers to, and ours may be a variable's own cell.
         x, y = fresh(a), fresh(b)
         return x & y if op == "&" else x | y if op == "|" else x ^ y
@@ -520,7 +537,7 @@ class Lowering:
     def cond(self, e):
         k = e["kind"]
         if k == "const":
-            return EUDVariable(1 if e["value"] else 0) >= 1  # initial: a constant, never written
+            return always(e["value"])
         if k == "cond":
             return condition(e["record"])
         if k == "var":
@@ -528,31 +545,15 @@ class Lowering:
         if k == "test":
             return as_var(self.num(e["expr"])) >= 1
         if k == "compare":
-            # What either side subtracts is added to the other, so a - b == 0 asks whether a == b
-            # and x >= -1 is true: neither side stops at 0 on its own, as it would were it stored.
-            left, right = [], []
-            self.linear(e["left"], left, right, 1)
-            self.linear(e["right"], right, left, 1)
-            a, b = self.total(left), self.total(right)
-            op = e["op"]
+            a, b = self.num(e["left"]), self.num(e["right"])
+            op, unsigned = e["op"], e.get("unsigned", False)
             if isinstance(a, int) and isinstance(b, int):
-                return EUDVariable(1 if compare(a, op, b) else 0) >= 1  # initial: a constant, never written
+                x = a if unsigned in (True, "left") else signed(a)
+                y = b if unsigned in (True, "right") else signed(b)
+                return always(compare(x, op, y))
             # One comparison, built once: a comparison between variables writes into its own
             # condition, and one that is built and dropped is an orphan eudplib refuses.
-            if isinstance(b, int):
-                b &= U32
-            av = as_var(a)
-            if op == "==":
-                return av == b
-            if op == "!=":
-                return av != b
-            if op == "<":
-                return av < b
-            if op == "<=":
-                return av <= b
-            if op == ">":
-                return av > b
-            return av >= b
+            return self.ordered(a, op, b, unsigned)
         if k == "and":
             return EUDAnd(*[self.cond(c) for c in e["items"]])
         if k == "or":
@@ -802,7 +803,7 @@ class Lowering:
             def body(ref, next_, exit_):
                 cu = self.cunit(ref)
                 # |dx| + |dy| is enough to say which is nearest, and never overflows.
-                d = self.difference([cu.posX], [cx], absolute=True) + self.difference([cu.posY], [cy], absolute=True)
+                d = distance(cu.posX, cx) + distance(cu.posY, cy)
                 if EUDIf()(d < least):
                     least << d
                     take(ref)
@@ -1199,9 +1200,9 @@ class Lowering:
                 default = label
                 continue
             n = c["value"]
-            if n != n or n < 0 or n > U32:  # NaN, or a value the variable never holds
+            if n != n or n < -SIGN or n > U32:  # NaN, or a value the variable never holds
                 continue
-            EUDJumpIf(v == int(n), label)
+            EUDJumpIf(v == int(n) & U32, label)
         EUDJump(default if default is not None else exit_)
         for c, label in zip(st["cases"], labels):
             label << NextTrigger()
@@ -1261,7 +1262,19 @@ class Lowering:
                 args.append(part["text"])
             elif k == "number":
                 v = self.num(part["expr"])
-                args.append(str(v) if isinstance(v, int) else v)
+                if isinstance(v, int):
+                    args.append(str(v if part.get("unsigned") else signed(v)))
+                elif part.get("unsigned"):
+                    args.append(v)
+                else:
+                    # A number below zero: its minus sign, then how far below it is.
+                    sign, size = fresh(NO_SIGN), fresh(v)
+                    if EUDIf()(size >= SIGN):
+                        sign << MINUS_SIGN
+                        size << 0 - size
+                    EUDEndIf()
+                    args.append(ptr2s(sign))
+                    args.append(size)
             elif k == "name":
                 args.append(PName(self.one_player(part["player"], st)))
             elif k == "color":
@@ -1388,7 +1401,8 @@ def loop_players(slots):
     EUDEndWhile()
 
 
-BITWISE = ("&", "|", "^", "<<", ">>")
+BITWISE = ("&", "|", "^", "<<", ">>", ">>>")
+FLIPPED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!="}
 
 
 def points(value, bits):
@@ -1402,6 +1416,42 @@ def uses_random(node):
     if isinstance(node, dict):
         return node.get("kind") in ("random", "randomInt") or (node.get("kind") == "pick" and node.get("by") == "random") or any(uses_random(v) for v in node.values())
     return isinstance(node, list) and any(uses_random(v) for v in node)
+
+
+def distance(a, b):
+    """|a - b| of two places on the map, both from 0 up."""
+    d = fresh(a)
+    d -= b
+    if EUDIf()(d >= SIGN):
+        d << 0 - d
+    EUDEndIf()
+    return d
+
+
+def signed(v):
+    """The 32 bits as a signed number."""
+    v &= U32
+    return v - (1 << 32) if v >= SIGN else v
+
+
+def always(truth):
+    """A condition that is known when the map is built."""
+    return EUDVariable(1 if truth else 0) >= 1  # initial: a constant, never written
+
+
+def relation(av, op, b):
+    """`av op b` between a variable and a variable or an int, both read from 0 up."""
+    if op == "==":
+        return av == b
+    if op == "!=":
+        return av != b
+    if op == "<":
+        return av < b
+    if op == "<=":
+        return av <= b
+    if op == ">":
+        return av > b
+    return av >= b
 
 
 def compare(a, op, b):

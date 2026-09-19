@@ -1362,10 +1362,13 @@ function entryFor(t, value) {
 }
 
 // compiler/ir.ts
-var IR_VERSION = 5;
+var IR_VERSION = 6;
 var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
 var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
 var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var I32_MAX = 2147483647;
+var I32_MIN = -2147483648;
+var U32_MAX2 = 4294967295;
 var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
   switch (e.kind) {
@@ -1375,6 +1378,7 @@ var isNumExpr = (e) => {
       return false;
     // ambiguous by shape; callers know the variable's kind
     case "unary":
+    case "cast":
     case "binary":
     case "intrinsic":
     case "read":
@@ -1489,6 +1493,7 @@ function declarations(body2) {
         unit(e.unit);
         break;
       case "unary":
+      case "cast":
         expr(e.expr);
         break;
       case "binary":
@@ -1709,6 +1714,7 @@ function inputsOf(programs) {
         unit(e.right);
         break;
       case "unary":
+      case "cast":
         expr(e.expr);
         break;
       case "binary":
@@ -2248,7 +2254,13 @@ function createRuntime(names, collector, options = {}) {
   rt.shared = () => {
     throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
   };
-  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
+  const signed = (v, what) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+    return v;
+  };
+  rt.u32 = (v) => signed(v, "u32: value") >>> 0;
+  rt.i32 = (v) => signed(v, "i32: value") | 0;
+  rt.clamp = (v, lo, hi) => Math.min(Math.max(signed(v, "clamp: value"), signed(lo, "clamp: low")), signed(hi, "clamp: high"));
   const reader = (fn) => Object.assign(fn, { __trigscript: "reader" });
   const onePlayer = (v, what, slots = PLAYER_SLOTS) => {
     const n = integer(v, what);
@@ -2528,14 +2540,15 @@ ${kw}type Race<N extends number = number> = N & Brand<"race">;
 ${kw}type Slot<N extends number = number> = N & Brand<"slot">;
 /** A unit count: a number, or "All". */
 ${kw}type Count = number | "All";
-/**
- * A number of a program that stays within 0 \u2026 255. Operations between variables decompose over
- * 8 bits instead of 32, so \`a += b\` costs 8 + 8 triggers rather than 32 + 32. Saturates at 255.
- */
+/** A number of a program that stays within 0 \u2026 255: stored below zero it is 0, above 255 it is 255. A plain \`number\` is signed and wraps. */
 ${kw}type u8 = number & Brand<"u8">;
-/** A number of a program that stays within 0 \u2026 65 535: 16-bit operations between variables. Saturates at 65 535. */
+/** A number of a program that stays within 0 \u2026 65 535: stored below zero it is 0, above 65 535 it is 65 535. */
 ${kw}type u16 = number & Brand<"u16">;
-/** A number of a program with the full range, 0 \u2026 4 294 967 295 \u2014 what a plain \`number\` is. */
+/**
+ * A number of a program read as 0 \u2026 4 294 967 295, wrapping as \`x >>> 0\` does: for bit masks, hashes and a count past
+ * 2 147 483 647. A plain \`number\` is signed. The two do not mix in arithmetic without saying which is meant \u2014 u32(x), i32(x) \u2014
+ * but compare exactly: a number below zero is smaller than any u32.
+ */
 ${kw}type u32 = number & Brand<"u32">;
 /** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
 ${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
@@ -2724,6 +2737,10 @@ ${kw}function shared(initial: number): number;
 ${kw}function shared(initial: boolean): boolean;
 /** The value kept within low \u2026 high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
 ${kw}function clamp(value: number, low: number, high: number): number;
+/** The same 32 bits read as a u32: u32(-1) is 4 294 967 295. Costs nothing in a program; \`x >>> 0\` says the same. */
+${kw}function u32(value: number): u32;
+/** The same 32 bits read as a signed number: i32(4294967295) is -1. Costs nothing in a program; \`x | 0\` of a u32 says the same. */
+${kw}function i32(value: number): number;
 /**
  * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
  * number goes \u2014 \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,
@@ -3548,6 +3565,7 @@ function expressions(body2, visit, pick) {
         unit(e.right);
         break;
       case "unary":
+      case "cast":
         expr(e.expr);
         break;
       case "binary":
@@ -3729,7 +3747,7 @@ function checkDivisions(body2, out) {
   expressions(body2, (e) => {
     if (e.kind !== "binary" || e.op !== "/" && e.op !== "%" || e.right.kind !== "const") return;
     const d = e.right.value;
-    if (!Number.isInteger(d) || d <= 0) out.push({ at: e.at, message: `Divide by a whole number of at least 1, not ${d}.` });
+    if (!Number.isInteger(d) || d === 0) out.push({ at: e.at, message: `Divide by a whole number other than 0, not ${d}.` });
   });
 }
 function checkWidths(body2, out) {
@@ -3738,7 +3756,7 @@ function checkWidths(body2, out) {
     const d = decls.get(id);
     if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
     const max = 2 ** d.bits - 1;
-    if (value.value > max) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 \u2026 ${max}, not ${value.value}.` });
+    if (value.value > max || value.value < 0) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 \u2026 ${max}, not ${value.value}.` });
   };
   const stmt = (s) => {
     switch (s.kind) {
@@ -3901,6 +3919,7 @@ function reads(e, into = /* @__PURE__ */ new Set()) {
       reads(e.bound, into);
       break;
     case "unary":
+    case "cast":
       reads(e.expr, into);
       break;
     case "binary":
@@ -4031,6 +4050,7 @@ function serializeIr(programs, strings, input = null) {
       case "unitSame":
         return { ...e, left: unit(e.left), right: unit(e.right) };
       case "unary":
+      case "cast":
         return { ...e, expr: expr(e.expr) };
       case "binary":
       case "compare":
@@ -4106,6 +4126,300 @@ function serializeIr(programs, strings, input = null) {
     }
   };
   return JSON.stringify({ version: programs[0]?.version ?? 1, ...input ? { input } : {}, programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
+}
+
+// compiler/numbers.ts
+var FLAGS = new Set(UNIT_FLAGS);
+function typeNumbers(program) {
+  const errors = [];
+  const never = /* @__PURE__ */ new Set();
+  const stores = [];
+  let settled = false;
+  const decls = new Map(declarations(program.body).map((d) => [d.id, d]));
+  const mixed = (at, what) => errors.push({ at, message: `${what} mixes a number, which is signed, with a u32. Say which is meant: u32(x) reads a number's 32 bits from 0 up, i32(x) a u32's as a signed number.` });
+  const unify = (a2, b, at, what) => {
+    if (a2 === "flex") return b;
+    if (b === "flex" || a2 === b) return a2;
+    mixed(at, what);
+    return "i32";
+  };
+  const nonNegative = (e) => {
+    switch (e.kind) {
+      case "const":
+        return e.value >= 0 && e.value <= I32_MAX;
+      case "var":
+        return !!decls.get(e.id)?.bits || never.has(e.id);
+      case "read":
+      case "unitField":
+      case "tableRead":
+      case "input":
+      case "randomInt":
+        return true;
+      case "ternary":
+        return nonNegative(e.whenTrue) && nonNegative(e.whenFalse);
+      case "intrinsic":
+        return e.unsigned ? false : e.name === "min" ? e.args.every(nonNegative) : e.name === "max" ? e.args.some(nonNegative) : false;
+      case "binary":
+        if (e.unsigned) return false;
+        switch (e.op) {
+          case "&":
+            return nonNegative(e.left) || nonNegative(e.right);
+          case "|":
+          case "^":
+          case "/":
+            return nonNegative(e.left) && nonNegative(e.right);
+          case "%":
+          case ">>":
+            return nonNegative(e.left);
+          case ">>>":
+            return e.right.kind === "const" && e.right.value >= 1 && e.right.value <= 31;
+          default:
+            return false;
+        }
+      case "call":
+        return !!e.call.result?.decl.bits;
+      default:
+        return false;
+    }
+  };
+  const num3 = (e) => {
+    switch (e.kind) {
+      case "const":
+        return [e, e.value < 0 ? "i32" : e.value > I32_MAX ? "u32" : "flex"];
+      case "var":
+        return [e, decls.get(e.id)?.unsigned ? "u32" : "i32"];
+      case "cast": {
+        const inner = num3(e.expr)[0];
+        if (settled) return [inner, e.to];
+        e.expr = inner;
+        return [e, e.to];
+      }
+      case "unary": {
+        const [inner, t] = num3(e.expr);
+        e.expr = inner;
+        return [e, t === "u32" ? "u32" : "i32"];
+      }
+      case "binary": {
+        const [left, lt] = num3(e.left);
+        const [right, rt] = num3(e.right);
+        e.left = left;
+        e.right = right;
+        if (e.op === "<<" || e.op === ">>" || e.op === ">>>") {
+          if (e.op === ">>>" && right.kind === "const" && right.value === 0) return [settled ? left : e, "u32"];
+          if (e.op === ">>" && lt === "u32") e.op = ">>>";
+          return [e, lt === "flex" ? "i32" : lt];
+        }
+        const t = unify(lt, rt, e.at, `This ${e.op === "+" ? "sum" : e.op === "-" ? "difference" : e.op === "*" ? "product" : e.op === "/" || e.op === "%" ? "division" : "operation"}`);
+        if ((e.op === "/" || e.op === "%") && t === "u32") e.unsigned = true;
+        return [e, t === "flex" ? "i32" : t];
+      }
+      case "randomInt":
+        e.bound = floor(e.bound, e.at);
+        return [e, "i32"];
+      case "unitField":
+        unit(e.unit);
+        return [e, "i32"];
+      case "ternary": {
+        e.cond = bool(e.cond);
+        const [a2, at] = num3(e.whenTrue);
+        const [b, bt] = num3(e.whenFalse);
+        e.whenTrue = a2;
+        e.whenFalse = b;
+        return [e, unify(at, bt, e.at, "This ? :")];
+      }
+      case "intrinsic": {
+        const typed = e.args.map(num3);
+        e.args = typed.map(([a2]) => a2);
+        if (e.name === "abs") {
+          if (typed[0][1] === "u32") return [e.args[0], "u32"];
+          return [e, "i32"];
+        }
+        const t = typed.map(([, x]) => x).reduce((a2, b) => unify(a2, b, e.at, `Math.${e.name}()`));
+        if (t === "u32") e.unsigned = true;
+        return [e, t === "flex" ? "i32" : t];
+      }
+      case "call":
+        call(e.call);
+        return [e, e.call.result?.decl.unsigned ? "u32" : "i32"];
+      default:
+        return [e, "i32"];
+    }
+  };
+  const floor = (e, at, keepConstant = false) => {
+    const [value, t] = num3(e);
+    if (!settled || t === "u32" || nonNegative(value)) return value;
+    if (value.kind === "const") return keepConstant ? value : { kind: "const", value: 0 };
+    return { kind: "intrinsic", name: "max", args: [value, { kind: "const", value: 0 }], at, label: "label" in value ? value.label : "" };
+  };
+  const bool = (e) => {
+    switch (e.kind) {
+      case "test":
+        e.expr = num3(e.expr)[0];
+        return e;
+      case "compare": {
+        const [left, lt] = num3(e.left);
+        const [right, rt] = num3(e.right);
+        e.left = left;
+        e.right = right;
+        const leftU = lt === "u32" || lt === "flex" && rt === "u32";
+        const rightU = rt === "u32" || rt === "flex" && lt === "u32";
+        if (leftU && rightU) e.unsigned = true;
+        else if (leftU) e.unsigned = nonNegative(right) ? true : "left";
+        else if (rightU) e.unsigned = nonNegative(left) ? true : "right";
+        else if (nonNegative(left) && nonNegative(right)) e.unsigned = true;
+        return e;
+      }
+      case "and":
+      case "or":
+        e.items = e.items.map(bool);
+        return e;
+      case "not":
+        e.expr = bool(e.expr);
+        return e;
+      case "edge":
+        e.cond = bool(e.cond);
+        return e;
+      case "ternary":
+        e.cond = bool(e.cond);
+        e.whenTrue = bool(e.whenTrue);
+        e.whenFalse = bool(e.whenFalse);
+        return e;
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        return e;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        return e;
+      case "call":
+        call(e.call);
+        return e;
+      default:
+        return e;
+    }
+  };
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+  };
+  const stored = (decl, value, at) => {
+    if (decl?.bits) return floor(value, at, true);
+    const [out, t] = num3(value);
+    if (decl && out.kind === "const" && value.kind === "const") {
+      if (!decl.unsigned && t === "u32") errors.push({ at, message: `${decl.name} is a number, which holds \u22122 147 483 648 \u2026 2 147 483 647, not ${out.value}. Declare it a u32 (let ${decl.name}: u32 = \u2026), or write i32(${out.value}) for the signed number with those bits.` });
+      if (decl.unsigned && out.value < 0) errors.push({ at, message: `${decl.name} is a u32, which holds 0 \u2026 4 294 967 295, not ${out.value}. Write u32(${out.value}) for the u32 with those bits.` });
+    }
+    if (!settled && decl && !decl.unsigned) stores.push([decl.id, out]);
+    return out;
+  };
+  const valueFor = (decl, value, at) => {
+    if (decl.kind === "number") return stored(decl, value, at);
+    if (decl.kind === "boolean") return bool(value);
+    unit(value);
+    return value;
+  };
+  let result;
+  const call = (c2) => {
+    for (const p of c2.params) p.init = valueFor(p.decl, p.init, c2.at);
+    const saved = result;
+    result = c2.result?.decl;
+    c2.body.forEach(stmt);
+    result = saved;
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) s.init = valueFor(s.decl, s.init, s.at);
+        break;
+      case "assign":
+        s.value = stored(decls.get(s.target), s.value, s.at);
+        break;
+      case "assignBool":
+        s.value = bool(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        s.value = FLAGS.has(s.field) ? bool(s.value) : floor(s.value, s.at);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = floor(s.verb.amount, s.at);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") s.value = s.boolean ? bool(s.value) : floor(s.value, s.at);
+        break;
+      case "if":
+        s.cond = bool(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) s.cond = bool(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        s.cond = bool(s.cond);
+        break;
+      case "for":
+        if (s.cond) s.cond = bool(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.value = num3(s.value)[0];
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value && result) s.value = valueFor(result, s.value, s.at);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at);
+        break;
+      case "centerLocation":
+        s.x = floor(s.x, s.at);
+        s.y = floor(s.y, s.at);
+        break;
+      case "print":
+        for (const p of s.parts) {
+          if (p.kind !== "number") continue;
+          const [value, t] = num3(p.expr);
+          p.expr = value;
+          if (t === "u32") p.unsigned = true;
+        }
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  program.body.forEach(stmt);
+  for (const [id] of stores) never.add(id);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [id, value] of stores) if (never.has(id) && !nonNegative(value)) {
+      never.delete(id);
+      changed = true;
+    }
+  }
+  settled = true;
+  errors.length = 0;
+  program.body.forEach(stmt);
+  return errors;
 }
 
 // compiler/scope.ts
@@ -4249,7 +4563,7 @@ var Structured = class {
     return list;
   }
   newVar(name, kind, at, extra = {}) {
-    return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...extra.bits ? { bits: extra.bits } : {}, ...extra.temp ? { temp: true } : {}, at };
+    return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...extra.bits ? { bits: extra.bits } : {}, ...extra.unsigned ? { unsigned: true } : {}, ...extra.temp ? { temp: true } : {}, at };
   }
   /* ── Values and bindings ── */
   /** Strip parentheses, `as`, `satisfies`, `!` — the wrappers that change nothing. */
@@ -4646,7 +4960,7 @@ var Structured = class {
         continue;
       }
       const initializer = shared ? shared.arguments[0] : d.initializer;
-      const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...kind === "number" ? { bits: this.bitsOf(type) } : {} });
+      const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...kind === "number" ? this.widthOf(type) : {} });
       this.emitDeclare(v, initializer, d);
       this.scope.bind(d, { kind: "var", v });
     }
@@ -4698,7 +5012,7 @@ var Structured = class {
         ok = false;
         continue;
       }
-      const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? { bits: this.bitsOf(ft) } : {});
+      const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? this.widthOf(ft) : {});
       this.emitDeclare(v, init, at);
       fields.set(key, { kind: "var", v });
     }
@@ -4746,17 +5060,18 @@ var Structured = class {
     const p = this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf));
     return { file: this.body.sf.fileName, line: p.line + 1, column: p.character + 1 };
   }
-  /** The width a `u8` / `u16` annotation declares, read off the brand in the type; undefined for a plain number. */
-  bitsOf(type) {
+  /** What a `u8` / `u16` / `u32` annotation declares, read off the brand in the type; nothing for a plain number, which is signed. */
+  widthOf(type) {
     for (const t of type.isIntersection() ? type.types : [type]) {
       const p = t.getProperty("__kind");
       if (!p) continue;
       const pt = this.c.checker.getTypeOfSymbol(p);
       const names = (pt.isUnion() ? pt.types : [pt]).filter((x) => x.isStringLiteral()).map((x) => x.value);
-      if (names.includes("u8")) return 8;
-      if (names.includes("u16")) return 16;
+      if (names.includes("u8")) return { bits: 8 };
+      if (names.includes("u16")) return { bits: 16 };
+      if (names.includes("u32")) return { unsigned: true };
     }
-    return void 0;
+    return {};
   }
   kindOf(type) {
     const { ts } = this;
@@ -5000,7 +5315,7 @@ var Structured = class {
         }
         const arith = compoundOp(ts, op);
         if (!arith) {
-          this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
+          this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= >>>= assign a number.");
           return;
         }
         const rhs = this.num(e.right);
@@ -5351,7 +5666,7 @@ var Structured = class {
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? "void";
     const line = this.line(call);
     const out = { ...name ? { name } : {}, at: this.at(call), label: this.label(call), params: [], body: [] };
-    if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true }), kind };
+    if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true, ...kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(call)) : {} }), kind };
     this.mark(out, call);
     const scope = new Scope(target === this.body && target === this.c.body ? this.topScope : null);
     let ok = true;
@@ -5405,7 +5720,7 @@ var Structured = class {
           scope.bind(p, { kind: "var", v: variable });
           return;
         }
-        const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), variable.bits ? { bits: variable.bits } : {});
+        const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), { ...variable.bits ? { bits: variable.bits } : {}, ...variable.unsigned ? { unsigned: true } : {} });
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
         out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable), label });
         scope.bind(p, { kind: "var", v: copy });
@@ -5424,7 +5739,7 @@ var Structured = class {
       }
       const value = ts.isIdentifier(this.unwrap(arg)) ? null : this.numQuietly(arg);
       if (value) {
-        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name));
+        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name), this.widthOf(this.c.checker.getTypeAtLocation(p.name)));
         out.params.push({ decl: copy, init: value, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
         scope.bind(p, { kind: "var", v: copy });
         return;
@@ -5517,6 +5832,10 @@ var Structured = class {
       this.c.error(at, `Only whole numbers exist in the game (got ${v}).`);
       return null;
     }
+    if (v < I32_MIN || v > U32_MAX2) {
+      this.c.error(at, `A number of the game has 32 bits: \u22122 147 483 648 to 2 147 483 647, or up to 4 294 967 295 as a u32 (got ${v}).`);
+      return null;
+    }
     return v;
   }
   /** `num` without diagnostics, for a probe that may fail. */
@@ -5593,7 +5912,7 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const op = arithOp(ts, e.operatorToken.kind);
       if (!op) {
-        this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >>.");
+        this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>.");
         return null;
       }
       const l = this.num(e.left);
@@ -5694,6 +6013,11 @@ var Structured = class {
     }
     const read = this.readCall(e);
     if (read !== void 0) return read ? this.readValue(read, e) : null;
+    for (const to of ["u32", "i32"]) {
+      if (!this.isLibraryCall(e, to)) continue;
+      const a2 = args(1, `${to}()`);
+      return a2 ? this.mark({ kind: "cast", to, expr: a2[0], at: this.at(e) }, e) : null;
+    }
     if (this.isLibraryCall(e, "clamp")) {
       const a2 = args(3, "clamp()");
       if (!a2) return null;
@@ -6329,8 +6653,9 @@ function arithOp(ts, kind) {
       return "<<";
     // Numbers are unsigned, so the two right shifts are one.
     case ts.SyntaxKind.GreaterThanGreaterThanToken:
-    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
       return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+      return ">>>";
     default:
       return null;
   }
@@ -6356,8 +6681,9 @@ function compoundOp(ts, kind) {
     case ts.SyntaxKind.LessThanLessThanEqualsToken:
       return "<<";
     case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken:
-    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
       return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
+      return ">>>";
     default:
       return null;
   }
@@ -6566,12 +6892,13 @@ function compileScript(ts, files, names, options) {
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
     const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    const mixes = typeNumbers(emitted2.program);
     const index = programs.length;
     ir.push(emitted2.program);
     programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
-    for (const d of declarations(emitted2.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {} });
+    for (const d of declarations(emitted2.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {}, ...d.unsigned ? { unsigned: true } : {} });
     const check = checkProgram(emitted2.program);
-    for (const d of check.errors) {
+    for (const d of [...mixes, ...check.errors]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }
@@ -7072,7 +7399,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "3.4.0";
+var VERSION = "3.5.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -7698,39 +8025,6 @@ var newUnit = (u) => {
 var UNIT_FIELD_MAX = { hp: 16777215, shields: 16777215, energy: 255, kills: 255, cooldown: 255, resources: 65535, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
 var FACTORIES = /* @__PURE__ */ new Set([106, 111, 113, 114, 131, 132, 133, 154, 155, 160, 167]);
 var inClass = (type, cls) => cls === 230 ? type < 106 : cls === 231 ? type >= 106 && type <= 202 : FACTORIES.has(type);
-var newSides = () => ({ plus: 0, minus: 0, plusConst: 0, minusConst: 0, variable: false });
-function add(sides, sign, value, buildTime) {
-  if (buildTime) {
-    if (sign > 0) sides.plusConst += value;
-    else sides.minusConst += value;
-    return;
-  }
-  sides.variable = true;
-  if (sign > 0) sides.plus = (sides.plus + value) % U32;
-  else sides.minus = (sides.minus + value) % U32;
-}
-function totals(sides) {
-  if (!sides.variable) return [sides.plusConst, sides.minusConst];
-  return [(sides.plusConst % U32 + sides.plus) % U32, (sides.minusConst % U32 + sides.minus) % U32];
-}
-function difference(sides, absolute = false) {
-  const [p, n] = totals(sides);
-  return (absolute ? Math.abs(p - n) : Math.max(p - n, 0)) % U32;
-}
-function isBuildTime(e) {
-  switch (e.kind) {
-    case "const":
-      return true;
-    case "unary":
-      return isBuildTime(e.expr);
-    case "binary":
-      return isBuildTime(e.left) && isBuildTime(e.right);
-    case "intrinsic":
-      return e.args.every(isBuildTime);
-    default:
-      return false;
-  }
-}
 var Halt = class extends Error {
 };
 var ProgramRun = class {
@@ -7738,6 +8032,8 @@ var ProgramRun = class {
   /** The variables that hold a unit, or none. */
   unitVars = /* @__PURE__ */ new Map();
   bits = /* @__PURE__ */ new Map();
+  /** The `u32` variables. */
+  unsigned = /* @__PURE__ */ new Set();
   latches = /* @__PURE__ */ new Map();
   body;
   done = false;
@@ -7775,14 +8071,11 @@ var ProgramRun = class {
     if (v === void 0) throw new Error(`The variable ${id} was read before it was declared${at ? ` (line ${at.line})` : ""}.`);
     return v;
   }
+  /** A number is kept as its type reads the 32 bits: a `u32` 0 and up, a `u8` / `u16` stopped at its top, anything else signed. */
   store(id, value) {
     if (typeof value === "number") {
-      let v = Math.trunc(value);
-      if (v < 0) v = 0;
-      else if (v >= U32) v = v % U32;
       const bits = this.bits.get(id);
-      if (bits) v = Math.min(v, 2 ** bits - 1);
-      this.vars.set(id, v);
+      this.vars.set(id, bits ? Math.min(value >>> 0, 2 ** bits - 1) : this.unsigned.has(id) ? value >>> 0 : value | 0);
     } else {
       this.vars.set(id, value);
     }
@@ -7793,6 +8086,7 @@ var ProgramRun = class {
       return;
     }
     if (decl.bits) this.bits.set(decl.id, decl.bits);
+    if (decl.unsigned) this.unsigned.add(decl.id);
     this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
   }
   /* ── units ── */
@@ -7818,7 +8112,7 @@ var ProgramRun = class {
   }
   *unitDo(e, verb, at) {
     const u = yield* this.living(e);
-    const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.num(verb.amount) : 0;
+    const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
     if (!u) return;
     switch (verb.do) {
       case "kill":
@@ -7850,94 +8144,81 @@ var ProgramRun = class {
   }
   /* ── expressions ── */
   /**
-   * A number, the way the game computes it (`python/trigscript.py`): + and − are flattened
-   * into what is added and what is subtracted, each side summed — wrapping at 2³² once a
-   * variable is part of it — and the difference stops at 0. Everything else is a term:
-   * × wraps, ÷ and % round down and give 0 for a divisor of 0.
+   * A number, the way the game computes it (`python/trigscript.py`): 32 bits, given here as the
+   * signed reading of them (`| 0`). + − × and the bitwise operators are the same bits whichever
+   * way they are read; what reads them one way or the other — ÷, %, a shift right, min and max, a
+   * comparison — says which in the IR. A divisor of 0 gives 0, as `(a / 0) | 0` does.
    */
   *num(e) {
-    if (e.kind === "unary" || e.kind === "binary" && (e.op === "+" || e.op === "-") || e.kind === "const" && e.value < 0) {
-      const sides = newSides();
-      yield* this.linear(e, sides, 1);
-      return difference(sides);
-    }
-    return yield* this.term(e);
-  }
-  *linear(e, sides, sign) {
-    if (e.kind === "binary" && (e.op === "+" || e.op === "-")) {
-      yield* this.linear(e.left, sides, sign);
-      yield* this.linear(e.right, sides, e.op === "+" ? sign : -sign);
-    } else if (e.kind === "unary") {
-      yield* this.linear(e.expr, sides, -sign);
-    } else if (e.kind === "const" && e.value < 0) {
-      add(sides, -sign, -e.value, true);
-    } else {
-      add(sides, sign, yield* this.term(e), isBuildTime(e));
-    }
-  }
-  *term(e) {
     switch (e.kind) {
-      // A constant below zero as a factor or a divisor is its 32-bit pattern, as it is in the game.
       case "const":
-        return (Math.trunc(e.value) % U32 + U32) % U32;
+        return e.value | 0;
       case "var":
-        return Number(this.read(e.id));
+        return Number(this.read(e.id)) | 0;
       case "unary":
-        return yield* this.num(e);
+        return -(yield* this.num(e.expr)) | 0;
+      case "cast":
+        return yield* this.num(e.expr);
       case "binary": {
         const a2 = yield* this.num(e.left);
         const b = yield* this.num(e.right);
         switch (e.op) {
+          case "+":
+            return a2 + b | 0;
+          case "-":
+            return a2 - b | 0;
           case "*":
-            return Number(BigInt(a2) * BigInt(b) % BigInt(U32));
+            return Math.imul(a2, b);
           case "/":
-            return b === 0 ? 0 : Math.floor(a2 / b);
+            return b === 0 ? 0 : e.unsigned ? Math.floor((a2 >>> 0) / (b >>> 0)) | 0 : a2 / b | 0;
           case "%":
-            return b === 0 ? 0 : a2 % b;
+            return b === 0 ? 0 : e.unsigned ? (a2 >>> 0) % (b >>> 0) | 0 : a2 % b | 0;
           case "&":
-            return (a2 & b) >>> 0;
+            return a2 & b;
           case "|":
-            return (a2 | b) >>> 0;
+            return a2 | b;
           case "^":
-            return (a2 ^ b) >>> 0;
-          // A shift by 32 or more leaves nothing, where JavaScript would shift by the remainder.
+            return a2 ^ b;
+          // A shift by 32 or more (or by a number below zero) leaves nothing but the sign, where JavaScript would shift by the remainder.
           case "<<":
-            return b >= 32 ? 0 : a2 << b >>> 0;
+            return b >>> 0 >= 32 ? 0 : a2 << b;
           case ">>":
-            return b >= 32 ? 0 : a2 >>> b;
-          default:
-            return yield* this.num(e);
+            return b >>> 0 >= 32 ? a2 < 0 ? -1 : 0 : a2 >> b;
+          case ">>>":
+            return b >>> 0 >= 32 ? 0 : a2 >>> b | 0;
         }
+        return 0;
       }
       case "read":
-        return this.sim.read(e.read);
+        return this.sim.read(e.read) | 0;
       case "unitField": {
         const u = yield* this.living(e.unit);
-        return u ? u[e.field] : 0;
+        return u ? u[e.field] | 0 : 0;
       }
       case "tableRead":
-        return this.sim.tableRead(e.cell);
+        return this.sim.tableRead(e.cell) | 0;
       case "input":
-        return this.sim.input(e.input);
+        return this.sim.input(e.input) | 0;
       case "randomInt": {
-        const n = yield* this.num(e.bound);
-        return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n));
+        const n = (yield* this.num(e.bound)) >>> 0;
+        return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n)) | 0;
       }
       case "ternary":
         return (yield* this.bool(e.cond)) ? yield* this.num(e.whenTrue) : yield* this.num(e.whenFalse);
       case "intrinsic": {
-        if (e.name === "abs") {
-          const sides = newSides();
-          yield* this.linear(e.args[0], sides, 1);
-          return difference(sides, true);
-        }
         const args = [];
         for (const a2 of e.args) args.push(yield* this.num(a2));
-        return e.name === "min" ? Math.min(...args) : Math.max(...args);
+        if (e.name === "abs") return Math.abs(args[0]) | 0;
+        const seen = e.unsigned ? args.map((a2) => a2 >>> 0) : args;
+        return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
       }
       case "call":
-        return Number(yield* this.call(e.call));
+        return Number(yield* this.call(e.call)) | 0;
     }
+  }
+  /** A number as the game takes one: the 32 bits from 0 up. What goes to a unit, a table, an action or the map is never below zero by then (the compiler saw to it). */
+  *amount(e) {
+    return (yield* this.num(e)) >>> 0;
   }
   *bool(e) {
     switch (e.kind) {
@@ -7950,10 +8231,10 @@ var ProgramRun = class {
       case "test":
         return (yield* this.num(e.expr)) !== 0;
       case "compare": {
-        const sides = newSides();
-        yield* this.linear(e.left, sides, 1);
-        yield* this.linear(e.right, sides, -1);
-        const [a2, b] = totals(sides);
+        let a2 = yield* this.num(e.left);
+        let b = yield* this.num(e.right);
+        if (e.unsigned === true || e.unsigned === "left") a2 = a2 >>> 0;
+        if (e.unsigned === true || e.unsigned === "right") b = b >>> 0;
         switch (e.op) {
           case "<":
             return a2 < b;
@@ -8066,7 +8347,7 @@ var ProgramRun = class {
           if (u) u.invincible = on;
           return "next";
         }
-        const value = yield* this.num(s.value);
+        const value = yield* this.amount(s.value);
         if (!u) return "next";
         u[field] = Math.min(value, UNIT_FIELD_MAX[field] ?? 4294967295);
         if (field === "hp" && u.hp === 0) {
@@ -8083,7 +8364,7 @@ var ProgramRun = class {
           this.sim.tableWrite(s.cell, 0, false, s.value.text);
           return "next";
         }
-        const value = s.boolean ? (yield* this.bool(s.value)) ? 1 : 0 : yield* this.num(s.value);
+        const value = s.boolean ? (yield* this.bool(s.value)) ? 1 : 0 : yield* this.amount(s.value);
         this.sim.tableWrite(s.cell, value, s.scaled === true);
         return "next";
       }
@@ -8133,7 +8414,7 @@ var ProgramRun = class {
       }
       case "switch": {
         const v = yield* this.num(s.value);
-        let from = s.cases.findIndex((c2) => c2.value !== null && c2.value === v);
+        let from = s.cases.findIndex((c2) => c2.value !== null && (c2.value | 0) === v);
         if (from < 0) from = s.cases.findIndex((c2) => c2.value === null);
         if (from < 0) return "next";
         for (let i = from; i < s.cases.length; i++) {
@@ -8158,19 +8439,19 @@ var ProgramRun = class {
       }
       case "action": {
         const record = { ...s.record };
-        for (const v of s.variables ?? []) record[v.field] = yield* this.num(v.expr);
+        for (const v of s.variables ?? []) record[v.field] = yield* this.amount(v.expr);
         this.sim.act(this, record, s.at);
         return "next";
       }
       case "print": {
         let text = "";
-        for (const p of s.parts) text += p.kind === "number" ? String(yield* this.num(p.expr)) : this.sim.partText(p);
+        for (const p of s.parts) text += p.kind === "number" ? String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr)) : this.sim.partText(p);
         this.sim.print(this, text, s.to, s.at);
         return "next";
       }
       case "centerLocation": {
-        const x = yield* this.num(s.x);
-        const y = yield* this.num(s.y);
+        const x = yield* this.amount(s.x);
+        const y = yield* this.amount(s.y);
         this.sim.centre(s.location, x, y);
         return "next";
       }
@@ -8534,14 +8815,18 @@ keeps each player's mouse in a location. They land in arrays registered by name 
 other two plugins' settings reach them \u2014 a cell per player, fresh every frame: an input reads 1 on
 the frame it arrives. The IR's \`input\` lists what is asked for; the editor wrote the settings from it.
 
-Numbers keep one contract with the simulator: 32-bit unsigned, an expression's exact value stored
-below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
+Numbers keep one contract with the simulator: 32 bits, a \`number\` signed and a \`u32\` not, wrapping at
+either end. + - * and the bitwise operators are the same bits whichever way they are read; what reads
+them one way or the other - a comparison, a division, a shift right, min and max, a printed number -
+says which in the IR (\`unsigned\`), so nothing here works a type out. Where the game takes nothing below
+zero the compiler has already written max(v, 0), and a store keeps stopping at the top of what it holds.
+In here a number known when the map is built is a Python int holding the 32 bits, 0 to 2^32 - 1.
 """
 import json
 
 from eudplib import *
 
-IR_VERSION = 5
+IR_VERSION = 6
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -8578,6 +8863,10 @@ CURRENT_PLAYER = 13
 # The state of a program whose body ended: nothing resumes it.
 DONE = 0xFFFFFFFF
 U32 = 0xFFFFFFFF
+SIGN = 0x80000000
+
+MINUS_SIGN = Db(b"-\\0\\0\\0")
+NO_SIGN = Db(b"\\0\\0\\0\\0")
 
 with open(settings["ir"], encoding="utf-8") as _f:
     IR = json.load(_f)
@@ -8762,58 +9051,8 @@ class Lowering:
         else:
             self.wait << value
 
-    # \u2500\u2500 numbers: an int or an EUDVariable \u2500\u2500
-    def linear(self, e, pos, neg, sign):
-        """Flatten + and - into positive and negative terms; anything else is one term. A constant
-        below zero is a term of the other sign: -1 is "subtract 1", never 0xFFFFFFFF."""
-        k = e["kind"]
-        if k == "binary" and e["op"] in ("+", "-"):
-            self.linear(e["left"], pos, neg, sign)
-            self.linear(e["right"], pos, neg, sign if e["op"] == "+" else -sign)
-        elif k == "unary":
-            self.linear(e["expr"], pos, neg, -sign)
-        elif k == "const" and e["value"] < 0:
-            (neg if sign > 0 else pos).append(int(-e["value"]))
-        else:
-            (pos if sign > 0 else neg).append(self.term(e))
-
-    @staticmethod
-    def total(terms):
-        """The sum of a side: an int when every term is one, else a variable (additions wrap at 2^32)."""
-        const = sum(t for t in terms if isinstance(t, int))
-        variables = [t for t in terms if not isinstance(t, int)]
-        if not variables:
-            return const
-        acc = fresh(const & U32)
-        for t in variables:
-            acc += t
-        return acc
-
-    def difference(self, pos, neg, absolute=False):
-        """sum(pos) - sum(neg), stopping at 0 \u2014 or, with \`absolute\`, the distance between the two."""
-        p, n = self.total(pos), self.total(neg)
-        if isinstance(p, int) and isinstance(n, int):
-            return (abs(p - n) if absolute else max(p - n, 0)) & U32
-        if isinstance(n, int) and n == 0:
-            return p
-        r = EUDVariable()
-        pv, nv = as_var(p), as_var(n)
-        if EUDIf()(pv >= nv):
-            r << pv - nv
-        if EUDElse()():
-            r << (nv - pv if absolute else 0)
-        EUDEndIf()
-        return r
-
+    # \u2500\u2500 numbers: an int (the 32 bits, 0 \u2026 2^32 - 1) or an EUDVariable \u2500\u2500
     def num(self, e):
-        k = e["kind"]
-        if k == "unary" or (k == "binary" and e["op"] in ("+", "-")) or (k == "const" and e["value"] < 0):
-            pos, neg = [], []
-            self.linear(e, pos, neg, 1)
-            return self.difference(pos, neg)
-        return self.term(e)
-
-    def term(self, e):
         k = e["kind"]
         if k == "input":
             return INPUT.read(e["input"], self, e)
@@ -8821,34 +9060,13 @@ class Lowering:
             return int(e["value"]) & U32
         if k == "var":
             return self.var(e["id"], e).get()
-        if k == "binary":
-            a, b = self.num(e["left"]), self.num(e["right"])
-            op = e["op"]
-            if op in BITWISE:
-                return self.bitwise(op, a, b)
-            if isinstance(a, int) and isinstance(b, int):
-                if op == "*":
-                    return (a * b) & U32
-                if b == 0:
-                    raise Fail("trigscript: division by zero%s" % where(e))
-                return (a // b if op == "/" else a % b) & U32
-            if op == "*":
-                return f_mul(as_var(a), as_var(b))
-            if isinstance(b, int):
-                if b == 0:
-                    raise Fail("trigscript: division by zero%s" % where(e))
-                q, r = f_div(as_var(a), b)
-                return q if op == "/" else r
-            # A divisor that is 0 in the game gives 0, as the simulator does; f_div alone would answer 0xFFFFFFFF.
-            out = fresh(0)
-            bv = as_var(b)
-            if EUDIf()(bv >= 1):
-                q, r = f_div(as_var(a), bv)
-                out << (q if op == "/" else r)
-            EUDEndIf()
-            return out
+        if k == "cast":
+            return self.num(e["expr"])
         if k == "unary":
-            return self.num(e)
+            x = self.num(e["expr"])
+            return (-x) & U32 if isinstance(x, int) else 0 - x
+        if k == "binary":
+            return self.binary(e)
         if k == "read":
             return self.read(e)
         if k == "randomInt":
@@ -8876,39 +9094,119 @@ class Lowering:
             EUDEndIf()
             return t
         if k == "intrinsic" and e["name"] == "abs":
-            # The distance between what the expression adds and what it subtracts: abs(b - a) is |b - a|, not 0 when a is larger.
-            pos, neg = [], []
-            self.linear(e["args"][0], pos, neg, 1)
-            return self.difference(pos, neg, absolute=True)
+            x = self.num(e["args"][0])
+            if isinstance(x, int):
+                return abs(signed(x)) & U32
+            t = fresh(x)
+            if EUDIf()(t >= SIGN):
+                t << 0 - t
+            EUDEndIf()
+            return t
         if k == "intrinsic":
-            args = [self.num(a) for a in e["args"]]
+            a, b = [self.num(x) for x in e["args"]]
             name = e["name"]
-            a, b = args
+            unsigned = bool(e.get("unsigned"))
             if isinstance(a, int) and isinstance(b, int):
-                return min(a, b) if name == "min" else max(a, b)
+                key = (lambda v: v) if unsigned else signed
+                return min(a, b, key=key) if name == "min" else max(a, b, key=key)
             t = EUDVariable()
-            av, bv = as_var(a), as_var(b)
-            if EUDIf()(av <= bv if name == "min" else av >= bv):
-                t << av
+            if EUDIf()(self.ordered(a, "<=" if name == "min" else ">=", b, unsigned)):
+                t << a
             if EUDElse()():
-                t << bv
+                t << b
             EUDEndIf()
             return t
         if k == "call":
             return self.call(e["call"])
         raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))
 
+    def binary(self, e):
+        a, b = self.num(e["left"]), self.num(e["right"])
+        op = e["op"]
+        if op in BITWISE:
+            return self.bitwise(op, a, b)
+        both = isinstance(a, int) and isinstance(b, int)
+        if op == "+":
+            return (a + b) & U32 if both else a + b
+        if op == "-":
+            return (a - b) & U32 if both else a - b
+        if op == "*":
+            return (a * b) & U32 if both else f_mul(as_var(a), as_var(b))
+        # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
+        unsigned = bool(e.get("unsigned"))
+        pick = (lambda q, r: q) if op == "/" else (lambda q, r: r)
+        if isinstance(b, int):
+            if b == 0:
+                raise Fail("trigscript: division by zero%s" % where(e))
+            if both:
+                if unsigned:
+                    return pick(a // b, a % b)
+                x, y = signed(a), signed(b)
+                q = abs(x) // abs(y) * (-1 if (x < 0) != (y < 0) else 1)
+                return pick(q, x - q * y) & U32
+            return pick(*(f_div(a, b) if unsigned else f_div_towards_zero(fresh(a), signed(b))))
+        out = fresh(0)
+        if EUDIf()(b >= 1):
+            q, r = f_div(as_var(a), b) if unsigned else f_div_towards_zero(fresh(a), fresh(b))
+            out << pick(q, r)
+        EUDEndIf()
+        return out
+
+    def ordered(self, a, op, b, unsigned):
+        """\`a op b\` as one condition, the two read as u32s (\`unsigned\` true), as signed numbers (false), or one of
+        each ("left" / "right" names the u32) - exactly: a number below zero is smaller than any u32. At least one
+        side is a variable. A signed order is the unsigned one with the top bit of both sides flipped."""
+        if unsigned in ("left", "right"):
+            # s is the signed side, u the u32, and the comparison is turned to read s op u.
+            s_, u_ = (b, a) if unsigned == "left" else (a, b)
+            if unsigned == "left":
+                op = FLIPPED[op]
+            if isinstance(s_, int):
+                if s_ >= SIGN:
+                    return always(op in ("<", "<=", "!="))
+                return self.ordered(s_, op, u_, True)
+            sv = as_var(s_)
+            if op in ("<", "<=", "!="):
+                return EUDOr(sv >= SIGN, relation(sv, op, u_))
+            return EUDAnd(sv <= SIGN - 1, relation(sv, op, u_))
+        if isinstance(a, int):
+            a, b, op = b, a, FLIPPED[op]
+        if unsigned or op in ("==", "!="):
+            return relation(as_var(a), op, b)
+        return relation(a + SIGN, op, (b + SIGN) & U32 if isinstance(b, int) else b + SIGN)
+
     @staticmethod
     def bitwise(op, a, b):
-        """& | ^ << >> over 32 bits; a shift by 32 or more leaves nothing."""
-        if isinstance(a, int) and isinstance(b, int):
-            if op in ("<<", ">>"):
-                return 0 if b >= 32 else ((a << b) & U32 if op == "<<" else a >> b)
-            return {"&": a & b, "|": a | b, "^": a ^ b}[op]
-        if op in ("<<", ">>"):
-            if isinstance(b, int) and b >= 32:
+        """& | ^ << >> >>> over 32 bits. \`>>\` keeps the sign of what it shifts and \`>>>\` does not; a shift by 32 or
+        more leaves nothing but that sign."""
+        if op in ("<<", ">>", ">>>"):
+            if isinstance(a, int) and isinstance(b, int):
+                if op == "<<":
+                    return 0 if b >= 32 else (a << b) & U32
+                if op == ">>>":
+                    return 0 if b >= 32 else a >> b
+                return (signed(a) >> min(b, 31)) & U32
+            if isinstance(b, int) and b == 0:
+                return a
+            if isinstance(b, int) and b >= 32 and op != ">>":
                 return 0
-            return (f_bitlshift if op == "<<" else f_bitrshift)(fresh(a), b)
+            if op == "<<":
+                return f_bitlshift(fresh(a), b)
+            if op == ">>>":
+                return f_bitrshift(fresh(a), b)
+            # The sign kept: a number below zero is shifted as its complement, which has zeros where it has ones.
+            x, below = fresh(a), fresh(0)
+            if EUDIf()(x >= SIGN):
+                below << 1
+                x << ~x
+            EUDEndIf()
+            r = fresh(f_bitrshift(x, b)) if not (isinstance(b, int) and b >= 32) else fresh(0)
+            if EUDIf()(below >= 1):
+                r << ~r
+            EUDEndIf()
+            return r
+        if isinstance(a, int) and isinstance(b, int):
+            return {"&": a & b, "|": a | b, "^": a ^ b}[op]
         # Copies: eudplib computes in place into an operand nothing else refers to, and ours may be a variable's own cell.
         x, y = fresh(a), fresh(b)
         return x & y if op == "&" else x | y if op == "|" else x ^ y
@@ -9009,7 +9307,7 @@ class Lowering:
     def cond(self, e):
         k = e["kind"]
         if k == "const":
-            return EUDVariable(1 if e["value"] else 0) >= 1  # initial: a constant, never written
+            return always(e["value"])
         if k == "cond":
             return condition(e["record"])
         if k == "var":
@@ -9017,31 +9315,15 @@ class Lowering:
         if k == "test":
             return as_var(self.num(e["expr"])) >= 1
         if k == "compare":
-            # What either side subtracts is added to the other, so a - b == 0 asks whether a == b
-            # and x >= -1 is true: neither side stops at 0 on its own, as it would were it stored.
-            left, right = [], []
-            self.linear(e["left"], left, right, 1)
-            self.linear(e["right"], right, left, 1)
-            a, b = self.total(left), self.total(right)
-            op = e["op"]
+            a, b = self.num(e["left"]), self.num(e["right"])
+            op, unsigned = e["op"], e.get("unsigned", False)
             if isinstance(a, int) and isinstance(b, int):
-                return EUDVariable(1 if compare(a, op, b) else 0) >= 1  # initial: a constant, never written
+                x = a if unsigned in (True, "left") else signed(a)
+                y = b if unsigned in (True, "right") else signed(b)
+                return always(compare(x, op, y))
             # One comparison, built once: a comparison between variables writes into its own
             # condition, and one that is built and dropped is an orphan eudplib refuses.
-            if isinstance(b, int):
-                b &= U32
-            av = as_var(a)
-            if op == "==":
-                return av == b
-            if op == "!=":
-                return av != b
-            if op == "<":
-                return av < b
-            if op == "<=":
-                return av <= b
-            if op == ">":
-                return av > b
-            return av >= b
+            return self.ordered(a, op, b, unsigned)
         if k == "and":
             return EUDAnd(*[self.cond(c) for c in e["items"]])
         if k == "or":
@@ -9291,7 +9573,7 @@ class Lowering:
             def body(ref, next_, exit_):
                 cu = self.cunit(ref)
                 # |dx| + |dy| is enough to say which is nearest, and never overflows.
-                d = self.difference([cu.posX], [cx], absolute=True) + self.difference([cu.posY], [cy], absolute=True)
+                d = distance(cu.posX, cx) + distance(cu.posY, cy)
                 if EUDIf()(d < least):
                     least << d
                     take(ref)
@@ -9688,9 +9970,9 @@ class Lowering:
                 default = label
                 continue
             n = c["value"]
-            if n != n or n < 0 or n > U32:  # NaN, or a value the variable never holds
+            if n != n or n < -SIGN or n > U32:  # NaN, or a value the variable never holds
                 continue
-            EUDJumpIf(v == int(n), label)
+            EUDJumpIf(v == int(n) & U32, label)
         EUDJump(default if default is not None else exit_)
         for c, label in zip(st["cases"], labels):
             label << NextTrigger()
@@ -9750,7 +10032,19 @@ class Lowering:
                 args.append(part["text"])
             elif k == "number":
                 v = self.num(part["expr"])
-                args.append(str(v) if isinstance(v, int) else v)
+                if isinstance(v, int):
+                    args.append(str(v if part.get("unsigned") else signed(v)))
+                elif part.get("unsigned"):
+                    args.append(v)
+                else:
+                    # A number below zero: its minus sign, then how far below it is.
+                    sign, size = fresh(NO_SIGN), fresh(v)
+                    if EUDIf()(size >= SIGN):
+                        sign << MINUS_SIGN
+                        size << 0 - size
+                    EUDEndIf()
+                    args.append(ptr2s(sign))
+                    args.append(size)
             elif k == "name":
                 args.append(PName(self.one_player(part["player"], st)))
             elif k == "color":
@@ -9877,7 +10171,8 @@ def loop_players(slots):
     EUDEndWhile()
 
 
-BITWISE = ("&", "|", "^", "<<", ">>")
+BITWISE = ("&", "|", "^", "<<", ">>", ">>>")
+FLIPPED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!="}
 
 
 def points(value, bits):
@@ -9891,6 +10186,42 @@ def uses_random(node):
     if isinstance(node, dict):
         return node.get("kind") in ("random", "randomInt") or (node.get("kind") == "pick" and node.get("by") == "random") or any(uses_random(v) for v in node.values())
     return isinstance(node, list) and any(uses_random(v) for v in node)
+
+
+def distance(a, b):
+    """|a - b| of two places on the map, both from 0 up."""
+    d = fresh(a)
+    d -= b
+    if EUDIf()(d >= SIGN):
+        d << 0 - d
+    EUDEndIf()
+    return d
+
+
+def signed(v):
+    """The 32 bits as a signed number."""
+    v &= U32
+    return v - (1 << 32) if v >= SIGN else v
+
+
+def always(truth):
+    """A condition that is known when the map is built."""
+    return EUDVariable(1 if truth else 0) >= 1  # initial: a constant, never written
+
+
+def relation(av, op, b):
+    """\`av op b\` between a variable and a variable or an int, both read from 0 up."""
+    if op == "==":
+        return av == b
+    if op == "!=":
+        return av != b
+    if op == "<":
+        return av < b
+    if op == "<=":
+        return av <= b
+    if op == ">":
+        return av > b
+    return av >= b
 
 
 def compare(a, op, b):
@@ -11163,7 +11494,7 @@ function createWorkspace(svc, options, mode) {
       )
     )));
   };
-  const typeOf = (v) => v.kind === "number" ? v.bits ? `u${v.bits}` : "number" : v.kind === "unit" ? "Unit" : "boolean";
+  const typeOf = (v) => v.kind === "number" ? v.bits ? `u${v.bits}` : v.unsigned ? "u32" : "number" : v.kind === "unit" ? "Unit" : "boolean";
   const renderPrograms = () => {
     const programs = outline?.programs ?? [];
     programsSection.setHidden(programs.length === 0);
