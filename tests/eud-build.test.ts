@@ -310,6 +310,29 @@ FIXTURES.functionsProbe = readFileSync(resolve(import.meta.dirname, "..", "probe
 // calling each other, rows a player, and the overflow that stops a program.
 FIXTURES.recursionProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "recursion.ts"), "utf8");
 
+// Destructuring and spread are the front end's alone; this is that what they come to still builds: a record of mouse() taken
+// apart, a swap of cells, a rest that grows, a row spread into a push, a pattern for a parameter of a called function.
+FIXTURES.destructuring = `program(() => {
+  let ws = [{ count: 4, delay: 2 }, { count: 6, delay: 1 }];
+  let xs: number[] = [];
+  function cost({ count, delay }: { count: number; delay: number }, ...extra: number[]) { let c = count * delay; for (const e of extra) c += e; return c; }
+  while (true) {
+    const { x, y } = mouse(P1);
+    xs.push(x); xs.push(y); xs.push(x + y);
+    const [first, ...tail] = xs;
+    [xs[0], xs[1]] = [xs[1], xs[0]];
+    const w = ws[0];
+    ws.push({ ...w, count: first });
+    const all = [...tail, first, cost(w), cost(ws[1], x, y)];
+    let sum = 0;
+    for (const { count, delay } of ws) sum += count + delay;
+    ws.forEach(({ count }) => { sum += count; });
+    displayText(\`\${sum} \${all.length} \${tail.length}\`);
+    xs.length = 0; ws.length = 2;
+    sleep(seconds(1));
+  }
+});`;
+
 // And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
 // and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.
 FIXTURES.callbacksProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "callbacks.ts"), "utf8");

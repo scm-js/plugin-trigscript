@@ -334,6 +334,27 @@ own arithmetic, done when the script is built.
 
 `new Array(12).fill(0)` is an array of numbers; for booleans, `new Array<boolean>(12).fill(false)`.
 
+**Patterns and spread** are TypeScript's. `const { x, y } = mouse(P1)`,
+`const { count, delay: wait } = waves[i]`, `const [first, , third = 0, ...tail] = xs`, nested
+as deep as they are written, in a declaration, in the variable of a `for…of`
+(`for (const { count, delay } of waves)`), and in a parameter — of a function
+(`function len({ x, y }: Point)`) or of one given to a method
+(`waves.forEach(({ count }) => …)`). A name in a pattern is a variable of its own holding a
+copy, as a number is copied in JavaScript: changing `x` does not change `p.x`. A record or
+an array *inside* what is taken apart stays itself, as an object does — `const [a, b] = waves`
+are two rows of `waves`. A default is for what is not there — a field the record has not
+got, a place past a fixed array's end; a name with neither is an error, since it would be
+undefined. `...tail` is an array of its own, which grows if what it was taken from does.
+
+Assigned, a pattern is a swap: `[a, b] = [b, a]`, `[hp[i], hp[j]] = [hp[j], hp[i]]`,
+`({ x: q.x, y: q.y } = p)` — every value is read before any is stored. `[...xs, v, ...ys]`
+copies the cells into a new array (fixed when all of them are, else one that grows), and
+`{ ...p, y: 9 }` the fields into a new record or a row — `waves.push({ ...w, count: 9 })`.
+`function sum(...ns: number[])` takes the rest of a call's arguments as an array made at
+that call; such a function is copied into each call rather than called, since every call
+has its own number of them. An array is handed to a function as itself (`total(xs)`), not
+spread into its arguments.
+
 **A list the script made is a table a program can look things up in.** `const price = [50,
 100, 150]` outside the program, `price[level]` inside it, is in the map once, however often
 it is read, and cannot be written. A list of records is a table a field — the wave table:
@@ -795,9 +816,9 @@ programs, each a thread of its own with its own variables. A program's text
 takes a string of the map you edit; a `trigger()`'s text is interned into the map when
 the script is applied, as it always was.
 
-Still to come, in this order: the rest of the TypeScript people write —
-`map` / `filter` / `sort` and the other array callbacks, destructuring and spread, arrays
-inside records and arrays of arrays, classes, a `Map` over any number; then `test()` blocks
+Still to come, in this order: the rest of the TypeScript people write — arrays inside
+records and arrays of arrays, a `string` that is a value (a text kept in a variable, a
+template stored and shown later), classes, a `Map` over any number; then `test()` blocks
 that run a script against the simulator, a debugger that steps it, and a gallery of
 examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
@@ -814,6 +835,11 @@ brought the script's standard library to ES2023. `new Array(12)` is an array of 
 where TypeScript's own declaration says `any[]`, so what is read out of one, or made from it
 by `map` or `reduce`, has a type; an array of booleans made that way says so:
 `new Array<boolean>(12).fill(false)`.
+
+Patterns and spread (*Patterns and spread*, above) are new too, and mended something:
+`const { n, d } = waves[0]` over a list of the script — nothing of the program in it — was
+refused with "n is not defined". A constant taken out of a pattern is now the script's
+constant like any other.
 
 ### Coming from 3.7
 

@@ -194,10 +194,24 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
   const written = (node: TS.Node) => {
     if (isFunctionValue(node)) return;
     let target: TS.Expression | undefined;
+    // `[xs[0], xs[1]] = [xs[1], xs[0]]`: each place in the pattern is a store of its own.
+    const left = ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? node.left : undefined;
+    if (left && (ts.isArrayLiteralExpression(left) || ts.isObjectLiteralExpression(left))) {
+      const places = (e: TS.Node): void => {
+        if (ts.isArrayLiteralExpression(e)) e.elements.forEach(places);
+        else if (ts.isObjectLiteralExpression(e)) e.properties.forEach((p) => { if (ts.isPropertyAssignment(p)) places(p.initializer); });
+        else if (ts.isElementAccessExpression(e) || ts.isPropertyAccessExpression(e)) store(e);
+      };
+      places(left);
+    }
     if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) target = node.left;
     else if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) target = node.operand;
     else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ARRAY_WRITERS.has(node.expression.name.text)) target = node.expression;
     while (target && (ts.isParenthesizedExpression(target) || ts.isNonNullExpression(target))) target = target.expression;
+    store(target);
+    ts.forEachChild(node, written);
+  };
+  const store = (target: TS.Expression | undefined) => {
     if (target && (ts.isElementAccessExpression(target) || ts.isPropertyAccessExpression(target)) && ts.isIdentifier(target.expression)) {
       const decl = declarationOf(ts, checker, target.expression);
       if (decl && ts.isVariableDeclaration(decl) && decl.initializer && inside(decl)) {
@@ -214,7 +228,6 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
         }
       }
     }
-    ts.forEachChild(node, written);
   };
   const inside = (decl: TS.Node) => { for (let n: TS.Node | undefined = decl; n; n = n.parent) if (n === arrow.body) return true; return false; };
   written(arrow.body);
@@ -300,6 +313,8 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
   };
   const value = (e: TS.Expression | undefined, items: PlanItem[]) => {
     if (!e) return;
+    // `...base` is not an expression on its own: what it spreads is.
+    if (ts.isSpreadElement(e)) { value(e.expression, items); return; }
     if (hoistable(e)) { hoist(e, items); return; }
     descend(e, items);
   };
@@ -429,29 +444,51 @@ export function hoistedFunction(ts: typeof TS, checker: TS.TypeChecker, plan: Pr
   const m = f.createIdentifier("__m");
   const arrow = (params: string[], body: TS.ConciseBody) => f.createArrowFunction(undefined, undefined, params.map((p) => f.createParameterDeclaration(undefined, undefined, p)), undefined, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), body);
   // Every reference to a build-time constant of the body becomes a call of its thunk.
+  // A constant's value: its thunk called — and, for a name taken out of a pattern (`const { n, d } = waves[0]`), that name of
+  // what the thunk gives, which for a pattern is an object of every name it binds.
+  const constant = (id: TS.Identifier): TS.Expression | undefined => {
+    const decl = declarationOf(ts, checker, id);
+    if (!decl) return undefined;
+    const owner = owningDeclaration(ts, decl);
+    const i = ts.isVariableDeclaration(owner) ? plan.consts.get(owner) : undefined;
+    if (i === undefined) return undefined;
+    const call = f.createCallExpression(f.createElementAccessExpression(c, f.createNumericLiteral(i)), undefined, []);
+    return ts.isBindingElement(decl) && ts.isIdentifier(decl.name) ? f.createPropertyAccessExpression(call, decl.name.text) : call;
+  };
   const rewrite = (node: TS.Node): TS.Node => {
     if (ts.isTypeNode(node)) return node;
-    if (ts.isIdentifier(node) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) && !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) {
-      const decl = declarationOf(ts, checker, node);
-      const i = decl && ts.isVariableDeclaration(decl) ? plan.consts.get(decl) : undefined;
-      if (i !== undefined) return f.createCallExpression(f.createElementAccessExpression(c, f.createNumericLiteral(i)), undefined, []);
-      return node;
-    }
+    if (ts.isIdentifier(node) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) && !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) return constant(node) ?? node;
     if (ts.isShorthandPropertyAssignment(node)) {
-      const decl = declarationOf(ts, checker, node.name);
-      const i = decl && ts.isVariableDeclaration(decl) ? plan.consts.get(decl) : undefined;
-      if (i !== undefined) return f.createPropertyAssignment(node.name, f.createCallExpression(f.createElementAccessExpression(c, f.createNumericLiteral(i)), undefined, []));
-      return node;
+      const value = constant(node.name);
+      return value ? f.createPropertyAssignment(node.name, value) : node;
     }
     return ts.visitEachChild(node, rewrite, context);
   };
   const expr = (e: TS.Expression) => f.createParenthesizedExpression(ts.visitNode(e, rewrite) as TS.Expression);
   const thunk = (e: TS.Expression) => arrow([], expr(e));
+  // `const { n, d: delay = 1, ...more } = waves[0]`: the pattern runs as JavaScript runs it, and what it bound comes back by name.
+  const names = (pattern: TS.BindingName, into: string[] = []): string[] => {
+    if (ts.isIdentifier(pattern)) into.push(pattern.text);
+    else for (const el of pattern.elements) if (ts.isBindingElement(el)) names(el.name, into);
+    return into;
+  };
+  // The names a pattern binds stay names; what it computes — a default, a computed key — may name other constants.
+  const patternOf = (pattern: TS.BindingName): TS.BindingName => {
+    if (ts.isIdentifier(pattern)) return pattern;
+    const element = (el: TS.ArrayBindingElement): TS.ArrayBindingElement => ts.isBindingElement(el)
+      ? f.updateBindingElement(el, el.dotDotDotToken, el.propertyName && ts.isComputedPropertyName(el.propertyName) ? (ts.visitNode(el.propertyName, rewrite) as TS.PropertyName) : el.propertyName, patternOf(el.name), el.initializer ? (ts.visitNode(el.initializer, rewrite) as TS.Expression) : undefined)
+      : el;
+    return ts.isObjectBindingPattern(pattern) ? f.updateObjectBindingPattern(pattern, pattern.elements.map((el) => element(el) as TS.BindingElement)) : f.updateArrayBindingPattern(pattern, pattern.elements.map(element));
+  };
+  const patternThunk = (decl: TS.VariableDeclaration) => arrow([], f.createBlock([
+    f.createVariableStatement(undefined, f.createVariableDeclarationList([f.createVariableDeclaration(patternOf(decl.name), undefined, undefined, expr(decl.initializer!))], ts.NodeFlags.Const)),
+    f.createReturnStatement(f.createObjectLiteralExpression(names(decl.name).map((n) => f.createShorthandPropertyAssignment(n)))),
+  ], true));
   const emit = (items: PlanItem[]): TS.Statement[] => items.map((item): TS.Statement => {
     switch (item.kind) {
       case "const": {
         const i = plan.consts.get(item.decl)!;
-        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(c, f.createNumericLiteral(i)), f.createCallExpression(m, undefined, [f.createNumericLiteral(i), thunk(item.decl.initializer!)])));
+        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(c, f.createNumericLiteral(i)), f.createCallExpression(m, undefined, [f.createNumericLiteral(i), ts.isIdentifier(item.decl.name) ? thunk(item.decl.initializer!) : patternThunk(item.decl)])));
       }
       case "hoist": return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), thunk(item.expr)));
       case "block": return f.createBlock(emit(item.items), true);

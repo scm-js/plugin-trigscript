@@ -640,7 +640,13 @@ export class Structured {
     for (const d of list.declarations) {
       // Computed when the script is built — now, so a helper it calls runs where the source has it — and its uses are hoisted expressions.
       if (this.body.plan.consts.has(d)) { this.constValue(d); continue; }
-      if (!ts.isIdentifier(d.name)) { this.c.error(d.name, "Destructuring is not supported in a program."); continue; }
+      if (!ts.isIdentifier(d.name)) {
+        // `const { x, y } = mouse(P1)`, `const [a, b] = pair`: every name a variable of its own.
+        if (!d.initializer) { this.c.error(d, "A pattern is taken from something: const { x, y } = p."); continue; }
+        const from = this.patternSource(d.initializer, d);
+        if (from) this.bindPattern(d.name, d, from, this.scope);
+        continue;
+      }
       if (!d.initializer) { this.c.error(d, `Give ${d.name.text} an initial value: let ${d.name.text} = 0 or = false.`); continue; }
       const init = this.unwrap(d.initializer);
       if (ts.isObjectLiteralExpression(init) && !this.keyedForm(init, this.c.checker.getTypeAtLocation(d.name))) {
@@ -903,7 +909,17 @@ export class Structured {
         else { const n = this.asInteger({ value: v }, literal); if (n === null) return null; row.set(field, num(n)); }
         continue;
       }
-      const p = literal.properties.find((x) => (ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && ts.isIdentifier(x.name) && x.name.text === field);
+      // The last to say what the field is wins, as in JavaScript: `{ ...w, count: 9 }` is w with another count, `{ count: 9, ...w }` is w.
+      let p: TS.ObjectLiteralElementLike | undefined;
+      let spread: NumExpr | BoolExpr | undefined;
+      for (const x of [...literal.properties].reverse()) {
+        if ((ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && ts.isIdentifier(x.name) && x.name.text === field) { p = x; break; }
+        if (!ts.isSpreadAssignment(x)) continue;
+        const b = this.spreadFields(x.expression)?.get(field);
+        const v = b && b.kind !== "record" ? this.valueOf(b, kind, x) : null;
+        if (v) { spread = v as NumExpr | BoolExpr; break; }
+      }
+      if (spread) { row.set(field, spread); continue; }
       if (!p) { this.c.error(literal, `${name}: a record has ${[...shape.keys()].join(", ")}; ${field} is missing.`); return null; }
       const value = ts.isPropertyAssignment(p) ? p.initializer : (p as TS.ShorthandPropertyAssignment).name;
       const v = kind === "number" ? this.num(value) : this.boolValue(value);
@@ -1241,6 +1257,230 @@ export class Structured {
     }
   }
 
+  /* ── Destructuring and spread ── */
+
+  /**
+   * What a pattern takes its values from: a record, a list, a value the script has — or, for `[a, b] = [b, a + 1]`, the
+   * items of an array written out, each worked out into a temporary first, so that a swap is one. Null with a diagnostic.
+   */
+  private patternSource(init: TS.Expression, at: TS.Node): Binding | Binding[] | null {
+    const { ts } = this;
+    const e = this.unwrap(init);
+    const h = this.evaluate(init);
+    if (h) return { kind: "value", value: h.value };
+    if (ts.isArrayLiteralExpression(e)) {
+      const items: Binding[] = [];
+      for (const x of e.elements) {
+        if (ts.isSpreadElement(x) || ts.isOmittedExpression(x)) { this.c.error(x, "An array that is taken apart where it is written has its items written out: [a, b] = [b, a]."); return null; }
+        const known = this.evaluate(x);
+        if (known) { items.push({ kind: "value", value: known.value }); continue; }
+        const held = this.bindingOf(x);
+        if (held && held.kind !== "var" && held.kind !== "cell") { items.push(held); continue; }
+        const kind = this.kindOf(this.c.checker.getTypeAtLocation(x));
+        if (!kind) { this.c.error(x, `This is ${this.c.checker.typeToString(this.c.checker.getTypeAtLocation(x))}; a pattern takes numbers, booleans, units and records.`); return null; }
+        const v = this.newVar("(taken)", kind, this.at(x), { temp: true, ...(kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(x)) : {}) });
+        this.emitDeclare(v, x, x);
+        items.push({ kind: "var", v });
+      }
+      return items;
+    }
+    if (ts.isObjectLiteralExpression(e)) return this.declareRecord("(taken)", e, this.c.checker.getTypeAtLocation(e), at);
+    if (ts.isCallExpression(e) && (this.isLibraryCall(e, "mouse") || this.isLibraryCall(e, "chatted"))) return this.declareInput("(taken)", e, at);
+    const b = this.listOf(init);
+    if (b) return b;
+    this.c.error(init, "Only a record, an array, or what mouse() and chatted() give can be taken apart in a program.");
+    return null;
+  }
+
+  /** The fields `...p` spreads: a record's, or those of an object the script has. Null with a diagnostic. */
+  private spreadFields(expr: TS.Expression): Map<string, Binding> | null {
+    const b = this.bindingOf(expr);
+    if (b?.kind === "record") return b.fields;
+    const h = b ? undefined : this.evaluate(expr);
+    if (h && typeof h.value === "object" && h.value !== null) return new Map(Object.entries(h.value as Record<string, unknown>).map(([k, value]) => [k, { kind: "value", value } as Binding]));
+    this.c.error(expr, "... inside { } spreads a record.");
+    return null;
+  }
+
+  /** A field of a record of the program from whatever a spread gave it: always a variable of its own, since a field can be assigned. */
+  private fieldCopy(b: Binding, name: string, at: TS.Node): Binding {
+    if (b.kind === "record") return { kind: "record", fields: new Map([...b.fields].map(([field, inner]) => [field, this.fieldCopy(inner, `${name}.${field}`, at)])) };
+    if (b.kind !== "value") return this.takenCopy(b, name, at);
+    const kind: Kind = typeof b.value === "boolean" ? "boolean" : "number";
+    const v = this.newVar(name, kind, this.sourceOf(at));
+    const n = kind === "number" ? this.asInteger({ value: b.value }, at) : null;
+    this.emit({ kind: "declare", decl: v, init: kind === "boolean" ? { kind: "const", value: b.value as boolean } : num(n ?? 0), at: this.at(at), label: this.label(at) }, at);
+    return { kind: "var", v };
+  }
+
+  /** A copy of what a binding holds, under a name of its own — what a name in a pattern is, since numbers are copied; a record or a list stays itself, as an object does. */
+  private takenCopy(from: Binding, name: string, at: TS.Node): Binding {
+    if (from.kind !== "var" && from.kind !== "cell") return from;
+    const like = from.kind === "var" ? from.v : from.a;
+    const v = this.newVar(name, like.kind, this.sourceOf(at), { ...(like.bits ? { bits: like.bits } : {}), ...(like.unsigned ? { unsigned: true } : {}) });
+    const init: NumExpr | BoolExpr | UnitExpr = from.kind === "cell" ? { kind: "element", array: from.a.id, index: from.index, at: this.at(at) } : from.v.kind === "number" ? varRef(from.v) : from.v.kind === "unit" ? unitRef(from.v) : boolRef(from.v);
+    this.emit({ kind: "declare", decl: v, init, at: this.at(at), label: this.label(at) }, at);
+    return { kind: "var", v };
+  }
+
+  /** What a pattern's name is when what it is taken from has nothing there: its default, a value of the script or of the program. */
+  private patternDefault(el: TS.BindingElement, what: string): Binding | null {
+    const { ts } = this;
+    const name = ts.isIdentifier(el.name) ? el.name.text : "(taken)";
+    if (!el.initializer) { this.c.error(el, `${what}, and ${name} has no default: it would be undefined, which does not exist when the map is played.`); return null; }
+    const h = this.evaluate(el.initializer);
+    if (h) return { kind: "value", value: h.value };
+    const kind = this.kindOf(this.c.checker.getTypeAtLocation(el.initializer));
+    if (!kind) { this.c.error(el.initializer, "A default is a number, a boolean or a unit."); return null; }
+    const v = this.newVar(name, kind, this.sourceOf(el.name), kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(el.initializer)) : {});
+    this.emitDeclare(v, el.initializer, el);
+    return { kind: "var", v };
+  }
+
+  /**
+   * `const { x, y: py, ...rest } = p`, `const [a, , b = 0, ...tail] = xs`, as deep as it is written: every name bound in
+   * `scope` to a copy of what it names (a record or a list inside stays itself). A default is for what is not there — a
+   * field the record has not got, a place past a fixed array's end — since nothing that is there is ever undefined.
+   */
+  private bindPattern(pattern: TS.BindingName, key: TS.Node, from: Binding | Binding[], scope: Scope): boolean {
+    const { ts } = this;
+    if (ts.isIdentifier(pattern)) {
+      if (Array.isArray(from)) { this.c.error(pattern, `${pattern.text} would be an array written out where it is used; give it a declaration of its own: let ${pattern.text} = [a, b].`); return false; }
+      scope.bind(key, this.takenCopy(from, pattern.text, pattern));
+      return true;
+    }
+    let ok = true;
+    if (ts.isObjectBindingPattern(pattern)) {
+      const fields: Map<string, Binding> | null = !Array.isArray(from) && from.kind === "record" ? from.fields
+        : !Array.isArray(from) && from.kind === "value" && typeof from.value === "object" && from.value !== null ? new Map(Object.entries(from.value as Record<string, unknown>).map(([k, value]) => [k, { kind: "value", value } as Binding]))
+        : null;
+      if (!fields) { this.c.error(pattern, "{ … } takes the fields of a record."); return false; }
+      const taken = new Set<string>();
+      for (const el of pattern.elements) {
+        if (el.dotDotDotToken) {
+          // The rest: a record of its own, of copies, as JavaScript makes one.
+          const rest = new Map<string, Binding>();
+          for (const [field, b] of fields) if (!taken.has(field)) rest.set(field, this.takenCopy(b, `${ts.isIdentifier(el.name) ? el.name.text : "rest"}.${field}`, el));
+          scope.bind(el, { kind: "record", fields: rest });
+          continue;
+        }
+        const prop = el.propertyName ?? el.name;
+        const field = ts.isIdentifier(prop) || ts.isStringLiteralLike(prop) ? prop.text : ts.isComputedPropertyName(prop) ? String(this.evaluate(prop.expression)?.value ?? "") : "";
+        if (!field) { this.c.error(el, "The name of a field in a pattern is written out, or known when the script is built."); ok = false; continue; }
+        taken.add(field);
+        const b = fields.get(field);
+        const present = b && !(b.kind === "value" && b.value === undefined) ? b : this.patternDefault(el, `There is no ${field} here`);
+        if (!present || !this.bindPattern(el.name, el, present, scope)) ok = false;
+      }
+      return ok;
+    }
+    // [a, b, ...tail]
+    const at = (i: number): Binding | undefined => {
+      if (Array.isArray(from)) return from[i];
+      if (from.kind === "value") return Array.isArray(from.value) && i < from.value.length ? { kind: "value", value: (from.value as unknown[])[i] } : undefined;
+      if (from.kind === "array") return from.a.dynamic || i < from.a.length ? { kind: "cell", a: from.a, index: num(i) } : undefined;
+      if (from.kind === "records") return this.rowOf(from, num(i));
+      return undefined;
+    };
+    if (!Array.isArray(from) && from.kind !== "value" && from.kind !== "array" && from.kind !== "records" && from.kind !== "units") { this.c.error(pattern, "[ … ] takes the items of an array."); return false; }
+    pattern.elements.forEach((el, i) => {
+      if (ts.isOmittedExpression(el)) return;
+      if (el.dotDotDotToken) {
+        const rest = this.restOf(from, i, ts.isIdentifier(el.name) ? el.name.text : "rest", el);
+        if (!rest || !this.bindPattern(el.name, el, rest, scope)) ok = false;
+        return;
+      }
+      if (!Array.isArray(from) && from.kind === "units") {
+        const v = this.newVar(ts.isIdentifier(el.name) ? el.name.text : "(taken)", "unit", this.sourceOf(el.name));
+        this.emit({ kind: "declare", decl: v, init: this.unitAtIndex(from, num(i), el), at: this.at(el), label: this.label(el) }, el);
+        scope.bind(el, { kind: "var", v });
+        return;
+      }
+      const b = at(i);
+      const present = b && !(b.kind === "value" && b.value === undefined) ? b : this.patternDefault(el, `There is no item ${i} here`);
+      if (!present || !this.bindPattern(el.name, el, present, scope)) ok = false;
+    });
+    return ok;
+  }
+
+  /**
+   * The left of `[a, hp[i], { x }] = …`: what each target is to be given is copied out now, and `stores` collects what
+   * writes them — run by the caller after every copy is made, which is what makes `[a, b] = [b, a]` a swap.
+   */
+  private assignPattern(left: TS.Expression, from: Binding | Binding[], stores: (() => void)[]): boolean {
+    const { ts } = this;
+    const target = this.unwrap(left);
+    if (ts.isArrayLiteralExpression(target)) {
+      if (!Array.isArray(from) && from.kind !== "value" && from.kind !== "array" && from.kind !== "records") { this.c.error(target, "[ … ] takes the items of an array."); return false; }
+      let ok = true;
+      target.elements.forEach((x, i) => {
+        if (ts.isOmittedExpression(x)) return;
+        if (ts.isSpreadElement(x)) { this.c.error(x, "...rest makes an array, which is declared, not assigned: const [first, ...rest] = xs."); ok = false; return; }
+        const item: Binding | undefined = Array.isArray(from) ? from[i]
+          : from.kind === "value" ? (Array.isArray(from.value) && i < from.value.length ? { kind: "value", value: (from.value as unknown[])[i] } : undefined)
+          : from.kind === "array" ? (from.a.dynamic || i < from.a.length ? { kind: "cell", a: from.a, index: num(i) } : undefined)
+          : from.kind === "records" ? this.rowOf(from, num(i)) : undefined;
+        if (!item) { this.c.error(x, `There is no item ${i} to give it.`); ok = false; return; }
+        if (!this.assignPattern(x, item, stores)) ok = false;
+      });
+      return ok;
+    }
+    if (ts.isObjectLiteralExpression(target)) {
+      const fields = !Array.isArray(from) && from.kind === "record" ? from.fields : !Array.isArray(from) && from.kind === "value" && typeof from.value === "object" && from.value !== null ? new Map(Object.entries(from.value as Record<string, unknown>).map(([k, value]) => [k, { kind: "value", value } as Binding])) : null;
+      if (!fields) { this.c.error(target, "{ … } takes the fields of a record."); return false; }
+      let ok = true;
+      for (const p of target.properties) {
+        const to = ts.isShorthandPropertyAssignment(p) ? p.name : ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name)) ? p.initializer : null;
+        const item = to && fields.get((p.name as TS.Identifier).text);
+        if (!to || !item) { this.c.error(p, to ? `There is no ${(p.name as TS.Identifier).text} to give it.` : "In a pattern that is assigned, a field is written out: ({ x, y: py } = p)."); ok = false; continue; }
+        if (!this.assignPattern(to, item, stores)) ok = false;
+      }
+      return ok;
+    }
+    if (Array.isArray(from) || (from.kind !== "var" && from.kind !== "cell" && from.kind !== "value")) { this.c.error(target, "A record or an array is assigned field by field, cell by cell: take it apart further."); return false; }
+    // Where it goes: a variable, or a cell (`hp[i]`, `p.x`, `waves[i].count`).
+    const to = this.bindingOf(target);
+    const el = !to && ts.isElementAccessExpression(target) ? this.elementOf(target) : undefined;
+    if (el === null) return false;
+    const kind: Kind | undefined = to?.kind === "var" ? to.v.kind : to?.kind === "cell" ? to.a.kind : el ? el.a.kind : undefined;
+    if (!kind) { this.c.error(target, "A pattern assigns to the program's variables, cells and fields."); return false; }
+    const held = this.takenCopy(from, "(taken)", target);
+    const value = this.valueOf(held, kind, target);
+    if (!value) return false;
+    const at = this.at(target);
+    const label = this.label(target);
+    stores.push(() => {
+      if (to?.kind === "var") this.emit(kind === "number" ? { kind: "assign", target: to.v.id, value: value as NumExpr, at, label } : kind === "unit" ? { kind: "assignUnit", target: to.v.id, value: value as UnitExpr, at, label } : { kind: "assignBool", target: to.v.id, value: value as BoolExpr, at, label }, target);
+      else if (to?.kind === "cell") this.emit({ kind: "store", array: to.a.id, index: to.index, value: value as NumExpr | BoolExpr, at, label }, target);
+      else if (el) this.emit({ kind: "store", array: el.a.id, index: el.index, value: value as NumExpr | BoolExpr, at, label }, target);
+    });
+    return true;
+  }
+
+  /** `...tail`: what is left from place `start` on, in an array of its own. */
+  private restOf(of: Binding | Binding[], start: number, name: string, el: TS.Node): Binding | null {
+    const at = this.at(el);
+    const label = this.label(el);
+    if (!Array.isArray(of) && of.kind === "value") return { kind: "value", value: Array.isArray(of.value) ? (of.value as unknown[]).slice(start) : [] };
+    if (!Array.isArray(of) && of.kind === "array") {
+      const a = of.a;
+      const left = a.length - start;
+      const tail = this.newArray(name, a.kind, a.dynamic || left < 1 ? 0 : left, this.sourceOf(el), { ...(a.bits ? { bits: a.bits } : {}), ...(a.unsigned ? { unsigned: true } : {}) });
+      if (!a.dynamic && left >= 1) {
+        this.emit({ kind: "declareArray", array: tail.id, init: Array.from({ length: left }, (_, k): NumExpr => ({ kind: "element", array: a.id, index: num(start + k), at })), at, label }, el);
+        return { kind: "array", a: tail };
+      }
+      tail.dynamic = true;
+      this.emit({ kind: "declareArray", array: tail.id, init: [], at, label }, el);
+      const i = this.newVar(`(index of ${a.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: i, init: num(start), at, label }, el);
+      this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: a.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "push", array: tail.id, value: { kind: "element", array: a.id, index: varRef(i), at }, at, label }], at, label }, el);
+      return { kind: "array", a: tail };
+    }
+    this.c.error(el, "...rest takes the tail of an array of numbers or booleans.");
+    return null;
+  }
+
   /* ── Methods that take a function ── */
 
   /** How deep the walk is inside a function given to such a method: nothing in there may sleep. */
@@ -1335,9 +1575,17 @@ export class Structured {
     this.mark(out, arg!);
     const scope = new Scope(fn.closure);
     let ok = true;
+    // `waves.forEach(({ count, delay }) => …)`: taken apart when the function starts, inside its body, where a turn's copies belong.
+    const patterns: (() => void)[] = [];
     fn.parameters.forEach((p, i) => {
-      if (!ts.isIdentifier(p.name)) { this.c.error(p, "Destructured parameters are not supported in a program."); ok = false; return; }
-      if (p.dotDotDotToken) { this.c.error(p, "Rest parameters are not supported in a program."); ok = false; return; }
+      if (p.dotDotDotToken) { this.c.error(p, "A function given to an array method is handed the item, its place and the array; there is no rest of them."); ok = false; return; }
+      if (!ts.isIdentifier(p.name)) {
+        const from = bound[i];
+        if (!from) { this.c.error(p, `${method}() hands its function ${bound.length} value${bound.length === 1 ? "" : "s"}; there is nothing here to take apart.`); ok = false; return; }
+        const pattern = p.name;
+        patterns.push(() => { this.bindPattern(pattern, p, from, scope); });
+        return;
+      }
       const b = bound[i];
       if (!b) {
         const h = p.initializer ? this.evaluate(p.initializer) : undefined;
@@ -1358,7 +1606,7 @@ export class Structured {
     });
     if (!ok) return undefined;
     this.inCallback++;
-    try { out.body = this.walkFunction(fn.body, kind, this.body, scope); } finally { this.inCallback--; }
+    try { out.body = this.walkFunction(fn.body, kind, this.body, scope, () => patterns.forEach((take) => take())); } finally { this.inCallback--; }
     return out;
   }
 
@@ -1384,6 +1632,7 @@ export class Structured {
   /** What a binding is as a value of `kind`, where a method stores or returns the item or its place. */
   private valueOf(b: Binding, kind: Kind, at: TS.Node): NumExpr | BoolExpr | UnitExpr | null {
     if (b.kind === "var" && b.v.kind === kind) return kind === "number" ? varRef(b.v) : kind === "unit" ? unitRef(b.v) : boolRef(b.v);
+    if (b.kind === "cell" && b.a.kind === kind) return { kind: "element", array: b.a.id, index: b.index, at: this.at(at) };
     if (b.kind === "value") {
       if (kind === "boolean" && typeof b.value === "boolean") return { kind: "const", value: b.value };
       if (kind === "number") { const n = this.asInteger({ value: b.value }, at); return n === null ? null : num(n); }
@@ -1399,11 +1648,15 @@ export class Structured {
    */
   private loopOver(over: Over, e: TS.CallExpression, turn: (item: Binding, index: Binding | undefined) => void, reverse = false) {
     const { ts } = this;
-    const at = this.at(e);
-    const label = this.label(e);
     const given = e.arguments[0] && this.unwrap(e.arguments[0]);
     const first = given && (ts.isArrowFunction(given) || ts.isFunctionExpression(given)) ? given.parameters[0] : undefined;
-    const itemName = first && ts.isIdentifier(first.name) ? first.name.text : `(item of ${this.overName(over)})`;
+    this.loopOf(over, e, first && ts.isIdentifier(first.name) ? first.name.text : `(item of ${this.overName(over)})`, turn, reverse);
+  }
+
+  /** The loop itself, for whatever statement wants one: a method's call, or a `for…of` whose variable is a pattern. */
+  private loopOf(over: Over, e: TS.Node, itemName: string, turn: (item: Binding, index: Binding | undefined) => void, reverse = false) {
+    const at = this.at(e);
+    const label = this.label(e);
     if (over.kind === "values") {
       const items = over.items.map((value, i) => [value, i] as const);
       for (const [value, i] of reverse ? items.reverse() : items) turn({ kind: "value", value }, { kind: "value", value: i });
@@ -1793,8 +2046,9 @@ export class Structured {
       return a;
     }
     const one = (e: TS.Expression): NumExpr | BoolExpr | null => (kind === "number" ? this.num(e) : this.boolValue(e));
+    if (ts.isArrayLiteralExpression(init) && init.elements.some((x) => ts.isSpreadElement(x))) return this.spreadArray(name, init, kind, width, !!shared, at);
     if (ts.isArrayLiteralExpression(init)) {
-      if (init.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) { this.c.error(init, "An array of a program is written out value by value: [a, b, 0]."); return null; }
+      if (init.elements.some((x) => ts.isOmittedExpression(x))) { this.c.error(init, "An array of a program is written out value by value: [a, b, 0]."); return null; }
       const values: (NumExpr | BoolExpr)[] = [];
       for (const x of init.elements) { const v = one(x); if (!v) return null; values.push(v); }
       const a = make(values.length);
@@ -1816,6 +2070,56 @@ export class Structured {
     }
     this.c.error(init, "An array's length has to be known when the script is built: write its values out ([a, b, 0]) or give it a size (new Array(12).fill(0)).");
     return null;
+  }
+
+  /**
+   * `[...xs, v, ...ys]`: the cells copied one by one. Of fixed arrays it is a fixed array, every value read before any is
+   * stored; with one that grows among them it grows, filled by pushes and a loop an array.
+   */
+  private spreadArray(name: string, init: TS.ArrayLiteralExpression, kind: "number" | "boolean", width: { bits?: 8 | 16; unsigned?: boolean }, shared: boolean, where: TS.Node): ArrayDecl | null {
+    const { ts } = this;
+    const at = this.at(where);
+    const label = this.label(where);
+    type Part = { a: ArrayDecl } | { value: NumExpr | BoolExpr };
+    const parts: Part[] = [];
+    for (const x of init.elements) {
+      if (ts.isOmittedExpression(x)) { this.c.error(x, "An array of a program has no holes."); return null; }
+      if (!ts.isSpreadElement(x)) { const value = kind === "number" ? this.num(x) : this.boolValue(x); if (!value) return null; parts.push({ value }); continue; }
+      const h = this.evaluate(x.expression);
+      if (h) {
+        if (!Array.isArray(h.value)) { this.c.error(x, `... spreads a list, got ${describe(h.value)}.`); return null; }
+        for (const v of h.value as unknown[]) {
+          if (kind === "boolean") { if (typeof v !== "boolean") { this.c.error(x, `Expected true or false, got ${describe(v)}.`); return null; } parts.push({ value: { kind: "const", value: v } }); }
+          else { const n = this.asInteger({ value: v }, x); if (n === null) return null; parts.push({ value: num(n) }); }
+        }
+        continue;
+      }
+      const b = this.listOf(x.expression);
+      if (b?.kind !== "array") { this.c.error(x, "... inside [ ] spreads an array of numbers or of booleans."); return null; }
+      if (b.a.kind !== kind) { this.c.error(x, `${b.a.name} holds ${b.a.kind}s, and ${name} ${kind}s.`); return null; }
+      parts.push({ a: b.a });
+    }
+    const grows = this.body.plan.grows.has(where) || parts.some((p) => "a" in p && p.a.dynamic);
+    const length = parts.reduce((n, p) => n + ("a" in p ? p.a.length : 1), 0);
+    if (length > MAX_ARRAY) { this.c.error(init, `An array of a program starts with at most ${MAX_ARRAY} cells (got ${length}).`); return null; }
+    if (!grows && length < 1) { this.c.error(init, `${name} would be empty, and nothing pushes to it.`); return null; }
+    const made = this.newArray(name, kind, grows ? 0 : length, this.sourceOf(where), { shared, ...width });
+    if (!grows) {
+      const values = parts.flatMap((p): (NumExpr | BoolExpr)[] => ("a" in p ? Array.from({ length: p.a.length }, (_, k) => ({ kind: "element" as const, array: p.a.id, index: num(k), at })) : [p.value]));
+      this.emit({ kind: "declareArray", array: made.id, init: values, at, label }, where);
+      return made;
+    }
+    made.dynamic = true;
+    // What is written out is worked out before the array is made again: `xs = [...xs, v]` in a loop reads the old xs.
+    const held = parts.map((p): Part => { if ("a" in p || p.value.kind === "const") return p; const t = this.newVar("(spread)", kind, at, { temp: true, ...width }); this.emit({ kind: "declare", decl: t, init: p.value, at, label }, where); return { value: kind === "number" ? varRef(t) : boolRef(t) }; });
+    this.emit({ kind: "declareArray", array: made.id, init: [], at, label }, where);
+    for (const p of held) {
+      if (!("a" in p)) { this.emit({ kind: "push", array: made.id, value: p.value, at, label }, where); continue; }
+      const i = this.newVar(`(index of ${p.a.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: i, init: num(0), at, label }, where);
+      this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: p.a.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "push", array: made.id, value: { kind: "element", array: p.a.id, index: varRef(i), at }, at, label }], at, label }, where);
+    }
+    return made;
   }
 
   /**
@@ -1884,6 +2188,13 @@ export class Structured {
       let init: TS.Expression;
       if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name))) { key = p.name.text; init = p.initializer; }
       else if (ts.isShorthandPropertyAssignment(p)) { key = p.name.text; init = p.name; }
+      else if (ts.isSpreadAssignment(p)) {
+        // `{ ...p, y: 9 }`: every field of p copied, as JavaScript copies them; what is written after it replaces its own.
+        const from = this.spreadFields(p.expression);
+        if (!from) { ok = false; continue; }
+        for (const [field, b] of from) fields.set(field, this.fieldCopy(b, `${name}.${field}`, p));
+        continue;
+      }
       else { this.c.error(p, "A record's fields are plain values: { lives: 3, alive: true }."); ok = false; continue; }
       const full = `${name}.${key}`;
       const prop = type.getProperty(key);
@@ -2113,6 +2424,14 @@ export class Structured {
     if (h) { this.hoistedStatement(e, h); return; }
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
+      if (op === ts.SyntaxKind.EqualsToken && (ts.isArrayLiteralExpression(this.unwrap(e.left)) || ts.isObjectLiteralExpression(this.unwrap(e.left)))) {
+        // `[a, b] = [b, a]`, `({ x, y } = p)`: every value taken first, then every store.
+        const from = this.patternSource(e.right, e);
+        if (!from) return;
+        const stores: (() => void)[] = [];
+        if (this.assignPattern(this.unwrap(e.left), from, stores)) stores.forEach((store) => store());
+        return;
+      }
       if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment) {
         const member = this.unitMember(e.left);
         if (member) { this.unitAssign(e, member, op); return; }
@@ -2477,7 +2796,20 @@ export class Structured {
     if (s.awaitModifier) { this.c.error(s, "for await is not supported in a program."); return; }
     const decl = ts.isVariableDeclarationList(s.initializer) && s.initializer.declarations.length === 1 ? s.initializer.declarations[0] : undefined;
     if (decl && this.keyedLoop(s, decl, ctx)) return;
-    if (!decl || !ts.isIdentifier(decl.name)) { this.c.error(s.initializer, "for…of takes one variable: for (const w of waves) { … }."); return; }
+    if (!decl) { this.c.error(s.initializer, "for…of takes one variable: for (const w of waves) { … }."); return; }
+    if (!ts.isIdentifier(decl.name)) {
+      // `for (const { count, delay } of waves)`: the loop forEach would be, the item taken apart at the top of each turn.
+      const pattern = decl.name;
+      const list = this.overOf(s.expression);
+      if (!list) { this.notConstant(s.expression, "What a for…of loop runs over"); return; }
+      const scope = new Scope(this.scope);
+      this.loopOf(list, s, "(item)", (item) => {
+        const outer = this.scope;
+        this.scope = scope;
+        try { if (this.bindPattern(pattern, decl, item, scope)) this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, new Scope(scope)); } finally { this.scope = outer; }
+      });
+      return;
+    }
     const over = this.listOf(s.expression);
     if (over?.kind === "units") {
       // The unit of the turn is a variable of its own, taken from the three cells: a unit is a reference whichever way it is held.
@@ -2614,9 +2946,39 @@ export class Structured {
       if (args) why = a;
       args = null;
     };
+    // `function len({ x, y }: Point)`: taken apart when the function starts, inside its body — a called function's too.
+    const patterns: (() => void)[] = [];
     parameters.forEach((p, i) => {
-      if (!ts.isIdentifier(p.name)) { this.c.error(p, "Destructured parameters are not supported in a program."); ok = false; return; }
-      if (p.dotDotDotToken) { this.c.error(p, "Rest parameters are not supported in a program."); ok = false; return; }
+      if (p.dotDotDotToken) {
+        // `function sum(...ns: number[])`: the arguments of this call, in an array made here. How many there are is the call's own, so the function stays a copy a call.
+        const element = this.c.checker.getIndexTypeOfType(this.c.checker.getTypeAtLocation(p.name), ts.IndexKind.Number);
+        const k = element ? this.kindOf(element) : null;
+        if (!ts.isIdentifier(p.name) || (k !== "number" && k !== "boolean")) { this.c.error(p, "The rest of the arguments is an array of numbers or of booleans: ...ns: number[]."); ok = false; return; }
+        const values: (NumExpr | BoolExpr)[] = [];
+        for (const x of call.arguments.slice(i)) {
+          if (ts.isSpreadElement(x)) { this.c.error(x, "An array is handed to a function as itself — f(xs) — not spread into its arguments."); ok = false; return; }
+          const v = k === "number" ? this.num(x) : this.boolValue(x);
+          if (!v) { ok = false; return; }
+          values.push(v);
+        }
+        const rest = this.newArray(p.name.text, k, values.length, this.sourceOfIn(target, p.name), k === "number" && element ? this.widthOf(element) : {});
+        if (values.length === 0) rest.dynamic = true;
+        this.emit({ kind: "declareArray", array: rest.id, init: values, at: this.at(call), label: this.label(call) }, call);
+        scope.bind(p, { kind: "array", a: rest });
+        asCalled(`${p.name.text} is the rest of a call's arguments, as many as that call has`);
+        return;
+      }
+      if (!ts.isIdentifier(p.name)) {
+        const arg = call.arguments[i] ?? p.initializer;
+        if (!arg) { this.c.error(call, `Missing argument ${p.name.getText(target.sf)}.`); ok = false; return; }
+        const from = this.patternSource(arg, arg);
+        if (!from) { ok = false; return; }
+        const pattern = p.name;
+        patterns.push(() => { this.bindPattern(pattern, p, from, scope); });
+        if (!Array.isArray(from) && (from.kind === "record" || from.kind === "array" || from.kind === "records" || from.kind === "units")) asCalled({ binding: from });
+        else asCalled(`${p.name.getText(target.sf)} is taken from something written at the call`);
+        return;
+      }
       const arg = call.arguments[i];
       const label = `L${line}: ${p.name.text} = ${arg ? arg.getText(this.body.sf) : "its default"}`;
       if (!arg) {
@@ -2690,7 +3052,7 @@ export class Structured {
       ok = false;
     });
     if (!ok) return out;
-    if (call.arguments.length > parameters.length) { this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`); return out; }
+    if (call.arguments.length > parameters.length && !parameters.some((p) => p.dotDotDotToken)) { this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`); return out; }
 
     const at = this.sourceOfIn(target, (decl as { name?: TS.Node }).name ?? decl);
     const site = args ? this.siteOf(decl, args) : undefined;
@@ -2726,7 +3088,7 @@ export class Structured {
     if (site) site.walking = (site.walking ?? 0) + 1;
     this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 0) + 1);
     try {
-      out.body = this.walkFunction(body, kind, target, scope);
+      out.body = this.walkFunction(body, kind, target, scope, () => patterns.forEach((take) => take()));
     } finally {
       if (site) site.walking = (site.walking ?? 1) - 1;
       this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 1) - 1);
@@ -2738,7 +3100,7 @@ export class Structured {
   }
 
   /** A function's body walked with its parameters bound in `scope`: the statements, `return` leaving them. */
-  private walkFunction(body: TS.Block | TS.Expression, kind: Kind | "void", target: Body, scope: Scope): Stmt[] {
+  private walkFunction(body: TS.Block | TS.Expression, kind: Kind | "void", target: Body, scope: Scope, first?: () => void): Stmt[] {
     const { ts } = this;
     const saved = this.enterBody(target);
     const outerScope = this.scope;
@@ -2747,6 +3109,8 @@ export class Structured {
     const fn: Ctx["fn"] = { kind };
     try {
       return this.collect(() => {
+        // What the function does before its first statement: its parameters taken apart.
+        first?.();
         if (ts.isBlock(body)) this.block(body.statements, { fn });
         else {
           // `game((a: number) => a + 1)`: the expression is what it returns.
@@ -2820,12 +3184,18 @@ export class Structured {
    * reported is kept: the same lines compile, or fail for good, where the function is inlined.
    */
   private callable(parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression, target: Body, name: string, decl: TS.Node, kind: Kind | "void", args: CallArgument[], closure: Scope | null, at: At, site: FunctionSite): FuncDecl | string {
+    const { ts } = this;
     const scope = new Scope(closure);
+    const patterns: (() => void)[] = [];
     const fn: FuncDecl = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
     for (let i = 0; i < parameters.length; i++) {
       const p = parameters[i];
       const a = args[i];
-      if ("binding" in a) { scope.bind(p, a.binding); continue; }
+      if ("binding" in a) {
+        if (ts.isIdentifier(p.name)) scope.bind(p, a.binding);
+        else { const pattern = p.name; const from = a.binding; patterns.push(() => { this.bindPattern(pattern, p, from, scope); }); }
+        continue;
+      }
       const type = this.c.checker.getTypeAtLocation(p.name);
       const k = this.kindOf(type);
       if (!k) return `${p.name.getText(target.sf)} is not a number, a boolean or a unit`;
@@ -2846,7 +3216,7 @@ export class Structured {
     const depth = this.inlineDepth;
     this.inlineDepth = 0;
     try {
-      fn.body = this.walkFunction(body, kind, target, scope);
+      fn.body = this.walkFunction(body, kind, target, scope, () => patterns.forEach((take) => take()));
     } finally {
       this.inlineDepth = depth;
       (this.c as { error: StructuredContext["error"] }).error = error;
@@ -2948,8 +3318,11 @@ export class Structured {
   private assigns(body: TS.Node, decl: TS.Node): boolean {
     const { ts } = this;
     let found = false;
-    const target = (e: TS.Expression) => {
+    const target = (e: TS.Expression): boolean => {
       const u = this.unwrap(e);
+      // `[a, b] = …`, `({ x, y: py } = …)`: every name in the pattern is assigned.
+      if (ts.isArrayLiteralExpression(u)) return u.elements.some((x) => !ts.isOmittedExpression(x) && target(ts.isSpreadElement(x) ? x.expression : x));
+      if (ts.isObjectLiteralExpression(u)) return u.properties.some((p) => (ts.isShorthandPropertyAssignment(p) ? target(p.name) : ts.isPropertyAssignment(p) ? target(p.initializer) : false));
       return ts.isIdentifier(u) && declarationOf(ts, this.c.checker, u) === decl;
     };
     const walk = (n: TS.Node) => {

@@ -665,6 +665,24 @@ things and the strings first):
   and `{ ...r, hp: 5 }` copy cell by cell; `...rest` in a parameter list is the arguments of
   each call site, which keeps that function inlined under slice 7's rule. All of it is the
   front end: the IR does not change.
+  **As built (2026-09-19).** All of it the front end's, as planned; the IR and the Python
+  are untouched, and there is no probe of its own (a fixture of `tests/eud-build.test.ts`
+  builds a script that uses every form). `compiler/structured.ts`, *Destructuring and
+  spread*: `patternSource` is what a pattern is taken from (a record, a list, a value of
+  the script, what `mouse()` and `chatted()` give, or an array written out — whose items
+  go into temporaries first, which is the whole of a swap), `bindPattern` binds every name
+  to a copy, `assignPattern` collects the stores and runs them after every copy is made.
+  A parameter's pattern is taken apart as the first thing in the function's body
+  (`walkFunction`'s `first`), so a called function does it too; a record or an array
+  handed to one keeps it a called function, a copy an array as before. `...rest` of a
+  parameter list is an array declared at the call, and the function stays inlined. A
+  pattern is also a `for…of` variable, through the loop the array methods use. What was
+  found on the way: a `const` of the *script's* taken out of a pattern never worked — the
+  hoisted function referred to a name nothing declared — and its thunk now runs the
+  pattern and gives the names back; `...base` inside `[ ]` was hoisted as an expression,
+  which it is not. Not done: a spread into a call's arguments (`f(...xs)` — an array goes
+  as itself), `...rest` on the left of an assignment, the rest of an array of records or
+  of units.
 - **Arrays inside things.** What 3.6 left out: a record with an array for a field
   (`{ hp: 5, path: [0, 0, 0] }`) and an array of arrays (`grid[y][x]`). Of a *fixed* shape
   both are the front end's alone: a fixed array in a record is more cells of the record, in
