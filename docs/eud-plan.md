@@ -696,7 +696,10 @@ things and the strings first):
   copy of a row (`const r = grid[y]`) is a reference, as it is in TypeScript, never a second
   owner. The strings and the map over any number, below, also keep blocks that a value
   owns: the three are designed together.
-  **As built (2026-09-19; no probe played yet).** Three shapes, the compiler choosing:
+  **As built (2026-09-19; probe `probes/inside.ts` played the same day, every step as
+  expected — three thousand rows pushed and cut off with nothing in red, so the heap gets
+  its blocks back in the game as it does in Simulate, and both of IR 12's new storages run
+  there).** Three shapes, the compiler choosing:
   - *A grid* — every row one length, none growing: one flat `ArrayDecl`, `grid[y][x]` an
     `element` at `y * width + x` whose index is −1 when `x` is past the row (a ternary over
     an unsigned compare), so nothing is made for a plain read or store. A row wanted as an
@@ -724,8 +727,7 @@ things and the strings first):
   arrays riding along as fields so that the rows' push / pop / sort / filter move them —
   and that is where copies of a handle appear (a filtered array's rows name the same
   blocks), so where ownership has to be said. Also left: `filter` / `sort` / `reverse`
-  of an array of arrays, three deep with rows that grow, and a probe (a grid filled and
-  read back, rows that grow with the outer one cut and the heap found whole).
+  of an array of arrays, and three deep with rows that grow.
 - **Strings.** Added 2026-09-19 at the user's word ("I would like native strings… I also do
   want full template strings such as `Wave ${n}`"). One type, `string`, written as
   TypeScript writes it, and nothing to declare beside it — no capacity, which would have
