@@ -20,8 +20,9 @@ import { aiScriptByName, type ActionDef, type ArgKind, type ConditionDef } from 
 import { ACTION_IDENTS, CANONICAL, choiceOf, choiceWords, CONDITION_IDENTS, scriptParams, TRIGGER_OPTION_NAMES } from "./api";
 import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
 import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
-import type { ScriptNames } from "./names";
-import type { RaceId, ReadSource, TextPart } from "./ir";
+import { allTables, type ScriptNames } from "./names";
+import type { RaceId, ReadSource, TableCell, TextPart, UnitFilter } from "./ir";
+import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -60,6 +61,38 @@ export const isRead = (v: unknown): v is ReadValue => typeof v === "object" && v
 export interface PrintValue { readonly __trigscript: "print"; readonly text: string; readonly to: number; readonly position: "chat" | "center" }
 export const isPrint = (v: unknown): v is PrintValue => typeof v === "object" && v !== null && (v as PrintValue).__trigscript === "print";
 
+/**
+ * What `unitsAt(…)`, `unitsOf(…)` and `allUnits(…)` return when the script is built: which units a
+ * `for…of` inside program() runs over. The units themselves exist only in the game.
+ */
+export interface UnitQueryValue { readonly __trigscript: "units"; readonly filter: UnitFilter; readonly ident: string }
+export const isUnitQuery = (v: unknown): v is UnitQueryValue => typeof v === "object" && v !== null && (v as UnitQueryValue).__trigscript === "units";
+
+/** What `first(…)`, `nearest(…)` and `randomUnit(…)` return when the script is built: how the game is to pick one unit. */
+export interface UnitPickValue { readonly __trigscript: "pick"; readonly by: "first" | "nearest" | "random"; readonly filter: UnitFilter; readonly near?: number; readonly ident: string }
+export const isUnitPick = (v: unknown): v is UnitPickValue => typeof v === "object" && v !== null && (v as UnitPickValue).__trigscript === "pick";
+
+/**
+ * A property of `stats(…)`: a cell of the game's tables. Like a read it has no value when the
+ * script is built; a program reads it as a number (or a boolean) and assigns to it.
+ */
+export interface TableValue { readonly __trigscript: "table"; readonly cell: TableCell; readonly field: TableField; readonly ident: string }
+export const isTable = (v: unknown): v is TableValue => typeof v === "object" && v !== null && (v as TableValue).__trigscript === "table";
+
+/** A value only the game has: nothing the script computes when it is built may take it as a number. */
+export const isGameValue = (v: unknown): v is ReadValue | TableValue | UnitPickValue => isRead(v) || isTable(v) || isUnitPick(v);
+
+/** The colour byte for what a script wrote as a player colour: a word of `PLAYER_COLORS`, or the byte itself. */
+export function playerColor(v: unknown): number {
+  if (typeof v === "string") {
+    const n = PLAYER_COLORS[v.trim().toLowerCase()];
+    if (n === undefined) throw new ScriptError(`Unknown colour ${JSON.stringify(v)}: one of ${Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(", ")}.`);
+    return n;
+  }
+  if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255) return v;
+  throw new ScriptError("A player colour is one of colors.*, a word such as \"teal\", or a palette entry from 0 to 255.");
+}
+
 /** A function of the library a program's expression calls for a value of the game: never computed when the script is built. */
 export interface ReaderFunction { (...args: unknown[]): ReadValue; readonly __trigscript: "reader" }
 export const isReader = (v: unknown): v is ReaderFunction => typeof v === "function" && (v as ReaderFunction).__trigscript === "reader";
@@ -95,6 +128,8 @@ export const READ_ARITY: ReadonlyMap<string, number> = new Map(
 );
 /** The library's functions that read the game, by the name a script calls them by. */
 export const READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"] as const;
+/** The library's functions about units on the map and the game's tables: the game's too, never computed when the script is built. */
+export const UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "stats"] as const;
 
 /**
  * What the transformer turns `program(() => { … })` — and the arrow of `game(…)` — into:
@@ -173,6 +208,9 @@ function describe(v: unknown): string {
   if (isCondition(v)) return "a condition";
   if (isAction(v)) return "an action";
   if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isTable(v)) return `a value the game holds (${v.ident})`;
+  if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
+  if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
   if (isPrint(v)) return "a print()";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "function") return "a function";
@@ -183,6 +221,7 @@ function integer(v: unknown, what: string): number {
   if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
   if (typeof v === "boolean") return v ? 1 : 0;
   if (isRead(v)) throw new ScriptError(`${what}: ${v.ident}() is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it; a trigger's condition or action takes numbers known when the script is built.`);
+  if (isTable(v)) throw new ScriptError(`${what}: ${v.ident} is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it.`);
   throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
 }
 
@@ -203,7 +242,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   const comment = options.comments === false ? undefined : (text: string) => collector.localString({ text });
 
   /* ── Names ── */
-  for (const t of [names.players, names.units, names.locations, names.switches, names.aiScripts]) {
+  for (const t of allTables(names)) {
     const table: Record<string, number> = {};
     for (const e of t.entries) for (const k of e.keys) table[k] = e.value;
     rt[t.object] = Object.freeze(table);
@@ -409,6 +448,82 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     return read("supply", { source: "supply", of, race: r, player: onePlayer(player, "supply: player", 12) });
   });
 
+  /* ── Units on the map ── */
+  const onlyInProgram = (ident: string, how: string): never => { throw new ScriptError(`${ident}() is about the units in the game, which exist while it runs: ${how}, inside program().`); };
+  const filterOf = (ident: string, v: unknown, given: UnitFilter): UnitFilter => {
+    const out: UnitFilter = { ...given };
+    if (v !== undefined && v !== null) {
+      if (typeof v !== "object" || Array.isArray(v) || isGameValue(v)) throw new ScriptError(`${ident}: the filter is an object such as { type: units.TerranMarine, owner: P1, at: locations.Base }, got ${describe(v)}.`);
+      for (const [key, value] of Object.entries(v as Record<string, unknown>)) {
+        if (value === undefined || value === null) continue;
+        if (key !== "type" && key !== "owner" && key !== "at") throw new ScriptError(`${ident}: unknown filter "${key}"; a filter has type, owner and at.`);
+        if (out[key] !== undefined) throw new ScriptError(`${ident}: ${key} is already given by the call's own argument.`);
+        out[key] = integer(value, `${ident}: ${key}`);
+      }
+    }
+    if (out.owner !== undefined) out.owner = onePlayer(out.owner, `${ident}: owner`, 12);
+    if (out.type !== undefined) {
+      // Any Unit is no filter at all; Men, Buildings and Factories are the classes a trigger knows.
+      if (out.type === 229) delete out.type;
+      else if (out.type > 232) throw new ScriptError(`${ident}: type is one of units.*.`);
+    }
+    // No location, and Anywhere, are everywhere.
+    if (out.at !== undefined && (out.at === 0 || out.at === 64)) delete out.at;
+    if (out.at !== undefined && out.at > 255) throw new ScriptError(`${ident}: at is one of locations.*.`);
+    return out;
+  };
+  const query = (ident: string, filter: UnitFilter): UnitQueryValue => ({
+    __trigscript: "units", filter, ident,
+    [Symbol.iterator]: () => onlyInProgram(ident, `write for (const u of ${ident}(…)) { … }`),
+  } as UnitQueryValue);
+  const pick = (ident: string, by: UnitPickValue["by"], filter: UnitFilter, near?: number): UnitPickValue => {
+    const fail = (): never => onlyInProgram(ident, `write const u = ${ident}(…); if (u) { … }`);
+    return { __trigscript: "pick", by, filter, ident, ...(near !== undefined ? { near } : {}), valueOf: fail, toString: fail } as UnitPickValue;
+  };
+  rt.unitsAt = (location: unknown, filter?: unknown) => query("unitsAt", filterOf("unitsAt", filter, { at: argValue("location", location, "unitsAt: location") }));
+  rt.unitsOf = (player: unknown, filter?: unknown) => query("unitsOf", filterOf("unitsOf", filter, { owner: integer(player, "unitsOf: player") }));
+  rt.allUnits = (filter?: unknown) => query("allUnits", filterOf("allUnits", filter, {}));
+  rt.first = (filter?: unknown) => pick("first", "first", filterOf("first", filter, {}));
+  rt.randomUnit = (filter?: unknown) => pick("randomUnit", "random", filterOf("randomUnit", filter, {}));
+  rt.nearest = (unit: unknown, location: unknown, filter?: unknown) => {
+    const near = argValue("location", location, "nearest: location");
+    if (near === 0 || near > 255) throw new ScriptError("nearest: the location to be near is one of locations.*.");
+    return pick("nearest", "nearest", filterOf("nearest", filter, { type: argValue("unit", unit, "nearest: unit") }), near);
+  };
+
+  /* ── The game's tables ── */
+  const tableValue = (kind: TableKind, field: TableField, index: number, ident: string, key?: number): TableValue => {
+    const cell: TableCell = {
+      name: `${kind}.${field.name}`, base: field.base, stride: field.stride, index, width: field.width,
+      ...(key !== undefined ? { key } : {}), ...(field.bit !== undefined ? { bit: field.bit } : {}), ...(field.scale ? { scale: field.scale } : {}),
+      ...(kind === "player" ? { player: true } : {}), ...(field.special ? { special: field.special } : {}),
+    };
+    const fail = (): never => { throw new ScriptError(`${ident} is a value the game holds: it has no value when the script is built. Inside program(), assign to it, assign it to a let, or use it in the program's own arithmetic and comparisons.`); };
+    return { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail } as TableValue;
+  };
+  /** `stats(x)`; the compiler adds what kind of thing `x` is, which a plain number cannot say. */
+  rt.stats = (of: unknown, brand?: unknown) => {
+    const kind = typeof brand === "string" ? tableOfBrand(brand) : undefined;
+    if (!kind) throw new ScriptError("stats() takes a unit type, a weapon, an upgrade, a technology or a player, written where the compiler can see which: stats(units.TerranMarine), stats(P3) — inside program().");
+    const index = kind === "player" ? onePlayer(of, "stats: player", 12) : integer(of, `stats: ${kind}`);
+    if (index !== PlayerGroup.CurrentPlayer && index >= TABLE_SIZE[kind]) throw new ScriptError(`stats: ${kind} ${index} is past the table (0–${TABLE_SIZE[kind] - 1}).`);
+    const who = `stats(${entryName(kind, index)})`;
+    const out: Record<string, unknown> = {};
+    for (const field of TABLE_FIELDS[kind]) {
+      if (!field.keyed) { out[field.name] = tableValue(kind, field, index, `${who}.${field.name}`); continue; }
+      const { kind: keyKind } = field.keyed;
+      out[field.name] = Object.freeze(Array.from({ length: TABLE_SIZE[keyKind] }, (_, k) => tableValue(kind, field, index, `${who}.${field.name}[${entryName(keyKind, k)}]`, k)));
+    }
+    return Object.freeze(out);
+  };
+  const tableNames: Record<TableKind, ScriptNames[keyof ScriptNames]> = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
+  const entryName = (kind: TableKind, value: number): string => {
+    const t = tableNames[kind];
+    const e = t.entries.find((x) => x.value === value);
+    return e ? `${t.object}.${e.keys[0]}` : String(value);
+  };
+  rt.colors = Object.freeze({ ...PLAYER_COLORS });
+
   /* ── Text a program fills in ── */
   rt.name = (player: unknown) => textMark("n", onePlayer(player, "name: player", 12));
   rt.color = (player: unknown) => textMark("c", onePlayer(player, "color: player", 12));
@@ -483,12 +598,13 @@ const isAt = (v: unknown): v is At => Array.isArray(v) && v.length === 2 && type
 
 /** Every name the library exports, for the declarations, the linker's globals and the printer's imports. */
 export function runtimeNames(names: ScriptNames): string[] {
-  const out = [names.players.object, names.units.object, names.locations.object, names.switches.object, names.aiScripts.object];
+  const out = allTables(names).map((t) => t.object);
   for (let i = 0; i < PLAYER_SLOTS; i++) out.push(`P${i + 1}`);
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "rose", "once", "shared", "clamp");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
+  out.push(...UNIT_CALL_NAMES, "colors");
   return out;
 }

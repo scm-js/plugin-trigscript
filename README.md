@@ -102,7 +102,11 @@ program interpreter that computes every number the way the game will, the two sh
 world, so a program's `setDeaths` is seen by a trigger and the other way round. Reads
 find what the simulation holds — death counters, the resources the programs themselves
 set, the clock — and 0 for what it does not (unit counts, kills, scores); a printed text
-shows with its numbers filled in and "Player 1" for a name. Unit conditions answer "false". The same interpreters are what the test suite uses to prove
+shows with its numbers filled in and "Player 1" for a name. Unit conditions answer "false".
+Units are the ones placed on the map, where they were placed and with the hit points their
+type and their own settings give, inside the map's locations as they are drawn: a loop
+over units, a pick, `kill()`, `give()`, a hit-point write all work on that list, and
+`stats()` holds what the program wrote. Nothing moves or fights, and `createUnit` makes no unit. The same interpreters are what the test suite uses to prove
 programs behave.
 
 A script with programs shows, at the right of the status bar, whether the eudplib plugin
@@ -372,6 +376,86 @@ is gone — which a slot nobody took also is; a computer never leaves), and `sup
 "max" | "provided", race?)` as the top bar shows it, of the race the player plays unless
 one is given.
 
+**Units on the map are objects.** A `Unit` is one of the game's units as it is right now
+(the entries of `units.` are `UnitType`s, and `u.type` is one):
+
+```ts
+for (const u of unitsAt(locations.Pen, { owner: P2 })) u.hp = u.maxHp / 2;
+
+const target = nearest(units.TerranMarine, locations.Beacon, { owner: P1 });
+if (target) target.order("move", locations.Exit);
+```
+
+`unitsAt(location, filter?)`, `unitsOf(player, filter?)` and `allUnits(filter?)` are what a
+`for…of` runs over; `first(filter?)`, `nearest(type, location, filter?)` and
+`randomUnit(filter?)` pick one unit or `null`, and TypeScript wants the `if (target)` before
+the unit is used (or `target?.kill()`). A filter is `{ type, owner, at }`, every part known
+when you build; `units.Men`, `units.Buildings` and `units.Factories` work as a type, and
+`CurrentPlayer` as an owner. Units come in the order of the game's unit table; a dying unit
+is passed over, so `first()` after a `kill()` is the next one.
+
+A unit has `hp`, `shields` and `energy` in whole points, `maxHp` / `maxShields` of its
+type, `owner`, `type`, `x`, `y`, `kills`, `orderId`, `cooldown`, `resources` (a mineral
+field's), the timers `stim` `ensnare` `plague` `lockdown` `maelstrom` `irradiate` `stasis`
+in the game's own ticks, and the booleans `invincible`, `hallucinated`, `cloaked`,
+`burrowed`, `underAttack`. Hit points, shields, energy, kills, the cooldown, the resources,
+the timers and `invincible` can be written (`u.hp = 0` kills); the rest the game keeps for
+itself — a position write ends the game with "EUD not supported", a cloak write showed
+nothing — and the declarations have them `readonly`, so the editor says so as you type.
+It can be told `order("move" | "patrol" | "attack", location)` (the game's own Order,
+reaching this unit alone), `give(player)`, `kill()`, `remove()`, `damage(n)` and
+`heal(n)` — or `{ percent: 50 }` of the type's maximum — and `locate(location)`, which
+centres a location on it so that `createUnit` and the rest can happen where the unit is.
+Functions take units and return them (`function weakest(): Unit | null`), and `a == b`
+says whether two are one unit.
+
+A variable can keep a unit across a `sleep()`. The game gives a dead unit's place to the
+next unit made, so every use checks that the unit is still the one that was kept: once it
+is gone its numbers read 0, its booleans false, and writing to it or telling it something
+does nothing; `if (u)` asks. The unit of a loop's turn needs no check, and a loop over
+units runs within one frame — a `sleep()` inside one is an error; to act on one unit at a
+time, find it again after each sleep:
+
+```ts
+let u = first({ owner: P2, at: locations.Pen });
+while (u) { u.kill(); sleep(seconds(1)); u = first({ owner: P2, at: locations.Pen }); }
+```
+
+Each loop and each pick looks through the game's 1700 unit slots when its line runs
+(`randomUnit` twice), and in a per-player program once for each player. Once or a few times
+a second is nothing; the editor notes it at the end of the line (`scans units`) so that a
+scan inside a loop that runs every frame is a choice and not an accident.
+
+**`stats()` is the game's own tables.** What a unit type costs, what a weapon does, a
+player's upgrades, as properties a program reads, assigns and `+=`s:
+
+```ts
+stats(units.TerranMarine).minerals = 25;
+stats(units.TerranMarine).speed = 6.5;            // pixels a frame: a fraction is fine when known when you build
+stats(units.ZergZergling).name = "Dog";
+stats(weapons.GaussRifle).damage += 2;
+stats(upgrades.TerranInfantryArmor).minerals = 50;
+stats(units.TerranGhost).permanentCloak = true;
+stats(P3).color = "teal";                         // or colors.teal
+stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3;
+stats(P1).researched[techs.Lockdown] = true;
+if (stats(units.TerranMarine).minerals > minerals(CurrentPlayer)) print("too dear");
+```
+
+A unit type has `maxHp`, `maxShields`, `armor`, `minerals`, `gas`, `buildTime` (seconds on
+the game's clock), `supplyUsed`, `supplyProvided`, `sight`, `groundWeapon`, `airWeapon`
+(`weapons.*`), `size`, `speed`, `name` and the flags `detector`, `permanentCloak`,
+`cloakable`, `burrowable`, `regenerates`, `invincible`, `hero`, `organic`, `mechanical`,
+`robotic`; a weapon `damage`, `bonus`, `cooldown`, `factor`, `range`, `minRange`; an upgrade
+`minerals`, `gas`, `time` and (read only) `maxLevel`; a technology `minerals`, `gas`,
+`time`, `energy`; a player `color`, `upgrades[…]` and `researched[…]`. Only what was played
+and seen working in StarCraft: Remastered is there — the hover on each says what it
+reaches: most unit-type fields apply to units made after the write, a weapon's to every
+unit using it at once. `speed` and `name` can be set but not read. A write lasts for the
+game. `stats()` wants to see what it is given — `stats(units.TerranMarine)`, `stats(p)`
+with `p: Player` — because a table's index is a plain number when the script runs and
+only its type says which table.
+
 **A text can hold the program's values.** `displayText` takes a template literal (or
 texts joined with `+`) with numbers of the program in it, `name(p)` and `color(p)`:
 
@@ -452,6 +536,18 @@ Still to come: reads of the game as values (`deaths(P1, u)` as a number, `minera
 units on the map as objects, text with numbers in it, and input. The plan is
 `docs/eud-plan.md`, and the IR the compiler hands eudplib is `docs/ir.md`.
 
+### Coming from 3.2
+
+One name moved. `Unit` is a unit on the map now, and a unit *type* — an entry of `units.`,
+what a condition or an action names — is a `UnitType`. A script that annotated a
+parameter with the old name (`(u: Unit) => createUnit(P1, u, 1, at)`) says
+`u: UnitType`; the type error names both. Nothing else about existing scripts changes.
+
+`units.AnyUnit`, `units.Men`, `units.Buildings` and `units.Factories` are 229 … 232, which
+is what the game has them as; until 3.3 they were one lower (228 … 231, where 228 is the
+game's "None"), so a condition over a class counted the wrong one. Building the script
+again is the fix.
+
 ### Coming from 2.x
 
 Until 3.0 a program was built as a state machine of death counters, so that it ran on
@@ -522,12 +618,12 @@ The layout:
 
 ### How the compiler is built
 
-`names.ts` turns the map into five name tables (players, units, locations, switches, AI
-scripts); each entry's keys are an identifier derived from the display name first
+`names.ts` turns the map into name tables (players, units, locations, switches, AI
+scripts, and the fixed weapons, upgrades and technologies `stats()` takes); each entry's keys are an identifier derived from the display name first
 (`Terran Marine` → `TerranMarine`), the display name itself second, then custom names —
 unique per table by construction. `declarations.ts` generates the `.d.ts` from them plus
-the library: values are branded literal types (`Unit<0> = 0 & Brand<"unit">`; plain
-numbers still pass, a `Location` where a `Unit` belongs does not), enumerated kinds are
+the library: values are branded literal types (`UnitType<0> = 0 & Brand<"unit">`; plain
+numbers still pass, a `Location` where a `UnitType` belongs does not), enumerated kinds are
 string unions of the canonical words, every condition and action is a `declare function`
 whose identifier is its `ConditionType` / `ActionType` key in camel case, and the whole
 thing is declared twice — as globals and as the ambient module `"trigscript"`.

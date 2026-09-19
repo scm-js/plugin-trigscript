@@ -81,10 +81,10 @@ describe("script names", () => {
 describe("declarations", () => {
   it("type-check on their own, as globals and as the module", () => {
     expect(compile("").diagnostics).toEqual([]);
-    expect(DECLS).toContain("declare function bring(player: Player, unit: Unit, location: Location, comparison: Comparison | number, amount: number): Condition;");
+    expect(DECLS).toContain("declare function bring(player: Player, unit: UnitType, location: Location, comparison: Comparison | number, amount: number): Condition;");
     expect(DECLS).toContain("declare function displayText(text: string, always?: boolean): Action;");
     expect(DECLS).toContain("declare function switchIs(switch_: Switch, state: SwitchState | number): Condition;");
-    expect(DECLS).toContain('readonly "Terran Marine": Unit<0>;');
+    expect(DECLS).toContain('readonly "Terran Marine": UnitType<0>;');
     expect(DECLS).toContain('declare module "trigscript" {');
     expect(DECLS).toContain("  export function trigger(");
     const r = compile(`import { trigger, always, victory, P1 } from "trigscript";\nimport type { Player } from "trigscript";\nconst p: Player = P1;\ntrigger(p, [always()], [victory()]);`);
@@ -103,7 +103,7 @@ describe("declarations", () => {
     const compact = generateDeclarations(NAMES, { compact: true });
     expect(compact.length).toBeLessThan(DECLS.length / 3);
     expect(compact).not.toContain('readonly "Terran Marine"');
-    expect(compact).toContain("readonly TerranMarine: Unit<0>;");
+    expect(compact).toContain("readonly TerranMarine: UnitType<0>;");
     expect(compact).toContain("readonly Switch16: Switch<15>;");
     expect(compact).not.toContain("readonly Switch17:");
     expect(compact).toContain("readonly [name: string]: AiScript<number>");

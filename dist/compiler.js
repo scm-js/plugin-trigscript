@@ -151,7 +151,7 @@ var ScoreType = {
   KillsAndRazings: 6,
   Custom: 7
 };
-var UnitClass = { Any: 228, Men: 229, Buildings: 230, Factories: 231 };
+var UnitClass = { Any: 229, Men: 230, Buildings: 231, Factories: 232 };
 var ConditionFlag = {
   /** Game bookkeeping. */
   Unknown: 1,
@@ -554,7 +554,7 @@ function argType(kind) {
     case "player":
       return "Player";
     case "unit":
-      return "Unit";
+      return "UnitType";
     case "location":
       return "Location";
     case "switch":
@@ -594,8 +594,8 @@ function scriptParams(def) {
     return p;
   };
   const main = def.args.filter((a2) => a2.kind !== "textFlags").map((arg) => ({ arg, name: name(arg.label), optional: false }));
-  const flag = def.args.find((a2) => a2.kind === "textFlags");
-  return flag ? [...main, { arg: flag, name: "always", optional: true }] : main;
+  const flag2 = def.args.find((a2) => a2.kind === "textFlags");
+  return flag2 ? [...main, { arg: flag2, name: "always", optional: true }] : main;
 }
 var IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 function propertyKey(key) {
@@ -660,355 +660,6 @@ function hyperTriggers(owner, comment) {
     return t;
   });
 }
-
-// compiler/runtime.ts
-var DEATHS_TABLE_ADDRESS = 5808996;
-var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
-var isRead = (v) => typeof v === "object" && v !== null && v.__trigscript === "read";
-var isPrint = (v) => typeof v === "object" && v !== null && v.__trigscript === "print";
-var isReader = (v) => typeof v === "function" && v.__trigscript === "reader";
-var MARK_OPEN = "\uE000";
-var MARK_CLOSE = "\uE001";
-var MARK = /\uE000([nc])(\d+)\uE001/g;
-var hasTextMark = (text) => text.includes(MARK_OPEN);
-var textMark = (letter, player) => `${MARK_OPEN}${letter}${player}${MARK_CLOSE}`;
-function textParts(text) {
-  const out = [];
-  let from = 0;
-  for (const m of text.matchAll(MARK)) {
-    if (m.index > from) out.push({ kind: "text", text: text.slice(from, m.index) });
-    out.push({ kind: m[1] === "n" ? "name" : "color", player: Number(m[2]) });
-    from = m.index + m[0].length;
-  }
-  if (from < text.length) out.push({ kind: "text", text: text.slice(from) });
-  return out;
-}
-var READ_ARITY = new Map(
-  [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
-);
-var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
-var ScriptError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "ScriptError";
-  }
-};
-var Collector = class {
-  entries = [];
-  strings = [];
-  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
-  hyper = false;
-  localString(s) {
-    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
-    if (at >= 0) return at + 1;
-    this.strings.push(s);
-    return this.strings.length;
-  }
-};
-var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript === "condition";
-var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
-var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
-var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
-var isGameFunction = (v) => typeof v === "function" && v.__trigscript === "gamefn";
-var isBuilder = (v) => typeof v === "function" && v.__trigscript === "builder";
-var condition = (record) => ({ __trigscript: "condition", record });
-var action = (record) => ({ __trigscript: "action", record });
-function describe(v) {
-  if (typeof v === "string") return JSON.stringify(v.length > 40 ? `${v.slice(0, 39)}\u2026` : v);
-  if (typeof v === "number" || typeof v === "boolean" || v === null || v === void 0) return String(v);
-  if (isCondition(v)) return "a condition";
-  if (isAction(v)) return "an action";
-  if (isRead(v)) return `a value the game holds (${v.ident}())`;
-  if (isPrint(v)) return "a print()";
-  if (Array.isArray(v)) return "an array";
-  if (typeof v === "function") return "a function";
-  return "an object";
-}
-function integer(v, what) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
-  if (typeof v === "boolean") return v ? 1 : 0;
-  if (isRead(v)) throw new ScriptError(`${what}: ${v.ident}() is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it; a trigger's condition or action takes numbers known when the script is built.`);
-  throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
-}
-function flatten(v, out = []) {
-  if (Array.isArray(v)) for (const x of v) flatten(x, out);
-  else if (v !== void 0 && v !== null && v !== false) out.push(v);
-  return out;
-}
-function createRuntime(names, collector, options = {}) {
-  const rt = {};
-  const comment = options.comments === false ? void 0 : (text) => collector.localString({ text });
-  for (const t of [names.players, names.units, names.locations, names.switches, names.aiScripts]) {
-    const table2 = {};
-    for (const e of t.entries) for (const k of e.keys) table2[k] = e.value;
-    rt[t.object] = Object.freeze(table2);
-  }
-  for (let i = 0; i < PLAYER_SLOTS; i++) rt[`P${i + 1}`] = i;
-  rt.CurrentPlayer = PlayerGroup.CurrentPlayer;
-  rt.AllPlayers = PlayerGroup.AllPlayers;
-  const argValue = (kind, v, what) => {
-    switch (kind) {
-      case "text":
-      case "wav":
-        if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
-        if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
-        throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
-      case "count":
-        if (typeof v === "string") {
-          if (v.trim().toLowerCase() === "all") return 0;
-          throw new ScriptError(`${what}: expected a count or "All", got ${describe(v)}.`);
-        }
-        return integer(v, what);
-      case "aiScript":
-        if (typeof v === "string") {
-          const code = aiScriptByName(v);
-          if (code === void 0) throw new ScriptError(`${what}: unknown AI script ${describe(v)}.`);
-          return code;
-        }
-        return integer(v, what);
-      case "textFlags":
-        return v === void 0 || v === true ? ActionFlag.AlwaysDisplay : v === false ? 0 : integer(v, what) & ActionFlag.AlwaysDisplay;
-      default:
-        if (typeof v === "string") {
-          if (!CANONICAL[kind]) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
-          const n = choiceOf(kind, v);
-          if (n === void 0) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
-          return n;
-        }
-        return integer(v, what);
-    }
-  };
-  const fromDef = (ident, def, kind) => Object.assign((...args) => {
-    const params = scriptParams(def);
-    const required = params.filter((p) => !p.optional).length;
-    if (kind === "condition" && READ_ARITY.get(ident) === args.length) return readOf(ident, def, args);
-    if (args.length < required || args.length > params.length) {
-      throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
-    }
-    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
-    params.forEach((p, i) => {
-      const v = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
-      if (p.arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v;
-      else record[p.arg.field] = v;
-    });
-    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
-    return kind === "condition" ? condition(record) : action(record);
-  }, { __trigscript: "builder", kind, def, ident });
-  const read = (ident, source, equals) => {
-    const fail = () => {
-      throw new ScriptError(`${ident}() is a value the game holds, read while the game runs: it has no value when the script is built. Inside program(), assign it to a let or use it in the program's own arithmetic and comparisons.`);
-    };
-    return { __trigscript: "read", read: source, ident, ...equals !== void 0 ? { equals } : {}, valueOf: fail, toString: fail };
-  };
-  const readOf = (ident, def, args) => {
-    const record = { ...emptyCondition(), type: def.type, comparison: Comparison.AtLeast };
-    const params = scriptParams(def).filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount");
-    params.forEach((p, i) => {
-      record[p.arg.field] = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
-    });
-    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= ConditionFlag.UnitTypeUsed;
-    return read(ident, { source: "condition", record });
-  };
-  for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
-  for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
-  rt.preserve = rt.preserveTrigger;
-  const raw = (kind) => (...args) => {
-    const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
-    const record = kind === "condition" ? emptyCondition() : emptyAction();
-    args.forEach((a2, i) => {
-      if (i < fields.length) record[fields[i]] = integer(a2, `${kind}(): ${fields[i]}`);
-    });
-    if (kind === "action") {
-      for (const f of ["text", "wav"]) if (record[f]) record[f] = collector.localString({ index: record[f] });
-    }
-    return kind === "condition" ? condition(record) : action(record);
-  };
-  rt.condition = raw("condition");
-  rt.action = raw("action");
-  const epd = (address, what) => {
-    const n = integer(address, what);
-    if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
-    return (n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
-  };
-  rt.memory = (address, comparison, value) => condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
-  rt.setMemory = (address, modifier, value) => action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
-  rt.disabled = (item) => {
-    if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
-    if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
-    throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
-  };
-  rt.not = (item) => {
-    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
-    const flipped = negateCondition(item.record);
-    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!\u2026) can test it.");
-    return condition(flipped[0]);
-  };
-  const playersOf = (v, what) => {
-    if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
-    return flatten(v).map((p) => {
-      const n = integer(p, what);
-      if (n >= PLAYER_GROUP_COUNT) throw new ScriptError(`${what}: player group ${n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
-      return n;
-    });
-  };
-  const items = (v, test, what, wrong, wrongName) => flatten(v).map((x) => {
-    if (test(x)) return x;
-    if (isRead(x)) throw new ScriptError(`${what}: ${x.ident}() without a comparison reads the value, which only a program can do. In a trigger, give the comparison and the amount: ${x.ident}(\u2026, ">=", 1).`);
-    if (isPrint(x)) throw new ScriptError(`${what}: print() is a statement of a program; a trigger shows text with displayText().`);
-    if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
-    throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
-  });
-  rt.trigger = (players, conditions, actions, options2, at) => {
-    const t = emptyTrigger();
-    for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
-    t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c2) => ({ ...c2.record }));
-    t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a2) => ({ ...a2.record }));
-    for (const a2 of t.actions) {
-      const s = a2.text > 0 ? collector.strings[a2.text - 1] : void 0;
-      if (s && "text" in s && hasTextMark(s.text)) throw new ScriptError("name() and color() are filled in by a program while the game runs; a trigger's text is fixed when the script is built. Show this text from inside program().");
-    }
-    if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
-    if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
-    if (options2 !== void 0 && options2 !== null) {
-      if (typeof options2 !== "object") throw new ScriptError(`trigger: options is an object such as { preserve: true }, got ${describe(options2)}.`);
-      for (const [key, value] of Object.entries(options2)) {
-        if (key === "flags") {
-          t.flags |= integer(value, "trigger: flags");
-          continue;
-        }
-        const hit = TRIGGER_OPTION_NAMES.find(([, name]) => name === key);
-        if (!hit) throw new ScriptError(`trigger: unknown option "${key}".`);
-        if (value) t.flags |= hit[0];
-      }
-    }
-    collector.entries.push({ kind: "trigger", record: t, at: isAt(at) ? at : null });
-    return { __trigscript: "trigger", record: t };
-  };
-  rt.hyperTriggers = (owner = 0) => {
-    const p = integer(owner, "hyperTriggers: owner");
-    if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
-    for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
-    collector.hyper = true;
-  };
-  const number = (v, what) => {
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
-    return v;
-  };
-  rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
-  rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
-  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
-  rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
-  rt.sleep = () => {
-    throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
-  };
-  rt.rose = () => {
-    throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if.");
-  };
-  rt.once = () => {
-    throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if.");
-  };
-  rt.shared = () => {
-    throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
-  };
-  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
-  const reader = (fn) => Object.assign(fn, { __trigscript: "reader" });
-  const onePlayer = (v, what, slots = PLAYER_SLOTS) => {
-    const n = integer(v, what);
-    if (n !== PlayerGroup.CurrentPlayer && n >= slots) throw new ScriptError(`${what}: expected one player, P1 \u2026 P${slots} or CurrentPlayer.`);
-    return n;
-  };
-  const conditionRead = (ident, type, fields) => read(ident, { source: "condition", record: { ...emptyCondition(), type, comparison: Comparison.AtLeast, ...fields } });
-  const resourceRead = (ident, player, kind) => conditionRead(ident, ConditionType.Accumulate, { player: argValue("player", player, `${ident}: player`), resource: argValue("resource", kind, `${ident}: resource`) });
-  rt.minerals = reader((player) => resourceRead("minerals", player, "ore"));
-  rt.gas = reader((player) => resourceRead("gas", player, "gas"));
-  rt.resources = reader((player, kind) => resourceRead("resources", player, kind));
-  rt.countUnits = reader((player, unit, location) => {
-    const fields = { player: argValue("player", player, "countUnits: player"), unitId: argValue("unit", unit, "countUnits: unit"), flags: ConditionFlag.UnitTypeUsed };
-    return location === void 0 ? conditionRead("countUnits", ConditionType.Command, fields) : conditionRead("countUnits", ConditionType.Bring, { ...fields, location: argValue("location", location, "countUnits: location") });
-  });
-  rt.kills = reader((player, unit) => conditionRead("kills", ConditionType.Kill, { player: argValue("player", player, "kills: player"), unitId: argValue("unit", unit, "kills: unit"), flags: ConditionFlag.UnitTypeUsed }));
-  rt.countdown = reader(() => conditionRead("countdown", ConditionType.CountdownTimer, {}));
-  rt.elapsed = reader(() => conditionRead("elapsed", ConditionType.ElapsedTime, {}));
-  rt.races = Object.freeze({ Zerg: 0, Terran: 1, Protoss: 2 });
-  rt.slots = Object.freeze({ Empty: 0, Computer: 1, Human: 2, Rescuable: 3, Neutral: 7 });
-  rt.race = reader((player) => read("race", { source: "player", fact: "race", player: onePlayer(player, "race: player", 12) }));
-  rt.slot = reader((player) => read("slot", { source: "player", fact: "slot", player: onePlayer(player, "slot: player", 12) }));
-  rt.isHuman = reader((player) => read("isHuman", { source: "player", fact: "slot", player: onePlayer(player, "isHuman: player", 12) }, 2));
-  rt.hasLeft = reader((player) => read("hasLeft", { source: "player", fact: "left", player: onePlayer(player, "hasLeft: player") }, 1));
-  rt.supply = reader((player, of = "used", race) => {
-    if (of !== "used" && of !== "max" && of !== "provided") throw new ScriptError(`supply: expected "used", "max" or "provided", got ${describe(of)}.`);
-    let r = null;
-    if (race !== void 0 && race !== null) {
-      const n = typeof race === "string" ? ["zerg", "terran", "protoss"].indexOf(race.trim().toLowerCase()) : integer(race, "supply: race");
-      if (n !== 0 && n !== 1 && n !== 2) throw new ScriptError(`supply: the race is races.Zerg, races.Terran or races.Protoss, got ${describe(race)}.`);
-      r = n;
-    }
-    return read("supply", { source: "supply", of, race: r, player: onePlayer(player, "supply: player", 12) });
-  });
-  rt.name = (player) => textMark("n", onePlayer(player, "name: player", 12));
-  rt.color = (player) => textMark("c", onePlayer(player, "color: player", 12));
-  rt.print = (text, options2) => {
-    if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
-    let to = PlayerGroup.CurrentPlayer;
-    let position = "chat";
-    if (options2 !== void 0 && options2 !== null) {
-      if (typeof options2 !== "object") throw new ScriptError(`print: options is an object such as { to: P2 }, got ${describe(options2)}.`);
-      for (const [key, value] of Object.entries(options2)) {
-        if (key === "to") {
-          to = integer(value, "print: to");
-          const groups = [PlayerGroup.CurrentPlayer, PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
-          if (to >= PLAYER_SLOTS && !groups.includes(to)) throw new ScriptError(`print: to is a player (P1 \u2026 P${PLAYER_SLOTS}), CurrentPlayer, AllPlayers or a force.`);
-        } else if (key === "position") {
-          if (value !== "chat" && value !== "center") throw new ScriptError(`print: position is "chat" or "center", got ${describe(value)}.`);
-          position = value;
-        } else throw new ScriptError(`print: unknown option "${key}".`);
-      }
-    }
-    return { __trigscript: "print", text, to, position };
-  };
-  rt.program = (body2, options2, at) => {
-    if (!isProgramDescriptor(body2)) {
-      throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
-    }
-    const out = { owners: [0], perPlayer: false };
-    if (options2 !== void 0 && options2 !== null) {
-      if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
-      for (const [key, value] of Object.entries(options2)) {
-        switch (key) {
-          case "owner": {
-            const owners = playersOf(value, "program: owner");
-            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
-            const groups = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
-            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 \u2026 P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players \u2014 the program runs once for each of them, with CurrentPlayer as that player.`);
-            out.owners = [...new Set(owners)];
-            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
-            break;
-          }
-          case "comments":
-          case "variableUnits":
-            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
-          default:
-            throw new ScriptError(`program: unknown option "${key}".`);
-        }
-      }
-    }
-    collector.entries.push({ kind: "program", descriptor: body2, options: out, at: isAt(at) ? at : null });
-  };
-  rt.random = () => {
-    throw new ScriptError("random() is a coin toss and random(n) a number from 0 to n \u2212 1, both made by the game: use them inside program().");
-  };
-  rt.game = (body2) => {
-    if (!isProgramDescriptor(body2)) {
-      throw new ScriptError(typeof body2 === "function" ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { \u2026 })." : `game() takes an arrow function, got ${describe(body2)}.`);
-    }
-    const fn = () => {
-      throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built.");
-    };
-    return Object.assign(fn, { __trigscript: "gamefn", descriptor: body2 });
-  };
-  return rt;
-}
-var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
 
 // vendor/units.ts
 var UNIT_NAMES = [
@@ -1242,8 +893,252 @@ var UNIT_NAMES = [
   "Terran Vespene Gas Tank Type 2"
 ];
 
+// vendor/gameNames.ts
+var WEAPON_NAMES = [
+  "Gauss Rifle",
+  "Gauss Rifle (Jim Raynor)",
+  "C-10 Canister Rifle",
+  "C-10 Canister Rifle (Sarah Kerrigan)",
+  "Fragmentation Grenade",
+  "Fragmentation Grenade (Jim Raynor)",
+  "Spider Mines",
+  "Twin Autocannons",
+  "Hellfire Missile Pack",
+  "Twin Autocannons (Alan Schezar)",
+  "Hellfire Missile Pack (Alan Schezar)",
+  "Arclite Cannon",
+  "Arclite Cannon (Edmund Duke)",
+  "Fusion Cutter",
+  "Fusion Cutter (Harvest)",
+  "Gemini Missiles",
+  "Burst Lasers",
+  "Gemini Missiles (Tom Kazansky)",
+  "Burst Lasers (Tom Kazansky)",
+  "ATS Laser Battery",
+  "ATA Laser Battery",
+  "ATS Laser Battery (Hero)",
+  "ATA Laser Battery (Hero)",
+  "ATS Laser Battery (Hyperion)",
+  "ATA Laser Battery (Hyperion)",
+  "Flame Thrower",
+  "Flame Thrower (Gui Montag)",
+  "Arclite Shock Cannon",
+  "Arclite Shock Cannon (Edmund Duke)",
+  "Longbolt Missile",
+  "Yamato Gun",
+  "Nuclear Strike",
+  "Lockdown",
+  "EMP Shockwave",
+  "Irradiate",
+  "Claws",
+  "Claws (Devouring One)",
+  "Claws (Infested Kerrigan)",
+  "Needle Spines",
+  "Needle Spines (Hunter Killer)",
+  "Kaiser Blades",
+  "Kaiser Blades (Torrasque)",
+  "Toxic Spores (Broodling)",
+  "Spines",
+  "Spines (Harvest)",
+  "Acid Spray (Unused)",
+  "Acid Spore",
+  "Acid Spore (Kukulza)",
+  "Glave Wurm",
+  "Glave Wurm (Kukulza)",
+  "Venom (Unused)",
+  "Venom (Unused, Hero)",
+  "Seeker Spores",
+  "Subterranean Tentacle",
+  "Suicide (Infested Terran)",
+  "Suicide (Scourge)",
+  "Parasite",
+  "Spawn Broodlings",
+  "Ensnare",
+  "Dark Swarm",
+  "Plague",
+  "Consume",
+  "Particle Beam",
+  "Particle Beam (Harvest)",
+  "Psi Blades",
+  "Psi Blades (Fenix)",
+  "Phase Disruptor",
+  "Phase Disruptor (Fenix)",
+  "Psi Assault (Unused)",
+  "Psi Assault (Tassadar/Aldaris)",
+  "Psionic Shockwave",
+  "Psionic Shockwave (Tassadar/Zeratul Archon)",
+  "Unknown 72",
+  "Dual Photon Blasters",
+  "Anti-Matter Missiles",
+  "Dual Photon Blasters (Mojo)",
+  "Anti-Matter Missiles (Mojo)",
+  "Phase Disruptor Cannon",
+  "Phase Disruptor Cannon (Danimoth)",
+  "Pulse Cannon",
+  "STS Photon Cannon",
+  "STA Photon Cannon",
+  "Scarab",
+  "Stasis Field",
+  "Psionic Storm",
+  "Warp Blades (Zeratul)",
+  "Warp Blades (Dark Templar Hero)",
+  "Missiles (Unused)",
+  "Laser Battery 1 (Unused)",
+  "Tormentor Missiles (Unused)",
+  "Bombs (Unused)",
+  "Raider Gun (Unused)",
+  "Laser Battery 2 (Unused)",
+  "Laser Battery 3 (Unused)",
+  "Dual Photon Blasters (Unused)",
+  "Flechette Grenade (Unused)",
+  "Twin Autocannons (Floor Trap)",
+  "Hellfire Missile Pack (Wall Trap)",
+  "Flame Thrower (Wall Trap)",
+  "Hellfire Missile Pack (Floor Trap)",
+  "Neutron Flare",
+  "Disruption Web",
+  "Restoration",
+  "Halo Rockets",
+  "Corrosive Acid",
+  "Mind Control",
+  "Feedback",
+  "Optical Flare",
+  "Maelstrom",
+  "Subterranean Spines",
+  "Gauss Rifle 0 (Unused)",
+  "Warp Blades",
+  "C-10 Canister Rifle (Samir Duran)",
+  "C-10 Canister Rifle (Infested Duran)",
+  "Dual Photon Blasters (Artanis)",
+  "Anti-Matter Missiles (Artanis)",
+  "C-10 Canister Rifle (Alexei Stukov)",
+  "Gauss Rifle 1 (Unused)",
+  "Unknown 118",
+  "Unknown 119",
+  "Unknown 120",
+  "Unknown 121",
+  "Unknown 122",
+  "Unknown 123",
+  "Unknown 124",
+  "Unknown 125",
+  "Unknown 126",
+  "Unknown 127",
+  "Unknown 128",
+  "Unknown 129"
+];
+var UPGRADE_NAMES = [
+  "Terran Infantry Armor",
+  "Terran Vehicle Plating",
+  "Terran Ship Plating",
+  "Zerg Carapace",
+  "Zerg Flyer Carapace",
+  "Protoss Ground Armor",
+  "Protoss Air Armor",
+  "Terran Infantry Weapons",
+  "Terran Vehicle Weapons",
+  "Terran Ship Weapons",
+  "Zerg Melee Attacks",
+  "Zerg Missile Attacks",
+  "Zerg Flyer Attacks",
+  "Protoss Ground Weapons",
+  "Protoss Air Weapons",
+  "Protoss Plasma Shields",
+  "U-238 Shells",
+  "Ion Thrusters",
+  "Burst Lasers (Unused)",
+  "Titan Reactor",
+  "Ocular Implants",
+  "Moebius Reactor",
+  "Apollo Reactor",
+  "Colossus Reactor",
+  "Ventral Sacs",
+  "Antennae",
+  "Pneumatized Carapace",
+  "Metabolic Boost",
+  "Adrenal Glands",
+  "Muscular Augments",
+  "Grooved Spines",
+  "Gamete Meiosis",
+  "Metasynaptic Node",
+  "Singularity Charge",
+  "Leg Enhancements",
+  "Scarab Damage",
+  "Reaver Capacity",
+  "Gravitic Drive",
+  "Sensor Array",
+  "Gravitic Boosters",
+  "Khaydarin Amulet",
+  "Apial Sensors",
+  "Gravitic Thrusters",
+  "Carrier Capacity",
+  "Khaydarin Core",
+  "Unused (45)",
+  "Unused (46)",
+  "Argus Jewel",
+  "Unused (48)",
+  "Argus Talisman",
+  "Unused (50)",
+  "Caduceus Reactor",
+  "Chitinous Plating",
+  "Anabolic Synthesis",
+  "Charon Boosters",
+  "Unused (55)",
+  "Unused (56)",
+  "Unused (57)",
+  "Unused (58)",
+  "Unused (59)",
+  "Unused (60)"
+];
+var TECH_NAMES = [
+  "Stim Packs",
+  "Lockdown",
+  "EMP Shockwave",
+  "Spider Mines",
+  "Scanner Sweep",
+  "Tank Siege Mode",
+  "Defensive Matrix",
+  "Irradiate",
+  "Yamato Gun",
+  "Cloaking Field",
+  "Personnel Cloaking",
+  "Burrowing",
+  "Infestation",
+  "Spawn Broodlings",
+  "Dark Swarm",
+  "Plague",
+  "Consume",
+  "Ensnare",
+  "Parasite",
+  "Psionic Storm",
+  "Hallucination",
+  "Recall",
+  "Stasis Field",
+  "Archon Warp",
+  "Restoration",
+  "Disruption Web",
+  "Unused (26)",
+  "Mind Control",
+  "Dark Archon Meld",
+  "Feedback",
+  "Optical Flare",
+  "Maelstrom",
+  "Lurker Aspect",
+  "Unused (33)",
+  "Healing",
+  "Unused (35)",
+  "Unused (36)",
+  "Unused (37)",
+  "Unused (38)",
+  "Unused (39)",
+  "Unused (40)",
+  "Unused (41)",
+  "Unused (42)",
+  "Unused (43)"
+];
+
 // compiler/names.ts
 var ANYWHERE_INDEX = 63;
+var allTables = (n) => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs];
 function identifier(name) {
   const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
   let id = words.map((w) => w[0].toUpperCase() + w.slice(1)).join("");
@@ -1324,15 +1219,533 @@ function scriptNames(src = {}) {
   });
   return {
     players: table("players", "Player", withMap ? "Players, player groups and the map's forces." : "Players and player groups.", playerEntries(src.forceNames ?? [])),
-    units: table("units", "Unit", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
+    units: table("units", "UnitType", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
     locations: table("locations", "Location", "The map's locations.", locations),
     switches: table("switches", "Switch", withMap ? "The 256 switches, by number and by the map's names." : "The 256 switches.", switches),
-    aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries())
+    aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries()),
+    weapons: table("weapons", "Weapon", "Weapons, for stats() and a unit type's groundWeapon / airWeapon.", [...WEAPON_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })), { value: WEAPON_NAMES.length, keys: ["None"] }]),
+    upgrades: table("upgrades", "Upgrade", "Upgrades, for stats().", UPGRADE_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
+    techs: table("techs", "Tech", "Technologies, for stats().", TECH_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })))
   };
 }
 function defaultScriptNames() {
   return scriptNames();
 }
+
+// compiler/tables.ts
+var TABLE_SIZE = { unit: 228, weapon: 130, upgrade: 61, tech: 44, player: 12 };
+var UNIT_FLAGS = 6701184;
+var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS, stride: 4, width: "bit", bit, boolean: true });
+var TABLE_FIELDS = {
+  unit: [
+    { name: "maxHp", doc: "Hit points of units made after the write.", base: 6693712, stride: 4, width: 4, scale: 256 },
+    { name: "maxShields", doc: "Shield points of units made after the write.", base: 6688256, stride: 2, width: 2 },
+    { name: "armor", doc: "Armour, before upgrades.", base: 6684360, stride: 1, width: 1 },
+    { name: "minerals", doc: "What the unit costs in minerals.", base: 6699144, stride: 2, width: 2 },
+    { name: "gas", doc: "What the unit costs in gas.", base: 6683904, stride: 2, width: 2 },
+    { name: "buildTime", doc: "Seconds to build, on the game's clock; a fraction is fine when the number is known when you build (1.5).", base: 6685736, stride: 2, width: 2, scale: 15 },
+    { name: "supplyUsed", doc: "Supply the unit takes; a Zergling is 0.5.", base: 6700264, stride: 1, width: 1, scale: 2 },
+    { name: "supplyProvided", doc: "Supply the unit provides, for the ones made after the write.", base: 6702792, stride: 1, width: 1, scale: 2 },
+    { name: "sight", doc: "Sight range in tiles, up to 11.", base: 6697528, stride: 1, width: 1 },
+    { name: "groundWeapon", doc: "The weapon used against ground units (weapons.*); units already on the map switch too.", base: 6698680, stride: 1, width: 1, type: "Weapon" },
+    { name: "airWeapon", doc: "The weapon used against air units (weapons.*); weapons.None for none.", base: 6690528, stride: 1, width: 1, type: "Weapon" },
+    { name: "size", doc: "What concussive and explosive damage scale by: 0 independent, 1 small, 2 medium, 3 large.", base: 6693248, stride: 1, width: 1 },
+    { name: "speed", doc: "Top speed in pixels a frame (a Marine walks at 4, a Vulture at 6.67), for units made after the write: the type's flingy is switched to table control and given this speed, with acceleration and stopping distance to match. A fraction is fine when the number is known when you build.", base: 7118584, stride: 4, width: 4, scale: 256, writeOnly: true, special: "speed" },
+    { name: "name", doc: "The name shown for the type: text known when you build.", base: 6685280, stride: 2, width: 2, writeOnly: true, special: "name", type: "string" },
+    flag("detector", 15, "Sees cloaked and burrowed units in its sight range."),
+    flag("permanentCloak", 22, "Always cloaked, for units made after the write."),
+    flag("cloakable", 9, "Has the ability to cloak (the flag alone gives no button)."),
+    flag("burrowable", 20, "Has the ability to burrow (the flag alone gives no button)."),
+    flag("regenerates", 7, "Hit points climb back over time, as a Zerg unit's do; units already on the map follow at once."),
+    flag("invincible", 29, "Cannot be hurt, for units made after the write."),
+    flag("hero", 6, "A hero unit."),
+    flag("organic", 16, "A Medic can heal it; units already on the map follow."),
+    flag("mechanical", 30, "An SCV can repair it; units already on the map follow."),
+    flag("robotic", 14, "Immune to the spells robotic units are immune to.")
+  ],
+  weapon: [
+    { name: "damage", doc: "Damage of one hit, before upgrades.", base: 6647472, stride: 2, width: 2 },
+    { name: "bonus", doc: "Extra damage per upgrade level.", base: 6649464, stride: 2, width: 2 },
+    { name: "cooldown", doc: "Frames between attacks.", base: 6647736, stride: 1, width: 1 },
+    { name: "factor", doc: "Hits per attack.", base: 6644960, stride: 1, width: 1 },
+    { name: "range", doc: "Range in pixels, 32 a tile.", base: 6648944, stride: 4, width: 4 },
+    { name: "minRange", doc: "The least range in pixels: nothing closer can be shot.", base: 6646296, stride: 4, width: 4 }
+  ],
+  upgrade: [
+    { name: "minerals", doc: "The first level's mineral cost.", base: 6641472, stride: 2, width: 2 },
+    { name: "gas", doc: "The first level's gas cost.", base: 6641728, stride: 2, width: 2 },
+    { name: "time", doc: "Seconds the first level takes, on the game's clock.", base: 6642560, stride: 2, width: 2, scale: 15 },
+    { name: "maxLevel", doc: "How many times it can be researched. Read only: the game took no write.", base: 6641408, stride: 1, width: 1, readonly: true }
+  ],
+  tech: [
+    { name: "minerals", doc: "Mineral cost of the research.", base: 6644296, stride: 2, width: 2 },
+    { name: "gas", doc: "Gas cost of the research.", base: 6644208, stride: 2, width: 2 },
+    { name: "time", doc: "Seconds the research takes, on the game's clock.", base: 6644696, stride: 2, width: 2, scale: 15 },
+    { name: "energy", doc: "Energy a cast takes.", base: 6644608, stride: 2, width: 2 }
+  ],
+  player: [
+    { name: "color", doc: `The colour the player's units and minimap dots are drawn in: one of colors.*, or "teal". Takes effect at once.`, base: 5774710, stride: 1, width: 1, writeOnly: true, special: "color", type: "PlayerColor | ColorName" },
+    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade" } },
+    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech" } }
+  ]
+};
+var PLAYER_COLORS = { red: 111, blue: 165, teal: 159, purple: 164, orange: 179, brown: 19, white: 255, yellow: 135, green: 117 };
+var MINIMAP_COLOR_OFFSET = 5774806 - 5774710;
+var TABLE_BRAND = { unit: "unit", weapon: "weapon", upgrade: "upgrade", tech: "tech", player: "player" };
+var tableOfBrand = (brand) => Object.keys(TABLE_BRAND).find((k) => TABLE_BRAND[k] === brand);
+var cellMax = (width) => width === "bit" ? 1 : width === 4 ? 4294967295 : 2 ** (width * 8) - 1;
+
+// compiler/runtime.ts
+var DEATHS_TABLE_ADDRESS = 5808996;
+var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
+var isRead = (v) => typeof v === "object" && v !== null && v.__trigscript === "read";
+var isPrint = (v) => typeof v === "object" && v !== null && v.__trigscript === "print";
+var isUnitQuery = (v) => typeof v === "object" && v !== null && v.__trigscript === "units";
+var isUnitPick = (v) => typeof v === "object" && v !== null && v.__trigscript === "pick";
+var isTable = (v) => typeof v === "object" && v !== null && v.__trigscript === "table";
+var isGameValue = (v) => isRead(v) || isTable(v) || isUnitPick(v);
+function playerColor(v) {
+  if (typeof v === "string") {
+    const n = PLAYER_COLORS[v.trim().toLowerCase()];
+    if (n === void 0) throw new ScriptError(`Unknown colour ${JSON.stringify(v)}: one of ${Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(", ")}.`);
+    return n;
+  }
+  if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255) return v;
+  throw new ScriptError('A player colour is one of colors.*, a word such as "teal", or a palette entry from 0 to 255.');
+}
+var isReader = (v) => typeof v === "function" && v.__trigscript === "reader";
+var MARK_OPEN = "\uE000";
+var MARK_CLOSE = "\uE001";
+var MARK = /\uE000([nc])(\d+)\uE001/g;
+var hasTextMark = (text) => text.includes(MARK_OPEN);
+var textMark = (letter, player) => `${MARK_OPEN}${letter}${player}${MARK_CLOSE}`;
+function textParts(text) {
+  const out = [];
+  let from = 0;
+  for (const m of text.matchAll(MARK)) {
+    if (m.index > from) out.push({ kind: "text", text: text.slice(from, m.index) });
+    out.push({ kind: m[1] === "n" ? "name" : "color", player: Number(m[2]) });
+    from = m.index + m[0].length;
+  }
+  if (from < text.length) out.push({ kind: "text", text: text.slice(from) });
+  return out;
+}
+var READ_ARITY = new Map(
+  [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
+);
+var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
+var UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "stats"];
+var ScriptError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ScriptError";
+  }
+};
+var Collector = class {
+  entries = [];
+  strings = [];
+  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
+  hyper = false;
+  localString(s) {
+    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
+    if (at >= 0) return at + 1;
+    this.strings.push(s);
+    return this.strings.length;
+  }
+};
+var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript === "condition";
+var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
+var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
+var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
+var isGameFunction = (v) => typeof v === "function" && v.__trigscript === "gamefn";
+var isBuilder = (v) => typeof v === "function" && v.__trigscript === "builder";
+var condition = (record) => ({ __trigscript: "condition", record });
+var action = (record) => ({ __trigscript: "action", record });
+function describe(v) {
+  if (typeof v === "string") return JSON.stringify(v.length > 40 ? `${v.slice(0, 39)}\u2026` : v);
+  if (typeof v === "number" || typeof v === "boolean" || v === null || v === void 0) return String(v);
+  if (isCondition(v)) return "a condition";
+  if (isAction(v)) return "an action";
+  if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isTable(v)) return `a value the game holds (${v.ident})`;
+  if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
+  if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isPrint(v)) return "a print()";
+  if (Array.isArray(v)) return "an array";
+  if (typeof v === "function") return "a function";
+  return "an object";
+}
+function integer(v, what) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (isRead(v)) throw new ScriptError(`${what}: ${v.ident}() is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it; a trigger's condition or action takes numbers known when the script is built.`);
+  if (isTable(v)) throw new ScriptError(`${what}: ${v.ident} is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it.`);
+  throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+}
+function flatten(v, out = []) {
+  if (Array.isArray(v)) for (const x of v) flatten(x, out);
+  else if (v !== void 0 && v !== null && v !== false) out.push(v);
+  return out;
+}
+function createRuntime(names, collector, options = {}) {
+  const rt = {};
+  const comment = options.comments === false ? void 0 : (text) => collector.localString({ text });
+  for (const t of allTables(names)) {
+    const table2 = {};
+    for (const e of t.entries) for (const k of e.keys) table2[k] = e.value;
+    rt[t.object] = Object.freeze(table2);
+  }
+  for (let i = 0; i < PLAYER_SLOTS; i++) rt[`P${i + 1}`] = i;
+  rt.CurrentPlayer = PlayerGroup.CurrentPlayer;
+  rt.AllPlayers = PlayerGroup.AllPlayers;
+  const argValue = (kind, v, what) => {
+    switch (kind) {
+      case "text":
+      case "wav":
+        if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
+        if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
+        throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
+      case "count":
+        if (typeof v === "string") {
+          if (v.trim().toLowerCase() === "all") return 0;
+          throw new ScriptError(`${what}: expected a count or "All", got ${describe(v)}.`);
+        }
+        return integer(v, what);
+      case "aiScript":
+        if (typeof v === "string") {
+          const code = aiScriptByName(v);
+          if (code === void 0) throw new ScriptError(`${what}: unknown AI script ${describe(v)}.`);
+          return code;
+        }
+        return integer(v, what);
+      case "textFlags":
+        return v === void 0 || v === true ? ActionFlag.AlwaysDisplay : v === false ? 0 : integer(v, what) & ActionFlag.AlwaysDisplay;
+      default:
+        if (typeof v === "string") {
+          if (!CANONICAL[kind]) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+          const n = choiceOf(kind, v);
+          if (n === void 0) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
+          return n;
+        }
+        return integer(v, what);
+    }
+  };
+  const fromDef = (ident, def, kind) => Object.assign((...args) => {
+    const params = scriptParams(def);
+    const required = params.filter((p) => !p.optional).length;
+    if (kind === "condition" && READ_ARITY.get(ident) === args.length) return readOf(ident, def, args);
+    if (args.length < required || args.length > params.length) {
+      throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
+    }
+    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
+    params.forEach((p, i) => {
+      const v = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
+      if (p.arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v;
+      else record[p.arg.field] = v;
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
+    return kind === "condition" ? condition(record) : action(record);
+  }, { __trigscript: "builder", kind, def, ident });
+  const read = (ident, source, equals) => {
+    const fail = () => {
+      throw new ScriptError(`${ident}() is a value the game holds, read while the game runs: it has no value when the script is built. Inside program(), assign it to a let or use it in the program's own arithmetic and comparisons.`);
+    };
+    return { __trigscript: "read", read: source, ident, ...equals !== void 0 ? { equals } : {}, valueOf: fail, toString: fail };
+  };
+  const readOf = (ident, def, args) => {
+    const record = { ...emptyCondition(), type: def.type, comparison: Comparison.AtLeast };
+    const params = scriptParams(def).filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount");
+    params.forEach((p, i) => {
+      record[p.arg.field] = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= ConditionFlag.UnitTypeUsed;
+    return read(ident, { source: "condition", record });
+  };
+  for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
+  for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
+  rt.preserve = rt.preserveTrigger;
+  const raw = (kind) => (...args) => {
+    const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
+    const record = kind === "condition" ? emptyCondition() : emptyAction();
+    args.forEach((a2, i) => {
+      if (i < fields.length) record[fields[i]] = integer(a2, `${kind}(): ${fields[i]}`);
+    });
+    if (kind === "action") {
+      for (const f of ["text", "wav"]) if (record[f]) record[f] = collector.localString({ index: record[f] });
+    }
+    return kind === "condition" ? condition(record) : action(record);
+  };
+  rt.condition = raw("condition");
+  rt.action = raw("action");
+  const epd = (address, what) => {
+    const n = integer(address, what);
+    if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
+    return (n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
+  };
+  rt.memory = (address, comparison, value) => condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
+  rt.setMemory = (address, modifier, value) => action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
+  rt.disabled = (item) => {
+    if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
+    if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
+    throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
+  };
+  rt.not = (item) => {
+    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
+    const flipped = negateCondition(item.record);
+    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!\u2026) can test it.");
+    return condition(flipped[0]);
+  };
+  const playersOf = (v, what) => {
+    if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
+    return flatten(v).map((p) => {
+      const n = integer(p, what);
+      if (n >= PLAYER_GROUP_COUNT) throw new ScriptError(`${what}: player group ${n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
+      return n;
+    });
+  };
+  const items = (v, test, what, wrong, wrongName) => flatten(v).map((x) => {
+    if (test(x)) return x;
+    if (isRead(x)) throw new ScriptError(`${what}: ${x.ident}() without a comparison reads the value, which only a program can do. In a trigger, give the comparison and the amount: ${x.ident}(\u2026, ">=", 1).`);
+    if (isPrint(x)) throw new ScriptError(`${what}: print() is a statement of a program; a trigger shows text with displayText().`);
+    if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
+    throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
+  });
+  rt.trigger = (players, conditions, actions, options2, at) => {
+    const t = emptyTrigger();
+    for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
+    t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c2) => ({ ...c2.record }));
+    t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a2) => ({ ...a2.record }));
+    for (const a2 of t.actions) {
+      const s = a2.text > 0 ? collector.strings[a2.text - 1] : void 0;
+      if (s && "text" in s && hasTextMark(s.text)) throw new ScriptError("name() and color() are filled in by a program while the game runs; a trigger's text is fixed when the script is built. Show this text from inside program().");
+    }
+    if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
+    if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`trigger: options is an object such as { preserve: true }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "flags") {
+          t.flags |= integer(value, "trigger: flags");
+          continue;
+        }
+        const hit = TRIGGER_OPTION_NAMES.find(([, name]) => name === key);
+        if (!hit) throw new ScriptError(`trigger: unknown option "${key}".`);
+        if (value) t.flags |= hit[0];
+      }
+    }
+    collector.entries.push({ kind: "trigger", record: t, at: isAt(at) ? at : null });
+    return { __trigscript: "trigger", record: t };
+  };
+  rt.hyperTriggers = (owner = 0) => {
+    const p = integer(owner, "hyperTriggers: owner");
+    if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
+    for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
+    collector.hyper = true;
+  };
+  const number = (v, what) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
+    return v;
+  };
+  rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
+  rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
+  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
+  rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
+  rt.sleep = () => {
+    throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
+  };
+  rt.rose = () => {
+    throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if.");
+  };
+  rt.once = () => {
+    throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if.");
+  };
+  rt.shared = () => {
+    throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
+  };
+  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
+  const reader = (fn) => Object.assign(fn, { __trigscript: "reader" });
+  const onePlayer = (v, what, slots = PLAYER_SLOTS) => {
+    const n = integer(v, what);
+    if (n !== PlayerGroup.CurrentPlayer && n >= slots) throw new ScriptError(`${what}: expected one player, P1 \u2026 P${slots} or CurrentPlayer.`);
+    return n;
+  };
+  const conditionRead = (ident, type, fields) => read(ident, { source: "condition", record: { ...emptyCondition(), type, comparison: Comparison.AtLeast, ...fields } });
+  const resourceRead = (ident, player, kind) => conditionRead(ident, ConditionType.Accumulate, { player: argValue("player", player, `${ident}: player`), resource: argValue("resource", kind, `${ident}: resource`) });
+  rt.minerals = reader((player) => resourceRead("minerals", player, "ore"));
+  rt.gas = reader((player) => resourceRead("gas", player, "gas"));
+  rt.resources = reader((player, kind) => resourceRead("resources", player, kind));
+  rt.countUnits = reader((player, unit, location) => {
+    const fields = { player: argValue("player", player, "countUnits: player"), unitId: argValue("unit", unit, "countUnits: unit"), flags: ConditionFlag.UnitTypeUsed };
+    return location === void 0 ? conditionRead("countUnits", ConditionType.Command, fields) : conditionRead("countUnits", ConditionType.Bring, { ...fields, location: argValue("location", location, "countUnits: location") });
+  });
+  rt.kills = reader((player, unit) => conditionRead("kills", ConditionType.Kill, { player: argValue("player", player, "kills: player"), unitId: argValue("unit", unit, "kills: unit"), flags: ConditionFlag.UnitTypeUsed }));
+  rt.countdown = reader(() => conditionRead("countdown", ConditionType.CountdownTimer, {}));
+  rt.elapsed = reader(() => conditionRead("elapsed", ConditionType.ElapsedTime, {}));
+  rt.races = Object.freeze({ Zerg: 0, Terran: 1, Protoss: 2 });
+  rt.slots = Object.freeze({ Empty: 0, Computer: 1, Human: 2, Rescuable: 3, Neutral: 7 });
+  rt.race = reader((player) => read("race", { source: "player", fact: "race", player: onePlayer(player, "race: player", 12) }));
+  rt.slot = reader((player) => read("slot", { source: "player", fact: "slot", player: onePlayer(player, "slot: player", 12) }));
+  rt.isHuman = reader((player) => read("isHuman", { source: "player", fact: "slot", player: onePlayer(player, "isHuman: player", 12) }, 2));
+  rt.hasLeft = reader((player) => read("hasLeft", { source: "player", fact: "left", player: onePlayer(player, "hasLeft: player") }, 1));
+  rt.supply = reader((player, of = "used", race) => {
+    if (of !== "used" && of !== "max" && of !== "provided") throw new ScriptError(`supply: expected "used", "max" or "provided", got ${describe(of)}.`);
+    let r = null;
+    if (race !== void 0 && race !== null) {
+      const n = typeof race === "string" ? ["zerg", "terran", "protoss"].indexOf(race.trim().toLowerCase()) : integer(race, "supply: race");
+      if (n !== 0 && n !== 1 && n !== 2) throw new ScriptError(`supply: the race is races.Zerg, races.Terran or races.Protoss, got ${describe(race)}.`);
+      r = n;
+    }
+    return read("supply", { source: "supply", of, race: r, player: onePlayer(player, "supply: player", 12) });
+  });
+  const onlyInProgram = (ident, how) => {
+    throw new ScriptError(`${ident}() is about the units in the game, which exist while it runs: ${how}, inside program().`);
+  };
+  const filterOf = (ident, v, given) => {
+    const out = { ...given };
+    if (v !== void 0 && v !== null) {
+      if (typeof v !== "object" || Array.isArray(v) || isGameValue(v)) throw new ScriptError(`${ident}: the filter is an object such as { type: units.TerranMarine, owner: P1, at: locations.Base }, got ${describe(v)}.`);
+      for (const [key, value] of Object.entries(v)) {
+        if (value === void 0 || value === null) continue;
+        if (key !== "type" && key !== "owner" && key !== "at") throw new ScriptError(`${ident}: unknown filter "${key}"; a filter has type, owner and at.`);
+        if (out[key] !== void 0) throw new ScriptError(`${ident}: ${key} is already given by the call's own argument.`);
+        out[key] = integer(value, `${ident}: ${key}`);
+      }
+    }
+    if (out.owner !== void 0) out.owner = onePlayer(out.owner, `${ident}: owner`, 12);
+    if (out.type !== void 0) {
+      if (out.type === 229) delete out.type;
+      else if (out.type > 232) throw new ScriptError(`${ident}: type is one of units.*.`);
+    }
+    if (out.at !== void 0 && (out.at === 0 || out.at === 64)) delete out.at;
+    if (out.at !== void 0 && out.at > 255) throw new ScriptError(`${ident}: at is one of locations.*.`);
+    return out;
+  };
+  const query = (ident, filter) => ({
+    __trigscript: "units",
+    filter,
+    ident,
+    [Symbol.iterator]: () => onlyInProgram(ident, `write for (const u of ${ident}(\u2026)) { \u2026 }`)
+  });
+  const pick = (ident, by, filter, near) => {
+    const fail = () => onlyInProgram(ident, `write const u = ${ident}(\u2026); if (u) { \u2026 }`);
+    return { __trigscript: "pick", by, filter, ident, ...near !== void 0 ? { near } : {}, valueOf: fail, toString: fail };
+  };
+  rt.unitsAt = (location, filter) => query("unitsAt", filterOf("unitsAt", filter, { at: argValue("location", location, "unitsAt: location") }));
+  rt.unitsOf = (player, filter) => query("unitsOf", filterOf("unitsOf", filter, { owner: integer(player, "unitsOf: player") }));
+  rt.allUnits = (filter) => query("allUnits", filterOf("allUnits", filter, {}));
+  rt.first = (filter) => pick("first", "first", filterOf("first", filter, {}));
+  rt.randomUnit = (filter) => pick("randomUnit", "random", filterOf("randomUnit", filter, {}));
+  rt.nearest = (unit, location, filter) => {
+    const near = argValue("location", location, "nearest: location");
+    if (near === 0 || near > 255) throw new ScriptError("nearest: the location to be near is one of locations.*.");
+    return pick("nearest", "nearest", filterOf("nearest", filter, { type: argValue("unit", unit, "nearest: unit") }), near);
+  };
+  const tableValue = (kind, field, index, ident, key) => {
+    const cell = {
+      name: `${kind}.${field.name}`,
+      base: field.base,
+      stride: field.stride,
+      index,
+      width: field.width,
+      ...key !== void 0 ? { key } : {},
+      ...field.bit !== void 0 ? { bit: field.bit } : {},
+      ...field.scale ? { scale: field.scale } : {},
+      ...kind === "player" ? { player: true } : {},
+      ...field.special ? { special: field.special } : {}
+    };
+    const fail = () => {
+      throw new ScriptError(`${ident} is a value the game holds: it has no value when the script is built. Inside program(), assign to it, assign it to a let, or use it in the program's own arithmetic and comparisons.`);
+    };
+    return { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail };
+  };
+  rt.stats = (of, brand) => {
+    const kind = typeof brand === "string" ? tableOfBrand(brand) : void 0;
+    if (!kind) throw new ScriptError("stats() takes a unit type, a weapon, an upgrade, a technology or a player, written where the compiler can see which: stats(units.TerranMarine), stats(P3) \u2014 inside program().");
+    const index = kind === "player" ? onePlayer(of, "stats: player", 12) : integer(of, `stats: ${kind}`);
+    if (index !== PlayerGroup.CurrentPlayer && index >= TABLE_SIZE[kind]) throw new ScriptError(`stats: ${kind} ${index} is past the table (0\u2013${TABLE_SIZE[kind] - 1}).`);
+    const who = `stats(${entryName(kind, index)})`;
+    const out = {};
+    for (const field of TABLE_FIELDS[kind]) {
+      if (!field.keyed) {
+        out[field.name] = tableValue(kind, field, index, `${who}.${field.name}`);
+        continue;
+      }
+      const { kind: keyKind } = field.keyed;
+      out[field.name] = Object.freeze(Array.from({ length: TABLE_SIZE[keyKind] }, (_, k) => tableValue(kind, field, index, `${who}.${field.name}[${entryName(keyKind, k)}]`, k)));
+    }
+    return Object.freeze(out);
+  };
+  const tableNames = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
+  const entryName = (kind, value) => {
+    const t = tableNames[kind];
+    const e = t.entries.find((x) => x.value === value);
+    return e ? `${t.object}.${e.keys[0]}` : String(value);
+  };
+  rt.colors = Object.freeze({ ...PLAYER_COLORS });
+  rt.name = (player) => textMark("n", onePlayer(player, "name: player", 12));
+  rt.color = (player) => textMark("c", onePlayer(player, "color: player", 12));
+  rt.print = (text, options2) => {
+    if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
+    let to = PlayerGroup.CurrentPlayer;
+    let position = "chat";
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`print: options is an object such as { to: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "to") {
+          to = integer(value, "print: to");
+          const groups = [PlayerGroup.CurrentPlayer, PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+          if (to >= PLAYER_SLOTS && !groups.includes(to)) throw new ScriptError(`print: to is a player (P1 \u2026 P${PLAYER_SLOTS}), CurrentPlayer, AllPlayers or a force.`);
+        } else if (key === "position") {
+          if (value !== "chat" && value !== "center") throw new ScriptError(`print: position is "chat" or "center", got ${describe(value)}.`);
+          position = value;
+        } else throw new ScriptError(`print: unknown option "${key}".`);
+      }
+    }
+    return { __trigscript: "print", text, to, position };
+  };
+  rt.program = (body2, options2, at) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const out = { owners: [0], perPlayer: false };
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        switch (key) {
+          case "owner": {
+            const owners = playersOf(value, "program: owner");
+            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
+            const groups = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 \u2026 P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players \u2014 the program runs once for each of them, with CurrentPlayer as that player.`);
+            out.owners = [...new Set(owners)];
+            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
+            break;
+          }
+          case "comments":
+          case "variableUnits":
+            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
+          default:
+            throw new ScriptError(`program: unknown option "${key}".`);
+        }
+      }
+    }
+    collector.entries.push({ kind: "program", descriptor: body2, options: out, at: isAt(at) ? at : null });
+  };
+  rt.random = () => {
+    throw new ScriptError("random() is a coin toss and random(n) a number from 0 to n \u2212 1, both made by the game: use them inside program().");
+  };
+  rt.game = (body2) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { \u2026 })." : `game() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const fn = () => {
+      throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built.");
+    };
+    return Object.assign(fn, { __trigscript: "gamefn", descriptor: body2 });
+  };
+  return rt;
+}
+var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
 
 // compiler/declarations.ts
 var DECLARATIONS_FILE = "trigscript.d.ts";
@@ -1348,8 +1761,17 @@ function types(kw) {
 ${kw}type Brand<K extends string> = { readonly __kind?: K };
 /** A player or player group (P1 \u2026 P12, CurrentPlayer, AllPlayers, players.*, or a raw group number). */
 ${kw}type Player<N extends number = number> = N & Brand<"player">;
-/** A unit type (units.*, or a raw units.dat id). */
-${kw}type Unit<N extends number = number> = N & Brand<"unit">;
+/** A unit type (units.*, or a raw units.dat id): what a condition or an action names. A unit on the map is a Unit. */
+${kw}type UnitType<N extends number = number> = N & Brand<"unit">;
+/** A weapon (weapons.*, or a raw weapons.dat id), for stats(). */
+${kw}type Weapon<N extends number = number> = N & Brand<"weapon">;
+/** An upgrade (upgrades.*, or a raw upgrades.dat id), for stats(). */
+${kw}type Upgrade<N extends number = number> = N & Brand<"upgrade">;
+/** A technology (techs.*, or a raw techdata.dat id), for stats(). */
+${kw}type Tech<N extends number = number> = N & Brand<"tech">;
+/** A player colour (colors.*), for stats(player).color. */
+${kw}type PlayerColor<N extends number = number> = N & Brand<"color">;
+${kw}type ColorName = __COLOR_NAMES__;
 /** A location (locations.*, or a raw 1-based location number; 0 = none). */
 ${kw}type Location<N extends number = number> = N & Brand<"location">;
 /** A switch (switches.*, or a raw 0-based switch number). */
@@ -1393,6 +1815,78 @@ ${TRIGGER_OPTION_NAMES.map(([, name]) => `  ${name}?: boolean;`).join("\n")}
   flags?: number;
 }
 
+/**
+ * A unit on the map, inside program() only: one of the game's units as it is right now. Get one from a
+ * loop \u2014 \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.hp = u.maxHp / 2;\` \u2014 or a pick,
+ * which may find none: \`const t = nearest(units.TerranMarine, locations.Beacon); if (t) t.order("move", locations.Exit);\`
+ * A variable may keep a unit across a sleep(). The game reuses a dead unit's place for a new one, so
+ * every use checks that the unit is still the one that was kept: once it is gone, its numbers read 0,
+ * its booleans false, and writing to it or telling it something does nothing. \`if (u)\` asks whether it is still there.
+ */
+${kw}interface Unit {
+  readonly __unit: true;
+  /** Hit points, in whole points as the game shows them. Writing 0 kills the unit. */
+  hp: number;
+  /** The type's hit points. */
+  readonly maxHp: number;
+  /** Shield points. */
+  shields: number;
+  /** The type's shield points. */
+  readonly maxShields: number;
+  /** Energy, 0 \u2026 255. */
+  energy: number;
+  /** Who owns the unit; give() changes it. */
+  readonly owner: Player;
+  /** What the unit is: \`if (u.type == units.TerranMarine)\`. */
+  readonly type: UnitType;
+  /** Where the unit is, in pixels (32 a tile). Read only: the game ends when a position is written. */
+  readonly x: number;
+  readonly y: number;
+  /** How many units it has killed, 0 \u2026 255. */
+  kills: number;
+  /** The orders.dat id of what the unit is doing (3 is standing guard, 6 moving, 10 attacking). */
+  readonly orderId: number;
+  /** Frames until the unit can attack or cast again, 0 \u2026 255; writing it holds the unit's fire that long. */
+  cooldown: number;
+  /** What a mineral field or a geyser still holds. */
+  resources: number;
+  /** Frames left of each effect, 0 \u2026 255: write one to start, lengthen or end it. Stim, ensnare and the rest tick down about every eighth frame. */
+  stim: number;
+  ensnare: number;
+  plague: number;
+  lockdown: number;
+  maelstrom: number;
+  irradiate: number;
+  stasis: number;
+  /** Whether the unit cannot be hurt. */
+  invincible: boolean;
+  readonly hallucinated: boolean;
+  readonly cloaked: boolean;
+  readonly burrowed: boolean;
+  /** True for about a second after something hit the unit. */
+  readonly underAttack: boolean;
+  /** Send the unit somewhere, as the Order action does, this unit alone. */
+  order(order: "move" | "patrol" | "attack", target: Location): void;
+  /** Hand the unit to another player. */
+  give(player: Player): void;
+  kill(): void;
+  /** Take the unit off the map without a death. */
+  remove(): void;
+  /** Take hit points away \u2014 so many, or a percentage of the type's maximum; at 0 the unit dies. Shields are left alone. */
+  damage(amount: number | { percent: number }): void;
+  /** Give hit points back, up to the type's maximum. */
+  heal(amount: number | { percent: number }): void;
+  /** Centre a location on the unit, its size kept: then createUnit(), moveUnit() and the rest can happen where the unit is. */
+  locate(location: Location): void;
+}
+/** Which units a loop or a pick looks at; a part left out matches all. units.Men, units.Buildings and units.Factories work as a type. */
+${kw}interface UnitFilter {
+  type?: UnitType;
+  owner?: Player;
+  /** Inside this location. */
+  at?: Location;
+}
+__STATS_TYPES__
 ${kw}interface ProgramOptions {
   /**
    * Who the program runs for (default P1). One player: one thread, as that player. AllPlayers, a
@@ -1404,6 +1898,8 @@ ${kw}interface ProgramOptions {
 }
 `;
 }
+var COLOR_NAMES = Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(" | ");
+var COLOR_TABLE = Object.entries(PLAYER_COLORS).map(([w, n]) => `readonly ${w}: PlayerColor<${n}>`).join("; ");
 function choiceTypes(kw) {
   const out = [];
   for (const [kind, name] of Object.entries(CHOICE_TYPES)) {
@@ -1493,9 +1989,9 @@ ${kw}function gas(player: Player): number;
 /** A player's minerals, gas, or both added up: what accumulate() compares. */
 ${kw}function resources(player: Player, resource: ResourceKind | number): number;
 /** How many units of a type a player has \u2014 at a location (what bring() compares) or anywhere (what command() compares). */
-${kw}function countUnits(player: Player, unit: Unit, location?: Location): number;
+${kw}function countUnits(player: Player, unit: UnitType, location?: Location): number;
 /** How many units of a type a player has killed: what kill() compares. */
-${kw}function kills(player: Player, unit: Unit): number;
+${kw}function kills(player: Player, unit: UnitType): number;
 /** The countdown timer, in game seconds: what countdownTimer() compares. A game second is sixteen frames, so at Fastest the timer runs about one and a half times as fast as sleep(seconds()). */
 ${kw}function countdown(): number;
 /** Game seconds since the start: what elapsedTime() compares. A game second is sixteen frames: after sleep(seconds(14)) at Fastest it reads about 21. */
@@ -1517,6 +2013,37 @@ ${kw}function supply(player: Player, of?: "used" | "max" | "provided", race?: Ra
 ${kw}const races: { readonly Zerg: Race<0>; readonly Terran: Race<1>; readonly Protoss: Race<2> };
 /** What a slot can hold, as slot() returns it. */
 ${kw}const slots: { readonly Empty: Slot<0>; readonly Computer: Slot<1>; readonly Human: Slot<2>; readonly Rescuable: Slot<3>; readonly Neutral: Slot<7> };
+/**
+ * Units on the map, inside program() only. Each of these looks through the game's 1700 unit slots when the
+ * line runs \u2014 once or a few times a second is nothing, every frame for every player adds up (the editor
+ * notes it at the end of the line). What to look for is known when you build. A loop over units runs
+ * within the frame: no sleep() inside it.
+ */
+/** The units inside a location: \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.kill();\` */
+${kw}function unitsAt(location: Location, filter?: Omit<UnitFilter, "at">): Iterable<Unit>;
+/** A player's units: \`for (const u of unitsOf(CurrentPlayer, { type: units.TerranMarine })) u.heal(10);\` */
+${kw}function unitsOf(player: Player, filter?: Omit<UnitFilter, "owner">): Iterable<Unit>;
+/** Every unit on the map the filter matches. */
+${kw}function allUnits(filter?: UnitFilter): Iterable<Unit>;
+/** The first unit the filter matches, or null. */
+${kw}function first(filter?: UnitFilter): Unit | null;
+/** The unit of a type nearest to the centre of a location, or null; units.AnyUnit for any type. */
+${kw}function nearest(unit: UnitType, location: Location, filter?: Omit<UnitFilter, "type">): Unit | null;
+/** One of the units the filter matches, picked by the game, or null. */
+${kw}function randomUnit(filter?: UnitFilter): Unit | null;
+/**
+ * The game's own tables, inside program() only: what a unit type costs, what a weapon does, a player's
+ * upgrades. Read a field as a number, assign to it, += it: \`stats(units.TerranMarine).minerals = 25;\`
+ * \`stats(weapons.GaussRifle).damage += 2;\` \`stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3;\`
+ * A write lasts for the game. Only fields seen working in StarCraft: Remastered are here.
+ */
+${kw}function stats(unit: UnitType): UnitTypeStats;
+${kw}function stats(weapon: Weapon): WeaponStats;
+${kw}function stats(upgrade: Upgrade): UpgradeStats;
+${kw}function stats(tech: Tech): TechStats;
+${kw}function stats(player: Player): PlayerStats;
+/** The player colours stats(player).color takes. */
+${kw}const colors: { __COLOR_TABLE__ };
 /**
  * A player's name, for a text a program shows: displayText(\`\${name(CurrentPlayer)} wins\`). The game
  * fills it in when the text is shown, so it works inside program() only.
@@ -1571,6 +2098,27 @@ function tableDecl(kw, t, keep = () => true, note) {
   lines.push("};");
   return lines.join("\n");
 }
+var identifierKey = (k) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k);
+var STATS_INTERFACES = {
+  unit: ["UnitTypeStats", "units.dat, for one unit type. Most fields reach the units made after the write; the ones already on the map keep what they were made with."],
+  weapon: ["WeaponStats", "weapons.dat, for one weapon: every unit using it follows at once."],
+  upgrade: ["UpgradeStats", "upgrades.dat, for one upgrade."],
+  tech: ["TechStats", "techdata.dat, for one technology."],
+  player: ["PlayerStats", "The player tables, for one player."]
+};
+function statsTypes(kw) {
+  return Object.keys(TABLE_FIELDS).map((kind) => {
+    const [name, doc] = STATS_INTERFACES[kind];
+    const lines = [`/** ${doc} */`, `${kw}interface ${name} {`];
+    for (const f of TABLE_FIELDS[kind]) {
+      const type = f.type ?? (f.boolean ? "boolean" : "number");
+      lines.push(`  /** ${f.doc}${f.writeOnly ? " Set only." : ""} */`);
+      lines.push(f.keyed ? `  readonly ${f.name}: { [${f.keyed.kind}: number]: ${type} };` : `  ${f.readonly ? "readonly " : ""}${f.name}: ${type};`);
+    }
+    lines.push("}");
+    return lines.join("\n");
+  }).join("\n");
+}
 function playerAliases(kw, names) {
   const lines = [];
   for (const e of names.players.entries) {
@@ -1585,7 +2133,7 @@ ${kw}const AllPlayers: Player<17>;`);
 }
 function tables(kw, names, compact) {
   if (!compact) {
-    return [names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => tableDecl(kw, t)).join("\n");
+    return allTables(names).map((t) => tableDecl(kw, t)).join("\n");
   }
   const isDefaultSwitch = (k) => /^Switch ?(\d+)$/.test(k);
   return [
@@ -1597,14 +2145,15 @@ function tables(kw, names, compact) {
       return m ? Number(m[1]) <= 16 : !isDefaultSwitch(k);
     }, "Switch1 \u2026 Switch256 exist; the first sixteen are listed. A switch given a name in the map is listed by that name."),
     `/** AI scripts, by StarEdit name ("Terran Custom Level") or four-character code. */
-${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`
+${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`,
+    ...[names.weapons, names.upgrades, names.techs].map((t) => tableDecl(kw, t, identifierKey))
   ].join("\n");
 }
 function body(kw, typeKw, names, compact) {
   return [
-    types(typeKw),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__STATS_TYPES__", statsTypes(typeKw)),
     choiceTypes(typeKw),
-    functions(kw),
+    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
     "// \u2500\u2500 Conditions \u2500\u2500",
     ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
     "",
@@ -1659,7 +2208,7 @@ function owningDeclaration(ts, decl) {
 }
 var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers", "game"]);
 var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "rose", "once", "shared"]);
-var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, "print"]);
+var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, ...UNIT_CALL_NAMES, "print"]);
 var isReadCall = (lib, args) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 function planProgram(ts, checker, arrow, options = {}) {
   const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Map(), constList: [], tree: [], errors: [] };
@@ -1956,10 +2505,10 @@ function planProgram(ts, checker, arrow, options = {}) {
       value(d.initializer, items);
     }
   };
-  const block = (statements) => {
+  const block = (statements2) => {
     const items = [];
     const deferred = [];
-    for (const s of statements) statement(s, items, deferred);
+    for (const s of statements2) statement(s, items, deferred);
     items.push(...deferred);
     return items;
   };
@@ -2190,7 +2739,11 @@ function mapPosition(mapJson, line, column) {
 }
 
 // compiler/ir.ts
-var IR_VERSION = 3;
+var IR_VERSION = 4;
+var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
+var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
+var UNIT_FLAGS2 = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
   switch (e.kind) {
     case "const":
@@ -2203,6 +2756,8 @@ var isNumExpr = (e) => {
     case "intrinsic":
     case "read":
     case "randomInt":
+    case "unitField":
+    case "tableRead":
       return true;
     case "ternary":
       return isNumExpr(e.whenTrue);
@@ -2225,6 +2780,24 @@ function declarations(body2) {
         break;
       case "assignBool":
         init(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        out.push(s.decl);
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        init(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") init(s.value);
         break;
       case "if":
         init(s.cond);
@@ -2278,9 +2851,15 @@ function declarations(body2) {
     }
     c2.body.forEach(stmt);
   };
-  const init = (e) => isNumExpr(e) ? expr(e) : bool(e);
+  const init = (e) => isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+  };
   const expr = (e) => {
     switch (e.kind) {
+      case "unitField":
+        unit(e.unit);
+        break;
       case "unary":
         expr(e.expr);
         break;
@@ -2308,6 +2887,14 @@ function declarations(body2) {
   };
   const bool = (b) => {
     switch (b.kind) {
+      case "unitAlive":
+      case "unitFlag":
+        unit(b.unit);
+        break;
+      case "unitSame":
+        unit(b.left);
+        unit(b.right);
+        break;
       case "test":
         expr(b.expr);
         break;
@@ -2347,14 +2934,30 @@ function checkProgram(program) {
   checkSleeps(program.body, errors);
   checkDivisions(program.body, errors);
   checkWidths(program.body, errors);
+  checkUnitLoops(program.body, errors);
   const hints = [];
   remarks(program.body, hints);
+  scans(program, hints);
   return { errors, hints };
 }
-function expressions(body2, visit) {
+function expressions(body2, visit, pick) {
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "pick") pick?.(u);
+  };
+  const any = (e) => isUnitExpr(e) ? unit(e) : expr(e);
   const expr = (e) => {
     visit(e);
     switch (e.kind) {
+      case "unitField":
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        break;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        break;
       case "unary":
         expr(e.expr);
         break;
@@ -2395,17 +2998,34 @@ function expressions(body2, visit) {
     }
   };
   const call = (c2) => {
-    for (const p of c2.params) expr(p.init);
+    for (const p of c2.params) any(p.init);
     c2.body.forEach(stmt);
   };
   const stmt = (s) => {
     switch (s.kind) {
       case "declare":
-        if (!s.failed) expr(s.init);
+        if (!s.failed) any(s.init);
         break;
       case "assign":
       case "assignBool":
         expr(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        expr(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") expr(s.value);
         break;
       case "if":
         expr(s.cond);
@@ -2433,7 +3053,7 @@ function expressions(body2, visit) {
         s.cases.forEach((c2) => c2.body.forEach(stmt));
         break;
       case "return":
-        if (s.value) expr(s.value);
+        if (s.value) any(s.value);
         break;
       case "action":
         if (s.variable) expr(s.variable.expr);
@@ -2452,6 +3072,65 @@ function expressions(body2, visit) {
     }
   };
   body2.forEach(stmt);
+}
+function statements(body2, visit) {
+  const stmt = (s) => {
+    visit(s);
+    switch (s.kind) {
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function checkUnitLoops(body2, out) {
+  statements(body2, (s) => {
+    if (s.kind !== "unitLoop") return;
+    statements(s.body, (inner) => {
+      if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. To do something to one unit at a time, find it again after each sleep: while (true) { const u = first(\u2026); if (!u) break; u.kill(); sleep(seconds(1)); }" });
+    });
+  });
+}
+function scans(program, out) {
+  const SLOTS = "the game's 1700 unit slots";
+  const each = program.perPlayer ? ", once for each player the program runs for" : "";
+  const seen = /* @__PURE__ */ new Set();
+  const hint = (at, label, note) => {
+    const key = `${at.file}:${at.line}:${label}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ file: at.file, line: at.line, label, note });
+  };
+  statements(program.body, (s) => {
+    if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`);
+  });
+  expressions(program.body, () => {
+  }, (u) => hint(u.at, u.by === "random" ? "scans units \xD72" : "scans units", u.by === "random" ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.` : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));
 }
 function checkDivisions(body2, out) {
   expressions(body2, (e) => {
@@ -2482,6 +3161,7 @@ function checkWidths(body2, out) {
         break;
       case "while":
       case "do":
+      case "unitLoop":
         s.body.forEach(stmt);
         break;
       case "for":
@@ -2518,6 +3198,7 @@ function remarks(body2, out) {
         break;
       case "while":
       case "do":
+      case "unitLoop":
         s.body.forEach(stmt);
         break;
       case "for":
@@ -2546,6 +3227,9 @@ function assigned(body2, into = /* @__PURE__ */ new Set()) {
   const stmt = (s) => {
     switch (s.kind) {
       case "action":
+      case "unitWrite":
+      case "unitDo":
+      case "tableWrite":
         into.add(THE_GAME);
         break;
       case "declare":
@@ -2553,7 +3237,12 @@ function assigned(body2, into = /* @__PURE__ */ new Set()) {
         break;
       case "assign":
       case "assignBool":
+      case "assignUnit":
         into.add(s.target);
+        break;
+      case "unitLoop":
+        into.add(s.decl.id);
+        s.body.forEach(stmt);
         break;
       case "if":
         s.then.forEach(stmt);
@@ -2599,7 +3288,17 @@ function reads(e, into = /* @__PURE__ */ new Set()) {
       break;
     case "read":
     case "cond":
+    case "tableRead":
       into.add(THE_GAME);
+      break;
+    case "unitField":
+    case "unitAlive":
+    case "unitFlag":
+      into.add(THE_GAME);
+      if (e.unit.kind === "unitVar") into.add(e.unit.id);
+      break;
+    case "unitSame":
+      for (const u of [e.left, e.right]) if (u.kind === "unitVar") into.add(u.id);
       break;
     case "randomInt":
       reads(e.bound, into);
@@ -2695,6 +3394,9 @@ function checkSleeps(body2, out) {
         s.then.forEach(stmt);
         s.else?.forEach(stmt);
         break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
       case "unrolled":
         s.iterations.forEach((i) => i.forEach(stmt));
         break;
@@ -2750,6 +3452,9 @@ function describe2(v) {
   if (isTrigger(v)) return "a trigger";
   if (isDuration(v)) return "a duration";
   if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isTable(v)) return `a value the game holds (${v.ident})`;
+  if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
+  if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
   if (isPrint(v)) return "a print()";
   if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
@@ -2773,6 +3478,9 @@ var FALSE = { kind: "const", value: false };
 var num = (value) => ({ kind: "const", value });
 var varRef = (v) => ({ kind: "var", id: v.id });
 var boolRef = (v) => ({ kind: "var", id: v.id });
+var unitRef = (v) => ({ kind: "unitVar", id: v.id });
+var NO_UNIT = { kind: "unitNull" };
+var ORDERS = ["move", "patrol", "attack"];
 var Structured = class {
   c;
   ts;
@@ -2792,16 +3500,16 @@ var Structured = class {
     this.body = c2.body;
   }
   run() {
-    const statements = this.body.plan.body.statements;
+    const statements2 = this.body.plan.body.statements;
     const at = this.at(this.body.plan.body);
     const program = { version: IR_VERSION, ...this.body.name ? { name: this.body.name } : {}, owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, body: [], at };
     this.nodes.set(program, this.body.plan.body);
     this.out = program.body;
     try {
-      this.block(statements, {}, this.topScope);
+      this.block(statements2, {}, this.topScope);
     } catch (err) {
       if (!(err instanceof LowerError)) throw err;
-      this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
+      this.c.error(statements2[statements2.length - 1] ?? this.body.plan.body, err.message);
     }
     return { program, nodeOf: (node) => this.nodes.get(node) };
   }
@@ -2937,9 +3645,10 @@ var Structured = class {
           continue;
         }
         const v = sub(a2);
-        if (!v || isRead(v.value)) return void 0;
+        if (!v || isGameValue(v.value)) return void 0;
         args.push(v.value);
       }
+      if (this.isLibraryCall(e, "stats") && e.arguments.length === 1) args.push(this.brandOf(e.arguments[0]));
       try {
         return { value: callee.value.apply(self, args) };
       } catch (err) {
@@ -2950,7 +3659,7 @@ var Structured = class {
       let out = e.head.text;
       for (const span of e.templateSpans) {
         const v = sub(span.expression);
-        if (!v || isRead(v.value)) return void 0;
+        if (!v || isGameValue(v.value)) return void 0;
         out += String(v.value) + span.literal.text;
       }
       return { value: out };
@@ -2976,7 +3685,7 @@ var Structured = class {
     }
     if (ts.isPrefixUnaryExpression(e)) {
       const v = sub(e.operand);
-      if (!v || isRead(v.value)) return void 0;
+      if (!v || isGameValue(v.value)) return void 0;
       switch (e.operator) {
         case ts.SyntaxKind.MinusToken:
           return { value: -v.value };
@@ -2991,7 +3700,7 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const l = sub(e.left);
       const r = sub(e.right);
-      if (!l || !r || isRead(l.value) || isRead(r.value)) return void 0;
+      if (!l || !r || isGameValue(l.value) || isGameValue(r.value)) return void 0;
       const a2 = l.value;
       const b = r.value;
       switch (e.operatorToken.kind) {
@@ -3025,7 +3734,7 @@ var Structured = class {
     }
     if (ts.isConditionalExpression(e)) {
       const c2 = sub(e.condition);
-      if (!c2 || isRead(c2.value)) return void 0;
+      if (!c2 || isGameValue(c2.value)) return void 0;
       return c2.value ? sub(e.whenTrue) : sub(e.whenFalse);
     }
     return void 0;
@@ -3082,10 +3791,10 @@ var Structured = class {
     this.c.error(expr, v ? `${what} must be known when the script is built, but ${v} is a variable of the program. Compare or assign variables in the program's own statements instead.` : `${what} must be known when the script is built.`);
   }
   /* ── Statements ── */
-  block(statements, ctx, scope = new Scope(this.scope)) {
+  block(statements2, ctx, scope = new Scope(this.scope)) {
     const outer = this.scope;
     this.scope = scope;
-    for (const s of statements) {
+    for (const s of statements2) {
       try {
         this.statement(s, ctx);
       } catch (err) {
@@ -3192,6 +3901,9 @@ var Structured = class {
       const value = this.num(s.expression);
       if (!value) return;
       this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    } else if (fn.kind === "unit") {
+      const value = this.unitExpr(s.expression);
+      if (value) this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
     } else {
       const value = this.boolValue(s.expression);
       this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
@@ -3221,12 +3933,16 @@ var Structured = class {
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) {
-        this.c.error(d, `Variables hold numbers, booleans or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
+        this.c.error(d, `Variables hold numbers, booleans, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
         continue;
       }
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
       if (shared && shared.arguments.length !== 1) {
         this.c.error(init, "shared() takes the initial value: shared(0) or shared(false).");
+        continue;
+      }
+      if (shared && kind === "unit") {
+        this.c.error(init, "shared() holds a number or a boolean.");
         continue;
       }
       const initializer = shared ? shared.arguments[0] : d.initializer;
@@ -3240,6 +3956,9 @@ var Structured = class {
     if (v.kind === "number") {
       const value = this.num(initializer);
       this.emit({ kind: "declare", decl: v, init: value ?? num(0), ...value ? {} : { failed: true }, at: this.at(at), label: this.label(at) }, at);
+    } else if (v.kind === "unit") {
+      const value = this.unitExpr(initializer);
+      this.emit({ kind: "declare", decl: v, init: value ?? NO_UNIT, ...value ? {} : { failed: true }, at: this.at(at), label: this.label(at) }, at);
     } else {
       this.emit({ kind: "declare", decl: v, init: this.boolValue(initializer), at: this.at(at), label: this.label(at) }, at);
     }
@@ -3275,7 +3994,7 @@ var Structured = class {
       }
       const kind = this.kindOf(ft);
       if (!kind) {
-        this.c.error(p, `A record's fields hold numbers or booleans; ${full} is ${this.c.checker.typeToString(ft)}.`);
+        this.c.error(p, `A record's fields hold numbers, booleans or units; ${full} is ${this.c.checker.typeToString(ft)}.`);
         ok = false;
         continue;
       }
@@ -3307,7 +4026,24 @@ var Structured = class {
     const isNumber = (t) => (t.flags & ts.TypeFlags.NumberLike) !== 0 || t.isIntersection() && t.types.some(isNumber);
     if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
     if (isNumber(type)) return "number";
+    const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    if (bare.length > 0 && bare.every((t) => !!t.getProperty("__unit"))) return "unit";
     return null;
+  }
+  isUnitTyped(e) {
+    return this.kindOf(this.c.checker.getTypeAtLocation(e)) === "unit";
+  }
+  /** The `__kind` brand of an expression's type (`"unit"`, `"player"`, …): what tells `stats(units.X)` from `stats(P3)`. */
+  brandOf(e) {
+    const type = this.c.checker.getTypeAtLocation(e);
+    for (const t of type.isIntersection() ? type.types : [type]) {
+      const p = t.getProperty("__kind");
+      if (!p) continue;
+      const pt = this.c.checker.getTypeOfSymbol(p);
+      const name = (pt.isUnion() ? pt.types : [pt]).find((x) => x.isStringLiteral());
+      if (name) return name.value;
+    }
+    return void 0;
   }
   /** An expression statement whose value was computed at build time: actions run, nothing else does anything. */
   hoistedStatement(expr, h) {
@@ -3327,6 +4063,18 @@ var Structured = class {
     }
     if (isRead(v)) {
       this.c.error(expr, `${v.ident}() reads a value and does nothing on its own: assign it to a variable, or compare it in an if.`);
+      return;
+    }
+    if (isTable(v)) {
+      this.c.error(expr, `${v.ident} reads a value and does nothing on its own: assign to it, or compare it in an if.`);
+      return;
+    }
+    if (isUnitPick(v)) {
+      this.c.error(expr, `${v.ident}() finds a unit and does nothing on its own: const u = ${v.ident}(\u2026); if (u) u.kill();`);
+      return;
+    }
+    if (isUnitQuery(v)) {
+      this.c.error(expr, `${v.ident}() names units and does nothing on its own: for (const u of ${v.ident}(\u2026)) { \u2026 }`);
       return;
     }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) {
@@ -3366,7 +4114,7 @@ var Structured = class {
     const { ts } = this;
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
-    if (h && !isRead(h.value)) {
+    if (h && !isGameValue(h.value)) {
       const v = h.value;
       if (typeof v === "string") return textParts(v);
       if (typeof v === "number" || typeof v === "boolean") return [{ kind: "text", text: String(v) }];
@@ -3449,12 +4197,31 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
       if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment) {
+        const member = this.unitMember(e.left);
+        if (member) {
+          this.unitAssign(e, member, op);
+          return;
+        }
+        const cell = this.evaluate(e.left)?.value;
+        if (isTable(cell)) {
+          this.tableAssign(e, cell, op);
+          return;
+        }
         const target = this.varOf(e.left);
         if (!target) {
           const b = this.bindingOf(e.left);
           if (b?.kind === "record") this.c.error(e.left, "A record is assigned field by field: p.lives = 3.");
           else if ((ts.isPropertyAccessExpression(this.unwrap(e.left)) || ts.isElementAccessExpression(this.unwrap(e.left))) && this.evaluate(e.left)) this.c.error(e.left, "This object is computed when the script is built. Declare it with let inside the program to make it a record of variables.");
           else this.c.error(e.left, "Only the program's let variables can be assigned.");
+          return;
+        }
+        if (target.kind === "unit") {
+          if (op !== ts.SyntaxKind.EqualsToken) {
+            this.c.error(e, "A unit takes = only.");
+            return;
+          }
+          const value = this.unitExpr(e.right);
+          if (value) this.emit({ kind: "assignUnit", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
           return;
         }
         if (target.kind !== "number") {
@@ -3484,6 +4251,17 @@ var Structured = class {
       return;
     }
     if ((ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)) {
+      const op = e.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-";
+      const member = this.unitMember(e.operand);
+      const cell = member ? void 0 : this.evaluate(e.operand)?.value;
+      if (member || isTable(cell)) {
+        const now = this.num(e.operand);
+        if (!now) return;
+        const value2 = this.mark({ kind: "binary", op, left: now, right: num(1), at: this.at(e), label: this.label(e) }, e);
+        if (member) this.unitWrite(e, member, value2);
+        else this.tableWrite(e, cell, value2);
+        return;
+      }
       const target = this.varOf(e.operand);
       if (!target || target.kind !== "number") {
         this.c.error(e, "++ / -- apply to number variables.");
@@ -3511,6 +4289,13 @@ var Structured = class {
           return;
         }
         this.c.error(e, `${e.expression.text} is not a function.`);
+        return;
+      }
+    }
+    if (ts.isPropertyAccessExpression(e.expression)) {
+      const member = this.unitMember(e.expression);
+      if (member) {
+        this.unitCall(e, member);
         return;
       }
     }
@@ -3713,6 +4498,14 @@ var Structured = class {
       this.notConstant(s.expression, "What a for\u2026of loop runs over");
       return;
     }
+    if (isUnitQuery(h.value)) {
+      const v = this.newVar(decl.name.text, "unit", this.sourceOf(decl.name));
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "var", v });
+      const body2 = this.collect(() => this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope));
+      this.emit({ kind: "unitLoop", decl: v, filter: { ...h.value.filter }, body: body2, at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
     let items;
     try {
       const iterable = typeof h.value === "string" || typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value;
@@ -3823,7 +4616,7 @@ var Structured = class {
         return;
       }
       const h = this.evaluate(arg);
-      if (h && !isRead(h.value)) {
+      if (h && !isGameValue(h.value)) {
         scope.bind(p, { kind: "value", value: h.value });
         return;
       }
@@ -3845,7 +4638,18 @@ var Structured = class {
         }
         const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), variable.bits ? { bits: variable.bits } : {});
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
-        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : boolRef(variable), label });
+        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable), label });
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
+      if (this.isUnitTyped(arg)) {
+        const unit = this.unitExpr(arg);
+        if (!unit) {
+          ok = false;
+          return;
+        }
+        const copy = this.newVar(p.name.text, "unit", this.sourceOfIn(target, p.name));
+        out.params.push({ decl: copy, init: unit, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
@@ -3876,6 +4680,9 @@ var Structured = class {
           try {
             if (kind === "number") {
               const value = this.num(body2);
+              if (value) this.emit({ kind: "return", value, at: this.at(body2), label: this.label(body2) }, body2);
+            } else if (kind === "unit") {
+              const value = this.unitExpr(body2);
               if (value) this.emit({ kind: "return", value, at: this.at(body2), label: this.label(body2) }, body2);
             } else if (kind === "boolean") this.emit({ kind: "return", value: this.boolValue(body2), at: this.at(body2), label: this.label(body2) }, body2);
             else this.expressionStatement(body2);
@@ -3964,12 +4771,25 @@ var Structured = class {
     const h = this.evaluate(expr);
     if (h) {
       if (isRead(h.value)) return this.readValue(h.value, e);
+      if (isTable(h.value)) return this.tableRead(h.value, e);
+      if (isUnitPick(h.value)) {
+        this.c.error(e, `${h.value.ident}() is a unit, not a number; read one of its fields: ${h.value.ident}(\u2026)?.hp \u2014 or keep it: const u = ${h.value.ident}(\u2026).`);
+        return null;
+      }
       const n = this.asInteger(h, e);
       return n === null ? null : num(n);
+    }
+    if (ts.isPropertyAccessExpression(e)) {
+      const member = this.unitMember(e);
+      if (member) return this.unitField(e, member);
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") {
+        if (b.v.kind === "unit") {
+          this.c.error(e, `${b.v.name} is a unit; use one of its fields: ${b.v.name}.hp.`);
+          return null;
+        }
         if (b.v.kind !== "number") {
           this.c.error(e, `${b.v.name} is a boolean.`);
           return null;
@@ -4155,7 +4975,7 @@ var Structured = class {
     for (let i = 0; i < e.arguments.length; i++) {
       const a2 = e.arguments[i];
       const h = this.evaluate(a2);
-      if (h && !isRead(h.value)) {
+      if (h && !isGameValue(h.value)) {
         values.push(h.value);
         continue;
       }
@@ -4196,6 +5016,278 @@ var Structured = class {
     const p = params[variable.index];
     this.emit({ kind: "action", record: { ...record }, variable: { field: p.arg.field, bits: p.arg.kind === "count" ? 8 : 32, name: p.name, expr: variable.expr }, at: this.at(e), label: this.label(e) }, e);
   }
+  /* ── Units on the map, and the game's tables ── */
+  /** `u.hp`, `target?.kills`: the unit and the member's name, when the object is a unit of the game. */
+  unitMember(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isPropertyAccessExpression(e) || !ts.isIdentifier(e.name) || !this.isUnitTyped(e.expression)) return null;
+    const unit = this.unitExpr(e.expression);
+    return unit ? { unit, name: e.name.text } : null;
+  }
+  /** A unit of the game, or none: a variable, `null`, a pick (`first(…)`), a function's result. Null, with a diagnostic, otherwise. */
+  unitExpr(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      if (h.value === null || h.value === void 0) return NO_UNIT;
+      if (isUnitPick(h.value)) return this.pick(h.value, e);
+      this.c.error(e, `Expected a unit of the game, got ${describe2(h.value)}.`);
+      return null;
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
+      if (b?.kind === "var" && b.v.kind === "unit") return unitRef(b.v);
+      this.c.error(e, "Expected a unit of the game: a variable holding one, first(\u2026), nearest(\u2026) or randomUnit(\u2026).");
+      return null;
+    }
+    if (ts.isCallExpression(e)) {
+      let call;
+      const decl = ts.isIdentifier(e.expression) ? this.gameDeclaration(e.expression) : void 0;
+      if (decl && ts.isFunctionDeclaration(decl)) call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+      else {
+        const callee = this.evaluate(e.expression)?.value;
+        if (isGameFunction(callee)) call = this.gameCall(e, callee);
+        else {
+          this.notConstant(e, "What picks the unit (the type, the owner, the location)");
+          return null;
+        }
+      }
+      if (!call?.result || call.result.kind !== "unit") {
+        if (call) this.c.error(e, "This function does not return a unit.");
+        return null;
+      }
+      return this.mark({ kind: "call", call }, e);
+    }
+    if (ts.isConditionalExpression(e)) {
+      this.c.error(e, "Choose the unit with an if: let u = a; if (\u2026) u = b;");
+      return null;
+    }
+    this.c.error(e, "Expected a unit of the game.");
+    return null;
+  }
+  pick(v, at) {
+    return this.mark({ kind: "pick", by: v.by, filter: { ...v.filter }, ...v.near !== void 0 ? { near: v.near } : {}, at: this.at(at), label: this.label(at) }, at);
+  }
+  /** `u.hp` as a number. */
+  unitField(e, m) {
+    if (UNIT_FLAGS2.includes(m.name)) {
+      const flag2 = this.mark({ kind: "unitFlag", unit: m.unit, flag: m.name, at: this.at(e), label: this.label(e) }, e);
+      return this.mark({ kind: "ternary", cond: flag2, whenTrue: num(1), whenFalse: num(0), at: this.at(e), label: this.label(e) }, e);
+    }
+    if (!UNIT_NUM_FIELDS.includes(m.name)) {
+      this.c.error(e, `A unit has no ${m.name} to read.`);
+      return null;
+    }
+    return this.mark({ kind: "unitField", unit: m.unit, field: m.name, at: this.at(e), label: this.label(e) }, e);
+  }
+  unitWrite(e, m, value) {
+    if (!UNIT_WRITABLE.has(m.name)) {
+      const why = m.name === "x" || m.name === "y" ? "the game ends when a unit's position is written; move a unit with order(), or moveUnit()" : m.name === "owner" ? "give() changes the owner" : m.name === "cloaked" ? "the game showed nothing when the cloak flags were written" : "the game keeps it for itself";
+      this.c.error(e, `A unit's ${m.name} is read only: ${why}.`);
+      return;
+    }
+    this.emit({ kind: "unitWrite", unit: m.unit, field: m.name, value, at: this.at(e), label: this.label(e) }, e);
+  }
+  /** `u.hp = 40`, `u.energy += 50`, `u.invincible = true`. */
+  unitAssign(e, m, op) {
+    const { ts } = this;
+    if (UNIT_FLAGS2.includes(m.name)) {
+      if (op !== ts.SyntaxKind.EqualsToken) {
+        this.c.error(e, "Booleans take = only.");
+        return;
+      }
+      this.unitWrite(e, m, this.boolValue(e.right));
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (op === ts.SyntaxKind.EqualsToken) {
+      this.unitWrite(e, m, rhs);
+      return;
+    }
+    const arith = compoundOp(ts, op);
+    const now = arith ? this.unitField(e.left, m) : null;
+    if (!arith) {
+      this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
+      return;
+    }
+    if (now) this.unitWrite(e, m, this.mark({ kind: "binary", op: arith, left: now, right: rhs, at: this.at(e), label: this.label(e) }, e));
+  }
+  /** `u.kill()`, `u.order("move", locations.Exit)`, `u.damage({ percent: 50 })`: what a unit is told to do. */
+  unitCall(e, m) {
+    const { ts } = this;
+    const known = (i, what) => {
+      const a2 = e.arguments[i];
+      if (!a2) {
+        this.c.error(e, `${m.name}() takes ${what}.`);
+        return void 0;
+      }
+      const h = this.evaluate(a2);
+      if (!h || isGameValue(h.value)) {
+        this.notConstant(a2, what[0].toUpperCase() + what.slice(1));
+        return void 0;
+      }
+      return h.value;
+    };
+    const emit = (verb) => {
+      this.emit({ kind: "unitDo", unit: m.unit, verb, at: this.at(e), label: this.label(e) }, e);
+    };
+    const location = (v) => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 255;
+    switch (m.name) {
+      case "kill":
+      case "remove":
+        if (e.arguments.length) {
+          this.c.error(e, `${m.name}() takes no arguments.`);
+          return;
+        }
+        emit({ do: m.name });
+        return;
+      case "give": {
+        const to = known(0, "the player who gets the unit");
+        if (to === void 0) return;
+        if (typeof to !== "number" || !Number.isInteger(to) || !(to >= 0 && to < 12 || to === CURRENT_PLAYER)) {
+          this.c.error(e.arguments[0], "give() takes one player: P1 \u2026 P12 or CurrentPlayer.");
+          return;
+        }
+        emit({ do: "give", to });
+        return;
+      }
+      case "order": {
+        const order = known(0, 'the order: "move", "patrol" or "attack"');
+        const target = order === void 0 ? void 0 : known(1, "the location to go to");
+        if (order === void 0 || target === void 0) return;
+        if (typeof order !== "string" || !ORDERS.includes(order)) {
+          this.c.error(e.arguments[0], `order() takes "move", "patrol" or "attack", got ${describe2(order)}.`);
+          return;
+        }
+        if (!location(target)) {
+          this.c.error(e.arguments[1], "order() takes one of locations.* to go to.");
+          return;
+        }
+        emit({ do: "order", order, target });
+        return;
+      }
+      case "locate": {
+        const at = known(0, "the location to centre on the unit");
+        if (at === void 0) return;
+        if (!location(at) || at === 64) {
+          this.c.error(e.arguments[0], "locate() takes one of locations.*, which is moved onto the unit (not Anywhere).");
+          return;
+        }
+        emit({ do: "locate", location: at });
+        return;
+      }
+      case "damage":
+      case "heal": {
+        const a2 = e.arguments[0];
+        if (!a2 || e.arguments.length > 1) {
+          this.c.error(e, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`);
+          return;
+        }
+        const literal = this.unwrap(a2);
+        let percent = false;
+        let of = a2;
+        if (ts.isObjectLiteralExpression(literal)) {
+          const p = literal.properties.length === 1 ? literal.properties[0] : void 0;
+          if (!p || !ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name) || p.name.text !== "percent") {
+            this.c.error(a2, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`);
+            return;
+          }
+          percent = true;
+          of = p.initializer;
+        }
+        const amount = this.num(of);
+        if (amount) emit({ do: m.name, amount, percent });
+        return;
+      }
+      default:
+        this.c.error(e.expression, `A unit has no ${m.name}().`);
+    }
+  }
+  /** A cell of the game's tables as a number: `stats(units.TerranMarine).minerals`. */
+  tableRead(v, at) {
+    if (v.field.writeOnly) {
+      this.c.error(at, `${v.ident} can be set but not read: ${v.field.special === "speed" ? "a speed is four records of the game's tables" : v.field.special === "name" ? "a name is text" : "the game keeps two copies"}.`);
+      return null;
+    }
+    return this.mark({ kind: "tableRead", cell: { ...v.cell }, at: this.at(at), label: this.label(at) }, at);
+  }
+  tableWrite(e, v, value, scaled = false) {
+    if (v.field.readonly) {
+      this.c.error(e, `${v.ident} is read only: the game took no write.`);
+      return;
+    }
+    this.emit({ kind: "tableWrite", cell: { ...v.cell }, value, ...scaled ? { scaled: true } : {}, ...v.field.boolean && value.kind !== "text" ? { boolean: true } : {}, at: this.at(e), label: this.label(e) }, e);
+  }
+  /** `stats(units.TerranMarine).minerals = 25`, `stats(P3).color = "teal"`, `stats(weapons.GaussRifle).damage += 2`. */
+  tableAssign(e, v, op) {
+    const { ts } = this;
+    const { field } = v;
+    const plain = op === ts.SyntaxKind.EqualsToken;
+    const h = this.evaluate(e.right);
+    const known = h && !isGameValue(h.value) ? h.value : void 0;
+    if (field.special === "name" || field.special === "color") {
+      if (!plain) {
+        this.c.error(e, `${v.ident} takes = only.`);
+        return;
+      }
+      if (known === void 0) {
+        this.notConstant(e.right, field.special === "name" ? "A name" : "A colour");
+        return;
+      }
+      if (field.special === "color") {
+        try {
+          this.tableWrite(e, v, num(playerColor(known)));
+        } catch (err) {
+          this.c.error(e.right, err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
+      if (typeof known !== "string" || known === "" || hasTextMark(known)) {
+        this.c.error(e.right, "A unit type's name is text known when the script is built.");
+        return;
+      }
+      this.tableWrite(e, v, { kind: "text", text: known });
+      return;
+    }
+    if (field.boolean) {
+      if (!plain) {
+        this.c.error(e, "Booleans take = only.");
+        return;
+      }
+      this.tableWrite(e, v, this.boolValue(e.right));
+      return;
+    }
+    if (plain && typeof known === "number" && Number.isFinite(known)) {
+      const raw = Math.round(known * (field.scale ?? 1));
+      const max = cellMax(field.width);
+      if (known < 0 || raw > max) {
+        this.c.error(e.right, `${v.ident} holds 0 \u2026 ${max / (field.scale ?? 1)}, not ${known}.`);
+        return;
+      }
+      if (!field.scale && !Number.isInteger(known)) {
+        this.c.error(e.right, `${v.ident} is a whole number (got ${known}).`);
+        return;
+      }
+      this.tableWrite(e, v, num(raw), true);
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (plain) {
+      this.tableWrite(e, v, rhs);
+      return;
+    }
+    const arith = compoundOp(ts, op);
+    if (!arith) {
+      this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
+      return;
+    }
+    const now = this.tableRead(v, e.left);
+    if (now) this.tableWrite(e, v, this.mark({ kind: "binary", op: arith, left: now, right: rhs, at: this.at(e), label: this.label(e) }, e));
+  }
   /* ── Booleans ── */
   /** The value stored into a boolean: a constant, a coin toss, a condition tree. */
   boolValue(expr) {
@@ -4226,6 +5318,10 @@ var Structured = class {
     if (typeof v === "string") return v !== "" ? TRUE : FALSE;
     if (isCondition(v)) return this.mark({ kind: "cond", record: { ...v.record } }, at);
     if (isRead(v)) return this.readBool(v, at);
+    if (isTable(v)) {
+      const read = this.tableRead(v, at);
+      return read ? this.mark({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at) : FALSE;
+    }
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
@@ -4245,6 +5341,10 @@ var Structured = class {
       this.c.error(e, "The condition nests too deeply.");
       return FALSE;
     }
+    if (this.isUnitTyped(e)) {
+      const unit = this.unitExpr(e);
+      return unit ? this.mark({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return { kind: "not", expr: this.boolInner(e.operand, depth + 1) };
@@ -4262,6 +5362,14 @@ var Structured = class {
       const whenTrue = this.boolValue(e.whenTrue);
       const whenFalse = this.boolValue(e.whenFalse);
       return this.mark({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+    }
+    if (ts.isPropertyAccessExpression(e)) {
+      const member = this.unitMember(e);
+      if (member) {
+        if (UNIT_FLAGS2.includes(member.name)) return this.mark({ kind: "unitFlag", unit: member.unit, flag: member.name, at: this.at(e), label: this.label(e) }, e);
+        const field = this.unitField(e, member);
+        return field ? this.mark({ kind: "test", expr: field, at: this.at(e), label: this.label(e) }, e) : FALSE;
+      }
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
@@ -4319,6 +5427,29 @@ var Structured = class {
     return call?.result ? this.mark({ kind: "call", call }, e) : FALSE;
   }
   comparison(e, op, depth) {
+    if (this.isUnitTyped(e.left) || this.isUnitTyped(e.right)) {
+      if (op !== "==" && op !== "!=") {
+        this.c.error(e, "Units compare with == and != only.");
+        return FALSE;
+      }
+      const none = (x) => {
+        const h = this.evaluate(x);
+        return !!h && (h.value === null || h.value === void 0);
+      };
+      const side = none(e.left) ? e.right : none(e.right) ? e.left : null;
+      let same;
+      if (side) {
+        const unit = this.unitExpr(side);
+        if (!unit) return FALSE;
+        same = { kind: "not", expr: this.mark({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) };
+      } else {
+        const left = this.unitExpr(e.left);
+        const right = this.unitExpr(e.right);
+        if (!left || !right) return FALSE;
+        same = this.mark({ kind: "unitSame", left, right, at: this.at(e), label: this.label(e) }, e);
+      }
+      return op === "==" ? same : same.kind === "not" ? same.expr : { kind: "not", expr: same };
+    }
     const isBool = (x) => {
       const h = this.evaluate(x);
       if (h) return typeof h.value === "boolean" || isCondition(h.value) || isRead(h.value) && h.value.equals !== void 0;
@@ -4451,6 +5582,10 @@ function compareNumbers(a2, op, b) {
 // compiler/compiler.ts
 var ENTRY_FILE = "main.ts";
 var LIB_FILE = "lib.d.ts";
+function renamedUnit(message) {
+  return /type 'Unit' is not assignable to (parameter of )?type 'UnitType/.test(message) || /type 'UnitType<\d+>' is not assignable to (parameter of )?type 'Unit'/.test(message) ? `${message}
+A unit type (units.*) is a UnitType; Unit is a unit on the map, inside program().` : message;
+}
 function normalizePath(path) {
   return path.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
 }
@@ -4509,7 +5644,7 @@ function compileScript(ts, files, names, options) {
     diagnostics.push({ file: sf.fileName, ...pos, message, source });
   };
   const planned = /* @__PURE__ */ new Set();
-  const tables2 = new Set([names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => t.object));
+  const tables2 = new Set(allTables(names).map((t) => t.object));
   for (const name of fileNames) {
     const sf = program.getSourceFile(name);
     const tableOf = (e) => {
@@ -4535,7 +5670,7 @@ function compileScript(ts, files, names, options) {
     const pos = sf && d.start !== void 0 ? position(sf, d.start, d.start + (d.length ?? 0)) : { line: 1, column: 1, endLine: 1, endColumn: 1 };
     const file = sf ? sf.fileName : ENTRY_FILE;
     const where = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
-    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
+    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), source: "typescript" });
   }
   if (diagnostics.length) return result();
   const plans = /* @__PURE__ */ new Map();

@@ -71,6 +71,11 @@ if (home && scn.locations?.[0] && !scn.locations[0].nameIndex && scn.locations[0
   const top = home.y + 320 <= h ? home.y + 128 : home.y - 320;
   const left = Math.max(0, Math.min(w - 384, home.x - 192));
   scn.locations[0] = { ...scn.locations[0], left, top, right: left + 384, bottom: top + 192, nameIndex: internString(scn, "Home") };
+  // Location 2, "Away": a smaller box beside Home — to its right where the map has room, else to its left — for a probe to send a unit to.
+  if (scn.locations[1] && !scn.locations[1].nameIndex && scn.locations[1].right === 0) {
+    const awayLeft = left + 384 + 256 + 128 <= w ? left + 384 + 256 : Math.max(0, left - 256 - 128);
+    scn.locations[1] = { ...scn.locations[1], left: awayLeft, top, right: awayLeft + 128, bottom: top + 192, nameIndex: internString(scn, "Away") };
+  }
   markDirty(scn, "MRGN");
 }
 markDirty(scn, "TRIG", "UNIT");

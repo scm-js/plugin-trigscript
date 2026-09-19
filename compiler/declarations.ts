@@ -16,7 +16,8 @@ import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
 import { READ_ARITY } from "./runtime";
 import { ACTION_IDENTS, argType, CHOICE_TYPES, choiceWords, CONDITION_IDENTS, MODULE_NAME, propertyKey, scriptParams, TRIGGER_OPTION_NAMES } from "./api";
 import type { ActionDef, ArgKind, ConditionDef } from "../vendor/triggerDefs";
-import { defaultScriptNames, type NameTable, type ScriptNames } from "./names";
+import { allTables, defaultScriptNames, type NameTable, type ScriptNames } from "./names";
+import { PLAYER_COLORS, TABLE_FIELDS, type TableKind } from "./tables";
 import { PLAYER_SLOTS } from "./lower";
 
 export const DECLARATIONS_FILE = "trigscript.d.ts";
@@ -38,8 +39,17 @@ function types(kw: string): string {
 ${kw}type Brand<K extends string> = { readonly __kind?: K };
 /** A player or player group (P1 … P12, CurrentPlayer, AllPlayers, players.*, or a raw group number). */
 ${kw}type Player<N extends number = number> = N & Brand<"player">;
-/** A unit type (units.*, or a raw units.dat id). */
-${kw}type Unit<N extends number = number> = N & Brand<"unit">;
+/** A unit type (units.*, or a raw units.dat id): what a condition or an action names. A unit on the map is a Unit. */
+${kw}type UnitType<N extends number = number> = N & Brand<"unit">;
+/** A weapon (weapons.*, or a raw weapons.dat id), for stats(). */
+${kw}type Weapon<N extends number = number> = N & Brand<"weapon">;
+/** An upgrade (upgrades.*, or a raw upgrades.dat id), for stats(). */
+${kw}type Upgrade<N extends number = number> = N & Brand<"upgrade">;
+/** A technology (techs.*, or a raw techdata.dat id), for stats(). */
+${kw}type Tech<N extends number = number> = N & Brand<"tech">;
+/** A player colour (colors.*), for stats(player).color. */
+${kw}type PlayerColor<N extends number = number> = N & Brand<"color">;
+${kw}type ColorName = __COLOR_NAMES__;
 /** A location (locations.*, or a raw 1-based location number; 0 = none). */
 ${kw}type Location<N extends number = number> = N & Brand<"location">;
 /** A switch (switches.*, or a raw 0-based switch number). */
@@ -83,6 +93,78 @@ ${TRIGGER_OPTION_NAMES.map(([, name]) => `  ${name}?: boolean;`).join("\n")}
   flags?: number;
 }
 
+/**
+ * A unit on the map, inside program() only: one of the game's units as it is right now. Get one from a
+ * loop — \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.hp = u.maxHp / 2;\` — or a pick,
+ * which may find none: \`const t = nearest(units.TerranMarine, locations.Beacon); if (t) t.order("move", locations.Exit);\`
+ * A variable may keep a unit across a sleep(). The game reuses a dead unit's place for a new one, so
+ * every use checks that the unit is still the one that was kept: once it is gone, its numbers read 0,
+ * its booleans false, and writing to it or telling it something does nothing. \`if (u)\` asks whether it is still there.
+ */
+${kw}interface Unit {
+  readonly __unit: true;
+  /** Hit points, in whole points as the game shows them. Writing 0 kills the unit. */
+  hp: number;
+  /** The type's hit points. */
+  readonly maxHp: number;
+  /** Shield points. */
+  shields: number;
+  /** The type's shield points. */
+  readonly maxShields: number;
+  /** Energy, 0 … 255. */
+  energy: number;
+  /** Who owns the unit; give() changes it. */
+  readonly owner: Player;
+  /** What the unit is: \`if (u.type == units.TerranMarine)\`. */
+  readonly type: UnitType;
+  /** Where the unit is, in pixels (32 a tile). Read only: the game ends when a position is written. */
+  readonly x: number;
+  readonly y: number;
+  /** How many units it has killed, 0 … 255. */
+  kills: number;
+  /** The orders.dat id of what the unit is doing (3 is standing guard, 6 moving, 10 attacking). */
+  readonly orderId: number;
+  /** Frames until the unit can attack or cast again, 0 … 255; writing it holds the unit's fire that long. */
+  cooldown: number;
+  /** What a mineral field or a geyser still holds. */
+  resources: number;
+  /** Frames left of each effect, 0 … 255: write one to start, lengthen or end it. Stim, ensnare and the rest tick down about every eighth frame. */
+  stim: number;
+  ensnare: number;
+  plague: number;
+  lockdown: number;
+  maelstrom: number;
+  irradiate: number;
+  stasis: number;
+  /** Whether the unit cannot be hurt. */
+  invincible: boolean;
+  readonly hallucinated: boolean;
+  readonly cloaked: boolean;
+  readonly burrowed: boolean;
+  /** True for about a second after something hit the unit. */
+  readonly underAttack: boolean;
+  /** Send the unit somewhere, as the Order action does, this unit alone. */
+  order(order: "move" | "patrol" | "attack", target: Location): void;
+  /** Hand the unit to another player. */
+  give(player: Player): void;
+  kill(): void;
+  /** Take the unit off the map without a death. */
+  remove(): void;
+  /** Take hit points away — so many, or a percentage of the type's maximum; at 0 the unit dies. Shields are left alone. */
+  damage(amount: number | { percent: number }): void;
+  /** Give hit points back, up to the type's maximum. */
+  heal(amount: number | { percent: number }): void;
+  /** Centre a location on the unit, its size kept: then createUnit(), moveUnit() and the rest can happen where the unit is. */
+  locate(location: Location): void;
+}
+/** Which units a loop or a pick looks at; a part left out matches all. units.Men, units.Buildings and units.Factories work as a type. */
+${kw}interface UnitFilter {
+  type?: UnitType;
+  owner?: Player;
+  /** Inside this location. */
+  at?: Location;
+}
+__STATS_TYPES__
 ${kw}interface ProgramOptions {
   /**
    * Who the program runs for (default P1). One player: one thread, as that player. AllPlayers, a
@@ -94,6 +176,9 @@ ${kw}interface ProgramOptions {
 }
 `;
 }
+
+const COLOR_NAMES = Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(" | ");
+const COLOR_TABLE = Object.entries(PLAYER_COLORS).map(([w, n]) => `readonly ${w}: PlayerColor<${n}>`).join("; ");
 
 function choiceTypes(kw: string): string {
   const out: string[] = [];
@@ -185,9 +270,9 @@ ${kw}function gas(player: Player): number;
 /** A player's minerals, gas, or both added up: what accumulate() compares. */
 ${kw}function resources(player: Player, resource: ResourceKind | number): number;
 /** How many units of a type a player has — at a location (what bring() compares) or anywhere (what command() compares). */
-${kw}function countUnits(player: Player, unit: Unit, location?: Location): number;
+${kw}function countUnits(player: Player, unit: UnitType, location?: Location): number;
 /** How many units of a type a player has killed: what kill() compares. */
-${kw}function kills(player: Player, unit: Unit): number;
+${kw}function kills(player: Player, unit: UnitType): number;
 /** The countdown timer, in game seconds: what countdownTimer() compares. A game second is sixteen frames, so at Fastest the timer runs about one and a half times as fast as sleep(seconds()). */
 ${kw}function countdown(): number;
 /** Game seconds since the start: what elapsedTime() compares. A game second is sixteen frames: after sleep(seconds(14)) at Fastest it reads about 21. */
@@ -209,6 +294,37 @@ ${kw}function supply(player: Player, of?: "used" | "max" | "provided", race?: Ra
 ${kw}const races: { readonly Zerg: Race<0>; readonly Terran: Race<1>; readonly Protoss: Race<2> };
 /** What a slot can hold, as slot() returns it. */
 ${kw}const slots: { readonly Empty: Slot<0>; readonly Computer: Slot<1>; readonly Human: Slot<2>; readonly Rescuable: Slot<3>; readonly Neutral: Slot<7> };
+/**
+ * Units on the map, inside program() only. Each of these looks through the game's 1700 unit slots when the
+ * line runs — once or a few times a second is nothing, every frame for every player adds up (the editor
+ * notes it at the end of the line). What to look for is known when you build. A loop over units runs
+ * within the frame: no sleep() inside it.
+ */
+/** The units inside a location: \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.kill();\` */
+${kw}function unitsAt(location: Location, filter?: Omit<UnitFilter, "at">): Iterable<Unit>;
+/** A player's units: \`for (const u of unitsOf(CurrentPlayer, { type: units.TerranMarine })) u.heal(10);\` */
+${kw}function unitsOf(player: Player, filter?: Omit<UnitFilter, "owner">): Iterable<Unit>;
+/** Every unit on the map the filter matches. */
+${kw}function allUnits(filter?: UnitFilter): Iterable<Unit>;
+/** The first unit the filter matches, or null. */
+${kw}function first(filter?: UnitFilter): Unit | null;
+/** The unit of a type nearest to the centre of a location, or null; units.AnyUnit for any type. */
+${kw}function nearest(unit: UnitType, location: Location, filter?: Omit<UnitFilter, "type">): Unit | null;
+/** One of the units the filter matches, picked by the game, or null. */
+${kw}function randomUnit(filter?: UnitFilter): Unit | null;
+/**
+ * The game's own tables, inside program() only: what a unit type costs, what a weapon does, a player's
+ * upgrades. Read a field as a number, assign to it, += it: \`stats(units.TerranMarine).minerals = 25;\`
+ * \`stats(weapons.GaussRifle).damage += 2;\` \`stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3;\`
+ * A write lasts for the game. Only fields seen working in StarCraft: Remastered are here.
+ */
+${kw}function stats(unit: UnitType): UnitTypeStats;
+${kw}function stats(weapon: Weapon): WeaponStats;
+${kw}function stats(upgrade: Upgrade): UpgradeStats;
+${kw}function stats(tech: Tech): TechStats;
+${kw}function stats(player: Player): PlayerStats;
+/** The player colours stats(player).color takes. */
+${kw}const colors: { __COLOR_TABLE__ };
 /**
  * A player's name, for a text a program shows: displayText(\`\${name(CurrentPlayer)} wins\`). The game
  * fills it in when the text is shown, so it works inside program() only.
@@ -262,6 +378,31 @@ function tableDecl(kw: string, t: NameTable, keep: (key: string, index: number) 
   return lines.join("\n");
 }
 
+const identifierKey = (k: string) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k);
+
+const STATS_INTERFACES: Record<TableKind, [name: string, doc: string]> = {
+  unit: ["UnitTypeStats", "units.dat, for one unit type. Most fields reach the units made after the write; the ones already on the map keep what they were made with."],
+  weapon: ["WeaponStats", "weapons.dat, for one weapon: every unit using it follows at once."],
+  upgrade: ["UpgradeStats", "upgrades.dat, for one upgrade."],
+  tech: ["TechStats", "techdata.dat, for one technology."],
+  player: ["PlayerStats", "The player tables, for one player."],
+};
+
+/** The interfaces `stats()` returns, from the one list of fields (`tables.ts`). */
+function statsTypes(kw: string): string {
+  return (Object.keys(TABLE_FIELDS) as TableKind[]).map((kind) => {
+    const [name, doc] = STATS_INTERFACES[kind];
+    const lines = [`/** ${doc} */`, `${kw}interface ${name} {`];
+    for (const f of TABLE_FIELDS[kind]) {
+      const type = f.type ?? (f.boolean ? "boolean" : "number");
+      lines.push(`  /** ${f.doc}${f.writeOnly ? " Set only." : ""} */`);
+      lines.push(f.keyed ? `  readonly ${f.name}: { [${f.keyed.kind}: number]: ${type} };` : `  ${f.readonly ? "readonly " : ""}${f.name}: ${type};`);
+    }
+    lines.push("}");
+    return lines.join("\n");
+  }).join("\n");
+}
+
 function playerAliases(kw: string, names: ScriptNames): string {
   const lines: string[] = [];
   for (const e of names.players.entries) {
@@ -274,7 +415,7 @@ function playerAliases(kw: string, names: ScriptNames): string {
 
 function tables(kw: string, names: ScriptNames, compact: boolean): string {
   if (!compact) {
-    return [names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => tableDecl(kw, t)).join("\n");
+    return allTables(names).map((t) => tableDecl(kw, t)).join("\n");
   }
   const isDefaultSwitch = (k: string) => /^Switch ?(\d+)$/.test(k);
   return [
@@ -283,14 +424,15 @@ function tables(kw: string, names: ScriptNames, compact: boolean): string {
     tableDecl(kw, names.locations),
     tableDecl(kw, names.switches, (k) => { const m = /^Switch(\d+)$/.exec(k); return m ? Number(m[1]) <= 16 : !isDefaultSwitch(k); }, "Switch1 … Switch256 exist; the first sixteen are listed. A switch given a name in the map is listed by that name."),
     `/** AI scripts, by StarEdit name ("Terran Custom Level") or four-character code. */\n${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`,
+    ...[names.weapons, names.upgrades, names.techs].map((t) => tableDecl(kw, t, identifierKey)),
   ].join("\n");
 }
 
 function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean): string {
   return [
-    types(typeKw),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__STATS_TYPES__", statsTypes(typeKw)),
     choiceTypes(typeKw),
-    functions(kw),
+    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
     "// ── Conditions ──",
     ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
     "",

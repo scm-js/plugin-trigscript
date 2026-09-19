@@ -136,7 +136,7 @@ export const ScoreType = {
 } as const;
 
 /** Unit ids beyond units.dat that conditions and actions accept. */
-export const UnitClass = { Any: 228, Men: 229, Buildings: 230, Factories: 231 } as const;
+export const UnitClass = { Any: 229, Men: 230, Buildings: 231, Factories: 232 } as const;
 
 export const ConditionFlag = {
   /** Game bookkeeping. */

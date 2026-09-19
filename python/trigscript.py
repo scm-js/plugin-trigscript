@@ -27,6 +27,15 @@ so a read means what the condition means, for a force's minerals or the units at
 Player facts are bytes of the player tables. Text with values in it is printed through eudplib's
 string buffer, for the player it is for and nobody else.
 
+A unit of the game is a pointer into the game's unit table — 1700 slots of 336 bytes — with the slot's
+uniqueness byte kept beside it: the game gives a dead unit's slot to the next unit made, so a unit kept
+in a variable is checked before every use (a sprite, an order other than "die", the same uniqueness
+byte) and reads 0, and takes no write, once it is gone. A loop over units and a pick walk the whole
+table with conditions whose address is moved on a slot at a time, as eudplib's own EUDLoopUnit2 does;
+a dying unit is passed over. What a unit can be asked and told is what Magenta's probe maps saw
+working in Remastered: no position, cloak or speed writes. The game's tables (`stats()`) are plain
+cells at addresses the IR carries; a speed is four flingy records, a colour two bytes, a name a string.
+
 Numbers keep one contract with the simulator: 32-bit unsigned, an expression's exact value stored
 below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
 """
@@ -34,7 +43,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 3
+IR_VERSION = 4
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -45,6 +54,27 @@ GAS_TABLE = 0x57F120
 PLAYER_BYTES = {"slot": 0x57F1B4, "race": 0x57F1C0}
 # Per race (144 bytes apart: Zerg, Terran, Protoss), a dword per player, in half supplies.
 SUPPLY_TABLES = {"provided": 0x582144, "used": 0x582174, "max": 0x5821A4}
+# The unit table, and a unit's dwords the scans test (as EPD offsets from the unit's own).
+UNIT_TABLE = 0x59CCA8
+UNIT_SIZE = 336
+UNIT_SLOTS = 1700
+UNIT_END = UNIT_TABLE + UNIT_SIZE * UNIT_SLOTS
+OFF_SPRITE, OFF_POS, OFF_OWNER_ORDER, OFF_TYPE, OFF_UID = 0x0C // 4, 0x28 // 4, 0x4C // 4, 0x64 // 4, 0xA4 // 4
+# units.dat: max hit points (dword, 256 to a point), max shields (word), the group flags a trigger's
+# Men / Buildings / Factories go by (byte), the flingy a type moves as (byte).
+UNITS_MAX_HP = 0x662350
+UNITS_MAX_SHIELDS = 0x660E00
+UNITS_GROUP = 0x6637A0
+UNITS_FLINGY = 0x6644F8
+GROUP_BITS = {230: 0x08, 231: 0x10, 232: 0x20}
+# flingy.dat, by flingy id: movement control (byte), top speed (dword), acceleration (word), halt distance (dword).
+FLINGY_CONTROL, FLINGY_SPEED, FLINGY_ACCELERATION, FLINGY_HALT = 0x6C9858, 0x6C9EF8, 0x6C9C78, 0x6C9930
+MINIMAP_COLOR_OFFSET = 0x581DD6 - 0x581D76
+# The location table, and the one an order borrows for the length of one action (put back after).
+MRGN = 0x58DC60
+SCRATCH_LOCATION = 255
+UNIT_TIMERS = {"stim": "stimTimer", "ensnare": "ensnareTimer", "plague": "plagueTimer", "lockdown": "lockdownTimer", "maelstrom": "maelstromTimer", "irradiate": "irradiateTimer", "stasis": "stasisTimer"}
+STATUS_INVINCIBLE, STATUS_HALLUCINATION, STATUS_BURROWED, STATUS_CLOAKED = 0x04000000, 0x40000000, 0x00000010, 0x00000300
 COND_COMMAND, COND_BRING, COND_ACCUMULATE, COND_KILL, COND_OPPONENTS, COND_DEATHS = 2, 3, 4, 5, 14, 15
 CURRENT_PLAYER = 13
 # The state of a program whose body ended: nothing resumes it.
@@ -97,6 +127,63 @@ class Storage:
             self.store << value
 
 
+class UnitRef:
+    """A unit of the game as the lowering holds it: the pointer, its EPD, and the slot's uniqueness byte
+    (as it sits in its dword, masked 0xFF00). `uid` None is the unit of a loop's turn, there by
+    construction; a pointer that is the int 0 is no unit at all."""
+
+    def __init__(self, ptr, epd, uid=None):
+        self.ptr, self.epd, self.uid = ptr, epd, uid
+
+    @property
+    def none(self):
+        return isinstance(self.ptr, int) and self.ptr == 0
+
+
+NO_UNIT = UnitRef(0, 0, 0)
+
+
+class UnitStorage:
+    """A unit variable: three cells, or three 12-slot rows of a per-player program."""
+
+    def __init__(self, decl, per_player, player_of):
+        self.decl = decl
+        self.rowed = per_player
+        self.player_of = player_of
+        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
+        self.ptr, self.epd, self.uid = make(), make(), make()
+
+    def get(self):
+        if self.rowed:
+            p = self.player_of()
+            return UnitRef(self.ptr[p], self.epd[p], self.uid[p])
+        return UnitRef(self.ptr, self.epd, self.uid)
+
+    def set(self, ref):
+        uid = ref.uid
+        if uid is None:
+            # The unit of a loop's turn is there now: this is when its slot's uniqueness byte is taken.
+            uid = f_maskread_epd(ref.epd + OFF_UID, 0xFF00)
+        for cell, value in ((self.ptr, ref.ptr), (self.epd, ref.epd), (self.uid, uid)):
+            if self.rowed:
+                cell[self.player_of()] = value
+            else:
+                cell << value
+
+
+class LoopUnit:
+    """The variable of a loop over units: the scan's own pointer, never kept past the loop."""
+
+    def __init__(self, ref):
+        self.ref = ref
+
+    def get(self):
+        return self.ref
+
+    def set(self, ref):
+        raise Fail("trigscript: the unit of a loop's turn cannot be assigned")
+
+
 def saturate(value, bits):
     top = (1 << bits) - 1
     if isinstance(value, int):
@@ -146,7 +233,10 @@ class Lowering:
         return self.player
 
     def declare(self, decl):
-        s = Storage(decl, self.per_player, self.player_of)
+        if decl.get("kind") == "unit":
+            s = UnitStorage(decl, self.per_player, self.player_of)
+        else:
+            s = Storage(decl, self.per_player, self.player_of)
         self.vars[decl["id"]] = s
         return s
 
@@ -273,6 +363,10 @@ class Lowering:
                 out << f_div(f_dwrand(), n)[1]
             EUDEndIf()
             return out
+        if k == "unitField":
+            return self.unit_field(e)
+        if k == "tableRead":
+            return self.table_read(e["cell"], e)
         if k == "ternary":
             t = EUDVariable()
             if EUDIf()(self.cond(e["cond"])):
@@ -456,6 +550,8 @@ class Lowering:
             return EUDNot(self.cond(e["expr"]))
         if k == "random":
             return (f_rand() & 1) >= 1
+        if k in ("unitAlive", "unitFlag", "unitSame"):
+            return as_var(self.truth(e)) >= 1
         if k == "edge":
             return self.edge(e)
         if k == "ternary":
@@ -476,6 +572,23 @@ class Lowering:
             return 1 if e["value"] else 0
         if e["kind"] == "var":
             return self.var(e["id"], e).get()
+        if e["kind"] == "unitAlive":
+            ref = self.unit(e["unit"])
+            t = fresh(0)
+            if not ref.none:
+                self.when_alive(ref, lambda: t << 1)
+            return t
+        if e["kind"] == "unitFlag":
+            return self.unit_flag(e)
+        if e["kind"] == "unitSame":
+            a, b = self.unit(e["left"]), self.unit(e["right"])
+            t = fresh(0)
+            if not a.none and not b.none:
+                ap, bp = as_var(a.ptr), as_var(b.ptr)
+                if EUDIf()([ap >= 1, ap == bp]):
+                    t << 1
+                EUDEndIf()
+            return t
         t = fresh(0)
         if EUDIf()(self.cond(e)):
             t << 1
@@ -511,6 +624,418 @@ class Lowering:
         EUDEndIf()
         return fired >= 1
 
+    # ── units: a pointer into the game's unit table, checked before use ──
+    def unit(self, e):
+        k = e["kind"]
+        if k == "unitNull":
+            return NO_UNIT
+        if k == "unitVar":
+            return self.var(e["id"], e).get()
+        if k == "pick":
+            return self.pick(e)
+        if k == "call":
+            return self.call(e["call"])
+        raise Fail("trigscript: unknown unit expression %r%s" % (k, where(e)))
+
+    def when_alive(self, ref, body):
+        """`body()` when the unit is still the one that was kept: the slot has a sprite, its order is not
+        "die", and its uniqueness byte is the one taken with the pointer."""
+        if ref.none:
+            return
+        if ref.uid is None:
+            body()
+            return
+        ptr, epd = as_var(ref.ptr), as_var(ref.epd)
+        if EUDIf()([ptr >= 1, MemoryEPD(epd + OFF_SPRITE, AtLeast, 1), MemoryXEPD(epd + OFF_OWNER_ORDER, AtLeast, 0x100, 0xFF00), MemoryXEPD(epd + OFF_UID, Exactly, ref.uid, 0xFF00)]):
+            body()
+        EUDEndIf()
+
+    @staticmethod
+    def cunit(ref):
+        return CUnit(ref.epd, ptr=ref.ptr)
+
+    def unit_field(self, e):
+        ref = self.unit(e["unit"])
+        out = fresh(0)
+        self.when_alive(ref, lambda: out << self.field_of(self.cunit(ref), e["field"], e))
+        return out
+
+    def field_of(self, cu, field, node):
+        """A unit's number, in the script's units: whole points for hit points (as the game shows them,
+        a started point counting), shields and energy."""
+        if field == "hp":
+            return f_div(cu.hp + 255, 256)[0]
+        if field == "maxHp":
+            return f_div(f_dwread_epd(EPD(UNITS_MAX_HP) + cu.unitType), 256)[0]
+        if field == "shields":
+            return f_div(cu.shield, 256)[0]
+        if field == "maxShields":
+            return f_wread(UNITS_MAX_SHIELDS + cu.unitType * 2)
+        if field == "energy":
+            return f_div(cu.energy, 256)[0]
+        if field in UNIT_TIMERS:
+            return getattr(cu, UNIT_TIMERS[field])
+        name = {"owner": "owner", "type": "unitType", "x": "posX", "y": "posY", "kills": "killCount", "orderId": "orderID", "cooldown": "groundWeaponCooldown", "resources": "resourceAmount"}.get(field)
+        if name is None:
+            raise Fail("trigscript: unknown unit field %r%s" % (field, where(node)))
+        return getattr(cu, name)
+
+    def unit_flag(self, e):
+        ref = self.unit(e["unit"])
+        out = fresh(0)
+
+        def body():
+            cu = self.cunit(ref)
+            flag = e["flag"]
+            if flag == "underAttack":
+                held = cu.attackNotifyTimer >= 1
+            else:
+                mask = {"hallucinated": STATUS_HALLUCINATION, "cloaked": STATUS_CLOAKED, "burrowed": STATUS_BURROWED, "invincible": STATUS_INVINCIBLE}.get(flag)
+                if mask is None:
+                    raise Fail("trigscript: unknown unit flag %r%s" % (flag, where(e)))
+                held = cu.check_status_flag(mask)
+            if EUDIf()(held):
+                out << 1
+            EUDEndIf()
+
+        self.when_alive(ref, body)
+        return out
+
+    def location_bounds(self, number):
+        base = EPD(MRGN + (int(number) - 1) * 20)
+        return [f_dwread_epd(base + i) for i in range(4)]
+
+    def scan(self, flt, node, body):
+        """The game's unit table, slot by slot: `body(ref, next_, exit_)` for every unit on the map the
+        filter matches. Every test is one condition whose address moves on with the slot, so a slot
+        that does not match costs a trigger or two."""
+        ptr, epd = EUDVariable(), EUDVariable()
+        empty = MemoryEPD(0, Exactly, 0)
+        dying = MemoryXEPD(0, Exactly, 0, 0xFF00)
+        moving = [(empty, OFF_SPRITE), (dying, OFF_OWNER_ORDER)]
+        match, values = [], []
+        owner = flt.get("owner")
+        if owner is not None:
+            who = self.current() if owner == CURRENT_PLAYER else int(owner)
+            c = MemoryXEPD(0, Exactly, who if isinstance(who, int) else 0, 0xFF)
+            match.append(c)
+            moving.append((c, OFF_OWNER_ORDER))
+            if not isinstance(who, int):
+                values.append((c, who))
+        kind = flt.get("type")
+        if kind is not None and kind < 228:
+            c = MemoryXEPD(0, Exactly, int(kind), 0xFFFF)
+            match.append(c)
+            moving.append((c, OFF_TYPE))
+        elif kind is not None and kind not in GROUP_BITS:
+            raise Fail("trigscript: unknown unit type %r%s" % (kind, where(node)))
+        if flt.get("at"):
+            left, top, right, bottom = self.location_bounds(flt["at"])
+            # A location reaching past the map's edge starts below zero, which a unit's position never is.
+            for v in (left, top):
+                if EUDIf()(v >= 0x80000000):
+                    v << 0
+                EUDEndIf()
+            for comparison, mask, value in ((AtLeast, 0xFFFF, left), (AtMost, 0xFFFF, right), (AtLeast, 0xFFFF0000, f_bitlshift(top, 16)), (AtMost, 0xFFFF0000, f_bitlshift(bottom, 16))):
+                c = MemoryXEPD(0, comparison, 0, mask)
+                match.append(c)
+                moving.append((c, OFF_POS))
+                values.append((c, value))
+        DoActions([ptr.SetNumber(UNIT_TABLE), epd.SetNumber(EPD(UNIT_TABLE))] + [SetMemory(c + 4, SetTo, EPD(UNIT_TABLE) + off) for c, off in moving])
+        for c, value in values:
+            f_dwwrite_epd(EPD(c + 8), value)
+        head, next_, exit_ = Forward(), Forward(), Forward()
+        head << NextTrigger()
+        EUDJumpIf(ptr >= UNIT_END, exit_)
+        EUDJumpIf(empty, next_)
+        EUDJumpIf(dying, next_)
+        if match:
+            matched = Forward()
+            EUDJumpIf(match, matched)
+            EUDJump(next_)
+            matched << NextTrigger()
+        if kind in GROUP_BITS:
+            group = fresh(f_bread(UNITS_GROUP + f_maskread_epd(epd + OFF_TYPE, 0xFFFF)))
+            EUDJumpIf((group & GROUP_BITS[kind]) == 0, next_)
+        body(UnitRef(ptr, epd, None), next_, exit_)
+        next_ << NextTrigger()
+        DoActions([SetMemory(c + 4, Add, UNIT_SIZE // 4) for c, _ in moving] + [ptr.AddNumber(UNIT_SIZE), epd.AddNumber(UNIT_SIZE // 4)])
+        EUDJump(head)
+        exit_ << NextTrigger()
+
+    def pick(self, e):
+        """One unit among the matching: the first, the nearest to a location's centre, or one at random."""
+        by, flt = e["by"], e.get("filter", {})
+        found_ptr, found_epd = fresh(0), fresh(0)
+
+        def take(ref):
+            found_ptr << ref.ptr
+            found_epd << ref.epd
+
+        if by == "first":
+            def body(ref, next_, exit_):
+                take(ref)
+                EUDJump(exit_)
+            self.scan(flt, e, body)
+        elif by == "nearest":
+            left, top, right, bottom = self.location_bounds(e["near"])
+            cx, cy = f_div(left + right, 2)[0], f_div(top + bottom, 2)[0]
+            least = fresh(U32)
+
+            def body(ref, next_, exit_):
+                cu = self.cunit(ref)
+                # |dx| + |dy| is enough to say which is nearest, and never overflows.
+                d = self.difference([cu.posX], [cx], absolute=True) + self.difference([cu.posY], [cy], absolute=True)
+                if EUDIf()(d < least):
+                    least << d
+                    take(ref)
+                EUDEndIf()
+            self.scan(flt, e, body)
+        elif by == "random":
+            # Count the matching, draw one, take the drawn one on a second pass.
+            count = fresh(0)
+            self.scan(flt, e, lambda ref, next_, exit_: count.__iadd__(1))
+            none = Forward()
+            EUDJumpIf(count == 0, none)
+            drawn = f_div(f_dwrand(), count)[1]
+            i = fresh(0)
+
+            def body(ref, next_, exit_):
+                hit = Forward()
+                EUDJumpIf(i == drawn, hit)
+                i.__iadd__(1)
+                EUDJump(next_)
+                hit << NextTrigger()
+                take(ref)
+                EUDJump(exit_)
+            self.scan(flt, e, body)
+            none << NextTrigger()
+        else:
+            raise Fail("trigscript: unknown pick %r%s" % (by, where(e)))
+        uid = fresh(0)
+        if EUDIf()(found_ptr >= 1):
+            uid << f_maskread_epd(found_epd + OFF_UID, 0xFF00)
+        EUDEndIf()
+        return UnitRef(found_ptr, found_epd, uid)
+
+    def unit_loop(self, st, ctx):
+        def body(ref, next_, exit_):
+            self.vars[st["decl"]["id"]] = LoopUnit(ref)
+            self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": next_}))
+        self.scan(st.get("filter", {}), st, body)
+
+    def unit_write(self, st):
+        ref = self.unit(st["unit"])
+        field = st["field"]
+        if field == "invincible":
+            on = self.truth(st["value"])
+
+            def flag():
+                cu = self.cunit(ref)
+                if isinstance(on, int):
+                    cu.set_invincible() if on else cu.clear_invincible()
+                    return
+                if EUDIf()(as_var(on) >= 1):
+                    cu.set_invincible()
+                if EUDElse()():
+                    cu.clear_invincible()
+                EUDEndIf()
+            self.when_alive(ref, flag)
+            return
+        value = self.num(st["value"])
+
+        def write():
+            cu = self.cunit(ref)
+            if field == "hp":
+                # Hit points at 0 are a dead unit, so that is what the write makes of it.
+                if isinstance(value, int):
+                    if value == 0:
+                        cu.die()
+                    else:
+                        cu.hp = min(value, 0xFFFFFF) * 256
+                    return
+                if EUDIf()(value == 0):
+                    cu.die()
+                if EUDElse()():
+                    cu.hp = f_mul(saturate(value, 24), 256)
+                EUDEndIf()
+            elif field == "shields":
+                cu.shield = points(value, 24)
+            elif field == "energy":
+                cu.energy = points(value, 8)
+            elif field == "kills":
+                cu.killCount = saturate(value, 8)
+            elif field == "resources":
+                cu.resourceAmount = saturate(value, 16)
+            elif field == "cooldown":
+                frames = saturate(value, 8)
+                cu.groundWeaponCooldown = frames
+                cu.airWeaponCooldown = frames
+                cu.spellCooldown = frames
+            elif field in UNIT_TIMERS:
+                setattr(cu, UNIT_TIMERS[field], saturate(value, 8))
+            else:
+                raise Fail("trigscript: a unit's %s takes no write%s" % (field, where(st)))
+        self.when_alive(ref, write)
+
+    def unit_do(self, st):
+        ref = self.unit(st["unit"])
+        verb = st["verb"]
+        do = verb["do"]
+        amount = self.num(verb["amount"]) if do in ("damage", "heal") else 0
+
+        def act():
+            cu = self.cunit(ref)
+            if do == "kill":
+                cu.die()
+            elif do == "remove":
+                cu.remove()
+            elif do == "give":
+                to = int(verb["to"])
+                cu.cgive(self.current() if to == CURRENT_PLAYER else to)
+            elif do == "order":
+                self.order(cu, verb, st)
+            elif do == "locate":
+                self.locate(cu, int(verb["location"]))
+            elif do in ("damage", "heal"):
+                self.adjust(cu, do, amount, bool(verb.get("percent")))
+            else:
+                raise Fail("trigscript: unknown unit verb %r%s" % (do, where(st)))
+        self.when_alive(ref, act)
+
+    def order(self, cu, verb, node):
+        """The game's own Order, reaching this unit alone: a location is made a small box around the unit
+        for the length of the action (the game did nothing with a box of no size), then put back."""
+        kind = {"move": Move, "patrol": Patrol, "attack": Attack}.get(verb["order"])
+        if kind is None:
+            raise Fail("trigscript: unknown order %r%s" % (verb["order"], where(node)))
+        base = EPD(MRGN + (SCRATCH_LOCATION - 1) * 20)
+        kept = [f_dwread_epd(base + i) for i in range(5)]
+        x, y = cu.posX, cu.posY
+        for i, v in enumerate((x - 2, y - 2, x + 2, y + 2, 0)):
+            f_dwwrite_epd(base + i, v)
+        DoActions(Order(cu.unitType, cu.owner, SCRATCH_LOCATION, kind, int(verb["target"])))
+        for i, v in enumerate(kept):
+            f_dwwrite_epd(base + i, v)
+
+    def locate(self, cu, number):
+        """A location centred on the unit, its size kept."""
+        base = EPD(MRGN + (number - 1) * 20)
+        left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
+        width, height = right - left, bottom - top
+        x, y = cu.posX - f_div(width, 2)[0], cu.posY - f_div(height, 2)[0]
+        for i, v in enumerate((x, y, x + width, y + height)):
+            f_dwwrite_epd(base + i, v)
+
+    def adjust(self, cu, do, amount, percent):
+        """Hit points down — at 0 the unit dies — or up to the type's maximum, in the game's own units (256 to a point)."""
+        now = fresh(cu.hp)
+        top = f_dwread_epd(EPD(UNITS_MAX_HP) + cu.unitType)
+        if percent:
+            step = f_div(f_mul(top, as_var(amount)), 100)[0]
+        else:
+            step = amount * 256 if isinstance(amount, int) else f_mul(saturate(amount, 24), 256)
+        if do == "damage":
+            if EUDIf()(now <= step):
+                cu.die()
+            if EUDElse()():
+                cu.hp = now - step
+            EUDEndIf()
+            return
+        new = fresh(now + step)
+        if EUDIf()(new >= top):
+            new << top
+        EUDEndIf()
+        cu.hp = new
+
+    # ── the game's tables ──
+    def cell_address(self, c):
+        index = c["index"]
+        if c.get("player") and index == CURRENT_PLAYER:
+            index = self.current()
+        base = int(c["base"]) + int(c.get("key") or 0)
+        return base + index * int(c["stride"])
+
+    def table_read(self, c, node):
+        if c.get("special"):
+            raise Fail("trigscript: %s cannot be read%s" % (c.get("name"), where(node)))
+        addr = self.cell_address(c)
+        width = c["width"]
+        if width == "bit":
+            v = fresh(0)
+            if EUDIf()(MemoryX(addr, AtLeast, 1, 1 << int(c["bit"]))):
+                v << 1
+            EUDEndIf()
+            return v
+        v = f_dwread(addr) if width == 4 else f_wread(addr) if width == 2 else f_bread(addr)
+        scale = int(c.get("scale") or 1)
+        return f_div(v, scale)[0] if scale > 1 else v
+
+    def table_write(self, st):
+        c = st["cell"]
+        addr = self.cell_address(c)
+        special = c.get("special")
+        if special == "name":
+            f_wwrite(addr, EncodeString(st["value"]["text"]))
+            return
+        width = c["width"]
+        if st.get("boolean"):
+            value = self.truth(st["value"])
+        else:
+            value = self.num(st["value"])
+            scale = int(c.get("scale") or 1)
+            if scale > 1 and not st.get("scaled"):
+                value = value * scale if isinstance(value, int) else f_mul(value, scale)
+        top = 1 if width == "bit" else (1 << (8 * width)) - 1
+        if isinstance(value, int):
+            value = min(value, top)
+        elif width != 4 and width != "bit":
+            value = saturate(value, 8 * width)
+        if special == "speed":
+            self.write_speed(int(c["index"]), value)
+        elif special == "color":
+            f_bwrite(addr, value)
+            f_bwrite(addr + MINIMAP_COLOR_OFFSET, value)
+        elif width == "bit":
+            mask = 1 << int(c["bit"])
+            if isinstance(value, int):
+                DoActions(SetMemoryX(addr, SetTo, mask if value else 0, mask))
+            else:
+                if EUDIf()(value >= 1):
+                    DoActions(SetMemoryX(addr, SetTo, mask, mask))
+                if EUDElse()():
+                    DoActions(SetMemoryX(addr, SetTo, 0, mask))
+                EUDEndIf()
+        elif width == 4:
+            f_dwwrite(addr, value)
+        elif width == 2:
+            f_wwrite(addr, value)
+        else:
+            f_bwrite(addr, value)
+
+    def write_speed(self, unit, speed):
+        """A unit type's top speed is its flingy's: the flingy is switched to table control and given the
+        speed, with acceleration about a seventeenth of it and the braking distance v² / 2a to match
+        (the Vulture's own figures), as Magenta writes it. Units made afterwards move at the new speed."""
+        flingy = f_bread(UNITS_FLINGY + unit)
+        if isinstance(speed, int):
+            acceleration = max(1, round(speed / 17))
+            halt = max(1, round(speed * speed / (2 * acceleration)))
+        else:
+            acceleration = fresh(f_div(speed, 17)[0])
+            if EUDIf()(acceleration == 0):
+                acceleration << 1
+            EUDEndIf()
+            halt = fresh(f_div(f_mul(speed, speed), acceleration * 2)[0])
+            if EUDIf()(halt == 0):
+                halt << 1
+            EUDEndIf()
+            acceleration = saturate(acceleration, 16)
+        f_bwrite(FLINGY_CONTROL + flingy, 0)
+        f_dwwrite(FLINGY_SPEED + flingy * 4, speed)
+        f_wwrite(FLINGY_ACCELERATION + flingy * 2, acceleration)
+        f_dwwrite(FLINGY_HALT + flingy * 4, halt)
+
     # ── statements ──
     def block(self, statements, ctx):
         for st in statements:
@@ -521,7 +1046,17 @@ class Lowering:
         if k == "declare":
             s = self.declare(st["decl"])
             if not st.get("failed"):
-                s.set(self.num(st["init"]) if st["decl"]["kind"] == "number" else self.truth(st["init"]))
+                s.set(self.value(st["init"], st["decl"]["kind"]))
+        elif k == "assignUnit":
+            self.var(st["target"], st).set(self.unit(st["value"]))
+        elif k == "unitLoop":
+            self.unit_loop(st, ctx)
+        elif k == "unitWrite":
+            self.unit_write(st)
+        elif k == "unitDo":
+            self.unit_do(st)
+        elif k == "tableWrite":
+            self.table_write(st)
         elif k == "assign":
             self.var(st["target"], st).set(self.num(st["value"]))
         elif k == "assignBool":
@@ -553,7 +1088,7 @@ class Lowering:
             if fn is None:
                 raise Fail("trigscript: return outside a function%s" % where(st))
             if st.get("value") is not None and fn["result"] is not None:
-                fn["result"].set(self.num(st["value"]) if fn["kind"] == "number" else self.truth(st["value"]))
+                fn["result"].set(self.value(st["value"], fn["kind"]))
             EUDJump(fn["end"])
             raise Leave()
         elif k == "sleep":
@@ -708,13 +1243,17 @@ class Lowering:
             show()
         f_setcurpl(self.current())
 
+    def value(self, e, kind):
+        """An expression as what a variable of `kind` holds."""
+        return self.num(e) if kind == "number" else self.unit(e) if kind == "unit" else self.truth(e)
+
     def call(self, call):
         result = self.declare(call["result"]["decl"]) if call.get("result") else None
         if result is not None:
-            result.set(0)
+            result.set(NO_UNIT if call["result"]["kind"] == "unit" else 0)
         for p in call["params"]:
             s = self.declare(p["decl"])
-            s.set(self.num(p["init"]) if p["decl"]["kind"] == "number" else self.truth(p["init"]))
+            s.set(self.value(p["init"], p["decl"]["kind"]))
         end = Forward()
         self.straight(call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}})
         end << NextTrigger()
@@ -814,9 +1353,16 @@ def loop_players(slots):
 BITWISE = ("&", "|", "^", "<<", ">>")
 
 
+def points(value, bits):
+    """Whole points as the game stores them, 256 to a point; `bits` is how many bits of points the cell holds."""
+    if isinstance(value, int):
+        return min(value, (1 << bits) - 1) * 256
+    return f_mul(saturate(value, bits), 256)
+
+
 def uses_random(node):
     if isinstance(node, dict):
-        return node.get("kind") in ("random", "randomInt") or any(uses_random(v) for v in node.values())
+        return node.get("kind") in ("random", "randomInt") or (node.get("kind") == "pick" and node.get("by") == "random") or any(uses_random(v) for v in node.values())
     return isinstance(node, list) and any(uses_random(v) for v in node)
 
 

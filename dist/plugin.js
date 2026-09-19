@@ -230,7 +230,7 @@ var ScoreType = {
   KillsAndRazings: 6,
   Custom: 7
 };
-var UnitClass = { Any: 228, Men: 229, Buildings: 230, Factories: 231 };
+var UnitClass = { Any: 229, Men: 230, Buildings: 231, Factories: 232 };
 var ConditionFlag = {
   /** Game bookkeeping. */
   Unknown: 1,
@@ -677,7 +677,7 @@ function argType(kind) {
     case "player":
       return "Player";
     case "unit":
-      return "Unit";
+      return "UnitType";
     case "location":
       return "Location";
     case "switch":
@@ -717,8 +717,8 @@ function scriptParams(def) {
     return p;
   };
   const main = def.args.filter((a2) => a2.kind !== "textFlags").map((arg) => ({ arg, name: name(arg.label), optional: false }));
-  const flag = def.args.find((a2) => a2.kind === "textFlags");
-  return flag ? [...main, { arg: flag, name: "always", optional: true }] : main;
+  const flag2 = def.args.find((a2) => a2.kind === "textFlags");
+  return flag2 ? [...main, { arg: flag2, name: "always", optional: true }] : main;
 }
 var IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 function propertyKey(key) {
@@ -786,355 +786,6 @@ function hyperTriggers(owner, comment) {
     return t;
   });
 }
-
-// compiler/runtime.ts
-var DEATHS_TABLE_ADDRESS = 5808996;
-var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
-var isRead = (v) => typeof v === "object" && v !== null && v.__trigscript === "read";
-var isPrint = (v) => typeof v === "object" && v !== null && v.__trigscript === "print";
-var isReader = (v) => typeof v === "function" && v.__trigscript === "reader";
-var MARK_OPEN = "\uE000";
-var MARK_CLOSE = "\uE001";
-var MARK = /\uE000([nc])(\d+)\uE001/g;
-var hasTextMark = (text) => text.includes(MARK_OPEN);
-var textMark = (letter, player) => `${MARK_OPEN}${letter}${player}${MARK_CLOSE}`;
-function textParts(text) {
-  const out = [];
-  let from = 0;
-  for (const m of text.matchAll(MARK)) {
-    if (m.index > from) out.push({ kind: "text", text: text.slice(from, m.index) });
-    out.push({ kind: m[1] === "n" ? "name" : "color", player: Number(m[2]) });
-    from = m.index + m[0].length;
-  }
-  if (from < text.length) out.push({ kind: "text", text: text.slice(from) });
-  return out;
-}
-var READ_ARITY = new Map(
-  [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
-);
-var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
-var ScriptError = class extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "ScriptError";
-  }
-};
-var Collector = class {
-  entries = [];
-  strings = [];
-  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
-  hyper = false;
-  localString(s) {
-    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
-    if (at >= 0) return at + 1;
-    this.strings.push(s);
-    return this.strings.length;
-  }
-};
-var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript === "condition";
-var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
-var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
-var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
-var isGameFunction = (v) => typeof v === "function" && v.__trigscript === "gamefn";
-var isBuilder = (v) => typeof v === "function" && v.__trigscript === "builder";
-var condition = (record) => ({ __trigscript: "condition", record });
-var action = (record) => ({ __trigscript: "action", record });
-function describe(v) {
-  if (typeof v === "string") return JSON.stringify(v.length > 40 ? `${v.slice(0, 39)}\u2026` : v);
-  if (typeof v === "number" || typeof v === "boolean" || v === null || v === void 0) return String(v);
-  if (isCondition(v)) return "a condition";
-  if (isAction(v)) return "an action";
-  if (isRead(v)) return `a value the game holds (${v.ident}())`;
-  if (isPrint(v)) return "a print()";
-  if (Array.isArray(v)) return "an array";
-  if (typeof v === "function") return "a function";
-  return "an object";
-}
-function integer(v, what) {
-  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
-  if (typeof v === "boolean") return v ? 1 : 0;
-  if (isRead(v)) throw new ScriptError(`${what}: ${v.ident}() is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it; a trigger's condition or action takes numbers known when the script is built.`);
-  throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
-}
-function flatten(v, out = []) {
-  if (Array.isArray(v)) for (const x of v) flatten(x, out);
-  else if (v !== void 0 && v !== null && v !== false) out.push(v);
-  return out;
-}
-function createRuntime(names, collector, options = {}) {
-  const rt = {};
-  const comment = options.comments === false ? void 0 : (text) => collector.localString({ text });
-  for (const t of [names.players, names.units, names.locations, names.switches, names.aiScripts]) {
-    const table2 = {};
-    for (const e of t.entries) for (const k of e.keys) table2[k] = e.value;
-    rt[t.object] = Object.freeze(table2);
-  }
-  for (let i = 0; i < PLAYER_SLOTS; i++) rt[`P${i + 1}`] = i;
-  rt.CurrentPlayer = PlayerGroup.CurrentPlayer;
-  rt.AllPlayers = PlayerGroup.AllPlayers;
-  const argValue = (kind, v, what) => {
-    switch (kind) {
-      case "text":
-      case "wav":
-        if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
-        if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
-        throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
-      case "count":
-        if (typeof v === "string") {
-          if (v.trim().toLowerCase() === "all") return 0;
-          throw new ScriptError(`${what}: expected a count or "All", got ${describe(v)}.`);
-        }
-        return integer(v, what);
-      case "aiScript":
-        if (typeof v === "string") {
-          const code = aiScriptByName(v);
-          if (code === void 0) throw new ScriptError(`${what}: unknown AI script ${describe(v)}.`);
-          return code;
-        }
-        return integer(v, what);
-      case "textFlags":
-        return v === void 0 || v === true ? ActionFlag.AlwaysDisplay : v === false ? 0 : integer(v, what) & ActionFlag.AlwaysDisplay;
-      default:
-        if (typeof v === "string") {
-          if (!CANONICAL[kind]) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
-          const n = choiceOf(kind, v);
-          if (n === void 0) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
-          return n;
-        }
-        return integer(v, what);
-    }
-  };
-  const fromDef = (ident, def, kind) => Object.assign((...args) => {
-    const params = scriptParams(def);
-    const required = params.filter((p) => !p.optional).length;
-    if (kind === "condition" && READ_ARITY.get(ident) === args.length) return readOf(ident, def, args);
-    if (args.length < required || args.length > params.length) {
-      throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
-    }
-    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
-    params.forEach((p, i) => {
-      const v = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
-      if (p.arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v;
-      else record[p.arg.field] = v;
-    });
-    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
-    return kind === "condition" ? condition(record) : action(record);
-  }, { __trigscript: "builder", kind, def, ident });
-  const read = (ident, source, equals) => {
-    const fail = () => {
-      throw new ScriptError(`${ident}() is a value the game holds, read while the game runs: it has no value when the script is built. Inside program(), assign it to a let or use it in the program's own arithmetic and comparisons.`);
-    };
-    return { __trigscript: "read", read: source, ident, ...equals !== void 0 ? { equals } : {}, valueOf: fail, toString: fail };
-  };
-  const readOf = (ident, def, args) => {
-    const record = { ...emptyCondition(), type: def.type, comparison: Comparison.AtLeast };
-    const params = scriptParams(def).filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount");
-    params.forEach((p, i) => {
-      record[p.arg.field] = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
-    });
-    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= ConditionFlag.UnitTypeUsed;
-    return read(ident, { source: "condition", record });
-  };
-  for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
-  for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
-  rt.preserve = rt.preserveTrigger;
-  const raw = (kind) => (...args) => {
-    const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
-    const record = kind === "condition" ? emptyCondition() : emptyAction();
-    args.forEach((a2, i) => {
-      if (i < fields.length) record[fields[i]] = integer(a2, `${kind}(): ${fields[i]}`);
-    });
-    if (kind === "action") {
-      for (const f of ["text", "wav"]) if (record[f]) record[f] = collector.localString({ index: record[f] });
-    }
-    return kind === "condition" ? condition(record) : action(record);
-  };
-  rt.condition = raw("condition");
-  rt.action = raw("action");
-  const epd = (address, what) => {
-    const n = integer(address, what);
-    if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
-    return (n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
-  };
-  rt.memory = (address, comparison, value) => condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
-  rt.setMemory = (address, modifier, value) => action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
-  rt.disabled = (item) => {
-    if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
-    if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
-    throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
-  };
-  rt.not = (item) => {
-    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
-    const flipped = negateCondition(item.record);
-    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!\u2026) can test it.");
-    return condition(flipped[0]);
-  };
-  const playersOf = (v, what) => {
-    if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
-    return flatten(v).map((p) => {
-      const n = integer(p, what);
-      if (n >= PLAYER_GROUP_COUNT) throw new ScriptError(`${what}: player group ${n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
-      return n;
-    });
-  };
-  const items = (v, test, what, wrong, wrongName) => flatten(v).map((x) => {
-    if (test(x)) return x;
-    if (isRead(x)) throw new ScriptError(`${what}: ${x.ident}() without a comparison reads the value, which only a program can do. In a trigger, give the comparison and the amount: ${x.ident}(\u2026, ">=", 1).`);
-    if (isPrint(x)) throw new ScriptError(`${what}: print() is a statement of a program; a trigger shows text with displayText().`);
-    if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
-    throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
-  });
-  rt.trigger = (players, conditions, actions, options2, at) => {
-    const t = emptyTrigger();
-    for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
-    t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c2) => ({ ...c2.record }));
-    t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a2) => ({ ...a2.record }));
-    for (const a2 of t.actions) {
-      const s = a2.text > 0 ? collector.strings[a2.text - 1] : void 0;
-      if (s && "text" in s && hasTextMark(s.text)) throw new ScriptError("name() and color() are filled in by a program while the game runs; a trigger's text is fixed when the script is built. Show this text from inside program().");
-    }
-    if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
-    if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
-    if (options2 !== void 0 && options2 !== null) {
-      if (typeof options2 !== "object") throw new ScriptError(`trigger: options is an object such as { preserve: true }, got ${describe(options2)}.`);
-      for (const [key, value] of Object.entries(options2)) {
-        if (key === "flags") {
-          t.flags |= integer(value, "trigger: flags");
-          continue;
-        }
-        const hit = TRIGGER_OPTION_NAMES.find(([, name]) => name === key);
-        if (!hit) throw new ScriptError(`trigger: unknown option "${key}".`);
-        if (value) t.flags |= hit[0];
-      }
-    }
-    collector.entries.push({ kind: "trigger", record: t, at: isAt(at) ? at : null });
-    return { __trigscript: "trigger", record: t };
-  };
-  rt.hyperTriggers = (owner = 0) => {
-    const p = integer(owner, "hyperTriggers: owner");
-    if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
-    for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
-    collector.hyper = true;
-  };
-  const number = (v, what) => {
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
-    return v;
-  };
-  rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
-  rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
-  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
-  rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
-  rt.sleep = () => {
-    throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
-  };
-  rt.rose = () => {
-    throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if.");
-  };
-  rt.once = () => {
-    throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if.");
-  };
-  rt.shared = () => {
-    throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
-  };
-  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
-  const reader = (fn) => Object.assign(fn, { __trigscript: "reader" });
-  const onePlayer = (v, what, slots = PLAYER_SLOTS) => {
-    const n = integer(v, what);
-    if (n !== PlayerGroup.CurrentPlayer && n >= slots) throw new ScriptError(`${what}: expected one player, P1 \u2026 P${slots} or CurrentPlayer.`);
-    return n;
-  };
-  const conditionRead = (ident, type, fields) => read(ident, { source: "condition", record: { ...emptyCondition(), type, comparison: Comparison.AtLeast, ...fields } });
-  const resourceRead = (ident, player, kind) => conditionRead(ident, ConditionType.Accumulate, { player: argValue("player", player, `${ident}: player`), resource: argValue("resource", kind, `${ident}: resource`) });
-  rt.minerals = reader((player) => resourceRead("minerals", player, "ore"));
-  rt.gas = reader((player) => resourceRead("gas", player, "gas"));
-  rt.resources = reader((player, kind) => resourceRead("resources", player, kind));
-  rt.countUnits = reader((player, unit, location) => {
-    const fields = { player: argValue("player", player, "countUnits: player"), unitId: argValue("unit", unit, "countUnits: unit"), flags: ConditionFlag.UnitTypeUsed };
-    return location === void 0 ? conditionRead("countUnits", ConditionType.Command, fields) : conditionRead("countUnits", ConditionType.Bring, { ...fields, location: argValue("location", location, "countUnits: location") });
-  });
-  rt.kills = reader((player, unit) => conditionRead("kills", ConditionType.Kill, { player: argValue("player", player, "kills: player"), unitId: argValue("unit", unit, "kills: unit"), flags: ConditionFlag.UnitTypeUsed }));
-  rt.countdown = reader(() => conditionRead("countdown", ConditionType.CountdownTimer, {}));
-  rt.elapsed = reader(() => conditionRead("elapsed", ConditionType.ElapsedTime, {}));
-  rt.races = Object.freeze({ Zerg: 0, Terran: 1, Protoss: 2 });
-  rt.slots = Object.freeze({ Empty: 0, Computer: 1, Human: 2, Rescuable: 3, Neutral: 7 });
-  rt.race = reader((player) => read("race", { source: "player", fact: "race", player: onePlayer(player, "race: player", 12) }));
-  rt.slot = reader((player) => read("slot", { source: "player", fact: "slot", player: onePlayer(player, "slot: player", 12) }));
-  rt.isHuman = reader((player) => read("isHuman", { source: "player", fact: "slot", player: onePlayer(player, "isHuman: player", 12) }, 2));
-  rt.hasLeft = reader((player) => read("hasLeft", { source: "player", fact: "left", player: onePlayer(player, "hasLeft: player") }, 1));
-  rt.supply = reader((player, of = "used", race) => {
-    if (of !== "used" && of !== "max" && of !== "provided") throw new ScriptError(`supply: expected "used", "max" or "provided", got ${describe(of)}.`);
-    let r = null;
-    if (race !== void 0 && race !== null) {
-      const n = typeof race === "string" ? ["zerg", "terran", "protoss"].indexOf(race.trim().toLowerCase()) : integer(race, "supply: race");
-      if (n !== 0 && n !== 1 && n !== 2) throw new ScriptError(`supply: the race is races.Zerg, races.Terran or races.Protoss, got ${describe(race)}.`);
-      r = n;
-    }
-    return read("supply", { source: "supply", of, race: r, player: onePlayer(player, "supply: player", 12) });
-  });
-  rt.name = (player) => textMark("n", onePlayer(player, "name: player", 12));
-  rt.color = (player) => textMark("c", onePlayer(player, "color: player", 12));
-  rt.print = (text, options2) => {
-    if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
-    let to = PlayerGroup.CurrentPlayer;
-    let position = "chat";
-    if (options2 !== void 0 && options2 !== null) {
-      if (typeof options2 !== "object") throw new ScriptError(`print: options is an object such as { to: P2 }, got ${describe(options2)}.`);
-      for (const [key, value] of Object.entries(options2)) {
-        if (key === "to") {
-          to = integer(value, "print: to");
-          const groups = [PlayerGroup.CurrentPlayer, PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
-          if (to >= PLAYER_SLOTS && !groups.includes(to)) throw new ScriptError(`print: to is a player (P1 \u2026 P${PLAYER_SLOTS}), CurrentPlayer, AllPlayers or a force.`);
-        } else if (key === "position") {
-          if (value !== "chat" && value !== "center") throw new ScriptError(`print: position is "chat" or "center", got ${describe(value)}.`);
-          position = value;
-        } else throw new ScriptError(`print: unknown option "${key}".`);
-      }
-    }
-    return { __trigscript: "print", text, to, position };
-  };
-  rt.program = (body2, options2, at) => {
-    if (!isProgramDescriptor(body2)) {
-      throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
-    }
-    const out = { owners: [0], perPlayer: false };
-    if (options2 !== void 0 && options2 !== null) {
-      if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
-      for (const [key, value] of Object.entries(options2)) {
-        switch (key) {
-          case "owner": {
-            const owners = playersOf(value, "program: owner");
-            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
-            const groups = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
-            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 \u2026 P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players \u2014 the program runs once for each of them, with CurrentPlayer as that player.`);
-            out.owners = [...new Set(owners)];
-            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
-            break;
-          }
-          case "comments":
-          case "variableUnits":
-            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
-          default:
-            throw new ScriptError(`program: unknown option "${key}".`);
-        }
-      }
-    }
-    collector.entries.push({ kind: "program", descriptor: body2, options: out, at: isAt(at) ? at : null });
-  };
-  rt.random = () => {
-    throw new ScriptError("random() is a coin toss and random(n) a number from 0 to n \u2212 1, both made by the game: use them inside program().");
-  };
-  rt.game = (body2) => {
-    if (!isProgramDescriptor(body2)) {
-      throw new ScriptError(typeof body2 === "function" ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { \u2026 })." : `game() takes an arrow function, got ${describe(body2)}.`);
-    }
-    const fn = () => {
-      throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built.");
-    };
-    return Object.assign(fn, { __trigscript: "gamefn", descriptor: body2 });
-  };
-  return rt;
-}
-var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
 
 // vendor/units.ts
 var UNIT_NAMES = [
@@ -1368,8 +1019,252 @@ var UNIT_NAMES = [
   "Terran Vespene Gas Tank Type 2"
 ];
 
+// vendor/gameNames.ts
+var WEAPON_NAMES = [
+  "Gauss Rifle",
+  "Gauss Rifle (Jim Raynor)",
+  "C-10 Canister Rifle",
+  "C-10 Canister Rifle (Sarah Kerrigan)",
+  "Fragmentation Grenade",
+  "Fragmentation Grenade (Jim Raynor)",
+  "Spider Mines",
+  "Twin Autocannons",
+  "Hellfire Missile Pack",
+  "Twin Autocannons (Alan Schezar)",
+  "Hellfire Missile Pack (Alan Schezar)",
+  "Arclite Cannon",
+  "Arclite Cannon (Edmund Duke)",
+  "Fusion Cutter",
+  "Fusion Cutter (Harvest)",
+  "Gemini Missiles",
+  "Burst Lasers",
+  "Gemini Missiles (Tom Kazansky)",
+  "Burst Lasers (Tom Kazansky)",
+  "ATS Laser Battery",
+  "ATA Laser Battery",
+  "ATS Laser Battery (Hero)",
+  "ATA Laser Battery (Hero)",
+  "ATS Laser Battery (Hyperion)",
+  "ATA Laser Battery (Hyperion)",
+  "Flame Thrower",
+  "Flame Thrower (Gui Montag)",
+  "Arclite Shock Cannon",
+  "Arclite Shock Cannon (Edmund Duke)",
+  "Longbolt Missile",
+  "Yamato Gun",
+  "Nuclear Strike",
+  "Lockdown",
+  "EMP Shockwave",
+  "Irradiate",
+  "Claws",
+  "Claws (Devouring One)",
+  "Claws (Infested Kerrigan)",
+  "Needle Spines",
+  "Needle Spines (Hunter Killer)",
+  "Kaiser Blades",
+  "Kaiser Blades (Torrasque)",
+  "Toxic Spores (Broodling)",
+  "Spines",
+  "Spines (Harvest)",
+  "Acid Spray (Unused)",
+  "Acid Spore",
+  "Acid Spore (Kukulza)",
+  "Glave Wurm",
+  "Glave Wurm (Kukulza)",
+  "Venom (Unused)",
+  "Venom (Unused, Hero)",
+  "Seeker Spores",
+  "Subterranean Tentacle",
+  "Suicide (Infested Terran)",
+  "Suicide (Scourge)",
+  "Parasite",
+  "Spawn Broodlings",
+  "Ensnare",
+  "Dark Swarm",
+  "Plague",
+  "Consume",
+  "Particle Beam",
+  "Particle Beam (Harvest)",
+  "Psi Blades",
+  "Psi Blades (Fenix)",
+  "Phase Disruptor",
+  "Phase Disruptor (Fenix)",
+  "Psi Assault (Unused)",
+  "Psi Assault (Tassadar/Aldaris)",
+  "Psionic Shockwave",
+  "Psionic Shockwave (Tassadar/Zeratul Archon)",
+  "Unknown 72",
+  "Dual Photon Blasters",
+  "Anti-Matter Missiles",
+  "Dual Photon Blasters (Mojo)",
+  "Anti-Matter Missiles (Mojo)",
+  "Phase Disruptor Cannon",
+  "Phase Disruptor Cannon (Danimoth)",
+  "Pulse Cannon",
+  "STS Photon Cannon",
+  "STA Photon Cannon",
+  "Scarab",
+  "Stasis Field",
+  "Psionic Storm",
+  "Warp Blades (Zeratul)",
+  "Warp Blades (Dark Templar Hero)",
+  "Missiles (Unused)",
+  "Laser Battery 1 (Unused)",
+  "Tormentor Missiles (Unused)",
+  "Bombs (Unused)",
+  "Raider Gun (Unused)",
+  "Laser Battery 2 (Unused)",
+  "Laser Battery 3 (Unused)",
+  "Dual Photon Blasters (Unused)",
+  "Flechette Grenade (Unused)",
+  "Twin Autocannons (Floor Trap)",
+  "Hellfire Missile Pack (Wall Trap)",
+  "Flame Thrower (Wall Trap)",
+  "Hellfire Missile Pack (Floor Trap)",
+  "Neutron Flare",
+  "Disruption Web",
+  "Restoration",
+  "Halo Rockets",
+  "Corrosive Acid",
+  "Mind Control",
+  "Feedback",
+  "Optical Flare",
+  "Maelstrom",
+  "Subterranean Spines",
+  "Gauss Rifle 0 (Unused)",
+  "Warp Blades",
+  "C-10 Canister Rifle (Samir Duran)",
+  "C-10 Canister Rifle (Infested Duran)",
+  "Dual Photon Blasters (Artanis)",
+  "Anti-Matter Missiles (Artanis)",
+  "C-10 Canister Rifle (Alexei Stukov)",
+  "Gauss Rifle 1 (Unused)",
+  "Unknown 118",
+  "Unknown 119",
+  "Unknown 120",
+  "Unknown 121",
+  "Unknown 122",
+  "Unknown 123",
+  "Unknown 124",
+  "Unknown 125",
+  "Unknown 126",
+  "Unknown 127",
+  "Unknown 128",
+  "Unknown 129"
+];
+var UPGRADE_NAMES = [
+  "Terran Infantry Armor",
+  "Terran Vehicle Plating",
+  "Terran Ship Plating",
+  "Zerg Carapace",
+  "Zerg Flyer Carapace",
+  "Protoss Ground Armor",
+  "Protoss Air Armor",
+  "Terran Infantry Weapons",
+  "Terran Vehicle Weapons",
+  "Terran Ship Weapons",
+  "Zerg Melee Attacks",
+  "Zerg Missile Attacks",
+  "Zerg Flyer Attacks",
+  "Protoss Ground Weapons",
+  "Protoss Air Weapons",
+  "Protoss Plasma Shields",
+  "U-238 Shells",
+  "Ion Thrusters",
+  "Burst Lasers (Unused)",
+  "Titan Reactor",
+  "Ocular Implants",
+  "Moebius Reactor",
+  "Apollo Reactor",
+  "Colossus Reactor",
+  "Ventral Sacs",
+  "Antennae",
+  "Pneumatized Carapace",
+  "Metabolic Boost",
+  "Adrenal Glands",
+  "Muscular Augments",
+  "Grooved Spines",
+  "Gamete Meiosis",
+  "Metasynaptic Node",
+  "Singularity Charge",
+  "Leg Enhancements",
+  "Scarab Damage",
+  "Reaver Capacity",
+  "Gravitic Drive",
+  "Sensor Array",
+  "Gravitic Boosters",
+  "Khaydarin Amulet",
+  "Apial Sensors",
+  "Gravitic Thrusters",
+  "Carrier Capacity",
+  "Khaydarin Core",
+  "Unused (45)",
+  "Unused (46)",
+  "Argus Jewel",
+  "Unused (48)",
+  "Argus Talisman",
+  "Unused (50)",
+  "Caduceus Reactor",
+  "Chitinous Plating",
+  "Anabolic Synthesis",
+  "Charon Boosters",
+  "Unused (55)",
+  "Unused (56)",
+  "Unused (57)",
+  "Unused (58)",
+  "Unused (59)",
+  "Unused (60)"
+];
+var TECH_NAMES = [
+  "Stim Packs",
+  "Lockdown",
+  "EMP Shockwave",
+  "Spider Mines",
+  "Scanner Sweep",
+  "Tank Siege Mode",
+  "Defensive Matrix",
+  "Irradiate",
+  "Yamato Gun",
+  "Cloaking Field",
+  "Personnel Cloaking",
+  "Burrowing",
+  "Infestation",
+  "Spawn Broodlings",
+  "Dark Swarm",
+  "Plague",
+  "Consume",
+  "Ensnare",
+  "Parasite",
+  "Psionic Storm",
+  "Hallucination",
+  "Recall",
+  "Stasis Field",
+  "Archon Warp",
+  "Restoration",
+  "Disruption Web",
+  "Unused (26)",
+  "Mind Control",
+  "Dark Archon Meld",
+  "Feedback",
+  "Optical Flare",
+  "Maelstrom",
+  "Lurker Aspect",
+  "Unused (33)",
+  "Healing",
+  "Unused (35)",
+  "Unused (36)",
+  "Unused (37)",
+  "Unused (38)",
+  "Unused (39)",
+  "Unused (40)",
+  "Unused (41)",
+  "Unused (42)",
+  "Unused (43)"
+];
+
 // compiler/names.ts
 var ANYWHERE_INDEX = 63;
+var allTables = (n) => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs];
 function identifier(name) {
   const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
   let id = words.map((w) => w[0].toUpperCase() + w.slice(1)).join("");
@@ -1450,10 +1345,13 @@ function scriptNames(src = {}) {
   });
   return {
     players: table("players", "Player", withMap ? "Players, player groups and the map's forces." : "Players and player groups.", playerEntries(src.forceNames ?? [])),
-    units: table("units", "Unit", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
+    units: table("units", "UnitType", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
     locations: table("locations", "Location", "The map's locations.", locations),
     switches: table("switches", "Switch", withMap ? "The 256 switches, by number and by the map's names." : "The 256 switches.", switches),
-    aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries())
+    aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries()),
+    weapons: table("weapons", "Weapon", "Weapons, for stats() and a unit type's groundWeapon / airWeapon.", [...WEAPON_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })), { value: WEAPON_NAMES.length, keys: ["None"] }]),
+    upgrades: table("upgrades", "Upgrade", "Upgrades, for stats().", UPGRADE_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
+    techs: table("techs", "Tech", "Technologies, for stats().", TECH_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })))
   };
 }
 function defaultScriptNames() {
@@ -1462,6 +1360,521 @@ function defaultScriptNames() {
 function entryFor(t, value) {
   return t.entries.find((e) => e.value === value);
 }
+
+// compiler/tables.ts
+var TABLE_SIZE = { unit: 228, weapon: 130, upgrade: 61, tech: 44, player: 12 };
+var UNIT_FLAGS = 6701184;
+var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS, stride: 4, width: "bit", bit, boolean: true });
+var TABLE_FIELDS = {
+  unit: [
+    { name: "maxHp", doc: "Hit points of units made after the write.", base: 6693712, stride: 4, width: 4, scale: 256 },
+    { name: "maxShields", doc: "Shield points of units made after the write.", base: 6688256, stride: 2, width: 2 },
+    { name: "armor", doc: "Armour, before upgrades.", base: 6684360, stride: 1, width: 1 },
+    { name: "minerals", doc: "What the unit costs in minerals.", base: 6699144, stride: 2, width: 2 },
+    { name: "gas", doc: "What the unit costs in gas.", base: 6683904, stride: 2, width: 2 },
+    { name: "buildTime", doc: "Seconds to build, on the game's clock; a fraction is fine when the number is known when you build (1.5).", base: 6685736, stride: 2, width: 2, scale: 15 },
+    { name: "supplyUsed", doc: "Supply the unit takes; a Zergling is 0.5.", base: 6700264, stride: 1, width: 1, scale: 2 },
+    { name: "supplyProvided", doc: "Supply the unit provides, for the ones made after the write.", base: 6702792, stride: 1, width: 1, scale: 2 },
+    { name: "sight", doc: "Sight range in tiles, up to 11.", base: 6697528, stride: 1, width: 1 },
+    { name: "groundWeapon", doc: "The weapon used against ground units (weapons.*); units already on the map switch too.", base: 6698680, stride: 1, width: 1, type: "Weapon" },
+    { name: "airWeapon", doc: "The weapon used against air units (weapons.*); weapons.None for none.", base: 6690528, stride: 1, width: 1, type: "Weapon" },
+    { name: "size", doc: "What concussive and explosive damage scale by: 0 independent, 1 small, 2 medium, 3 large.", base: 6693248, stride: 1, width: 1 },
+    { name: "speed", doc: "Top speed in pixels a frame (a Marine walks at 4, a Vulture at 6.67), for units made after the write: the type's flingy is switched to table control and given this speed, with acceleration and stopping distance to match. A fraction is fine when the number is known when you build.", base: 7118584, stride: 4, width: 4, scale: 256, writeOnly: true, special: "speed" },
+    { name: "name", doc: "The name shown for the type: text known when you build.", base: 6685280, stride: 2, width: 2, writeOnly: true, special: "name", type: "string" },
+    flag("detector", 15, "Sees cloaked and burrowed units in its sight range."),
+    flag("permanentCloak", 22, "Always cloaked, for units made after the write."),
+    flag("cloakable", 9, "Has the ability to cloak (the flag alone gives no button)."),
+    flag("burrowable", 20, "Has the ability to burrow (the flag alone gives no button)."),
+    flag("regenerates", 7, "Hit points climb back over time, as a Zerg unit's do; units already on the map follow at once."),
+    flag("invincible", 29, "Cannot be hurt, for units made after the write."),
+    flag("hero", 6, "A hero unit."),
+    flag("organic", 16, "A Medic can heal it; units already on the map follow."),
+    flag("mechanical", 30, "An SCV can repair it; units already on the map follow."),
+    flag("robotic", 14, "Immune to the spells robotic units are immune to.")
+  ],
+  weapon: [
+    { name: "damage", doc: "Damage of one hit, before upgrades.", base: 6647472, stride: 2, width: 2 },
+    { name: "bonus", doc: "Extra damage per upgrade level.", base: 6649464, stride: 2, width: 2 },
+    { name: "cooldown", doc: "Frames between attacks.", base: 6647736, stride: 1, width: 1 },
+    { name: "factor", doc: "Hits per attack.", base: 6644960, stride: 1, width: 1 },
+    { name: "range", doc: "Range in pixels, 32 a tile.", base: 6648944, stride: 4, width: 4 },
+    { name: "minRange", doc: "The least range in pixels: nothing closer can be shot.", base: 6646296, stride: 4, width: 4 }
+  ],
+  upgrade: [
+    { name: "minerals", doc: "The first level's mineral cost.", base: 6641472, stride: 2, width: 2 },
+    { name: "gas", doc: "The first level's gas cost.", base: 6641728, stride: 2, width: 2 },
+    { name: "time", doc: "Seconds the first level takes, on the game's clock.", base: 6642560, stride: 2, width: 2, scale: 15 },
+    { name: "maxLevel", doc: "How many times it can be researched. Read only: the game took no write.", base: 6641408, stride: 1, width: 1, readonly: true }
+  ],
+  tech: [
+    { name: "minerals", doc: "Mineral cost of the research.", base: 6644296, stride: 2, width: 2 },
+    { name: "gas", doc: "Gas cost of the research.", base: 6644208, stride: 2, width: 2 },
+    { name: "time", doc: "Seconds the research takes, on the game's clock.", base: 6644696, stride: 2, width: 2, scale: 15 },
+    { name: "energy", doc: "Energy a cast takes.", base: 6644608, stride: 2, width: 2 }
+  ],
+  player: [
+    { name: "color", doc: `The colour the player's units and minimap dots are drawn in: one of colors.*, or "teal". Takes effect at once.`, base: 5774710, stride: 1, width: 1, writeOnly: true, special: "color", type: "PlayerColor | ColorName" },
+    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade" } },
+    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech" } }
+  ]
+};
+var PLAYER_COLORS = { red: 111, blue: 165, teal: 159, purple: 164, orange: 179, brown: 19, white: 255, yellow: 135, green: 117 };
+var MINIMAP_COLOR_OFFSET = 5774806 - 5774710;
+var TABLE_BRAND = { unit: "unit", weapon: "weapon", upgrade: "upgrade", tech: "tech", player: "player" };
+var tableOfBrand = (brand) => Object.keys(TABLE_BRAND).find((k) => TABLE_BRAND[k] === brand);
+var cellMax = (width) => width === "bit" ? 1 : width === 4 ? 4294967295 : 2 ** (width * 8) - 1;
+
+// compiler/runtime.ts
+var DEATHS_TABLE_ADDRESS = 5808996;
+var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
+var isRead = (v) => typeof v === "object" && v !== null && v.__trigscript === "read";
+var isPrint = (v) => typeof v === "object" && v !== null && v.__trigscript === "print";
+var isUnitQuery = (v) => typeof v === "object" && v !== null && v.__trigscript === "units";
+var isUnitPick = (v) => typeof v === "object" && v !== null && v.__trigscript === "pick";
+var isTable = (v) => typeof v === "object" && v !== null && v.__trigscript === "table";
+var isGameValue = (v) => isRead(v) || isTable(v) || isUnitPick(v);
+function playerColor(v) {
+  if (typeof v === "string") {
+    const n = PLAYER_COLORS[v.trim().toLowerCase()];
+    if (n === void 0) throw new ScriptError(`Unknown colour ${JSON.stringify(v)}: one of ${Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(", ")}.`);
+    return n;
+  }
+  if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255) return v;
+  throw new ScriptError('A player colour is one of colors.*, a word such as "teal", or a palette entry from 0 to 255.');
+}
+var isReader = (v) => typeof v === "function" && v.__trigscript === "reader";
+var MARK_OPEN = "\uE000";
+var MARK_CLOSE = "\uE001";
+var MARK = /\uE000([nc])(\d+)\uE001/g;
+var hasTextMark = (text) => text.includes(MARK_OPEN);
+var textMark = (letter, player) => `${MARK_OPEN}${letter}${player}${MARK_CLOSE}`;
+function textParts(text) {
+  const out = [];
+  let from = 0;
+  for (const m of text.matchAll(MARK)) {
+    if (m.index > from) out.push({ kind: "text", text: text.slice(from, m.index) });
+    out.push({ kind: m[1] === "n" ? "name" : "color", player: Number(m[2]) });
+    from = m.index + m[0].length;
+  }
+  if (from < text.length) out.push({ kind: "text", text: text.slice(from) });
+  return out;
+}
+var READ_ARITY = new Map(
+  [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
+);
+var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
+var UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "stats"];
+var ScriptError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ScriptError";
+  }
+};
+var Collector = class {
+  entries = [];
+  strings = [];
+  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
+  hyper = false;
+  localString(s) {
+    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
+    if (at >= 0) return at + 1;
+    this.strings.push(s);
+    return this.strings.length;
+  }
+};
+var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript === "condition";
+var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
+var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
+var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
+var isGameFunction = (v) => typeof v === "function" && v.__trigscript === "gamefn";
+var isBuilder = (v) => typeof v === "function" && v.__trigscript === "builder";
+var condition = (record) => ({ __trigscript: "condition", record });
+var action = (record) => ({ __trigscript: "action", record });
+function describe(v) {
+  if (typeof v === "string") return JSON.stringify(v.length > 40 ? `${v.slice(0, 39)}\u2026` : v);
+  if (typeof v === "number" || typeof v === "boolean" || v === null || v === void 0) return String(v);
+  if (isCondition(v)) return "a condition";
+  if (isAction(v)) return "an action";
+  if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isTable(v)) return `a value the game holds (${v.ident})`;
+  if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
+  if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isPrint(v)) return "a print()";
+  if (Array.isArray(v)) return "an array";
+  if (typeof v === "function") return "a function";
+  return "an object";
+}
+function integer(v, what) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (isRead(v)) throw new ScriptError(`${what}: ${v.ident}() is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it; a trigger's condition or action takes numbers known when the script is built.`);
+  if (isTable(v)) throw new ScriptError(`${what}: ${v.ident} is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it.`);
+  throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+}
+function flatten(v, out = []) {
+  if (Array.isArray(v)) for (const x of v) flatten(x, out);
+  else if (v !== void 0 && v !== null && v !== false) out.push(v);
+  return out;
+}
+function createRuntime(names, collector, options = {}) {
+  const rt = {};
+  const comment = options.comments === false ? void 0 : (text) => collector.localString({ text });
+  for (const t of allTables(names)) {
+    const table2 = {};
+    for (const e of t.entries) for (const k of e.keys) table2[k] = e.value;
+    rt[t.object] = Object.freeze(table2);
+  }
+  for (let i = 0; i < PLAYER_SLOTS; i++) rt[`P${i + 1}`] = i;
+  rt.CurrentPlayer = PlayerGroup.CurrentPlayer;
+  rt.AllPlayers = PlayerGroup.AllPlayers;
+  const argValue = (kind, v, what) => {
+    switch (kind) {
+      case "text":
+      case "wav":
+        if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
+        if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
+        throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
+      case "count":
+        if (typeof v === "string") {
+          if (v.trim().toLowerCase() === "all") return 0;
+          throw new ScriptError(`${what}: expected a count or "All", got ${describe(v)}.`);
+        }
+        return integer(v, what);
+      case "aiScript":
+        if (typeof v === "string") {
+          const code = aiScriptByName(v);
+          if (code === void 0) throw new ScriptError(`${what}: unknown AI script ${describe(v)}.`);
+          return code;
+        }
+        return integer(v, what);
+      case "textFlags":
+        return v === void 0 || v === true ? ActionFlag.AlwaysDisplay : v === false ? 0 : integer(v, what) & ActionFlag.AlwaysDisplay;
+      default:
+        if (typeof v === "string") {
+          if (!CANONICAL[kind]) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+          const n = choiceOf(kind, v);
+          if (n === void 0) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
+          return n;
+        }
+        return integer(v, what);
+    }
+  };
+  const fromDef = (ident, def, kind) => Object.assign((...args) => {
+    const params = scriptParams(def);
+    const required = params.filter((p) => !p.optional).length;
+    if (kind === "condition" && READ_ARITY.get(ident) === args.length) return readOf(ident, def, args);
+    if (args.length < required || args.length > params.length) {
+      throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
+    }
+    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
+    params.forEach((p, i) => {
+      const v = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
+      if (p.arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v;
+      else record[p.arg.field] = v;
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
+    return kind === "condition" ? condition(record) : action(record);
+  }, { __trigscript: "builder", kind, def, ident });
+  const read = (ident, source, equals) => {
+    const fail = () => {
+      throw new ScriptError(`${ident}() is a value the game holds, read while the game runs: it has no value when the script is built. Inside program(), assign it to a let or use it in the program's own arithmetic and comparisons.`);
+    };
+    return { __trigscript: "read", read: source, ident, ...equals !== void 0 ? { equals } : {}, valueOf: fail, toString: fail };
+  };
+  const readOf = (ident, def, args) => {
+    const record = { ...emptyCondition(), type: def.type, comparison: Comparison.AtLeast };
+    const params = scriptParams(def).filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount");
+    params.forEach((p, i) => {
+      record[p.arg.field] = argValue(p.arg.kind, args[i], `${ident}: ${p.name}`);
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= ConditionFlag.UnitTypeUsed;
+    return read(ident, { source: "condition", record });
+  };
+  for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
+  for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
+  rt.preserve = rt.preserveTrigger;
+  const raw = (kind) => (...args) => {
+    const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
+    const record = kind === "condition" ? emptyCondition() : emptyAction();
+    args.forEach((a2, i) => {
+      if (i < fields.length) record[fields[i]] = integer(a2, `${kind}(): ${fields[i]}`);
+    });
+    if (kind === "action") {
+      for (const f of ["text", "wav"]) if (record[f]) record[f] = collector.localString({ index: record[f] });
+    }
+    return kind === "condition" ? condition(record) : action(record);
+  };
+  rt.condition = raw("condition");
+  rt.action = raw("action");
+  const epd = (address, what) => {
+    const n = integer(address, what);
+    if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
+    return (n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
+  };
+  rt.memory = (address, comparison, value) => condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
+  rt.setMemory = (address, modifier, value) => action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
+  rt.disabled = (item) => {
+    if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
+    if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
+    throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
+  };
+  rt.not = (item) => {
+    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
+    const flipped = negateCondition(item.record);
+    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!\u2026) can test it.");
+    return condition(flipped[0]);
+  };
+  const playersOf = (v, what) => {
+    if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
+    return flatten(v).map((p) => {
+      const n = integer(p, what);
+      if (n >= PLAYER_GROUP_COUNT) throw new ScriptError(`${what}: player group ${n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
+      return n;
+    });
+  };
+  const items = (v, test, what, wrong, wrongName) => flatten(v).map((x) => {
+    if (test(x)) return x;
+    if (isRead(x)) throw new ScriptError(`${what}: ${x.ident}() without a comparison reads the value, which only a program can do. In a trigger, give the comparison and the amount: ${x.ident}(\u2026, ">=", 1).`);
+    if (isPrint(x)) throw new ScriptError(`${what}: print() is a statement of a program; a trigger shows text with displayText().`);
+    if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
+    throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
+  });
+  rt.trigger = (players, conditions, actions, options2, at) => {
+    const t = emptyTrigger();
+    for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
+    t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c2) => ({ ...c2.record }));
+    t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a2) => ({ ...a2.record }));
+    for (const a2 of t.actions) {
+      const s = a2.text > 0 ? collector.strings[a2.text - 1] : void 0;
+      if (s && "text" in s && hasTextMark(s.text)) throw new ScriptError("name() and color() are filled in by a program while the game runs; a trigger's text is fixed when the script is built. Show this text from inside program().");
+    }
+    if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
+    if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`trigger: options is an object such as { preserve: true }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "flags") {
+          t.flags |= integer(value, "trigger: flags");
+          continue;
+        }
+        const hit = TRIGGER_OPTION_NAMES.find(([, name]) => name === key);
+        if (!hit) throw new ScriptError(`trigger: unknown option "${key}".`);
+        if (value) t.flags |= hit[0];
+      }
+    }
+    collector.entries.push({ kind: "trigger", record: t, at: isAt(at) ? at : null });
+    return { __trigscript: "trigger", record: t };
+  };
+  rt.hyperTriggers = (owner = 0) => {
+    const p = integer(owner, "hyperTriggers: owner");
+    if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
+    for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
+    collector.hyper = true;
+  };
+  const number = (v, what) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
+    return v;
+  };
+  rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
+  rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
+  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
+  rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
+  rt.sleep = () => {
+    throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
+  };
+  rt.rose = () => {
+    throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if.");
+  };
+  rt.once = () => {
+    throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if.");
+  };
+  rt.shared = () => {
+    throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
+  };
+  rt.clamp = (v, lo, hi) => Math.min(Math.max(number(v, "clamp: value"), number(lo, "clamp: low")), number(hi, "clamp: high"));
+  const reader = (fn) => Object.assign(fn, { __trigscript: "reader" });
+  const onePlayer = (v, what, slots = PLAYER_SLOTS) => {
+    const n = integer(v, what);
+    if (n !== PlayerGroup.CurrentPlayer && n >= slots) throw new ScriptError(`${what}: expected one player, P1 \u2026 P${slots} or CurrentPlayer.`);
+    return n;
+  };
+  const conditionRead = (ident, type, fields) => read(ident, { source: "condition", record: { ...emptyCondition(), type, comparison: Comparison.AtLeast, ...fields } });
+  const resourceRead = (ident, player, kind) => conditionRead(ident, ConditionType.Accumulate, { player: argValue("player", player, `${ident}: player`), resource: argValue("resource", kind, `${ident}: resource`) });
+  rt.minerals = reader((player) => resourceRead("minerals", player, "ore"));
+  rt.gas = reader((player) => resourceRead("gas", player, "gas"));
+  rt.resources = reader((player, kind) => resourceRead("resources", player, kind));
+  rt.countUnits = reader((player, unit, location) => {
+    const fields = { player: argValue("player", player, "countUnits: player"), unitId: argValue("unit", unit, "countUnits: unit"), flags: ConditionFlag.UnitTypeUsed };
+    return location === void 0 ? conditionRead("countUnits", ConditionType.Command, fields) : conditionRead("countUnits", ConditionType.Bring, { ...fields, location: argValue("location", location, "countUnits: location") });
+  });
+  rt.kills = reader((player, unit) => conditionRead("kills", ConditionType.Kill, { player: argValue("player", player, "kills: player"), unitId: argValue("unit", unit, "kills: unit"), flags: ConditionFlag.UnitTypeUsed }));
+  rt.countdown = reader(() => conditionRead("countdown", ConditionType.CountdownTimer, {}));
+  rt.elapsed = reader(() => conditionRead("elapsed", ConditionType.ElapsedTime, {}));
+  rt.races = Object.freeze({ Zerg: 0, Terran: 1, Protoss: 2 });
+  rt.slots = Object.freeze({ Empty: 0, Computer: 1, Human: 2, Rescuable: 3, Neutral: 7 });
+  rt.race = reader((player) => read("race", { source: "player", fact: "race", player: onePlayer(player, "race: player", 12) }));
+  rt.slot = reader((player) => read("slot", { source: "player", fact: "slot", player: onePlayer(player, "slot: player", 12) }));
+  rt.isHuman = reader((player) => read("isHuman", { source: "player", fact: "slot", player: onePlayer(player, "isHuman: player", 12) }, 2));
+  rt.hasLeft = reader((player) => read("hasLeft", { source: "player", fact: "left", player: onePlayer(player, "hasLeft: player") }, 1));
+  rt.supply = reader((player, of = "used", race) => {
+    if (of !== "used" && of !== "max" && of !== "provided") throw new ScriptError(`supply: expected "used", "max" or "provided", got ${describe(of)}.`);
+    let r = null;
+    if (race !== void 0 && race !== null) {
+      const n = typeof race === "string" ? ["zerg", "terran", "protoss"].indexOf(race.trim().toLowerCase()) : integer(race, "supply: race");
+      if (n !== 0 && n !== 1 && n !== 2) throw new ScriptError(`supply: the race is races.Zerg, races.Terran or races.Protoss, got ${describe(race)}.`);
+      r = n;
+    }
+    return read("supply", { source: "supply", of, race: r, player: onePlayer(player, "supply: player", 12) });
+  });
+  const onlyInProgram = (ident, how) => {
+    throw new ScriptError(`${ident}() is about the units in the game, which exist while it runs: ${how}, inside program().`);
+  };
+  const filterOf = (ident, v, given) => {
+    const out = { ...given };
+    if (v !== void 0 && v !== null) {
+      if (typeof v !== "object" || Array.isArray(v) || isGameValue(v)) throw new ScriptError(`${ident}: the filter is an object such as { type: units.TerranMarine, owner: P1, at: locations.Base }, got ${describe(v)}.`);
+      for (const [key, value] of Object.entries(v)) {
+        if (value === void 0 || value === null) continue;
+        if (key !== "type" && key !== "owner" && key !== "at") throw new ScriptError(`${ident}: unknown filter "${key}"; a filter has type, owner and at.`);
+        if (out[key] !== void 0) throw new ScriptError(`${ident}: ${key} is already given by the call's own argument.`);
+        out[key] = integer(value, `${ident}: ${key}`);
+      }
+    }
+    if (out.owner !== void 0) out.owner = onePlayer(out.owner, `${ident}: owner`, 12);
+    if (out.type !== void 0) {
+      if (out.type === 229) delete out.type;
+      else if (out.type > 232) throw new ScriptError(`${ident}: type is one of units.*.`);
+    }
+    if (out.at !== void 0 && (out.at === 0 || out.at === 64)) delete out.at;
+    if (out.at !== void 0 && out.at > 255) throw new ScriptError(`${ident}: at is one of locations.*.`);
+    return out;
+  };
+  const query = (ident, filter) => ({
+    __trigscript: "units",
+    filter,
+    ident,
+    [Symbol.iterator]: () => onlyInProgram(ident, `write for (const u of ${ident}(\u2026)) { \u2026 }`)
+  });
+  const pick = (ident, by, filter, near) => {
+    const fail = () => onlyInProgram(ident, `write const u = ${ident}(\u2026); if (u) { \u2026 }`);
+    return { __trigscript: "pick", by, filter, ident, ...near !== void 0 ? { near } : {}, valueOf: fail, toString: fail };
+  };
+  rt.unitsAt = (location, filter) => query("unitsAt", filterOf("unitsAt", filter, { at: argValue("location", location, "unitsAt: location") }));
+  rt.unitsOf = (player, filter) => query("unitsOf", filterOf("unitsOf", filter, { owner: integer(player, "unitsOf: player") }));
+  rt.allUnits = (filter) => query("allUnits", filterOf("allUnits", filter, {}));
+  rt.first = (filter) => pick("first", "first", filterOf("first", filter, {}));
+  rt.randomUnit = (filter) => pick("randomUnit", "random", filterOf("randomUnit", filter, {}));
+  rt.nearest = (unit, location, filter) => {
+    const near = argValue("location", location, "nearest: location");
+    if (near === 0 || near > 255) throw new ScriptError("nearest: the location to be near is one of locations.*.");
+    return pick("nearest", "nearest", filterOf("nearest", filter, { type: argValue("unit", unit, "nearest: unit") }), near);
+  };
+  const tableValue = (kind, field, index, ident, key) => {
+    const cell = {
+      name: `${kind}.${field.name}`,
+      base: field.base,
+      stride: field.stride,
+      index,
+      width: field.width,
+      ...key !== void 0 ? { key } : {},
+      ...field.bit !== void 0 ? { bit: field.bit } : {},
+      ...field.scale ? { scale: field.scale } : {},
+      ...kind === "player" ? { player: true } : {},
+      ...field.special ? { special: field.special } : {}
+    };
+    const fail = () => {
+      throw new ScriptError(`${ident} is a value the game holds: it has no value when the script is built. Inside program(), assign to it, assign it to a let, or use it in the program's own arithmetic and comparisons.`);
+    };
+    return { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail };
+  };
+  rt.stats = (of, brand) => {
+    const kind = typeof brand === "string" ? tableOfBrand(brand) : void 0;
+    if (!kind) throw new ScriptError("stats() takes a unit type, a weapon, an upgrade, a technology or a player, written where the compiler can see which: stats(units.TerranMarine), stats(P3) \u2014 inside program().");
+    const index = kind === "player" ? onePlayer(of, "stats: player", 12) : integer(of, `stats: ${kind}`);
+    if (index !== PlayerGroup.CurrentPlayer && index >= TABLE_SIZE[kind]) throw new ScriptError(`stats: ${kind} ${index} is past the table (0\u2013${TABLE_SIZE[kind] - 1}).`);
+    const who = `stats(${entryName(kind, index)})`;
+    const out = {};
+    for (const field of TABLE_FIELDS[kind]) {
+      if (!field.keyed) {
+        out[field.name] = tableValue(kind, field, index, `${who}.${field.name}`);
+        continue;
+      }
+      const { kind: keyKind } = field.keyed;
+      out[field.name] = Object.freeze(Array.from({ length: TABLE_SIZE[keyKind] }, (_, k) => tableValue(kind, field, index, `${who}.${field.name}[${entryName(keyKind, k)}]`, k)));
+    }
+    return Object.freeze(out);
+  };
+  const tableNames = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
+  const entryName = (kind, value) => {
+    const t = tableNames[kind];
+    const e = t.entries.find((x) => x.value === value);
+    return e ? `${t.object}.${e.keys[0]}` : String(value);
+  };
+  rt.colors = Object.freeze({ ...PLAYER_COLORS });
+  rt.name = (player) => textMark("n", onePlayer(player, "name: player", 12));
+  rt.color = (player) => textMark("c", onePlayer(player, "color: player", 12));
+  rt.print = (text, options2) => {
+    if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
+    let to = PlayerGroup.CurrentPlayer;
+    let position = "chat";
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`print: options is an object such as { to: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "to") {
+          to = integer(value, "print: to");
+          const groups = [PlayerGroup.CurrentPlayer, PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+          if (to >= PLAYER_SLOTS && !groups.includes(to)) throw new ScriptError(`print: to is a player (P1 \u2026 P${PLAYER_SLOTS}), CurrentPlayer, AllPlayers or a force.`);
+        } else if (key === "position") {
+          if (value !== "chat" && value !== "center") throw new ScriptError(`print: position is "chat" or "center", got ${describe(value)}.`);
+          position = value;
+        } else throw new ScriptError(`print: unknown option "${key}".`);
+      }
+    }
+    return { __trigscript: "print", text, to, position };
+  };
+  rt.program = (body2, options2, at) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const out = { owners: [0], perPlayer: false };
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        switch (key) {
+          case "owner": {
+            const owners = playersOf(value, "program: owner");
+            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
+            const groups = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 \u2026 P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players \u2014 the program runs once for each of them, with CurrentPlayer as that player.`);
+            out.owners = [...new Set(owners)];
+            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
+            break;
+          }
+          case "comments":
+          case "variableUnits":
+            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
+          default:
+            throw new ScriptError(`program: unknown option "${key}".`);
+        }
+      }
+    }
+    collector.entries.push({ kind: "program", descriptor: body2, options: out, at: isAt(at) ? at : null });
+  };
+  rt.random = () => {
+    throw new ScriptError("random() is a coin toss and random(n) a number from 0 to n \u2212 1, both made by the game: use them inside program().");
+  };
+  rt.game = (body2) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { \u2026 })." : `game() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const fn = () => {
+      throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built.");
+    };
+    return Object.assign(fn, { __trigscript: "gamefn", descriptor: body2 });
+  };
+  return rt;
+}
+var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
 
 // compiler/declarations.ts
 var DECLARATIONS_FILE = "trigscript.d.ts";
@@ -1477,8 +1890,17 @@ function types(kw) {
 ${kw}type Brand<K extends string> = { readonly __kind?: K };
 /** A player or player group (P1 \u2026 P12, CurrentPlayer, AllPlayers, players.*, or a raw group number). */
 ${kw}type Player<N extends number = number> = N & Brand<"player">;
-/** A unit type (units.*, or a raw units.dat id). */
-${kw}type Unit<N extends number = number> = N & Brand<"unit">;
+/** A unit type (units.*, or a raw units.dat id): what a condition or an action names. A unit on the map is a Unit. */
+${kw}type UnitType<N extends number = number> = N & Brand<"unit">;
+/** A weapon (weapons.*, or a raw weapons.dat id), for stats(). */
+${kw}type Weapon<N extends number = number> = N & Brand<"weapon">;
+/** An upgrade (upgrades.*, or a raw upgrades.dat id), for stats(). */
+${kw}type Upgrade<N extends number = number> = N & Brand<"upgrade">;
+/** A technology (techs.*, or a raw techdata.dat id), for stats(). */
+${kw}type Tech<N extends number = number> = N & Brand<"tech">;
+/** A player colour (colors.*), for stats(player).color. */
+${kw}type PlayerColor<N extends number = number> = N & Brand<"color">;
+${kw}type ColorName = __COLOR_NAMES__;
 /** A location (locations.*, or a raw 1-based location number; 0 = none). */
 ${kw}type Location<N extends number = number> = N & Brand<"location">;
 /** A switch (switches.*, or a raw 0-based switch number). */
@@ -1522,6 +1944,78 @@ ${TRIGGER_OPTION_NAMES.map(([, name]) => `  ${name}?: boolean;`).join("\n")}
   flags?: number;
 }
 
+/**
+ * A unit on the map, inside program() only: one of the game's units as it is right now. Get one from a
+ * loop \u2014 \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.hp = u.maxHp / 2;\` \u2014 or a pick,
+ * which may find none: \`const t = nearest(units.TerranMarine, locations.Beacon); if (t) t.order("move", locations.Exit);\`
+ * A variable may keep a unit across a sleep(). The game reuses a dead unit's place for a new one, so
+ * every use checks that the unit is still the one that was kept: once it is gone, its numbers read 0,
+ * its booleans false, and writing to it or telling it something does nothing. \`if (u)\` asks whether it is still there.
+ */
+${kw}interface Unit {
+  readonly __unit: true;
+  /** Hit points, in whole points as the game shows them. Writing 0 kills the unit. */
+  hp: number;
+  /** The type's hit points. */
+  readonly maxHp: number;
+  /** Shield points. */
+  shields: number;
+  /** The type's shield points. */
+  readonly maxShields: number;
+  /** Energy, 0 \u2026 255. */
+  energy: number;
+  /** Who owns the unit; give() changes it. */
+  readonly owner: Player;
+  /** What the unit is: \`if (u.type == units.TerranMarine)\`. */
+  readonly type: UnitType;
+  /** Where the unit is, in pixels (32 a tile). Read only: the game ends when a position is written. */
+  readonly x: number;
+  readonly y: number;
+  /** How many units it has killed, 0 \u2026 255. */
+  kills: number;
+  /** The orders.dat id of what the unit is doing (3 is standing guard, 6 moving, 10 attacking). */
+  readonly orderId: number;
+  /** Frames until the unit can attack or cast again, 0 \u2026 255; writing it holds the unit's fire that long. */
+  cooldown: number;
+  /** What a mineral field or a geyser still holds. */
+  resources: number;
+  /** Frames left of each effect, 0 \u2026 255: write one to start, lengthen or end it. Stim, ensnare and the rest tick down about every eighth frame. */
+  stim: number;
+  ensnare: number;
+  plague: number;
+  lockdown: number;
+  maelstrom: number;
+  irradiate: number;
+  stasis: number;
+  /** Whether the unit cannot be hurt. */
+  invincible: boolean;
+  readonly hallucinated: boolean;
+  readonly cloaked: boolean;
+  readonly burrowed: boolean;
+  /** True for about a second after something hit the unit. */
+  readonly underAttack: boolean;
+  /** Send the unit somewhere, as the Order action does, this unit alone. */
+  order(order: "move" | "patrol" | "attack", target: Location): void;
+  /** Hand the unit to another player. */
+  give(player: Player): void;
+  kill(): void;
+  /** Take the unit off the map without a death. */
+  remove(): void;
+  /** Take hit points away \u2014 so many, or a percentage of the type's maximum; at 0 the unit dies. Shields are left alone. */
+  damage(amount: number | { percent: number }): void;
+  /** Give hit points back, up to the type's maximum. */
+  heal(amount: number | { percent: number }): void;
+  /** Centre a location on the unit, its size kept: then createUnit(), moveUnit() and the rest can happen where the unit is. */
+  locate(location: Location): void;
+}
+/** Which units a loop or a pick looks at; a part left out matches all. units.Men, units.Buildings and units.Factories work as a type. */
+${kw}interface UnitFilter {
+  type?: UnitType;
+  owner?: Player;
+  /** Inside this location. */
+  at?: Location;
+}
+__STATS_TYPES__
 ${kw}interface ProgramOptions {
   /**
    * Who the program runs for (default P1). One player: one thread, as that player. AllPlayers, a
@@ -1533,6 +2027,8 @@ ${kw}interface ProgramOptions {
 }
 `;
 }
+var COLOR_NAMES = Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(" | ");
+var COLOR_TABLE = Object.entries(PLAYER_COLORS).map(([w, n]) => `readonly ${w}: PlayerColor<${n}>`).join("; ");
 function choiceTypes(kw) {
   const out = [];
   for (const [kind, name] of Object.entries(CHOICE_TYPES)) {
@@ -1622,9 +2118,9 @@ ${kw}function gas(player: Player): number;
 /** A player's minerals, gas, or both added up: what accumulate() compares. */
 ${kw}function resources(player: Player, resource: ResourceKind | number): number;
 /** How many units of a type a player has \u2014 at a location (what bring() compares) or anywhere (what command() compares). */
-${kw}function countUnits(player: Player, unit: Unit, location?: Location): number;
+${kw}function countUnits(player: Player, unit: UnitType, location?: Location): number;
 /** How many units of a type a player has killed: what kill() compares. */
-${kw}function kills(player: Player, unit: Unit): number;
+${kw}function kills(player: Player, unit: UnitType): number;
 /** The countdown timer, in game seconds: what countdownTimer() compares. A game second is sixteen frames, so at Fastest the timer runs about one and a half times as fast as sleep(seconds()). */
 ${kw}function countdown(): number;
 /** Game seconds since the start: what elapsedTime() compares. A game second is sixteen frames: after sleep(seconds(14)) at Fastest it reads about 21. */
@@ -1646,6 +2142,37 @@ ${kw}function supply(player: Player, of?: "used" | "max" | "provided", race?: Ra
 ${kw}const races: { readonly Zerg: Race<0>; readonly Terran: Race<1>; readonly Protoss: Race<2> };
 /** What a slot can hold, as slot() returns it. */
 ${kw}const slots: { readonly Empty: Slot<0>; readonly Computer: Slot<1>; readonly Human: Slot<2>; readonly Rescuable: Slot<3>; readonly Neutral: Slot<7> };
+/**
+ * Units on the map, inside program() only. Each of these looks through the game's 1700 unit slots when the
+ * line runs \u2014 once or a few times a second is nothing, every frame for every player adds up (the editor
+ * notes it at the end of the line). What to look for is known when you build. A loop over units runs
+ * within the frame: no sleep() inside it.
+ */
+/** The units inside a location: \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.kill();\` */
+${kw}function unitsAt(location: Location, filter?: Omit<UnitFilter, "at">): Iterable<Unit>;
+/** A player's units: \`for (const u of unitsOf(CurrentPlayer, { type: units.TerranMarine })) u.heal(10);\` */
+${kw}function unitsOf(player: Player, filter?: Omit<UnitFilter, "owner">): Iterable<Unit>;
+/** Every unit on the map the filter matches. */
+${kw}function allUnits(filter?: UnitFilter): Iterable<Unit>;
+/** The first unit the filter matches, or null. */
+${kw}function first(filter?: UnitFilter): Unit | null;
+/** The unit of a type nearest to the centre of a location, or null; units.AnyUnit for any type. */
+${kw}function nearest(unit: UnitType, location: Location, filter?: Omit<UnitFilter, "type">): Unit | null;
+/** One of the units the filter matches, picked by the game, or null. */
+${kw}function randomUnit(filter?: UnitFilter): Unit | null;
+/**
+ * The game's own tables, inside program() only: what a unit type costs, what a weapon does, a player's
+ * upgrades. Read a field as a number, assign to it, += it: \`stats(units.TerranMarine).minerals = 25;\`
+ * \`stats(weapons.GaussRifle).damage += 2;\` \`stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3;\`
+ * A write lasts for the game. Only fields seen working in StarCraft: Remastered are here.
+ */
+${kw}function stats(unit: UnitType): UnitTypeStats;
+${kw}function stats(weapon: Weapon): WeaponStats;
+${kw}function stats(upgrade: Upgrade): UpgradeStats;
+${kw}function stats(tech: Tech): TechStats;
+${kw}function stats(player: Player): PlayerStats;
+/** The player colours stats(player).color takes. */
+${kw}const colors: { __COLOR_TABLE__ };
 /**
  * A player's name, for a text a program shows: displayText(\`\${name(CurrentPlayer)} wins\`). The game
  * fills it in when the text is shown, so it works inside program() only.
@@ -1700,6 +2227,27 @@ function tableDecl(kw, t, keep = () => true, note) {
   lines.push("};");
   return lines.join("\n");
 }
+var identifierKey = (k) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k);
+var STATS_INTERFACES = {
+  unit: ["UnitTypeStats", "units.dat, for one unit type. Most fields reach the units made after the write; the ones already on the map keep what they were made with."],
+  weapon: ["WeaponStats", "weapons.dat, for one weapon: every unit using it follows at once."],
+  upgrade: ["UpgradeStats", "upgrades.dat, for one upgrade."],
+  tech: ["TechStats", "techdata.dat, for one technology."],
+  player: ["PlayerStats", "The player tables, for one player."]
+};
+function statsTypes(kw) {
+  return Object.keys(TABLE_FIELDS).map((kind) => {
+    const [name, doc] = STATS_INTERFACES[kind];
+    const lines = [`/** ${doc} */`, `${kw}interface ${name} {`];
+    for (const f of TABLE_FIELDS[kind]) {
+      const type = f.type ?? (f.boolean ? "boolean" : "number");
+      lines.push(`  /** ${f.doc}${f.writeOnly ? " Set only." : ""} */`);
+      lines.push(f.keyed ? `  readonly ${f.name}: { [${f.keyed.kind}: number]: ${type} };` : `  ${f.readonly ? "readonly " : ""}${f.name}: ${type};`);
+    }
+    lines.push("}");
+    return lines.join("\n");
+  }).join("\n");
+}
 function playerAliases(kw, names) {
   const lines = [];
   for (const e of names.players.entries) {
@@ -1714,7 +2262,7 @@ ${kw}const AllPlayers: Player<17>;`);
 }
 function tables(kw, names, compact) {
   if (!compact) {
-    return [names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => tableDecl(kw, t)).join("\n");
+    return allTables(names).map((t) => tableDecl(kw, t)).join("\n");
   }
   const isDefaultSwitch = (k) => /^Switch ?(\d+)$/.test(k);
   return [
@@ -1726,14 +2274,15 @@ function tables(kw, names, compact) {
       return m ? Number(m[1]) <= 16 : !isDefaultSwitch(k);
     }, "Switch1 \u2026 Switch256 exist; the first sixteen are listed. A switch given a name in the map is listed by that name."),
     `/** AI scripts, by StarEdit name ("Terran Custom Level") or four-character code. */
-${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`
+${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`,
+    ...[names.weapons, names.upgrades, names.techs].map((t) => tableDecl(kw, t, identifierKey))
   ].join("\n");
 }
 function body(kw, typeKw, names, compact) {
   return [
-    types(typeKw),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__STATS_TYPES__", statsTypes(typeKw)),
     choiceTypes(typeKw),
-    functions(kw),
+    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
     "// \u2500\u2500 Conditions \u2500\u2500",
     ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
     "",
@@ -1788,7 +2337,7 @@ function owningDeclaration(ts, decl) {
 }
 var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers", "game"]);
 var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "rose", "once", "shared"]);
-var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, "print"]);
+var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, ...UNIT_CALL_NAMES, "print"]);
 var isReadCall = (lib, args) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 function planProgram(ts, checker, arrow, options = {}) {
   const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Map(), constList: [], tree: [], errors: [] };
@@ -2085,10 +2634,10 @@ function planProgram(ts, checker, arrow, options = {}) {
       value(d.initializer, items);
     }
   };
-  const block2 = (statements) => {
+  const block2 = (statements2) => {
     const items = [];
     const deferred = [];
-    for (const s of statements) statement(s, items, deferred);
+    for (const s of statements2) statement(s, items, deferred);
     items.push(...deferred);
     return items;
   };
@@ -2319,7 +2868,11 @@ function mapPosition(mapJson, line, column) {
 }
 
 // compiler/ir.ts
-var IR_VERSION = 3;
+var IR_VERSION = 4;
+var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
+var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
+var UNIT_FLAGS2 = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
   switch (e.kind) {
     case "const":
@@ -2332,6 +2885,8 @@ var isNumExpr = (e) => {
     case "intrinsic":
     case "read":
     case "randomInt":
+    case "unitField":
+    case "tableRead":
       return true;
     case "ternary":
       return isNumExpr(e.whenTrue);
@@ -2354,6 +2909,24 @@ function declarations(body2) {
         break;
       case "assignBool":
         init(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        out.push(s.decl);
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        init(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") init(s.value);
         break;
       case "if":
         init(s.cond);
@@ -2407,9 +2980,15 @@ function declarations(body2) {
     }
     c2.body.forEach(stmt);
   };
-  const init = (e) => isNumExpr(e) ? expr(e) : bool(e);
+  const init = (e) => isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+  };
   const expr = (e) => {
     switch (e.kind) {
+      case "unitField":
+        unit(e.unit);
+        break;
       case "unary":
         expr(e.expr);
         break;
@@ -2437,6 +3016,14 @@ function declarations(body2) {
   };
   const bool = (b) => {
     switch (b.kind) {
+      case "unitAlive":
+      case "unitFlag":
+        unit(b.unit);
+        break;
+      case "unitSame":
+        unit(b.left);
+        unit(b.right);
+        break;
       case "test":
         expr(b.expr);
         break;
@@ -2476,14 +3063,30 @@ function checkProgram(program) {
   checkSleeps(program.body, errors);
   checkDivisions(program.body, errors);
   checkWidths(program.body, errors);
+  checkUnitLoops(program.body, errors);
   const hints = [];
   remarks(program.body, hints);
+  scans(program, hints);
   return { errors, hints };
 }
-function expressions(body2, visit) {
+function expressions(body2, visit, pick) {
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "pick") pick?.(u);
+  };
+  const any = (e) => isUnitExpr(e) ? unit(e) : expr(e);
   const expr = (e) => {
     visit(e);
     switch (e.kind) {
+      case "unitField":
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        break;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        break;
       case "unary":
         expr(e.expr);
         break;
@@ -2524,17 +3127,34 @@ function expressions(body2, visit) {
     }
   };
   const call = (c2) => {
-    for (const p of c2.params) expr(p.init);
+    for (const p of c2.params) any(p.init);
     c2.body.forEach(stmt);
   };
   const stmt = (s) => {
     switch (s.kind) {
       case "declare":
-        if (!s.failed) expr(s.init);
+        if (!s.failed) any(s.init);
         break;
       case "assign":
       case "assignBool":
         expr(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        expr(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") expr(s.value);
         break;
       case "if":
         expr(s.cond);
@@ -2562,7 +3182,7 @@ function expressions(body2, visit) {
         s.cases.forEach((c2) => c2.body.forEach(stmt));
         break;
       case "return":
-        if (s.value) expr(s.value);
+        if (s.value) any(s.value);
         break;
       case "action":
         if (s.variable) expr(s.variable.expr);
@@ -2581,6 +3201,65 @@ function expressions(body2, visit) {
     }
   };
   body2.forEach(stmt);
+}
+function statements(body2, visit) {
+  const stmt = (s) => {
+    visit(s);
+    switch (s.kind) {
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function checkUnitLoops(body2, out) {
+  statements(body2, (s) => {
+    if (s.kind !== "unitLoop") return;
+    statements(s.body, (inner) => {
+      if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. To do something to one unit at a time, find it again after each sleep: while (true) { const u = first(\u2026); if (!u) break; u.kill(); sleep(seconds(1)); }" });
+    });
+  });
+}
+function scans(program, out) {
+  const SLOTS = "the game's 1700 unit slots";
+  const each = program.perPlayer ? ", once for each player the program runs for" : "";
+  const seen = /* @__PURE__ */ new Set();
+  const hint = (at, label, note) => {
+    const key = `${at.file}:${at.line}:${label}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ file: at.file, line: at.line, label, note });
+  };
+  statements(program.body, (s) => {
+    if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`);
+  });
+  expressions(program.body, () => {
+  }, (u) => hint(u.at, u.by === "random" ? "scans units \xD72" : "scans units", u.by === "random" ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.` : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));
 }
 function checkDivisions(body2, out) {
   expressions(body2, (e) => {
@@ -2611,6 +3290,7 @@ function checkWidths(body2, out) {
         break;
       case "while":
       case "do":
+      case "unitLoop":
         s.body.forEach(stmt);
         break;
       case "for":
@@ -2647,6 +3327,7 @@ function remarks(body2, out) {
         break;
       case "while":
       case "do":
+      case "unitLoop":
         s.body.forEach(stmt);
         break;
       case "for":
@@ -2675,6 +3356,9 @@ function assigned(body2, into = /* @__PURE__ */ new Set()) {
   const stmt = (s) => {
     switch (s.kind) {
       case "action":
+      case "unitWrite":
+      case "unitDo":
+      case "tableWrite":
         into.add(THE_GAME);
         break;
       case "declare":
@@ -2682,7 +3366,12 @@ function assigned(body2, into = /* @__PURE__ */ new Set()) {
         break;
       case "assign":
       case "assignBool":
+      case "assignUnit":
         into.add(s.target);
+        break;
+      case "unitLoop":
+        into.add(s.decl.id);
+        s.body.forEach(stmt);
         break;
       case "if":
         s.then.forEach(stmt);
@@ -2728,7 +3417,17 @@ function reads(e, into = /* @__PURE__ */ new Set()) {
       break;
     case "read":
     case "cond":
+    case "tableRead":
       into.add(THE_GAME);
+      break;
+    case "unitField":
+    case "unitAlive":
+    case "unitFlag":
+      into.add(THE_GAME);
+      if (e.unit.kind === "unitVar") into.add(e.unit.id);
+      break;
+    case "unitSame":
+      for (const u of [e.left, e.right]) if (u.kind === "unitVar") into.add(u.id);
       break;
     case "randomInt":
       reads(e.bound, into);
@@ -2824,6 +3523,9 @@ function checkSleeps(body2, out) {
         s.then.forEach(stmt);
         s.else?.forEach(stmt);
         break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
       case "unrolled":
         s.iterations.forEach((i) => i.forEach(stmt));
         break;
@@ -2850,8 +3552,16 @@ function serializeIr(programs, strings) {
   };
   const action2 = (r) => ({ ...r, text: resolve(r.text), wav: resolve(r.wav) });
   const condition2 = (r) => ({ ...r });
+  const unit = (u) => u.kind === "call" ? { ...u, call: call(u.call) } : u;
+  const any = (e) => isUnitExpr(e) ? unit(e) : expr(e);
   const expr = (e) => {
     switch (e.kind) {
+      case "unitField":
+      case "unitAlive":
+      case "unitFlag":
+        return { ...e, unit: unit(e.unit) };
+      case "unitSame":
+        return { ...e, left: unit(e.left), right: unit(e.right) };
       case "unary":
         return { ...e, expr: expr(e.expr) };
       case "binary":
@@ -2880,11 +3590,21 @@ function serializeIr(programs, strings) {
         return e;
     }
   };
-  const call = (c2) => ({ ...c2, params: c2.params.map((p) => ({ ...p, init: expr(p.init) })), body: c2.body.map(stmt) });
+  const call = (c2) => ({ ...c2, params: c2.params.map((p) => ({ ...p, init: any(p.init) })), body: c2.body.map(stmt) });
   const stmt = (s) => {
     switch (s.kind) {
       case "declare":
-        return { ...s, init: expr(s.init) };
+        return { ...s, init: any(s.init) };
+      case "assignUnit":
+        return { ...s, value: unit(s.value) };
+      case "unitLoop":
+        return { ...s, body: s.body.map(stmt) };
+      case "unitWrite":
+        return { ...s, unit: unit(s.unit), value: expr(s.value) };
+      case "unitDo":
+        return { ...s, unit: unit(s.unit), verb: s.verb.do === "damage" || s.verb.do === "heal" ? { ...s.verb, amount: expr(s.verb.amount) } : s.verb };
+      case "tableWrite":
+        return s.value.kind === "text" ? s : { ...s, value: expr(s.value) };
       case "assign":
         return { ...s, value: expr(s.value) };
       case "assignBool":
@@ -2902,7 +3622,7 @@ function serializeIr(programs, strings) {
       case "switch":
         return { ...s, value: expr(s.value), cases: s.cases.map((c2) => ({ ...c2, body: c2.body.map(stmt) })) };
       case "return":
-        return s.value ? { ...s, value: expr(s.value) } : s;
+        return s.value ? { ...s, value: any(s.value) } : s;
       case "action":
         return { ...s, record: action2(s.record), ...s.variable ? { variable: { ...s.variable, expr: expr(s.variable.expr) } } : {} };
       case "print":
@@ -2954,6 +3674,9 @@ function describe2(v) {
   if (isTrigger(v)) return "a trigger";
   if (isDuration(v)) return "a duration";
   if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isTable(v)) return `a value the game holds (${v.ident})`;
+  if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
+  if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
   if (isPrint(v)) return "a print()";
   if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
@@ -2977,6 +3700,9 @@ var FALSE = { kind: "const", value: false };
 var num = (value) => ({ kind: "const", value });
 var varRef = (v) => ({ kind: "var", id: v.id });
 var boolRef = (v) => ({ kind: "var", id: v.id });
+var unitRef = (v) => ({ kind: "unitVar", id: v.id });
+var NO_UNIT = { kind: "unitNull" };
+var ORDERS = ["move", "patrol", "attack"];
 var Structured = class {
   c;
   ts;
@@ -2996,16 +3722,16 @@ var Structured = class {
     this.body = c2.body;
   }
   run() {
-    const statements = this.body.plan.body.statements;
+    const statements2 = this.body.plan.body.statements;
     const at = this.at(this.body.plan.body);
     const program = { version: IR_VERSION, ...this.body.name ? { name: this.body.name } : {}, owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, body: [], at };
     this.nodes.set(program, this.body.plan.body);
     this.out = program.body;
     try {
-      this.block(statements, {}, this.topScope);
+      this.block(statements2, {}, this.topScope);
     } catch (err) {
       if (!(err instanceof LowerError)) throw err;
-      this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
+      this.c.error(statements2[statements2.length - 1] ?? this.body.plan.body, err.message);
     }
     return { program, nodeOf: (node) => this.nodes.get(node) };
   }
@@ -3141,9 +3867,10 @@ var Structured = class {
           continue;
         }
         const v = sub(a2);
-        if (!v || isRead(v.value)) return void 0;
+        if (!v || isGameValue(v.value)) return void 0;
         args.push(v.value);
       }
+      if (this.isLibraryCall(e, "stats") && e.arguments.length === 1) args.push(this.brandOf(e.arguments[0]));
       try {
         return { value: callee.value.apply(self, args) };
       } catch (err) {
@@ -3154,7 +3881,7 @@ var Structured = class {
       let out = e.head.text;
       for (const span of e.templateSpans) {
         const v = sub(span.expression);
-        if (!v || isRead(v.value)) return void 0;
+        if (!v || isGameValue(v.value)) return void 0;
         out += String(v.value) + span.literal.text;
       }
       return { value: out };
@@ -3180,7 +3907,7 @@ var Structured = class {
     }
     if (ts.isPrefixUnaryExpression(e)) {
       const v = sub(e.operand);
-      if (!v || isRead(v.value)) return void 0;
+      if (!v || isGameValue(v.value)) return void 0;
       switch (e.operator) {
         case ts.SyntaxKind.MinusToken:
           return { value: -v.value };
@@ -3195,7 +3922,7 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const l = sub(e.left);
       const r = sub(e.right);
-      if (!l || !r || isRead(l.value) || isRead(r.value)) return void 0;
+      if (!l || !r || isGameValue(l.value) || isGameValue(r.value)) return void 0;
       const a2 = l.value;
       const b = r.value;
       switch (e.operatorToken.kind) {
@@ -3229,7 +3956,7 @@ var Structured = class {
     }
     if (ts.isConditionalExpression(e)) {
       const c2 = sub(e.condition);
-      if (!c2 || isRead(c2.value)) return void 0;
+      if (!c2 || isGameValue(c2.value)) return void 0;
       return c2.value ? sub(e.whenTrue) : sub(e.whenFalse);
     }
     return void 0;
@@ -3286,10 +4013,10 @@ var Structured = class {
     this.c.error(expr, v ? `${what} must be known when the script is built, but ${v} is a variable of the program. Compare or assign variables in the program's own statements instead.` : `${what} must be known when the script is built.`);
   }
   /* ── Statements ── */
-  block(statements, ctx, scope = new Scope(this.scope)) {
+  block(statements2, ctx, scope = new Scope(this.scope)) {
     const outer = this.scope;
     this.scope = scope;
-    for (const s of statements) {
+    for (const s of statements2) {
       try {
         this.statement(s, ctx);
       } catch (err) {
@@ -3396,6 +4123,9 @@ var Structured = class {
       const value = this.num(s.expression);
       if (!value) return;
       this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    } else if (fn.kind === "unit") {
+      const value = this.unitExpr(s.expression);
+      if (value) this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
     } else {
       const value = this.boolValue(s.expression);
       this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
@@ -3425,12 +4155,16 @@ var Structured = class {
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) {
-        this.c.error(d, `Variables hold numbers, booleans or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
+        this.c.error(d, `Variables hold numbers, booleans, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
         continue;
       }
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
       if (shared && shared.arguments.length !== 1) {
         this.c.error(init, "shared() takes the initial value: shared(0) or shared(false).");
+        continue;
+      }
+      if (shared && kind === "unit") {
+        this.c.error(init, "shared() holds a number or a boolean.");
         continue;
       }
       const initializer = shared ? shared.arguments[0] : d.initializer;
@@ -3444,6 +4178,9 @@ var Structured = class {
     if (v.kind === "number") {
       const value = this.num(initializer);
       this.emit({ kind: "declare", decl: v, init: value ?? num(0), ...value ? {} : { failed: true }, at: this.at(at), label: this.label(at) }, at);
+    } else if (v.kind === "unit") {
+      const value = this.unitExpr(initializer);
+      this.emit({ kind: "declare", decl: v, init: value ?? NO_UNIT, ...value ? {} : { failed: true }, at: this.at(at), label: this.label(at) }, at);
     } else {
       this.emit({ kind: "declare", decl: v, init: this.boolValue(initializer), at: this.at(at), label: this.label(at) }, at);
     }
@@ -3479,7 +4216,7 @@ var Structured = class {
       }
       const kind = this.kindOf(ft);
       if (!kind) {
-        this.c.error(p, `A record's fields hold numbers or booleans; ${full} is ${this.c.checker.typeToString(ft)}.`);
+        this.c.error(p, `A record's fields hold numbers, booleans or units; ${full} is ${this.c.checker.typeToString(ft)}.`);
         ok = false;
         continue;
       }
@@ -3511,7 +4248,24 @@ var Structured = class {
     const isNumber = (t) => (t.flags & ts.TypeFlags.NumberLike) !== 0 || t.isIntersection() && t.types.some(isNumber);
     if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
     if (isNumber(type)) return "number";
+    const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    if (bare.length > 0 && bare.every((t) => !!t.getProperty("__unit"))) return "unit";
     return null;
+  }
+  isUnitTyped(e) {
+    return this.kindOf(this.c.checker.getTypeAtLocation(e)) === "unit";
+  }
+  /** The `__kind` brand of an expression's type (`"unit"`, `"player"`, …): what tells `stats(units.X)` from `stats(P3)`. */
+  brandOf(e) {
+    const type = this.c.checker.getTypeAtLocation(e);
+    for (const t of type.isIntersection() ? type.types : [type]) {
+      const p = t.getProperty("__kind");
+      if (!p) continue;
+      const pt = this.c.checker.getTypeOfSymbol(p);
+      const name = (pt.isUnion() ? pt.types : [pt]).find((x) => x.isStringLiteral());
+      if (name) return name.value;
+    }
+    return void 0;
   }
   /** An expression statement whose value was computed at build time: actions run, nothing else does anything. */
   hoistedStatement(expr, h) {
@@ -3531,6 +4285,18 @@ var Structured = class {
     }
     if (isRead(v)) {
       this.c.error(expr, `${v.ident}() reads a value and does nothing on its own: assign it to a variable, or compare it in an if.`);
+      return;
+    }
+    if (isTable(v)) {
+      this.c.error(expr, `${v.ident} reads a value and does nothing on its own: assign to it, or compare it in an if.`);
+      return;
+    }
+    if (isUnitPick(v)) {
+      this.c.error(expr, `${v.ident}() finds a unit and does nothing on its own: const u = ${v.ident}(\u2026); if (u) u.kill();`);
+      return;
+    }
+    if (isUnitQuery(v)) {
+      this.c.error(expr, `${v.ident}() names units and does nothing on its own: for (const u of ${v.ident}(\u2026)) { \u2026 }`);
       return;
     }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) {
@@ -3570,7 +4336,7 @@ var Structured = class {
     const { ts } = this;
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
-    if (h && !isRead(h.value)) {
+    if (h && !isGameValue(h.value)) {
       const v = h.value;
       if (typeof v === "string") return textParts(v);
       if (typeof v === "number" || typeof v === "boolean") return [{ kind: "text", text: String(v) }];
@@ -3653,12 +4419,31 @@ var Structured = class {
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
       if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment) {
+        const member2 = this.unitMember(e.left);
+        if (member2) {
+          this.unitAssign(e, member2, op);
+          return;
+        }
+        const cell = this.evaluate(e.left)?.value;
+        if (isTable(cell)) {
+          this.tableAssign(e, cell, op);
+          return;
+        }
         const target = this.varOf(e.left);
         if (!target) {
           const b = this.bindingOf(e.left);
           if (b?.kind === "record") this.c.error(e.left, "A record is assigned field by field: p.lives = 3.");
           else if ((ts.isPropertyAccessExpression(this.unwrap(e.left)) || ts.isElementAccessExpression(this.unwrap(e.left))) && this.evaluate(e.left)) this.c.error(e.left, "This object is computed when the script is built. Declare it with let inside the program to make it a record of variables.");
           else this.c.error(e.left, "Only the program's let variables can be assigned.");
+          return;
+        }
+        if (target.kind === "unit") {
+          if (op !== ts.SyntaxKind.EqualsToken) {
+            this.c.error(e, "A unit takes = only.");
+            return;
+          }
+          const value = this.unitExpr(e.right);
+          if (value) this.emit({ kind: "assignUnit", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
           return;
         }
         if (target.kind !== "number") {
@@ -3688,6 +4473,17 @@ var Structured = class {
       return;
     }
     if ((ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)) {
+      const op = e.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-";
+      const member2 = this.unitMember(e.operand);
+      const cell = member2 ? void 0 : this.evaluate(e.operand)?.value;
+      if (member2 || isTable(cell)) {
+        const now = this.num(e.operand);
+        if (!now) return;
+        const value2 = this.mark({ kind: "binary", op, left: now, right: num(1), at: this.at(e), label: this.label(e) }, e);
+        if (member2) this.unitWrite(e, member2, value2);
+        else this.tableWrite(e, cell, value2);
+        return;
+      }
       const target = this.varOf(e.operand);
       if (!target || target.kind !== "number") {
         this.c.error(e, "++ / -- apply to number variables.");
@@ -3715,6 +4511,13 @@ var Structured = class {
           return;
         }
         this.c.error(e, `${e.expression.text} is not a function.`);
+        return;
+      }
+    }
+    if (ts.isPropertyAccessExpression(e.expression)) {
+      const member2 = this.unitMember(e.expression);
+      if (member2) {
+        this.unitCall(e, member2);
         return;
       }
     }
@@ -3917,6 +4720,14 @@ var Structured = class {
       this.notConstant(s.expression, "What a for\u2026of loop runs over");
       return;
     }
+    if (isUnitQuery(h.value)) {
+      const v = this.newVar(decl.name.text, "unit", this.sourceOf(decl.name));
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "var", v });
+      const body2 = this.collect(() => this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope));
+      this.emit({ kind: "unitLoop", decl: v, filter: { ...h.value.filter }, body: body2, at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
     let items;
     try {
       const iterable = typeof h.value === "string" || typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value;
@@ -4027,7 +4838,7 @@ var Structured = class {
         return;
       }
       const h = this.evaluate(arg);
-      if (h && !isRead(h.value)) {
+      if (h && !isGameValue(h.value)) {
         scope.bind(p, { kind: "value", value: h.value });
         return;
       }
@@ -4049,7 +4860,18 @@ var Structured = class {
         }
         const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), variable.bits ? { bits: variable.bits } : {});
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
-        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : boolRef(variable), label });
+        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable), label });
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
+      if (this.isUnitTyped(arg)) {
+        const unit = this.unitExpr(arg);
+        if (!unit) {
+          ok = false;
+          return;
+        }
+        const copy = this.newVar(p.name.text, "unit", this.sourceOfIn(target, p.name));
+        out.params.push({ decl: copy, init: unit, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
@@ -4080,6 +4902,9 @@ var Structured = class {
           try {
             if (kind === "number") {
               const value = this.num(body2);
+              if (value) this.emit({ kind: "return", value, at: this.at(body2), label: this.label(body2) }, body2);
+            } else if (kind === "unit") {
+              const value = this.unitExpr(body2);
               if (value) this.emit({ kind: "return", value, at: this.at(body2), label: this.label(body2) }, body2);
             } else if (kind === "boolean") this.emit({ kind: "return", value: this.boolValue(body2), at: this.at(body2), label: this.label(body2) }, body2);
             else this.expressionStatement(body2);
@@ -4168,12 +4993,25 @@ var Structured = class {
     const h = this.evaluate(expr);
     if (h) {
       if (isRead(h.value)) return this.readValue(h.value, e);
+      if (isTable(h.value)) return this.tableRead(h.value, e);
+      if (isUnitPick(h.value)) {
+        this.c.error(e, `${h.value.ident}() is a unit, not a number; read one of its fields: ${h.value.ident}(\u2026)?.hp \u2014 or keep it: const u = ${h.value.ident}(\u2026).`);
+        return null;
+      }
       const n = this.asInteger(h, e);
       return n === null ? null : num(n);
+    }
+    if (ts.isPropertyAccessExpression(e)) {
+      const member2 = this.unitMember(e);
+      if (member2) return this.unitField(e, member2);
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") {
+        if (b.v.kind === "unit") {
+          this.c.error(e, `${b.v.name} is a unit; use one of its fields: ${b.v.name}.hp.`);
+          return null;
+        }
         if (b.v.kind !== "number") {
           this.c.error(e, `${b.v.name} is a boolean.`);
           return null;
@@ -4359,7 +5197,7 @@ var Structured = class {
     for (let i = 0; i < e.arguments.length; i++) {
       const a2 = e.arguments[i];
       const h = this.evaluate(a2);
-      if (h && !isRead(h.value)) {
+      if (h && !isGameValue(h.value)) {
         values.push(h.value);
         continue;
       }
@@ -4400,6 +5238,278 @@ var Structured = class {
     const p = params[variable.index];
     this.emit({ kind: "action", record: { ...record }, variable: { field: p.arg.field, bits: p.arg.kind === "count" ? 8 : 32, name: p.name, expr: variable.expr }, at: this.at(e), label: this.label(e) }, e);
   }
+  /* ── Units on the map, and the game's tables ── */
+  /** `u.hp`, `target?.kills`: the unit and the member's name, when the object is a unit of the game. */
+  unitMember(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isPropertyAccessExpression(e) || !ts.isIdentifier(e.name) || !this.isUnitTyped(e.expression)) return null;
+    const unit = this.unitExpr(e.expression);
+    return unit ? { unit, name: e.name.text } : null;
+  }
+  /** A unit of the game, or none: a variable, `null`, a pick (`first(…)`), a function's result. Null, with a diagnostic, otherwise. */
+  unitExpr(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      if (h.value === null || h.value === void 0) return NO_UNIT;
+      if (isUnitPick(h.value)) return this.pick(h.value, e);
+      this.c.error(e, `Expected a unit of the game, got ${describe2(h.value)}.`);
+      return null;
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
+      if (b?.kind === "var" && b.v.kind === "unit") return unitRef(b.v);
+      this.c.error(e, "Expected a unit of the game: a variable holding one, first(\u2026), nearest(\u2026) or randomUnit(\u2026).");
+      return null;
+    }
+    if (ts.isCallExpression(e)) {
+      let call;
+      const decl = ts.isIdentifier(e.expression) ? this.gameDeclaration(e.expression) : void 0;
+      if (decl && ts.isFunctionDeclaration(decl)) call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+      else {
+        const callee = this.evaluate(e.expression)?.value;
+        if (isGameFunction(callee)) call = this.gameCall(e, callee);
+        else {
+          this.notConstant(e, "What picks the unit (the type, the owner, the location)");
+          return null;
+        }
+      }
+      if (!call?.result || call.result.kind !== "unit") {
+        if (call) this.c.error(e, "This function does not return a unit.");
+        return null;
+      }
+      return this.mark({ kind: "call", call }, e);
+    }
+    if (ts.isConditionalExpression(e)) {
+      this.c.error(e, "Choose the unit with an if: let u = a; if (\u2026) u = b;");
+      return null;
+    }
+    this.c.error(e, "Expected a unit of the game.");
+    return null;
+  }
+  pick(v, at) {
+    return this.mark({ kind: "pick", by: v.by, filter: { ...v.filter }, ...v.near !== void 0 ? { near: v.near } : {}, at: this.at(at), label: this.label(at) }, at);
+  }
+  /** `u.hp` as a number. */
+  unitField(e, m) {
+    if (UNIT_FLAGS2.includes(m.name)) {
+      const flag2 = this.mark({ kind: "unitFlag", unit: m.unit, flag: m.name, at: this.at(e), label: this.label(e) }, e);
+      return this.mark({ kind: "ternary", cond: flag2, whenTrue: num(1), whenFalse: num(0), at: this.at(e), label: this.label(e) }, e);
+    }
+    if (!UNIT_NUM_FIELDS.includes(m.name)) {
+      this.c.error(e, `A unit has no ${m.name} to read.`);
+      return null;
+    }
+    return this.mark({ kind: "unitField", unit: m.unit, field: m.name, at: this.at(e), label: this.label(e) }, e);
+  }
+  unitWrite(e, m, value) {
+    if (!UNIT_WRITABLE.has(m.name)) {
+      const why = m.name === "x" || m.name === "y" ? "the game ends when a unit's position is written; move a unit with order(), or moveUnit()" : m.name === "owner" ? "give() changes the owner" : m.name === "cloaked" ? "the game showed nothing when the cloak flags were written" : "the game keeps it for itself";
+      this.c.error(e, `A unit's ${m.name} is read only: ${why}.`);
+      return;
+    }
+    this.emit({ kind: "unitWrite", unit: m.unit, field: m.name, value, at: this.at(e), label: this.label(e) }, e);
+  }
+  /** `u.hp = 40`, `u.energy += 50`, `u.invincible = true`. */
+  unitAssign(e, m, op) {
+    const { ts } = this;
+    if (UNIT_FLAGS2.includes(m.name)) {
+      if (op !== ts.SyntaxKind.EqualsToken) {
+        this.c.error(e, "Booleans take = only.");
+        return;
+      }
+      this.unitWrite(e, m, this.boolValue(e.right));
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (op === ts.SyntaxKind.EqualsToken) {
+      this.unitWrite(e, m, rhs);
+      return;
+    }
+    const arith = compoundOp(ts, op);
+    const now = arith ? this.unitField(e.left, m) : null;
+    if (!arith) {
+      this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
+      return;
+    }
+    if (now) this.unitWrite(e, m, this.mark({ kind: "binary", op: arith, left: now, right: rhs, at: this.at(e), label: this.label(e) }, e));
+  }
+  /** `u.kill()`, `u.order("move", locations.Exit)`, `u.damage({ percent: 50 })`: what a unit is told to do. */
+  unitCall(e, m) {
+    const { ts } = this;
+    const known = (i, what) => {
+      const a2 = e.arguments[i];
+      if (!a2) {
+        this.c.error(e, `${m.name}() takes ${what}.`);
+        return void 0;
+      }
+      const h = this.evaluate(a2);
+      if (!h || isGameValue(h.value)) {
+        this.notConstant(a2, what[0].toUpperCase() + what.slice(1));
+        return void 0;
+      }
+      return h.value;
+    };
+    const emit = (verb) => {
+      this.emit({ kind: "unitDo", unit: m.unit, verb, at: this.at(e), label: this.label(e) }, e);
+    };
+    const location = (v) => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 255;
+    switch (m.name) {
+      case "kill":
+      case "remove":
+        if (e.arguments.length) {
+          this.c.error(e, `${m.name}() takes no arguments.`);
+          return;
+        }
+        emit({ do: m.name });
+        return;
+      case "give": {
+        const to = known(0, "the player who gets the unit");
+        if (to === void 0) return;
+        if (typeof to !== "number" || !Number.isInteger(to) || !(to >= 0 && to < 12 || to === CURRENT_PLAYER)) {
+          this.c.error(e.arguments[0], "give() takes one player: P1 \u2026 P12 or CurrentPlayer.");
+          return;
+        }
+        emit({ do: "give", to });
+        return;
+      }
+      case "order": {
+        const order = known(0, 'the order: "move", "patrol" or "attack"');
+        const target = order === void 0 ? void 0 : known(1, "the location to go to");
+        if (order === void 0 || target === void 0) return;
+        if (typeof order !== "string" || !ORDERS.includes(order)) {
+          this.c.error(e.arguments[0], `order() takes "move", "patrol" or "attack", got ${describe2(order)}.`);
+          return;
+        }
+        if (!location(target)) {
+          this.c.error(e.arguments[1], "order() takes one of locations.* to go to.");
+          return;
+        }
+        emit({ do: "order", order, target });
+        return;
+      }
+      case "locate": {
+        const at = known(0, "the location to centre on the unit");
+        if (at === void 0) return;
+        if (!location(at) || at === 64) {
+          this.c.error(e.arguments[0], "locate() takes one of locations.*, which is moved onto the unit (not Anywhere).");
+          return;
+        }
+        emit({ do: "locate", location: at });
+        return;
+      }
+      case "damage":
+      case "heal": {
+        const a2 = e.arguments[0];
+        if (!a2 || e.arguments.length > 1) {
+          this.c.error(e, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`);
+          return;
+        }
+        const literal = this.unwrap(a2);
+        let percent = false;
+        let of = a2;
+        if (ts.isObjectLiteralExpression(literal)) {
+          const p = literal.properties.length === 1 ? literal.properties[0] : void 0;
+          if (!p || !ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name) || p.name.text !== "percent") {
+            this.c.error(a2, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`);
+            return;
+          }
+          percent = true;
+          of = p.initializer;
+        }
+        const amount = this.num(of);
+        if (amount) emit({ do: m.name, amount, percent });
+        return;
+      }
+      default:
+        this.c.error(e.expression, `A unit has no ${m.name}().`);
+    }
+  }
+  /** A cell of the game's tables as a number: `stats(units.TerranMarine).minerals`. */
+  tableRead(v, at) {
+    if (v.field.writeOnly) {
+      this.c.error(at, `${v.ident} can be set but not read: ${v.field.special === "speed" ? "a speed is four records of the game's tables" : v.field.special === "name" ? "a name is text" : "the game keeps two copies"}.`);
+      return null;
+    }
+    return this.mark({ kind: "tableRead", cell: { ...v.cell }, at: this.at(at), label: this.label(at) }, at);
+  }
+  tableWrite(e, v, value, scaled = false) {
+    if (v.field.readonly) {
+      this.c.error(e, `${v.ident} is read only: the game took no write.`);
+      return;
+    }
+    this.emit({ kind: "tableWrite", cell: { ...v.cell }, value, ...scaled ? { scaled: true } : {}, ...v.field.boolean && value.kind !== "text" ? { boolean: true } : {}, at: this.at(e), label: this.label(e) }, e);
+  }
+  /** `stats(units.TerranMarine).minerals = 25`, `stats(P3).color = "teal"`, `stats(weapons.GaussRifle).damage += 2`. */
+  tableAssign(e, v, op) {
+    const { ts } = this;
+    const { field } = v;
+    const plain = op === ts.SyntaxKind.EqualsToken;
+    const h = this.evaluate(e.right);
+    const known = h && !isGameValue(h.value) ? h.value : void 0;
+    if (field.special === "name" || field.special === "color") {
+      if (!plain) {
+        this.c.error(e, `${v.ident} takes = only.`);
+        return;
+      }
+      if (known === void 0) {
+        this.notConstant(e.right, field.special === "name" ? "A name" : "A colour");
+        return;
+      }
+      if (field.special === "color") {
+        try {
+          this.tableWrite(e, v, num(playerColor(known)));
+        } catch (err) {
+          this.c.error(e.right, err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
+      if (typeof known !== "string" || known === "" || hasTextMark(known)) {
+        this.c.error(e.right, "A unit type's name is text known when the script is built.");
+        return;
+      }
+      this.tableWrite(e, v, { kind: "text", text: known });
+      return;
+    }
+    if (field.boolean) {
+      if (!plain) {
+        this.c.error(e, "Booleans take = only.");
+        return;
+      }
+      this.tableWrite(e, v, this.boolValue(e.right));
+      return;
+    }
+    if (plain && typeof known === "number" && Number.isFinite(known)) {
+      const raw = Math.round(known * (field.scale ?? 1));
+      const max = cellMax(field.width);
+      if (known < 0 || raw > max) {
+        this.c.error(e.right, `${v.ident} holds 0 \u2026 ${max / (field.scale ?? 1)}, not ${known}.`);
+        return;
+      }
+      if (!field.scale && !Number.isInteger(known)) {
+        this.c.error(e.right, `${v.ident} is a whole number (got ${known}).`);
+        return;
+      }
+      this.tableWrite(e, v, num(raw), true);
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (plain) {
+      this.tableWrite(e, v, rhs);
+      return;
+    }
+    const arith = compoundOp(ts, op);
+    if (!arith) {
+      this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
+      return;
+    }
+    const now = this.tableRead(v, e.left);
+    if (now) this.tableWrite(e, v, this.mark({ kind: "binary", op: arith, left: now, right: rhs, at: this.at(e), label: this.label(e) }, e));
+  }
   /* ── Booleans ── */
   /** The value stored into a boolean: a constant, a coin toss, a condition tree. */
   boolValue(expr) {
@@ -4430,6 +5540,10 @@ var Structured = class {
     if (typeof v === "string") return v !== "" ? TRUE : FALSE;
     if (isCondition(v)) return this.mark({ kind: "cond", record: { ...v.record } }, at);
     if (isRead(v)) return this.readBool(v, at);
+    if (isTable(v)) {
+      const read = this.tableRead(v, at);
+      return read ? this.mark({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at) : FALSE;
+    }
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
@@ -4449,6 +5563,10 @@ var Structured = class {
       this.c.error(e, "The condition nests too deeply.");
       return FALSE;
     }
+    if (this.isUnitTyped(e)) {
+      const unit = this.unitExpr(e);
+      return unit ? this.mark({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return { kind: "not", expr: this.boolInner(e.operand, depth + 1) };
@@ -4466,6 +5584,14 @@ var Structured = class {
       const whenTrue = this.boolValue(e.whenTrue);
       const whenFalse = this.boolValue(e.whenFalse);
       return this.mark({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+    }
+    if (ts.isPropertyAccessExpression(e)) {
+      const member2 = this.unitMember(e);
+      if (member2) {
+        if (UNIT_FLAGS2.includes(member2.name)) return this.mark({ kind: "unitFlag", unit: member2.unit, flag: member2.name, at: this.at(e), label: this.label(e) }, e);
+        const field = this.unitField(e, member2);
+        return field ? this.mark({ kind: "test", expr: field, at: this.at(e), label: this.label(e) }, e) : FALSE;
+      }
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
@@ -4523,6 +5649,29 @@ var Structured = class {
     return call?.result ? this.mark({ kind: "call", call }, e) : FALSE;
   }
   comparison(e, op, depth) {
+    if (this.isUnitTyped(e.left) || this.isUnitTyped(e.right)) {
+      if (op !== "==" && op !== "!=") {
+        this.c.error(e, "Units compare with == and != only.");
+        return FALSE;
+      }
+      const none = (x) => {
+        const h = this.evaluate(x);
+        return !!h && (h.value === null || h.value === void 0);
+      };
+      const side = none(e.left) ? e.right : none(e.right) ? e.left : null;
+      let same;
+      if (side) {
+        const unit = this.unitExpr(side);
+        if (!unit) return FALSE;
+        same = { kind: "not", expr: this.mark({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) };
+      } else {
+        const left = this.unitExpr(e.left);
+        const right = this.unitExpr(e.right);
+        if (!left || !right) return FALSE;
+        same = this.mark({ kind: "unitSame", left, right, at: this.at(e), label: this.label(e) }, e);
+      }
+      return op === "==" ? same : same.kind === "not" ? same.expr : { kind: "not", expr: same };
+    }
     const isBool = (x) => {
       const h = this.evaluate(x);
       if (h) return typeof h.value === "boolean" || isCondition(h.value) || isRead(h.value) && h.value.equals !== void 0;
@@ -4655,6 +5804,10 @@ function compareNumbers(a2, op, b) {
 // compiler/compiler.ts
 var ENTRY_FILE = "main.ts";
 var LIB_FILE = "lib.d.ts";
+function renamedUnit(message) {
+  return /type 'Unit' is not assignable to (parameter of )?type 'UnitType/.test(message) || /type 'UnitType<\d+>' is not assignable to (parameter of )?type 'Unit'/.test(message) ? `${message}
+A unit type (units.*) is a UnitType; Unit is a unit on the map, inside program().` : message;
+}
 function normalizePath(path) {
   return path.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
 }
@@ -4713,7 +5866,7 @@ function compileScript(ts, files, names, options) {
     diagnostics.push({ file: sf.fileName, ...pos, message, source });
   };
   const planned = /* @__PURE__ */ new Set();
-  const tables2 = new Set([names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => t.object));
+  const tables2 = new Set(allTables(names).map((t) => t.object));
   for (const name of fileNames) {
     const sf = program.getSourceFile(name);
     const tableOf = (e) => {
@@ -4739,7 +5892,7 @@ function compileScript(ts, files, names, options) {
     const pos = sf && d.start !== void 0 ? position(sf, d.start, d.start + (d.length ?? 0)) : { line: 1, column: 1, endLine: 1, endColumn: 1 };
     const file = sf ? sf.fileName : ENTRY_FILE;
     const where = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
-    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
+    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), source: "typescript" });
   }
   if (diagnostics.length) return result();
   const plans = /* @__PURE__ */ new Map();
@@ -5095,7 +6248,7 @@ function setHoverVariables(monaco, variables) {
         const path = pathOfUri(m.uri);
         const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
         if (!v) continue;
-        const what = v.kind === "boolean" ? "a boolean" : v.bits ? `a u${v.bits} number (0 \u2026 ${2 ** v.bits - 1}, stopping at either end)` : "a number (0 \u2026 4 294 967 295, never below 0)";
+        const what = v.kind === "unit" ? "a unit of the game, or none \u2014 checked before every use: once the unit is gone it reads 0 and takes no write" : v.kind === "boolean" ? "a boolean" : v.bits ? `a u${v.bits} number (0 \u2026 ${2 ** v.bits - 1}, stopping at either end)` : "a number (0 \u2026 4 294 967 295, never below 0)";
         return {
           range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
           contents: [{ value: `**${v.name}** is a variable of the program: ${what}${v.shared ? ", one value shared by every player the program runs for" : ""}. It lives in the game while the map is played.` }]
@@ -5332,7 +6485,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "3.2.0";
+var VERSION = "3.3.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -5924,6 +7077,40 @@ function triggerAtLine(block2, file, line) {
 var FRAMES_PER_SECOND = 24;
 var FRAMES_PER_GAME_SECOND = 16;
 var U32 = 4294967296;
+var newUnit = (u) => {
+  const hp = u.hp ?? u.maxHp ?? 1;
+  const shields = u.shields ?? u.maxShields ?? 0;
+  return {
+    x: 0,
+    y: 0,
+    energy: 0,
+    kills: 0,
+    orderId: 3,
+    cooldown: 0,
+    resources: 0,
+    stim: 0,
+    ensnare: 0,
+    plague: 0,
+    lockdown: 0,
+    maelstrom: 0,
+    irradiate: 0,
+    stasis: 0,
+    hallucinated: false,
+    cloaked: false,
+    burrowed: false,
+    invincible: false,
+    underAttack: false,
+    ...u,
+    hp,
+    maxHp: u.maxHp ?? hp,
+    shields,
+    maxShields: u.maxShields ?? shields,
+    alive: true
+  };
+};
+var UNIT_FIELD_MAX = { hp: 16777215, shields: 16777215, energy: 255, kills: 255, cooldown: 255, resources: 65535, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
+var FACTORIES = /* @__PURE__ */ new Set([106, 111, 113, 114, 131, 132, 133, 154, 155, 160, 167]);
+var inClass = (type, cls) => cls === 230 ? type < 106 : cls === 231 ? type >= 106 && type <= 202 : FACTORIES.has(type);
 var newSides = () => ({ plus: 0, minus: 0, plusConst: 0, minusConst: 0, variable: false });
 function add(sides, sign, value, buildTime) {
   if (buildTime) {
@@ -5961,6 +7148,8 @@ var Halt = class extends Error {
 };
 var ProgramRun = class {
   vars = /* @__PURE__ */ new Map();
+  /** The variables that hold a unit, or none. */
+  unitVars = /* @__PURE__ */ new Map();
   bits = /* @__PURE__ */ new Map();
   latches = /* @__PURE__ */ new Map();
   body;
@@ -6012,8 +7201,65 @@ var ProgramRun = class {
     }
   }
   declare(decl) {
+    if (decl.kind === "unit") {
+      this.unitVars.set(decl.id, null);
+      return;
+    }
     if (decl.bits) this.bits.set(decl.id, decl.bits);
     this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
+  }
+  /* ── units ── */
+  /** The unit an expression names; null for none. A unit that has died is still the value — what reads it finds it gone. */
+  *unit(e) {
+    switch (e.kind) {
+      case "unitNull":
+        return null;
+      case "unitVar":
+        return this.unitVars.get(e.id) ?? null;
+      case "pick":
+        return this.sim.pick(e.by, e.filter, e.near);
+      case "call": {
+        yield* this.call(e.call);
+        return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null;
+      }
+    }
+  }
+  /** The unit, when there is one and it is still on the map. */
+  *living(e) {
+    const u = yield* this.unit(e);
+    return u?.alive ? u : null;
+  }
+  *unitDo(e, verb, at) {
+    const u = yield* this.living(e);
+    const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.num(verb.amount) : 0;
+    if (!u) return;
+    switch (verb.do) {
+      case "kill":
+      case "remove":
+        u.alive = false;
+        this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at);
+        break;
+      case "give":
+        u.owner = verb.to === PlayerGroup.CurrentPlayer ? this.sim.player : verb.to;
+        break;
+      case "order":
+        this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order });
+        break;
+      case "locate":
+        this.sim.centre(verb.location, u.x, u.y);
+        break;
+      case "damage":
+      case "heal": {
+        const step = verb.percent ? Math.floor(u.maxHp * 256 * amount / 100) : amount * 256;
+        const raw = verb.do === "damage" ? Math.max(0, u.hp * 256 - step) : Math.min(u.maxHp * 256, u.hp * 256 + step);
+        u.hp = Math.ceil(raw / 256);
+        if (u.hp === 0) {
+          u.alive = false;
+          this.sim.unitEvent(this, ActionType.KillUnit, u, at);
+        }
+        break;
+      }
+    }
   }
   /* ── expressions ── */
   /**
@@ -6078,6 +7324,12 @@ var ProgramRun = class {
       }
       case "read":
         return this.sim.read(e.read);
+      case "unitField": {
+        const u = yield* this.living(e.unit);
+        return u ? u[e.field] : 0;
+      }
+      case "tableRead":
+        return this.sim.tableRead(e.cell);
       case "randomInt": {
         const n = yield* this.num(e.bound);
         return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n));
@@ -6141,6 +7393,17 @@ var ProgramRun = class {
         return !(yield* this.bool(e.expr));
       case "random":
         return this.sim.random() < 0.5;
+      case "unitAlive":
+        return (yield* this.living(e.unit)) !== null;
+      case "unitSame": {
+        const a2 = yield* this.unit(e.left);
+        const b = yield* this.unit(e.right);
+        return a2 !== null && a2 === b;
+      }
+      case "unitFlag": {
+        const u = yield* this.living(e.unit);
+        return u ? u[e.flag] : false;
+      }
       case "edge": {
         const held = yield* this.bool(e.cond);
         const was = this.latches.get(e) ?? false;
@@ -6161,15 +7424,20 @@ var ProgramRun = class {
   *init(e, kind) {
     return kind === "number" ? yield* this.num(e) : yield* this.bool(e);
   }
+  /** A declaration's, a parameter's or a return's value into its variable, whatever it holds. */
+  *put(decl, e) {
+    if (decl.kind === "unit") this.unitVars.set(decl.id, yield* this.unit(e));
+    else this.store(decl.id, yield* this.init(e, decl.kind));
+  }
   *call(c2) {
     if (c2.result) this.declare(c2.result.decl);
     for (const p of c2.params) {
       this.declare(p.decl);
-      this.store(p.decl.id, yield* this.init(p.init, p.decl.kind));
+      yield* this.put(p.decl, p.init);
     }
-    const flow = yield* this.block(c2.body, { fn: { result: c2.result?.decl.id } });
+    const flow = yield* this.block(c2.body, { fn: { result: c2.result?.decl } });
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c2.at.line}).`);
-    return c2.result ? this.read(c2.result.decl.id) : 0;
+    return c2.result && c2.result.kind !== "unit" ? this.read(c2.result.decl.id) : 0;
   }
   /* ── statements ── */
   *block(body2, ctx) {
@@ -6184,7 +7452,50 @@ var ProgramRun = class {
     switch (s.kind) {
       case "declare": {
         this.declare(s.decl);
-        if (!s.failed) this.store(s.decl.id, yield* this.init(s.init, s.decl.kind));
+        if (!s.failed) yield* this.put(s.decl, s.init);
+        return "next";
+      }
+      case "assignUnit":
+        this.unitVars.set(s.target, yield* this.unit(s.value));
+        return "next";
+      case "unitLoop": {
+        this.declare(s.decl);
+        for (const u of this.sim.matching(s.filter)) {
+          if (!u.alive) continue;
+          this.unitVars.set(s.decl.id, u);
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") break;
+          if (flow === "return") return flow;
+        }
+        return "next";
+      }
+      case "unitWrite": {
+        const u = yield* this.living(s.unit);
+        const field = s.field;
+        if (field === "invincible") {
+          const on = yield* this.bool(s.value);
+          if (u) u.invincible = on;
+          return "next";
+        }
+        const value = yield* this.num(s.value);
+        if (!u) return "next";
+        u[field] = Math.min(value, UNIT_FIELD_MAX[field] ?? 4294967295);
+        if (field === "hp" && u.hp === 0) {
+          u.alive = false;
+          this.sim.unitEvent(this, ActionType.KillUnit, u, s.at);
+        }
+        return "next";
+      }
+      case "unitDo":
+        yield* this.unitDo(s.unit, s.verb, s.at);
+        return "next";
+      case "tableWrite": {
+        if (s.value.kind === "text") {
+          this.sim.tableWrite(s.cell, 0, false, s.value.text);
+          return "next";
+        }
+        const value = s.boolean ? (yield* this.bool(s.value)) ? 1 : 0 : yield* this.num(s.value);
+        this.sim.tableWrite(s.cell, value, s.scaled === true);
         return "next";
       }
       case "assign":
@@ -6248,7 +7559,7 @@ var ProgramRun = class {
       case "continue":
         return "continue";
       case "return": {
-        if (s.value && ctx.fn?.result) this.store(ctx.fn.result, yield* this.init(s.value, typeof this.read(ctx.fn.result) === "number" ? "number" : "boolean"));
+        if (s.value && ctx.fn?.result) yield* this.put(ctx.fn.result, s.value);
         return "return";
       }
       case "sleep": {
@@ -6280,6 +7591,12 @@ var ProgramRun = class {
         return "next";
     }
   }
+  /** The unit a variable holds, by its source name; null for none or a unit that is gone. */
+  unitValue(name) {
+    let found = null;
+    for (const [id, u] of this.unitVars) if (id === name || id.startsWith(`${name}#`)) found = u;
+    return found?.alive ? found : null;
+  }
   /** A user variable's value by its source name (the last declared with that name). */
   value(name) {
     let found;
@@ -6296,6 +7613,13 @@ var ProgramSimulation = class {
   conditionOf;
   readOf;
   nameOf;
+  /** The units of the game, in the order of its unit table; a dead one stays in the list, gone. */
+  units;
+  locations = /* @__PURE__ */ new Map();
+  /** What the programs wrote into the game's tables, as the cell stores it; a name as its text. */
+  tables = /* @__PURE__ */ new Map();
+  tableOf;
+  classOf;
   /** Ore and gas by player slot, as the programs' own setResources actions leave them. */
   resources = /* @__PURE__ */ new Map();
   cycle = 0;
@@ -6306,6 +7630,10 @@ var ProgramSimulation = class {
     this.conditionOf = options.condition;
     this.readOf = options.read;
     this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
+    this.units = (options.units ?? []).map(newUnit);
+    for (const [n, b] of Object.entries(options.locations ?? {})) this.locations.set(Number(n), { ...b });
+    this.tableOf = options.table;
+    this.classOf = options.unitClass ?? inClass;
     this.runs = programs.map((p, i) => new ProgramRun(this, i, p));
   }
   get player() {
@@ -6365,6 +7693,66 @@ var ProgramSimulation = class {
     if (r.source === "condition") return this.quantity(r.record) ?? 0;
     if (r.source === "player" && r.fact === "slot") return this.slotOf(r.player) === this.player ? 2 : 0;
     return 0;
+  }
+  /* ── units and tables ── */
+  /** The living units a filter matches, in table order. */
+  matching(f) {
+    const owner = f.owner === void 0 ? void 0 : this.slotOf(f.owner);
+    const box = f.at === void 0 ? void 0 : this.locations.get(f.at);
+    return this.units.filter((u) => u.alive && (owner === void 0 || u.owner === owner) && (f.type === void 0 || (f.type >= 230 ? this.classOf(u.type, f.type) : u.type === f.type)) && (!box || u.x >= box.left && u.x <= box.right && u.y >= box.top && u.y <= box.bottom));
+  }
+  /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
+  pick(by, f, near) {
+    const all = this.matching(f);
+    if (all.length === 0) return null;
+    if (by === "first") return all[0];
+    if (by === "random") return all[Math.min(all.length - 1, Math.floor(this.random() * all.length))];
+    const box = near === void 0 ? void 0 : this.locations.get(near);
+    const cx = box ? Math.floor((box.left + box.right) / 2) : 0;
+    const cy = box ? Math.floor((box.top + box.bottom) / 2) : 0;
+    let best = all[0];
+    let least = Infinity;
+    for (const u of all) {
+      const d = Math.abs(u.x - cx) + Math.abs(u.y - cy);
+      if (d < least) {
+        least = d;
+        best = u;
+      }
+    }
+    return best;
+  }
+  /** A location centred on a point, its size kept. */
+  centre(location, x, y) {
+    const b = this.locations.get(location) ?? { left: 0, top: 0, right: 0, bottom: 0 };
+    const w = b.right - b.left;
+    const h = b.bottom - b.top;
+    const left = x - Math.floor(w / 2);
+    const top = y - Math.floor(h / 2);
+    this.locations.set(location, { left, top, right: left + w, bottom: top + h });
+  }
+  cellKey(c2) {
+    return `${c2.name}:${c2.player ? this.slotOf(c2.index) : c2.index}${c2.key !== void 0 ? `:${c2.key}` : ""}`;
+  }
+  /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
+  tableRead(c2) {
+    const stored = this.tables.get(this.cellKey(c2));
+    if (typeof stored === "number") return Math.floor(stored / (c2.scale ?? 1));
+    const given = this.tableOf?.(c2);
+    return given === void 0 ? 0 : Math.max(0, Math.trunc(given));
+  }
+  /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
+  tableWrite(c2, value, scaled, text) {
+    if (text !== void 0) {
+      this.tables.set(this.cellKey(c2), text);
+      return;
+    }
+    const raw = scaled ? value : value * (c2.scale ?? 1);
+    this.tables.set(this.cellKey(c2), Math.min(raw, cellMax(c2.width)));
+  }
+  /** What a program did to a unit, for the log: the game's nearest action, with the unit in words. */
+  unitEvent(run, type, u, at, extra = {}) {
+    const what = `unit ${this.units.indexOf(u)} (type ${u.type}, P${u.owner + 1})`;
+    this.events.push({ cycle: this.cycle, program: run.index, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...extra.location ? { location: extra.location } : {} }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
   partText(p) {
     return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
@@ -6439,6 +7827,10 @@ var ProgramSimulation = class {
   finished() {
     return this.runs.every((r) => r.done);
   }
+  /** The unit a variable holds by its source name, in a program (the first by default). */
+  unit(name, program = 0) {
+    return this.runs[program]?.unitValue(name) ?? null;
+  }
   /** A variable's value by its source name, in a program (the first by default). */
   value(name, program = 0) {
     return this.runs[program]?.value(name);
@@ -6475,6 +7867,15 @@ so a read means what the condition means, for a force's minerals or the units at
 Player facts are bytes of the player tables. Text with values in it is printed through eudplib's
 string buffer, for the player it is for and nobody else.
 
+A unit of the game is a pointer into the game's unit table \u2014 1700 slots of 336 bytes \u2014 with the slot's
+uniqueness byte kept beside it: the game gives a dead unit's slot to the next unit made, so a unit kept
+in a variable is checked before every use (a sprite, an order other than "die", the same uniqueness
+byte) and reads 0, and takes no write, once it is gone. A loop over units and a pick walk the whole
+table with conditions whose address is moved on a slot at a time, as eudplib's own EUDLoopUnit2 does;
+a dying unit is passed over. What a unit can be asked and told is what Magenta's probe maps saw
+working in Remastered: no position, cloak or speed writes. The game's tables (\`stats()\`) are plain
+cells at addresses the IR carries; a speed is four flingy records, a colour two bytes, a name a string.
+
 Numbers keep one contract with the simulator: 32-bit unsigned, an expression's exact value stored
 below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
 """
@@ -6482,7 +7883,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 3
+IR_VERSION = 4
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -6493,6 +7894,27 @@ GAS_TABLE = 0x57F120
 PLAYER_BYTES = {"slot": 0x57F1B4, "race": 0x57F1C0}
 # Per race (144 bytes apart: Zerg, Terran, Protoss), a dword per player, in half supplies.
 SUPPLY_TABLES = {"provided": 0x582144, "used": 0x582174, "max": 0x5821A4}
+# The unit table, and a unit's dwords the scans test (as EPD offsets from the unit's own).
+UNIT_TABLE = 0x59CCA8
+UNIT_SIZE = 336
+UNIT_SLOTS = 1700
+UNIT_END = UNIT_TABLE + UNIT_SIZE * UNIT_SLOTS
+OFF_SPRITE, OFF_POS, OFF_OWNER_ORDER, OFF_TYPE, OFF_UID = 0x0C // 4, 0x28 // 4, 0x4C // 4, 0x64 // 4, 0xA4 // 4
+# units.dat: max hit points (dword, 256 to a point), max shields (word), the group flags a trigger's
+# Men / Buildings / Factories go by (byte), the flingy a type moves as (byte).
+UNITS_MAX_HP = 0x662350
+UNITS_MAX_SHIELDS = 0x660E00
+UNITS_GROUP = 0x6637A0
+UNITS_FLINGY = 0x6644F8
+GROUP_BITS = {230: 0x08, 231: 0x10, 232: 0x20}
+# flingy.dat, by flingy id: movement control (byte), top speed (dword), acceleration (word), halt distance (dword).
+FLINGY_CONTROL, FLINGY_SPEED, FLINGY_ACCELERATION, FLINGY_HALT = 0x6C9858, 0x6C9EF8, 0x6C9C78, 0x6C9930
+MINIMAP_COLOR_OFFSET = 0x581DD6 - 0x581D76
+# The location table, and the one an order borrows for the length of one action (put back after).
+MRGN = 0x58DC60
+SCRATCH_LOCATION = 255
+UNIT_TIMERS = {"stim": "stimTimer", "ensnare": "ensnareTimer", "plague": "plagueTimer", "lockdown": "lockdownTimer", "maelstrom": "maelstromTimer", "irradiate": "irradiateTimer", "stasis": "stasisTimer"}
+STATUS_INVINCIBLE, STATUS_HALLUCINATION, STATUS_BURROWED, STATUS_CLOAKED = 0x04000000, 0x40000000, 0x00000010, 0x00000300
 COND_COMMAND, COND_BRING, COND_ACCUMULATE, COND_KILL, COND_OPPONENTS, COND_DEATHS = 2, 3, 4, 5, 14, 15
 CURRENT_PLAYER = 13
 # The state of a program whose body ended: nothing resumes it.
@@ -6545,6 +7967,63 @@ class Storage:
             self.store << value
 
 
+class UnitRef:
+    """A unit of the game as the lowering holds it: the pointer, its EPD, and the slot's uniqueness byte
+    (as it sits in its dword, masked 0xFF00). \`uid\` None is the unit of a loop's turn, there by
+    construction; a pointer that is the int 0 is no unit at all."""
+
+    def __init__(self, ptr, epd, uid=None):
+        self.ptr, self.epd, self.uid = ptr, epd, uid
+
+    @property
+    def none(self):
+        return isinstance(self.ptr, int) and self.ptr == 0
+
+
+NO_UNIT = UnitRef(0, 0, 0)
+
+
+class UnitStorage:
+    """A unit variable: three cells, or three 12-slot rows of a per-player program."""
+
+    def __init__(self, decl, per_player, player_of):
+        self.decl = decl
+        self.rowed = per_player
+        self.player_of = player_of
+        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
+        self.ptr, self.epd, self.uid = make(), make(), make()
+
+    def get(self):
+        if self.rowed:
+            p = self.player_of()
+            return UnitRef(self.ptr[p], self.epd[p], self.uid[p])
+        return UnitRef(self.ptr, self.epd, self.uid)
+
+    def set(self, ref):
+        uid = ref.uid
+        if uid is None:
+            # The unit of a loop's turn is there now: this is when its slot's uniqueness byte is taken.
+            uid = f_maskread_epd(ref.epd + OFF_UID, 0xFF00)
+        for cell, value in ((self.ptr, ref.ptr), (self.epd, ref.epd), (self.uid, uid)):
+            if self.rowed:
+                cell[self.player_of()] = value
+            else:
+                cell << value
+
+
+class LoopUnit:
+    """The variable of a loop over units: the scan's own pointer, never kept past the loop."""
+
+    def __init__(self, ref):
+        self.ref = ref
+
+    def get(self):
+        return self.ref
+
+    def set(self, ref):
+        raise Fail("trigscript: the unit of a loop's turn cannot be assigned")
+
+
 def saturate(value, bits):
     top = (1 << bits) - 1
     if isinstance(value, int):
@@ -6594,7 +8073,10 @@ class Lowering:
         return self.player
 
     def declare(self, decl):
-        s = Storage(decl, self.per_player, self.player_of)
+        if decl.get("kind") == "unit":
+            s = UnitStorage(decl, self.per_player, self.player_of)
+        else:
+            s = Storage(decl, self.per_player, self.player_of)
         self.vars[decl["id"]] = s
         return s
 
@@ -6721,6 +8203,10 @@ class Lowering:
                 out << f_div(f_dwrand(), n)[1]
             EUDEndIf()
             return out
+        if k == "unitField":
+            return self.unit_field(e)
+        if k == "tableRead":
+            return self.table_read(e["cell"], e)
         if k == "ternary":
             t = EUDVariable()
             if EUDIf()(self.cond(e["cond"])):
@@ -6904,6 +8390,8 @@ class Lowering:
             return EUDNot(self.cond(e["expr"]))
         if k == "random":
             return (f_rand() & 1) >= 1
+        if k in ("unitAlive", "unitFlag", "unitSame"):
+            return as_var(self.truth(e)) >= 1
         if k == "edge":
             return self.edge(e)
         if k == "ternary":
@@ -6924,6 +8412,23 @@ class Lowering:
             return 1 if e["value"] else 0
         if e["kind"] == "var":
             return self.var(e["id"], e).get()
+        if e["kind"] == "unitAlive":
+            ref = self.unit(e["unit"])
+            t = fresh(0)
+            if not ref.none:
+                self.when_alive(ref, lambda: t << 1)
+            return t
+        if e["kind"] == "unitFlag":
+            return self.unit_flag(e)
+        if e["kind"] == "unitSame":
+            a, b = self.unit(e["left"]), self.unit(e["right"])
+            t = fresh(0)
+            if not a.none and not b.none:
+                ap, bp = as_var(a.ptr), as_var(b.ptr)
+                if EUDIf()([ap >= 1, ap == bp]):
+                    t << 1
+                EUDEndIf()
+            return t
         t = fresh(0)
         if EUDIf()(self.cond(e)):
             t << 1
@@ -6959,6 +8464,418 @@ class Lowering:
         EUDEndIf()
         return fired >= 1
 
+    # \u2500\u2500 units: a pointer into the game's unit table, checked before use \u2500\u2500
+    def unit(self, e):
+        k = e["kind"]
+        if k == "unitNull":
+            return NO_UNIT
+        if k == "unitVar":
+            return self.var(e["id"], e).get()
+        if k == "pick":
+            return self.pick(e)
+        if k == "call":
+            return self.call(e["call"])
+        raise Fail("trigscript: unknown unit expression %r%s" % (k, where(e)))
+
+    def when_alive(self, ref, body):
+        """\`body()\` when the unit is still the one that was kept: the slot has a sprite, its order is not
+        "die", and its uniqueness byte is the one taken with the pointer."""
+        if ref.none:
+            return
+        if ref.uid is None:
+            body()
+            return
+        ptr, epd = as_var(ref.ptr), as_var(ref.epd)
+        if EUDIf()([ptr >= 1, MemoryEPD(epd + OFF_SPRITE, AtLeast, 1), MemoryXEPD(epd + OFF_OWNER_ORDER, AtLeast, 0x100, 0xFF00), MemoryXEPD(epd + OFF_UID, Exactly, ref.uid, 0xFF00)]):
+            body()
+        EUDEndIf()
+
+    @staticmethod
+    def cunit(ref):
+        return CUnit(ref.epd, ptr=ref.ptr)
+
+    def unit_field(self, e):
+        ref = self.unit(e["unit"])
+        out = fresh(0)
+        self.when_alive(ref, lambda: out << self.field_of(self.cunit(ref), e["field"], e))
+        return out
+
+    def field_of(self, cu, field, node):
+        """A unit's number, in the script's units: whole points for hit points (as the game shows them,
+        a started point counting), shields and energy."""
+        if field == "hp":
+            return f_div(cu.hp + 255, 256)[0]
+        if field == "maxHp":
+            return f_div(f_dwread_epd(EPD(UNITS_MAX_HP) + cu.unitType), 256)[0]
+        if field == "shields":
+            return f_div(cu.shield, 256)[0]
+        if field == "maxShields":
+            return f_wread(UNITS_MAX_SHIELDS + cu.unitType * 2)
+        if field == "energy":
+            return f_div(cu.energy, 256)[0]
+        if field in UNIT_TIMERS:
+            return getattr(cu, UNIT_TIMERS[field])
+        name = {"owner": "owner", "type": "unitType", "x": "posX", "y": "posY", "kills": "killCount", "orderId": "orderID", "cooldown": "groundWeaponCooldown", "resources": "resourceAmount"}.get(field)
+        if name is None:
+            raise Fail("trigscript: unknown unit field %r%s" % (field, where(node)))
+        return getattr(cu, name)
+
+    def unit_flag(self, e):
+        ref = self.unit(e["unit"])
+        out = fresh(0)
+
+        def body():
+            cu = self.cunit(ref)
+            flag = e["flag"]
+            if flag == "underAttack":
+                held = cu.attackNotifyTimer >= 1
+            else:
+                mask = {"hallucinated": STATUS_HALLUCINATION, "cloaked": STATUS_CLOAKED, "burrowed": STATUS_BURROWED, "invincible": STATUS_INVINCIBLE}.get(flag)
+                if mask is None:
+                    raise Fail("trigscript: unknown unit flag %r%s" % (flag, where(e)))
+                held = cu.check_status_flag(mask)
+            if EUDIf()(held):
+                out << 1
+            EUDEndIf()
+
+        self.when_alive(ref, body)
+        return out
+
+    def location_bounds(self, number):
+        base = EPD(MRGN + (int(number) - 1) * 20)
+        return [f_dwread_epd(base + i) for i in range(4)]
+
+    def scan(self, flt, node, body):
+        """The game's unit table, slot by slot: \`body(ref, next_, exit_)\` for every unit on the map the
+        filter matches. Every test is one condition whose address moves on with the slot, so a slot
+        that does not match costs a trigger or two."""
+        ptr, epd = EUDVariable(), EUDVariable()
+        empty = MemoryEPD(0, Exactly, 0)
+        dying = MemoryXEPD(0, Exactly, 0, 0xFF00)
+        moving = [(empty, OFF_SPRITE), (dying, OFF_OWNER_ORDER)]
+        match, values = [], []
+        owner = flt.get("owner")
+        if owner is not None:
+            who = self.current() if owner == CURRENT_PLAYER else int(owner)
+            c = MemoryXEPD(0, Exactly, who if isinstance(who, int) else 0, 0xFF)
+            match.append(c)
+            moving.append((c, OFF_OWNER_ORDER))
+            if not isinstance(who, int):
+                values.append((c, who))
+        kind = flt.get("type")
+        if kind is not None and kind < 228:
+            c = MemoryXEPD(0, Exactly, int(kind), 0xFFFF)
+            match.append(c)
+            moving.append((c, OFF_TYPE))
+        elif kind is not None and kind not in GROUP_BITS:
+            raise Fail("trigscript: unknown unit type %r%s" % (kind, where(node)))
+        if flt.get("at"):
+            left, top, right, bottom = self.location_bounds(flt["at"])
+            # A location reaching past the map's edge starts below zero, which a unit's position never is.
+            for v in (left, top):
+                if EUDIf()(v >= 0x80000000):
+                    v << 0
+                EUDEndIf()
+            for comparison, mask, value in ((AtLeast, 0xFFFF, left), (AtMost, 0xFFFF, right), (AtLeast, 0xFFFF0000, f_bitlshift(top, 16)), (AtMost, 0xFFFF0000, f_bitlshift(bottom, 16))):
+                c = MemoryXEPD(0, comparison, 0, mask)
+                match.append(c)
+                moving.append((c, OFF_POS))
+                values.append((c, value))
+        DoActions([ptr.SetNumber(UNIT_TABLE), epd.SetNumber(EPD(UNIT_TABLE))] + [SetMemory(c + 4, SetTo, EPD(UNIT_TABLE) + off) for c, off in moving])
+        for c, value in values:
+            f_dwwrite_epd(EPD(c + 8), value)
+        head, next_, exit_ = Forward(), Forward(), Forward()
+        head << NextTrigger()
+        EUDJumpIf(ptr >= UNIT_END, exit_)
+        EUDJumpIf(empty, next_)
+        EUDJumpIf(dying, next_)
+        if match:
+            matched = Forward()
+            EUDJumpIf(match, matched)
+            EUDJump(next_)
+            matched << NextTrigger()
+        if kind in GROUP_BITS:
+            group = fresh(f_bread(UNITS_GROUP + f_maskread_epd(epd + OFF_TYPE, 0xFFFF)))
+            EUDJumpIf((group & GROUP_BITS[kind]) == 0, next_)
+        body(UnitRef(ptr, epd, None), next_, exit_)
+        next_ << NextTrigger()
+        DoActions([SetMemory(c + 4, Add, UNIT_SIZE // 4) for c, _ in moving] + [ptr.AddNumber(UNIT_SIZE), epd.AddNumber(UNIT_SIZE // 4)])
+        EUDJump(head)
+        exit_ << NextTrigger()
+
+    def pick(self, e):
+        """One unit among the matching: the first, the nearest to a location's centre, or one at random."""
+        by, flt = e["by"], e.get("filter", {})
+        found_ptr, found_epd = fresh(0), fresh(0)
+
+        def take(ref):
+            found_ptr << ref.ptr
+            found_epd << ref.epd
+
+        if by == "first":
+            def body(ref, next_, exit_):
+                take(ref)
+                EUDJump(exit_)
+            self.scan(flt, e, body)
+        elif by == "nearest":
+            left, top, right, bottom = self.location_bounds(e["near"])
+            cx, cy = f_div(left + right, 2)[0], f_div(top + bottom, 2)[0]
+            least = fresh(U32)
+
+            def body(ref, next_, exit_):
+                cu = self.cunit(ref)
+                # |dx| + |dy| is enough to say which is nearest, and never overflows.
+                d = self.difference([cu.posX], [cx], absolute=True) + self.difference([cu.posY], [cy], absolute=True)
+                if EUDIf()(d < least):
+                    least << d
+                    take(ref)
+                EUDEndIf()
+            self.scan(flt, e, body)
+        elif by == "random":
+            # Count the matching, draw one, take the drawn one on a second pass.
+            count = fresh(0)
+            self.scan(flt, e, lambda ref, next_, exit_: count.__iadd__(1))
+            none = Forward()
+            EUDJumpIf(count == 0, none)
+            drawn = f_div(f_dwrand(), count)[1]
+            i = fresh(0)
+
+            def body(ref, next_, exit_):
+                hit = Forward()
+                EUDJumpIf(i == drawn, hit)
+                i.__iadd__(1)
+                EUDJump(next_)
+                hit << NextTrigger()
+                take(ref)
+                EUDJump(exit_)
+            self.scan(flt, e, body)
+            none << NextTrigger()
+        else:
+            raise Fail("trigscript: unknown pick %r%s" % (by, where(e)))
+        uid = fresh(0)
+        if EUDIf()(found_ptr >= 1):
+            uid << f_maskread_epd(found_epd + OFF_UID, 0xFF00)
+        EUDEndIf()
+        return UnitRef(found_ptr, found_epd, uid)
+
+    def unit_loop(self, st, ctx):
+        def body(ref, next_, exit_):
+            self.vars[st["decl"]["id"]] = LoopUnit(ref)
+            self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": next_}))
+        self.scan(st.get("filter", {}), st, body)
+
+    def unit_write(self, st):
+        ref = self.unit(st["unit"])
+        field = st["field"]
+        if field == "invincible":
+            on = self.truth(st["value"])
+
+            def flag():
+                cu = self.cunit(ref)
+                if isinstance(on, int):
+                    cu.set_invincible() if on else cu.clear_invincible()
+                    return
+                if EUDIf()(as_var(on) >= 1):
+                    cu.set_invincible()
+                if EUDElse()():
+                    cu.clear_invincible()
+                EUDEndIf()
+            self.when_alive(ref, flag)
+            return
+        value = self.num(st["value"])
+
+        def write():
+            cu = self.cunit(ref)
+            if field == "hp":
+                # Hit points at 0 are a dead unit, so that is what the write makes of it.
+                if isinstance(value, int):
+                    if value == 0:
+                        cu.die()
+                    else:
+                        cu.hp = min(value, 0xFFFFFF) * 256
+                    return
+                if EUDIf()(value == 0):
+                    cu.die()
+                if EUDElse()():
+                    cu.hp = f_mul(saturate(value, 24), 256)
+                EUDEndIf()
+            elif field == "shields":
+                cu.shield = points(value, 24)
+            elif field == "energy":
+                cu.energy = points(value, 8)
+            elif field == "kills":
+                cu.killCount = saturate(value, 8)
+            elif field == "resources":
+                cu.resourceAmount = saturate(value, 16)
+            elif field == "cooldown":
+                frames = saturate(value, 8)
+                cu.groundWeaponCooldown = frames
+                cu.airWeaponCooldown = frames
+                cu.spellCooldown = frames
+            elif field in UNIT_TIMERS:
+                setattr(cu, UNIT_TIMERS[field], saturate(value, 8))
+            else:
+                raise Fail("trigscript: a unit's %s takes no write%s" % (field, where(st)))
+        self.when_alive(ref, write)
+
+    def unit_do(self, st):
+        ref = self.unit(st["unit"])
+        verb = st["verb"]
+        do = verb["do"]
+        amount = self.num(verb["amount"]) if do in ("damage", "heal") else 0
+
+        def act():
+            cu = self.cunit(ref)
+            if do == "kill":
+                cu.die()
+            elif do == "remove":
+                cu.remove()
+            elif do == "give":
+                to = int(verb["to"])
+                cu.cgive(self.current() if to == CURRENT_PLAYER else to)
+            elif do == "order":
+                self.order(cu, verb, st)
+            elif do == "locate":
+                self.locate(cu, int(verb["location"]))
+            elif do in ("damage", "heal"):
+                self.adjust(cu, do, amount, bool(verb.get("percent")))
+            else:
+                raise Fail("trigscript: unknown unit verb %r%s" % (do, where(st)))
+        self.when_alive(ref, act)
+
+    def order(self, cu, verb, node):
+        """The game's own Order, reaching this unit alone: a location is made a small box around the unit
+        for the length of the action (the game did nothing with a box of no size), then put back."""
+        kind = {"move": Move, "patrol": Patrol, "attack": Attack}.get(verb["order"])
+        if kind is None:
+            raise Fail("trigscript: unknown order %r%s" % (verb["order"], where(node)))
+        base = EPD(MRGN + (SCRATCH_LOCATION - 1) * 20)
+        kept = [f_dwread_epd(base + i) for i in range(5)]
+        x, y = cu.posX, cu.posY
+        for i, v in enumerate((x - 2, y - 2, x + 2, y + 2, 0)):
+            f_dwwrite_epd(base + i, v)
+        DoActions(Order(cu.unitType, cu.owner, SCRATCH_LOCATION, kind, int(verb["target"])))
+        for i, v in enumerate(kept):
+            f_dwwrite_epd(base + i, v)
+
+    def locate(self, cu, number):
+        """A location centred on the unit, its size kept."""
+        base = EPD(MRGN + (number - 1) * 20)
+        left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
+        width, height = right - left, bottom - top
+        x, y = cu.posX - f_div(width, 2)[0], cu.posY - f_div(height, 2)[0]
+        for i, v in enumerate((x, y, x + width, y + height)):
+            f_dwwrite_epd(base + i, v)
+
+    def adjust(self, cu, do, amount, percent):
+        """Hit points down \u2014 at 0 the unit dies \u2014 or up to the type's maximum, in the game's own units (256 to a point)."""
+        now = fresh(cu.hp)
+        top = f_dwread_epd(EPD(UNITS_MAX_HP) + cu.unitType)
+        if percent:
+            step = f_div(f_mul(top, as_var(amount)), 100)[0]
+        else:
+            step = amount * 256 if isinstance(amount, int) else f_mul(saturate(amount, 24), 256)
+        if do == "damage":
+            if EUDIf()(now <= step):
+                cu.die()
+            if EUDElse()():
+                cu.hp = now - step
+            EUDEndIf()
+            return
+        new = fresh(now + step)
+        if EUDIf()(new >= top):
+            new << top
+        EUDEndIf()
+        cu.hp = new
+
+    # \u2500\u2500 the game's tables \u2500\u2500
+    def cell_address(self, c):
+        index = c["index"]
+        if c.get("player") and index == CURRENT_PLAYER:
+            index = self.current()
+        base = int(c["base"]) + int(c.get("key") or 0)
+        return base + index * int(c["stride"])
+
+    def table_read(self, c, node):
+        if c.get("special"):
+            raise Fail("trigscript: %s cannot be read%s" % (c.get("name"), where(node)))
+        addr = self.cell_address(c)
+        width = c["width"]
+        if width == "bit":
+            v = fresh(0)
+            if EUDIf()(MemoryX(addr, AtLeast, 1, 1 << int(c["bit"]))):
+                v << 1
+            EUDEndIf()
+            return v
+        v = f_dwread(addr) if width == 4 else f_wread(addr) if width == 2 else f_bread(addr)
+        scale = int(c.get("scale") or 1)
+        return f_div(v, scale)[0] if scale > 1 else v
+
+    def table_write(self, st):
+        c = st["cell"]
+        addr = self.cell_address(c)
+        special = c.get("special")
+        if special == "name":
+            f_wwrite(addr, EncodeString(st["value"]["text"]))
+            return
+        width = c["width"]
+        if st.get("boolean"):
+            value = self.truth(st["value"])
+        else:
+            value = self.num(st["value"])
+            scale = int(c.get("scale") or 1)
+            if scale > 1 and not st.get("scaled"):
+                value = value * scale if isinstance(value, int) else f_mul(value, scale)
+        top = 1 if width == "bit" else (1 << (8 * width)) - 1
+        if isinstance(value, int):
+            value = min(value, top)
+        elif width != 4 and width != "bit":
+            value = saturate(value, 8 * width)
+        if special == "speed":
+            self.write_speed(int(c["index"]), value)
+        elif special == "color":
+            f_bwrite(addr, value)
+            f_bwrite(addr + MINIMAP_COLOR_OFFSET, value)
+        elif width == "bit":
+            mask = 1 << int(c["bit"])
+            if isinstance(value, int):
+                DoActions(SetMemoryX(addr, SetTo, mask if value else 0, mask))
+            else:
+                if EUDIf()(value >= 1):
+                    DoActions(SetMemoryX(addr, SetTo, mask, mask))
+                if EUDElse()():
+                    DoActions(SetMemoryX(addr, SetTo, 0, mask))
+                EUDEndIf()
+        elif width == 4:
+            f_dwwrite(addr, value)
+        elif width == 2:
+            f_wwrite(addr, value)
+        else:
+            f_bwrite(addr, value)
+
+    def write_speed(self, unit, speed):
+        """A unit type's top speed is its flingy's: the flingy is switched to table control and given the
+        speed, with acceleration about a seventeenth of it and the braking distance v\xB2 / 2a to match
+        (the Vulture's own figures), as Magenta writes it. Units made afterwards move at the new speed."""
+        flingy = f_bread(UNITS_FLINGY + unit)
+        if isinstance(speed, int):
+            acceleration = max(1, round(speed / 17))
+            halt = max(1, round(speed * speed / (2 * acceleration)))
+        else:
+            acceleration = fresh(f_div(speed, 17)[0])
+            if EUDIf()(acceleration == 0):
+                acceleration << 1
+            EUDEndIf()
+            halt = fresh(f_div(f_mul(speed, speed), acceleration * 2)[0])
+            if EUDIf()(halt == 0):
+                halt << 1
+            EUDEndIf()
+            acceleration = saturate(acceleration, 16)
+        f_bwrite(FLINGY_CONTROL + flingy, 0)
+        f_dwwrite(FLINGY_SPEED + flingy * 4, speed)
+        f_wwrite(FLINGY_ACCELERATION + flingy * 2, acceleration)
+        f_dwwrite(FLINGY_HALT + flingy * 4, halt)
+
     # \u2500\u2500 statements \u2500\u2500
     def block(self, statements, ctx):
         for st in statements:
@@ -6969,7 +8886,17 @@ class Lowering:
         if k == "declare":
             s = self.declare(st["decl"])
             if not st.get("failed"):
-                s.set(self.num(st["init"]) if st["decl"]["kind"] == "number" else self.truth(st["init"]))
+                s.set(self.value(st["init"], st["decl"]["kind"]))
+        elif k == "assignUnit":
+            self.var(st["target"], st).set(self.unit(st["value"]))
+        elif k == "unitLoop":
+            self.unit_loop(st, ctx)
+        elif k == "unitWrite":
+            self.unit_write(st)
+        elif k == "unitDo":
+            self.unit_do(st)
+        elif k == "tableWrite":
+            self.table_write(st)
         elif k == "assign":
             self.var(st["target"], st).set(self.num(st["value"]))
         elif k == "assignBool":
@@ -7001,7 +8928,7 @@ class Lowering:
             if fn is None:
                 raise Fail("trigscript: return outside a function%s" % where(st))
             if st.get("value") is not None and fn["result"] is not None:
-                fn["result"].set(self.num(st["value"]) if fn["kind"] == "number" else self.truth(st["value"]))
+                fn["result"].set(self.value(st["value"], fn["kind"]))
             EUDJump(fn["end"])
             raise Leave()
         elif k == "sleep":
@@ -7156,13 +9083,17 @@ class Lowering:
             show()
         f_setcurpl(self.current())
 
+    def value(self, e, kind):
+        """An expression as what a variable of \`kind\` holds."""
+        return self.num(e) if kind == "number" else self.unit(e) if kind == "unit" else self.truth(e)
+
     def call(self, call):
         result = self.declare(call["result"]["decl"]) if call.get("result") else None
         if result is not None:
-            result.set(0)
+            result.set(NO_UNIT if call["result"]["kind"] == "unit" else 0)
         for p in call["params"]:
             s = self.declare(p["decl"])
-            s.set(self.num(p["init"]) if p["decl"]["kind"] == "number" else self.truth(p["init"]))
+            s.set(self.value(p["init"], p["decl"]["kind"]))
         end = Forward()
         self.straight(call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}})
         end << NextTrigger()
@@ -7262,9 +9193,16 @@ def loop_players(slots):
 BITWISE = ("&", "|", "^", "<<", ">>")
 
 
+def points(value, bits):
+    """Whole points as the game stores them, 256 to a point; \`bits\` is how many bits of points the cell holds."""
+    if isinstance(value, int):
+        return min(value, (1 << bits) - 1) * 256
+    return f_mul(saturate(value, bits), 256)
+
+
 def uses_random(node):
     if isinstance(node, dict):
-        return node.get("kind") in ("random", "randomInt") or any(uses_random(v) for v in node.values())
+        return node.get("kind") in ("random", "randomInt") or (node.get("kind") == "pick" and node.get("by") == "random") or any(uses_random(v) for v in node.values())
     return isinstance(node, list) and any(uses_random(v) for v in node)
 
 
@@ -8074,6 +10012,7 @@ var FILE_TEMPLATE = `import { trigger, units, locations, P1 } from "trigscript";
 // Helpers this file exports are imported by main.ts: import { \u2026 } from "./name";
 `;
 var SIMULATE_FRAMES = 480;
+var START_LOCATION_UNIT = 214;
 var SIMULATE_ROWS = 200;
 var CHECK_DELAY_MS = 350;
 var OUTPUT_LINES = 2e3;
@@ -8337,7 +10276,7 @@ function createWorkspace(svc, options, mode) {
       )
     )));
   };
-  const typeOf = (v) => v.kind === "number" ? v.bits ? `u${v.bits}` : "number" : "boolean";
+  const typeOf = (v) => v.kind === "number" ? v.bits ? `u${v.bits}` : "number" : v.kind === "unit" ? "Unit" : "boolean";
   const renderPrograms = () => {
     const programs = outline?.programs ?? [];
     programsSection.setHidden(programs.length === 0);
@@ -8721,6 +10660,42 @@ function createWorkspace(svc, options, mode) {
     const n = before.length + after.length;
     if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
   };
+  const simulatedMap = () => {
+    const scn = api.document.scenario();
+    if (!scn) return {};
+    const types2 = /* @__PURE__ */ new Map();
+    const typeOf2 = (id) => {
+      let t = types2.get(id);
+      if (!t) {
+        const view = api.settings?.unitType(id);
+        t = { hp: view?.hitPoints ?? 1, shields: view?.shields ?? 0 };
+        types2.set(id, t);
+      }
+      return t;
+    };
+    const part = (max, percent, valid) => valid ? Math.max(1, Math.ceil(max * Math.min(100, percent) / 100)) : max;
+    const units = scn.units.filter((u) => u.unitId !== START_LOCATION_UNIT).map((u) => {
+      const t = typeOf2(u.unitId);
+      return {
+        type: u.unitId,
+        owner: u.owner,
+        x: u.x,
+        y: u.y,
+        // validStates says which of a placed unit's own figures are set: 2 hit points, 4 shields, 64 the state flags.
+        maxHp: t.hp,
+        hp: part(t.hp, u.hitPointsPercent, (u.validStates & 2) !== 0),
+        maxShields: t.shields,
+        shields: t.shields ? part(t.shields, u.shieldPercent, (u.validStates & 4) !== 0) : 0,
+        resources: u.resourceAmount,
+        ...(u.validStates & 64) !== 0 ? { cloaked: (u.stateFlags & 1) !== 0, burrowed: (u.stateFlags & 2) !== 0, hallucinated: (u.stateFlags & 8) !== 0, invincible: (u.stateFlags & 16) !== 0 } : {}
+      };
+    });
+    const locations = {};
+    scn.locations.forEach((l, i) => {
+      if (l.right > l.left || l.bottom > l.top) locations[i + 1] = { left: l.left, top: l.top, right: l.right, bottom: l.bottom };
+    });
+    return { units, locations };
+  };
   const simulateNow = async () => {
     const r = (await compileNow())?.compiled;
     if (!r) return;
@@ -8732,7 +10707,7 @@ function createWorkspace(svc, options, mode) {
     try {
       const player = r.programs[0]?.owner;
       const sim = new Simulation(r.triggers, { strings: r.strings, player });
-      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player }) : null;
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, ...simulatedMap() }) : null;
       for (let i = 0; i < SIMULATE_FRAMES; i++) {
         sim.step();
         programs?.step();

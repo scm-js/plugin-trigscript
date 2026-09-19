@@ -192,7 +192,7 @@ export function setHoverVariables(monaco: MonacoApi, variables: () => VariableIn
         const path = pathOfUri(m.uri);
         const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
         if (!v) continue;
-        const what = v.kind === "boolean" ? "a boolean" : v.bits ? `a u${v.bits} number (0 … ${2 ** v.bits - 1}, stopping at either end)` : "a number (0 … 4 294 967 295, never below 0)";
+        const what = v.kind === "unit" ? "a unit of the game, or none — checked before every use: once the unit is gone it reads 0 and takes no write" : v.kind === "boolean" ? "a boolean" : v.bits ? `a u${v.bits} number (0 … ${2 ** v.bits - 1}, stopping at either end)` : "a number (0 … 4 294 967 295, never below 0)";
         return {
           range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
           contents: [{ value: `**${v.name}** is a variable of the program: ${what}${v.shared ? ", one value shared by every player the program runs for" : ""}. It lives in the game while the map is played.` }],

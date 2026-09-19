@@ -160,9 +160,9 @@ Player facts and supply are Remastered only.
 ### Units on the map as objects
 
 A `Unit` is a unit that exists in the game right now (a CUnit pointer underneath). The
-entries of the `units.` table are `UnitType`s, and `u.type` gives one. (Today the table's
-entries are typed `Unit<n>`; the plugin has no users yet, so the rename is free and happens
-in slice 1, before instances exist, so the type names are right from 3.0.0 on.)
+entries of the `units.` table are `UnitType`s, and `u.type` gives one. (Until 3.3 the table's
+entries were typed `Unit<n>`; the rename came with slice 3, not slice 1 as first planned, and
+a script using the old name is told the new one.)
 
 ```ts
 for (const u of unitsAt(locations.Pen, { owner: P2 })) u.hp = u.maxHp / 2;
@@ -369,10 +369,22 @@ before the slice is called done, in the Magenta manner.
 | 1 | IR refactor + Remastered backend for today's language + Build & Test + simulator on IR | every existing test program simulates identically on both targets; `a = b` and `if (a < b)` cost nothing; loops run in-frame; the sleep rule | the big one, ~1 week |
 | 1½ | The workspace as VS Code lays one out (3.1.0) | the frame slices 5 and 6 put their panels in: no banner moves the text, every command in the palette, the keys people already know | 2 days, no probe: nothing about the game changes |
 | 2 | Reads and text (3.2.0) | `deaths(P1, u)` as a value, `minerals()`, `countUnits()`, player facts, template literals with numbers and names, `print()`, `random(n)`, the bitwise operators | 2–3 days |
-| 3 | `Unit` objects, unit loops, picks, `stats()` | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
+| 3 | `Unit` objects, unit loops, picks, `stats()` (3.3.0; built 2026-09-18, the probe is `probes/units.ts`) | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
 | 4 | Input | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |
 | 5 | `test()` blocks + debugger | Tests panel, frame stepping, breakpoints, world table | 3–4 days |
 | 6 | Examples, guide, assistant prompts, registry | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers target-aware | 2 days |
+
+**Slice 3 as built**, where it differs from the sections above: the read of a unit's order is
+`orderId` (a property and a method cannot share the name `order`); `underMouse()` waits for
+slice 4, which brings the mouse; `locate(location)`, `underAttack`, `stasis` and `resources`
+were added from Magenta's verified list; a `sleep()` inside a loop over units is an error (the
+unit table moves between frames — the way to act on one unit at a time is to find it again
+after each sleep), which also means the unit of a loop's turn needs no re-check; `stats()` is
+one function told apart by the brand of its argument's type, since a table's index is a plain
+number when the script runs; `stats(player)` has `color`, `upgrades[…]` and `researched[…]`;
+a value with a scale (`speed`, `buildTime`, `supplyUsed`) takes a fraction when it is known at
+build time. The unit classes turned out to be one too low in the editor's table (Any unit 228
+for 229, and so on); corrected there and here with this slice.
 
 Slice 1 is where the value is and where the risk is; nothing after it is hard once the IR
 and the Python lowering exist. Slices 2–4 can be reordered by what the user wants to play

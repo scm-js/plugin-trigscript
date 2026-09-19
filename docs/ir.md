@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 3** (2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 4** (3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -29,6 +29,10 @@ Everything TypeScript-specific is gone by the time a program reaches the IR:
 - What a read reads is known: `minerals(P1)` and `deaths(P1, unit)` arrive as `read`
   nodes with the player, the unit and the location as numbers. `isHuman(p)` is a
   comparison of the slot's byte with 2, `hasLeft(p)` of the left flag with 1.
+- Which units a loop or a pick looks at is known: the type, the owner and the location of
+  a filter are numbers. `stats(units.TerranMarine).minerals` is a cell of the game's
+  tables with its address worked out; a value known when the script was built is already
+  scaled to what the cell stores.
 - A text is in parts: a template literal, a `+` of texts and the `name()` / `color()`
   marks inside any string are taken apart into written text, number expressions, names
   and colours. A text with none of those stays the `text` of a Display Text action.
@@ -54,14 +58,15 @@ the statement as the source has it ("L12: while (x < 3)"), for a log or a debugg
 ## Variables
 
 ```
-VarDecl { id, name, kind: "number" | "boolean", shared, bits?: 8 | 16, temp?, at }
+VarDecl { id, name, kind: "number" | "boolean" | "unit", shared, bits?: 8 | 16, temp?, at }
 ```
 
 `id` is unique within the program (`name#n`); `name` is the source's. `shared` is a
 `shared(…)` variable of a per-player program (one cell for everyone). `bits` is a `u8` /
 `u16` annotation. `temp` marks a backend's scratch value that dies with its statement (a
 call's result). A variable exists from its `declare` statement on; a backend allocates
-storage in that order.
+storage in that order. A `unit` variable holds a unit of the game or none; its `declare`,
+a parameter's `init` and a `return` carry a unit expression (below).
 
 ## Statements
 
@@ -70,6 +75,11 @@ storage in that order.
 | `declare` | `decl`, `init`, `failed?` | The variable exists from here, holding `init` (a number or boolean expression). `failed` means the initializer did not compile — reported already — and the variable is left unset. |
 | `assign` | `target`, `value` | `target = value` for a number. `x += y` and `x++` arrive as `x = x + y`, `x = x + 1`. |
 | `assignBool` | `target`, `value` | `target = value` for a boolean. |
+| `assignUnit` | `target`, `value` | `target = value` for a unit variable. |
+| `unitLoop` | `decl`, `filter`, `body` | `for (const u of unitsAt(…))`: the body once for every unit the filter matches, in the order of the game's unit table, within the frame (the compiler refuses a `sleep` inside). `decl` is the unit of the turn; `break` and `continue` are the loop's. |
+| `unitWrite` | `unit`, `field`, `value` | `u.hp = 40`, `u.invincible = true`. Nothing happens when the unit is none or gone. Hit points at 0 kill. |
+| `unitDo` | `unit`, `verb` | `{ do: "kill" }`, `{ do: "remove" }`, `{ do: "give", to }`, `{ do: "order", order, target }` (a location), `{ do: "damage" \| "heal", amount, percent }`, `{ do: "locate", location }`. Nothing happens when the unit is none or gone; an amount is evaluated either way. |
+| `tableWrite` | `cell`, `value`, `scaled?`, `boolean?` | A cell of the game's tables. `value` is a number expression, a boolean one (`boolean`), or `{ kind: "text", text }` for a name. `scaled`: the number is already what the cell stores. |
 | `if` | `cond`, `then`, `else?` | As it reads. |
 | `while` | `cond?`, `body` | `cond` absent means `while (true)`, or a condition known true when the script was built. |
 | `do` | `body`, `cond`, `condLabel` | `do { … } while (cond)`. |
@@ -97,6 +107,8 @@ Numbers (`NumExpr`):
 | `binary` | `op: + - * / % & | ^ << >>`, `left`, `right` |
 | `read` | `read` — a value of the game, taken when the expression is evaluated (below) |
 | `randomInt` | `bound` — a whole number from 0 to `bound` − 1, fresh at every evaluation; 0 when `bound` is 0 |
+| `unitField` | `unit`, `field` — a number of a unit; 0 when the unit is none or gone |
+| `tableRead` | `cell` — a cell of the game's tables in the script's units (stored ÷ `scale`, rounded down); a flag reads 1 or 0 |
 | `ternary` | `cond`, `whenTrue`, `whenFalse` |
 | `intrinsic` | `name: min | max | abs`, `args` |
 | `call` | `call` (its result is the value) |
@@ -113,6 +125,9 @@ Booleans (`BoolExpr`):
 | `and`, `or` | `items` |
 | `not` | `expr` |
 | `random` | a coin toss, fresh at every evaluation |
+| `unitAlive` | `unit` — `if (target)`: there is a unit and it is still on the map |
+| `unitSame` | `left`, `right` — both name one unit of the game (none is never the same as anything) |
+| `unitFlag` | `unit`, `flag: hallucinated | cloaked | burrowed | invincible | underAttack`; false when the unit is none or gone |
 | `edge` | `edge: rose | once`, `cond` |
 | `ternary` | `cond`, `whenTrue`, `whenFalse` |
 | `call` | `call` (its boolean result) |
@@ -128,6 +143,51 @@ Call { name?, at, label, params: { decl, init, label }[], result?: { decl, kind 
 `params` are the parameters bound by copy (the function assigns them), each a variable
 initialised from the argument; a parameter the function only reads is the caller's own
 variable, already substituted in the body. `result` is the variable `return` writes.
+
+## Units
+
+Units (`UnitExpr`):
+
+| Kind | Fields |
+| --- | --- |
+| `unitNull` | none |
+| `unitVar` | `id` of a unit variable |
+| `pick` | `by: first | nearest | random`, `filter`, `near?` — one of the units the filter matches: the first in table order, the nearest to the centre of location `near` by \|dx\| + \|dy\| (the first of equals), or one drawn at random; none when nothing matches |
+| `call` | `call` whose result is a unit |
+
+```
+UnitFilter { type?, owner?, at? }
+```
+
+`type` is a units.dat id, or 230 Men, 231 Buildings, 232 Factories (units.dat's group
+flags, as a trigger counts them); `owner` a slot or 13; `at` a 1-based location whose box
+holds the unit's centre, edges included. An absent part matches all, and a unit that is
+dying matches nothing. Number fields: `hp` (whole points, a started point counting, as
+the game shows it), `maxHp`, `shields`, `maxShields`, `energy`, `owner`, `type`, `x`, `y`,
+`kills`, `orderId`, `cooldown`, `resources`, and the timers `stim` `ensnare` `plague`
+`lockdown` `maelstrom` `irradiate` `stasis`. A written value stops at what the game's
+cell holds: 255 for a byte (kills, cooldown, timers, energy points), 65 535 for
+resources, 2²⁴ − 1 hit points.
+
+A unit variable is a pointer into the game's unit table with the slot's uniqueness byte
+beside it: the game reuses a dead unit's slot, so the lowering checks before every use
+that the slot has a sprite, its order is not "die" and the byte is the one taken with the
+pointer. The unit of a `unitLoop`'s turn is there by construction and is not checked.
+
+## Tables
+
+```
+TableCell { name, base, stride, index, key?, width: 1 | 2 | 4 | "bit", bit?, scale?, player?, special? }
+```
+
+The cell is at `base + index × stride + key`; `player` means `index` 13 is the current
+player. Stored = value × `scale`. A written value stops at what `width` holds. `special`
+cells have a routine of their own: `speed` (the type's flingy, read from units.dat when
+the line runs, is switched to table control and given the speed, an acceleration of a
+seventeenth of it and the braking distance v² / 2a), `color` (the units' palette entry
+and the minimap's, 0x60 bytes on), `name` (the text becomes a string of the built map and
+its id is written). `compiler/tables.ts` is the list of fields, each one played in
+Remastered by Magenta's probes.
 
 ## Reads
 

@@ -48,10 +48,11 @@ import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
 import { declarationOf, libraryCallName } from "./hoist";
 import { scriptParams } from "./api";
-import { hasTextMark, isAction, isBuilder, isCondition, isDuration, isGameFunction, isPrint, isRead, isReader, isTrigger, READ_ARITY, textParts, type GameFunctionValue, type ReadValue, type ScriptString } from "./runtime";
+import { hasTextMark, isAction, isBuilder, isCondition, isDuration, isGameFunction, isGameValue, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
+import { cellMax } from "./tables";
 import { Scope, type Binding } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { IR_VERSION, type ArithOp, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type TextPart, type VarDecl } from "./ir";
+import { IR_VERSION, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, type ArithOp, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -99,8 +100,11 @@ interface Ctx {
   canBreak?: boolean;
   canContinue?: boolean;
   /** Inside an inlined function: what it returns. */
-  fn?: { kind: "number" | "boolean" | "void" };
+  fn?: { kind: Kind | "void" };
 }
+
+/** What a variable of a program holds. */
+type Kind = "number" | "boolean" | "unit";
 
 const MAX_INLINE_DEPTH = 16;
 const LABEL_LENGTH = 48;
@@ -118,6 +122,9 @@ function describe(v: unknown): string {
   if (isTrigger(v)) return "a trigger";
   if (isDuration(v)) return "a duration";
   if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isTable(v)) return `a value the game holds (${v.ident})`;
+  if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
+  if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
   if (isPrint(v)) return "a print()";
   if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
@@ -146,6 +153,9 @@ const FALSE: BoolExpr = { kind: "const", value: false };
 const num = (value: number): NumExpr => ({ kind: "const", value });
 const varRef = (v: VarDecl): NumExpr => ({ kind: "var", id: v.id });
 const boolRef = (v: VarDecl): BoolExpr => ({ kind: "var", id: v.id });
+const unitRef = (v: VarDecl): UnitExpr => ({ kind: "unitVar", id: v.id });
+const NO_UNIT: UnitExpr = { kind: "unitNull" };
+const ORDERS: readonly string[] = ["move", "patrol", "attack"];
 
 /** What `run()` hands back: the IR, and the way back from any of its nodes to the source, for diagnostics a backend raises. */
 export interface Emitted {
@@ -231,7 +241,7 @@ export class Structured {
     return list;
   }
 
-  private newVar(name: string, kind: "number" | "boolean", at: At, extra: { shared?: boolean; bits?: 8 | 16; temp?: boolean } = {}): VarDecl {
+  private newVar(name: string, kind: Kind, at: At, extra: { shared?: boolean; bits?: 8 | 16; temp?: boolean } = {}): VarDecl {
     return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.temp ? { temp: true } : {}), at };
   }
 
@@ -325,9 +335,11 @@ export class Structured {
         if (ts.isSpreadElement(a)) { const v = sub(a.expression); if (!v || !Array.isArray(v.value)) return undefined; args.push(...(v.value as unknown[])); continue; }
         const v = sub(a);
         // A read among the arguments makes the call the program's: an action with that amount, a function inlined.
-        if (!v || isRead(v.value)) return undefined;
+        if (!v || isGameValue(v.value)) return undefined;
         args.push(v.value);
       }
+      // stats(x): a table's index is a plain number when the script runs; its type says which table.
+      if (this.isLibraryCall(e, "stats") && e.arguments.length === 1) args.push(this.brandOf(e.arguments[0]));
       try {
         return { value: (callee.value as (...a: unknown[]) => unknown).apply(self, args) };
       } catch (err) {
@@ -338,7 +350,7 @@ export class Structured {
       let out = e.head.text;
       for (const span of e.templateSpans) {
         const v = sub(span.expression);
-        if (!v || isRead(v.value)) return undefined;
+        if (!v || isGameValue(v.value)) return undefined;
         out += String(v.value) + span.literal.text;
       }
       return { value: out };
@@ -357,7 +369,7 @@ export class Structured {
     if (ts.isPrefixUnaryExpression(e)) {
       const v = sub(e.operand);
       // A read has no value yet: arithmetic over it is the program's, not the script's.
-      if (!v || isRead(v.value)) return undefined;
+      if (!v || isGameValue(v.value)) return undefined;
       switch (e.operator) {
         case ts.SyntaxKind.MinusToken: return { value: -(v.value as number) };
         case ts.SyntaxKind.PlusToken: return { value: +(v.value as number) };
@@ -368,7 +380,7 @@ export class Structured {
     if (ts.isBinaryExpression(e)) {
       const l = sub(e.left);
       const r = sub(e.right);
-      if (!l || !r || isRead(l.value) || isRead(r.value)) return undefined;
+      if (!l || !r || isGameValue(l.value) || isGameValue(r.value)) return undefined;
       const a = l.value as number;
       const b = r.value as number;
       switch (e.operatorToken.kind) {
@@ -389,7 +401,7 @@ export class Structured {
     }
     if (ts.isConditionalExpression(e)) {
       const c = sub(e.condition);
-      if (!c || isRead(c.value)) return undefined;
+      if (!c || isGameValue(c.value)) return undefined;
       return c.value ? sub(e.whenTrue) : sub(e.whenFalse);
     }
     return undefined;
@@ -514,6 +526,9 @@ export class Structured {
       const value = this.num(s.expression);
       if (!value) return;
       this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    } else if (fn.kind === "unit") {
+      const value = this.unitExpr(s.expression);
+      if (value) this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
     } else {
       const value = this.boolValue(s.expression);
       this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
@@ -535,10 +550,11 @@ export class Structured {
       }
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
-      if (!kind) { this.c.error(d, `Variables hold numbers, booleans or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
+      if (!kind) { this.c.error(d, `Variables hold numbers, booleans, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
       // `let total = shared(0)`: one cell for every player of a per-player program, initialised with the argument.
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
       if (shared && shared.arguments.length !== 1) { this.c.error(init, "shared() takes the initial value: shared(0) or shared(false)."); continue; }
+      if (shared && kind === "unit") { this.c.error(init, "shared() holds a number or a boolean."); continue; }
       const initializer = shared ? shared.arguments[0] : d.initializer;
       const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...(kind === "number" ? { bits: this.bitsOf(type) } : {}) });
       this.emitDeclare(v, initializer, d);
@@ -552,6 +568,9 @@ export class Structured {
     if (v.kind === "number") {
       const value = this.num(initializer);
       this.emit({ kind: "declare", decl: v, init: value ?? num(0), ...(value ? {} : { failed: true }), at: this.at(at), label: this.label(at) }, at);
+    } else if (v.kind === "unit") {
+      const value = this.unitExpr(initializer);
+      this.emit({ kind: "declare", decl: v, init: value ?? NO_UNIT, ...(value ? {} : { failed: true }), at: this.at(at), label: this.label(at) }, at);
     } else {
       this.emit({ kind: "declare", decl: v, init: this.boolValue(initializer), at: this.at(at), label: this.label(at) }, at);
     }
@@ -579,7 +598,7 @@ export class Structured {
         continue;
       }
       const kind = this.kindOf(ft);
-      if (!kind) { this.c.error(p, `A record's fields hold numbers or booleans; ${full} is ${this.c.checker.typeToString(ft)}.`); ok = false; continue; }
+      if (!kind) { this.c.error(p, `A record's fields hold numbers, booleans or units; ${full} is ${this.c.checker.typeToString(ft)}.`); ok = false; continue; }
       const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? { bits: this.bitsOf(ft) } : {});
       this.emitDeclare(v, init, at);
       fields.set(key, { kind: "var", v });
@@ -606,12 +625,32 @@ export class Structured {
     return undefined;
   }
 
-  private kindOf(type: TS.Type): "number" | "boolean" | null {
+  private kindOf(type: TS.Type): Kind | null {
     const { ts } = this;
     const isNumber = (t: TS.Type): boolean => (t.flags & ts.TypeFlags.NumberLike) !== 0 || (t.isIntersection() && t.types.some(isNumber));
     if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
     if (isNumber(type)) return "number";
+    // `Unit | null`: a unit of the game, or none.
+    const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    if (bare.length > 0 && bare.every((t) => !!t.getProperty("__unit"))) return "unit";
     return null;
+  }
+
+  private isUnitTyped(e: TS.Expression): boolean {
+    return this.kindOf(this.c.checker.getTypeAtLocation(e)) === "unit";
+  }
+
+  /** The `__kind` brand of an expression's type (`"unit"`, `"player"`, …): what tells `stats(units.X)` from `stats(P3)`. */
+  private brandOf(e: TS.Expression): string | undefined {
+    const type = this.c.checker.getTypeAtLocation(e);
+    for (const t of type.isIntersection() ? type.types : [type]) {
+      const p = t.getProperty("__kind");
+      if (!p) continue;
+      const pt = this.c.checker.getTypeOfSymbol(p);
+      const name = (pt.isUnion() ? pt.types : [pt]).find((x): x is TS.StringLiteralType => x.isStringLiteral());
+      if (name) return name.value;
+    }
+    return undefined;
   }
 
   /** An expression statement whose value was computed at build time: actions run, nothing else does anything. */
@@ -622,6 +661,9 @@ export class Structured {
     if (isAction(v)) { this.emitAction(v.record, expr); return; }
     if (isPrint(v)) { this.emitPrint(textParts(v.text), v.to, v.position, expr); return; }
     if (isRead(v)) { this.c.error(expr, `${v.ident}() reads a value and does nothing on its own: assign it to a variable, or compare it in an if.`); return; }
+    if (isTable(v)) { this.c.error(expr, `${v.ident} reads a value and does nothing on its own: assign to it, or compare it in an if.`); return; }
+    if (isUnitPick(v)) { this.c.error(expr, `${v.ident}() finds a unit and does nothing on its own: const u = ${v.ident}(…); if (u) u.kill();`); return; }
+    if (isUnitQuery(v)) { this.c.error(expr, `${v.ident}() names units and does nothing on its own: for (const u of ${v.ident}(…)) { … }`); return; }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) { for (const a of v) this.emitAction(a.record, expr); return; }
     if (Array.isArray(v) && v.length === 0) return;
     if (isCondition(v)) { this.c.error(expr, "This is a condition; test it in an if or a while."); return; }
@@ -654,7 +696,7 @@ export class Structured {
     const { ts } = this;
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
-    if (h && !isRead(h.value)) {
+    if (h && !isGameValue(h.value)) {
       const v = h.value;
       if (typeof v === "string") return textParts(v);
       if (typeof v === "number" || typeof v === "boolean") return [{ kind: "text", text: String(v) }];
@@ -721,12 +763,22 @@ export class Structured {
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
       if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment) {
+        const member = this.unitMember(e.left);
+        if (member) { this.unitAssign(e, member, op); return; }
+        const cell = this.evaluate(e.left)?.value;
+        if (isTable(cell)) { this.tableAssign(e, cell, op); return; }
         const target = this.varOf(e.left);
         if (!target) {
           const b = this.bindingOf(e.left);
           if (b?.kind === "record") this.c.error(e.left, "A record is assigned field by field: p.lives = 3.");
           else if ((ts.isPropertyAccessExpression(this.unwrap(e.left)) || ts.isElementAccessExpression(this.unwrap(e.left))) && this.evaluate(e.left)) this.c.error(e.left, "This object is computed when the script is built. Declare it with let inside the program to make it a record of variables.");
           else this.c.error(e.left, "Only the program's let variables can be assigned.");
+          return;
+        }
+        if (target.kind === "unit") {
+          if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "A unit takes = only."); return; }
+          const value = this.unitExpr(e.right);
+          if (value) this.emit({ kind: "assignUnit", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
           return;
         }
         if (target.kind !== "number") {
@@ -750,6 +802,18 @@ export class Structured {
       return;
     }
     if ((ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)) {
+      const op = e.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-";
+      const member = this.unitMember(e.operand);
+      const cell = member ? undefined : this.evaluate(e.operand)?.value;
+      if (member || isTable(cell)) {
+        // u.kills++, stats(units.TerranMarine).minerals--: the field read, moved by one, written back.
+        const now = this.num(e.operand);
+        if (!now) return;
+        const value = this.mark<NumExpr>({ kind: "binary", op, left: now, right: num(1), at: this.at(e), label: this.label(e) }, e);
+        if (member) this.unitWrite(e, member, value);
+        else this.tableWrite(e, cell as TableValue, value);
+        return;
+      }
       const target = this.varOf(e.operand);
       if (!target || target.kind !== "number") { this.c.error(e, "++ / -- apply to number variables."); return; }
       const value = this.mark<NumExpr>({ kind: "binary", op: e.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-", left: varRef(target), right: num(1), at: this.at(e), label: this.label(e) }, e);
@@ -770,6 +834,10 @@ export class Structured {
         this.c.error(e, `${e.expression.text} is not a function.`);
         return;
       }
+    }
+    if (ts.isPropertyAccessExpression(e.expression)) {
+      const member = this.unitMember(e.expression);
+      if (member) { this.unitCall(e, member); return; }
     }
     if (this.isLibraryCall(e, "random")) { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a variable."); return; }
     if (this.isLibraryCall(e, "sleep")) { this.sleepStatement(e); return; }
@@ -939,6 +1007,15 @@ export class Structured {
     if (!decl || !ts.isIdentifier(decl.name)) { this.c.error(s.initializer, "for…of takes one variable: for (const w of waves) { … }."); return; }
     const h = this.evaluate(s.expression);
     if (!h) { this.notConstant(s.expression, "What a for…of loop runs over"); return; }
+    if (isUnitQuery(h.value)) {
+      // The units of the game: a loop the game runs, the variable the unit of the turn.
+      const v = this.newVar(decl.name.text, "unit", this.sourceOf(decl.name));
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "var", v });
+      const body = this.collect(() => this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope));
+      this.emit({ kind: "unitLoop", decl: v, filter: { ...h.value.filter }, body, at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
     let items: unknown[];
     try {
       const iterable = typeof h.value === "string" || (typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value);
@@ -1020,7 +1097,7 @@ export class Structured {
       }
       const h = this.evaluate(arg);
       // By value: a read passed as an argument is read once, at the call, into a variable of the parameter's own.
-      if (h && !isRead(h.value)) { scope.bind(p, { kind: "value", value: h.value }); return; }
+      if (h && !isGameValue(h.value)) { scope.bind(p, { kind: "value", value: h.value }); return; }
       const binding = this.bindingOf(arg);
       if (binding?.kind === "record") {
         if (this.assigns(body, p)) { this.c.error(p, `${p.name.text} is a record; a record parameter can have its fields assigned, not be reassigned itself.`); ok = false; return; }
@@ -1033,7 +1110,16 @@ export class Structured {
         if (!this.assigns(body, p)) { scope.bind(p, { kind: "var", v: variable }); return; }
         const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), variable.bits ? { bits: variable.bits } : {});
         const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
-        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : boolRef(variable), label });
+        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable), label });
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
+      if (this.isUnitTyped(arg)) {
+        // A unit found at the call (first(…), a function's result): found once, into a variable of the parameter's own.
+        const unit = this.unitExpr(arg);
+        if (!unit) { ok = false; return; }
+        const copy = this.newVar(p.name.text, "unit", this.sourceOfIn(target, p.name));
+        out.params.push({ decl: copy, init: unit, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
@@ -1062,6 +1148,7 @@ export class Structured {
           // `game((a: number) => a + 1)`: the expression is what it returns.
           try {
             if (kind === "number") { const value = this.num(body); if (value) this.emit({ kind: "return", value, at: this.at(body), label: this.label(body) }, body); }
+            else if (kind === "unit") { const value = this.unitExpr(body); if (value) this.emit({ kind: "return", value, at: this.at(body), label: this.label(body) }, body); }
             else if (kind === "boolean") this.emit({ kind: "return", value: this.boolValue(body), at: this.at(body), label: this.label(body) }, body);
             else this.expressionStatement(body);
           } catch (err) {
@@ -1143,12 +1230,19 @@ export class Structured {
     const h = this.evaluate(expr);
     if (h) {
       if (isRead(h.value)) return this.readValue(h.value, e);
+      if (isTable(h.value)) return this.tableRead(h.value, e);
+      if (isUnitPick(h.value)) { this.c.error(e, `${h.value.ident}() is a unit, not a number; read one of its fields: ${h.value.ident}(…)?.hp — or keep it: const u = ${h.value.ident}(…).`); return null; }
       const n = this.asInteger(h, e);
       return n === null ? null : num(n);
+    }
+    if (ts.isPropertyAccessExpression(e)) {
+      const member = this.unitMember(e);
+      if (member) return this.unitField(e, member);
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") {
+        if (b.v.kind === "unit") { this.c.error(e, `${b.v.name} is a unit; use one of its fields: ${b.v.name}.hp.`); return null; }
         if (b.v.kind !== "number") { this.c.error(e, `${b.v.name} is a boolean.`); return null; }
         return varRef(b.v);
       }
@@ -1296,7 +1390,7 @@ export class Structured {
       const a = e.arguments[i];
       const h = this.evaluate(a);
       // A read is the program's value, not the script's: it takes the variable's place.
-      if (h && !isRead(h.value)) { values.push(h.value); continue; }
+      if (h && !isGameValue(h.value)) { values.push(h.value); continue; }
       const p = params[i];
       if (!p) { this.c.error(a, `${ident} takes ${params.length} argument${params.length === 1 ? "" : "s"}.`); return; }
       const eligible = ((p.arg.kind === "amount" || p.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type)) || (p.arg.kind === "count" && COUNT_ACTIONS.has(def.type));
@@ -1321,6 +1415,205 @@ export class Structured {
     }
     const p = params[variable.index];
     this.emit({ kind: "action", record: { ...record }, variable: { field: p.arg.field as keyof ActionRecord, bits: p.arg.kind === "count" ? 8 : 32, name: p.name, expr: variable.expr }, at: this.at(e), label: this.label(e) }, e);
+  }
+
+  /* ── Units on the map, and the game's tables ── */
+
+  /** `u.hp`, `target?.kills`: the unit and the member's name, when the object is a unit of the game. */
+  private unitMember(expr: TS.Expression): { unit: UnitExpr; name: string } | null {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isPropertyAccessExpression(e) || !ts.isIdentifier(e.name) || !this.isUnitTyped(e.expression)) return null;
+    const unit = this.unitExpr(e.expression);
+    return unit ? { unit, name: e.name.text } : null;
+  }
+
+  /** A unit of the game, or none: a variable, `null`, a pick (`first(…)`), a function's result. Null, with a diagnostic, otherwise. */
+  private unitExpr(expr: TS.Expression): UnitExpr | null {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      if (h.value === null || h.value === undefined) return NO_UNIT;
+      if (isUnitPick(h.value)) return this.pick(h.value, e);
+      this.c.error(e, `Expected a unit of the game, got ${describe(h.value)}.`);
+      return null;
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
+      if (b?.kind === "var" && b.v.kind === "unit") return unitRef(b.v);
+      this.c.error(e, "Expected a unit of the game: a variable holding one, first(…), nearest(…) or randomUnit(…).");
+      return null;
+    }
+    if (ts.isCallExpression(e)) {
+      let call: Call | undefined;
+      const decl = ts.isIdentifier(e.expression) ? this.gameDeclaration(e.expression) : undefined;
+      if (decl && ts.isFunctionDeclaration(decl)) call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+      else {
+        const callee = this.evaluate(e.expression)?.value;
+        if (isGameFunction(callee)) call = this.gameCall(e, callee);
+        else { this.notConstant(e, "What picks the unit (the type, the owner, the location)"); return null; }
+      }
+      if (!call?.result || call.result.kind !== "unit") { if (call) this.c.error(e, "This function does not return a unit."); return null; }
+      return this.mark<UnitExpr>({ kind: "call", call }, e);
+    }
+    if (ts.isConditionalExpression(e)) { this.c.error(e, "Choose the unit with an if: let u = a; if (…) u = b;"); return null; }
+    this.c.error(e, "Expected a unit of the game.");
+    return null;
+  }
+
+  private pick(v: UnitPickValue, at: TS.Node): UnitExpr {
+    return this.mark<UnitExpr>({ kind: "pick", by: v.by, filter: { ...v.filter }, ...(v.near !== undefined ? { near: v.near } : {}), at: this.at(at), label: this.label(at) }, at);
+  }
+
+  /** `u.hp` as a number. */
+  private unitField(e: TS.Node, m: { unit: UnitExpr; name: string }): NumExpr | null {
+    if ((UNIT_FLAGS as readonly string[]).includes(m.name)) {
+      const flag = this.mark<BoolExpr>({ kind: "unitFlag", unit: m.unit, flag: m.name as UnitFlag, at: this.at(e), label: this.label(e) }, e);
+      return this.mark<NumExpr>({ kind: "ternary", cond: flag, whenTrue: num(1), whenFalse: num(0), at: this.at(e), label: this.label(e) }, e);
+    }
+    if (!(UNIT_NUM_FIELDS as readonly string[]).includes(m.name)) { this.c.error(e, `A unit has no ${m.name} to read.`); return null; }
+    return this.mark<NumExpr>({ kind: "unitField", unit: m.unit, field: m.name as UnitNumField, at: this.at(e), label: this.label(e) }, e);
+  }
+
+  private unitWrite(e: TS.Node, m: { unit: UnitExpr; name: string }, value: NumExpr | BoolExpr) {
+    if (!UNIT_WRITABLE.has(m.name)) {
+      const why = m.name === "x" || m.name === "y" ? "the game ends when a unit's position is written; move a unit with order(), or moveUnit()"
+        : m.name === "owner" ? "give() changes the owner" : m.name === "cloaked" ? "the game showed nothing when the cloak flags were written" : "the game keeps it for itself";
+      this.c.error(e, `A unit's ${m.name} is read only: ${why}.`);
+      return;
+    }
+    this.emit({ kind: "unitWrite", unit: m.unit, field: m.name as UnitNumField | UnitFlag, value, at: this.at(e), label: this.label(e) }, e);
+  }
+
+  /** `u.hp = 40`, `u.energy += 50`, `u.invincible = true`. */
+  private unitAssign(e: TS.BinaryExpression, m: { unit: UnitExpr; name: string }, op: TS.SyntaxKind) {
+    const { ts } = this;
+    if ((UNIT_FLAGS as readonly string[]).includes(m.name)) {
+      if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "Booleans take = only."); return; }
+      this.unitWrite(e, m, this.boolValue(e.right));
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (op === ts.SyntaxKind.EqualsToken) { this.unitWrite(e, m, rhs); return; }
+    const arith = compoundOp(ts, op);
+    const now = arith ? this.unitField(e.left, m) : null;
+    if (!arith) { this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number."); return; }
+    if (now) this.unitWrite(e, m, this.mark<NumExpr>({ kind: "binary", op: arith, left: now, right: rhs, at: this.at(e), label: this.label(e) }, e));
+  }
+
+  /** `u.kill()`, `u.order("move", locations.Exit)`, `u.damage({ percent: 50 })`: what a unit is told to do. */
+  private unitCall(e: TS.CallExpression, m: { unit: UnitExpr; name: string }) {
+    const { ts } = this;
+    const known = (i: number, what: string): unknown => {
+      const a = e.arguments[i];
+      if (!a) { this.c.error(e, `${m.name}() takes ${what}.`); return undefined; }
+      const h = this.evaluate(a);
+      if (!h || isGameValue(h.value)) { this.notConstant(a, what[0].toUpperCase() + what.slice(1)); return undefined; }
+      return h.value;
+    };
+    const emit = (verb: UnitVerb) => { this.emit({ kind: "unitDo", unit: m.unit, verb, at: this.at(e), label: this.label(e) }, e); };
+    const location = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 255;
+    switch (m.name) {
+      case "kill": case "remove":
+        if (e.arguments.length) { this.c.error(e, `${m.name}() takes no arguments.`); return; }
+        emit({ do: m.name });
+        return;
+      case "give": {
+        const to = known(0, "the player who gets the unit");
+        if (to === undefined) return;
+        if (typeof to !== "number" || !Number.isInteger(to) || !((to >= 0 && to < 12) || to === CURRENT_PLAYER)) { this.c.error(e.arguments[0], "give() takes one player: P1 … P12 or CurrentPlayer."); return; }
+        emit({ do: "give", to });
+        return;
+      }
+      case "order": {
+        const order = known(0, "the order: \"move\", \"patrol\" or \"attack\"");
+        const target = order === undefined ? undefined : known(1, "the location to go to");
+        if (order === undefined || target === undefined) return;
+        if (typeof order !== "string" || !ORDERS.includes(order)) { this.c.error(e.arguments[0], `order() takes "move", "patrol" or "attack", got ${describe(order)}.`); return; }
+        if (!location(target)) { this.c.error(e.arguments[1], "order() takes one of locations.* to go to."); return; }
+        emit({ do: "order", order: order as "move" | "patrol" | "attack", target });
+        return;
+      }
+      case "locate": {
+        const at = known(0, "the location to centre on the unit");
+        if (at === undefined) return;
+        if (!location(at) || at === 64) { this.c.error(e.arguments[0], "locate() takes one of locations.*, which is moved onto the unit (not Anywhere)."); return; }
+        emit({ do: "locate", location: at });
+        return;
+      }
+      case "damage": case "heal": {
+        const a = e.arguments[0];
+        if (!a || e.arguments.length > 1) { this.c.error(e, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`); return; }
+        const literal = this.unwrap(a);
+        let percent = false;
+        let of: TS.Expression = a;
+        if (ts.isObjectLiteralExpression(literal)) {
+          const p = literal.properties.length === 1 ? literal.properties[0] : undefined;
+          if (!p || !ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name) || p.name.text !== "percent") { this.c.error(a, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`); return; }
+          percent = true;
+          of = p.initializer;
+        }
+        const amount = this.num(of);
+        if (amount) emit({ do: m.name, amount, percent });
+        return;
+      }
+      default:
+        this.c.error(e.expression, `A unit has no ${m.name}().`);
+    }
+  }
+
+  /** A cell of the game's tables as a number: `stats(units.TerranMarine).minerals`. */
+  private tableRead(v: TableValue, at: TS.Node): NumExpr | null {
+    if (v.field.writeOnly) { this.c.error(at, `${v.ident} can be set but not read: ${v.field.special === "speed" ? "a speed is four records of the game's tables" : v.field.special === "name" ? "a name is text" : "the game keeps two copies"}.`); return null; }
+    return this.mark<NumExpr>({ kind: "tableRead", cell: { ...v.cell }, at: this.at(at), label: this.label(at) }, at);
+  }
+
+  private tableWrite(e: TS.Node, v: TableValue, value: NumExpr | BoolExpr | { kind: "text"; text: string }, scaled = false) {
+    if (v.field.readonly) { this.c.error(e, `${v.ident} is read only: the game took no write.`); return; }
+    this.emit({ kind: "tableWrite", cell: { ...v.cell }, value, ...(scaled ? { scaled: true } : {}), ...(v.field.boolean && value.kind !== "text" ? { boolean: true } : {}), at: this.at(e), label: this.label(e) }, e);
+  }
+
+  /** `stats(units.TerranMarine).minerals = 25`, `stats(P3).color = "teal"`, `stats(weapons.GaussRifle).damage += 2`. */
+  private tableAssign(e: TS.BinaryExpression, v: TableValue, op: TS.SyntaxKind) {
+    const { ts } = this;
+    const { field } = v;
+    const plain = op === ts.SyntaxKind.EqualsToken;
+    const h = this.evaluate(e.right);
+    const known = h && !isGameValue(h.value) ? h.value : undefined;
+    if (field.special === "name" || field.special === "color") {
+      if (!plain) { this.c.error(e, `${v.ident} takes = only.`); return; }
+      if (known === undefined) { this.notConstant(e.right, field.special === "name" ? "A name" : "A colour"); return; }
+      if (field.special === "color") {
+        try { this.tableWrite(e, v, num(playerColor(known))); } catch (err) { this.c.error(e.right, err instanceof Error ? err.message : String(err)); }
+        return;
+      }
+      if (typeof known !== "string" || known === "" || hasTextMark(known)) { this.c.error(e.right, "A unit type's name is text known when the script is built."); return; }
+      this.tableWrite(e, v, { kind: "text", text: known });
+      return;
+    }
+    if (field.boolean) {
+      if (!plain) { this.c.error(e, "Booleans take = only."); return; }
+      this.tableWrite(e, v, this.boolValue(e.right));
+      return;
+    }
+    if (plain && typeof known === "number" && Number.isFinite(known)) {
+      // Known when the script is built: scaled now, so a fraction the cell can hold (1.5 seconds, a Zergling's half supply) is fine.
+      const raw = Math.round(known * (field.scale ?? 1));
+      const max = cellMax(field.width);
+      if (known < 0 || raw > max) { this.c.error(e.right, `${v.ident} holds 0 … ${max / (field.scale ?? 1)}, not ${known}.`); return; }
+      if (!field.scale && !Number.isInteger(known)) { this.c.error(e.right, `${v.ident} is a whole number (got ${known}).`); return; }
+      this.tableWrite(e, v, num(raw), true);
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (plain) { this.tableWrite(e, v, rhs); return; }
+    const arith = compoundOp(ts, op);
+    if (!arith) { this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number."); return; }
+    const now = this.tableRead(v, e.left);
+    if (now) this.tableWrite(e, v, this.mark<NumExpr>({ kind: "binary", op: arith, left: now, right: rhs, at: this.at(e), label: this.label(e) }, e));
   }
 
   /* ── Booleans ── */
@@ -1353,6 +1646,7 @@ export class Structured {
     if (typeof v === "string") return v !== "" ? TRUE : FALSE;
     if (isCondition(v)) return this.mark<BoolExpr>({ kind: "cond", record: { ...v.record } }, at);
     if (isRead(v)) return this.readBool(v, at);
+    if (isTable(v)) { const read = this.tableRead(v, at); return read ? this.mark<BoolExpr>({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at) : FALSE; }
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c) => this.mark<BoolExpr>({ kind: "cond", record: { ...c.record } }, at)) };
     if (isAction(v)) { this.c.error(at, "This is an action, not a condition."); return FALSE; }
     this.c.error(at, `Expected a condition, got ${describe(v)}.`);
@@ -1368,6 +1662,11 @@ export class Structured {
     const { ts } = this;
     const e = this.unwrap(expr);
     if (depth > 64) { this.c.error(e, "The condition nests too deeply."); return FALSE; }
+    if (this.isUnitTyped(e)) {
+      // `if (target)`: there is a unit, and it is still on the map.
+      const unit = this.unitExpr(e);
+      return unit ? this.mark<BoolExpr>({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return { kind: "not", expr: this.boolInner(e.operand, depth + 1) };
@@ -1386,6 +1685,14 @@ export class Structured {
       const whenTrue = this.boolValue(e.whenTrue);
       const whenFalse = this.boolValue(e.whenFalse);
       return this.mark<BoolExpr>({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+    }
+    if (ts.isPropertyAccessExpression(e)) {
+      const member = this.unitMember(e);
+      if (member) {
+        if ((UNIT_FLAGS as readonly string[]).includes(member.name)) return this.mark<BoolExpr>({ kind: "unitFlag", unit: member.unit, flag: member.name as UnitFlag, at: this.at(e), label: this.label(e) }, e);
+        const field = this.unitField(e, member);
+        return field ? this.mark<BoolExpr>({ kind: "test", expr: field, at: this.at(e), label: this.label(e) }, e) : FALSE;
+      }
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
@@ -1430,6 +1737,25 @@ export class Structured {
   }
 
   private comparison(e: TS.BinaryExpression, op: CompareOp, depth: number): BoolExpr {
+    // Units: `target != null`, `u == target`.
+    if (this.isUnitTyped(e.left) || this.isUnitTyped(e.right)) {
+      if (op !== "==" && op !== "!=") { this.c.error(e, "Units compare with == and != only."); return FALSE; }
+      const none = (x: TS.Expression) => { const h = this.evaluate(x); return !!h && (h.value === null || h.value === undefined); };
+      const side = none(e.left) ? e.right : none(e.right) ? e.left : null;
+      let same: BoolExpr;
+      if (side) {
+        const unit = this.unitExpr(side);
+        if (!unit) return FALSE;
+        // Not none is "there is one": `target != null` and `if (target)` ask the same.
+        same = { kind: "not", expr: this.mark<BoolExpr>({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) };
+      } else {
+        const left = this.unitExpr(e.left);
+        const right = this.unitExpr(e.right);
+        if (!left || !right) return FALSE;
+        same = this.mark<BoolExpr>({ kind: "unitSame", left, right, at: this.at(e), label: this.label(e) }, e);
+      }
+      return op === "==" ? same : same.kind === "not" ? same.expr : { kind: "not", expr: same };
+    }
     // Boolean equality: `flag == true`, `a != b` over switches.
     const isBool = (x: TS.Expression) => {
       const h = this.evaluate(x);

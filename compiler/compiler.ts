@@ -24,7 +24,7 @@ import { runModules, type LinkedFile } from "./link";
 import { checkProgram } from "./eud";
 import { declarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
-import type { ScriptNames } from "./names";
+import { allTables, type ScriptNames } from "./names";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
 import { newBody, Structured, type Body } from "./structured";
 
@@ -67,7 +67,8 @@ export interface SourceRange {
 
 export interface VariableInfo {
   name: string;
-  kind: "number" | "boolean";
+  /** `unit`: a unit of the game, or none. */
+  kind: "number" | "boolean" | "unit";
   /** Index into `programs` of the program it belongs to. */
   program: number;
   /** One value for every player of a per-player program (`shared(…)`); otherwise a per-player program has one per player. */
@@ -140,6 +141,13 @@ export interface CompileOptions {
 export { LowerError };
 
 /** `main.ts`, `./x/y.ts`, `x\y.ts` → `x/y.ts`. */
+/** Until 3.3 a unit type was a `Unit`: a script still saying so is told what the name is now, where TypeScript only says the two differ. */
+function renamedUnit(message: string): string {
+  return /type 'Unit' is not assignable to (parameter of )?type 'UnitType/.test(message) || /type 'UnitType<\d+>' is not assignable to (parameter of )?type 'Unit'/.test(message)
+    ? `${message}\nA unit type (units.*) is a UnitType; Unit is a unit on the map, inside program().`
+    : message;
+}
+
 export function normalizePath(path: string): string {
   return path.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
 }
@@ -198,7 +206,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   };
   // Filled in after the programs are planned; empty until then.
   const planned = new Set<string>();
-  const tables = new Set([names.players, names.units, names.locations, names.switches, names.aiScripts].map((t) => t.object));
+  const tables = new Set(allTables(names).map((t) => t.object));
   for (const name of fileNames) {
     const sf = program.getSourceFile(name)!;
     // `locations` itself, or the `locations` of `ts.locations` through a namespace import: the library's symbol either way.
@@ -226,7 +234,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const pos = sf && d.start !== undefined ? position(sf, d.start, d.start + (d.length ?? 0)) : { line: 1, column: 1, endLine: 1, endColumn: 1 };
     const file = sf ? sf.fileName : ENTRY_FILE;
     const where = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
-    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
+    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), source: "typescript" });
   }
   if (diagnostics.length) return result();
 

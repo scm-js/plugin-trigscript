@@ -15,10 +15,18 @@
  * the strings — is a trigger `Simulation`, shared with any `trigger()` records run beside
  * the programs, so an action a program takes is seen by a hand trigger and the other way
  * round.
+ *
+ * Units are a list the caller supplies (`units`, the map's placed ones in the editor), in the
+ * order of the game's unit table, with the map's locations as boxes (`locations`). A loop
+ * over units, a pick and every field and verb work on that list; a unit that is killed or
+ * removed is gone from the next line on. What the simulation does not model is the game
+ * itself: nothing moves, nothing fights, `createUnit` makes no unit. The game's tables
+ * (`stats()`) hold what the program wrote and otherwise what `table` answers, else 0.
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, PlayerGroup, ResourceType } from "../vendor/triggers";
-import type { At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TextPart, VarDecl } from "./ir";
+import type { At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
+import { cellMax } from "./tables";
 import { Simulation, type SimulationOptions } from "./simulate";
 
 export const FRAMES_PER_SECOND = 24;
@@ -36,6 +44,36 @@ export interface ProgramEvent {
   text?: string;
 }
 
+/** A unit of the simulated game. Hit points, shields and energy in whole points. */
+export interface SimUnit {
+  type: number; owner: number; x: number; y: number;
+  hp: number; maxHp: number; shields: number; maxShields: number; energy: number;
+  kills: number; orderId: number; cooldown: number; resources: number;
+  stim: number; ensnare: number; plague: number; lockdown: number; maelstrom: number; irradiate: number; stasis: number;
+  hallucinated: boolean; cloaked: boolean; burrowed: boolean; invincible: boolean; underAttack: boolean;
+  /** Still on the map. */
+  alive: boolean;
+}
+export type SimUnitInit = Partial<Omit<SimUnit, "alive">> & { type: number; owner: number };
+export interface SimBounds { left: number; top: number; right: number; bottom: number }
+
+const newUnit = (u: SimUnitInit): SimUnit => {
+  const hp = u.hp ?? u.maxHp ?? 1;
+  const shields = u.shields ?? u.maxShields ?? 0;
+  return {
+    x: 0, y: 0, energy: 0, kills: 0, orderId: 3, cooldown: 0, resources: 0,
+    stim: 0, ensnare: 0, plague: 0, lockdown: 0, maelstrom: 0, irradiate: 0, stasis: 0,
+    hallucinated: false, cloaked: false, burrowed: false, invincible: false, underAttack: false,
+    ...u, hp, maxHp: u.maxHp ?? hp, shields, maxShields: u.maxShields ?? shields, alive: true,
+  };
+};
+
+/** The most a field of a unit holds: a byte for the timers, the cooldown and the kills, 255 points of energy, a word of resources. */
+const UNIT_FIELD_MAX: Partial<Record<UnitNumField, number>> = { hp: 0xff_ffff, shields: 0xff_ffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
+/** The production buildings a trigger's "Factories" class counts. */
+const FACTORIES: ReadonlySet<number> = new Set([106, 111, 113, 114, 131, 132, 133, 154, 155, 160, 167]);
+const inClass = (type: number, cls: number): boolean => (cls === 230 ? type < 106 : cls === 231 ? type >= 106 && type <= 202 : FACTORIES.has(type));
+
 export interface ProgramSimulationOptions extends Pick<SimulationOptions, "player" | "condition" | "random" | "strings"> {
   /** The trigger interpreter holding the world; one is made when absent. */
   world?: Simulation;
@@ -49,6 +87,14 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
   read?: (read: ReadSource, sim: ProgramSimulation) => number | undefined;
   /** A player's name in a printed text; default "Player 1" … */
   playerName?: (player: number) => string;
+  /** The units on the map, in the order of the game's unit table. */
+  units?: SimUnitInit[];
+  /** The map's locations as boxes, by their 1-based number. A location the simulation does not know holds every unit. */
+  locations?: Record<number, SimBounds>;
+  /** What a cell of the game's tables holds before the program writes it, in the script's units (points, seconds); default 0. */
+  table?: (cell: TableCell) => number | undefined;
+  /** Whether a unit type is of a trigger class (230 Men, 231 Buildings, 232 Factories); default by id range. */
+  unitClass?: (type: number, cls: number) => boolean;
 }
 
 /** What an expression adds and what it subtracts: the constants exactly, the rest wrapping at 2³² as the game's additions do. */
@@ -82,10 +128,11 @@ function isBuildTime(e: NumExpr): boolean {
 type Flow = "next" | "break" | "continue" | "return";
 type Exec = Generator<undefined, Flow, undefined>;
 type Value = number | boolean;
+type Gen<T> = Generator<undefined, T, undefined>;
 
 interface Ctx {
   /** Inside an inlined call: where `return` writes. */
-  fn?: { result?: string };
+  fn?: { result?: VarDecl };
 }
 
 class Halt extends Error {}
@@ -93,6 +140,8 @@ class Halt extends Error {}
 /** One program's run: its variables, its latches, and the coroutine that is its body. */
 class ProgramRun {
   readonly vars = new Map<string, Value>();
+  /** The variables that hold a unit, or none. */
+  readonly unitVars = new Map<string, SimUnit | null>();
   readonly bits = new Map<string, 8 | 16>();
   readonly latches = new Map<object, boolean>();
   body: Exec | null;
@@ -149,8 +198,48 @@ class ProgramRun {
   }
 
   private declare(decl: VarDecl): void {
+    if (decl.kind === "unit") { this.unitVars.set(decl.id, null); return; }
     if (decl.bits) this.bits.set(decl.id, decl.bits);
     this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
+  }
+
+  /* ── units ── */
+
+  /** The unit an expression names; null for none. A unit that has died is still the value — what reads it finds it gone. */
+  private *unit(e: UnitExpr): Gen<SimUnit | null> {
+    switch (e.kind) {
+      case "unitNull": return null;
+      case "unitVar": return this.unitVars.get(e.id) ?? null;
+      case "pick": return this.sim.pick(e.by, e.filter, e.near);
+      case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
+    }
+  }
+
+  /** The unit, when there is one and it is still on the map. */
+  private *living(e: UnitExpr): Gen<SimUnit | null> {
+    const u = yield* this.unit(e);
+    return u?.alive ? u : null;
+  }
+
+  private *unitDo(e: UnitExpr, verb: UnitVerb, at: At): Gen<void> {
+    const u = yield* this.living(e);
+    // The amount is computed whether or not there is a unit, as the game computes it.
+    const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.num(verb.amount) : 0;
+    if (!u) return;
+    switch (verb.do) {
+      case "kill": case "remove": u.alive = false; this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
+      case "give": u.owner = verb.to === PlayerGroup.CurrentPlayer ? this.sim.player : verb.to; break;
+      case "order": this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
+      case "locate": this.sim.centre(verb.location, u.x, u.y); break;
+      case "damage": case "heal": {
+        // In the game's own units, 256 to a point, as the lowering computes it.
+        const step = verb.percent ? Math.floor((u.maxHp * 256 * amount) / 100) : amount * 256;
+        const raw = verb.do === "damage" ? Math.max(0, u.hp * 256 - step) : Math.min(u.maxHp * 256, u.hp * 256 + step);
+        u.hp = Math.ceil(raw / 256);
+        if (u.hp === 0) { u.alive = false; this.sim.unitEvent(this, ActionType.KillUnit, u, at); }
+        break;
+      }
+    }
   }
 
   /* ── expressions ── */
@@ -206,6 +295,8 @@ class ProgramRun {
         }
       }
       case "read": return this.sim.read(e.read);
+      case "unitField": { const u = yield* this.living(e.unit); return u ? u[e.field] : 0; }
+      case "tableRead": return this.sim.tableRead(e.cell);
       case "randomInt": {
         const n = yield* this.num(e.bound);
         return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n));
@@ -251,6 +342,9 @@ class ProgramRun {
       case "or": { for (const i of e.items) if (yield* this.bool(i)) return true; return false; }
       case "not": return !(yield* this.bool(e.expr));
       case "random": return this.sim.random() < 0.5;
+      case "unitAlive": return (yield* this.living(e.unit)) !== null;
+      case "unitSame": { const a = yield* this.unit(e.left); const b = yield* this.unit(e.right); return a !== null && a === b; }
+      case "unitFlag": { const u = yield* this.living(e.unit); return u ? u[e.flag] : false; }
       case "edge": {
         const held = yield* this.bool(e.cond);
         const was = this.latches.get(e) ?? false;
@@ -271,15 +365,21 @@ class ProgramRun {
     return kind === "number" ? yield* this.num(e as NumExpr) : yield* this.bool(e as BoolExpr);
   }
 
+  /** A declaration's, a parameter's or a return's value into its variable, whatever it holds. */
+  private *put(decl: { id: string; kind: VarDecl["kind"] }, e: NumExpr | BoolExpr | UnitExpr): Gen<void> {
+    if (decl.kind === "unit") this.unitVars.set(decl.id, yield* this.unit(e as UnitExpr));
+    else this.store(decl.id, yield* this.init(e as NumExpr | BoolExpr, decl.kind));
+  }
+
   private *call(c: Call): Generator<undefined, Value, undefined> {
     if (c.result) this.declare(c.result.decl);
     for (const p of c.params) {
       this.declare(p.decl);
-      this.store(p.decl.id, yield* this.init(p.init, p.decl.kind));
+      yield* this.put(p.decl, p.init);
     }
-    const flow = yield* this.block(c.body, { fn: { result: c.result?.decl.id } });
+    const flow = yield* this.block(c.body, { fn: { result: c.result?.decl } });
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c.at.line}).`);
-    return c.result ? this.read(c.result.decl.id) : 0;
+    return c.result && c.result.kind !== "unit" ? this.read(c.result.decl.id) : 0;
   }
 
   /* ── statements ── */
@@ -297,7 +397,37 @@ class ProgramRun {
     switch (s.kind) {
       case "declare": {
         this.declare(s.decl);
-        if (!s.failed) this.store(s.decl.id, yield* this.init(s.init, s.decl.kind));
+        if (!s.failed) yield* this.put(s.decl, s.init);
+        return "next";
+      }
+      case "assignUnit": this.unitVars.set(s.target, yield* this.unit(s.value)); return "next";
+      case "unitLoop": {
+        this.declare(s.decl);
+        // The units as they are when the loop starts, in table order; one that dies on the way is passed over.
+        for (const u of this.sim.matching(s.filter)) {
+          if (!u.alive) continue;
+          this.unitVars.set(s.decl.id, u);
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") break;
+          if (flow === "return") return flow;
+        }
+        return "next";
+      }
+      case "unitWrite": {
+        const u = yield* this.living(s.unit);
+        const field = s.field;
+        if (field === "invincible") { const on = yield* this.bool(s.value as BoolExpr); if (u) u.invincible = on; return "next"; }
+        const value = yield* this.num(s.value as NumExpr);
+        if (!u) return "next";
+        (u as unknown as Record<string, number>)[field] = Math.min(value, UNIT_FIELD_MAX[field as UnitNumField] ?? 0xffff_ffff);
+        if (field === "hp" && u.hp === 0) { u.alive = false; this.sim.unitEvent(this, ActionType.KillUnit, u, s.at); }
+        return "next";
+      }
+      case "unitDo": yield* this.unitDo(s.unit, s.verb, s.at); return "next";
+      case "tableWrite": {
+        if (s.value.kind === "text") { this.sim.tableWrite(s.cell, 0, false, s.value.text); return "next"; }
+        const value = s.boolean ? ((yield* this.bool(s.value as BoolExpr)) ? 1 : 0) : yield* this.num(s.value as NumExpr);
+        this.sim.tableWrite(s.cell, value, s.scaled === true);
         return "next";
       }
       case "assign": this.store(s.target, yield* this.num(s.value)); return "next";
@@ -355,7 +485,7 @@ class ProgramRun {
       case "break": return "break";
       case "continue": return "continue";
       case "return": {
-        if (s.value && ctx.fn?.result) this.store(ctx.fn.result, yield* this.init(s.value, typeof this.read(ctx.fn.result) === "number" ? "number" : "boolean"));
+        if (s.value && ctx.fn?.result) yield* this.put(ctx.fn.result, s.value);
         return "return";
       }
       case "sleep": {
@@ -384,6 +514,13 @@ class ProgramRun {
     }
   }
 
+  /** The unit a variable holds, by its source name; null for none or a unit that is gone. */
+  unitValue(name: string): SimUnit | null {
+    let found: SimUnit | null = null;
+    for (const [id, u] of this.unitVars) if (id === name || id.startsWith(`${name}#`)) found = u;
+    return found?.alive ? found : null;
+  }
+
   /** A user variable's value by its source name (the last declared with that name). */
   value(name: string): Value | undefined {
     let found: Value | undefined;
@@ -401,6 +538,13 @@ export class ProgramSimulation {
   private readonly conditionOf?: SimulationOptions["condition"];
   private readonly readOf?: ProgramSimulationOptions["read"];
   private readonly nameOf: (player: number) => string;
+  /** The units of the game, in the order of its unit table; a dead one stays in the list, gone. */
+  readonly units: SimUnit[];
+  readonly locations = new Map<number, SimBounds>();
+  /** What the programs wrote into the game's tables, as the cell stores it; a name as its text. */
+  readonly tables = new Map<string, number | string>();
+  private readonly tableOf?: ProgramSimulationOptions["table"];
+  private readonly classOf: (type: number, cls: number) => boolean;
   /** Ore and gas by player slot, as the programs' own setResources actions leave them. */
   private readonly resources = new Map<number, [ore: number, gas: number]>();
   cycle = 0;
@@ -412,6 +556,10 @@ export class ProgramSimulation {
     this.conditionOf = options.condition;
     this.readOf = options.read;
     this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
+    this.units = (options.units ?? []).map(newUnit);
+    for (const [n, b] of Object.entries(options.locations ?? {})) this.locations.set(Number(n), { ...b });
+    this.tableOf = options.table;
+    this.classOf = options.unitClass ?? inClass;
     this.runs = programs.map((p, i) => new ProgramRun(this, i, p));
   }
 
@@ -465,6 +613,68 @@ export class ProgramSimulation {
     if (r.source === "condition") return this.quantity(r.record) ?? 0;
     if (r.source === "player" && r.fact === "slot") return this.slotOf(r.player) === this.player ? 2 : 0;
     return 0;
+  }
+
+  /* ── units and tables ── */
+
+  /** The living units a filter matches, in table order. */
+  matching(f: UnitFilter): SimUnit[] {
+    const owner = f.owner === undefined ? undefined : this.slotOf(f.owner);
+    const box = f.at === undefined ? undefined : this.locations.get(f.at);
+    return this.units.filter((u) => u.alive
+      && (owner === undefined || u.owner === owner)
+      && (f.type === undefined || (f.type >= 230 ? this.classOf(u.type, f.type) : u.type === f.type))
+      && (!box || (u.x >= box.left && u.x <= box.right && u.y >= box.top && u.y <= box.bottom)));
+  }
+
+  /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
+  pick(by: "first" | "nearest" | "random", f: UnitFilter, near?: number): SimUnit | null {
+    const all = this.matching(f);
+    if (all.length === 0) return null;
+    if (by === "first") return all[0];
+    if (by === "random") return all[Math.min(all.length - 1, Math.floor(this.random() * all.length))];
+    const box = near === undefined ? undefined : this.locations.get(near);
+    const cx = box ? Math.floor((box.left + box.right) / 2) : 0;
+    const cy = box ? Math.floor((box.top + box.bottom) / 2) : 0;
+    let best = all[0];
+    let least = Infinity;
+    for (const u of all) { const d = Math.abs(u.x - cx) + Math.abs(u.y - cy); if (d < least) { least = d; best = u; } }
+    return best;
+  }
+
+  /** A location centred on a point, its size kept. */
+  centre(location: number, x: number, y: number): void {
+    const b = this.locations.get(location) ?? { left: 0, top: 0, right: 0, bottom: 0 };
+    const w = b.right - b.left;
+    const h = b.bottom - b.top;
+    const left = x - Math.floor(w / 2);
+    const top = y - Math.floor(h / 2);
+    this.locations.set(location, { left, top, right: left + w, bottom: top + h });
+  }
+
+  private cellKey(c: TableCell): string {
+    return `${c.name}:${c.player ? this.slotOf(c.index) : c.index}${c.key !== undefined ? `:${c.key}` : ""}`;
+  }
+
+  /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
+  tableRead(c: TableCell): number {
+    const stored = this.tables.get(this.cellKey(c));
+    if (typeof stored === "number") return Math.floor(stored / (c.scale ?? 1));
+    const given = this.tableOf?.(c);
+    return given === undefined ? 0 : Math.max(0, Math.trunc(given));
+  }
+
+  /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
+  tableWrite(c: TableCell, value: number, scaled: boolean, text?: string): void {
+    if (text !== undefined) { this.tables.set(this.cellKey(c), text); return; }
+    const raw = scaled ? value : value * (c.scale ?? 1);
+    this.tables.set(this.cellKey(c), Math.min(raw, cellMax(c.width)));
+  }
+
+  /** What a program did to a unit, for the log: the game's nearest action, with the unit in words. */
+  unitEvent(run: ProgramRun, type: number, u: SimUnit, at: At, extra: { location?: number; text?: string } = {}): void {
+    const what = `unit ${this.units.indexOf(u)} (type ${u.type}, P${u.owner + 1})`;
+    this.events.push({ cycle: this.cycle, program: run.index, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
 
   partText(p: Exclude<TextPart, { kind: "number" }>): string {
@@ -530,6 +740,9 @@ export class ProgramSimulation {
 
   /** Whether every program has ended. */
   finished(): boolean { return this.runs.every((r) => r.done); }
+
+  /** The unit a variable holds by its source name, in a program (the first by default). */
+  unit(name: string, program = 0): SimUnit | null { return this.runs[program]?.unitValue(name) ?? null; }
 
   /** A variable's value by its source name, in a program (the first by default). */
   value(name: string, program = 0): Value | undefined { return this.runs[program]?.value(name); }

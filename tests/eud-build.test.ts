@@ -88,6 +88,55 @@ const FIXTURES: Record<string, string> = {
       sleep(seconds(2));
     }
   }, { owner: AllPlayers });`,
+  units: `program(() => {
+    stats(units.TerranMarine).minerals = 25;
+    stats(units.TerranMarine).speed = 6.5;
+    stats(units.TerranMarine).buildTime = 1.5;
+    stats(units.ZergZergling).name = "Dog";
+    stats(units.TerranGhost).permanentCloak = true;
+    stats(weapons.GaussRifle).damage += 2;
+    stats(upgrades.TerranInfantryArmor).minerals = stats(upgrades.TerranInfantryArmor).maxLevel * 10;
+    stats(P1).color = "teal";
+    stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3;
+    stats(P1).researched[techs.Lockdown] = true;
+    let kept: Unit | null = null;
+    let fast = 3;
+    function weakest(): Unit | null {
+      let best: Unit | null = null;
+      let least = 9999;
+      for (const u of unitsOf(P1, { type: units.Men })) { if (u.hp < least) { least = u.hp; best = u; } }
+      return best;
+    }
+    function hurt(u: Unit, by: number) { u.damage(by); u.stim = 40; }
+    while (true) {
+      for (const u of unitsAt(locations.Anywhere, { owner: P2, type: units.ZergZergling })) {
+        if (u.burrowed || u.invincible) continue;
+        u.hp = u.maxHp / 2; u.energy += 10; u.kills++; u.cooldown = 24; u.invincible = !u.hallucinated;
+        if (u.shields > u.maxShields) break;
+        kept = u;
+      }
+      const target = nearest(units.TerranMarine, locations.Anywhere, { owner: P1 });
+      if (target) { target.order("move", locations.Anywhere); target.damage({ percent: 50 }); target.heal(fast); target.locate(5 as Location); print(\`\${target.hp} hp at \${target.x}, \${target.y}\`); }
+      const lucky = randomUnit({ owner: P1 });
+      if (lucky != null && lucky != target) { lucky.give(P2); hurt(lucky, fast); }
+      const w = weakest();
+      if (w) w.heal({ percent: fast });
+      if (kept && kept.type == units.ZergZergling && kept.owner == P2) kept.kill();
+      if (stats(units.TerranGhost).permanentCloak && !stats(units.TerranMarine).detector) { stats(units.TerranMarine).detector = fast > 3; }
+      if (!first({ type: units.Buildings, owner: P2 })) { stats(units.TerranMarine).speed = fast; fast += 1; }
+      first({ owner: P2 })?.remove();
+      sleep(seconds(1));
+    }
+  });`,
+  unitsPerPlayer: `program(() => {
+    let mine: Unit | null = null;
+    while (true) {
+      if (!mine) mine = first({ owner: CurrentPlayer, type: units.Men });
+      if (mine) { mine.heal(1); stats(CurrentPlayer).color = colors.green; }
+      for (const u of unitsOf(CurrentPlayer)) { if (u == mine) continue; if (u.underAttack) u.invincible = true; }
+      sleep(frames(8));
+    }
+  }, { owner: AllPlayers });`,
   perPlayer: `program(() => {
     let mine = 0;
     let total = shared(0);
@@ -137,6 +186,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(3);
+    expect(ir.version).toBe(4);
   });
 });

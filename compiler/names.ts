@@ -1,6 +1,7 @@
 /**
- * The identifiers a script uses for the map's things. `scriptNames(sources)` builds five
- * tables — players, units, locations, switches, AI scripts — each entry being a value and
+ * The identifiers a script uses for the map's things. `scriptNames(sources)` builds the
+ * tables — players, units, locations, switches, AI scripts, and the weapons, upgrades and
+ * technologies `stats()` takes — each entry being a value and
  * the keys it goes by: an identifier derived from the display name (`TerranMarine`,
  * `BeaconAlpha`) first, the display name itself second (usable as `units["Terran Marine"]`),
  * then any custom name the map gives it. The declarations are generated from these tables
@@ -14,6 +15,7 @@
 import { PlayerGroup, SWITCH_COUNT } from "../vendor/triggers";
 import { AI_SCRIPT_CHOICES, aiScriptCode, PLAYER_GROUP_CHOICES, UNIT_CLASS_CHOICES } from "../vendor/triggerDefs";
 import { UNIT_NAMES } from "../vendor/units";
+import { TECH_NAMES, UPGRADE_NAMES, WEAPON_NAMES } from "../vendor/gameNames";
 
 /** The location slot the game calls Anywhere (0-based); a script names it `locations.Anywhere`, value 64. */
 export const ANYWHERE_INDEX = 63;
@@ -39,7 +41,14 @@ export interface ScriptNames {
   locations: NameTable;
   switches: NameTable;
   aiScripts: NameTable;
+  /** weapons.dat, upgrades.dat and techdata.dat ids: what `stats()` and a unit type's weapon fields take. */
+  weapons: NameTable;
+  upgrades: NameTable;
+  techs: NameTable;
 }
+
+/** Every table, in the order the declarations list them. */
+export const allTables = (n: ScriptNames): NameTable[] => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs];
 
 /** What a map contributes to the tables; every part is optional (the fixed lists stand without a map). */
 export interface NameSources {
@@ -135,10 +144,13 @@ export function scriptNames(src: NameSources = {}): ScriptNames {
   });
   return {
     players: table("players", "Player", withMap ? "Players, player groups and the map's forces." : "Players and player groups.", playerEntries(src.forceNames ?? [])),
-    units: table("units", "Unit", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
+    units: table("units", "UnitType", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
     locations: table("locations", "Location", "The map's locations.", locations),
     switches: table("switches", "Switch", withMap ? "The 256 switches, by number and by the map's names." : "The 256 switches.", switches),
     aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries()),
+    weapons: table("weapons", "Weapon", "Weapons, for stats() and a unit type's groundWeapon / airWeapon.", [...WEAPON_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })), { value: WEAPON_NAMES.length, keys: ["None"] }]),
+    upgrades: table("upgrades", "Upgrade", "Upgrades, for stats().", UPGRADE_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
+    techs: table("techs", "Tech", "Technologies, for stats().", TECH_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
   };
 }
 

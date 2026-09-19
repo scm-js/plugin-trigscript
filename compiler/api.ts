@@ -108,7 +108,7 @@ export function choiceWords(kind: ArgKind): string[] {
 export function argType(kind: ArgKind): string {
   switch (kind) {
     case "player": return "Player";
-    case "unit": return "Unit";
+    case "unit": return "UnitType";
     case "location": return "Location";
     case "switch": return "Switch";
     case "text": case "wav": return "string";
