@@ -307,7 +307,7 @@ each. A function off every cycle, and the program's body, are left exactly as th
   results, the temporaries above) but this call's own result. `arrays`: the growing arrays
   declared in the function. `within`: the function's name, for the words of an overflow. A
   backend, in this order: works out every argument; puts on the stack where the function
-  returns to, the `vars` (a cell each, three for a unit) and the `arrays`' handles (four
+  returns to, the `vars` (a cell each, three for a unit or a made text) and the `arrays`' handles (four
   cells each), and sets those handles to "no block"; sets the parameters; runs the body;
   gives back to the heap the block each of the `arrays`' handles now holds — the inner
   run's — and takes everything back; copies the result. A variable the lowering has not met
@@ -335,9 +335,26 @@ would otherwise be ten thousand frames of JavaScript's own stack.
 What cannot recurse: a function that sleeps or holds an `edge` (it is not a called function
 at all, and the front end says so when the inlined copies reach sixteen deep), and a
 `unitLoop` holding a `saves` call (the scan's place in the unit table is the lowering's
-own). A function that calls itself on every path is an error too. Nor, in version 13, a
-function that works with a text: a frame would have to keep the ownership of its blocks
-straight around every call, and the pass refuses it by name instead.
+own), nor a `textLoop` holding one, for the same reason. A function that calls itself on
+every path is an error too.
+
+**Texts in a frame.** A function that calls itself may hold texts. A made text among a
+call's `vars` is three cells of the frame — where it is, its block, its length — and once
+they are on the stack the variable holds *no block* for the length of the call, as an
+array's handle does, so that the inner run's first text gives nothing of the outer run's
+back. When the call returns, the block the inner run left in the variable goes back to the
+heap, and then the three cells are the outer run's again. A text kept as its id is one
+cell, as a number is. The pass takes a call that may come back out of a text as it does
+out of any expression: a `textCall` of such a call becomes the call as a statement and a
+`textVar` of its result (looked at, so copied where it is kept — the result keeps its
+block until the next return, as it always does), and the numbers, conditions and texts
+inside a text are rewritten in place.
+
+**A text through a called function.** A `FuncDecl`'s parameter or result may be a `text`.
+A call works every argument out first; a text argument is a copy of its own by then (what
+it is made from may be the parameter itself). Setting the parameter gives back what it held
+from the call before. The function's result moves to the call's own result variable, from
+where a `textCall` takes it; a text result is not reset when a call starts.
 
 ## Texts
 

@@ -72,7 +72,7 @@ and how do we get the best developer experience out of that.
 > the second time after an instance came to be made straight on its row) and `map` (400
 > reads in one frame without a pause that could be seen). The IR went 11 → 14 over the
 > slice: 12 for arrays inside things, 13 for texts, 14 for a text in the cells of a row;
-> the map over any number needed none. 464 tests pass, the eudplib builds among them. Each
+> the map over any number needed none, and neither did the leftovers below. Each
 > part's *As built* under slice 8½ says what it became, what was found on the way and what
 > was left out.
 >
@@ -82,15 +82,44 @@ and how do we get the best developer experience out of that.
 > TrigScript section — classes, texts, the map — and the catalogue note), the registry, and
 > the assistant's prompt in ai-server, whose deploy to the VM has been owed since 0.9.1.
 >
-> What is owed to the language after it, none of it in the way of 3.9.0 (each is an error
-> that says what to do instead): a text local to a function that calls itself, and a
-> function that takes or returns a text becoming one that is called (part 4); `string[]` a
-> program fills, a function that returns an instance, an instance variable given another
-> (part 5); a text or a unit for a `Map`'s key, `[...m.keys()]` (part 6); fusing a chain's
-> loops, `toSorted` and the rest (part 1); `f(...xs)` (part 2); `filter` / `sort` of an
-> array of arrays (part 3). After 3.9.0 the order is unchanged: slice 9, `test()` and the
-> debugger (3.10.0), then slice 10, the examples (3.11.0) — and the debugger now has a call
-> stack, arrays, rows, texts, instances and maps to show, which is why it waited.
+> **The leftovers, taken in (2026-09-19, later still).** Asked how hard what was left out
+> would be now, the answer was "easier than when it was left out", and the user took the
+> list. In, each tested against JavaScript itself where JavaScript has the same thing
+> (`tests/leftovers.test.ts` runs a body in the simulator and through `new Function`, and
+> compares what was printed):
+> - *Copies*: `slice`, `concat`, `toSorted`, `toReversed`, `Array.from`, of an array of the
+>   program or a list the script has (`copiedList`); a `Map`'s keys and values and a `Set`
+>   as arrays (`hashList`), so `[...m.keys()]`.
+> - *A row variable given another row of its array* (`rowVars`: which row is a variable).
+> - *A call that gives an instance* (`instanceCall`): `return this`, `return new …`, or one
+>   it was handed, when every return gives the same one. The calls before the last in a
+>   chain run *inside* it (`MethodCall.before`), then its own arguments, then its body —
+>   found by the test, since run as statements before the expression they changed what
+>   the expression had already read in JavaScript.
+> - *`sort`, `reverse`, `filter` of an array of arrays* (`rowOps`): rows that grow are
+>   their four arrays of handles seen as an array of records with one field; a grid's rows
+>   are runs of its flat array, the hand a run past its end.
+> - *`f(...xs)`* for a list the script has or a tuple — TypeScript itself refuses a spread
+>   argument that is not one, so there was less to leave out than thought.
+> - *An array of texts* (`texts`: an array of records with the one field `(text)`), which
+>   cost a day less than feared because a text in a row was already there and played.
+> - *`Map<Unit, V>` and `Set<Unit>`*: the key is where the unit is plus its uniqueness byte
+>   sixteen bits up, one number, so a unit made where a dead one was is another key and
+>   nothing has to be checked; the unit's three numbers ride along for a loop to hand back.
+> - *A text through a called function, and in one that calls itself*: the only new Python
+>   (a text parameter set from a copy, a text result moved to the call's own, a frame that
+>   keeps a made text's three cells and leaves the variable with no block for the call).
+>   `eachCall` had never counted a `textCall`, which no called function had been inside
+>   before.
+>
+> One probe for what reaches the Python or the game anew, `probes/leftovers.ts`, steps A–H:
+> **not played yet.** Still refused, by decision or by nature: a function that returns one
+> of several instances, a standalone instance variable given another, a text for a `Map`'s
+> key, `string[]` inside a row, a `for…of` over a text or over units around a call that may
+> come back, fusing a chain's loops, `set` in a chain. After 3.9.0 the order is unchanged:
+> slice 9, `test()` and the debugger (3.10.0), then slice 10, the examples (3.11.0) — and
+> the debugger now has a call stack, arrays, rows, texts, instances and maps to show, which
+> is why it waited.
 
 ## What we are aiming for
 

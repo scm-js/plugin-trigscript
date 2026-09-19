@@ -388,8 +388,26 @@ How it is kept is the compiler's choice, and the end of the line says which:
 One thing is not JavaScript's: a row of rows that grow kept in a `const` is that *place* in
 the outer array, not the array that was there. `const last = buckets[2]; buckets.pop();
 buckets.push([7])` leaves `last` reading `[7]`, where JavaScript would still have the row
-that was popped. `filter`, `sort` and `reverse` of an array of arrays are not there yet, nor
-is an array inside an *array of* records (`squads[i].members`), which comes with classes.
+that was popped. `sort`, `reverse` and `filter` work on an array of arrays, of either kind —
+`points.sort((a, b) => a[0] - b[0])`, `buckets.filter((r) => r.length > 2)` — and `filter`
+gives rows of their own, as it does of records: what is changed through the rows it made is
+not changed in the rows it took them from, which is the one way it is not JavaScript's.
+
+**Copies.** `xs.slice(1)`, `xs.slice(-2)`, `xs.concat(ys, 7, [a, b])`, `xs.toSorted(f)`,
+`xs.toReversed()` and `Array.from(xs)` give a new array that grows, of numbers, booleans or
+units, from an array of the program or a list the script has; `[...m.keys()]`,
+`Array.from(m.values())` and `[...set]` give a `Map`'s or a `Set`'s as one. `f(...xs)` spreads
+an array into a call's arguments when the script knows how many there are — a list it has, or
+an array TypeScript knows as a tuple (`let box: [number, number, number] = [1, 1, 1]`), which
+is what TypeScript itself asks of a spread argument; an array that grows is handed over as
+itself.
+
+**An array of texts** a program fills is `const names: string[] = []`: `push`, `pop()` (its
+value too: `names.pop() ?? ""`), `names[i]` read, written and added to, `length` and `length
+=`, `for…of`, `forEach`, `includes`, `indexOf`, `join`. Each text is what a text in a row
+is, and the array gives a text's block back when it is replaced, popped or cut off. In a
+variable, a record's field or a class's, or handed to a function; not inside a row of an
+array of records, where a text is a field of its own.
 
 **A list the script made is a table a program can look things up in.** `const price = [50,
 100, 150]` outside the program, `price[level]` inside it, is in the map once, however often
@@ -458,8 +476,15 @@ table keyed by ids of the game is one read, so where the keys are ids of the gam
 starts at eight slots and doubles as it fills, and deleted entries go when it is next made
 again. The line's hint says which kind a `Map` became. Values are numbers or booleans; for
 anything more keep the place of a row of an array of records. Left out: a text for a key,
-`[...m.keys()]` and the other ways of making an array of one, and `m.set(…).set(…)` in a
-chain.
+and `m.set(…).set(…)` in a chain.
+
+**A `Map` or a `Set` keyed by units** is the same table: `const cooldown = new Map<Unit,
+number>()`, `cooldown.set(u, 72)`, `(cooldown.get(u) ?? 0)`, `new Set<Unit>()` for the units
+already dealt with. A unit is found by where it is together with the byte that tells one
+unit of that place from the next, so a unit made where a dead one was is *not* the dead
+one's key, and reads as absent. A unit that died stays an entry until it is deleted; in a
+loop (`for (const [u, n] of cooldown)`) it reads as no unit, which is where to delete it.
+`Map<Unit | null, number>` is how TypeScript lets `first(…)` be a key without an `if`.
 
 **Numbers** are whole, and a `number` is what it is in TypeScript as far as 32 bits go:
 signed, from −2 147 483 648 to 2 147 483 647. `a - b` is below zero when `b` is larger,
@@ -632,9 +657,15 @@ and the same is where the limits are:
   `waves.push(new Wave(…))`, `waves[i] = new Wave(…)`, `[new Wave(…), …]`, an argument
   (`run(new Wave(…))`). A row *is* the instance, so `waves.push(w)` of one kept in a variable
   is refused rather than quietly copied. `const same = w` is another name for the same one.
-- **A function does not return an instance**, and a variable is not given another one
-  (`w = other`): both would need to know which instance it is while the map is played.
-  Hand the instance to the function, or keep instances in an array and return the place.
+- **A function may give an instance when every `return` gives the same one**: `return
+  this` (so `v.add(w).scale(2)` chains, the calls running in the order written),
+  `return new Wave(n, 10)` (a function that makes one: `const w = make(3)`), or one it was
+  handed. `pick(a, b)` that returns one or the other is refused: which instance it is would
+  only be known while the map is played. For that, keep the instances in an array and
+  return the place.
+- **A variable that is a row may be given another row of the same array**: `let cur =
+  waves[0]; … cur = waves[i]`. Underneath, which row it is is a number. A variable holding an
+  instance of its own (`let w = new Wave(…)`) is not given another.
 - **A class is declared in the program** (or in a `game()` function) that uses it. One
   declared outside is the script's: fine for working things out when the script is
   applied, not something a program can write to.
@@ -946,11 +977,12 @@ own. What is on the screen is the text as it was when the action ran; changing t
 variable afterwards changes nothing until the action runs again. Any other action's text
 (`setNextScenario`, a sound's path) is a text of the map or an error that says so.
 
-What is left out for now: a function that calls itself cannot hold a text; a function
-that takes or returns a text is always a copy at each call (the hint on its line says
-why); an array of texts is a list the script has (`titles[level]`), not one a program
-fills — a program that needs one keeps an array of records with a text for a field, which a
-row can hold; `parseInt`, regular expressions and the words a player typed in chat are not there.
+A function takes and returns a text like any other value — it is called from its second
+use on, its parameter a variable set to a copy at each call — and one that calls itself may
+hold texts: around each call that may come back a text's three cells go on the stack with
+the rest, so each run has its own. The one thing such a function cannot do is go through a
+text with `for…of` around the call; the error says to walk it by place. What is left out
+for now: `parseInt`, regular expressions and the words a player typed in chat.
 
 **Time is `sleep`.** `sleep(seconds(15))` gives the frame back and resumes that much
 later; other programs and the map's triggers go on meanwhile. `frames(n)` is the game's
@@ -1041,8 +1073,15 @@ written out. And `p.trail = []` on an array that grows, a record's or an instanc
 it over where 3.8 said an array is assigned cell by cell.
 
 A `Map` and a `Set` take any number for a key (*A `Map` and a `Set` over any number*,
-above), where 3.8 said a key has to be an id of the game. One keyed by ids of the game is
-what it was.
+above), or a unit of the game, where 3.8 said a key has to be an id of the game. One keyed by
+ids of the game is what it was.
+
+Smaller things that 3.8 refused by name and 3.9 does: `slice`, `concat`, `toSorted`,
+`toReversed` and `Array.from`; `sort`, `reverse` and `filter` of an array of arrays; a
+spread into a call's arguments; an array of texts a program fills. One thing changed under
+a script that already worked: a function handed a text written in the script
+(`say("hello")`) used to be copied into each call, and is now one that is called, as a
+function handed a number is. What it shows is the same.
 
 Patterns and spread (*Patterns and spread*, above) are new too, and mended something:
 `const { n, d } = waves[0]` over a list of the script — nothing of the program in it — was
