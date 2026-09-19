@@ -90,8 +90,15 @@ writeFileSync(irPath, ir);
 writeFileSync(resolve(outPath).replace(/\.scx$/, ".json"), ir);
 const mapPath = join(dir, "in.scx");
 writeFileSync(mapPath, withStrings);
-writeFileSync(pluginsPath, JSON.stringify(buildPlugins(r.input, "/work/files/trigscript.json")));
-const res = spawnSync("npx", ["tsx", join(eudplib, "scripts", "build-map.mts"), mapPath, resolve(outPath), pluginsPath, `trigscript=${join(root, "python", "trigscript.py")}`, `file=trigscript.json=${irPath}`], { cwd: eudplib, encoding: "utf8", env: { ...process.env, EUDPLIB_LOG: "1" } });
+// EXTRA_PLUGIN=name=path.py builds a hand-written euddraft plugin into the same map, for a spike that
+// tries something in the game before the compiler learns it (probes/strings-spike.py).
+const extra = process.env.EXTRA_PLUGIN;
+const extraName = extra?.slice(0, extra.indexOf("="));
+const sections = buildPlugins(r.input, "/work/files/trigscript.json");
+const { eudTurbo, ...before } = sections;
+writeFileSync(pluginsPath, JSON.stringify(extraName ? { ...before, [extraName]: {}, eudTurbo } : sections));
+const extraArgs = extra && extraName ? [`${extraName}=${resolve(extra.slice(extraName.length + 1))}`] : [];
+const res = spawnSync("npx", ["tsx", join(eudplib, "scripts", "build-map.mts"), mapPath, resolve(outPath), pluginsPath, `trigscript=${join(root, "python", "trigscript.py")}`, `file=trigscript.json=${irPath}`, ...extraArgs], { cwd: eudplib, encoding: "utf8", env: { ...process.env, EUDPLIB_LOG: "1" } });
 rmSync(dir, { recursive: true, force: true });
 process.stdout.write(res.stdout);
 if (res.status !== 0) { console.error(res.stderr); process.exit(1); }

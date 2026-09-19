@@ -56,6 +56,12 @@ and how do we get the best developer experience out of that.
 > over any number are what a person writing TypeScript reaches for next, and each changes
 > what the debugger shows and what the examples look like. It takes 3.9.0; `test()` and the
 > debugger move to 3.10.0 and the examples to 3.11.0.
+>
+> **Revised 2026-09-19, later: strings join slice 8½.** The user asked whether a text could
+> be kept in a variable, then for the whole of it — `` `Wave ${n}` `` stored, not only shown.
+> "There are no string variables" was stricter than the game is: a text of the string table
+> is a number, and a text made while the map is played is bytes in the heap slice 6 built.
+> One type, `string`, no capacity to declare. See *Strings* in the slice.
 
 ## What we are aiming for
 
@@ -391,7 +397,7 @@ before the slice is called done, in the Magenta manner.
 | 6 | Arrays and keyed tables (3.6.0; the probe is `probes/arrays.ts`, played 2026-09-18: step L — 20 000 pushes at 500 a frame — did not stutter, said out of memory once and stopped at 4096, the push the simulator stops at; M found room again in the blocks given back, N had an array a player and one shared; played again 2026-09-19 with the records, the array of units and the Map loops — steps O to Q — all as expected) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` on an array that grows out of a heap; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
 | 7 | Functions that are called (3.7.0; the probe is `probes/functions.ts`, played 2026-09-19: every line as expected — 2000 calls in one frame without a stutter, one Marine at 10 hit points, the per-player line) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
 | 8 | Recursion (3.8.0; the probe is `probes/recursion.ts`, played 2026-09-19: as expected — `fib(20)`, 21 891 calls in one frame, with basically no pause; the overflow said in red where the third program stopped and the first going on to its end) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
-| 8½ | The TypeScript people write (3.9.0) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 7–8 days |
+| 8½ | The TypeScript people write (3.9.0) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; `string` as a value — a text of the table as its id, a text that was made as bytes in the heap; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 10–11 days |
 | 9 | `test()` blocks + debugger (3.10.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
 | 10 | Examples, guide, assistant prompts, registry (3.11.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
 
@@ -500,7 +506,8 @@ TypeScript thing in the language.
   is refused by TypeScript itself; its typed form, `Record<K, V>`, is this.
 - A `Map<number, number>` over *any* key is a hash table, a few probes an operation. Not
   in this slice: it is the last part of slice 8½. A key that is a string of the
-  game does not exist: there are no strings when the map is played.
+  game does not exist: there are no strings when the map is played (as of 3.6 — slice 8½'s
+  *Strings* changes that, though not for a key).
 - Left out of 3.6, and where each went (2026-09-19): an array inside a record and an array
   of arrays are a part of slice 8½, before the classes that need them; the simulator's
   faults shown in the Simulate view come with slice 7; arrays in the Explorer and the
@@ -596,8 +603,9 @@ frame back in a trigger a cell, and that is where to start if a script ever need
 program has `push`, `pop`, `fill`, `includes`, `indexOf`, `length` and `for…of`, and says so
 when anything else is called; a spread inside an array literal is refused; the only
 destructuring is `for (const [k, v] of m.entries())`; a class is fine outside `program()`,
-where the script simply runs, and nothing inside it. Five parts, in this order, each of which
-can ship alone (but the classes want the arrays inside things first):
+where the script simply runs, and nothing inside it; a text is shown and never kept. Six
+parts, in this order, each of which can ship alone (but the classes want the arrays inside
+things and the strings first):
 
 - **Callbacks on arrays.** `forEach`, `some`, `every`, `find`, `findIndex`, `findLast`,
   `reduce`, `map`, `filter`, `sort` and `reverse`. The arrow — or the
@@ -631,11 +639,115 @@ can ship alone (but the classes want the arrays inside things first):
   covers it. The rule that replaces it: what holds the handle owns the block; `pop`,
   `length =`, `clear` and declaring the outer again give the inner blocks back first, and a
   copy of a row (`const r = grid[y]`) is a reference, as it is in TypeScript, never a second
-  owner. The map over any number, below, also keeps blocks that a value owns: the two are
-  designed together.
+  owner. The strings and the map over any number, below, also keep blocks that a value
+  owns: the three are designed together.
+- **Strings.** Added 2026-09-19 at the user's word ("I would like native strings… I also do
+  want full template strings such as `Wave ${n}`"). One type, `string`, written as
+  TypeScript writes it, and nothing to declare beside it — no capacity, which would have
+  been slice 6's first array over again. The compiler keeps it one of two ways, a variable
+  at a time, and the end of the line says which:
+  - *A text of the map.* A variable that only ever receives literals (and what folds to
+    one: `"a" + "b"`, a `?:` between two) holds the text's id in the built map's string
+    table, where eudplib puts a program's texts already — never in the map being edited.
+    Assigning is copying a number; `==` compares ids, the same text being one id; `switch`
+    is a switch over numbers. Any text field of any action takes it, the id written into
+    the action before it runs: objectives, a leaderboard's label, a transmission, where
+    until now only a literal could go.
+  - *A text that was made.* `` `Wave ${n}` ``, `a + b`, `s += "!"`, `String(n)`,
+    `name(p)` kept: formatted into one scratch buffer (eudplib's `f_dbstr_print`),
+    measured, and copied to a block of the heap of that many bytes, four to a cell, handed
+    out as an array's blocks are. The variable is three cells: the text's address — a
+    literal's address is a constant of the build, through `GetMapStringAddr`, so printing
+    never asks which kind it has — the block it owns, 0 when it owns none, and its length
+    in characters.
+  - **A string is a value, and what holds it owns its block**: the rule of the arrays
+    inside things. `a = b` copies the block (a temporary is moved, not copied); assigning
+    or declaring again gives the old block back first; a string in a record, an array or a
+    class is given back with its holder; one local to a recursive function has its cells
+    saved and zeroed as a growing array's handle is. Since a JavaScript string cannot be
+    changed, a script cannot tell a copy from a reference, and copying is what needs no
+    collector. A template written straight into `print()` stays what it is in 3.8: no
+    block at all.
+  - What it can do: templates, `+`, `+=`, `==` / `!=` (`f_strcmp` when either side was
+    made, a loop over the bytes, with a hint), `switch`, `String(n)` / `n.toString()`,
+    `startsWith`, `endsWith`, `includes` (`f_strnstr`; the bytes are UTF-8, where a match
+    of bytes is a match of characters). Colour codes are bytes like any other. Out of
+    memory is the heap's message and the simulator's fault at the same line; a text longer
+    than the scratch buffer (1 024 bytes) is cut, and says so the same two ways.
+  - **A character is a code point** (decided 2026-09-19). JavaScript counts UTF-16 units
+    and the game holds UTF-8, so a Korean syllable is one there and three bytes here;
+    bytes would make `"저글링".length` 9 and `"저글링"[1]` half a character. A code point
+    is one UTF-16 unit for everything below U+10000 — Latin, every Hangul syllable, kana,
+    the usual Chinese characters, the colour codes — so the numbers are JavaScript's.
+    Above it (emoji, the rare CJK extensions) JavaScript counts two and this counts one;
+    a literal that holds such a character gets a warning, *the game cannot draw this*, and
+    a Battle.net name cannot hold one, so no text of a running map counts differently.
+    (That Remastered draws none of them is believed, not checked: the probe shows one.)
+    The simulator counts the same way, `[...s].length`, so the two agree there too. With
+    that settled, in the first cut: `length`, `s[i]` / `at()` / `charAt()`, `slice` /
+    `substring`, `indexOf`, `padStart` / `padEnd`, `repeat`, and `for…of` over a text.
+    A literal's length is a constant of the build and a made text's is counted as it is
+    made — the bytes are walked then anyway — and kept in a third cell, so `length` is
+    free. What is not JavaScript's is the cost of a place: UTF-8 has no fixed width, so
+    `s[i]` and `slice` walk from the start, and `s[i]` in a loop over a long text gets a
+    hint that names `for…of`, which walks once. The README says of `padStart` what is
+    true in a browser too: it counts characters, the game's font is proportional and a
+    colour code has no width, so it does not line columns up.
+  - **A made text in a field that is not `print`** (decided 2026-09-19: it works without
+    the script saying anything, where the game allows it). An action takes an id, not an
+    address. The compiler reserves a string of the built map's table — 255 bytes of room,
+    added with `ForceAddString` so no other string shares its bytes — and copies the made
+    text over it just before the action that names its id runs. **One a kind of field,
+    not one a call site**: a player has one objectives text, one leaderboard, one
+    transmission at a time, so a later call replaces an earlier one on the screen anyway,
+    and a map pays for four or five such strings however many calls it has. **Written
+    only on the machine of the player it is for**, if the game turns out to read the
+    string again each time it draws: a per-player program runs the action for every
+    player on every machine, and the last one's text would be everybody's. The slot is
+    memory nothing of the script can read back, so a write that differs by machine
+    cannot desynchronise. What the script sees is a snapshot, as a string value is in
+    TypeScript: changing the variable afterwards changes nothing on the screen until the
+    call runs again. A text past the room is cut, a fault in the simulator. **A verdict
+    a field**: `probes/strings-spike.py`, hand-written eudplib built beside a script that
+    does nothing (`EXTRA_PLUGIN` of `scripts/build-fixture.mts`), tries Display Text (the
+    control), the objectives, a leaderboard's label, a transmission and a unit type's
+    name, and for each writes the slot again *without* the action to see whether the game
+    copied the text or reads it each time. A field that fails keeps its error, naming
+    `print`. The transmission also answers something older: it is a waiting action, and
+    eudplib warns that one inside its loop holds everything up.
+
+    **Played 2026-09-19.** The objectives, a leaderboard's label and a unit type's name
+    all show a made text, and all three are **read again each time they are drawn**: the
+    objectives opened after the slot was written over said the new text with no action
+    run, the label counted every second, and the Marines were renamed by a write to the
+    slot alone. The write to the name's entry (`0x660260`) did not end the game. So:
+    - these three fields take a made text in the first cut;
+    - the write is for the local player only — put exactly, *the slot is written on a
+      machine whose player is among those the action is for*: one player named, that
+      player's machine; `AllPlayers` or a force, every machine in it, the text being one
+      for all of them. A unit type's name is nobody's in particular and is written
+      everywhere, from values every machine has;
+    - a name needs a slot a unit type, not one a kind, so the type is a constant of the
+      build there (a slot each for the types a script names);
+    - a slot belongs to the compiler: nothing else writes it, so what is on the screen
+      still changes only when a call runs, as a snapshot should. (That the game reads it
+      again is what a label that follows a variable by itself would be built on. Not in
+      this slice: it is not what the TypeScript says.)
+    A transmission's line was the made text too, so it is the fourth field in the first
+    cut; whether that line is copied or read again was not seen, and the write is for
+    the local player either way. Nothing was seen to stop while the transmission was up,
+    for all eudplib's warning about a waiting action in its loop. Korean is drawn as
+    written; an emoji is not drawn at all, which is what the warning on a literal says.
+  - Out, with an error: a key of a `Map` that is a made string (a union of literals is a
+    record already); `parseInt`; regular expressions; a word taken from chat
+    (`chatted(p, "-name {word}")`), which can follow once the chat plugin's buffer has been
+    looked at.
+  - IR: a text value beside the number, `VarDecl.text` (`"id"` / `"made"`), the operations
+    above as nodes of their own. The simulator keeps JavaScript strings and counts blocks
+    by their UTF-8 length, so it runs out where the game does.
 - **Classes.** A class used inside a program is a record and its methods functions with the
   instance first; `new` declares the cells and runs the constructor; a field that is an
-  array (`members: Unit[]`) is the part above. Whether a method is
+  array (`members: Unit[]`) or a text (`name: string`) is one of the two parts above. Whether a method is
   called or inlined is slice 7's rule, nothing of its own. Fields, methods, getters and
   setters, `static`, `readonly`, `private` and `#x`. `extends` works because the class of
   every value is known when the script is built — there is no type when the map is played —
@@ -649,13 +761,17 @@ can ship alone (but the classes want the arrays inside things first):
   order the keys went in, and keeping that costs a second block of keys — either pay it, or
   say in the README that the order is not kept.
 
-What stays out, each with an error that says so: a string made while the map is played
-(there are none), a function as a value, generators and `async` (an error already),
-`try` / `throw`, and anything that needs a type at run time (`typeof x === …` on a value of
-the game). One probe, `probes/callbacks.ts`: a sort of 256 cells timed in the frame, a
-`filter` that grows past its first block, a grid filled and read back, an array of arrays
-that grow with the outer one cut and the blocks found again, a class with an array of
-instances, and a `Map` through two doublings.
+What stays out, each with an error that says so: a function as a value, generators and
+`async` (an error already), `try` / `throw`, and anything that needs a type at run time
+(`typeof x === …` on a value of the game). One probe, `probes/callbacks.ts`: a sort of 256
+cells timed in the frame, a `filter` that grows past its first block, a grid filled and
+read back, an array of arrays that grow with the outer one cut and the blocks found again,
+a text of the map chosen by a variable and shown in `print`, the objectives and a
+leaderboard, a made text kept across a `sleep` and shown later, a hundred made in a frame
+and the heap found whole after, Korean text compared, found, counted and cut in the middle,
+an emoji to see what the game draws of it, a made text in each field
+that is not `print`, a class with an array of instances and a name, and a `Map` through
+two doublings.
 
 Slice 1 is where the value is and where the risk is; nothing after it is hard once the IR
 and the Python lowering exist. Slices 2–4 can be reordered by what the user wants to play
@@ -676,6 +792,10 @@ with first; 5 and 6 are what make it feel finished.
   recursion follows (slice 8).
 - ~~A map over any key.~~ Decided 2026-09-19: the last part of slice 8½, in the heap
   rather than with a capacity. What is left open is whether it keeps insertion order.
+- ~~Strings.~~ Decided 2026-09-19: a value of the language, in slice 8½ — a text of the
+  table as its id, a made text as bytes in the heap, no capacity declared; a character is a
+  code point. Left open: which fields besides `print` show a made text, which the probe
+  answers.
 - **A limit on scans.** A loop over every unit on every frame in a per-player program is
   twelve scans a frame. A hint is planned; a hard cap is not.
 - **The classic install on the Remastered target.** As of 2.6 every compile still runs the
