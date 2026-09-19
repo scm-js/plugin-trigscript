@@ -541,9 +541,12 @@ came — a read or a store past an end, a push that found no memory — and show
 The Simulate view lists them with their lines, and slice 8's stack overflow joins the same
 list.
 
-**8. Recursion (3.8.0).** eudplib's functions keep their arguments, results and return
-address in cells of their own (`EUDFuncN`: `_fargs`, `_frets`, one `_nptr`), so a call from
-inside itself overwrites the outer one. A function on a cycle of the call graph — only
+**8. Recursion (3.8.0).** A called function's parameters, result and locals are cells of
+the program (slice 7 as built: an `EUDFunc` of no arguments, so none of eudplib's `_fargs` /
+`_frets` are in play), and eudplib keeps one return address a function (`_nptr`) — so a call
+from inside itself overwrites the outer one's cells and its way back. Slice 7 refuses such a
+call for now ("recursion is not possible"), and never makes a function on a cycle a called
+one; this slice is what lifts that. A function on a cycle of the call graph — only
 those pay — pushes its parameters, locals, live temporaries and return address on one stack
 array around the call and pops them after; mutual recursion is the same. `fib`, a flood
 fill over an array, a walk of a tree of indices compile as written. Three rules show that

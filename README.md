@@ -721,8 +721,11 @@ programs, each a thread of its own with its own variables. A program's text
 takes a string of the map you edit; a `trigger()`'s text is interned into the map when
 the script is applied, as it always was.
 
-Still to come: `test()` blocks that run a script against the simulator, a debugger that
-steps it, and a gallery of examples. The plan is `docs/eud-plan.md`, and the IR the
+Still to come, in this order: recursion; the rest of the TypeScript people write —
+`map` / `filter` / `sort` and the other array callbacks, destructuring and spread, arrays
+inside records and arrays of arrays, classes, a `Map` over any number; then `test()` blocks
+that run a script against the simulator, a debugger that steps it, and a gallery of
+examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
 
 ### Coming from 3.6
