@@ -63,6 +63,35 @@ and how do we get the best developer experience out of that.
 > is a number, and a text made while the map is played is bytes in the heap slice 6 built.
 > One type, `string`, no capacity to declare. See *Strings* in the slice.
 
+> **Where it stands, 2026-09-19 (night): slice 8½ is built and played, and 3.9.0 is not
+> shipped.** All six parts — the methods that take a function, patterns and spread, arrays
+> inside things, texts, classes, a `Map` and a `Set` over any number — are on `main` of this
+> repository *locally*: nothing is pushed, the version still says 3.8.0, `dist/` is not
+> rebuilt, and scm-js still pins v3.8.0. Every probe of the slice was played by the user
+> with every step as expected: `callbacks`, `inside`, `strings`, `classes` (played twice,
+> the second time after an instance came to be made straight on its row) and `map` (400
+> reads in one frame without a pause that could be seen). The IR went 11 → 14 over the
+> slice: 12 for arrays inside things, 13 for texts, 14 for a text in the cells of a row;
+> the map over any number needed none. 464 tests pass, the eudplib builds among them. Each
+> part's *As built* under slice 8½ says what it became, what was found on the way and what
+> was left out.
+>
+> What shipping 3.9.0 takes, when the user says so: the version in `package.json`,
+> `plugin.json` and `version.ts`; `npm run build` for `dist/`; the commit, the tag `v3.9.0`
+> and the push; then scm-js (the pin in its defaults, the vendored copy, the guide's
+> TrigScript section — classes, texts, the map — and the catalogue note), the registry, and
+> the assistant's prompt in ai-server, whose deploy to the VM has been owed since 0.9.1.
+>
+> What is owed to the language after it, none of it in the way of 3.9.0 (each is an error
+> that says what to do instead): a text local to a function that calls itself, and a
+> function that takes or returns a text becoming one that is called (part 4); `string[]` a
+> program fills, a function that returns an instance, an instance variable given another
+> (part 5); a text or a unit for a `Map`'s key, `[...m.keys()]` (part 6); fusing a chain's
+> loops, `toSorted` and the rest (part 1); `f(...xs)` (part 2); `filter` / `sort` of an
+> array of arrays (part 3). After 3.9.0 the order is unchanged: slice 9, `test()` and the
+> debugger (3.10.0), then slice 10, the examples (3.11.0) — and the debugger now has a call
+> stack, arrays, rows, texts, instances and maps to show, which is why it waited.
+
 ## What we are aiming for
 
 TrigScript today is TypeScript that runs when you build, with `program()` bodies compiled
@@ -397,7 +426,7 @@ before the slice is called done, in the Magenta manner.
 | 6 | Arrays and keyed tables (3.6.0; the probe is `probes/arrays.ts`, played 2026-09-18: step L — 20 000 pushes at 500 a frame — did not stutter, said out of memory once and stopped at 4096, the push the simulator stops at; M found room again in the blocks given back, N had an array a player and one shared; played again 2026-09-19 with the records, the array of units and the Map loops — steps O to Q — all as expected) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` on an array that grows out of a heap; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
 | 7 | Functions that are called (3.7.0; the probe is `probes/functions.ts`, played 2026-09-19: every line as expected — 2000 calls in one frame without a stutter, one Marine at 10 hit points, the per-player line) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
 | 8 | Recursion (3.8.0; the probe is `probes/recursion.ts`, played 2026-09-19: as expected — `fib(20)`, 21 891 calls in one frame, with basically no pause; the overflow said in red where the third program stopped and the first going on to its end) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
-| 8½ | The TypeScript people write (3.9.0) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; `string` as a value — a text of the table as its id, a text that was made as bytes in the heap; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 10–11 days |
+| 8½ | The TypeScript people write (3.9.0; built 2026-09-19, not shipped; the probes are `probes/callbacks.ts`, `inside.ts`, `strings.ts`, `classes.ts` and `map.ts`, all played 2026-09-19 with every step as expected) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; `string` as a value — a text of the table as its id, a text that was made as bytes in the heap; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 10–11 days |
 | 9 | `test()` blocks + debugger (3.10.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
 | 10 | Examples, guide, assistant prompts, registry (3.11.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
 
@@ -880,7 +909,7 @@ things and the strings first):
   so `super`, an overridden method and `instanceof` are all settled at build time, and an
   array of a base class that holds two different subclasses is an error. An array of
   instances is the array of records 3.6 has.
-  **As built (2026-09-19; probe `probes/classes.ts`, steps A–K, played the same day: every step as expected, nothing in red at step I — so IR 14's Python, a text in the cells of a row stored, copied by `filter`, moved by a sort and given back, holds in the game, as do the rows' arrays and units).** A class
+  **As built (2026-09-19; probe `probes/classes.ts`, steps A–K, played the same day and again once an instance was made straight on its row, below: every step as expected both times, nothing in red at step I — so IR 14's Python, a text in the cells of a row stored, copied by `filter`, moved by a sort and given back, holds in the game, as do the rows' arrays and units).** A class
   *declared in the program* (or in a `game()` function) is the program's, as a function
   declared there is; one declared outside stays the script's. That was the decision that
   made the rest small: the hoisting pass already plans every body inside the program, so a
@@ -977,7 +1006,8 @@ things and the strings first):
 
 What stays out, each with an error that says so: a function as a value, generators and
 `async` (an error already), `try` / `throw`, and anything that needs a type at run time
-(`typeof x === …` on a value of the game). One probe, `probes/callbacks.ts`: a sort of 256
+(`typeof x === …` on a value of the game). (As built there are five probes, one a part
+that needed one — see the table above.) As first planned, one probe, `probes/callbacks.ts`: a sort of 256
 cells timed in the frame, a `filter` that grows past its first block, a grid filled and
 read back, an array of arrays that grow with the outer one cut and the blocks found again,
 a text of the map chosen by a variable and shown in `print`, the objectives and a
@@ -1005,7 +1035,12 @@ with first; 5 and 6 are what make it feel finished.
 - ~~Functions as real calls.~~ Decided 2026-09-18: the compiler chooses (slice 7), and
   recursion follows (slice 8).
 - ~~A map over any key.~~ Decided 2026-09-19: the last part of slice 8½, in the heap
-  rather than with a capacity. What is left open is whether it keeps insertion order.
+  rather than with a capacity. It keeps the order its keys went in, as JavaScript does
+  (the user: "match js as much as possible"); the tests compare with JavaScript itself.
+- ~~Where a class is declared.~~ Decided 2026-09-19 while building: in the program (or a
+  `game()` function) that uses it, as a function is. One declared outside is the script's.
+  If classes shared between programs or files are wanted, the way in is what `game()` is
+  to a function: the class's bodies planned on their own and found again from its value.
 - ~~Strings.~~ Decided 2026-09-19: a value of the language, in slice 8½ — a text of the
   table as its id, a made text as bytes in the heap, no capacity declared; a character is a
   code point. Left open: which fields besides `print` show a made text, which the probe
