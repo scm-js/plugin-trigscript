@@ -28,13 +28,17 @@
  *   Arguments pass by value, as in TypeScript: a parameter bound to a build-time value
  *   is that value, one bound to a variable reads that variable directly when the
  *   function never assigns it (free) and is a copy when it does. A function may return a
- *   number or a boolean, through a temp. No recursion.
+ *   number, a boolean or a unit, through a temp.
  * - A function met a second time is *called* instead, when it can be: one body in the
  *   built map (`Program.functions`) whose parameters are variables every call sets. It
  *   can be when it never sleeps, keeps no edge of its own (`rose` / `once`) and compiles
  *   with every parameter a variable — a parameter that reaches a field only a build-time
  *   value can fill keeps it inlined. An array reaches a function as itself, so a function
  *   that takes one is a copy an array passed. See `inline` and `settleFunctions`.
+ * - A function that calls itself is a called one from the call inside itself on, whether
+ *   or not anything else calls it twice (`recursion.ts` is what makes that safe). One
+ *   that cannot be called — it sleeps, a parameter reaches a build-time-only field — can
+ *   only be copies inside copies, which is an error sixteen deep.
  * - `if (false) …` and `while (false) …` are pruned: what is inside never runs, when the
  *   script is built or in the game.
  * - The amount of `setResources` / `setDeaths` / `setScore` / `setCountdownTimer`, the
@@ -61,7 +65,7 @@ import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGa
 import { cellMax } from "./tables";
 import { Scope, type Binding } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { I32_MAX, I32_MIN, IR_VERSION, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { I32_MAX, I32_MIN, IR_VERSION, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, eachCall, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -191,8 +195,12 @@ interface FunctionSite {
   first?: { call: Call; args: CallArgument[] };
   fn?: FuncDecl;
   never?: string;
-  /** Being tried as a called function right now: a call of itself met inside is inlined, and runs into the depth limit as it always did. */
+  /** Being tried as a called function right now. */
   busy?: boolean;
+  /** The function that attempt is making: a call of itself met inside its body is a call of this — recursion. */
+  making?: FuncDecl;
+  /** How many inlined copies of the body are being walked right now: above zero, a call met is the function inside itself. */
+  walking?: number;
 }
 
 /** Whether a node of this kind is anywhere in a piece of IR. */
@@ -202,15 +210,6 @@ function mentions(root: unknown, kind: string): boolean {
   const o = root as Record<string, unknown>;
   if (o.kind === kind) return true;
   return Object.values(o).some((v) => !!v && typeof v === "object" && mentions(v, kind));
-}
-
-/** Every call in a piece of IR — statements and expressions alike, those inside a call's arguments and body included. */
-function eachCall(root: unknown, visit: (c: Call) => void) {
-  if (Array.isArray(root)) { for (const x of root) eachCall(x, visit); return; }
-  if (!root || typeof root !== "object") return;
-  const o = root as Record<string, unknown>;
-  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call as Call);
-  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
 }
 
 /** What `run()` hands back: the IR, and the way back from any of its nodes to the source, for diagnostics a backend raises. */
@@ -239,6 +238,8 @@ export class Structured {
   private readonly callees = new WeakMap<Call, TS.Node>();
   private readonly inlinedBecause = new Map<TS.Node, { why: string; name: string; at: At }>();
   private readonly declared = new Map<FuncDecl, TS.Node>();
+  /** How many inlined copies of each function's body are being walked right now: how a call finds that it is inside its own function. */
+  private readonly walkingBodies = new Map<TS.Node, number>();
   private readonly identities = new WeakMap<object, number>();
   private lastIdentity = 0;
 
@@ -1464,7 +1465,8 @@ export class Structured {
 
   private kindOf(type: TS.Type): Kind | null {
     const { ts } = this;
-    const isNumber = (t: TS.Type): boolean => (t.flags & ts.TypeFlags.NumberLike) !== 0 || (t.isIntersection() && t.types.some(isNumber));
+    // `c ? 1 : 0` is `0 | 1`: a union of numbers is a number.
+    const isNumber = (t: TS.Type): boolean => (t.flags & ts.TypeFlags.NumberLike) !== 0 || (t.isIntersection() && t.types.some(isNumber)) || (t.isUnion() && t.types.every(isNumber));
     if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
     if (isNumber(type)) return "number";
     // `Unit | null`: a unit of the game, or none.
@@ -2082,7 +2084,8 @@ export class Structured {
     const { ts } = this;
     const what = name ?? "The function";
     if (!body) { this.c.error(call, "The function has no body."); return undefined; }
-    if (this.inlineDepth >= MAX_INLINE_DEPTH) { this.c.error(call, "Functions nest too deeply (recursion is not possible: a call is inlined)."); return undefined; }
+    // A copy of a body inside a copy of a body, sixteen times over: what happens from here is decided once the arguments are known.
+    const deep = this.inlineDepth >= MAX_INLINE_DEPTH;
     if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) && (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))) { this.c.error(decl, "Generators and async functions are not supported in a program."); return undefined; }
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? "void";
     const line = this.line(call);
@@ -2121,8 +2124,18 @@ export class Structured {
       const h = this.evaluate(arg);
       // By value: a read passed as an argument is read once, at the call, into a variable of the parameter's own.
       if (h && !isGameValue(h.value)) {
+        const constant = this.constantArgument(h.value, label, p);
+        const k = this.kindOf(this.c.checker.getTypeAtLocation(p.name));
+        if (constant && "init" in constant && k && this.assigns(body, p)) {
+          // The function assigns it (`n--`): a variable of the parameter's own that starts from the value, as one passed a variable is.
+          const copy = this.newVar(p.name.text, k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(p.name)) : {});
+          out.params.push({ decl: copy, init: constant.init, label });
+          scope.bind(p, { kind: "var", v: copy });
+          asCalled(constant);
+          return;
+        }
         scope.bind(p, { kind: "value", value: h.value });
-        asCalled(this.constantArgument(h.value, label, p) ?? `${p.name.text} is ${describe(h.value)}, which only the script has`);
+        asCalled(constant ?? `${p.name.text} is ${describe(h.value)}, which only the script has`);
         return;
       }
       const binding = this.bindingOf(arg);
@@ -2174,17 +2187,19 @@ export class Structured {
     const site = args ? this.siteOf(decl, args) : undefined;
     if (site && args) {
       if (site.fn) return this.calls(out, site.fn, args);
-      if (site.first && !site.never && !site.busy) {
-        // Met a second time: one copy that both calls run, when the function can be one.
+      // Inside the attempt to make it a function that is called: the function calls itself, and this is that call.
+      if (site.making) return this.calls(out, site.making, args);
+      // Met a second time, or met inside itself: one copy that every call runs, when the function can be one.
+      if ((site.first || (site.walking ?? 0) > 0) && !site.never && !site.busy) {
         if (ts.isFunctionDeclaration(decl) && (closure === null || decl.parent !== this.c.body.plan.body)) site.never = "it is declared inside a block or another function, whose variables it may use";
         else {
           site.busy = true;
           let made: FuncDecl | string;
-          try { made = this.callable(parameters, body, target, name ?? "function", decl, kind, args, closure, at); } finally { site.busy = false; }
+          try { made = this.callable(parameters, body, target, name ?? "function", decl, kind, args, closure, at, site); } finally { site.busy = false; site.making = undefined; }
           if (typeof made === "string") site.never = made;
           else {
             site.fn = made;
-            this.calls(site.first.call, made, site.first.args);
+            if (site.first) this.calls(site.first.call, made, site.first.args);
             site.first = undefined;
             return this.calls(out, made, args);
           }
@@ -2193,7 +2208,22 @@ export class Structured {
     }
     const because = site?.never ?? (args ? "" : why);
     if (because) this.inlinedBecause.set(decl, { why: because, name: name ?? "function", at });
-    out.body = this.walkFunction(body, kind, target, scope);
+    if (deep) {
+      this.c.error(call, (this.walkingBodies.get(decl) ?? 0) > 0
+        ? `${what} calls itself, and here it cannot be a function that is called${because ? ` — ${because}` : ""}. A call that is not one is a copy of the function's body, and these copies would have no end.`
+        : "Functions nest too deeply: a call that is inlined is a copy of the function's body, and these are sixteen inside one another.");
+      return undefined;
+    }
+    if (site) site.walking = (site.walking ?? 0) + 1;
+    this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 0) + 1);
+    try {
+      out.body = this.walkFunction(body, kind, target, scope);
+    } finally {
+      if (site) site.walking = (site.walking ?? 1) - 1;
+      this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 1) - 1);
+    }
+    // Made a function that is called while this copy of it was being walked — it calls itself: this call is one of that function too.
+    if (site?.fn && args) return this.calls(out, site.fn, args);
     if (site && args && !site.first && !site.fn && !site.never) site.first = { call: out, args };
     return out;
   }
@@ -2280,7 +2310,7 @@ export class Structured {
    * that way — a parameter reaches a field only a value known when the script is built can fill. Nothing the attempt
    * reported is kept: the same lines compile, or fail for good, where the function is inlined.
    */
-  private callable(parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression, target: Body, name: string, decl: TS.Node, kind: Kind | "void", args: CallArgument[], closure: Scope | null, at: At): FuncDecl | string {
+  private callable(parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression, target: Body, name: string, decl: TS.Node, kind: Kind | "void", args: CallArgument[], closure: Scope | null, at: At, site: FunctionSite): FuncDecl | string {
     const scope = new Scope(closure);
     const fn: FuncDecl = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
     for (let i = 0; i < parameters.length; i++) {
@@ -2301,9 +2331,15 @@ export class Structured {
     const { error } = this.c;
     const caught: string[] = [];
     (this.c as { error: StructuredContext["error"] }).error = (_node, message) => { caught.push(message); };
+    // From here a call of this function at these arrays, met in its own body, is a call of `fn`.
+    site.making = fn;
+    // Its body is a place of its own: how deep the copies around this attempt go says nothing about it.
+    const depth = this.inlineDepth;
+    this.inlineDepth = 0;
     try {
       fn.body = this.walkFunction(body, kind, target, scope);
     } finally {
+      this.inlineDepth = depth;
       (this.c as { error: StructuredContext["error"] }).error = error;
     }
     if (caught.length) return `with its parameters as variables of the game it does not compile — ${caught[0].replace(/\.$/, "")}`;

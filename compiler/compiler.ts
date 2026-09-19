@@ -23,6 +23,7 @@ import { libraryCallName, libraryName, planProgram, transformer, type ProgramPla
 import { runModules, type LinkedFile } from "./link";
 import { checkProgram } from "./eud";
 import { typeNumbers } from "./numbers";
+import { markRecursion, settleRecursion } from "./recursion";
 import { inputPlan, inputsOf, type InputPlan } from "./input";
 import { programDeclarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
@@ -336,13 +337,16 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
     // What every number is read as, written into the operations that care, before anything looks at the program.
     const mixes = typeNumbers(emitted.program);
+    markRecursion(emitted.program);
     const index = programs.length;
     ir.push(emitted.program);
     programs.push({ ...(emitted.program.name ? { name: emitted.program.name } : {}), owner, owners, perPlayer: entry.options.perPlayer, source: at });
     for (const d of programDeclarations(emitted.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}) });
     // What would freeze the game or cannot be built is a fault of the script, said where it is.
     const check = checkProgram(emitted.program);
-    for (const d of [...mixes, ...check.errors]) {
+    // Checked as the script wrote it; only then is a function that calls itself taken apart into what a backend can re-enter.
+    const recursion = settleRecursion(emitted.program);
+    for (const d of [...mixes, ...check.errors, ...recursion]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }

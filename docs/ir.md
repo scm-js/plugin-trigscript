@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 10** (9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 11** (10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -118,10 +118,9 @@ size class — a cell each, or a row of twelve each in a per-player program.
   (`xs.pop() ?? d` arrives as a `ternary` on the length). `setLength` only cuts.
 - `length` of an array that does not grow never reaches a backend: `numbers.ts` makes it a constant on
   its final pass, when every push has been met.
-- The top of the heap is the **stack**'s, which grows down towards the blocks (`reserve` / `release` in
-  the lowering, a `stack` count in the interpreter). Nothing uses it yet: it is for the frames a
-  recursive function saves around a call to itself. Locals stay cells of their own — a condition or an
-  action reaches a cell directly, and a frame would make every access a read through a pointer.
+- The heap is the arrays' alone. Until version 11 its top was set aside for recursion's stack, growing down
+  towards the blocks; the stack is an array of its own now (*Recursion*, below), so that how deep a
+  function may go does not depend on what the arrays hold at that moment.
 - **Records, units and keyed tables are not nodes either.** An array of records is an array a field
   (`waves.count`, `waves.delay`), a record of one a front-end binding of cells, so `waves[i].count` is an `element`
   and `w.delay = 9` a `store`. An array of units is three arrays of numbers — `squad (ptr)`, `(epd)`, `(uid)` —
@@ -243,9 +242,9 @@ never shared between programs.
 What the front end guarantees of a function in the list: it never sleeps (so it can be a
 plain subroutine: the lowering makes it an `EUDFunc` of no arguments over the program's own
 cells), it holds no `edge` (a latch belongs to a place in the source, and an inlined body
-is a place each), it never reaches itself through its calls, and at least two calls that
-are part of the program name it — a function left with one is inlined there again before
-the IR is handed on. An array parameter is not a parameter in the IR at all: which array
+is a place each), and at least two calls that are part of the program name it — a function
+left with one is inlined there again before the IR is handed on. Since version 11 it may
+reach itself through its calls (*Recursion*, next). An array parameter is not a parameter in the IR at all: which array
 it is was settled when the script was built, so the body names that array, and a function
 handed two different arrays is two `FuncDecl`s of one name.
 
@@ -254,6 +253,67 @@ the program's body the hint for a function inlined more than once, with the reas
 
 Every pass that walks a program walks `bodiesOf(program)` — the body, then each function's
 — and `programDeclarations(program)` lists the functions' variables with the rest.
+
+### Recursion
+
+```
+FuncDecl { …, recursive: true }
+Call     { …, fn, saves: { vars: string[], arrays: string[], within: "fill" } }
+```
+
+Since version 11. A function's cells are the program's own, one of each, so a function that
+comes back into itself would write over what its outer run still needs. `recursion.ts` — a
+pass over the IR, after the numbers are typed and the program has been checked as the
+script wrote it — finds the functions on a cycle of the call graph (Tarjan's components
+over `Call.fn`; a self-edge counts), marks them `recursive`, and makes three things true of
+each. A function off every cycle, and the program's body, are left exactly as they were.
+
+- **A call that may come back is a statement of its own**: `{ kind: "call" }` with a
+  `Call` whose `fn` is of the same cycle, never inside an expression. `fib(n - 1) +
+  fib(n - 2)` is two call statements and an addition of their `result.decl`s. A backend
+  computes an expression through temporaries no frame knows of, so nothing may be half
+  computed when such a call is made. What JavaScript evaluates before the call is evaluated
+  before it still: an operand to the left of one is declared into a temporary first
+  (`(kept)#r…`), unless it is a constant or a variable of the function's own, which comes
+  back with the frame. `c ? f(x) : 0` becomes an `if` around an assignment (`(chosen)`),
+  `a && f(x)` a chain of `if`s over one boolean (`(so far)`), and a loop whose condition holds
+  such a call a `while` without a condition whose body begins by working the condition out
+  and leaving on it — a `do` through a `(first turn)` flag, so that `continue` still comes to
+  the check. An inlined call whose body holds such a call is taken out the same way, whole.
+- **Such a call says what to keep** — `saves`. `vars`: every variable of the function it is
+  in (parameters, locals, the parameters and results of what is inlined in it, other calls'
+  results, the temporaries above) but this call's own result. `arrays`: the growing arrays
+  declared in the function. `within`: the function's name, for the words of an overflow. A
+  backend, in this order: works out every argument; puts on the stack where the function
+  returns to, the `vars` (a cell each, three for a unit) and the `arrays`' handles (four
+  cells each), and sets those handles to "no block"; sets the parameters; runs the body;
+  gives back to the heap the block each of the `arrays`' handles now holds — the inner
+  run's — and takes everything back; copies the result. A variable the lowering has not met
+  a declaration of yet has no cell and is skipped: it is set before it is read.
+- **An array declared in a recursive function grows** (`dynamic`), whatever it was, so that
+  a run has its own by keeping a handle and not the cells.
+
+The stack is one array for every program and every player — such a function never sleeps,
+so nothing is on it when a frame ends — of as many frames of the largest `saves` in the file
+as the depth allows: the IR file's `stack`, written only when the map's script settings
+differ from `STACK_DEPTH` (1 024) and something recurses. What is counted is calls, not
+cells: a `saves` call met at that depth says so in the game (*stack overflow in fill, line
+12*), empties the stack and ends the program for good (for that player, in a per-player
+program); the interpreter records a fault at the same call and ends the program the same
+way. Arrays whose handles were on the stack then keep their blocks: the heap loses them.
+
+The lowering cannot use an `EUDFunc` for these — it keeps one return address, and is not
+there to be called until its body is whole — so a recursive function is triggers of its own
+in a scope apart, ended by a trigger whose next-trigger field is the return address; the
+address is kept a second time in a variable, since a frame can write a variable out in two
+triggers and reading the field back would cost thirty. The interpreter runs the body of a
+`saves` call apart from its caller (`ProgramRun.drive`), because a thousand calls deep
+would otherwise be ten thousand frames of JavaScript's own stack.
+
+What cannot recurse: a function that sleeps or holds an `edge` (it is not a called function
+at all, and the front end says so when the inlined copies reach sixteen deep), and a
+`unitLoop` holding a `saves` call (the scan's place in the unit table is the lowering's
+own). A function that calls itself on every path is an error too.
 
 ## Units
 

@@ -390,7 +390,7 @@ before the slice is called done, in the Magenta manner.
 | 5 | Signed numbers (3.5.0; the probe is `probes/numbers.ts`, played 2026-09-18: every line as expected, the ore at 75 at the end) | `number` is a signed 32-bit integer, `u32` the unsigned one beside it, `>>>` apart from `>>`, division towards zero; IR 6 | 2–3 days |
 | 6 | Arrays and keyed tables (3.6.0; the probe is `probes/arrays.ts`, played 2026-09-18: step L — 20 000 pushes at 500 a frame — did not stutter, said out of memory once and stopped at 4096, the push the simulator stops at; M found room again in the blocks given back, N had an array a player and one shared; played again 2026-09-19 with the records, the array of units and the Map loops — steps O to Q — all as expected) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` on an array that grows out of a heap; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
 | 7 | Functions that are called (3.7.0; the probe is `probes/functions.ts`, played 2026-09-19: every line as expected — 2000 calls in one frame without a stutter, one Marine at 10 hit points, the per-player line) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
-| 8 | Recursion (3.8.0) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
+| 8 | Recursion (3.8.0; the probe is `probes/recursion.ts`, played 2026-09-19: as expected, the overflow said in red where the third program stopped and the first going on to its end) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
 | 8½ | The TypeScript people write (3.9.0) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 7–8 days |
 | 9 | `test()` blocks + debugger (3.10.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
 | 10 | Examples, guide, assistant prompts, registry (3.11.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
@@ -487,7 +487,8 @@ TypeScript thing in the language.
   exchanged for one twice the size, a block given back kept for the next array of that size. A declaration first gives
   back what its handle held, so there is no collector and nothing to leak but one block a declaration. Out of memory:
   nothing is pushed, the game says so once, the simulator — which counts blocks as the game does — records a fault at
-  the same push. The heap's top is the **stack**'s, growing down, for slice 8's saved frames; locals stay cells of
+  the same push. (As first built the heap's top was the **stack**'s, growing down, for slice 8's saved frames;
+  slice 8 gave the stack an array of its own instead — see there.) Locals stay cells of
   their own, because a condition or an action reaches a cell directly and a frame would make every access a read
   through a pointer. A read past the end is 0 and a write past it does nothing — in the game; the simulator says
   where, since it is always a mistake.
@@ -556,6 +557,39 @@ serves every player — it is empty between frames); a depth limit, with a line 
 the simulator; and its parameters are variables, so one that reaches a build-time-only
 field is a compile error. Cost: a store and a load a saved cell a call — fine in the tens
 and hundreds, slow for thousands of calls in a frame; the probe times it.
+
+**As built (2026-09-19).** Two things were decided with the user before building, both for
+the sake of a limit that means the same every time. **The limit is a depth, not a size**:
+the panel's Settings has *Recursion depth* beside the heap's size — 1 024 calls unless the
+map says otherwise, 16 to 65 536, kept in the map and carried in the IR file as `stack` —
+because a count of cells moves whenever a function gains a local, and "1 024 calls deep"
+is what the message in the game can say. **The stack is an array of its own**, not the top
+of the heap as slice 6 left it: sharing the pool made an overflow depend on what the arrays
+held at that moment, so the same recursion could pass in Simulate and fail in the game, or
+fail in one frame and not the next. It is as many frames of the script's largest frame as
+the depth allows, there only when something recurses (Settings says what that comes to, and
+a build refuses more than a million cells); `reserve` / `release` went from the heap.
+
+The rest is `compiler/recursion.ts` and *Recursion* in `docs/ir.md`. The front end makes a
+function a called one the moment it meets it inside itself — no second call from outside is
+needed — and says why when it cannot (it sleeps; a parameter reaches a build-time-only
+field), where 3.7 only said the copies nest too deeply. The pass finds the cycles, takes
+every call that may come back out of the expression it is in — a backend's temporaries are
+in no frame — turning `?:`, `&&`, `||` and loop conditions that hold one into the `if`s they
+mean, and writes on each what to keep: everything of the function's but the call's own
+result. Liveness was left out on purpose: a frame is three or four cells for the functions
+people write, and a wrong "dead" is a wrong number in the game. Arrays declared in a
+recursive function become growing ones, so a frame keeps a handle and not the cells. The
+lowering could not use `EUDFunc` (one return address, and not callable until its body is
+whole): a recursive function is a scope of triggers ended by one whose next-trigger field
+is the return address. The interpreter runs such a body apart from its caller, since a
+thousand calls deep was ten thousand frames of JavaScript's stack and ended the browser's
+before the map's. Refused: such a call inside a loop over units, and a function that calls
+itself on every path. Along the way: a parameter given a plain value may be assigned in the
+function, and `c ? 1 : 0` is a number. What the probe has to say is step J — `fib(20)`,
+21 891 calls in one frame — since a frame brought back is some thirty triggers a cell; if
+that pause is too long, the stack can become variable triggers chained frame by frame,
+which brings a frame back in a trigger a cell.
 
 **8½. The TypeScript people write (3.9.0).** Added 2026-09-19. As 3.6 stands, an array of a
 program has `push`, `pop`, `fill`, `includes`, `indexOf`, `length` and `for…of`, and says so

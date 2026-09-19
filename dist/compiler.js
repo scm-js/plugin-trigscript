@@ -1233,8 +1233,10 @@ function defaultScriptNames() {
 }
 
 // compiler/ir.ts
-var IR_VERSION = 10;
+var IR_VERSION = 11;
 var HEAP_CELLS_MAX = 1 << 20;
+var STACK_DEPTH = 1024;
+var STACK_CELLS_MAX = 1 << 20;
 var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
 var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
 var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
@@ -1252,6 +1254,16 @@ function programDeclarations(program) {
     out.push(...declarations(f.body));
   }
   return out;
+}
+function eachCall(root, visit) {
+  if (Array.isArray(root)) {
+    for (const x of root) eachCall(x, visit);
+    return;
+  }
+  if (!root || typeof root !== "object") return;
+  const o = root;
+  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
 }
 var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
@@ -4339,6 +4351,401 @@ function typeNumbers(program) {
   return errors;
 }
 
+// compiler/recursion.ts
+var FLAGS2 = new Set(UNIT_FLAGS);
+function mentions(root, kind) {
+  if (Array.isArray(root)) return root.some((x) => mentions(x, kind));
+  if (!root || typeof root !== "object") return false;
+  const o = root;
+  if (o.kind === kind) return true;
+  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions(v, kind));
+}
+function cycles(functions2) {
+  const ids = new Set(functions2.map((f) => f.id));
+  const edges = /* @__PURE__ */ new Map();
+  for (const f of functions2) {
+    const to = /* @__PURE__ */ new Set();
+    eachCall(f.body, (c2) => {
+      if (c2.fn && ids.has(c2.fn)) to.add(c2.fn);
+    });
+    edges.set(f.id, to);
+  }
+  const index = /* @__PURE__ */ new Map();
+  const low = /* @__PURE__ */ new Map();
+  const stack = [];
+  const on = /* @__PURE__ */ new Set();
+  const component = /* @__PURE__ */ new Map();
+  let next = 0;
+  let components = 0;
+  for (const root of ids) {
+    if (index.has(root)) continue;
+    const work = [];
+    const enter = (id) => {
+      index.set(id, next);
+      low.set(id, next);
+      next++;
+      stack.push(id);
+      on.add(id);
+      work.push({ id, out: [...edges.get(id)], i: 0 });
+    };
+    enter(root);
+    while (work.length) {
+      const w = work[work.length - 1];
+      if (w.i < w.out.length) {
+        const to = w.out[w.i++];
+        if (!index.has(to)) enter(to);
+        else if (on.has(to)) low.set(w.id, Math.min(low.get(w.id), index.get(to)));
+        continue;
+      }
+      work.pop();
+      const parent = work[work.length - 1];
+      if (parent) low.set(parent.id, Math.min(low.get(parent.id), low.get(w.id)));
+      if (low.get(w.id) !== index.get(w.id)) continue;
+      const members = [];
+      for (; ; ) {
+        const id = stack.pop();
+        on.delete(id);
+        members.push(id);
+        if (id === w.id) break;
+      }
+      if (members.length > 1 || edges.get(w.id).has(w.id)) {
+        for (const id of members) component.set(id, components);
+        components++;
+      }
+    }
+  }
+  return component;
+}
+function markRecursion(program) {
+  const functions2 = program.functions ?? [];
+  const component = cycles(functions2);
+  for (const f of functions2) {
+    if (!component.has(f.id)) continue;
+    f.recursive = true;
+    const remark = f.body[0];
+    if (remark?.kind !== "remark") continue;
+    remark.short = `${remark.short ?? "called"}, calls itself`;
+    remark.text = `${remark.text} It calls itself: around each such call its variables are kept on a stack, as deep as the script's Settings allow (${STACK_DEPTH.toLocaleString("en-US")} calls unless the map says otherwise).`;
+  }
+}
+function settleRecursion(program) {
+  const functions2 = program.functions ?? [];
+  const component = cycles(functions2);
+  if (!component.size) return [];
+  const errors = [];
+  const arrays = new Map(program.arrays.map((a2) => [a2.id, a2]));
+  let nextId = 0;
+  for (const f of functions2) {
+    const mine = component.get(f.id);
+    if (mine === void 0) continue;
+    f.recursive = true;
+    const own = new Set([...f.params, ...f.result ? [f.result.decl] : [], ...declarations(f.body)].map((d) => d.id));
+    const comesBack = (c2) => c2.fn ? component.get(c2.fn) === mine : risky([c2.params.map((p) => p.init), c2.body]);
+    const risky = (root) => {
+      let found = false;
+      eachCall(root, (c2) => {
+        if (c2.fn && component.get(c2.fn) === mine) found = true;
+      });
+      return found;
+    };
+    const temp = (name, kind, at) => {
+      const decl = { id: `(${name})#r${nextId++}`, name: `(${name})`, kind, shared: false, temp: true, at };
+      own.add(decl.id);
+      return decl;
+    };
+    const ref = (decl) => decl.kind === "unit" ? { kind: "unitVar", id: decl.id } : { kind: "var", id: decl.id };
+    const steady = (e) => e.kind === "const" || e.kind === "unitNull" || (e.kind === "var" || e.kind === "unitVar") && own.has(e.id);
+    const operands = (items, pre, w) => {
+      let last = -1;
+      items.forEach((x, i) => {
+        if (risky(x.e)) last = i;
+      });
+      return items.map((x, i) => {
+        const e = rewrite(x.e, x.kind, pre, w);
+        if (i >= last || steady(e)) return e;
+        const decl = temp("kept", x.kind, w.at);
+        pre.push({ kind: "declare", decl, init: e, at: w.at, label: w.label });
+        return ref(decl);
+      });
+    };
+    const settleCall = (c2, pre, w) => {
+      const inits = operands(c2.params.map((p) => ({ e: p.init, kind: p.decl.kind })), pre, w);
+      c2.params.forEach((p, i) => {
+        p.init = inits[i];
+      });
+      if (!c2.fn) c2.body = body2(c2.body, c2.result?.kind);
+    };
+    const choice = (kind, cond, whenTrue, whenFalse, pre, w) => {
+      const decl = temp("chosen", kind, w.at);
+      const arm = (e) => {
+        const inner = [];
+        const value = rewrite(e, kind, inner, w);
+        inner.push(kind === "number" ? { kind: "assign", target: decl.id, value, at: w.at, label: w.label } : { kind: "assignBool", target: decl.id, value, at: w.at, label: w.label });
+        return inner;
+      };
+      const c2 = rewrite(cond, "boolean", pre, w);
+      pre.push({ kind: "declare", decl, init: kind === "number" ? { kind: "const", value: 0 } : { kind: "const", value: false }, at: w.at, label: w.label });
+      pre.push({ kind: "if", cond: c2, then: arm(whenTrue), else: arm(whenFalse), at: w.at, label: w.label });
+      return ref(decl);
+    };
+    const chain = (e, pre, w) => {
+      const k = e.items.findIndex((item, i) => i >= 1 && risky(item));
+      if (k < 0) return { ...e, items: operands(e.items.map((x) => ({ e: x, kind: "boolean" })), pre, w) };
+      const head = e.items.slice(0, k).map((x) => rewrite(x, "boolean", pre, w));
+      const decl = temp("so far", "boolean", w.at);
+      pre.push({ kind: "declare", decl, init: head.length === 1 ? head[0] : { kind: e.kind, items: head }, at: w.at, label: w.label });
+      const undecided = e.kind === "and" ? { kind: "var", id: decl.id } : { kind: "not", expr: { kind: "var", id: decl.id } };
+      for (const item of e.items.slice(k)) {
+        const inner = [];
+        const value = rewrite(item, "boolean", inner, w);
+        inner.push({ kind: "assignBool", target: decl.id, value, at: w.at, label: w.label });
+        pre.push({ kind: "if", cond: undecided, then: inner, at: w.at, label: w.label });
+      }
+      return { kind: "var", id: decl.id };
+    };
+    const rewrite = (e, kind, pre, w) => {
+      if (!risky(e)) return e;
+      const one = (x, k) => rewrite(x, k, pre, w);
+      switch (e.kind) {
+        case "call": {
+          const c2 = e.call;
+          if (!comesBack(c2)) {
+            settleCall(c2, pre, w);
+            return e;
+          }
+          settleCall(c2, pre, { at: c2.at, label: c2.label });
+          pre.push({ kind: "call", call: c2, at: c2.at, label: c2.label });
+          return c2.result ? ref(c2.result.decl) : kind === "number" ? { kind: "const", value: 0 } : kind === "boolean" ? { kind: "const", value: false } : { kind: "unitNull" };
+        }
+        case "ternary":
+          if (risky(e.whenTrue) || risky(e.whenFalse)) return choice(kind === "boolean" ? "boolean" : "number", e.cond, e.whenTrue, e.whenFalse, pre, w);
+          return { ...e, cond: one(e.cond, "boolean") };
+        case "and":
+        case "or":
+          return chain(e, pre, w);
+        case "not":
+          return { ...e, expr: one(e.expr, "boolean") };
+        case "test":
+          return { ...e, expr: one(e.expr, "number") };
+        case "edge":
+          return { ...e, cond: one(e.cond, "boolean") };
+        case "unary":
+        case "cast":
+          return { ...e, expr: one(e.expr, "number") };
+        case "element":
+          return { ...e, index: one(e.index, "number") };
+        case "randomInt":
+          return { ...e, bound: one(e.bound, "number") };
+        case "unitField":
+        case "unitPart":
+          return { ...e, unit: one(e.unit, "unit") };
+        case "unitAlive":
+        case "unitFlag":
+          return { ...e, unit: one(e.unit, "unit") };
+        case "binary":
+        case "compare": {
+          const [left, right] = operands([{ e: e.left, kind: "number" }, { e: e.right, kind: "number" }], pre, w);
+          return { ...e, left, right };
+        }
+        case "unitSame": {
+          const [left, right] = operands([{ e: e.left, kind: "unit" }, { e: e.right, kind: "unit" }], pre, w);
+          return { ...e, left, right };
+        }
+        case "intrinsic":
+          return { ...e, args: operands(e.args.map((a2) => ({ e: a2, kind: "number" })), pre, w) };
+        case "unitAt": {
+          const [ptr, epd, uid] = operands([e.ptr, e.epd, e.uid].map((x) => ({ e: x, kind: "number" })), pre, w);
+          return { ...e, ptr, epd, uid };
+        }
+        default:
+          return e;
+      }
+    };
+    const leaveUnless = (cond, w) => {
+      const pre = [];
+      const c2 = rewrite(cond, "boolean", pre, w);
+      pre.push({ kind: "if", cond: { kind: "not", expr: c2 }, then: [{ kind: "break", at: w.at, label: w.label }], at: w.at, label: w.label });
+      return pre;
+    };
+    const body2 = (statements2, returns) => {
+      const out = [];
+      for (const s of statements2) {
+        if (!risky(s)) {
+          out.push(s);
+          continue;
+        }
+        const w = { at: s.at, label: "label" in s ? s.label : "" };
+        const pre = [];
+        const value = (e, k) => rewrite(e, k, pre, w);
+        const arrayKind = (id) => arrays.get(id)?.kind ?? "number";
+        switch (s.kind) {
+          case "declare":
+            s.init = value(s.init, s.decl.kind);
+            break;
+          case "assign":
+            s.value = value(s.value, "number");
+            break;
+          case "assignBool":
+            s.value = value(s.value, "boolean");
+            break;
+          case "assignUnit":
+            s.value = value(s.value, "unit");
+            break;
+          case "declareArray":
+            if (s.init) s.init = operands(s.init.map((e) => ({ e, kind: arrayKind(s.array) })), pre, w);
+            if (s.fill) s.fill = value(s.fill, arrayKind(s.array));
+            break;
+          case "store": {
+            const [v, i] = operands([{ e: s.value, kind: arrayKind(s.array) }, { e: s.index, kind: "number" }], pre, w);
+            s.value = v;
+            s.index = i;
+            break;
+          }
+          case "push":
+            s.value = value(s.value, arrayKind(s.array));
+            break;
+          case "setLength":
+            s.value = value(s.value, "number");
+            break;
+          case "unitWrite": {
+            const [u, v] = operands([{ e: s.unit, kind: "unit" }, { e: s.value, kind: FLAGS2.has(s.field) ? "boolean" : "number" }], pre, w);
+            s.unit = u;
+            s.value = v;
+            break;
+          }
+          case "unitDo": {
+            const items = [{ e: s.unit, kind: "unit" }];
+            if (s.verb.do === "damage" || s.verb.do === "heal") items.push({ e: s.verb.amount, kind: "number" });
+            const done = operands(items, pre, w);
+            s.unit = done[0];
+            if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = done[1];
+            break;
+          }
+          case "tableWrite":
+            if (s.value.kind !== "text") s.value = value(s.value, s.boolean ? "boolean" : "number");
+            break;
+          case "return":
+            if (s.value) s.value = value(s.value, returns ?? "number");
+            break;
+          case "action": {
+            const done = operands((s.variables ?? []).map((v) => ({ e: v.expr, kind: "number" })), pre, w);
+            s.variables?.forEach((v, i) => {
+              v.expr = done[i];
+            });
+            break;
+          }
+          case "centerLocation":
+            [s.x, s.y] = operands([{ e: s.x, kind: "number" }, { e: s.y, kind: "number" }], pre, w);
+            break;
+          case "print": {
+            const numbers = s.parts.filter((p) => p.kind === "number");
+            const done = operands(numbers.map((p) => ({ e: p.expr, kind: "number" })), pre, w);
+            numbers.forEach((p, i) => {
+              p.expr = done[i];
+            });
+            break;
+          }
+          case "switch":
+            s.value = value(s.value, "number");
+            for (const c2 of s.cases) c2.body = body2(c2.body, returns);
+            break;
+          case "if":
+            s.cond = value(s.cond, "boolean");
+            s.then = body2(s.then, returns);
+            if (s.else) s.else = body2(s.else, returns);
+            break;
+          case "while":
+            s.body = body2(s.body, returns);
+            if (s.cond && risky(s.cond)) {
+              s.body = [...leaveUnless(s.cond, w), ...s.body];
+              delete s.cond;
+            }
+            break;
+          case "for":
+            s.body = body2(s.body, returns);
+            s.update = body2(s.update, returns);
+            if (s.cond && risky(s.cond)) {
+              s.body = [...leaveUnless(s.cond, w), ...s.body];
+              delete s.cond;
+            }
+            break;
+          case "do": {
+            const inner = body2(s.body, returns);
+            if (!risky(s.cond)) {
+              s.body = inner;
+              break;
+            }
+            const first = temp("first turn", "boolean", s.at);
+            const check = { at: s.at, label: s.condLabel };
+            out.push({ kind: "declare", decl: first, init: { kind: "const", value: true }, at: s.at, label: s.label });
+            out.push({ kind: "while", at: s.at, label: s.label, body: [
+              { kind: "if", cond: { kind: "not", expr: { kind: "var", id: first.id } }, then: leaveUnless(s.cond, check), at: s.at, label: s.condLabel },
+              { kind: "assignBool", target: first.id, value: { kind: "const", value: false }, at: s.at, label: s.label },
+              ...inner
+            ] });
+            continue;
+          }
+          case "unrolled":
+            s.iterations = s.iterations.map((i) => body2(i, returns));
+            break;
+          case "block":
+            s.body = body2(s.body, returns);
+            break;
+          case "unitLoop":
+            errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over units holds such a call: the loop's place among the game's units is not something a call can keep. Collect what the loop finds into an array first, and make the calls from a loop over that array.` });
+            s.body = body2(s.body, returns);
+            break;
+          case "call":
+            settleCall(s.call, pre, w);
+            break;
+          default:
+            break;
+        }
+        out.push(...pre, s);
+      }
+      return out;
+    };
+    f.body = body2(f.body, f.result?.kind);
+    const never = (statements2) => {
+      for (const s of statements2) {
+        if (s.kind === "call" && s.call.fn === f.id) return true;
+        if (s.kind === "if" && s.else && never(s.then) && never(s.else)) return true;
+        if (s.kind === "block" && never(s.body)) return true;
+        if (s.kind !== "remark" && mentions(s, "return")) return false;
+      }
+      return false;
+    };
+    if (never(f.body)) errors.push({ at: f.at, message: `${f.name} calls itself on every path through it, so no call of it ever returns: the stack would run out the first time it is called. Give it a way out \u2014 an if that returns before the call.` });
+    const local = [];
+    const seen = /* @__PURE__ */ new Set();
+    const find = (root) => {
+      if (Array.isArray(root)) {
+        root.forEach(find);
+        return;
+      }
+      if (!root || typeof root !== "object") return;
+      const o = root;
+      if (o.kind === "declareArray" && typeof o.array === "string" && !seen.has(o.array)) {
+        seen.add(o.array);
+        const a2 = arrays.get(o.array);
+        if (a2 && !a2.values) {
+          a2.dynamic = true;
+          local.push(a2.id);
+        }
+      }
+      for (const v of Object.values(o)) if (v && typeof v === "object") find(v);
+    };
+    find(f.body);
+    const all = [...f.params, ...declarations(f.body)];
+    eachCall(f.body, (c2) => {
+      if (!c2.fn || component.get(c2.fn) !== mine) return;
+      const result = c2.result?.decl.id;
+      c2.saves = { vars: all.filter((d) => d.id !== result).map((d) => d.id), arrays: local, within: f.name };
+    });
+  }
+  return errors;
+}
+
 // compiler/scope.ts
 var Scope = class {
   map = /* @__PURE__ */ new Map();
@@ -4417,22 +4824,12 @@ var boolRef = (v) => ({ kind: "var", id: v.id });
 var unitRef = (v) => ({ kind: "unitVar", id: v.id });
 var NO_UNIT = { kind: "unitNull" };
 var ORDERS = ["move", "patrol", "attack"];
-function mentions(root, kind) {
-  if (Array.isArray(root)) return root.some((x) => mentions(x, kind));
+function mentions2(root, kind) {
+  if (Array.isArray(root)) return root.some((x) => mentions2(x, kind));
   if (!root || typeof root !== "object") return false;
   const o = root;
   if (o.kind === kind) return true;
-  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions(v, kind));
-}
-function eachCall(root, visit) {
-  if (Array.isArray(root)) {
-    for (const x of root) eachCall(x, visit);
-    return;
-  }
-  if (!root || typeof root !== "object") return;
-  const o = root;
-  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call);
-  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
+  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions2(v, kind));
 }
 var Structured = class {
   c;
@@ -4454,6 +4851,8 @@ var Structured = class {
   callees = /* @__PURE__ */ new WeakMap();
   inlinedBecause = /* @__PURE__ */ new Map();
   declared = /* @__PURE__ */ new Map();
+  /** How many inlined copies of each function's body are being walked right now: how a call finds that it is inside its own function. */
+  walkingBodies = /* @__PURE__ */ new Map();
   identities = /* @__PURE__ */ new WeakMap();
   lastIdentity = 0;
   constructor(c2) {
@@ -5902,7 +6301,7 @@ var Structured = class {
   }
   kindOf(type) {
     const { ts } = this;
-    const isNumber = (t) => (t.flags & ts.TypeFlags.NumberLike) !== 0 || t.isIntersection() && t.types.some(isNumber);
+    const isNumber = (t) => (t.flags & ts.TypeFlags.NumberLike) !== 0 || t.isIntersection() && t.types.some(isNumber) || t.isUnion() && t.types.every(isNumber);
     if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
     if (isNumber(type)) return "number";
     const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
@@ -6702,10 +7101,7 @@ var Structured = class {
       this.c.error(call, "The function has no body.");
       return void 0;
     }
-    if (this.inlineDepth >= MAX_INLINE_DEPTH) {
-      this.c.error(call, "Functions nest too deeply (recursion is not possible: a call is inlined).");
-      return void 0;
-    }
+    const deep = this.inlineDepth >= MAX_INLINE_DEPTH;
     if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) && (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))) {
       this.c.error(decl, "Generators and async functions are not supported in a program.");
       return void 0;
@@ -6762,8 +7158,17 @@ var Structured = class {
       }
       const h = this.evaluate(arg);
       if (h && !isGameValue(h.value)) {
+        const constant = this.constantArgument(h.value, label, p);
+        const k = this.kindOf(this.c.checker.getTypeAtLocation(p.name));
+        if (constant && "init" in constant && k && this.assigns(body2, p)) {
+          const copy = this.newVar(p.name.text, k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(p.name)) : {});
+          out.params.push({ decl: copy, init: constant.init, label });
+          scope.bind(p, { kind: "var", v: copy });
+          asCalled(constant);
+          return;
+        }
         scope.bind(p, { kind: "value", value: h.value });
-        asCalled(this.constantArgument(h.value, label, p) ?? `${p.name.text} is ${describe2(h.value)}, which only the script has`);
+        asCalled(constant ?? `${p.name.text} is ${describe2(h.value)}, which only the script has`);
         return;
       }
       const binding = this.bindingOf(arg);
@@ -6827,20 +7232,22 @@ var Structured = class {
     const site = args ? this.siteOf(decl, args) : void 0;
     if (site && args) {
       if (site.fn) return this.calls(out, site.fn, args);
-      if (site.first && !site.never && !site.busy) {
+      if (site.making) return this.calls(out, site.making, args);
+      if ((site.first || (site.walking ?? 0) > 0) && !site.never && !site.busy) {
         if (ts.isFunctionDeclaration(decl) && (closure === null || decl.parent !== this.c.body.plan.body)) site.never = "it is declared inside a block or another function, whose variables it may use";
         else {
           site.busy = true;
           let made;
           try {
-            made = this.callable(parameters, body2, target, name ?? "function", decl, kind, args, closure, at);
+            made = this.callable(parameters, body2, target, name ?? "function", decl, kind, args, closure, at, site);
           } finally {
             site.busy = false;
+            site.making = void 0;
           }
           if (typeof made === "string") site.never = made;
           else {
             site.fn = made;
-            this.calls(site.first.call, made, site.first.args);
+            if (site.first) this.calls(site.first.call, made, site.first.args);
             site.first = void 0;
             return this.calls(out, made, args);
           }
@@ -6849,7 +7256,19 @@ var Structured = class {
     }
     const because = site?.never ?? (args ? "" : why);
     if (because) this.inlinedBecause.set(decl, { why: because, name: name ?? "function", at });
-    out.body = this.walkFunction(body2, kind, target, scope);
+    if (deep) {
+      this.c.error(call, (this.walkingBodies.get(decl) ?? 0) > 0 ? `${what} calls itself, and here it cannot be a function that is called${because ? ` \u2014 ${because}` : ""}. A call that is not one is a copy of the function's body, and these copies would have no end.` : "Functions nest too deeply: a call that is inlined is a copy of the function's body, and these are sixteen inside one another.");
+      return void 0;
+    }
+    if (site) site.walking = (site.walking ?? 0) + 1;
+    this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 0) + 1);
+    try {
+      out.body = this.walkFunction(body2, kind, target, scope);
+    } finally {
+      if (site) site.walking = (site.walking ?? 1) - 1;
+      this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 1) - 1);
+    }
+    if (site?.fn && args) return this.calls(out, site.fn, args);
     if (site && args && !site.first && !site.fn && !site.never) site.first = { call: out, args };
     return out;
   }
@@ -6943,7 +7362,7 @@ var Structured = class {
    * that way — a parameter reaches a field only a value known when the script is built can fill. Nothing the attempt
    * reported is kept: the same lines compile, or fail for good, where the function is inlined.
    */
-  callable(parameters, body2, target, name, decl, kind, args, closure, at) {
+  callable(parameters, body2, target, name, decl, kind, args, closure, at, site) {
     const scope = new Scope(closure);
     const fn = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
     for (let i = 0; i < parameters.length; i++) {
@@ -6969,14 +7388,18 @@ var Structured = class {
     this.c.error = (_node, message) => {
       caught.push(message);
     };
+    site.making = fn;
+    const depth = this.inlineDepth;
+    this.inlineDepth = 0;
     try {
       fn.body = this.walkFunction(body2, kind, target, scope);
     } finally {
+      this.inlineDepth = depth;
       this.c.error = error;
     }
     if (caught.length) return `with its parameters as variables of the game it does not compile \u2014 ${caught[0].replace(/\.$/, "")}`;
-    if (mentions(fn.body, "sleep")) return "it sleeps, and the program wakes up inside it";
-    if (mentions(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
+    if (mentions2(fn.body, "sleep")) return "it sleeps, and the program wakes up inside it";
+    if (mentions2(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
     this.mark(fn, decl);
     this.functions.push(fn);
     this.declared.set(fn, decl);
@@ -8287,12 +8710,14 @@ function compileScript(ts, files, names, options) {
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
     const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
     const mixes = typeNumbers(emitted2.program);
+    markRecursion(emitted2.program);
     const index = programs.length;
     ir.push(emitted2.program);
     programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
     for (const d of programDeclarations(emitted2.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {}, ...d.unsigned ? { unsigned: true } : {} });
     const check = checkProgram(emitted2.program);
-    for (const d of [...mixes, ...check.errors]) {
+    const recursion = settleRecursion(emitted2.program);
+    for (const d of [...mixes, ...check.errors, ...recursion]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }

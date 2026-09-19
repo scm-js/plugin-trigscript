@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 11: recursion — `FuncDecl.recursive`, and `Call.saves` on a call that may come back into the function it is in: what that function keeps on the stack around the call.
  * 10: functions that are called — `Program.functions`, and `Call.fn` naming one: the call sets the function's parameters and runs its one body, where a call without `fn` carries a body of its own.
  * 9: a unit as the three numbers it is (`unitAt`, `unitPart`), which is what lets an array hold units.
  * 8: arrays that grow — `ArrayDecl.dynamic`, `push`, `pop`, `setLength`, `length` — out of a heap the programs share.
@@ -20,7 +21,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 10;
+export const IR_VERSION = 11;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -81,6 +82,22 @@ export function heapCells(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(HEAP_CELLS_MAX, Math.max(HEAP_CELLS_MIN, Math.floor(value))) : HEAP_CELLS;
 }
 export const HEAP_SMALLEST = 4;
+
+/**
+ * How many calls deep a function that calls itself may go, unless the map's script settings say otherwise (carried to
+ * the lowering as the IR file's `stack`). The stack is an array of its own in the built map — this many frames of the
+ * largest frame any program has — and only there when some function recurses, so the limit is the same whatever the
+ * programs' arrays hold: the simulator and the game stop at the same call.
+ */
+export const STACK_DEPTH = 1024;
+export const STACK_DEPTH_MIN = 16;
+export const STACK_DEPTH_MAX = 65536;
+/** The most cells the stack may come to (depth × the largest frame): four bytes each while the map is played. */
+export const STACK_CELLS_MAX = 1 << 20;
+/** A depth as the build takes it: whole, within the limits; the default for anything that is not a number. */
+export function stackDepth(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(STACK_DEPTH_MAX, Math.max(STACK_DEPTH_MIN, Math.floor(value))) : STACK_DEPTH;
+}
 
 /** A player's race as the game holds it; what `race(p)` gives and `supply()` takes. */
 export type RaceId = 0 | 1 | 2;
@@ -258,17 +275,28 @@ export type CompareOp = "<" | "<=" | ">" | ">=" | "==" | "!=";
 
 /**
  * A function that is called: one body in the built map, which every `Call` naming it (`fn`) runs. Its parameters are
- * variables of its own that a call sets; `return` writes `result`, which the call copies into its own. It never sleeps
- * and never calls itself, directly or round about.
+ * variables of its own that a call sets; `return` writes `result`, which the call copies into its own. It never sleeps.
+ * `recursive`: it is on a cycle of the call graph — it calls itself, directly or round about (`recursion.ts`). Its
+ * cells are still the program's own, one of each, so a call in its body that may come back into it keeps what the
+ * function holds on the stack meanwhile (`Call.saves`), and such a call is always a statement of its own.
  */
 export interface FuncDecl {
   id: string;
   name: string;
   params: VarDecl[];
   result?: { decl: VarDecl; kind: "number" | "boolean" | "unit" };
+  recursive?: boolean;
   body: Stmt[];
   at: At;
 }
+
+/**
+ * What a recursive function keeps on the stack around a call that may come back into it, and takes back after: the
+ * variables (a cell each, three for a unit), the handles of the growing arrays declared in it (four cells each, set to
+ * "no block" for the call — the block the inner run leaves is given back before the handle is taken back) and, not
+ * listed, where the function returns to. `within` names the function the call is in, for the words of an overflow.
+ */
+export interface Saves { vars: string[]; arrays: string[]; within: string }
 
 /**
  * A function at a call. Inlined (no `fn`): parameter copies, the body, and what it returns into. Called (`fn`): the
@@ -284,6 +312,8 @@ export interface Call {
   params: { decl: VarDecl; init: NumExpr | BoolExpr | UnitExpr; label: string }[];
   /** What the call returns, when it returns something: the variable `return` writes. */
   result?: { decl: VarDecl; kind: "number" | "boolean" | "unit" };
+  /** On a call inside a recursive function that may come back into it; such a call is a statement, never inside an expression. */
+  saves?: Saves;
   body: Stmt[];
 }
 
@@ -372,6 +402,15 @@ export function programDeclarations(program: Pick<Program, "body" | "functions">
     out.push(...declarations(f.body));
   }
   return out;
+}
+
+/** Every call in a piece of IR — statements and expressions alike, those inside a call's arguments and body included. */
+export function eachCall(root: unknown, visit: (c: Call) => void): void {
+  if (Array.isArray(root)) { for (const x of root) eachCall(x, visit); return; }
+  if (!root || typeof root !== "object") return;
+  const o = root as Record<string, unknown>;
+  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call as Call);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
 }
 
 export const isUnitExpr = (e: NumExpr | BoolExpr | UnitExpr | { kind: "text" }): e is UnitExpr =>

@@ -19,7 +19,7 @@
  */
 import { cloneTrigger, encodeTriggers, type TriggerRecord } from "./vendor/triggers";
 import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
-import { HEAP_CELLS, heapCells } from "./compiler/ir";
+import { HEAP_CELLS, STACK_DEPTH, heapCells, stackDepth } from "./compiler/ir";
 
 /** The archive folder the script's files live in, next to `staredit\`. */
 export const SCRIPT_FOLDER = "trigscript\\";
@@ -38,24 +38,31 @@ export const SETTINGS_MEMBER = `${SCRIPT_FOLDER}settings.json`;
 export interface ScriptSettings {
   /** The cells of the heap the programs' growing arrays share (`compiler/ir.ts#HEAP_CELLS`). */
   heapCells: number;
+  /** How many calls deep a function that calls itself may go (`compiler/ir.ts#STACK_DEPTH`). */
+  stackDepth: number;
 }
-export const DEFAULT_SETTINGS: ScriptSettings = { heapCells: HEAP_CELLS };
+export const DEFAULT_SETTINGS: ScriptSettings = { heapCells: HEAP_CELLS, stackDepth: STACK_DEPTH };
 
 export function readSettings(extras: Extras): ScriptSettings {
   const bytes = member(extras, SETTINGS_MEMBER);
   if (!bytes) return { ...DEFAULT_SETTINGS };
   try {
     const raw = JSON.parse(decoder.decode(bytes)) as Partial<ScriptSettings> | null;
-    return { heapCells: heapCells(raw?.heapCells) };
+    return { heapCells: heapCells(raw?.heapCells), stackDepth: stackDepth(raw?.stackDepth) };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
 }
 
 /** The members with these settings; settings that are all the default leave no member behind. */
-export function withSettings(extras: Extras, settings: ScriptSettings): Map<string, Uint8Array> {
+export function withSettings(extras: Extras, settings: Partial<ScriptSettings>): Map<string, Uint8Array> {
+  // Only what differs from the default is written, so a map keeps following a default that changes.
+  const chosen: Partial<ScriptSettings> = {};
   const heap = heapCells(settings.heapCells);
-  return withMember(extras, SETTINGS_MEMBER, heap === DEFAULT_SETTINGS.heapCells ? null : encoder.encode(JSON.stringify({ heapCells: heap }, null, 2)));
+  const depth = stackDepth(settings.stackDepth);
+  if (heap !== DEFAULT_SETTINGS.heapCells) chosen.heapCells = heap;
+  if (depth !== DEFAULT_SETTINGS.stackDepth) chosen.stackDepth = depth;
+  return withMember(extras, SETTINGS_MEMBER, Object.keys(chosen).length ? encoder.encode(JSON.stringify(chosen, null, 2)) : null);
 }
 
 export interface ScriptManifest {

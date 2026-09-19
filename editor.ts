@@ -29,7 +29,8 @@
 import type { PluginApi } from "@scm-js/plugin-api";
 import { CompileSuperseded, retainCompileWorker } from "./compile";
 import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
-import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, heapCells } from "./compiler/ir";
+import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_CELLS_MAX, STACK_DEPTH, STACK_DEPTH_MAX, STACK_DEPTH_MIN, heapCells, stackDepth } from "./compiler/ir";
+import { largestFrame } from "./compiler/recursion";
 import { entryFor } from "./compiler/names";
 import { printScript } from "./compiler/print";
 import { Simulation, type SimulationEvent } from "./compiler/simulate";
@@ -40,7 +41,7 @@ import {
   type LocationRef, type MonacoApi, type ScriptEditor,
 } from "./monaco";
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
-import { FILE_NAME } from "./script";
+import { FILE_NAME, type ScriptSettings } from "./script";
 import { ProgramSimulation, type ProgramEvent, type ProgramSimulationOptions, type SimBounds, type SimUnitInit } from "./compiler/simulateIr";
 import { positionIn, type BuildRefusal, type MapNames, type ScriptArtifact, type ScriptService } from "./service";
 import { COMPACT_LAYOUT, DEFAULT_LAYOUT, SHELL_STYLE, createShell, type ShellLayout } from "./shell";
@@ -299,28 +300,44 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   /**
    * The map's script settings (`script.ts#ScriptSettings`): kept in the map beside the script, because the built map
-   * depends on them. One so far — how much memory the arrays that grow share.
+   * depends on them — how much memory the arrays that grow share, and how deep a function that calls itself may go.
    */
   function renderSettings() {
     const open = api.document.isOpen();
-    const now = svc.settings().heapCells;
-    const input = el("input", { type: "number", min: String(HEAP_CELLS_MIN), max: String(HEAP_CELLS_MAX), step: "1024", value: String(now), disabled: !open }) as HTMLInputElement;
+    const settings = svc.settings();
+    const count = (n: number) => n.toLocaleString("en-US");
     const size = (cells: number) => (cells * 4 >= 1 << 20 ? `${(cells * 4 / (1 << 20)).toFixed(cells * 4 % (1 << 20) ? 1 : 0)} MB` : `${Math.round(cells * 4 / 1024)} KB`);
-    const said = el("span", { className: "now" }, `cells — ${size(now)} of the built map`);
-    const reset = el("button", { type: "button", disabled: !open || now === HEAP_CELLS }, `Default (${HEAP_CELLS.toLocaleString("en-US")})`) as HTMLButtonElement;
-    const commit = (value: unknown) => {
-      const cells = heapCells(typeof value === "number" && Number.isFinite(value) ? value : HEAP_CELLS);
-      if (cells !== svc.settings().heapCells) { svc.writeSettings({ heapCells: cells }); simulation = null; renderSimulation(); }
-      renderSettings();
+    /** One number of the settings: the field, what it comes to, and the way back to the default. */
+    const row = (o: { key: keyof ScriptSettings; min: number; max: number; step: number; normal: number; fit: (v: unknown) => number; said: (now: number) => string }) => {
+      const now = settings[o.key];
+      const input = el("input", { type: "number", min: String(o.min), max: String(o.max), step: String(o.step), value: String(now), disabled: !open }) as HTMLInputElement;
+      const reset = el("button", { type: "button", disabled: !open || now === o.normal }, `Default (${count(o.normal)})`) as HTMLButtonElement;
+      const commit = (value: unknown) => {
+        const next = o.fit(typeof value === "number" && Number.isFinite(value) ? value : o.normal);
+        if (next !== svc.settings()[o.key]) { svc.writeSettings({ ...svc.settings(), [o.key]: next }); simulation = null; renderSimulation(); }
+        renderSettings();
+      };
+      input.addEventListener("change", () => commit(input.value === "" ? o.normal : Number(input.value)));
+      input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") input.blur(); });
+      reset.addEventListener("click", () => commit(o.normal));
+      return el("div", { className: "row" }, input, el("span", { className: "now" }, o.said(now)), reset);
     };
-    input.addEventListener("change", () => commit(input.value === "" ? HEAP_CELLS : Number(input.value)));
-    input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") input.blur(); });
-    reset.addEventListener("click", () => commit(HEAP_CELLS));
+    // What a call deep costs this script: the largest frame any of its functions keeps, as it was last compiled.
+    const frame = result?.ok ? largestFrame(result.ir) : 0;
+    const stack = (depth: number) => {
+      if (!frame) return "calls deep — no function of this script calls itself";
+      const cells = frame * depth;
+      return `calls deep — ${frame} cells a call here, ${size(cells)} while the map is played${cells > STACK_CELLS_MAX ? `: more than the ${size(STACK_CELLS_MAX)} a map may use, and it will not build` : ""}`;
+    };
     settingsView.body.replaceChildren(el("div", { className: "tsd-settings" },
       el("h4", {}, "Memory for arrays that grow"),
       el("p", {}, "Arrays a program pushes to share one pool of cells; this is its size. A single array can reach between a quarter and a half of it. When the pool runs out, nothing more is pushed and the game says so once."),
-      el("div", { className: "row" }, input, said, reset),
-      el("p", {}, `${HEAP_CELLS_MIN.toLocaleString("en-US")} to ${HEAP_CELLS_MAX.toLocaleString("en-US")} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.`),
+      row({ key: "heapCells", min: HEAP_CELLS_MIN, max: HEAP_CELLS_MAX, step: 1024, normal: HEAP_CELLS, fit: heapCells, said: (now) => `cells — ${size(now)} of the built map` }),
+      el("p", {}, `${count(HEAP_CELLS_MIN)} to ${count(HEAP_CELLS_MAX)} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.`),
+      el("h4", {}, "Recursion depth"),
+      el("p", {}, "How many calls deep a function that calls itself may go. Around each such call the function's variables are kept on a stack, which is only in the built map when some function calls itself. A call past the limit stops the program, and the game says where; Simulate stops at the same call."),
+      row({ key: "stackDepth", min: STACK_DEPTH_MIN, max: STACK_DEPTH_MAX, step: 256, normal: STACK_DEPTH, fit: stackDepth, said: stack }),
+      el("p", {}, `${count(STACK_DEPTH_MIN)} to ${count(STACK_DEPTH_MAX)} calls. The limit costs nothing until it is reached, but each call deep keeps and brings back every variable of its function, so thousands of calls within one frame make the game stutter. Kept in the map, like the pool above.`),
     ));
   }
 
@@ -852,7 +869,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       // The programs run from the IR; the trigger() records through the trigger interpreter, sharing one world.
       const player = r.programs[0]?.owner;
       const sim = new Simulation(r.triggers, { strings: r.strings, player });
-      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, ...simulatedMap() }) : null;
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, stackDepth: svc.settings().stackDepth, ...simulatedMap() }) : null;
       for (let i = 0; i < SIMULATE_FRAMES; i++) { sim.step(); programs?.step(); }
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);

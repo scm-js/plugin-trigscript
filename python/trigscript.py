@@ -56,7 +56,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 10
+IR_VERSION = 11
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -200,8 +200,9 @@ class ArrayStorage:
 
 # The heap the programs' growing arrays share. A block is a power of two of cells, four at least; one given back
 # waits in its size's list (its first cell links the next) for whoever wants that size next; new ground is taken
-# from the bottom up, and the stack - recursion's, to come - will take it from the top down. Cell 0 is never
-# handed out: 0 is "no block". compiler/simulateIr.ts counts the same way, so both run out at the same push.
+# from the bottom up. Cell 0 is never handed out: 0 is "no block". compiler/simulateIr.ts counts the same way, so
+# both run out at the same push. (Recursion's stack is an array of its own, below: how deep a function may go is
+# then the same whatever the arrays hold.)
 HEAP_CELLS = min(1 << 20, max(1024, int(IR.get("heap", 16384))))  # the map's script settings, or the default
 HEAP_SMALLEST = 4
 HEAP_ROOMS = []
@@ -218,7 +219,6 @@ def heap():
     rooms = EUDArray(HEAP_ROOMS + [0xFFFFFFFF])  # initial: the sizes, never written
     free = EUDArray(len(HEAP_ROOMS))  # initial: no block waits
     top = EUDVariable(1)  # initial: the heap's own state, for the whole game
-    stack = EUDVariable(HEAP_CELLS)  # initial: the heap's own state
     said = EUDVariable(0)  # initial: the heap's own state
 
     @EUDFunc
@@ -231,7 +231,7 @@ def heap():
             EUDReturn(at)
         EUDEndIf()
         end = top + rooms[k]
-        if EUDIf()(end <= stack):
+        if EUDIf()(end <= HEAP_CELLS):
             at << top
             top << end
             EUDReturn(at)
@@ -289,21 +289,70 @@ def heap():
         EUDEndIf()
         EUDReturn(ptr, length, room, k)
 
-    @EUDFunc
-    def reserve(n):
-        """The stack's: n cells from the top down; their place, or 0 when the heap has grown up to there."""
-        if EUDIf()(top + n <= stack):
-            stack -= n
-            EUDReturn(stack)
-        EUDEndIf()
-        EUDReturn(0)
-
-    @EUDFunc
-    def release(n):
-        stack += n
-
-    _HEAP.update(cells=cells, take=take, give=give, grow=grow, push=push, reserve=reserve, release=release)
+    _HEAP.update(cells=cells, take=take, give=give, grow=grow, push=push)
     return _HEAP
+
+
+# The stack of the functions that call themselves. A function's variables are cells of the program, one of each, so
+# a call that may come back into the function it is in (the IR's `saves`) puts what that function holds here first
+# and takes it back after, with where the function returns to. One stack serves every program and every player:
+# such a function never sleeps, so the stack is empty whenever a frame ends. It is as many frames of the largest
+# frame as the map's script settings allow calls deep (the IR file's `stack`), and the depth is what is counted -
+# compiler/simulateIr.ts counts the same - so a program stops at the same call in both.
+STACK_DEPTH = min(1 << 16, max(16, int(IR.get("stack", 1024))))
+STACK_CELLS_MAX = 1 << 20
+HANDLE = ("ptr", "len", "room", "k")
+_STACK = {}
+
+
+def frame_cells(saves, kinds):
+    return 1 + 4 * len(saves.get("arrays", [])) + sum(3 if kinds.get(v) == "unit" else 1 for v in saves.get("vars", []))
+
+
+def largest_frame():
+    most = [0]
+
+    def walk(node, kinds):
+        if isinstance(node, list):
+            for x in node:
+                walk(x, kinds)
+        elif isinstance(node, dict):
+            if isinstance(node.get("saves"), dict):
+                most[0] = max(most[0], frame_cells(node["saves"], kinds))
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    walk(v, kinds)
+
+    def kinds_of(node, into):
+        if isinstance(node, list):
+            for x in node:
+                kinds_of(x, into)
+        elif isinstance(node, dict):
+            if isinstance(node.get("id"), str) and node.get("kind") in ("number", "boolean", "unit") and "shared" in node:
+                into[node["id"]] = node["kind"]
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    kinds_of(v, into)
+        return into
+
+    for program in IR.get("programs", []):
+        walk(program.get("functions", []), kinds_of(program, {}))
+    return most[0]
+
+
+def stack():
+    """The stack's cells, where the next frame goes (an EPD, so a cell is one write) and how deep it is."""
+    if _STACK:
+        return _STACK
+    frame = largest_frame()
+    if frame * STACK_DEPTH > STACK_CELLS_MAX:
+        raise Fail("trigscript: the stack would be %d cells - %d calls deep, %d cells a call - and %d is the most: lower the recursion depth in the script's Settings, or keep fewer variables in the function that calls itself" % (frame * STACK_DEPTH, STACK_DEPTH, frame, STACK_CELLS_MAX))
+    cells = EUDArray(max(1, frame) * STACK_DEPTH)
+    base = cells  # an EUDArray's own value is where it is, as an EPD already
+    at = EUDVariable(base)  # initial: the stack's own state; it is back here whenever a frame ends
+    depth = EUDVariable(0)  # initial: the stack's own state; nothing is on it between frames
+    _STACK.update(cells=cells, base=base, at=at, depth=depth)
+    return _STACK
 
 
 class ListStorage:
@@ -507,6 +556,8 @@ class Lowering:
         self.functions = {f["id"]: f for f in program.get("functions", [])}
         self.made = {}
         self.in_function = 0
+        # The function being lowered, when it is one that calls itself: whose return address a frame keeps.
+        self.within = []
 
     # ── storage ──
     def player_of(self):
@@ -1648,6 +1699,8 @@ class Lowering:
         kind = f["result"]["kind"] if f.get("result") else "void"
         result = self.declare(f["result"]["decl"]) if f.get("result") else None
         lowering = self
+        if f.get("recursive"):
+            return self.recursive_function(id_, f, params, kind, result)
 
         @EUDFunc
         def body():
@@ -1664,6 +1717,117 @@ class Lowering:
         made = self.made[id_] = (body, params, result)
         return made
 
+    def recursive_function(self, id_, f, params, kind, result):
+        """A function that calls itself. eudplib's EUDFunc keeps one return address and is not there to be called
+        until its body is whole, so this one is triggers of our own: the body in a scope apart, ended by a trigger
+        whose next-trigger field is the return address - a cell a call writes, and a frame keeps. It is on record
+        before its body is lowered, so a call of it met in that body finds it."""
+        start, tail = Forward(), Forward()
+        # The return address a second time, in a variable: a frame keeps it from there, since reading a cell of
+        # the game's memory back costs some thirty triggers and writing a variable out costs two.
+        back = EUDVariable()
+
+        def body():
+            after = Forward()
+            DoActions([SetNextPtr(tail, after), back.SetNumber(after)])
+            EUDJump(start)
+            after << NextTrigger()
+
+        made = self.made[id_] = (body, params, result)
+        entry = {"f": f, "tail": tail, "back": back}
+        PushTriggerScope()
+        start << NextTrigger()
+        if result is not None:
+            result.set(NO_UNIT if kind == "unit" else 0)
+        end = Forward()
+        self.in_function += 1
+        self.within.append(entry)
+        try:
+            self.straight(f["body"], {"fn": {"result": result, "kind": kind, "end": end}})
+        finally:
+            self.within.pop()
+            self.in_function -= 1
+        end << NextTrigger()
+        tail << RawTrigger()
+        PopTriggerScope()
+        return made
+
+    def saved_cells(self, saves, node):
+        """What a frame keeps, as (read, write) pairs a cell: the variables, a unit three cells, an array's handle four."""
+        pairs = []
+        for id_ in saves.get("vars", []):
+            s = self.vars.get(id_)
+            if s is None:
+                # Declared further down the body: it has no cell yet, and the declaration that makes it sets it.
+                continue
+            if isinstance(s, UnitStorage):
+                for cell in (s.ptr, s.epd, s.uid):
+                    pairs.append(self.cell_pair(cell, s.rowed))
+            elif isinstance(s, Storage):
+                pairs.append(self.cell_pair(s.store, s.rowed))
+        for id_ in saves.get("arrays", []):
+            a = self.array(id_, node)
+            if isinstance(a, ListStorage):
+                for name in HANDLE:
+                    pairs.append(self.cell_pair(a.handle[name], a.rowed))
+        return pairs
+
+    def cell_pair(self, cell, rowed):
+        if rowed:
+            return (lambda: cell[self.player_of()]), (lambda v: cell.__setitem__(self.player_of(), v))
+        return (lambda: cell), (lambda v: cell << v)
+
+    def keep(self, call):
+        """Before a call that may come back into the function it is in: that function's cells and its return
+        address onto the stack, the handles of its arrays set to "no block". Past the depth the map allows the
+        program says so and stops for good."""
+        saves = call["saves"]
+        st = stack()
+        if not self.within:
+            raise Fail("trigscript: a call keeps a frame outside a function that calls itself%s" % where(call))
+        mine = self.within[-1]
+        if EUDIf()(st["depth"] >= STACK_DEPTH):
+            GetGlobalStringBuffer().print("\x06TrigScript: stack overflow in %s, line %s - %d calls deep. The program has stopped." % (saves.get("within", "a function"), (call.get("at") or {}).get("line", "?"), STACK_DEPTH))
+            st["depth"] << 0
+            st["at"] << st["base"]
+            self.set_state(DONE)
+            EUDJump(self.frame_end)
+        EUDEndIf()
+        pairs = self.saved_cells(saves, call)
+        at = st["at"]
+        f_dwwrite_epd(at, mine["back"])
+        at += 1
+        for read, _ in pairs:
+            f_dwwrite_epd(at, read())
+            at += 1
+        st["depth"] += 1
+        for id_ in saves.get("arrays", []):
+            a = self.array(id_, call)
+            if isinstance(a, ListStorage):
+                for name in HANDLE:
+                    a.put(name, 0)
+        return pairs, mine
+
+    def bring_back(self, call, kept):
+        pairs, mine = kept
+        st = stack()
+        # The block the inner run left in a handle goes back to the heap before the handle is the outer run's again.
+        for id_ in call["saves"].get("arrays", []):
+            a = self.array(id_, call)
+            if isinstance(a, ListStorage):
+                ptr = fresh(a.field("ptr"))
+                if EUDIf()(ptr >= 1):
+                    a.heap["give"](ptr, a.field("k"))
+                EUDEndIf()
+        at = st["at"]
+        for _, write in reversed(pairs):
+            at -= 1
+            write(f_dwread_epd(at))
+        at -= 1
+        mine["back"] << f_dwread_epd(at)
+        f_dwwrite_epd(EPD(mine["tail"]) + 1, mine["back"])
+        st["depth"] -= 1
+
     def call_function(self, call, result):
         body, params, returned = self.function(call["fn"], call)
         if len(params) != len(call["params"]):
@@ -1677,9 +1841,18 @@ class Lowering:
             if later and p["decl"]["kind"] != "unit" and not isinstance(v, int):
                 v = fresh(v)
             values.append(v)
+        # A call that may come back here keeps this function's frame: after the arguments are worked out (they read
+        # it), before the parameters are set (they may be this function's own).
+        kept = None
+        if call.get("saves"):
+            # Copies: an argument may be one of this function's own parameters, which the ones set before it write over.
+            values = [v if isinstance(v, int) else UnitRef(v.ptr if isinstance(v.ptr, int) else fresh(v.ptr), v.epd if isinstance(v.epd, int) else fresh(v.epd), v.uid if v.uid is None or isinstance(v.uid, int) else fresh(v.uid)) if isinstance(v, UnitRef) else fresh(v) for v in values]
+            kept = self.keep(call)
         for s, v in zip(params, values):
             s.set(v)
         body()
+        if kept is not None:
+            self.bring_back(call, kept)
         if result is None:
             return 0
         result.set(returned.get())

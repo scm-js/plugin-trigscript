@@ -9,7 +9,7 @@
  * condition does not mention a variable the body assigns, is an error naming the loop.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { HEAP_CELLS, bodiesOf, heapCells, isUnitExpr, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
+import { HEAP_CELLS, STACK_DEPTH, bodiesOf, heapCells, stackDepth, isUnitExpr, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
 import type { LineHint, ScriptString } from "./compiler";
 import type { InputPlan } from "./input";
 
@@ -300,7 +300,7 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
  * named one (`{ index }`). Nothing a program says is written into the map the user edits.
  * `input` is the compile's plan for what the players do (`input.ts`), when a program reads any.
  */
-export function serializeIr(programs: Program[], strings: readonly ScriptString[], input: InputPlan | null = null, settings: { heapCells?: number } = {}): string {
+export function serializeIr(programs: Program[], strings: readonly ScriptString[], input: InputPlan | null = null, settings: { heapCells?: number; stackDepth?: number } = {}): string {
   const resolve = (local: number): number | string => {
     if (local <= 0) return 0;
     const s = strings[local - 1];
@@ -362,5 +362,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
   };
   // The heap's size goes along only when an array grows and the map's settings changed it: the lowering has the same default.
   const heap = settings.heapCells !== undefined && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a) => a.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, ...(p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}), body: p.body.map(stmt) })) });
+  // The same for how deep a function that calls itself may go: only when one does.
+  const stack = settings.stackDepth !== undefined && settings.stackDepth !== STACK_DEPTH && programs.some((p) => p.functions?.some((f) => f.recursive)) ? { stack: stackDepth(settings.stackDepth) } : {};
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...stack, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, ...(p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}), body: p.body.map(stmt) })) });
 }

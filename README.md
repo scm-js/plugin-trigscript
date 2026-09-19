@@ -99,7 +99,8 @@ a built-in interpreter and lists, in the panel's Simulate view, every action tha
 with its frame and source line, plus each program variable's final value. First in the
 list, marked as errors, is what a program did that is always a mistake and that the game
 passes over in silence — a read or a store past an array's end, a push the heap had no room
-for — one row a line however often a loop came past it. The `trigger()` records run in a trigger
+for — and a recursion that ran out of stack, which stops the program here as it does in the
+game — one row a line however often a loop came past it. The `trigger()` records run in a trigger
 interpreter (death counters, switches, preserve, list order) and the programs in a
 program interpreter that computes every number the way the game will, the two sharing one
 world, so a program's `setDeaths` is seen by a trigger and the other way round. Reads
@@ -396,7 +397,7 @@ than 256 iterations is an error that says how to write it as a loop instead.
 **Functions.** Arguments pass by value, as in TypeScript: `function bump(x: number) { x++; }`
 leaves the caller's variable alone. A function may **return a number, a boolean or a
 unit** — `function canAfford(price: number) { return gold >= price; }`, `x = twice(y) + 1`.
-Locals start afresh at every call. There is no recursion yet.
+Locals start afresh at every call.
 
 A function used once is **inlined**: its body is written where the call stands, a
 parameter that was given a value known when the script is built is that value, and one
@@ -420,6 +421,32 @@ An array reaches a function as itself — what the function stores, the caller s
 which array is settled when the script is built. So a function that takes an array is one
 copy *for each array it is passed*: `total(hp)` and `total(shields)` are two copies, five
 calls of `total(hp)` one. The hint counts them: *called ×5, 2 copies*.
+
+**A function may call itself**, directly or through another: `fib(n - 1) + fib(n - 2)`, a
+flood fill over an array, two functions that call each other. Such a function is always a
+called one — from the call inside itself on, whether or not anything else calls it twice —
+and its line says *calls itself*. It means what it means in TypeScript: each run has its own
+parameters and locals, an array declared in it is that run's own, and `c ? f(x) : 0` or
+`ok && f(x)` makes the call only when TypeScript would. Three things show that it is a map
+and not a JavaScript engine:
+
+- **No `sleep()` in it.** A function that sleeps is inlined, and one that calls itself
+  cannot be; the error says so.
+- **A depth limit** — 1 024 calls deep unless the panel's **Settings** says otherwise (16 to
+  65 536, kept in the map). A call past it stops the program for good, and the game says
+  where: *stack overflow in fill, line 12*. **Simulate** stops at the same call and lists it
+  with the other faults. A function with no way out at all — it calls itself on every path —
+  is an error when the script is built.
+- **It costs what it keeps.** A function's variables are single cells of the map, so around
+  each call that may come back the function's variables are put on a stack and taken back
+  after. That is a few dozen triggers a variable a call: nothing for a flood fill or a walk
+  a thousand deep, a visible pause for tens of thousands of calls within one frame. The
+  fewer variables the function has, the less a call costs. The stack is only in the built
+  map when some function calls itself — Settings says how large it comes to for the script
+  as it stands — and a function that does not call itself costs what it always did.
+
+A loop over units (`for (const u of unitsOf(…))`) cannot hold such a call: collect what it
+finds into an array, and recurse from a loop over that.
 
 Functions the game runs can live in any file: `game()` marks them.
 
@@ -721,12 +748,21 @@ programs, each a thread of its own with its own variables. A program's text
 takes a string of the map you edit; a `trigger()`'s text is interned into the map when
 the script is applied, as it always was.
 
-Still to come, in this order: recursion; the rest of the TypeScript people write —
+Still to come, in this order: the rest of the TypeScript people write —
 `map` / `filter` / `sort` and the other array callbacks, destructuring and spread, arrays
 inside records and arrays of arrays, classes, a `Map` over any number; then `test()` blocks
 that run a script against the simulator, a debugger that steps it, and a gallery of
 examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
+
+### Coming from 3.7
+
+Nothing a 3.7 script does has changed. What is new is that a function may call itself
+(*Functions*, above), and with it a second number in the panel's **Settings**: how many
+calls deep such a function may go. Two smaller things came with it. A parameter given a
+plain value can now be assigned inside the function — `function count(n: number) { n--; … }`
+with `count(3)` used to be refused. And `const hit = found ? 1 : 0` is a number: TypeScript
+calls it `0 | 1`, which the compiler did not take for one.
 
 ### Coming from 3.6
 

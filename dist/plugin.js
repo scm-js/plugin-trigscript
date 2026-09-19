@@ -1362,7 +1362,7 @@ function entryFor(t, value) {
 }
 
 // compiler/ir.ts
-var IR_VERSION = 10;
+var IR_VERSION = 11;
 var HEAP_CELLS = 16384;
 var HEAP_CELLS_MIN = 1024;
 var HEAP_CELLS_MAX = 1 << 20;
@@ -1370,6 +1370,13 @@ function heapCells(value) {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(HEAP_CELLS_MAX, Math.max(HEAP_CELLS_MIN, Math.floor(value))) : HEAP_CELLS;
 }
 var HEAP_SMALLEST = 4;
+var STACK_DEPTH = 1024;
+var STACK_DEPTH_MIN = 16;
+var STACK_DEPTH_MAX = 65536;
+var STACK_CELLS_MAX = 1 << 20;
+function stackDepth(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(STACK_DEPTH_MAX, Math.max(STACK_DEPTH_MIN, Math.floor(value))) : STACK_DEPTH;
+}
 var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
 var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
 var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
@@ -1387,6 +1394,16 @@ function programDeclarations(program) {
     out.push(...declarations(f.body));
   }
   return out;
+}
+function eachCall(root, visit) {
+  if (Array.isArray(root)) {
+    for (const x of root) eachCall(x, visit);
+    return;
+  }
+  if (!root || typeof root !== "object") return;
+  const o = root;
+  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
 }
 var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
@@ -4297,7 +4314,8 @@ function serializeIr(programs, strings, input = null, settings = {}) {
     }
   };
   const heap = settings.heapCells !== void 0 && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a2) => a2.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...input ? { input } : {}, programs: programs.map((p) => ({ ...p, ...p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}, body: p.body.map(stmt) })) });
+  const stack = settings.stackDepth !== void 0 && settings.stackDepth !== STACK_DEPTH && programs.some((p) => p.functions?.some((f) => f.recursive)) ? { stack: stackDepth(settings.stackDepth) } : {};
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...stack, ...input ? { input } : {}, programs: programs.map((p) => ({ ...p, ...p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}, body: p.body.map(stmt) })) });
 }
 
 // compiler/numbers.ts
@@ -4655,6 +4673,424 @@ function typeNumbers(program) {
   return errors;
 }
 
+// compiler/recursion.ts
+var FLAGS2 = new Set(UNIT_FLAGS);
+var CELLS = { number: 1, boolean: 1, unit: 3 };
+var HANDLE_CELLS = 4;
+function mentions(root, kind) {
+  if (Array.isArray(root)) return root.some((x) => mentions(x, kind));
+  if (!root || typeof root !== "object") return false;
+  const o = root;
+  if (o.kind === kind) return true;
+  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions(v, kind));
+}
+function frameCells(program, saves, kinds) {
+  const k = kinds ?? kindsOf(program);
+  return 1 + saves.arrays.length * HANDLE_CELLS + saves.vars.reduce((n, id) => n + CELLS[k.get(id) ?? "number"], 0);
+}
+function kindsOf(program) {
+  const out = /* @__PURE__ */ new Map();
+  for (const d of declarations(program.body)) out.set(d.id, d.kind);
+  for (const f of program.functions ?? []) for (const d of [...f.params, ...f.result ? [f.result.decl] : [], ...declarations(f.body)]) out.set(d.id, d.kind);
+  return out;
+}
+function largestFrame(programs) {
+  let most = 0;
+  for (const p of programs) {
+    if (!p.functions?.some((f) => f.recursive)) continue;
+    const kinds = kindsOf(p);
+    eachCall(p.functions, (c2) => {
+      if (c2.saves) most = Math.max(most, frameCells(p, c2.saves, kinds));
+    });
+  }
+  return most;
+}
+function cycles(functions2) {
+  const ids = new Set(functions2.map((f) => f.id));
+  const edges = /* @__PURE__ */ new Map();
+  for (const f of functions2) {
+    const to = /* @__PURE__ */ new Set();
+    eachCall(f.body, (c2) => {
+      if (c2.fn && ids.has(c2.fn)) to.add(c2.fn);
+    });
+    edges.set(f.id, to);
+  }
+  const index = /* @__PURE__ */ new Map();
+  const low = /* @__PURE__ */ new Map();
+  const stack = [];
+  const on = /* @__PURE__ */ new Set();
+  const component = /* @__PURE__ */ new Map();
+  let next = 0;
+  let components = 0;
+  for (const root of ids) {
+    if (index.has(root)) continue;
+    const work = [];
+    const enter = (id) => {
+      index.set(id, next);
+      low.set(id, next);
+      next++;
+      stack.push(id);
+      on.add(id);
+      work.push({ id, out: [...edges.get(id)], i: 0 });
+    };
+    enter(root);
+    while (work.length) {
+      const w = work[work.length - 1];
+      if (w.i < w.out.length) {
+        const to = w.out[w.i++];
+        if (!index.has(to)) enter(to);
+        else if (on.has(to)) low.set(w.id, Math.min(low.get(w.id), index.get(to)));
+        continue;
+      }
+      work.pop();
+      const parent = work[work.length - 1];
+      if (parent) low.set(parent.id, Math.min(low.get(parent.id), low.get(w.id)));
+      if (low.get(w.id) !== index.get(w.id)) continue;
+      const members = [];
+      for (; ; ) {
+        const id = stack.pop();
+        on.delete(id);
+        members.push(id);
+        if (id === w.id) break;
+      }
+      if (members.length > 1 || edges.get(w.id).has(w.id)) {
+        for (const id of members) component.set(id, components);
+        components++;
+      }
+    }
+  }
+  return component;
+}
+function markRecursion(program) {
+  const functions2 = program.functions ?? [];
+  const component = cycles(functions2);
+  for (const f of functions2) {
+    if (!component.has(f.id)) continue;
+    f.recursive = true;
+    const remark = f.body[0];
+    if (remark?.kind !== "remark") continue;
+    remark.short = `${remark.short ?? "called"}, calls itself`;
+    remark.text = `${remark.text} It calls itself: around each such call its variables are kept on a stack, as deep as the script's Settings allow (${STACK_DEPTH.toLocaleString("en-US")} calls unless the map says otherwise).`;
+  }
+}
+function settleRecursion(program) {
+  const functions2 = program.functions ?? [];
+  const component = cycles(functions2);
+  if (!component.size) return [];
+  const errors = [];
+  const arrays = new Map(program.arrays.map((a2) => [a2.id, a2]));
+  let nextId = 0;
+  for (const f of functions2) {
+    const mine = component.get(f.id);
+    if (mine === void 0) continue;
+    f.recursive = true;
+    const own = new Set([...f.params, ...f.result ? [f.result.decl] : [], ...declarations(f.body)].map((d) => d.id));
+    const comesBack = (c2) => c2.fn ? component.get(c2.fn) === mine : risky([c2.params.map((p) => p.init), c2.body]);
+    const risky = (root) => {
+      let found = false;
+      eachCall(root, (c2) => {
+        if (c2.fn && component.get(c2.fn) === mine) found = true;
+      });
+      return found;
+    };
+    const temp = (name, kind, at) => {
+      const decl = { id: `(${name})#r${nextId++}`, name: `(${name})`, kind, shared: false, temp: true, at };
+      own.add(decl.id);
+      return decl;
+    };
+    const ref2 = (decl) => decl.kind === "unit" ? { kind: "unitVar", id: decl.id } : { kind: "var", id: decl.id };
+    const steady = (e) => e.kind === "const" || e.kind === "unitNull" || (e.kind === "var" || e.kind === "unitVar") && own.has(e.id);
+    const operands = (items, pre, w) => {
+      let last = -1;
+      items.forEach((x, i) => {
+        if (risky(x.e)) last = i;
+      });
+      return items.map((x, i) => {
+        const e = rewrite(x.e, x.kind, pre, w);
+        if (i >= last || steady(e)) return e;
+        const decl = temp("kept", x.kind, w.at);
+        pre.push({ kind: "declare", decl, init: e, at: w.at, label: w.label });
+        return ref2(decl);
+      });
+    };
+    const settleCall = (c2, pre, w) => {
+      const inits = operands(c2.params.map((p) => ({ e: p.init, kind: p.decl.kind })), pre, w);
+      c2.params.forEach((p, i) => {
+        p.init = inits[i];
+      });
+      if (!c2.fn) c2.body = body2(c2.body, c2.result?.kind);
+    };
+    const choice = (kind, cond, whenTrue, whenFalse, pre, w) => {
+      const decl = temp("chosen", kind, w.at);
+      const arm = (e) => {
+        const inner = [];
+        const value = rewrite(e, kind, inner, w);
+        inner.push(kind === "number" ? { kind: "assign", target: decl.id, value, at: w.at, label: w.label } : { kind: "assignBool", target: decl.id, value, at: w.at, label: w.label });
+        return inner;
+      };
+      const c2 = rewrite(cond, "boolean", pre, w);
+      pre.push({ kind: "declare", decl, init: kind === "number" ? { kind: "const", value: 0 } : { kind: "const", value: false }, at: w.at, label: w.label });
+      pre.push({ kind: "if", cond: c2, then: arm(whenTrue), else: arm(whenFalse), at: w.at, label: w.label });
+      return ref2(decl);
+    };
+    const chain = (e, pre, w) => {
+      const k = e.items.findIndex((item, i) => i >= 1 && risky(item));
+      if (k < 0) return { ...e, items: operands(e.items.map((x) => ({ e: x, kind: "boolean" })), pre, w) };
+      const head = e.items.slice(0, k).map((x) => rewrite(x, "boolean", pre, w));
+      const decl = temp("so far", "boolean", w.at);
+      pre.push({ kind: "declare", decl, init: head.length === 1 ? head[0] : { kind: e.kind, items: head }, at: w.at, label: w.label });
+      const undecided = e.kind === "and" ? { kind: "var", id: decl.id } : { kind: "not", expr: { kind: "var", id: decl.id } };
+      for (const item of e.items.slice(k)) {
+        const inner = [];
+        const value = rewrite(item, "boolean", inner, w);
+        inner.push({ kind: "assignBool", target: decl.id, value, at: w.at, label: w.label });
+        pre.push({ kind: "if", cond: undecided, then: inner, at: w.at, label: w.label });
+      }
+      return { kind: "var", id: decl.id };
+    };
+    const rewrite = (e, kind, pre, w) => {
+      if (!risky(e)) return e;
+      const one = (x, k) => rewrite(x, k, pre, w);
+      switch (e.kind) {
+        case "call": {
+          const c2 = e.call;
+          if (!comesBack(c2)) {
+            settleCall(c2, pre, w);
+            return e;
+          }
+          settleCall(c2, pre, { at: c2.at, label: c2.label });
+          pre.push({ kind: "call", call: c2, at: c2.at, label: c2.label });
+          return c2.result ? ref2(c2.result.decl) : kind === "number" ? { kind: "const", value: 0 } : kind === "boolean" ? { kind: "const", value: false } : { kind: "unitNull" };
+        }
+        case "ternary":
+          if (risky(e.whenTrue) || risky(e.whenFalse)) return choice(kind === "boolean" ? "boolean" : "number", e.cond, e.whenTrue, e.whenFalse, pre, w);
+          return { ...e, cond: one(e.cond, "boolean") };
+        case "and":
+        case "or":
+          return chain(e, pre, w);
+        case "not":
+          return { ...e, expr: one(e.expr, "boolean") };
+        case "test":
+          return { ...e, expr: one(e.expr, "number") };
+        case "edge":
+          return { ...e, cond: one(e.cond, "boolean") };
+        case "unary":
+        case "cast":
+          return { ...e, expr: one(e.expr, "number") };
+        case "element":
+          return { ...e, index: one(e.index, "number") };
+        case "randomInt":
+          return { ...e, bound: one(e.bound, "number") };
+        case "unitField":
+        case "unitPart":
+          return { ...e, unit: one(e.unit, "unit") };
+        case "unitAlive":
+        case "unitFlag":
+          return { ...e, unit: one(e.unit, "unit") };
+        case "binary":
+        case "compare": {
+          const [left, right] = operands([{ e: e.left, kind: "number" }, { e: e.right, kind: "number" }], pre, w);
+          return { ...e, left, right };
+        }
+        case "unitSame": {
+          const [left, right] = operands([{ e: e.left, kind: "unit" }, { e: e.right, kind: "unit" }], pre, w);
+          return { ...e, left, right };
+        }
+        case "intrinsic":
+          return { ...e, args: operands(e.args.map((a2) => ({ e: a2, kind: "number" })), pre, w) };
+        case "unitAt": {
+          const [ptr, epd, uid] = operands([e.ptr, e.epd, e.uid].map((x) => ({ e: x, kind: "number" })), pre, w);
+          return { ...e, ptr, epd, uid };
+        }
+        default:
+          return e;
+      }
+    };
+    const leaveUnless = (cond, w) => {
+      const pre = [];
+      const c2 = rewrite(cond, "boolean", pre, w);
+      pre.push({ kind: "if", cond: { kind: "not", expr: c2 }, then: [{ kind: "break", at: w.at, label: w.label }], at: w.at, label: w.label });
+      return pre;
+    };
+    const body2 = (statements2, returns) => {
+      const out = [];
+      for (const s of statements2) {
+        if (!risky(s)) {
+          out.push(s);
+          continue;
+        }
+        const w = { at: s.at, label: "label" in s ? s.label : "" };
+        const pre = [];
+        const value = (e, k) => rewrite(e, k, pre, w);
+        const arrayKind = (id) => arrays.get(id)?.kind ?? "number";
+        switch (s.kind) {
+          case "declare":
+            s.init = value(s.init, s.decl.kind);
+            break;
+          case "assign":
+            s.value = value(s.value, "number");
+            break;
+          case "assignBool":
+            s.value = value(s.value, "boolean");
+            break;
+          case "assignUnit":
+            s.value = value(s.value, "unit");
+            break;
+          case "declareArray":
+            if (s.init) s.init = operands(s.init.map((e) => ({ e, kind: arrayKind(s.array) })), pre, w);
+            if (s.fill) s.fill = value(s.fill, arrayKind(s.array));
+            break;
+          case "store": {
+            const [v, i] = operands([{ e: s.value, kind: arrayKind(s.array) }, { e: s.index, kind: "number" }], pre, w);
+            s.value = v;
+            s.index = i;
+            break;
+          }
+          case "push":
+            s.value = value(s.value, arrayKind(s.array));
+            break;
+          case "setLength":
+            s.value = value(s.value, "number");
+            break;
+          case "unitWrite": {
+            const [u, v] = operands([{ e: s.unit, kind: "unit" }, { e: s.value, kind: FLAGS2.has(s.field) ? "boolean" : "number" }], pre, w);
+            s.unit = u;
+            s.value = v;
+            break;
+          }
+          case "unitDo": {
+            const items = [{ e: s.unit, kind: "unit" }];
+            if (s.verb.do === "damage" || s.verb.do === "heal") items.push({ e: s.verb.amount, kind: "number" });
+            const done = operands(items, pre, w);
+            s.unit = done[0];
+            if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = done[1];
+            break;
+          }
+          case "tableWrite":
+            if (s.value.kind !== "text") s.value = value(s.value, s.boolean ? "boolean" : "number");
+            break;
+          case "return":
+            if (s.value) s.value = value(s.value, returns ?? "number");
+            break;
+          case "action": {
+            const done = operands((s.variables ?? []).map((v) => ({ e: v.expr, kind: "number" })), pre, w);
+            s.variables?.forEach((v, i) => {
+              v.expr = done[i];
+            });
+            break;
+          }
+          case "centerLocation":
+            [s.x, s.y] = operands([{ e: s.x, kind: "number" }, { e: s.y, kind: "number" }], pre, w);
+            break;
+          case "print": {
+            const numbers = s.parts.filter((p) => p.kind === "number");
+            const done = operands(numbers.map((p) => ({ e: p.expr, kind: "number" })), pre, w);
+            numbers.forEach((p, i) => {
+              p.expr = done[i];
+            });
+            break;
+          }
+          case "switch":
+            s.value = value(s.value, "number");
+            for (const c2 of s.cases) c2.body = body2(c2.body, returns);
+            break;
+          case "if":
+            s.cond = value(s.cond, "boolean");
+            s.then = body2(s.then, returns);
+            if (s.else) s.else = body2(s.else, returns);
+            break;
+          case "while":
+            s.body = body2(s.body, returns);
+            if (s.cond && risky(s.cond)) {
+              s.body = [...leaveUnless(s.cond, w), ...s.body];
+              delete s.cond;
+            }
+            break;
+          case "for":
+            s.body = body2(s.body, returns);
+            s.update = body2(s.update, returns);
+            if (s.cond && risky(s.cond)) {
+              s.body = [...leaveUnless(s.cond, w), ...s.body];
+              delete s.cond;
+            }
+            break;
+          case "do": {
+            const inner = body2(s.body, returns);
+            if (!risky(s.cond)) {
+              s.body = inner;
+              break;
+            }
+            const first = temp("first turn", "boolean", s.at);
+            const check = { at: s.at, label: s.condLabel };
+            out.push({ kind: "declare", decl: first, init: { kind: "const", value: true }, at: s.at, label: s.label });
+            out.push({ kind: "while", at: s.at, label: s.label, body: [
+              { kind: "if", cond: { kind: "not", expr: { kind: "var", id: first.id } }, then: leaveUnless(s.cond, check), at: s.at, label: s.condLabel },
+              { kind: "assignBool", target: first.id, value: { kind: "const", value: false }, at: s.at, label: s.label },
+              ...inner
+            ] });
+            continue;
+          }
+          case "unrolled":
+            s.iterations = s.iterations.map((i) => body2(i, returns));
+            break;
+          case "block":
+            s.body = body2(s.body, returns);
+            break;
+          case "unitLoop":
+            errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over units holds such a call: the loop's place among the game's units is not something a call can keep. Collect what the loop finds into an array first, and make the calls from a loop over that array.` });
+            s.body = body2(s.body, returns);
+            break;
+          case "call":
+            settleCall(s.call, pre, w);
+            break;
+          default:
+            break;
+        }
+        out.push(...pre, s);
+      }
+      return out;
+    };
+    f.body = body2(f.body, f.result?.kind);
+    const never = (statements2) => {
+      for (const s of statements2) {
+        if (s.kind === "call" && s.call.fn === f.id) return true;
+        if (s.kind === "if" && s.else && never(s.then) && never(s.else)) return true;
+        if (s.kind === "block" && never(s.body)) return true;
+        if (s.kind !== "remark" && mentions(s, "return")) return false;
+      }
+      return false;
+    };
+    if (never(f.body)) errors.push({ at: f.at, message: `${f.name} calls itself on every path through it, so no call of it ever returns: the stack would run out the first time it is called. Give it a way out \u2014 an if that returns before the call.` });
+    const local = [];
+    const seen = /* @__PURE__ */ new Set();
+    const find = (root) => {
+      if (Array.isArray(root)) {
+        root.forEach(find);
+        return;
+      }
+      if (!root || typeof root !== "object") return;
+      const o = root;
+      if (o.kind === "declareArray" && typeof o.array === "string" && !seen.has(o.array)) {
+        seen.add(o.array);
+        const a2 = arrays.get(o.array);
+        if (a2 && !a2.values) {
+          a2.dynamic = true;
+          local.push(a2.id);
+        }
+      }
+      for (const v of Object.values(o)) if (v && typeof v === "object") find(v);
+    };
+    find(f.body);
+    const all = [...f.params, ...declarations(f.body)];
+    eachCall(f.body, (c2) => {
+      if (!c2.fn || component.get(c2.fn) !== mine) return;
+      const result = c2.result?.decl.id;
+      c2.saves = { vars: all.filter((d) => d.id !== result).map((d) => d.id), arrays: local, within: f.name };
+    });
+  }
+  return errors;
+}
+
 // compiler/scope.ts
 var Scope = class {
   map = /* @__PURE__ */ new Map();
@@ -4733,22 +5169,12 @@ var boolRef = (v) => ({ kind: "var", id: v.id });
 var unitRef = (v) => ({ kind: "unitVar", id: v.id });
 var NO_UNIT = { kind: "unitNull" };
 var ORDERS = ["move", "patrol", "attack"];
-function mentions(root, kind) {
-  if (Array.isArray(root)) return root.some((x) => mentions(x, kind));
+function mentions2(root, kind) {
+  if (Array.isArray(root)) return root.some((x) => mentions2(x, kind));
   if (!root || typeof root !== "object") return false;
   const o = root;
   if (o.kind === kind) return true;
-  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions(v, kind));
-}
-function eachCall(root, visit) {
-  if (Array.isArray(root)) {
-    for (const x of root) eachCall(x, visit);
-    return;
-  }
-  if (!root || typeof root !== "object") return;
-  const o = root;
-  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call);
-  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
+  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions2(v, kind));
 }
 var Structured = class {
   c;
@@ -4770,6 +5196,8 @@ var Structured = class {
   callees = /* @__PURE__ */ new WeakMap();
   inlinedBecause = /* @__PURE__ */ new Map();
   declared = /* @__PURE__ */ new Map();
+  /** How many inlined copies of each function's body are being walked right now: how a call finds that it is inside its own function. */
+  walkingBodies = /* @__PURE__ */ new Map();
   identities = /* @__PURE__ */ new WeakMap();
   lastIdentity = 0;
   constructor(c2) {
@@ -6218,7 +6646,7 @@ var Structured = class {
   }
   kindOf(type) {
     const { ts } = this;
-    const isNumber = (t) => (t.flags & ts.TypeFlags.NumberLike) !== 0 || t.isIntersection() && t.types.some(isNumber);
+    const isNumber = (t) => (t.flags & ts.TypeFlags.NumberLike) !== 0 || t.isIntersection() && t.types.some(isNumber) || t.isUnion() && t.types.every(isNumber);
     if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
     if (isNumber(type)) return "number";
     const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
@@ -7018,10 +7446,7 @@ var Structured = class {
       this.c.error(call, "The function has no body.");
       return void 0;
     }
-    if (this.inlineDepth >= MAX_INLINE_DEPTH) {
-      this.c.error(call, "Functions nest too deeply (recursion is not possible: a call is inlined).");
-      return void 0;
-    }
+    const deep = this.inlineDepth >= MAX_INLINE_DEPTH;
     if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) && (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))) {
       this.c.error(decl, "Generators and async functions are not supported in a program.");
       return void 0;
@@ -7078,8 +7503,17 @@ var Structured = class {
       }
       const h = this.evaluate(arg);
       if (h && !isGameValue(h.value)) {
+        const constant = this.constantArgument(h.value, label, p);
+        const k = this.kindOf(this.c.checker.getTypeAtLocation(p.name));
+        if (constant && "init" in constant && k && this.assigns(body2, p)) {
+          const copy = this.newVar(p.name.text, k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(p.name)) : {});
+          out.params.push({ decl: copy, init: constant.init, label });
+          scope.bind(p, { kind: "var", v: copy });
+          asCalled(constant);
+          return;
+        }
         scope.bind(p, { kind: "value", value: h.value });
-        asCalled(this.constantArgument(h.value, label, p) ?? `${p.name.text} is ${describe2(h.value)}, which only the script has`);
+        asCalled(constant ?? `${p.name.text} is ${describe2(h.value)}, which only the script has`);
         return;
       }
       const binding = this.bindingOf(arg);
@@ -7143,20 +7577,22 @@ var Structured = class {
     const site = args ? this.siteOf(decl, args) : void 0;
     if (site && args) {
       if (site.fn) return this.calls(out, site.fn, args);
-      if (site.first && !site.never && !site.busy) {
+      if (site.making) return this.calls(out, site.making, args);
+      if ((site.first || (site.walking ?? 0) > 0) && !site.never && !site.busy) {
         if (ts.isFunctionDeclaration(decl) && (closure === null || decl.parent !== this.c.body.plan.body)) site.never = "it is declared inside a block or another function, whose variables it may use";
         else {
           site.busy = true;
           let made;
           try {
-            made = this.callable(parameters, body2, target, name ?? "function", decl, kind, args, closure, at);
+            made = this.callable(parameters, body2, target, name ?? "function", decl, kind, args, closure, at, site);
           } finally {
             site.busy = false;
+            site.making = void 0;
           }
           if (typeof made === "string") site.never = made;
           else {
             site.fn = made;
-            this.calls(site.first.call, made, site.first.args);
+            if (site.first) this.calls(site.first.call, made, site.first.args);
             site.first = void 0;
             return this.calls(out, made, args);
           }
@@ -7165,7 +7601,19 @@ var Structured = class {
     }
     const because = site?.never ?? (args ? "" : why);
     if (because) this.inlinedBecause.set(decl, { why: because, name: name ?? "function", at });
-    out.body = this.walkFunction(body2, kind, target, scope);
+    if (deep) {
+      this.c.error(call, (this.walkingBodies.get(decl) ?? 0) > 0 ? `${what} calls itself, and here it cannot be a function that is called${because ? ` \u2014 ${because}` : ""}. A call that is not one is a copy of the function's body, and these copies would have no end.` : "Functions nest too deeply: a call that is inlined is a copy of the function's body, and these are sixteen inside one another.");
+      return void 0;
+    }
+    if (site) site.walking = (site.walking ?? 0) + 1;
+    this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 0) + 1);
+    try {
+      out.body = this.walkFunction(body2, kind, target, scope);
+    } finally {
+      if (site) site.walking = (site.walking ?? 1) - 1;
+      this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 1) - 1);
+    }
+    if (site?.fn && args) return this.calls(out, site.fn, args);
     if (site && args && !site.first && !site.fn && !site.never) site.first = { call: out, args };
     return out;
   }
@@ -7259,7 +7707,7 @@ var Structured = class {
    * that way — a parameter reaches a field only a value known when the script is built can fill. Nothing the attempt
    * reported is kept: the same lines compile, or fail for good, where the function is inlined.
    */
-  callable(parameters, body2, target, name, decl, kind, args, closure, at) {
+  callable(parameters, body2, target, name, decl, kind, args, closure, at, site) {
     const scope = new Scope(closure);
     const fn = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
     for (let i = 0; i < parameters.length; i++) {
@@ -7285,14 +7733,18 @@ var Structured = class {
     this.c.error = (_node, message) => {
       caught.push(message);
     };
+    site.making = fn;
+    const depth = this.inlineDepth;
+    this.inlineDepth = 0;
     try {
       fn.body = this.walkFunction(body2, kind, target, scope);
     } finally {
+      this.inlineDepth = depth;
       this.c.error = error;
     }
     if (caught.length) return `with its parameters as variables of the game it does not compile \u2014 ${caught[0].replace(/\.$/, "")}`;
-    if (mentions(fn.body, "sleep")) return "it sleeps, and the program wakes up inside it";
-    if (mentions(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
+    if (mentions2(fn.body, "sleep")) return "it sleeps, and the program wakes up inside it";
+    if (mentions2(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
     this.mark(fn, decl);
     this.functions.push(fn);
     this.declared.set(fn, decl);
@@ -8603,12 +9055,14 @@ function compileScript(ts, files, names, options) {
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
     const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
     const mixes = typeNumbers(emitted2.program);
+    markRecursion(emitted2.program);
     const index = programs.length;
     ir.push(emitted2.program);
     programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
     for (const d of programDeclarations(emitted2.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {}, ...d.unsigned ? { unsigned: true } : {} });
     const check = checkProgram(emitted2.program);
-    for (const d of [...mixes, ...check.errors]) {
+    const recursion = settleRecursion(emitted2.program);
+    for (const d of [...mixes, ...check.errors, ...recursion]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }
@@ -9109,7 +9563,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "3.7.0";
+var VERSION = "3.8.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -9441,8 +9895,8 @@ var Simulation = class {
     }
     this.cycle++;
   }
-  run(cycles) {
-    for (let i = 0; i < cycles; i++) this.step();
+  run(cycles2) {
+    for (let i = 0; i < cycles2; i++) this.step();
     return this;
   }
   condition(c2) {
@@ -9512,8 +9966,8 @@ function compare(value, comparison, amount) {
       return false;
   }
 }
-function simulate(triggers, cycles, options = {}) {
-  return new Simulation(triggers, options).run(cycles);
+function simulate(triggers, cycles2, options = {}) {
+  return new Simulation(triggers, options).run(cycles2);
 }
 
 // script.ts
@@ -9521,20 +9975,24 @@ var SCRIPT_FOLDER = "trigscript\\";
 var MANIFEST_MEMBER = `${SCRIPT_FOLDER}build.json`;
 var ENTRY_MEMBER = `${SCRIPT_FOLDER}${ENTRY_FILE}`;
 var SETTINGS_MEMBER = `${SCRIPT_FOLDER}settings.json`;
-var DEFAULT_SETTINGS = { heapCells: HEAP_CELLS };
+var DEFAULT_SETTINGS = { heapCells: HEAP_CELLS, stackDepth: STACK_DEPTH };
 function readSettings(extras) {
   const bytes2 = member(extras, SETTINGS_MEMBER);
   if (!bytes2) return { ...DEFAULT_SETTINGS };
   try {
     const raw = JSON.parse(decoder.decode(bytes2));
-    return { heapCells: heapCells(raw?.heapCells) };
+    return { heapCells: heapCells(raw?.heapCells), stackDepth: stackDepth(raw?.stackDepth) };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
 }
 function withSettings(extras, settings) {
+  const chosen = {};
   const heap = heapCells(settings.heapCells);
-  return withMember(extras, SETTINGS_MEMBER, heap === DEFAULT_SETTINGS.heapCells ? null : encoder.encode(JSON.stringify({ heapCells: heap }, null, 2)));
+  const depth = stackDepth(settings.stackDepth);
+  if (heap !== DEFAULT_SETTINGS.heapCells) chosen.heapCells = heap;
+  if (depth !== DEFAULT_SETTINGS.stackDepth) chosen.stackDepth = depth;
+  return withMember(extras, SETTINGS_MEMBER, Object.keys(chosen).length ? encoder.encode(JSON.stringify(chosen, null, 2)) : null);
 }
 var decoder = new TextDecoder();
 var encoder = new TextEncoder();
@@ -9753,6 +10211,8 @@ var FACTORIES = /* @__PURE__ */ new Set([106, 111, 113, 114, 131, 132, 133, 154,
 var inClass = (type, cls) => cls === 230 ? type < 106 : cls === 231 ? type >= 106 && type <= 202 : FACTORIES.has(type);
 var Halt = class extends Error {
 };
+var Stopped = class extends Error {
+};
 var ProgramRun = class {
   vars = /* @__PURE__ */ new Map();
   /** The variables that hold a unit, or none. */
@@ -9766,6 +10226,10 @@ var ProgramRun = class {
   body;
   done = false;
   steps = 0;
+  /** How many calls deep the program is in functions that call themselves: frames on the stack. Nothing is on it between frames. */
+  depth = 0;
+  /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
+  apart = [];
   sim;
   index;
   program;
@@ -9785,10 +10249,32 @@ var ProgramRun = class {
   tick() {
     if (this.done || !this.body) return;
     this.steps = 0;
-    const r = this.body.next();
-    if (r.done) {
+    try {
+      if (this.drive()) {
+        this.done = true;
+        this.body = null;
+      }
+    } catch (err) {
+      this.apart.length = 0;
+      if (!(err instanceof Stopped)) throw err;
       this.done = true;
       this.body = null;
+      this.depth = 0;
+    }
+  }
+  /** The run until it gives the frame back (false) or ends (true): the body, and above it each body that was handed over to be run apart. */
+  drive() {
+    let send;
+    for (; ; ) {
+      const top = this.apart[this.apart.length - 1] ?? this.body;
+      const r = top.next(send);
+      send = void 0;
+      if (r.done) {
+        if (!this.apart.length) return true;
+        this.apart.pop();
+        send = r.value;
+      } else if (r.value === void 0) return false;
+      else this.apart.push(r.value.run);
     }
   }
   step() {
@@ -10091,9 +10577,11 @@ var ProgramRun = class {
     if (c2.result) this.declare(c2.result.decl);
     const fn = c2.fn ? this.program.functions?.find((f) => f.id === c2.fn) : void 0;
     if (c2.fn && !fn) throw new Error(`The function ${c2.fn} is not one of the program's (line ${c2.at.line}).`);
+    let kept;
     if (fn) {
       const values = [];
       for (const p of c2.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init) : yield* this.init(p.init, p.decl.kind));
+      if (c2.saves) kept = this.keep(c2);
       c2.params.forEach((p, i) => {
         this.declare(p.decl);
         if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i]);
@@ -10105,9 +10593,47 @@ var ProgramRun = class {
         yield* this.put(p.decl, p.init);
       }
     }
-    const flow = yield* this.block(fn ? fn.body : c2.body, { fn: { result: c2.result?.decl } });
+    const ctx = { fn: { result: c2.result?.decl } };
+    const flow = kept && fn ? yield { run: this.block(fn.body, ctx) } : yield* this.block(fn ? fn.body : c2.body, ctx);
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c2.at.line}).`);
+    if (kept) this.bringBack(kept);
     return c2.result && c2.result.kind !== "unit" ? this.read(c2.result.decl.id) : 0;
+  }
+  /**
+   * A call that may come back into the function it is in: what that function holds goes on the stack, as the game
+   * keeps it (`python/trigscript.py`) — its variables, and the handle of each array declared in it, which is "no block"
+   * for the length of the call. Past the depth the map allows the program stops, and says where.
+   */
+  keep(c2) {
+    const saves = c2.saves;
+    if (this.depth >= this.sim.stackDepth) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: c2.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
+      throw new Stopped();
+    }
+    this.depth++;
+    const frame = { vars: [], units: [], arrays: [] };
+    for (const id of saves.vars) {
+      if (this.unitVars.has(id)) frame.units.push([id, this.unitVars.get(id) ?? null]);
+      else if (this.vars.has(id)) frame.vars.push([id, this.vars.get(id)]);
+    }
+    for (const id of saves.arrays) {
+      const a2 = this.arrays.get(id);
+      if (!a2) continue;
+      frame.arrays.push({ a: a2, cells: a2.cells, room: a2.room });
+      a2.cells = [];
+      a2.room = 0;
+    }
+    return frame;
+  }
+  bringBack(frame) {
+    for (const [id, v] of frame.vars) this.vars.set(id, v);
+    for (const [id, u] of frame.units) this.unitVars.set(id, u);
+    for (const k of frame.arrays) {
+      if (k.a.room) this.sim.heap.give(k.a.room);
+      k.a.cells = k.cells;
+      k.a.room = k.room;
+    }
+    this.depth--;
   }
   /* ── statements ── */
   *block(body2, ctx) {
@@ -10353,7 +10879,7 @@ var ProgramSimulation = class {
   /**
    * The heap the programs' growing arrays share, counted as the game counts it: blocks are powers of two, a block given
    * back waits in its size's list for the next array that wants that size, and new ground is taken from the bottom up
-   * while the stack (recursion's, to come) takes it from the top down. Only the counting is here: the cells are the arrays' own.
+   * up to its end. Only the counting is here: the cells are the arrays' own.
    */
   heap = {
     cells: HEAP_CELLS,
@@ -10374,6 +10900,8 @@ var ProgramSimulation = class {
       this.free.set(room, (this.free.get(room) ?? 0) + 1);
     }
   };
+  /** How deep the stack of a function that calls itself goes; it is an array of its own in the built map, so the heap has no part in it. */
+  stackDepth = STACK_DEPTH;
   maxSteps;
   random;
   conditionOf;
@@ -10401,6 +10929,7 @@ var ProgramSimulation = class {
     this.world = options.world ?? new Simulation([], { player: options.player ?? programs[0]?.owner ?? 0, condition: options.condition, random: options.random, strings: options.strings });
     this.maxSteps = options.maxStepsPerCycle ?? 1e5;
     this.heap.cells = this.heap.stack = heapCells(options.heapCells);
+    this.stackDepth = stackDepth(options.stackDepth);
     this.random = options.random ?? Math.random;
     this.conditionOf = options.condition;
     this.readOf = options.read;
@@ -10642,8 +11171,8 @@ var ProgramSimulation = class {
     }
     this.cycle++;
   }
-  run(cycles) {
-    for (let i = 0; i < cycles; i++) this.step();
+  run(cycles2) {
+    for (let i = 0; i < cycles2; i++) this.step();
     return this;
   }
   /** Whether every program has ended. */
@@ -10723,7 +11252,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 10
+IR_VERSION = 11
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -10867,8 +11396,9 @@ class ArrayStorage:
 
 # The heap the programs' growing arrays share. A block is a power of two of cells, four at least; one given back
 # waits in its size's list (its first cell links the next) for whoever wants that size next; new ground is taken
-# from the bottom up, and the stack - recursion's, to come - will take it from the top down. Cell 0 is never
-# handed out: 0 is "no block". compiler/simulateIr.ts counts the same way, so both run out at the same push.
+# from the bottom up. Cell 0 is never handed out: 0 is "no block". compiler/simulateIr.ts counts the same way, so
+# both run out at the same push. (Recursion's stack is an array of its own, below: how deep a function may go is
+# then the same whatever the arrays hold.)
 HEAP_CELLS = min(1 << 20, max(1024, int(IR.get("heap", 16384))))  # the map's script settings, or the default
 HEAP_SMALLEST = 4
 HEAP_ROOMS = []
@@ -10885,7 +11415,6 @@ def heap():
     rooms = EUDArray(HEAP_ROOMS + [0xFFFFFFFF])  # initial: the sizes, never written
     free = EUDArray(len(HEAP_ROOMS))  # initial: no block waits
     top = EUDVariable(1)  # initial: the heap's own state, for the whole game
-    stack = EUDVariable(HEAP_CELLS)  # initial: the heap's own state
     said = EUDVariable(0)  # initial: the heap's own state
 
     @EUDFunc
@@ -10898,7 +11427,7 @@ def heap():
             EUDReturn(at)
         EUDEndIf()
         end = top + rooms[k]
-        if EUDIf()(end <= stack):
+        if EUDIf()(end <= HEAP_CELLS):
             at << top
             top << end
             EUDReturn(at)
@@ -10956,21 +11485,70 @@ def heap():
         EUDEndIf()
         EUDReturn(ptr, length, room, k)
 
-    @EUDFunc
-    def reserve(n):
-        """The stack's: n cells from the top down; their place, or 0 when the heap has grown up to there."""
-        if EUDIf()(top + n <= stack):
-            stack -= n
-            EUDReturn(stack)
-        EUDEndIf()
-        EUDReturn(0)
-
-    @EUDFunc
-    def release(n):
-        stack += n
-
-    _HEAP.update(cells=cells, take=take, give=give, grow=grow, push=push, reserve=reserve, release=release)
+    _HEAP.update(cells=cells, take=take, give=give, grow=grow, push=push)
     return _HEAP
+
+
+# The stack of the functions that call themselves. A function's variables are cells of the program, one of each, so
+# a call that may come back into the function it is in (the IR's \`saves\`) puts what that function holds here first
+# and takes it back after, with where the function returns to. One stack serves every program and every player:
+# such a function never sleeps, so the stack is empty whenever a frame ends. It is as many frames of the largest
+# frame as the map's script settings allow calls deep (the IR file's \`stack\`), and the depth is what is counted -
+# compiler/simulateIr.ts counts the same - so a program stops at the same call in both.
+STACK_DEPTH = min(1 << 16, max(16, int(IR.get("stack", 1024))))
+STACK_CELLS_MAX = 1 << 20
+HANDLE = ("ptr", "len", "room", "k")
+_STACK = {}
+
+
+def frame_cells(saves, kinds):
+    return 1 + 4 * len(saves.get("arrays", [])) + sum(3 if kinds.get(v) == "unit" else 1 for v in saves.get("vars", []))
+
+
+def largest_frame():
+    most = [0]
+
+    def walk(node, kinds):
+        if isinstance(node, list):
+            for x in node:
+                walk(x, kinds)
+        elif isinstance(node, dict):
+            if isinstance(node.get("saves"), dict):
+                most[0] = max(most[0], frame_cells(node["saves"], kinds))
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    walk(v, kinds)
+
+    def kinds_of(node, into):
+        if isinstance(node, list):
+            for x in node:
+                kinds_of(x, into)
+        elif isinstance(node, dict):
+            if isinstance(node.get("id"), str) and node.get("kind") in ("number", "boolean", "unit") and "shared" in node:
+                into[node["id"]] = node["kind"]
+            for v in node.values():
+                if isinstance(v, (dict, list)):
+                    kinds_of(v, into)
+        return into
+
+    for program in IR.get("programs", []):
+        walk(program.get("functions", []), kinds_of(program, {}))
+    return most[0]
+
+
+def stack():
+    """The stack's cells, where the next frame goes (an EPD, so a cell is one write) and how deep it is."""
+    if _STACK:
+        return _STACK
+    frame = largest_frame()
+    if frame * STACK_DEPTH > STACK_CELLS_MAX:
+        raise Fail("trigscript: the stack would be %d cells - %d calls deep, %d cells a call - and %d is the most: lower the recursion depth in the script's Settings, or keep fewer variables in the function that calls itself" % (frame * STACK_DEPTH, STACK_DEPTH, frame, STACK_CELLS_MAX))
+    cells = EUDArray(max(1, frame) * STACK_DEPTH)
+    base = cells  # an EUDArray's own value is where it is, as an EPD already
+    at = EUDVariable(base)  # initial: the stack's own state; it is back here whenever a frame ends
+    depth = EUDVariable(0)  # initial: the stack's own state; nothing is on it between frames
+    _STACK.update(cells=cells, base=base, at=at, depth=depth)
+    return _STACK
 
 
 class ListStorage:
@@ -11174,6 +11752,8 @@ class Lowering:
         self.functions = {f["id"]: f for f in program.get("functions", [])}
         self.made = {}
         self.in_function = 0
+        # The function being lowered, when it is one that calls itself: whose return address a frame keeps.
+        self.within = []
 
     # \u2500\u2500 storage \u2500\u2500
     def player_of(self):
@@ -12315,6 +12895,8 @@ class Lowering:
         kind = f["result"]["kind"] if f.get("result") else "void"
         result = self.declare(f["result"]["decl"]) if f.get("result") else None
         lowering = self
+        if f.get("recursive"):
+            return self.recursive_function(id_, f, params, kind, result)
 
         @EUDFunc
         def body():
@@ -12331,6 +12913,117 @@ class Lowering:
         made = self.made[id_] = (body, params, result)
         return made
 
+    def recursive_function(self, id_, f, params, kind, result):
+        """A function that calls itself. eudplib's EUDFunc keeps one return address and is not there to be called
+        until its body is whole, so this one is triggers of our own: the body in a scope apart, ended by a trigger
+        whose next-trigger field is the return address - a cell a call writes, and a frame keeps. It is on record
+        before its body is lowered, so a call of it met in that body finds it."""
+        start, tail = Forward(), Forward()
+        # The return address a second time, in a variable: a frame keeps it from there, since reading a cell of
+        # the game's memory back costs some thirty triggers and writing a variable out costs two.
+        back = EUDVariable()
+
+        def body():
+            after = Forward()
+            DoActions([SetNextPtr(tail, after), back.SetNumber(after)])
+            EUDJump(start)
+            after << NextTrigger()
+
+        made = self.made[id_] = (body, params, result)
+        entry = {"f": f, "tail": tail, "back": back}
+        PushTriggerScope()
+        start << NextTrigger()
+        if result is not None:
+            result.set(NO_UNIT if kind == "unit" else 0)
+        end = Forward()
+        self.in_function += 1
+        self.within.append(entry)
+        try:
+            self.straight(f["body"], {"fn": {"result": result, "kind": kind, "end": end}})
+        finally:
+            self.within.pop()
+            self.in_function -= 1
+        end << NextTrigger()
+        tail << RawTrigger()
+        PopTriggerScope()
+        return made
+
+    def saved_cells(self, saves, node):
+        """What a frame keeps, as (read, write) pairs a cell: the variables, a unit three cells, an array's handle four."""
+        pairs = []
+        for id_ in saves.get("vars", []):
+            s = self.vars.get(id_)
+            if s is None:
+                # Declared further down the body: it has no cell yet, and the declaration that makes it sets it.
+                continue
+            if isinstance(s, UnitStorage):
+                for cell in (s.ptr, s.epd, s.uid):
+                    pairs.append(self.cell_pair(cell, s.rowed))
+            elif isinstance(s, Storage):
+                pairs.append(self.cell_pair(s.store, s.rowed))
+        for id_ in saves.get("arrays", []):
+            a = self.array(id_, node)
+            if isinstance(a, ListStorage):
+                for name in HANDLE:
+                    pairs.append(self.cell_pair(a.handle[name], a.rowed))
+        return pairs
+
+    def cell_pair(self, cell, rowed):
+        if rowed:
+            return (lambda: cell[self.player_of()]), (lambda v: cell.__setitem__(self.player_of(), v))
+        return (lambda: cell), (lambda v: cell << v)
+
+    def keep(self, call):
+        """Before a call that may come back into the function it is in: that function's cells and its return
+        address onto the stack, the handles of its arrays set to "no block". Past the depth the map allows the
+        program says so and stops for good."""
+        saves = call["saves"]
+        st = stack()
+        if not self.within:
+            raise Fail("trigscript: a call keeps a frame outside a function that calls itself%s" % where(call))
+        mine = self.within[-1]
+        if EUDIf()(st["depth"] >= STACK_DEPTH):
+            GetGlobalStringBuffer().print("\\x06TrigScript: stack overflow in %s, line %s - %d calls deep. The program has stopped." % (saves.get("within", "a function"), (call.get("at") or {}).get("line", "?"), STACK_DEPTH))
+            st["depth"] << 0
+            st["at"] << st["base"]
+            self.set_state(DONE)
+            EUDJump(self.frame_end)
+        EUDEndIf()
+        pairs = self.saved_cells(saves, call)
+        at = st["at"]
+        f_dwwrite_epd(at, mine["back"])
+        at += 1
+        for read, _ in pairs:
+            f_dwwrite_epd(at, read())
+            at += 1
+        st["depth"] += 1
+        for id_ in saves.get("arrays", []):
+            a = self.array(id_, call)
+            if isinstance(a, ListStorage):
+                for name in HANDLE:
+                    a.put(name, 0)
+        return pairs, mine
+
+    def bring_back(self, call, kept):
+        pairs, mine = kept
+        st = stack()
+        # The block the inner run left in a handle goes back to the heap before the handle is the outer run's again.
+        for id_ in call["saves"].get("arrays", []):
+            a = self.array(id_, call)
+            if isinstance(a, ListStorage):
+                ptr = fresh(a.field("ptr"))
+                if EUDIf()(ptr >= 1):
+                    a.heap["give"](ptr, a.field("k"))
+                EUDEndIf()
+        at = st["at"]
+        for _, write in reversed(pairs):
+            at -= 1
+            write(f_dwread_epd(at))
+        at -= 1
+        mine["back"] << f_dwread_epd(at)
+        f_dwwrite_epd(EPD(mine["tail"]) + 1, mine["back"])
+        st["depth"] -= 1
+
     def call_function(self, call, result):
         body, params, returned = self.function(call["fn"], call)
         if len(params) != len(call["params"]):
@@ -12344,9 +13037,18 @@ class Lowering:
             if later and p["decl"]["kind"] != "unit" and not isinstance(v, int):
                 v = fresh(v)
             values.append(v)
+        # A call that may come back here keeps this function's frame: after the arguments are worked out (they read
+        # it), before the parameters are set (they may be this function's own).
+        kept = None
+        if call.get("saves"):
+            # Copies: an argument may be one of this function's own parameters, which the ones set before it write over.
+            values = [v if isinstance(v, int) else UnitRef(v.ptr if isinstance(v.ptr, int) else fresh(v.ptr), v.epd if isinstance(v.epd, int) else fresh(v.epd), v.uid if v.uid is None or isinstance(v.uid, int) else fresh(v.uid)) if isinstance(v, UnitRef) else fresh(v) for v in values]
+            kept = self.keep(call)
         for s, v in zip(params, values):
             s.set(v)
         body()
+        if kept is not None:
+            self.bring_back(call, kept)
         if result is None:
             return 0
         result.set(returned.get())
@@ -12991,8 +13693,8 @@ var ScriptService = class {
     return printScript(triggers, { names, string: (i) => this.api.names.string(i) }, options);
   }
   /** The trigger-cycle interpreter over records: Deaths, Switch, Always and Never modelled, other conditions false, other actions logged. */
-  simulate(triggers, cycles, options = {}) {
-    const sim = simulate(triggers, cycles, { player: options.player, strings: (i) => this.api.names.string(i) });
+  simulate(triggers, cycles2, options = {}) {
+    const sim = simulate(triggers, cycles2, { player: options.player, strings: (i) => this.api.names.string(i) });
     const switches = [];
     sim.switches.forEach((v, i) => {
       if (v) switches.push(i);
@@ -13710,33 +14412,47 @@ function createWorkspace(svc, options, mode) {
   const settingsView = shell.view({ id: "settings", title: "Settings", onShow: () => renderSettings() });
   function renderSettings() {
     const open = api.document.isOpen();
-    const now = svc.settings().heapCells;
-    const input = el("input", { type: "number", min: String(HEAP_CELLS_MIN), max: String(HEAP_CELLS_MAX), step: "1024", value: String(now), disabled: !open });
+    const settings = svc.settings();
+    const count = (n) => n.toLocaleString("en-US");
     const size = (cells) => cells * 4 >= 1 << 20 ? `${(cells * 4 / (1 << 20)).toFixed(cells * 4 % (1 << 20) ? 1 : 0)} MB` : `${Math.round(cells * 4 / 1024)} KB`;
-    const said = el("span", { className: "now" }, `cells \u2014 ${size(now)} of the built map`);
-    const reset = el("button", { type: "button", disabled: !open || now === HEAP_CELLS }, `Default (${HEAP_CELLS.toLocaleString("en-US")})`);
-    const commit = (value) => {
-      const cells = heapCells(typeof value === "number" && Number.isFinite(value) ? value : HEAP_CELLS);
-      if (cells !== svc.settings().heapCells) {
-        svc.writeSettings({ heapCells: cells });
-        simulation = null;
-        renderSimulation();
-      }
-      renderSettings();
+    const row = (o) => {
+      const now = settings[o.key];
+      const input = el("input", { type: "number", min: String(o.min), max: String(o.max), step: String(o.step), value: String(now), disabled: !open });
+      const reset = el("button", { type: "button", disabled: !open || now === o.normal }, `Default (${count(o.normal)})`);
+      const commit = (value) => {
+        const next = o.fit(typeof value === "number" && Number.isFinite(value) ? value : o.normal);
+        if (next !== svc.settings()[o.key]) {
+          svc.writeSettings({ ...svc.settings(), [o.key]: next });
+          simulation = null;
+          renderSimulation();
+        }
+        renderSettings();
+      };
+      input.addEventListener("change", () => commit(input.value === "" ? o.normal : Number(input.value)));
+      input.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") input.blur();
+      });
+      reset.addEventListener("click", () => commit(o.normal));
+      return el("div", { className: "row" }, input, el("span", { className: "now" }, o.said(now)), reset);
     };
-    input.addEventListener("change", () => commit(input.value === "" ? HEAP_CELLS : Number(input.value)));
-    input.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") input.blur();
-    });
-    reset.addEventListener("click", () => commit(HEAP_CELLS));
+    const frame = result?.ok ? largestFrame(result.ir) : 0;
+    const stack = (depth) => {
+      if (!frame) return "calls deep \u2014 no function of this script calls itself";
+      const cells = frame * depth;
+      return `calls deep \u2014 ${frame} cells a call here, ${size(cells)} while the map is played${cells > STACK_CELLS_MAX ? `: more than the ${size(STACK_CELLS_MAX)} a map may use, and it will not build` : ""}`;
+    };
     settingsView.body.replaceChildren(el(
       "div",
       { className: "tsd-settings" },
       el("h4", {}, "Memory for arrays that grow"),
       el("p", {}, "Arrays a program pushes to share one pool of cells; this is its size. A single array can reach between a quarter and a half of it. When the pool runs out, nothing more is pushed and the game says so once."),
-      el("div", { className: "row" }, input, said, reset),
-      el("p", {}, `${HEAP_CELLS_MIN.toLocaleString("en-US")} to ${HEAP_CELLS_MAX.toLocaleString("en-US")} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.`)
+      row({ key: "heapCells", min: HEAP_CELLS_MIN, max: HEAP_CELLS_MAX, step: 1024, normal: HEAP_CELLS, fit: heapCells, said: (now) => `cells \u2014 ${size(now)} of the built map` }),
+      el("p", {}, `${count(HEAP_CELLS_MIN)} to ${count(HEAP_CELLS_MAX)} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.`),
+      el("h4", {}, "Recursion depth"),
+      el("p", {}, "How many calls deep a function that calls itself may go. Around each such call the function's variables are kept on a stack, which is only in the built map when some function calls itself. A call past the limit stops the program, and the game says where; Simulate stops at the same call."),
+      row({ key: "stackDepth", min: STACK_DEPTH_MIN, max: STACK_DEPTH_MAX, step: 256, normal: STACK_DEPTH, fit: stackDepth, said: stack }),
+      el("p", {}, `${count(STACK_DEPTH_MIN)} to ${count(STACK_DEPTH_MAX)} calls. The limit costs nothing until it is reached, but each call deep keeps and brings back every variable of its function, so thousands of calls within one frame make the game stutter. Kept in the map, like the pool above.`)
     ));
   }
   const problemsItem = shell.statusItem("left");
@@ -14295,7 +15011,7 @@ function createWorkspace(svc, options, mode) {
     try {
       const player = r.programs[0]?.owner;
       const sim = new Simulation(r.triggers, { strings: r.strings, player });
-      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, ...simulatedMap() }) : null;
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, stackDepth: svc.settings().stackDepth, ...simulatedMap() }) : null;
       for (let i = 0; i < SIMULATE_FRAMES; i++) {
         sim.step();
         programs?.step();
@@ -14604,7 +15320,7 @@ function activate(api) {
   api.commands.register({ id: "compile", title: "TrigScript: compile", run: (input) => svc.compile(scriptInput(input)) });
   api.commands.register({ id: "build", title: "TrigScript: build", run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true, replaceStale: isRecord(options) && options.replaceStale === true }) });
   api.commands.register({ id: "print", title: "TrigScript: print records as script", run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : void 0) });
-  api.commands.register({ id: "simulate", title: "TrigScript: simulate records", run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
+  api.commands.register({ id: "simulate", title: "TrigScript: simulate records", run: (triggers, cycles2, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles2) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
   api.commands.register({ id: "triggerAt", title: "TrigScript: trigger at a source line", run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
   const attached = svc.attach();
   return () => attached.dispose();

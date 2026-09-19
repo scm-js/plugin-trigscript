@@ -29,7 +29,7 @@
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, PlayerGroup, ResourceType } from "../vendor/triggers";
-import { HEAP_CELLS, HEAP_SMALLEST, heapCells } from "./ir";
+import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, heapCells, stackDepth } from "./ir";
 import type { ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
@@ -103,14 +103,26 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
   unitClass?: (type: number, cls: number) => boolean;
   /** The cells of the heap the programs' growing arrays share: the map's script setting; default `HEAP_CELLS`. */
   heapCells?: number;
+  /** How many calls deep a function that calls itself may go: the map's script setting; default `STACK_DEPTH`. */
+  stackDepth?: number;
   /** The unit type a name typed in chat means, the name in lower case: what a `{…:unit}` capture asks. Default: no name is known. */
   unitByName?: (lower: string) => number | undefined;
 }
 
 type Flow = "next" | "break" | "continue" | "return";
-type Exec = Generator<undefined, Flow, undefined>;
+type Exec = Gen<Flow>;
 type Value = number | boolean;
-type Gen<T> = Generator<undefined, T, undefined>;
+/**
+ * A piece of a program's run. What it yields is the frame (`undefined`: a sleep, and the rest of the run waits for the
+ * next frame) or a body to be run apart from it (`Apart`), whose outcome is what the `yield` then evaluates to.
+ */
+type Gen<T> = Generator<Apart | undefined, T, unknown>;
+/**
+ * The body of a call that may come back into its own function, handed to the run's loop (`ProgramRun.drive`) instead
+ * of being run inside the caller: each `yield*` is a frame of JavaScript's own stack, a thousand calls deep would be
+ * ten thousand of those, and the browser's stack ends long before the map's does.
+ */
+interface Apart { run: Exec }
 
 interface Ctx {
   /** Inside an inlined call: where `return` writes. */
@@ -118,8 +130,17 @@ interface Ctx {
 }
 
 class Halt extends Error {}
+/** The program stops for good, as the game stops it: its stack ran out. Said as a fault where it happened. */
+class Stopped extends Error {}
 
 /** One program's run: its variables, its latches, and the coroutine that is its body. */
+/** What a recursive function holds, kept for the length of a call that may come back into it. */
+interface Frame {
+  vars: [string, Value][];
+  units: [string, SimUnit | null][];
+  arrays: { a: { decl: ArrayDecl; cells: Value[]; room: number }; cells: Value[]; room: number }[];
+}
+
 class ProgramRun {
   readonly vars = new Map<string, Value>();
   /** The variables that hold a unit, or none. */
@@ -133,6 +154,10 @@ class ProgramRun {
   body: Exec | null;
   done = false;
   steps = 0;
+  /** How many calls deep the program is in functions that call themselves: frames on the stack. Nothing is on it between frames. */
+  depth = 0;
+  /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
+  private readonly apart: Exec[] = [];
   readonly sim: ProgramSimulation;
   readonly index: number;
   readonly program: Program;
@@ -155,8 +180,31 @@ class ProgramRun {
   tick(): void {
     if (this.done || !this.body) return;
     this.steps = 0;
-    const r = this.body.next();
-    if (r.done) { this.done = true; this.body = null; }
+    try {
+      if (this.drive()) { this.done = true; this.body = null; }
+    } catch (err) {
+      this.apart.length = 0;
+      if (!(err instanceof Stopped)) throw err;
+      this.done = true;
+      this.body = null;
+      this.depth = 0;
+    }
+  }
+
+  /** The run until it gives the frame back (false) or ends (true): the body, and above it each body that was handed over to be run apart. */
+  private drive(): boolean {
+    let send: unknown;
+    for (;;) {
+      const top = this.apart[this.apart.length - 1] ?? this.body!;
+      const r = top.next(send);
+      send = undefined;
+      if (r.done) {
+        if (!this.apart.length) return true;
+        this.apart.pop();
+        send = r.value;
+      } else if (r.value === undefined) return false;
+      else this.apart.push(r.value.run);
+    }
   }
 
   private step(): void {
@@ -274,7 +322,7 @@ class ProgramRun {
    * way they are read; what reads them one way or the other — ÷, %, a shift right, min and max, a
    * comparison — says which in the IR. A divisor of 0 gives 0, as `(a / 0) | 0` does.
    */
-  private *num(e: NumExpr): Generator<undefined, number, undefined> {
+  private *num(e: NumExpr): Gen<number> {
     switch (e.kind) {
       case "const": return e.value | 0;
       case "var": return Number(this.read(e.id)) | 0;
@@ -324,11 +372,11 @@ class ProgramRun {
   }
 
   /** A number as the game takes one: the 32 bits from 0 up. What goes to a unit, a table, an action or the map is never below zero by then (the compiler saw to it). */
-  private *amount(e: NumExpr): Generator<undefined, number, undefined> {
+  private *amount(e: NumExpr): Gen<number> {
     return (yield* this.num(e)) >>> 0;
   }
 
-  private *bool(e: BoolExpr): Generator<undefined, boolean, undefined> {
+  private *bool(e: BoolExpr): Gen<boolean> {
     switch (e.kind) {
       case "const": return e.value;
       case "cond": return this.sim.condition(e.record);
@@ -375,7 +423,7 @@ class ProgramRun {
     }
   }
 
-  private *init(e: NumExpr | BoolExpr, kind: "number" | "boolean"): Generator<undefined, Value, undefined> {
+  private *init(e: NumExpr | BoolExpr, kind: "number" | "boolean"): Gen<Value> {
     return kind === "number" ? yield* this.num(e as NumExpr) : yield* this.bool(e as BoolExpr);
   }
 
@@ -385,14 +433,16 @@ class ProgramRun {
     else this.store(decl.id, yield* this.init(e as NumExpr | BoolExpr, decl.kind));
   }
 
-  private *call(c: Call): Generator<undefined, Value, undefined> {
+  private *call(c: Call): Gen<Value> {
     if (c.result) this.declare(c.result.decl);
     const fn = c.fn ? this.program.functions?.find((f) => f.id === c.fn) : undefined;
     if (c.fn && !fn) throw new Error(`The function ${c.fn} is not one of the program's (line ${c.at.line}).`);
+    let kept: Frame | undefined;
     if (fn) {
       // A called function: every argument first — one of them may be a call of the same function — then its parameters, then its one body.
       const values: (Value | SimUnit | null)[] = [];
       for (const p of c.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init as UnitExpr) : yield* this.init(p.init as NumExpr | BoolExpr, p.decl.kind));
+      if (c.saves) kept = this.keep(c);
       c.params.forEach((p, i) => {
         this.declare(p.decl);
         if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i] as SimUnit | null);
@@ -404,9 +454,50 @@ class ProgramRun {
         yield* this.put(p.decl, p.init);
       }
     }
-    const flow = yield* this.block(fn ? fn.body : c.body, { fn: { result: c.result?.decl } });
+    const ctx: Ctx = { fn: { result: c.result?.decl } };
+    const flow = kept && fn ? ((yield { run: this.block(fn.body, ctx) }) as Flow) : yield* this.block(fn ? fn.body : c.body, ctx);
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c.at.line}).`);
+    if (kept) this.bringBack(kept);
     return c.result && c.result.kind !== "unit" ? this.read(c.result.decl.id) : 0;
+  }
+
+  /**
+   * A call that may come back into the function it is in: what that function holds goes on the stack, as the game
+   * keeps it (`python/trigscript.py`) — its variables, and the handle of each array declared in it, which is "no block"
+   * for the length of the call. Past the depth the map allows the program stops, and says where.
+   */
+  private keep(c: Call): Frame {
+    const saves = c.saves!;
+    if (this.depth >= this.sim.stackDepth) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: c.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
+      throw new Stopped();
+    }
+    this.depth++;
+    const frame: Frame = { vars: [], units: [], arrays: [] };
+    for (const id of saves.vars) {
+      if (this.unitVars.has(id)) frame.units.push([id, this.unitVars.get(id) ?? null]);
+      else if (this.vars.has(id)) frame.vars.push([id, this.vars.get(id)!]);
+    }
+    for (const id of saves.arrays) {
+      const a = this.arrays.get(id);
+      if (!a) continue;
+      frame.arrays.push({ a, cells: a.cells, room: a.room });
+      a.cells = [];
+      a.room = 0;
+    }
+    return frame;
+  }
+
+  private bringBack(frame: Frame): void {
+    for (const [id, v] of frame.vars) this.vars.set(id, v);
+    for (const [id, u] of frame.units) this.unitVars.set(id, u);
+    for (const k of frame.arrays) {
+      // The block the inner run left in the handle goes back to the heap first.
+      if (k.a.room) this.sim.heap.give(k.a.room);
+      k.a.cells = k.cells;
+      k.a.room = k.room;
+    }
+    this.depth--;
   }
 
   /* ── statements ── */
@@ -619,7 +710,7 @@ export class ProgramSimulation {
   /**
    * The heap the programs' growing arrays share, counted as the game counts it: blocks are powers of two, a block given
    * back waits in its size's list for the next array that wants that size, and new ground is taken from the bottom up
-   * while the stack (recursion's, to come) takes it from the top down. Only the counting is here: the cells are the arrays' own.
+   * up to its end. Only the counting is here: the cells are the arrays' own.
    */
   readonly heap = {
     cells: HEAP_CELLS,
@@ -635,6 +726,8 @@ export class ProgramSimulation {
     },
     give(room: number): void { this.free.set(room, (this.free.get(room) ?? 0) + 1); },
   };
+  /** How deep the stack of a function that calls itself goes; it is an array of its own in the built map, so the heap has no part in it. */
+  readonly stackDepth: number = STACK_DEPTH;
   readonly maxSteps: number;
   readonly random: () => number;
   private readonly conditionOf?: SimulationOptions["condition"];
@@ -663,6 +756,7 @@ export class ProgramSimulation {
     this.world = options.world ?? new Simulation([], { player: options.player ?? programs[0]?.owner ?? 0, condition: options.condition, random: options.random, strings: options.strings });
     this.maxSteps = options.maxStepsPerCycle ?? 100_000;
     this.heap.cells = this.heap.stack = heapCells(options.heapCells);
+    this.stackDepth = stackDepth(options.stackDepth);
     this.random = options.random ?? Math.random;
     this.conditionOf = options.condition;
     this.readOf = options.read;

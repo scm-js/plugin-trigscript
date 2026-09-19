@@ -253,7 +253,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" ? 2 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" ? 2 : name === "recursionProbe" ? 3 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -306,6 +306,10 @@ FIXTURES.arraysProbe = readFileSync(resolve(import.meta.dirname, "..", "probes",
 // And the functions probe: every kind of called function in one build.
 FIXTURES.functionsProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "functions.ts"), "utf8");
 
+// And the recursion probe: frames kept and brought back for numbers, booleans, units and arrays' handles, two functions
+// calling each other, rows a player, and the overflow that stops a program.
+FIXTURES.recursionProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "recursion.ts"), "utf8");
+
 describe.skipIf(!have)("programs build through the eudplib plugin", () => {
   for (const [name, src] of Object.entries(FIXTURES)) {
     it(`${name}: compiles to IR, builds, and the output opens with the payload's triggers`, () => {
@@ -324,6 +328,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(10);
+    expect(ir.version).toBe(11);
   });
 });

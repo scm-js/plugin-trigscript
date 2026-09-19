@@ -121,9 +121,10 @@ describe("functions: called or inlined", () => {
     expect(simulate(r).value("sum")).toBe(6);
   });
 
-  it("recursion is still refused", () => {
-    const r = raw("function down(n: number) { if (n > 0) down(n - 1); } let k = 3; down(k); down(k);");
-    expect(r.diagnostics.map((d) => d.message).join("\n")).toContain("recursion is not possible");
+  it("a function that calls itself is a called one (recursion.test.ts has the rest)", () => {
+    const r = compile("let turns = 0; function down(n: number) { turns++; if (n > 0) down(n - 1); } let k = 3; down(k); down(k);");
+    expect(functions(r).map((f) => [f.name, f.recursive])).toEqual([["down", true]]);
+    expect(simulate(r).value("turns")).toBe(8);
   });
 });
 
@@ -172,7 +173,7 @@ describe("functions: arrays, and functions inside functions", () => {
   it("the functions go to the lowering with the program, their text written out", () => {
     const r = compile("function say(n: number) { displayText(`n`); setDeaths(P1, units.TerranMarine, 'set', n); } let k = 1; say(k); say(k + 1);");
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
-    expect(ir.version).toBe(10);
+    expect(ir.version).toBe(11);
     expect(ir.programs[0].functions).toHaveLength(1);
     expect(JSON.stringify(ir.programs[0].functions)).toContain('"text":"n"');
   });
