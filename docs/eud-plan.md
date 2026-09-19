@@ -113,7 +113,11 @@ and how do we get the best developer experience out of that.
 >   before.
 >
 > One probe for what reaches the Python or the game anew, `probes/leftovers.ts`, steps A–H:
-> **not played yet.** Still refused, by decision or by nature: a function that returns one
+> **played 2026-09-19, every step as expected** — nothing in red at C (400 calls of a
+> function that calls itself and keeps a text) or E (600 texts pushed and cut off), one
+> Marine dead at G, and at H a Marine made after it not taken for the dead one's key. So
+> the Python for a text through a called function and in a frame holds in the game, and
+> so does a unit as a key. Still refused, by decision or by nature: a function that returns one
 > of several instances, a standalone instance variable given another, a text for a `Map`'s
 > key, `string[]` inside a row, a `for…of` over a text or over units around a call that may
 > come back, fusing a chain's loops, `set` in a chain. After 3.9.0 the order is unchanged:
