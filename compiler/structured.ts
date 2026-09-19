@@ -2812,8 +2812,8 @@ export class Structured {
   /** A text the script has, as the program's: one of the table, or — with name() or color() in it — one the game fills in. */
   private literalText(value: string, at: TS.Node): TextExpr {
     if (hasTextMark(value)) return this.mark<TextExpr>({ kind: "template", parts: mergeText(textParts(value)), at: this.at(at), label: this.label(at) }, at);
-    // A character past U+FFFF is two of JavaScript's and one here, and the game draws none of them.
-    if ([...value].some((ch) => ch.codePointAt(0)! > 0xffff)) this.emit({ kind: "remark", short: "a character the game cannot draw", text: "This text holds a character past U+FFFF (an emoji, a rare ideograph). StarCraft draws nothing for it, and where JavaScript counts it as two characters a program counts it as one.", at: this.at(at) }, at);
+    // A character past U+FFFF is two of JavaScript's and one here, and the game draws a dark square for each (played 2026-09-19).
+    if ([...value].some((ch) => ch.codePointAt(0)! > 0xffff)) this.emit({ kind: "remark", short: "a character the game cannot draw", text: "This text holds a character past U+FFFF (an emoji, a rare ideograph). StarCraft draws a dark square in its place, and where JavaScript counts it as two characters a program counts it as one.", at: this.at(at) }, at);
     return { kind: "text", text: value };
   }
 

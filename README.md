@@ -826,7 +826,7 @@ has, since the script simply runs.
 Korean syllable is three bytes; a program counts what JavaScript counts, so
 `"저글링".length` is 3 and `"저글링"[1]` is `글`. The one difference is a character past
 U+FFFF (an emoji, a rare ideograph): JavaScript counts two and a program one — and the
-game draws nothing for it, which a hint on the line says. Since a character has no fixed
+game draws a dark square in its place, which a hint on the line says. Since a character has no fixed
 size in the game's memory, `s[i]` and `slice()` walk the text from its start; over a long
 text, `for (const ch of s)` walks once. That loop runs within the frame, so `sleep()`
 inside it is refused; a loop over the places can sleep between turns, which is how a text

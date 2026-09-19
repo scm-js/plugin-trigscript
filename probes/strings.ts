@@ -21,7 +21,7 @@
 //  59 s  N  a transmission whose line was made                                               — expect "Marine 7 reporting, wave 3"
 //  65 s  O  a Marine's name made: select one                                                 — expect "Marine of wave 3"
 //  68 s  P  in a program of every player, a made text with your name kept in it              — expect "P: <your name> has 5 lives"
-//  71 s  Q  an emoji: one character to a program; the game is believed to draw nothing of it  — expect 3, and what is between the bars?
+//  71 s  Q  an emoji: one character to a program; played 2026-09-19: a dark grey square       — expect 3, and a square between the bars
 //  74 s  R  a text past what one holds: ONE red line saying a text was cut off, and          — expect 1023
 //  77 s  "done"
 //

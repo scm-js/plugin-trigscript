@@ -769,7 +769,7 @@ things and the strings first):
     Above it (emoji, the rare CJK extensions) JavaScript counts two and this counts one;
     a literal that holds such a character gets a warning, *the game cannot draw this*, and
     a Battle.net name cannot hold one, so no text of a running map counts differently.
-    (That Remastered draws none of them is believed, not checked: the probe shows one.)
+    (Played 2026-09-19: Remastered draws a dark grey square in its place.)
     The simulator counts the same way, `[...s].length`, so the two agree there too. With
     that settled, in the first cut: `length`, `s[i]` / `at()` / `charAt()`, `slice` /
     `substring`, `indexOf`, `padStart` / `padEnd`, `repeat`, and `for…of` over a text.
@@ -825,7 +825,7 @@ things and the strings first):
     the local player either way. Nothing was seen to stop while the transmission was up,
     for all eudplib's warning about a waiting action in its loop. Korean is drawn as
     written; an emoji is not drawn at all, which is what the warning on a literal says.
-    **As built (2026-09-19; probe `probes/strings.ts` built, not yet played).** IR 13: a
+    **As built (2026-09-19; probe `probes/strings.ts` played the same day: every step as expected, the one red line at step R and none before it, and the emoji of step Q a dark grey square — so the Python text run time, the slot strings under `IsUserCP` and the heap's accounting all hold in the game).** IR 13: a
     `text` kind beside number, boolean and unit, `VarDecl.text` (`id` / `made`), one
     `TextExpr` type that a backend works out either as an id or as a text that is
     somewhere (`docs/ir.md`, *Texts*). What was decided on the way:
