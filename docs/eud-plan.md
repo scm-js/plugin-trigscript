@@ -948,7 +948,7 @@ things and the strings first):
   which one a `Map` became. To decide when it is built: JavaScript iterates a `Map` in the
   order the keys went in, and keeping that costs a second block of keys — either pay it, or
   say in the README that the order is not kept.
-  **As built (2026-09-19; probe `probes/map.ts`, steps A–I, not played yet).** Decided by
+  **As built (2026-09-19; probe `probes/map.ts`, steps A–I, played the same day: every step as expected, nothing in red at step F, and step G — 400 `has()` of a Map of 64 within one frame — without a pause that could be seen, so a search's three bitwise operations are not felt).** Decided by
   the user: the order is JavaScript's, as far as it can be matched. So the table is two
   things, the way a JavaScript engine's is: the *entries* in the order they went in —
   three arrays that grow, a key, a value, whether it is still there — and the *slots* a
@@ -973,8 +973,7 @@ things and the strings first):
     while a loop runs. The probe's expected lines were worked out the same way.
   - Left out, each with a message: a text for a key (the plan had it out), a unit for a
     key, `[...m.keys()]` and whatever else makes an array of one, `set` in a chain, a value
-    that is more than a number or a boolean. What the probe has to say: whether the three
-    bitwise operations a search starts with are felt — step G is 400 `has()` in one frame.
+    that is more than a number or a boolean.
 
 What stays out, each with an error that says so: a function as a value, generators and
 `async` (an error already), `try` / `throw`, and anything that needs a type at run time
