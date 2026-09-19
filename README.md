@@ -425,9 +425,41 @@ A `Record` is read and written by its keys and reads 0 where nothing was stored;
 of seen)`, `lost.keys()` and `lost.values()` go through the keys that are there, in the order
 of the ids — every id is looked at, so the editor marks the line with how many. One made inside the program is the program's, to
 be written while the map is played; one made outside it is the script's, and a program only
-looks things up in it. Keys have to be ids of the game, so that there is a cell for each:
-for numbers of your own an array does it, and `CurrentPlayer` is not a key — in a program of
-every player a plain variable is already one per player.
+looks things up in it. `CurrentPlayer` is not a key — in a program of every player a plain
+variable is already one per player.
+
+**A `Map` and a `Set` over any number** are for keys that are no id of the game: a place
+packed into one number, a unit's id of your own, a score. `new Map<number, number>()`,
+`new Map<number, boolean>()`, `new Set<number>()`, empty or with what they start with
+(`new Map([[1, 10], [k, 20]])`), in a variable, a record's field or a class's.
+
+```ts
+program(() => {
+  const owner = new Map<number, number>();            // a tile, as x + y * 256, to who holds it
+  const claimed = new Set<number>();
+  for (const u of unitsOf(P1, { type: units.TerranMarine })) {
+    const tile = (u.x >> 5) + (u.y >> 5) * 256;
+    if (!claimed.has(tile)) { claimed.add(tile); owner.set(tile, 1); }
+  }
+  for (const [tile, who] of owner) if (who == 1) print(`tile ${tile % 256}, ${tile >> 8}`);
+});
+```
+
+`get` (`?? d` for a key it has not got; without it such a key reads 0 or false), `set`,
+`has`, `delete` (true when the key was there), `clear`, `size`, `forEach`, and `for…of` over
+the table, its `keys()`, `values()` or `entries()`. **They go through their keys in the
+order the keys went in, as JavaScript does**: a key set again stays where it was, one
+deleted and set again goes to the end, what the loop's body adds is reached and what it
+deletes is not. The tests run the same lines in JavaScript and compare.
+
+What it costs is that a key is *looked for* — a few steps to find, set or delete one, where a
+table keyed by ids of the game is one read, so where the keys are ids of the game, say so
+(`Map<UnitType, number>`) — and that it lives in the memory the programs' arrays share: it
+starts at eight slots and doubles as it fills, and deleted entries go when it is next made
+again. The line's hint says which kind a `Map` became. Values are numbers or booleans; for
+anything more keep the place of a row of an array of records. Left out: a text for a key,
+`[...m.keys()]` and the other ways of making an array of one, and `m.set(…).set(…)` in a
+chain.
 
 **Numbers** are whole, and a `number` is what it is in TypeScript as far as 32 bits go:
 signed, from −2 147 483 648 to 2 147 483 647. `a - b` is below zero when `b` is larger,
@@ -977,8 +1009,7 @@ programs, each a thread of its own with its own variables. A program's text
 takes a string of the map you edit; a `trigger()`'s text is interned into the map when
 the script is applied, as it always was.
 
-Still to come, in this order: the last of the TypeScript people write — a `Map` over any
-number; then `test()` blocks
+Still to come, in this order: `test()` blocks
 that run a script against the simulator, a debugger that steps it, and a gallery of
 examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
@@ -1008,6 +1039,10 @@ them an array of records learnt to hold more than numbers and booleans — a uni
 array that grows, a record inside the record — whether its rows are instances or records
 written out. And `p.trail = []` on an array that grows, a record's or an instance's, starts
 it over where 3.8 said an array is assigned cell by cell.
+
+A `Map` and a `Set` take any number for a key (*A `Map` and a `Set` over any number*,
+above), where 3.8 said a key has to be an id of the game. One keyed by ids of the game is
+what it was.
 
 Patterns and spread (*Patterns and spread*, above) are new too, and mended something:
 `const { n, d } = waves[0]` over a list of the script — nothing of the program in it — was

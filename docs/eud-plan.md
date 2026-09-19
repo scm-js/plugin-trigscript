@@ -929,16 +929,52 @@ things and the strings first):
     records, inside a row; a class expression, type parameters, static blocks, decorators.
     Still owed from part 4 and not needed by anything here: a text local to a function
     that calls itself, and a function that takes or returns a text becoming a called one.
-    **Worth doing before 3.9.0 if the probe's size is felt:** `push(new C(…))` makes the
-    instance in variables of its own and copies it into the row (the arrays cell by cell)
-    — the constructor could run on the new row directly. The probe is 690 KB where the
-    others are 130–220.
+  - **An instance is made straight on its row** (the same day, at the user's word):
+    `push(new C(…))`, `xs[i] = new C(…)` and `[new C(…)]` first made the instance in
+    variables of its own and copied it in, the arrays cell by cell. Now the row is there
+    first, with nothing in it, and is `this`: a field's first value and a parameter that
+    declares a field are stored into its cells (`rowFieldGiven`, which is `rowField` again),
+    and `this.x = …` was a store already. One thing JavaScript does differently had to be
+    kept: what `new` is handed is worked out *before* the row is there, so
+    `waves.push(new Wave(waves.length))` must see the old length. Where an argument names
+    the array, or holds a call, the instance is still made apart and copied
+    (`copiedRow`). The probe went from 690 KB to 574; what is left is the row itself — the
+    probe's `Squad` is 25 cells, a `Unit[]` alone twelve — and a whole row moved is a
+    statement a cell. A constructor's *body* that reads the array's length sees the row
+    already there, which JavaScript's would not; nothing says so.
 - **A map over any number.** `Map<number, V>` and `Set<number>`: open addressing in a block
   of the heap, exchanged for one twice the size at three quarters full, as an array that
   grows is. A few probes an operation where a keyed table is one read, so the hint says
   which one a `Map` became. To decide when it is built: JavaScript iterates a `Map` in the
   order the keys went in, and keeping that costs a second block of keys — either pay it, or
   say in the README that the order is not kept.
+  **As built (2026-09-19; probe `probes/map.ts`, steps A–I, not played yet).** Decided by
+  the user: the order is JavaScript's, as far as it can be matched. So the table is two
+  things, the way a JavaScript engine's is: the *entries* in the order they went in —
+  three arrays that grow, a key, a value, whether it is still there — and the *slots* a
+  key is found through, a power of two of cells holding an entry's place plus one. A key
+  set again stays where it was; one deleted is marked, and set again is a new entry at the
+  end; a loop goes up the entries by place and asks the length again every turn, so what
+  its body adds is reached and what it deletes is not. A deleted entry keeps its slot, so
+  what was put in after it is still found; the slots are made again when three quarters
+  are taken — at twice the size when more than half would be, and without the deleted
+  entries, the rest closing up in their order. Closing up moves the place a loop is at, so
+  it waits while any loop goes through the table (`walking`, counted out before a `return`
+  that leaves the loop). Where a search starts is the key's two halves folded together
+  under the mask, so keys alike in their low sixteen bits spread out.
+  - **Nothing new in the IR, and no Python.** The work is five functions of the table's
+    own, written as IR by the front end and called (`hashFunction`: find, place, grow, put,
+    drop); `get` is a function of the compiler's with the call of `find` inside it, as
+    `includes` is one. A table is a binding (`hash`), handed to a function as itself and a
+    field of a record or a class.
+  - **The tests run JavaScript.** `tests/hash.test.ts` runs each body through the
+    simulator and the same lines through `new Function`, and compares what was printed —
+    four hundred operations at random among them, keys from −2³¹ to 2³¹ − 1, deleting
+    while a loop runs. The probe's expected lines were worked out the same way.
+  - Left out, each with a message: a text for a key (the plan had it out), a unit for a
+    key, `[...m.keys()]` and whatever else makes an array of one, `set` in a chain, a value
+    that is more than a number or a boolean. What the probe has to say: whether the three
+    bitwise operations a search starts with are felt — step G is 400 `has()` in one frame.
 
 What stays out, each with an error that says so: a function as a value, generators and
 `async` (an error already), `try` / `throw`, and anything that needs a type at run time
