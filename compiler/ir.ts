@@ -7,13 +7,15 @@
  * Plain data, JSON-serialisable (`eud.ts#serializeIr`); `docs/ir.md` is the reference.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
+import type { InputSource } from "./input";
 
 /**
+ * 5: what the players do (`input`: keys, clicks, the mouse, typed lines), a pick near a player's mouse, `centerLocation`, and an action with several fields from the program (`variables`, where 4 had one `variable`).
  * 4: units on the map — `unit` variables, `unitLoop`, picks, unit fields, flags and verbs — and the cells of the game's tables (`tableRead` / `tableWrite`).
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 4;
+export const IR_VERSION = 5;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -73,8 +75,10 @@ export type UnitExpr =
   /**
    * One unit among those the filter matches: the first in the game's unit table, the nearest to the
    * centre of location `near` (by |dx| + |dy|), or one at random. None when nothing matches.
+   * `mouse` in place of `near`: nearest to that player's mouse (a slot, or 13 for the current
+   * player), and no farther from it than `within` pixels.
    */
-  | { kind: "pick"; by: "first" | "nearest" | "random"; filter: UnitFilter; near?: number; at: At; label: string }
+  | { kind: "pick"; by: "first" | "nearest" | "random"; filter: UnitFilter; near?: number; mouse?: number; within?: number; at: At; label: string }
   /** A call inlined here whose result is a unit. */
   | { kind: "call"; call: Call };
 
@@ -125,6 +129,8 @@ export type NumExpr =
   | { kind: "unitField"; unit: UnitExpr; field: UnitNumField; at: At; label: string }
   /** A cell of the game's tables, unscaled: a flag reads 1 or 0. */
   | { kind: "tableRead"; cell: TableCell; at: At; label: string }
+  /** What a player did, as it reached every computer (`input.ts`): a key or a click reads 1 on its frame, the mouse its place on the map, a typed line 1 or a value it carried. */
+  | { kind: "input"; input: InputSource; at: At; label: string }
   | { kind: "ternary"; cond: BoolExpr; whenTrue: NumExpr; whenFalse: NumExpr; at: At; label: string }
   | { kind: "intrinsic"; name: "min" | "max" | "abs"; args: NumExpr[]; at: At; label: string }
   /** A call inlined here: its body runs, its result is the number. */
@@ -162,6 +168,9 @@ export type TextPart =
   | { kind: "number"; expr: NumExpr }
   | { kind: "name"; player: number }
   | { kind: "color"; player: number };
+
+/** A field of an action filled in by the program: `bits` 8 is a unit count (done once per unit), 16 a unit type, 32 an amount. */
+export interface ActionVariable { field: keyof ActionRecord; bits: 8 | 16 | 32; name: string; expr: NumExpr }
 
 export type CompareOp = "<" | "<=" | ">" | ">=" | "==" | "!=";
 
@@ -209,8 +218,10 @@ export type Stmt =
   | { kind: "return"; value?: NumExpr | BoolExpr | UnitExpr; at: At; label: string }
   /** `cycles` is a count of frames (`frames(n)`; `cycles(n)` is the older word for the same). */
   | { kind: "sleep"; ms?: number; cycles?: number; at: At; label: string }
-  /** A trigger action; `variable` names a field that takes an expression's value instead of the record's. */
-  | { kind: "action"; record: ActionRecord; variable?: { field: keyof ActionRecord; bits: 8 | 32; name: string; expr: NumExpr }; at: At; label: string }
+  /** A trigger action; each of `variables` names a field that takes an expression's value instead of the record's. */
+  | { kind: "action"; record: ActionRecord; variables?: ActionVariable[]; at: At; label: string }
+  /** Centre a location on a point of the map, in pixels, its size kept. */
+  | { kind: "centerLocation"; location: number; x: NumExpr; y: NumExpr; at: At; label: string }
   /**
    * Text with values in it, shown to `to` — a slot, 13 for the current player, All Players or a
    * force — in the chat area or on the line in the middle of the screen the game's own errors use.
@@ -239,7 +250,7 @@ export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr): e is NumExpr => {
   switch (e.kind) {
     case "const": return typeof e.value === "number";
     case "var": return false; // ambiguous by shape; callers know the variable's kind
-    case "unary": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": return true;
+    case "unary": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": return true;
     case "ternary": return isNumExpr(e.whenTrue);
     case "call": return e.call.result?.kind === "number";
     default: return false;
@@ -266,7 +277,8 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) init(s.value); break;
-      case "action": if (s.variable) expr(s.variable.expr); break;
+      case "action": for (const v of s.variables ?? []) expr(v.expr); break;
+      case "centerLocation": expr(s.x); expr(s.y); break;
       case "print": for (const p of s.parts) if (p.kind === "number") expr(p.expr); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;

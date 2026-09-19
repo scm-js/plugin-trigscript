@@ -31,7 +31,7 @@
 import type * as TS from "typescript";
 import { DECLARATIONS_FILE } from "./declarations";
 import { MODULE_NAME } from "./api";
-import { READ_ARITY, READER_NAMES, UNIT_CALL_NAMES } from "./runtime";
+import { INPUT_CALL_NAMES, READ_ARITY, READER_NAMES, UNIT_CALL_NAMES } from "./runtime";
 
 export interface PlanError { node: TS.Node; message: string }
 
@@ -112,9 +112,10 @@ const GAME_CALLS = new Set(["random", "sleep", "rose", "once", "shared"]);
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
  * build-time value, though its callee and its arguments are: `minerals(P1) * 2` is the program's
  * arithmetic, not the script's. The same goes for the units of the game (`unitsAt(…)`, `first(…)`)
- * and the game's tables (`stats(…)`): `const u = nearest(…)` is a variable of the program.
+ * and the game's tables (`stats(…)`): `const u = nearest(…)` is a variable of the program. And
+ * for what the players do (`keyPressed(…)`, `chatted(…)`): `const m = chatted(…)` is the program's.
  */
-const READ_CALLS = new Set<string>([...READER_NAMES, ...UNIT_CALL_NAMES, "print"]);
+const READ_CALLS = new Set<string>([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
 const isReadCall = (lib: string | null, args: number) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {

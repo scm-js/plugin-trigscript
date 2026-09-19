@@ -19,6 +19,7 @@ import { join, resolve } from "node:path";
 import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { serializeIr } from "../compiler/eud";
+import { buildPlugins } from "../compiler/input";
 import { resolveStrings } from "../script";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -79,7 +80,7 @@ if (home && scn.locations?.[0] && !scn.locations[0].nameIndex && scn.locations[0
   markDirty(scn, "MRGN");
 }
 markDirty(scn, "TRIG", "UNIT");
-const ir = serializeIr(r.ir, r.strings);
+const ir = serializeIr(r.ir, r.strings, r.input);
 const extras = loaded.archive ? await readExtras(loaded.archive, loaded.files) : new Map();
 const withStrings = await saveMap(serializeScenario(scn), { extras, compress: "pkware", listfile: true });
 const dir = mkdtempSync(join(tmpdir(), "trigscript-fixture-"));
@@ -89,7 +90,7 @@ writeFileSync(irPath, ir);
 writeFileSync(resolve(outPath).replace(/\.scx$/, ".json"), ir);
 const mapPath = join(dir, "in.scx");
 writeFileSync(mapPath, withStrings);
-writeFileSync(pluginsPath, JSON.stringify({ trigscript: { ir: "/work/files/trigscript.json" }, eudTurbo: {} }));
+writeFileSync(pluginsPath, JSON.stringify(buildPlugins(r.input, "/work/files/trigscript.json")));
 const res = spawnSync("npx", ["tsx", join(eudplib, "scripts", "build-map.mts"), mapPath, resolve(outPath), pluginsPath, `trigscript=${join(root, "python", "trigscript.py")}`, `file=trigscript.json=${irPath}`], { cwd: eudplib, encoding: "utf8", env: { ...process.env, EUDPLIB_LOG: "1" } });
 rmSync(dir, { recursive: true, force: true });
 process.stdout.write(res.stdout);

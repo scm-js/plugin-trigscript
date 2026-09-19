@@ -370,7 +370,7 @@ before the slice is called done, in the Magenta manner.
 | 1½ | The workspace as VS Code lays one out (3.1.0) | the frame slices 5 and 6 put their panels in: no banner moves the text, every command in the palette, the keys people already know | 2 days, no probe: nothing about the game changes |
 | 2 | Reads and text (3.2.0) | `deaths(P1, u)` as a value, `minerals()`, `countUnits()`, player facts, template literals with numbers and names, `print()`, `random(n)`, the bitwise operators | 2–3 days |
 | 3 | `Unit` objects, unit loops, picks, `stats()` (3.3.0; built 2026-09-18, the probe is `probes/units.ts`) | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
-| 4 | Input | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |
+| 4 | Input (3.4.0; built 2026-09-18, the probe is `probes/input.ts`) | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |
 | 5 | `test()` blocks + debugger | Tests panel, frame stepping, breakpoints, world table | 3–4 days |
 | 6 | Examples, guide, assistant prompts, registry | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers target-aware | 2 days |
 
@@ -385,6 +385,36 @@ number when the script runs; `stats(player)` has `color`, `upgrades[…]` and `r
 a value with a scale (`speed`, `buildTime`, `supplyUsed`) takes a fraction when it is known at
 build time. The unit classes turned out to be one too low in the editor's table (Any unit 228
 for 229, and so on); corrected there and here with this slice.
+
+**Slice 4 as built** (3.4.0; the probe is `probes/input.ts`), where it differs from the
+sections above. Nothing of the map's is used for the cells: chatEvent and MSQC take a *name*
+wherever they take an address or a death-counter unit, so the lowering registers
+`EUDArray(12)`s and `EUDVariable`s under names the compiler also writes into the two plugins'
+settings (`compiler/input.ts`; Magenta uses death counters because its rows are conditions
+of ordinary triggers — a program needs none). chatEvent is given no messages at all: it only
+finds the local player's line, and `trigscript.py` matches every pattern itself, on the
+computer the line was typed on, so there is one matcher, no two-`.*` rule and no clash
+between patterns sharing a first word. chatEvent's result is local (it prints "desync"
+beside it), so the pattern's number and its values go through MSQC's `val` to every
+computer — which is why a typed number stops at 2²⁰ − 1 (what `val` carries on the smallest
+map) and a pattern reads at most three values (one command unit per human each). A
+`{name:unit}` capture is looked up by a hash of the lower-cased rest of the line in a
+sorted table (a search by halves), a `{name:a|b}` capture the same way against its words.
+`chatted()` gives a record of the program's numbers with a boolean of its own for `if (m)`;
+`mouse()` a record of two. `mouse(p)` has no `locate()`: `centerLocation(location, x, y)`
+is a statement of its own, useful with any two numbers. An action takes several fields from
+the program at once, a unit type among them (`createUnit(p, m.what, m.n, at)`) — IR 5 has
+`variables` where 4 had `variable`. The input functions refuse to run outside a program,
+where a truthy object would make `if (keyPressed(…))` always true. An input never counts
+as "moving" for the sleep rule: it cannot change within the frame. Locations come from the
+map's first 63, highest first, which every map's table has. Found on the way: the lowering
+waited one frame longer than every `sleep()` asked, so a loop sleeping a frame ran every
+other frame and would have missed half the presses; fixed with this slice (the simulator
+always had it right). What `test()` needs — `sim.press`, `sim.click`, `sim.type`,
+`sim.moveMouse` — is in the interpreter already. The probe was played three times: everything
+passed but F6, which the game never reports (silent first in MSQC's settings and silent
+third, while F7, F8, `1`, Q, W and E answered), so F6 is not a `Key`. MSQC's unit type (the Valkyrie) and its
+player (12) are fixed for now; a map that uses Valkyries has no way to say so yet.
 
 Slice 1 is where the value is and where the risk is; nothing after it is hard once the IR
 and the Python lowering exist. Slices 2–4 can be reordered by what the user wants to play

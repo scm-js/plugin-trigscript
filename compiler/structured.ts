@@ -31,9 +31,12 @@
  *   number or a boolean, through a temp. No recursion.
  * - `if (false) …` and `while (false) …` are pruned: what is inside never runs, when the
  *   script is built or in the game.
- * - The amount of `setResources` / `setDeaths` / `setScore` / `setCountdownTimer` and the
- *   unit count of `createUnit` / `killUnitAt` / `removeUnitAt` / `giveUnits` may be a
- *   variable.
+ * - The amount of `setResources` / `setDeaths` / `setScore` / `setCountdownTimer`, the
+ *   unit count of `createUnit` / `killUnitAt` / `removeUnitAt` / `giveUnits` and an
+ *   action's unit type may be variables.
+ * - What the players do — `keyPressed`, `clicked`, `mouse`, `chatted` — is an `input`
+ *   expression; `const m = chatted(…)` and `const at = mouse(…)` are records of the
+ *   program's numbers taken when the line runs (`input.ts` has what carries them).
  *
  * Everything the body reads from outside — the library's conditions and actions, the
  * script's constants and helpers — arrives as *hoisted values* (`hoist.ts`): the plan
@@ -48,11 +51,11 @@ import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
 import { declarationOf, libraryCallName } from "./hoist";
 import { scriptParams } from "./api";
-import { hasTextMark, isAction, isBuilder, isCondition, isDuration, isGameFunction, isGameValue, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
+import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
 import { cellMax } from "./tables";
 import { Scope, type Binding } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { IR_VERSION, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, type ArithOp, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { IR_VERSION, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, type ActionVariable, type ArithOp, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -125,6 +128,9 @@ function describe(v: unknown): string {
   if (isTable(v)) return `a value the game holds (${v.ident})`;
   if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
   if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isInput(v)) return `what a player does in the game (${v.ident})`;
+  if (isMouse(v)) return "where a player's mouse is (mouse())";
+  if (isChat(v)) return "what a player typed (chatted())";
   if (isPrint(v)) return "a print()";
   if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
@@ -548,6 +554,11 @@ export class Structured {
         if (record) this.scope.bind(d, record);
         continue;
       }
+      if (ts.isCallExpression(init) && (this.isLibraryCall(init, "mouse") || this.isLibraryCall(init, "chatted"))) {
+        const record = this.declareInput(d.name.text, init, d);
+        if (record) this.scope.bind(d, record);
+        continue;
+      }
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) { this.c.error(d, `Variables hold numbers, booleans, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
@@ -604,6 +615,43 @@ export class Structured {
       fields.set(key, { kind: "var", v });
     }
     return ok ? { kind: "record", fields } : null;
+  }
+
+  /**
+   * `const at = mouse(p)`, `const m = chatted(p, "-give {n}")`: what the player did, taken when the
+   * line runs and kept — a record of numbers, and for a typed line the boolean `if (m)` asks.
+   */
+  private declareInput(name: string, call: TS.CallExpression, at: TS.Node): Binding | null {
+    const h = this.evaluate(call);
+    if (!h) { this.notConstant(call, "Which player, and what to look for,"); return null; }
+    const fields = new Map<string, Binding>();
+    const keep = (field: string, value: InputValue) => {
+      const v = this.newVar(`${name}.${field}`, "number", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: v, init: this.inputValue(value, call), at: this.at(at), label: this.label(at) }, at);
+      fields.set(field, { kind: "var", v });
+    };
+    if (isMouse(h.value)) {
+      keep("x", h.value.x);
+      keep("y", h.value.y);
+      return { kind: "record", fields };
+    }
+    if (isChat(h.value)) {
+      const truth = this.newVar(name, "boolean", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: truth, init: this.inputBool(h.value.matched, call), at: this.at(at), label: this.label(at) }, at);
+      for (const [field, value] of Object.entries(h.value.values)) keep(field, value);
+      return { kind: "record", fields, truth };
+    }
+    this.c.error(call, `Expected mouse() or chatted(), got ${describe(h.value)}.`);
+    return null;
+  }
+
+  /** What a player did, as a number of the program: a key or a click counts 1 or 0. */
+  private inputValue(v: InputValue, at: TS.Node): NumExpr {
+    return this.mark<NumExpr>({ kind: "input", input: { ...v.input }, at: this.at(at), label: this.label(at) }, at);
+  }
+
+  private inputBool(v: InputValue, at: TS.Node): BoolExpr {
+    return this.mark<BoolExpr>({ kind: "test", expr: this.inputValue(v, at), at: this.at(at), label: this.label(at) }, at);
   }
 
   /** Where a declaration's name is, for the editor's hover. */
@@ -664,6 +712,7 @@ export class Structured {
     if (isTable(v)) { this.c.error(expr, `${v.ident} reads a value and does nothing on its own: assign to it, or compare it in an if.`); return; }
     if (isUnitPick(v)) { this.c.error(expr, `${v.ident}() finds a unit and does nothing on its own: const u = ${v.ident}(…); if (u) u.kill();`); return; }
     if (isUnitQuery(v)) { this.c.error(expr, `${v.ident}() names units and does nothing on its own: for (const u of ${v.ident}(…)) { … }`); return; }
+    if (isInput(v) || isMouse(v) || isChat(v)) { this.c.error(expr, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const."); return; }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) { for (const a of v) this.emitAction(a.record, expr); return; }
     if (Array.isArray(v) && v.length === 0) return;
     if (isCondition(v)) { this.c.error(expr, "This is a condition; test it in an if or a while."); return; }
@@ -743,6 +792,18 @@ export class Structured {
     }
     const parts = this.textOf(e.arguments[0]);
     if (parts) this.emitPrint(parts, to, position, e);
+  }
+
+  /** `centerLocation(locations.Cursor, at.x, at.y)`: the location known when the script is built, the point the program's. */
+  private centerLocation(e: TS.CallExpression) {
+    if (e.arguments.length !== 3) { this.c.error(e, "centerLocation() takes the location and the point: centerLocation(locations.Cursor, x, y)."); return; }
+    const h = this.evaluate(e.arguments[0]);
+    if (!h || isGameValue(h.value)) { this.notConstant(e.arguments[0], "The location"); return; }
+    const location = h.value;
+    if (typeof location !== "number" || !Number.isInteger(location) || location < 1 || location > 255 || location === 64) { this.c.error(e.arguments[0], "centerLocation() takes one of locations.*, which is moved (not Anywhere)."); return; }
+    const x = this.num(e.arguments[1]);
+    const y = this.num(e.arguments[2]);
+    if (x && y) this.emit({ kind: "centerLocation", location, x, y, at: this.at(e), label: this.label(e) }, e);
   }
 
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
@@ -844,6 +905,8 @@ export class Structured {
     if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) { this.c.error(e, "rose() / once() are conditions: test them in an if."); return; }
     if (this.isLibraryCall(e, "shared")) { this.c.error(e, "shared() goes on a declaration: let total = shared(0)."); return; }
     if (this.isLibraryCall(e, "print")) { this.printStatement(e); return; }
+    if (this.isLibraryCall(e, "centerLocation")) { this.centerLocation(e); return; }
+    if (this.isLibraryCall(e, "keyPressed") || this.isLibraryCall(e, "clicked") || this.isLibraryCall(e, "mouse") || this.isLibraryCall(e, "chatted")) { this.c.error(e, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const."); return; }
     const callee = this.evaluate(e.expression)?.value;
     if (isGameFunction(callee)) { const call = this.gameCall(e, callee); if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e); return; }
     if (isReader(callee) || (isBuilder(callee) && callee.kind === "condition" && READ_ARITY.get(callee.ident) === e.arguments.length)) { this.c.error(e, "This reads a value and does nothing on its own: assign it to a variable, or compare it in an if."); return; }
@@ -1232,6 +1295,9 @@ export class Structured {
       if (isRead(h.value)) return this.readValue(h.value, e);
       if (isTable(h.value)) return this.tableRead(h.value, e);
       if (isUnitPick(h.value)) { this.c.error(e, `${h.value.ident}() is a unit, not a number; read one of its fields: ${h.value.ident}(…)?.hp — or keep it: const u = ${h.value.ident}(…).`); return null; }
+      if (isInput(h.value)) return this.inputValue(h.value, e);
+      if (isMouse(h.value)) { this.c.error(e, "mouse() is a place on the map: read its x or its y."); return null; }
+      if (isChat(h.value)) { this.c.error(e, "chatted() is what a player typed: test it in an if, or read one of the values its pattern names."); return null; }
       const n = this.asInteger(h, e);
       return n === null ? null : num(n);
     }
@@ -1378,14 +1444,14 @@ export class Structured {
   }
 
   /**
-   * An action whose argument is a variable: `setResources(P1, "add", n, "ore")`,
-   * `createUnit(P2, unit, count, at)`. The record is built with the variable's place
-   * as 0; the backend does the action with the expression's value in that field.
+   * An action with arguments from the program: `setResources(P1, "add", n, "ore")`,
+   * `createUnit(P2, m.unit, count, at)`. The record is built with each such place as 0;
+   * the backend does the action with the expressions' values in those fields.
    */
   private actionWithVars(e: TS.CallExpression, ident: string, def: Parameters<typeof scriptParams>[0]) {
     const params = scriptParams(def);
     const values: unknown[] = [];
-    let variable: { index: number; expr: NumExpr } | null = null;
+    const variables: { index: number; expr: NumExpr }[] = [];
     for (let i = 0; i < e.arguments.length; i++) {
       const a = e.arguments[i];
       const h = this.evaluate(a);
@@ -1393,18 +1459,18 @@ export class Structured {
       if (h && !isGameValue(h.value)) { values.push(h.value); continue; }
       const p = params[i];
       if (!p) { this.c.error(a, `${ident} takes ${params.length} argument${params.length === 1 ? "" : "s"}.`); return; }
-      const eligible = ((p.arg.kind === "amount" || p.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type)) || (p.arg.kind === "count" && COUNT_ACTIONS.has(def.type));
+      const eligible = ((p.arg.kind === "amount" || p.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type)) || (p.arg.kind === "count" && COUNT_ACTIONS.has(def.type)) || p.arg.kind === "unit";
       if (!eligible) {
-        this.c.error(a, `${ident}'s ${p.name} must be known when the script is built. Only an amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer) and a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) can be a variable of the program.`);
+        this.c.error(a, `${ident}'s ${p.name} must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.`);
         return;
       }
-      if (variable) { this.c.error(a, `${ident}: one argument at a time can be a variable of the program.`); return; }
       const expr = this.num(a);
       if (!expr) return;
-      variable = { index: i, expr };
+      variables.push({ index: i, expr });
+      // The record is built with a stand-in: a unit type any action takes, 0 elsewhere.
       values.push(0);
     }
-    if (!variable) { this.notConstant(e, "A call's arguments"); return; }
+    if (!variables.length) { this.notConstant(e, "A call's arguments"); return; }
     let record: ActionRecord;
     try {
       const built = (this.evaluate(e.expression)!.value as (...a: unknown[]) => unknown)(...values);
@@ -1413,8 +1479,11 @@ export class Structured {
     } catch (err) {
       throw new ValueError(e, err instanceof Error ? err.message : String(err));
     }
-    const p = params[variable.index];
-    this.emit({ kind: "action", record: { ...record }, variable: { field: p.arg.field as keyof ActionRecord, bits: p.arg.kind === "count" ? 8 : 32, name: p.name, expr: variable.expr }, at: this.at(e), label: this.label(e) }, e);
+    const list: ActionVariable[] = variables.map((v) => {
+      const p = params[v.index];
+      return { field: p.arg.field as keyof ActionRecord, bits: p.arg.kind === "count" ? 8 : p.arg.kind === "unit" ? 16 : 32, name: p.name, expr: v.expr };
+    });
+    this.emit({ kind: "action", record: { ...record }, variables: list, at: this.at(e), label: this.label(e) }, e);
   }
 
   /* ── Units on the map, and the game's tables ── */
@@ -1463,7 +1532,7 @@ export class Structured {
   }
 
   private pick(v: UnitPickValue, at: TS.Node): UnitExpr {
-    return this.mark<UnitExpr>({ kind: "pick", by: v.by, filter: { ...v.filter }, ...(v.near !== undefined ? { near: v.near } : {}), at: this.at(at), label: this.label(at) }, at);
+    return this.mark<UnitExpr>({ kind: "pick", by: v.by, filter: { ...v.filter }, ...(v.near !== undefined ? { near: v.near } : {}), ...(v.mouse !== undefined ? { mouse: v.mouse, within: v.within ?? 48 } : {}), at: this.at(at), label: this.label(at) }, at);
   }
 
   /** `u.hp` as a number. */
@@ -1647,6 +1716,9 @@ export class Structured {
     if (isCondition(v)) return this.mark<BoolExpr>({ kind: "cond", record: { ...v.record } }, at);
     if (isRead(v)) return this.readBool(v, at);
     if (isTable(v)) { const read = this.tableRead(v, at); return read ? this.mark<BoolExpr>({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at) : FALSE; }
+    if (isInput(v)) return this.inputBool(v, at);
+    if (isChat(v)) return this.inputBool(v.matched, at);
+    if (isMouse(v)) { this.c.error(at, "mouse() is a place on the map, not a condition: compare its x or its y."); return FALSE; }
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c) => this.mark<BoolExpr>({ kind: "cond", record: { ...c.record } }, at)) };
     if (isAction(v)) { this.c.error(at, "This is an action, not a condition."); return FALSE; }
     this.c.error(at, `Expected a condition, got ${describe(v)}.`);
@@ -1697,6 +1769,7 @@ export class Structured {
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") return b.v.kind !== "number" ? boolRef(b.v) : this.mark<BoolExpr>({ kind: "test", expr: varRef(b.v), at: this.at(e), label: this.label(e) }, e);
+      if (b?.kind === "record" && b.truth) return boolRef(b.truth);
       if (b?.kind === "record") { this.c.error(e, "This is a record; test one of its fields."); return FALSE; }
       if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       else this.notConstant(e, "A condition");
@@ -1756,10 +1829,18 @@ export class Structured {
       }
       return op === "==" ? same : same.kind === "not" ? same.expr : { kind: "not", expr: same };
     }
+    // What chatted() found, against null: `m != null` asks what `if (m)` asks.
+    const found = (x: TS.Expression) => { const b = this.bindingOf(x); return b?.kind === "record" && b.truth ? b.truth : undefined; };
+    const isNull = (x: TS.Expression) => { const h = this.evaluate(x); return !!h && (h.value === null || h.value === undefined); };
+    const truth = isNull(e.right) ? found(e.left) : isNull(e.left) ? found(e.right) : undefined;
+    if (truth) {
+      if (op !== "==" && op !== "!=") { this.c.error(e, "What chatted() found compares with null by == and != only."); return FALSE; }
+      return op === "!=" ? boolRef(truth) : { kind: "not", expr: boolRef(truth) };
+    }
     // Boolean equality: `flag == true`, `a != b` over switches.
     const isBool = (x: TS.Expression) => {
       const h = this.evaluate(x);
-      if (h) return typeof h.value === "boolean" || isCondition(h.value) || (isRead(h.value) && h.value.equals !== undefined);
+      if (h) return typeof h.value === "boolean" || isCondition(h.value) || (isRead(h.value) && h.value.equals !== undefined) || (isInput(h.value) && h.value.boolean) || isChat(h.value);
       const v = this.varOf(x);
       if (v !== undefined) return v.kind !== "number";
       return this.kindOf(this.c.checker.getTypeAtLocation(x)) === "boolean";

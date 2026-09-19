@@ -12,6 +12,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { compileScript } from "../compiler/compiler";
 import { serializeIr } from "../compiler/eud";
+import { buildPlugins } from "../compiler/input";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 
@@ -137,6 +138,27 @@ const FIXTURES: Record<string, string> = {
       sleep(frames(8));
     }
   }, { owner: AllPlayers });`,
+  input: `program(() => {
+    let gold = 0;
+    while (true) {
+      if (keyPressed(CurrentPlayer, "F2") || keyPressed(CurrentPlayer, "Space")) gold += 1;
+      if (clicked(CurrentPlayer) || clicked(CurrentPlayer, "right")) { const at = mouse(CurrentPlayer); centerLocation(1, at.x + 8, at.y); createUnit(CurrentPlayer, units.TerranMarine, 1, 1); }
+      const m = chatted(CurrentPlayer, "-spawn {n} {unit:unit}");
+      if (m) createUnit(CurrentPlayer, m.unit, m.n, 1);
+      const g = chatted(CurrentPlayer, "-give {kind:ore|gas} {n}");
+      if (g != null && g.kind == 1) setResources(CurrentPlayer, "add", g.n, "gas");
+      if (chatted(CurrentPlayer, "-help")) displayText("no help");
+      const u = underMouse(CurrentPlayer, { owner: CurrentPlayer, within: 64 });
+      if (u) u.kill();
+      sleep(frames(1));
+    }
+  }, { owner: AllPlayers });`,
+  inputOnePlayer: `program(() => {
+    while (true) {
+      if (keyPressed(P1, "A") && mouse(P1).x > 100) underMouse(P1)?.heal(5);
+      sleep(frames(1));
+    }
+  });`,
   perPlayer: `program(() => {
     let mine = 0;
     let total = shared(0);
@@ -152,13 +174,13 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   expect(r.ir.length).toBe(1);
-  const ir = serializeIr(r.ir, r.strings);
+  const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
   const pluginsPath = join(dir, "plugins.json");
   const outPath = join(dir, `${name}-eud.scx`);
   writeFileSync(irPath, ir);
-  writeFileSync(pluginsPath, JSON.stringify({ trigscript: { ir: "/work/files/trigscript.json" }, eudTurbo: {} }));
+  writeFileSync(pluginsPath, JSON.stringify(buildPlugins(r.input, "/work/files/trigscript.json")));
   const res = spawnSync("npx", ["tsx", join(EUDPLIB_DIR, "scripts", "build-map.mts"), MAP, outPath, pluginsPath, `trigscript=${resolve(import.meta.dirname, "..", "python", "trigscript.py")}`, `file=trigscript.json=${irPath}`], { cwd: EUDPLIB_DIR, encoding: "utf8", env: { ...process.env, EUDPLIB_LOG: "1" } });
   if (res.status !== 0) throw new Error(`${name}: build failed\n${res.stdout}\n${res.stderr}`);
   const out = readFileSync(outPath).length;
@@ -186,6 +208,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(4);
+    expect(ir.version).toBe(5);
   });
 });

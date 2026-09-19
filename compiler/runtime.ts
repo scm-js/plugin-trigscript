@@ -22,6 +22,7 @@ import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
 import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import type { RaceId, ReadSource, TableCell, TextPart, UnitFilter } from "./ir";
+import { DEAF_KEYS, keyName, KEY_NAMES, MOUSE_BUTTONS, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
@@ -69,7 +70,7 @@ export interface UnitQueryValue { readonly __trigscript: "units"; readonly filte
 export const isUnitQuery = (v: unknown): v is UnitQueryValue => typeof v === "object" && v !== null && (v as UnitQueryValue).__trigscript === "units";
 
 /** What `first(…)`, `nearest(…)` and `randomUnit(…)` return when the script is built: how the game is to pick one unit. */
-export interface UnitPickValue { readonly __trigscript: "pick"; readonly by: "first" | "nearest" | "random"; readonly filter: UnitFilter; readonly near?: number; readonly ident: string }
+export interface UnitPickValue { readonly __trigscript: "pick"; readonly by: "first" | "nearest" | "random"; readonly filter: UnitFilter; readonly near?: number; readonly mouse?: number; readonly within?: number; readonly ident: string }
 export const isUnitPick = (v: unknown): v is UnitPickValue => typeof v === "object" && v !== null && (v as UnitPickValue).__trigscript === "pick";
 
 /**
@@ -79,8 +80,21 @@ export const isUnitPick = (v: unknown): v is UnitPickValue => typeof v === "obje
 export interface TableValue { readonly __trigscript: "table"; readonly cell: TableCell; readonly field: TableField; readonly ident: string }
 export const isTable = (v: unknown): v is TableValue => typeof v === "object" && v !== null && (v as TableValue).__trigscript === "table";
 
+/**
+ * What `keyPressed()`, `clicked()`, `mouse(p).x` and a value of `chatted()` are when the script is
+ * built: which thing a player does the program is asking about. `boolean`: it reads as true or false.
+ */
+export interface InputValue { readonly __trigscript: "input"; readonly input: InputSource; readonly boolean: boolean; readonly ident: string }
+export const isInput = (v: unknown): v is InputValue => typeof v === "object" && v !== null && (v as InputValue).__trigscript === "input";
+/** What `mouse(p)` returns: the two numbers of where a player's mouse is. */
+export interface MouseValue { readonly __trigscript: "mouse"; readonly x: InputValue; readonly y: InputValue }
+export const isMouse = (v: unknown): v is MouseValue => typeof v === "object" && v !== null && (v as MouseValue).__trigscript === "mouse";
+/** What `chatted(p, pattern)` returns: whether a line matching the pattern came in, and the values it carried by their names. */
+export interface ChatValue { readonly __trigscript: "chat"; readonly pattern: ChatPattern; readonly matched: InputValue; readonly values: Readonly<Record<string, InputValue>> }
+export const isChat = (v: unknown): v is ChatValue => typeof v === "object" && v !== null && (v as ChatValue).__trigscript === "chat";
+
 /** A value only the game has: nothing the script computes when it is built may take it as a number. */
-export const isGameValue = (v: unknown): v is ReadValue | TableValue | UnitPickValue => isRead(v) || isTable(v) || isUnitPick(v);
+export const isGameValue = (v: unknown): v is ReadValue | TableValue | UnitPickValue | InputValue | MouseValue | ChatValue => isRead(v) || isTable(v) || isUnitPick(v) || isInput(v) || isMouse(v) || isChat(v);
 
 /** The colour byte for what a script wrote as a player colour: a word of `PLAYER_COLORS`, or the byte itself. */
 export function playerColor(v: unknown): number {
@@ -129,7 +143,9 @@ export const READ_ARITY: ReadonlyMap<string, number> = new Map(
 /** The library's functions that read the game, by the name a script calls them by. */
 export const READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"] as const;
 /** The library's functions about units on the map and the game's tables: the game's too, never computed when the script is built. */
-export const UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "stats"] as const;
+export const UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "underMouse", "stats"] as const;
+/** The library's functions about what the players do, and the one that moves a location to a point: the game's as well. */
+export const INPUT_CALL_NAMES = ["keyPressed", "clicked", "mouse", "chatted", "centerLocation"] as const;
 
 /**
  * What the transformer turns `program(() => { … })` — and the arrow of `game(…)` — into:
@@ -183,6 +199,12 @@ export class Collector {
   readonly strings: ScriptString[] = [];
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
+  /**
+   * The script's own statements are running — as opposed to a program's build-time parts, which the
+   * compiler asks for afterwards. What a player does has no meaning there, and `if (keyPressed(…))`
+   * would quietly be true (it is an object), so those functions refuse while this is set.
+   */
+  running = false;
 
   localString(s: ScriptString): number {
     const at = this.strings.findIndex((x) => ("text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index));
@@ -211,6 +233,7 @@ function describe(v: unknown): string {
   if (isTable(v)) return `a value the game holds (${v.ident})`;
   if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
   if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isInput(v) || isMouse(v) || isChat(v)) return `what a player does in the game (${isInput(v) ? v.ident : isMouse(v) ? "mouse()" : "chatted()"})`;
   if (isPrint(v)) return "a print()";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "function") return "a function";
@@ -491,6 +514,58 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     return pick("nearest", "nearest", filterOf("nearest", filter, { type: argValue("unit", unit, "nearest: unit") }), near);
   };
 
+  rt.underMouse = (player: unknown, filter?: unknown) => {
+    let within = 48;
+    let rest = filter;
+    if (filter !== undefined && filter !== null && typeof filter === "object" && !Array.isArray(filter) && "within" in filter) {
+      const { within: w, ...others } = filter as Record<string, unknown>;
+      rest = others;
+      if (w !== undefined && w !== null) {
+        if (typeof w !== "number" || !Number.isInteger(w) || w < 1 || w > 4096) throw new ScriptError(`underMouse: within is a distance in pixels, 1 to 4096 (32 is a tile), got ${describe(w)}.`);
+        within = w;
+      }
+    }
+    const who = onePlayer(player, "underMouse: player", 8);
+    return { ...pick("underMouse", "nearest", filterOf("underMouse", rest, {})), mouse: who, within } as UnitPickValue;
+  };
+
+  /* ── What the players do ── */
+  const inputValue = (ident: string, input: InputSource, boolean: boolean): InputValue => {
+    const fail = (): never => { throw new ScriptError(`${ident} is what a player does while the game runs: it has no value when the script is built. Inside program(), test it in an if or assign it to a let.`); };
+    return { __trigscript: "input", input, boolean, ident, valueOf: fail, toString: fail } as InputValue;
+  };
+  // The players who can press a key: the eight slots a person can sit in.
+  const human = (v: unknown, what: string) => {
+    if (collector.running) throw new ScriptError(`${what.split(":")[0]}() asks what a player does while the game runs: use it inside program().`);
+    return onePlayer(v, what, 8);
+  };
+  rt.keyPressed = (player: unknown, key: unknown) => {
+    const name = typeof key === "string" ? keyName(key) : null;
+    const deaf = typeof key === "string" ? DEAF_KEYS[key.trim().toUpperCase()] : undefined;
+    if (deaf) throw new ScriptError(`keyPressed: ${deaf}.`);
+    if (!name) throw new ScriptError(`keyPressed: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} … "F1" … "Space", "Enter", "Escape", "Left" …; got ${describe(key)}.`);
+    return inputValue(`keyPressed(…, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, "keyPressed: player") }, true);
+  };
+  rt.clicked = (player: unknown, button: unknown = "left") => {
+    const b = typeof button === "string" ? button.trim().toLowerCase() : "";
+    if (!(MOUSE_BUTTONS as readonly string[]).includes(b)) throw new ScriptError(`clicked: the button is "left", "right" or "middle", got ${describe(button)}.`);
+    return inputValue(`clicked(…, ${JSON.stringify(b)})`, { source: "click", button: b as MouseButton, player: human(player, "clicked: player") }, true);
+  };
+  rt.mouse = (player: unknown): MouseValue => {
+    const who = human(player, "mouse: player");
+    return Object.freeze({ __trigscript: "mouse" as const, x: inputValue("mouse(…).x", { source: "mouse", axis: "x", player: who }, false), y: inputValue("mouse(…).y", { source: "mouse", axis: "y", player: who }, false) });
+  };
+  rt.chatted = (player: unknown, pattern: unknown): ChatValue => {
+    if (typeof pattern !== "string") throw new ScriptError(`chatted: the pattern is text such as "-give {n}", got ${describe(pattern)}.`);
+    let parsed: ChatPattern;
+    try { parsed = parseChatPattern(pattern); } catch (err) { throw new ScriptError(err instanceof Error ? err.message : String(err)); }
+    const who = human(player, "chatted: player");
+    const values: Record<string, InputValue> = {};
+    parsed.captures.forEach((c, i) => { values[c.name] = inputValue(`chatted(…).${c.name}`, { source: "chat", pattern, capture: i, player: who }, false); });
+    return Object.freeze({ __trigscript: "chat" as const, pattern: parsed, matched: inputValue("chatted(…)", { source: "chat", pattern, capture: null, player: who }, true), values: Object.freeze(values) });
+  };
+  rt.centerLocation = () => { throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement — centerLocation(locations.Cursor, x, y)."); };
+
   /* ── The game's tables ── */
   const tableValue = (kind: TableKind, field: TableField, index: number, ident: string, key?: number): TableValue => {
     const cell: TableCell = {
@@ -605,6 +680,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "rose", "once", "shared", "clamp");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
-  out.push(...UNIT_CALL_NAMES, "colors");
+  out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
   return out;
 }

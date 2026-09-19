@@ -19,6 +19,7 @@ import { compileInBackground, type CompileInput } from "./compile";
 import { ENTRY_FILE, type CompileResult, type ScriptDiagnostic, type ScriptFiles } from "./compiler/compiler";
 import { generateDeclarations } from "./compiler/declarations";
 import { serializeIr } from "./compiler/eud";
+import { buildPlugins } from "./compiler/input";
 import { TRIGSCRIPT_PY } from "./compiler/generated/trigscriptPy";
 import { scriptNames, type ScriptNames } from "./compiler/names";
 import { printScript, type PrintOptions } from "./compiler/print";
@@ -223,9 +224,10 @@ export class ScriptService {
     const artifact = cached && map && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) ? cached : await this.prepare(state.files, map);
     if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
     return {
-      plugins: { trigscript: { ir: "/work/files/trigscript.json" }, eudTurbo: {} },
+      // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
+      plugins: buildPlugins(artifact.compiled.input, "/work/files/trigscript.json"),
       sources: { trigscript: TRIGSCRIPT_PY },
-      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings) },
+      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings, artifact.compiled.input) },
     };
   }
 

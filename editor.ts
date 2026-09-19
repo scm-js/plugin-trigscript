@@ -798,7 +798,9 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       for (let i = 0; i < SIMULATE_FRAMES; i++) { sim.step(); programs?.step(); }
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
-      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.`);
+      // Nobody presses a key in a simulation: said, so that a program waiting for one is not taken for broken.
+      const quiet = r.input ? " Keys, clicks, the mouse and chat are not simulated: they read as nothing." : "";
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.${quiet}`);
       shell.showPanel("simulate");
     } catch (err) {
       setStatus("error", `Simulation stopped: ${(err as Error).message}`);

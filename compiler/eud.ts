@@ -11,6 +11,7 @@
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import { declarations, isUnitExpr, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type UnitExpr } from "./ir";
 import type { LineHint, ScriptString } from "./compiler";
+import type { InputPlan } from "./input";
 
 export interface ProgramDiagnostic { at: At; message: string }
 
@@ -66,7 +67,8 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
-      case "action": if (s.variable) expr(s.variable.expr); break;
+      case "action": for (const v of s.variables ?? []) expr(v.expr); break;
+      case "centerLocation": expr(s.x); expr(s.y); break;
       case "print": for (const p of s.parts) if (p.kind === "number") expr(p.expr); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
@@ -178,7 +180,7 @@ function remarks(body: Stmt[], out: LineHint[]) {
 function assigned(body: Stmt[], into = new Set<string>()): Set<string> {
   const stmt = (s: Stmt) => {
     switch (s.kind) {
-      case "action": case "unitWrite": case "unitDo": case "tableWrite": into.add(THE_GAME); break;
+      case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": into.add(THE_GAME); break;
       case "declare": into.add(s.decl.id); break;
       case "assign": case "assignBool": case "assignUnit": into.add(s.target); break;
       case "unitLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
@@ -205,6 +207,8 @@ function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
   switch (e.kind) {
     case "var": into.add(e.id); break;
     case "read": case "cond": case "tableRead": into.add(THE_GAME); break;
+    // What the players did is as it was when the frame began: nothing a loop does within the frame changes it.
+    case "input": break;
     case "unitField": case "unitAlive": case "unitFlag": into.add(THE_GAME); if (e.unit.kind === "unitVar") into.add(e.unit.id); break;
     case "unitSame": for (const u of [e.left, e.right]) if (u.kind === "unitVar") into.add(u.id); break;
     case "randomInt": reads(e.bound, into); break;
@@ -274,8 +278,9 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[]) {
  * compile's *local* ids; here each becomes the text itself (`strings[k - 1].text`), which
  * eudplib puts in the built map's string table, or the map's own index when the script
  * named one (`{ index }`). Nothing a program says is written into the map the user edits.
+ * `input` is the compile's plan for what the players do (`input.ts`), when a program reads any.
  */
-export function serializeIr(programs: Program[], strings: readonly ScriptString[]): string {
+export function serializeIr(programs: Program[], strings: readonly ScriptString[], input: InputPlan | null = null): string {
   const resolve = (local: number): number | string => {
     if (local <= 0) return 0;
     const s = strings[local - 1];
@@ -322,12 +327,13 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "unrolled": return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
       case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
       case "return": return s.value ? { ...s, value: any(s.value) } : s;
-      case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variable ? { variable: { ...s.variable, expr: expr(s.variable.expr) } } : {}) };
+      case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}) };
+      case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y) };
       case "print": return { ...s, parts: s.parts.map((p) => (p.kind === "number" ? { ...p, expr: expr(p.expr) } : p)) };
       case "call": return { ...s, call: call(s.call) };
       case "block": return { ...s, body: s.body.map(stmt) };
       default: return s;
     }
   };
-  return JSON.stringify({ version: programs[0]?.version ?? 1, programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
 }

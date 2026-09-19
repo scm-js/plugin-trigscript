@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 4** (3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 5** (4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -88,9 +88,10 @@ a parameter's `init` and a `return` carry a unit expression (below).
 | `switch` | `value`, `cases: { value, body }[]` | Cases tested in order; `value` null is `default`, `NaN` a case whose value could not be read (no test, still fallen into). Bodies fall through unless they `break`. |
 | `break`, `continue` | | Of the nearest loop (`break` also of a `switch`). |
 | `return` | `value?` | Inside a `call` body: writes the result and leaves the call. |
-| `sleep` | `ms?`, `cycles?` | Park the program: a duration in milliseconds, or in trigger cycles. |
+| `sleep` | `ms?`, `cycles?` | Park the program: a duration in milliseconds, or in frames (`cycles`). `cycles: 1` goes on in the very next frame. |
 | `print` | `parts`, `to`, `position` | Text with values in it. `parts` are `{ kind: "text", text }`, `{ kind: "number", expr }` (its digits), `{ kind: "name", player }` and `{ kind: "color", player }` (the colour code of the player's colour), a player being a slot or 13 for the current player. `to` is who sees it: a slot, 13, All Players (17) or a force (18–21). `position` is `chat` or `center`, the line the game's own errors use. Every number is evaluated before anything is shown. |
-| `action` | `record`, `variable?` | A trigger action. `variable` names a field of the record that takes an expression's value: `{ field, bits: 8 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, an amount with a modifier a 32-bit one. |
+| `action` | `record`, `variables?` | A trigger action. Each of `variables` names a field of the record that takes an expression's value: `{ field, bits: 8, 16 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, a unit type a 16-bit one (the lowering stops it at 228), an amount with a modifier a 32-bit one. Version 4 had one, as `variable`. |
+| `centerLocation` | `location`, `x`, `y` | Centre a location (1-based) on a point of the map in pixels, its size kept. |
 | `call` | `call` | An inlined function as a statement (its result, if any, unused). |
 | `block` | `body` | Scoping only. |
 | `remark` | `text`, `short?` | A word for the editor about the line: a loop unrolled when the script was applied. |
@@ -109,6 +110,7 @@ Numbers (`NumExpr`):
 | `randomInt` | `bound` — a whole number from 0 to `bound` − 1, fresh at every evaluation; 0 when `bound` is 0 |
 | `unitField` | `unit`, `field` — a number of a unit; 0 when the unit is none or gone |
 | `tableRead` | `cell` — a cell of the game's tables in the script's units (stored ÷ `scale`, rounded down); a flag reads 1 or 0 |
+| `input` | `input` — what a player did, as it reached every computer (below): a key, a click and a typed line read 1 on their frame, the mouse its place on the map |
 | `ternary` | `cond`, `whenTrue`, `whenFalse` |
 | `intrinsic` | `name: min | max | abs`, `args` |
 | `call` | `call` (its result is the value) |
@@ -152,7 +154,7 @@ Units (`UnitExpr`):
 | --- | --- |
 | `unitNull` | none |
 | `unitVar` | `id` of a unit variable |
-| `pick` | `by: first | nearest | random`, `filter`, `near?` — one of the units the filter matches: the first in table order, the nearest to the centre of location `near` by \|dx\| + \|dy\| (the first of equals), or one drawn at random; none when nothing matches |
+| `pick` | `by: first | nearest | random`, `filter`, `near?`, `mouse?`, `within?` — one of the units the filter matches: the first in table order, the nearest to the centre of location `near` by \|dx\| + \|dy\| (the first of equals), or one drawn at random; none when nothing matches. With `mouse` (a player: a slot, or 13) in place of `near`, the nearest to that player's mouse and no farther from it than `within` pixels |
 | `call` | `call` whose result is a unit |
 
 ```
@@ -214,6 +216,50 @@ nobody has watched it change. `supply` is as the top
 bar shows it — the tables hold half supplies, so used is rounded up and the others down —
 for one race, or for the race the player plays (`race` null), 0 when the slot plays none.
 In these two `player` is a slot or 13, the player the program is running as.
+
+## Input
+
+```
+{ source: "key", key, player }                          1 on the frame the press arrives
+{ source: "click", button: "left" | "right" | "middle", player }
+{ source: "mouse", axis: "x" | "y", player }            map pixels
+{ source: "chat", pattern, capture: number | null, player }
+```
+
+What a player does happens on one computer; two euddraft plugins the build adds bring it to
+all of them in step, and the IR file's top-level `input` is what they are set up from
+(`compiler/input.ts`):
+
+```
+input: {
+  keys: string[], buttons: string[],          what is asked for, each once; an index is the cell's number
+  chats: { pattern, segments, captures }[],   a typed line is the first of these it fits, in this order
+  unitNames?: [lowerCaseName, unitType][],    only when a pattern reads a unit's name
+  qcLocation,                                 the 0-based location slot MSQC keeps for itself
+  mouseBase                                   the 1-based number of the first of eight locations MSQC keeps the mice in, or null
+}
+```
+
+`player` is a slot (0–7) or 13. A `chat` with `capture` null is 1 on the frame a line
+fitting `pattern` arrives from that player; with a number, that capture's value on that
+frame and 0 otherwise. A pattern's `segments` are its written text (strings, matched
+exactly) and its captures (their index); a capture is `{ name, kind: "number" }` (digits,
+stopping at 1 048 575), `{ kind: "word", words }` (its place in the list) or
+`{ kind: "unit" }` (a unit type by name, the rest of the line); words and names match
+whatever the capitals. The whole line has to fit.
+
+The build's plugin sections, in the order they run (`buildPlugins`): **chatEvent**, with no
+messages of its own — it only finds the line the local player typed and leaves its address
+and length; **trigscript**, which before the triggers matches that line against the patterns
+on the computer it was typed on, into a number for the pattern and up to three values;
+**MSQC**, which sends those, the keys (`KeyPress(K); NotTyping`) and the clicks
+(`MouseDown(B)`) to every computer as the player they came from, and keeps each human's
+mouse in a location; **eudTurbo**. Every cell is an `EUDArray(12)` or an `EUDVariable` the
+lowering registers by name (`tsin_key0`, `tsin_chat_in`, …), which is how the other two
+plugins' settings reach them: no death counter, switch or string of the map is used. MSQC
+clears its cells every frame, so an input lasts the frame it arrives in. It makes its
+command units of one unit type (58, the Valkyrie) owned by Player 12, which the map must
+leave alone.
 
 ## Numbers
 

@@ -456,6 +456,69 @@ game. `stats()` wants to see what it is given — `stats(units.TerranMarine)`, `
 with `p: Player` — because a table's index is a plain number when the script runs and
 only its type says which table.
 
+**What the players do is `keyPressed`, `clicked`, `mouse` and `chatted`.** A key, a
+click and a typed line are true on the one frame they arrive, so a program looks for them
+in a loop that runs every frame:
+
+```ts
+program(() => {
+  while (true) {
+    if (keyPressed(CurrentPlayer, "F8")) createUnit(CurrentPlayer, units.TerranMarine, 1, locations.Base);
+
+    if (clicked(CurrentPlayer, "right")) {
+      const at = mouse(CurrentPlayer);                       // map pixels, kept as they are now
+      centerLocation(locations.Cursor, at.x, at.y);
+      createUnit(CurrentPlayer, units.TerranMarine, 1, locations.Cursor);
+    }
+
+    const m = chatted(CurrentPlayer, "-spawn {n} {what:unit}");
+    if (m) createUnit(CurrentPlayer, m.what, m.n, locations.Base);
+
+    underMouse(CurrentPlayer, { owner: CurrentPlayer })?.heal(10);
+    sleep(frames(1));
+  }
+}, { owner: AllPlayers });
+```
+
+`keyPressed(player, key)` is true when the press arrives — once per press, not while the
+key is held (the game reports no held key), and not while the player is typing a message.
+Keys are the letters and digits, `"F1"` … `"F12"` without `"F6"` (the game keeps it to
+itself and reports no press of it — played and seen — so it is an error to ask), `"Space"`, `"Enter"`, `"Escape"`,
+`"Tab"`, `"Shift"`, `"Ctrl"`, `"Alt"`, the arrows (`"Left"` …), `"Backspace"`, `"Delete"`,
+`"Insert"`, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"` and `"Numpad0"` … `"Numpad9"`; the
+game's own use of a key still happens. `clicked(player, "left" | "right" | "middle")` is
+the same for a mouse button. `mouse(player)` is where the player's mouse is on the map,
+`x` and `y` in pixels (32 to a tile); `const at = mouse(p)` keeps the place, and
+`centerLocation(location, x, y)` moves a location there — its size kept — so that
+`createUnit` and the rest can happen under the cursor. `underMouse(player, filter?)` is the
+unit nearest the mouse and no farther than `within` pixels from it (48 unless the filter
+says), or `null`.
+
+`chatted(player, pattern)` is `null`, or what the pattern read out of the line the player
+sent. The pattern's own text is matched exactly and the whole line has to fit. `{n}` reads
+a whole number (up to 1 048 575); `{what:unit}` a unit type by its name — `Terran Marine`
+or `TerranMarine`, a custom name too — which is the rest of the line, so it comes last;
+`{kind:ore|gas}` one of the listed words, giving its place in the list (0, 1, …). Names
+and words match whatever the capitals; up to three values a pattern. The values are typed
+from the pattern itself — `m.n` is a number, `m.what` a `UnitType`, `m.amount` an error as
+you type — and they are the program's numbers: an action takes a unit type and a count
+from them at once. A pattern starts with a word of its own (`-spawn`), so ordinary talk is
+never taken for it; a line that fits no pattern is just chat. A game played in single
+player has no chat: test typed lines in a multiplayer game, which one person can host
+alone.
+
+The player is one of `P1` … `P8` or `CurrentPlayer`; in a per-player program each player's
+own keys, mouse and lines. All of it reaches every player's computer in step, a few frames
+after it happens — that is the trip between computers, and the same in a game alone. It
+comes through two plugins the eudplib library carries (MSQC and chatEvent), set up by the
+compiler from what the programs ask for. They take a little from the map, and only when a
+program reads input: one free location among the map's first 63 (and eight more in a row
+when the mouse is read — the script is told when there is no room), the Valkyrie, which
+the map must not use (its type carries the input), and Player 12, who holds those units.
+No death counter, switch or string is used. Outside a program these functions are an
+error, where `if (keyPressed(…))` would otherwise quietly be true. Simulate presses no
+keys: there they read as nothing (tests that press them come with `test()`).
+
 **A text can hold the program's values.** `displayText` takes a template literal (or
 texts joined with `+`) with numbers of the program in it, `name(p)` and `color(p)`:
 
@@ -532,9 +595,19 @@ programs, each a thread of its own with its own variables. A program's text
 takes a string of the map you edit; a `trigger()`'s text is interned into the map when
 the script is applied, as it always was.
 
-Still to come: reads of the game as values (`deaths(P1, u)` as a number, `minerals()`),
-units on the map as objects, text with numbers in it, and input. The plan is
-`docs/eud-plan.md`, and the IR the compiler hands eudplib is `docs/ir.md`.
+Still to come: `test()` blocks that run a script against the simulator, a debugger that
+steps it, and a gallery of examples. The plan is `docs/eud-plan.md`, and the IR the
+compiler hands eudplib is `docs/ir.md`.
+
+### Coming from 3.3
+
+`sleep(frames(1))` goes on in the next frame, as it was always described. Until 3.4 the
+built map waited one frame longer than asked after every `sleep` — a loop sleeping a frame
+ran every other frame, `sleep(seconds(1))` took 25 — while Simulate did not; now both do
+what the words say. A script that counted on the longer wait runs a little faster.
+
+A unit type can be a variable of the program in an action (`createUnit(P1, m.what, m.n,
+at)`), along with the count or the amount; before, one argument at a time could be.
 
 ### Coming from 3.2
 

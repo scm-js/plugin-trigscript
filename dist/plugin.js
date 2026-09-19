@@ -1361,10 +1361,556 @@ function entryFor(t, value) {
   return t.entries.find((e) => e.value === value);
 }
 
+// compiler/ir.ts
+var IR_VERSION = 5;
+var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
+var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
+var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "call" && e.call.result?.kind === "unit";
+var isNumExpr = (e) => {
+  switch (e.kind) {
+    case "const":
+      return typeof e.value === "number";
+    case "var":
+      return false;
+    // ambiguous by shape; callers know the variable's kind
+    case "unary":
+    case "binary":
+    case "intrinsic":
+    case "read":
+    case "randomInt":
+    case "unitField":
+    case "tableRead":
+    case "input":
+      return true;
+    case "ternary":
+      return isNumExpr(e.whenTrue);
+    case "call":
+      return e.call.result?.kind === "number";
+    default:
+      return false;
+  }
+};
+function declarations(body2) {
+  const out = [];
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        out.push(s.decl);
+        init(s.init);
+        break;
+      case "assign":
+        expr(s.value);
+        break;
+      case "assignBool":
+        init(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        out.push(s.decl);
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        init(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") init(s.value);
+        break;
+      case "if":
+        init(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) init(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        init(s.cond);
+        break;
+      case "for":
+        if (s.cond) init(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) init(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "print":
+        for (const p of s.parts) if (p.kind === "number") expr(p.expr);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    if (c2.result) out.push(c2.result.decl);
+    for (const p of c2.params) {
+      out.push(p.decl);
+      init(p.init);
+    }
+    c2.body.forEach(stmt);
+  };
+  const init = (e) => isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+  };
+  const expr = (e) => {
+    switch (e.kind) {
+      case "unitField":
+        unit(e.unit);
+        break;
+      case "unary":
+        expr(e.expr);
+        break;
+      case "binary":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        bool(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const bool = (b) => {
+    switch (b.kind) {
+      case "unitAlive":
+      case "unitFlag":
+        unit(b.unit);
+        break;
+      case "unitSame":
+        unit(b.left);
+        unit(b.right);
+        break;
+      case "test":
+        expr(b.expr);
+        break;
+      case "compare":
+        expr(b.left);
+        expr(b.right);
+        break;
+      case "and":
+      case "or":
+        b.items.forEach(bool);
+        break;
+      case "not":
+        bool(b.expr);
+        break;
+      case "edge":
+        bool(b.cond);
+        break;
+      case "ternary":
+        bool(b.cond);
+        bool(b.whenTrue);
+        bool(b.whenFalse);
+        break;
+      case "call":
+        call(b.call);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+  return out;
+}
+
+// compiler/input.ts
+var MOUSE_BUTTONS = ["left", "right", "middle"];
+var MSQC_BUTTON = { left: "L", right: "R", middle: "M" };
+var NAMED_KEYS = {
+  Space: "SPACE",
+  Enter: "ENTER",
+  Escape: "ESC",
+  Tab: "TAB",
+  Shift: "SHIFT",
+  Ctrl: "LCTRL",
+  Alt: "LALT",
+  Left: "LEFT",
+  Up: "UP",
+  Right: "RIGHT",
+  Down: "DOWN",
+  Backspace: "BACK",
+  Delete: "DELETE",
+  Insert: "INSERT",
+  Home: "HOME",
+  End: "END",
+  PageUp: "PGUP",
+  PageDown: "PGDN"
+};
+var LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+var DIGITS = "0123456789".split("");
+var DEAF_KEYS = { F6: "StarCraft: Remastered keeps F6 to itself and reports no press of it (played and seen); F7 and F8 work" };
+var KEY_NAMES = [
+  ...LETTERS,
+  ...DIGITS,
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`).filter((k) => !(k in DEAF_KEYS)),
+  ...Object.keys(NAMED_KEYS),
+  ...DIGITS.map((d) => `Numpad${d}`)
+];
+var KEY_BY_LOWER = new Map(KEY_NAMES.map((k) => [k.toLowerCase(), k]));
+function keyName(v) {
+  return KEY_BY_LOWER.get(v.trim().toLowerCase()) ?? null;
+}
+function msqcKey(key) {
+  return NAMED_KEYS[key] ?? key.toUpperCase();
+}
+var MAX_CHAT_CAPTURES = 3;
+var MAX_CHAT_BYTES = 78;
+var MAX_CHAT_NUMBER = 1048575;
+var IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var bytes = (s) => new TextEncoder().encode(s).length;
+function parseChatPattern(pattern) {
+  if (pattern === "") throw new Error('chatted: the pattern is what the player types, such as "-give {n}".');
+  if (/[\r\n\0]/.test(pattern)) throw new Error("chatted: a typed line is one line.");
+  const segments = [];
+  const captures = [];
+  let text = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "}") throw new Error("chatted: a } without its {. A capture is {name}, {name:unit} or {name:word|word}.");
+    if (ch !== "{") {
+      text += ch;
+      continue;
+    }
+    const end = pattern.indexOf("}", i);
+    if (end < 0) throw new Error("chatted: a { without its }. A capture is {name}, {name:unit} or {name:word|word}.");
+    const inside = pattern.slice(i + 1, end);
+    i = end;
+    const colon = inside.indexOf(":");
+    const name = colon < 0 ? inside : inside.slice(0, colon);
+    const kind = colon < 0 ? "" : inside.slice(colon + 1);
+    if (!IDENT.test(name) || name.startsWith("__")) throw new Error(`chatted: {${inside}} needs a name to be read by: {n}, {unit:unit}, {kind:ore|gas}.`);
+    if (captures.some((c2) => c2.name === name)) throw new Error(`chatted: two captures are called ${name}.`);
+    if (text === "") throw new Error(segments.length === 0 ? 'chatted: a pattern starts with its own word, so that ordinary talk is not taken for it: "-give {n}".' : `chatted: {${name}} follows another capture with nothing between them; put a space or a word there.`);
+    segments.push(text);
+    text = "";
+    if (kind === "") captures.push({ name, kind: "number" });
+    else if (kind === "unit") captures.push({ name, kind: "unit" });
+    else {
+      const words = kind.split("|");
+      if (kind === "number" || kind === "word") throw new Error(`chatted: {${name}} alone is a number; {${name}:unit} a unit type; {${name}:ore|gas} one of the words listed.`);
+      if (words.some((w) => w === "" || /\s/.test(w))) throw new Error(`chatted: {${inside}}: each word of the list is one word, without spaces.`);
+      if (new Set(words.map((w) => w.toLowerCase())).size !== words.length) throw new Error(`chatted: {${inside}} lists a word twice.`);
+      captures.push({ name, kind: "word", words });
+    }
+    segments.push(captures.length - 1);
+  }
+  if (text !== "") segments.push(text);
+  if (captures.length > MAX_CHAT_CAPTURES) throw new Error(`chatted: a pattern reads at most ${MAX_CHAT_CAPTURES} values.`);
+  const unit = captures.findIndex((c2) => c2.kind === "unit");
+  if (unit >= 0 && (unit !== captures.length - 1 || typeof segments[segments.length - 1] === "string")) throw new Error("chatted: a unit's name has spaces in it, so {\u2026:unit} reads the rest of the line and comes last.");
+  const written = segments.filter((s) => typeof s === "string").join("");
+  if (bytes(written) > MAX_CHAT_BYTES) throw new Error(`chatted: the game lets a player type ${MAX_CHAT_BYTES} bytes; the pattern's own text is longer.`);
+  return { pattern, segments, captures };
+}
+function matchChat(p, line, unitByName) {
+  let pos = 0;
+  const out = [];
+  for (let s = 0; s < p.segments.length; s++) {
+    const seg = p.segments[s];
+    if (typeof seg === "string") {
+      if (!line.startsWith(seg, pos)) return null;
+      pos += seg.length;
+      continue;
+    }
+    const c2 = p.captures[seg];
+    if (c2.kind === "number") {
+      const m = /^\d+/.exec(line.slice(pos));
+      if (!m) return null;
+      pos += m[0].length;
+      out.push(Math.min(Number(m[0]), MAX_CHAT_NUMBER));
+    } else if (c2.kind === "unit") {
+      const id = unitByName(line.slice(pos).toLowerCase());
+      if (id === void 0) return null;
+      pos = line.length;
+      out.push(id);
+    } else {
+      const m = /^\S+/.exec(line.slice(pos));
+      const at = m ? c2.words.findIndex((w) => w.toLowerCase() === m[0].toLowerCase()) : -1;
+      if (!m || at < 0) return null;
+      pos += m[0].length;
+      out.push(at);
+    }
+  }
+  return pos === line.length ? out : null;
+}
+var QC_UNIT = 58;
+var QC_PLAYER = 11;
+var MOUSE_SLOTS = 8;
+var LAST_SLOT = 62;
+function inputsOf(programs) {
+  const sources = [];
+  let mouse = false;
+  let at = null;
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "pick" && u.mouse !== void 0) {
+      mouse = true;
+      at ??= u.at;
+    }
+  };
+  const any = (e) => isUnitExpr(e) ? unit(e) : expr(e);
+  const expr = (e) => {
+    switch (e.kind) {
+      case "input":
+        sources.push(e.input);
+        at ??= e.at;
+        if (e.input.source === "mouse") mouse = true;
+        break;
+      case "unitField":
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        break;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        break;
+      case "unary":
+        expr(e.expr);
+        break;
+      case "binary":
+      case "compare":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        expr(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "and":
+      case "or":
+        e.items.forEach(expr);
+        break;
+      case "not":
+      case "test":
+        expr(e.expr);
+        break;
+      case "edge":
+        expr(e.cond);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) any(p.init);
+    c2.body.forEach(stmt);
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) any(s.init);
+        break;
+      case "assign":
+      case "assignBool":
+        expr(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        expr(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") expr(s.value);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "if":
+        expr(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) expr(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        expr(s.cond);
+        break;
+      case "for":
+        if (s.cond) expr(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) any(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        break;
+      case "print":
+        for (const p of s.parts) if (p.kind === "number") expr(p.expr);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  for (const p of programs) p.body.forEach(stmt);
+  return { sources, mouse, at };
+}
+function inputPlan(programs, locations, units) {
+  const { sources, mouse } = inputsOf(programs);
+  if (sources.length === 0 && !mouse) return null;
+  const keys = [];
+  const buttons = [];
+  const chats = [];
+  for (const s of sources) {
+    if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
+    else if (s.source === "click" && !buttons.includes(s.button)) buttons.push(s.button);
+    else if (s.source === "chat" && !chats.some((c2) => c2.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
+  }
+  const used = new Set(locations.entries.map((e) => e.value - 1));
+  const free = (slot) => slot >= 0 && slot <= LAST_SLOT && !used.has(slot);
+  let qcLocation = -1;
+  for (let slot = LAST_SLOT; slot >= 0; slot--) if (free(slot)) {
+    qcLocation = slot;
+    break;
+  }
+  if (qcLocation < 0) throw new Error("Reading keys, clicks or chat needs one free location among the map's first 63 for the plugin that carries them between the players' computers; this map uses them all.");
+  let mouseBase = null;
+  if (mouse) {
+    for (let slot = LAST_SLOT - MOUSE_SLOTS + 1; slot >= 0 && mouseBase === null; slot--) {
+      let ok = true;
+      for (let i = 0; i < MOUSE_SLOTS; i++) if (!free(slot + i) || slot + i === qcLocation) ok = false;
+      if (ok) mouseBase = slot + 1;
+    }
+    if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
+  }
+  const plan = { keys, buttons, chats, qcLocation, mouseBase };
+  if (chats.some((c2) => c2.captures.some((x) => x.kind === "unit"))) {
+    const seen = /* @__PURE__ */ new Set();
+    plan.unitNames = [];
+    for (const e of units.entries) {
+      if (e.value >= 228) continue;
+      for (const k of e.keys) {
+        const lower = k.toLowerCase();
+        if (!seen.has(lower)) {
+          seen.add(lower);
+          plan.unitNames.push([lower, e.value]);
+        }
+      }
+    }
+  }
+  return plan;
+}
+var INPUT_NAMES = {
+  key: (i) => `tsin_key${i}`,
+  button: (i) => `tsin_button${i}`,
+  chatLocal: "tsin_chat",
+  chatIn: "tsin_chat_in",
+  captureLocal: (i) => `tsin_capture${i}`,
+  captureIn: (i) => `tsin_capture${i}_in`,
+  heard: "tsin_heard",
+  pointer: "tsin_pointer",
+  length: "tsin_length",
+  pattern: "tsin_pattern"
+};
+function inputPlugins(plan) {
+  const before = {};
+  if (plan.chats.length) before.chatEvent = { __addr__: INPUT_NAMES.heard, __ptrAddr__: INPUT_NAMES.pointer, __lenAddr__: INPUT_NAMES.length, __patternAddr__: INPUT_NAMES.pattern };
+  const msqc = { QCUnit: QC_UNIT, QCLoc: plan.qcLocation, QCPlayer: QC_PLAYER, QCDebug: "false" };
+  plan.keys.forEach((key, i) => {
+    msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`;
+  });
+  plan.buttons.forEach((b, i) => {
+    msqc[`MouseDown(${MSQC_BUTTON[b]})`] = `${INPUT_NAMES.button(i)}, 1`;
+  });
+  if (plan.mouseBase !== null) msqc.Mouse = plan.mouseBase;
+  if (plan.chats.length) {
+    const sent = `${INPUT_NAMES.chatLocal}.AtLeast(1)`;
+    msqc[`${sent}; val, ${INPUT_NAMES.chatLocal}`] = INPUT_NAMES.chatIn;
+    const captures = Math.max(0, ...plan.chats.map((c2) => c2.captures.length));
+    for (let i = 0; i < captures; i++) msqc[`${sent}; val, ${INPUT_NAMES.captureLocal(i)}`] = INPUT_NAMES.captureIn(i);
+  }
+  return { before, after: { MSQC: msqc } };
+}
+function buildPlugins(plan, irPath) {
+  const input = plan ? inputPlugins(plan) : { before: {}, after: {} };
+  return { ...input.before, trigscript: { ir: irPath }, ...input.after, eudTurbo: {} };
+}
+
 // compiler/tables.ts
 var TABLE_SIZE = { unit: 228, weapon: 130, upgrade: 61, tech: 44, player: 12 };
-var UNIT_FLAGS = 6701184;
-var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS, stride: 4, width: "bit", bit, boolean: true });
+var UNIT_FLAGS2 = 6701184;
+var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS2, stride: 4, width: "bit", bit, boolean: true });
 var TABLE_FIELDS = {
   unit: [
     { name: "maxHp", doc: "Hit points of units made after the write.", base: 6693712, stride: 4, width: 4, scale: 256 },
@@ -1432,7 +1978,10 @@ var isPrint = (v) => typeof v === "object" && v !== null && v.__trigscript === "
 var isUnitQuery = (v) => typeof v === "object" && v !== null && v.__trigscript === "units";
 var isUnitPick = (v) => typeof v === "object" && v !== null && v.__trigscript === "pick";
 var isTable = (v) => typeof v === "object" && v !== null && v.__trigscript === "table";
-var isGameValue = (v) => isRead(v) || isTable(v) || isUnitPick(v);
+var isInput = (v) => typeof v === "object" && v !== null && v.__trigscript === "input";
+var isMouse = (v) => typeof v === "object" && v !== null && v.__trigscript === "mouse";
+var isChat = (v) => typeof v === "object" && v !== null && v.__trigscript === "chat";
+var isGameValue = (v) => isRead(v) || isTable(v) || isUnitPick(v) || isInput(v) || isMouse(v) || isChat(v);
 function playerColor(v) {
   if (typeof v === "string") {
     const n = PLAYER_COLORS[v.trim().toLowerCase()];
@@ -1463,7 +2012,8 @@ var READ_ARITY = new Map(
   [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
 );
 var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
-var UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "stats"];
+var UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "underMouse", "stats"];
+var INPUT_CALL_NAMES = ["keyPressed", "clicked", "mouse", "chatted", "centerLocation"];
 var ScriptError = class extends Error {
   constructor(message) {
     super(message);
@@ -1475,6 +2025,12 @@ var Collector = class {
   strings = [];
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
+  /**
+   * The script's own statements are running — as opposed to a program's build-time parts, which the
+   * compiler asks for afterwards. What a player does has no meaning there, and `if (keyPressed(…))`
+   * would quietly be true (it is an object), so those functions refuse while this is set.
+   */
+  running = false;
   localString(s) {
     const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
     if (at >= 0) return at + 1;
@@ -1499,6 +2055,7 @@ function describe(v) {
   if (isTable(v)) return `a value the game holds (${v.ident})`;
   if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
   if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isInput(v) || isMouse(v) || isChat(v)) return `what a player does in the game (${isInput(v) ? v.ident : isMouse(v) ? "mouse()" : "chatted()"})`;
   if (isPrint(v)) return "a print()";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "function") return "a function";
@@ -1769,6 +2326,64 @@ function createRuntime(names, collector, options = {}) {
     if (near === 0 || near > 255) throw new ScriptError("nearest: the location to be near is one of locations.*.");
     return pick("nearest", "nearest", filterOf("nearest", filter, { type: argValue("unit", unit, "nearest: unit") }), near);
   };
+  rt.underMouse = (player, filter) => {
+    let within = 48;
+    let rest = filter;
+    if (filter !== void 0 && filter !== null && typeof filter === "object" && !Array.isArray(filter) && "within" in filter) {
+      const { within: w, ...others } = filter;
+      rest = others;
+      if (w !== void 0 && w !== null) {
+        if (typeof w !== "number" || !Number.isInteger(w) || w < 1 || w > 4096) throw new ScriptError(`underMouse: within is a distance in pixels, 1 to 4096 (32 is a tile), got ${describe(w)}.`);
+        within = w;
+      }
+    }
+    const who = onePlayer(player, "underMouse: player", 8);
+    return { ...pick("underMouse", "nearest", filterOf("underMouse", rest, {})), mouse: who, within };
+  };
+  const inputValue = (ident, input, boolean) => {
+    const fail = () => {
+      throw new ScriptError(`${ident} is what a player does while the game runs: it has no value when the script is built. Inside program(), test it in an if or assign it to a let.`);
+    };
+    return { __trigscript: "input", input, boolean, ident, valueOf: fail, toString: fail };
+  };
+  const human = (v, what) => {
+    if (collector.running) throw new ScriptError(`${what.split(":")[0]}() asks what a player does while the game runs: use it inside program().`);
+    return onePlayer(v, what, 8);
+  };
+  rt.keyPressed = (player, key) => {
+    const name = typeof key === "string" ? keyName(key) : null;
+    const deaf = typeof key === "string" ? DEAF_KEYS[key.trim().toUpperCase()] : void 0;
+    if (deaf) throw new ScriptError(`keyPressed: ${deaf}.`);
+    if (!name) throw new ScriptError(`keyPressed: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} \u2026 "F1" \u2026 "Space", "Enter", "Escape", "Left" \u2026; got ${describe(key)}.`);
+    return inputValue(`keyPressed(\u2026, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, "keyPressed: player") }, true);
+  };
+  rt.clicked = (player, button = "left") => {
+    const b = typeof button === "string" ? button.trim().toLowerCase() : "";
+    if (!MOUSE_BUTTONS.includes(b)) throw new ScriptError(`clicked: the button is "left", "right" or "middle", got ${describe(button)}.`);
+    return inputValue(`clicked(\u2026, ${JSON.stringify(b)})`, { source: "click", button: b, player: human(player, "clicked: player") }, true);
+  };
+  rt.mouse = (player) => {
+    const who = human(player, "mouse: player");
+    return Object.freeze({ __trigscript: "mouse", x: inputValue("mouse(\u2026).x", { source: "mouse", axis: "x", player: who }, false), y: inputValue("mouse(\u2026).y", { source: "mouse", axis: "y", player: who }, false) });
+  };
+  rt.chatted = (player, pattern) => {
+    if (typeof pattern !== "string") throw new ScriptError(`chatted: the pattern is text such as "-give {n}", got ${describe(pattern)}.`);
+    let parsed;
+    try {
+      parsed = parseChatPattern(pattern);
+    } catch (err) {
+      throw new ScriptError(err instanceof Error ? err.message : String(err));
+    }
+    const who = human(player, "chatted: player");
+    const values = {};
+    parsed.captures.forEach((c2, i) => {
+      values[c2.name] = inputValue(`chatted(\u2026).${c2.name}`, { source: "chat", pattern, capture: i, player: who }, false);
+    });
+    return Object.freeze({ __trigscript: "chat", pattern: parsed, matched: inputValue("chatted(\u2026)", { source: "chat", pattern, capture: null, player: who }, true), values: Object.freeze(values) });
+  };
+  rt.centerLocation = () => {
+    throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement \u2014 centerLocation(locations.Cursor, x, y).");
+  };
   const tableValue = (kind, field, index, ident, key) => {
     const cell = {
       name: `${kind}.${field.name}`,
@@ -2015,6 +2630,11 @@ ${kw}interface UnitFilter {
   /** Inside this location. */
   at?: Location;
 }
+/** A key keyPressed() knows. F6 is not among them: the game reports no press of it. */
+${kw}type Key = __KEY_NAMES__;
+/** What a chatted() pattern's captures are read as: {n} a number, {unit:unit} a unit type, {kind:ore|gas} the place of the word in its list. */
+${kw}type ChatCapture<C extends string> = C extends \`\${infer N}:unit\` ? { readonly [K in N]: UnitType } : C extends \`\${infer N}:\${string}\` ? { readonly [K in N]: number } : { readonly [K in C]: number };
+${kw}type ChatValues<P extends string> = P extends \`\${string}{\${infer C}}\${infer Rest}\` ? ChatCapture<C> & ChatValues<Rest> : {};
 __STATS_TYPES__
 ${kw}interface ProgramOptions {
   /**
@@ -2059,9 +2679,10 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
  * Math.min / max / abs, clamp(). Everything the body reads from outside (constants, helpers,
  * conditions, actions) is computed when you build \u2014 the editor underlines those parts \u2014 so
  * it cannot depend on the variables, except the amount of setResources / setDeaths /
- * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
- * giveUnits, which can be a variable, and the text of displayText() / print(), which can hold
- * numbers of the program. The game's own values are reads: minerals(P1), deaths(P1, unit), \u2026
+ * setScore / setCountdownTimer, the unit count of createUnit / killUnitAt / removeUnitAt /
+ * giveUnits and an action's unit type, which can be variables, and the text of displayText() /
+ * print(), which can hold numbers of the program. The game's own values are reads:
+ * minerals(P1), deaths(P1, unit), \u2026 and what the players do: keyPressed(), clicked(), mouse(), chatted().
  *
  * A map with a program in it needs StarCraft: Remastered: the programs are built into the
  * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
@@ -2186,6 +2807,35 @@ ${kw}function color(player: Player): string;
  * game's own messages ("Not enough minerals") appear: print(\`Wave \${wave}\`, { to: AllPlayers, position: "center" }).
  */
 ${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
+/**
+ * What the players do, inside program() only. A key, a click and a typed line are true on the one
+ * frame they arrive, so look for them in a loop that runs every frame:
+ * \`while (true) { if (keyPressed(CurrentPlayer, "F2")) \u2026; sleep(frames(1)); }\`. They reach every
+ * player's computer in step, a few frames after they happen. The player is one of P1 \u2026 P8 or
+ * CurrentPlayer \u2014 in a program with \`{ owner: AllPlayers }\`, each player's own keys.
+ * The map gives up a little for it: one free location among the first 63 (nine when the mouse is read),
+ * the Valkyrie unit type, and Player 12 to hold the units that carry the input.
+ */
+/** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
+${kw}function keyPressed(player: Player, key: Key): boolean;
+/** True on the frame a player's press of a mouse button arrives ("left" when none is named). */
+${kw}function clicked(player: Player, button?: "left" | "right" | "middle"): boolean;
+/** Where a player's mouse is on the map, in pixels (32 to a tile): \`const at = mouse(CurrentPlayer);\` keeps the place as it is now. */
+${kw}function mouse(player: Player): { readonly x: number; readonly y: number };
+/** The unit nearest a player's mouse and no farther from it than \`within\` pixels (48 when not given), or null. */
+${kw}function underMouse(player: Player, filter?: UnitFilter & { within?: number }): Unit | null;
+/**
+ * What a player typed, on the frame the line arrives: null, or the values the pattern names.
+ * \`const m = chatted(CurrentPlayer, "-give {n}"); if (m) setResources(CurrentPlayer, "add", m.n, "ore");\`
+ * The pattern's own text is matched exactly and the whole line has to fit it. {n} reads a whole number
+ * (up to 1 048 575), {unit:unit} a unit type by its name \u2014 the rest of the line, so it comes last \u2014
+ * and {kind:ore|gas} one of the listed words, giving its place in the list (0, 1, \u2026); names and words
+ * match whatever the capitals. Up to three values. A game played alone has no chat: test these in a
+ * multiplayer game, which one person can host.
+ */
+${kw}function chatted<const P extends string>(player: Player, pattern: P): ChatValues<P> | null;
+/** Centre a location on a point of the map, in pixels, its size kept; inside program() only. With mouse(): \`centerLocation(locations.Cursor, at.x, at.y)\`, then createUnit() there. */
+${kw}function centerLocation(location: Location, x: number, y: number): void;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -2280,7 +2930,7 @@ ${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number
 }
 function body(kw, typeKw, names, compact) {
   return [
-    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__STATS_TYPES__", statsTypes(typeKw)),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", statsTypes(typeKw)),
     choiceTypes(typeKw),
     functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
     "// \u2500\u2500 Conditions \u2500\u2500",
@@ -2337,7 +2987,7 @@ function owningDeclaration(ts, decl) {
 }
 var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers", "game"]);
 var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "rose", "once", "shared"]);
-var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, ...UNIT_CALL_NAMES, "print"]);
+var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
 var isReadCall = (lib, args) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 function planProgram(ts, checker, arrow, options = {}) {
   const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Map(), constList: [], tree: [], errors: [] };
@@ -2867,196 +3517,6 @@ function mapPosition(mapJson, line, column) {
   return best;
 }
 
-// compiler/ir.ts
-var IR_VERSION = 4;
-var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
-var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
-var UNIT_FLAGS2 = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
-var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "call" && e.call.result?.kind === "unit";
-var isNumExpr = (e) => {
-  switch (e.kind) {
-    case "const":
-      return typeof e.value === "number";
-    case "var":
-      return false;
-    // ambiguous by shape; callers know the variable's kind
-    case "unary":
-    case "binary":
-    case "intrinsic":
-    case "read":
-    case "randomInt":
-    case "unitField":
-    case "tableRead":
-      return true;
-    case "ternary":
-      return isNumExpr(e.whenTrue);
-    case "call":
-      return e.call.result?.kind === "number";
-    default:
-      return false;
-  }
-};
-function declarations(body2) {
-  const out = [];
-  const stmt = (s) => {
-    switch (s.kind) {
-      case "declare":
-        out.push(s.decl);
-        init(s.init);
-        break;
-      case "assign":
-        expr(s.value);
-        break;
-      case "assignBool":
-        init(s.value);
-        break;
-      case "assignUnit":
-        unit(s.value);
-        break;
-      case "unitLoop":
-        out.push(s.decl);
-        s.body.forEach(stmt);
-        break;
-      case "unitWrite":
-        unit(s.unit);
-        init(s.value);
-        break;
-      case "unitDo":
-        unit(s.unit);
-        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
-        break;
-      case "tableWrite":
-        if (s.value.kind !== "text") init(s.value);
-        break;
-      case "if":
-        init(s.cond);
-        s.then.forEach(stmt);
-        s.else?.forEach(stmt);
-        break;
-      case "while":
-        if (s.cond) init(s.cond);
-        s.body.forEach(stmt);
-        break;
-      case "do":
-        s.body.forEach(stmt);
-        init(s.cond);
-        break;
-      case "for":
-        if (s.cond) init(s.cond);
-        s.update.forEach(stmt);
-        s.body.forEach(stmt);
-        break;
-      case "unrolled":
-        s.iterations.forEach((i) => i.forEach(stmt));
-        break;
-      case "switch":
-        expr(s.value);
-        s.cases.forEach((c2) => c2.body.forEach(stmt));
-        break;
-      case "return":
-        if (s.value) init(s.value);
-        break;
-      case "action":
-        if (s.variable) expr(s.variable.expr);
-        break;
-      case "print":
-        for (const p of s.parts) if (p.kind === "number") expr(p.expr);
-        break;
-      case "call":
-        call(s.call);
-        break;
-      case "block":
-        s.body.forEach(stmt);
-        break;
-      default:
-        break;
-    }
-  };
-  const call = (c2) => {
-    if (c2.result) out.push(c2.result.decl);
-    for (const p of c2.params) {
-      out.push(p.decl);
-      init(p.init);
-    }
-    c2.body.forEach(stmt);
-  };
-  const init = (e) => isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
-  const unit = (u) => {
-    if (u.kind === "call") call(u.call);
-  };
-  const expr = (e) => {
-    switch (e.kind) {
-      case "unitField":
-        unit(e.unit);
-        break;
-      case "unary":
-        expr(e.expr);
-        break;
-      case "binary":
-        expr(e.left);
-        expr(e.right);
-        break;
-      case "ternary":
-        bool(e.cond);
-        expr(e.whenTrue);
-        expr(e.whenFalse);
-        break;
-      case "intrinsic":
-        e.args.forEach(expr);
-        break;
-      case "randomInt":
-        expr(e.bound);
-        break;
-      case "call":
-        call(e.call);
-        break;
-      default:
-        break;
-    }
-  };
-  const bool = (b) => {
-    switch (b.kind) {
-      case "unitAlive":
-      case "unitFlag":
-        unit(b.unit);
-        break;
-      case "unitSame":
-        unit(b.left);
-        unit(b.right);
-        break;
-      case "test":
-        expr(b.expr);
-        break;
-      case "compare":
-        expr(b.left);
-        expr(b.right);
-        break;
-      case "and":
-      case "or":
-        b.items.forEach(bool);
-        break;
-      case "not":
-        bool(b.expr);
-        break;
-      case "edge":
-        bool(b.cond);
-        break;
-      case "ternary":
-        bool(b.cond);
-        bool(b.whenTrue);
-        bool(b.whenFalse);
-        break;
-      case "call":
-        call(b.call);
-        break;
-      default:
-        break;
-    }
-  };
-  body2.forEach(stmt);
-  return out;
-}
-
 // compiler/eud.ts
 function checkProgram(program) {
   const errors = [];
@@ -3185,7 +3645,11 @@ function expressions(body2, visit, pick) {
         if (s.value) any(s.value);
         break;
       case "action":
-        if (s.variable) expr(s.variable.expr);
+        for (const v of s.variables ?? []) expr(v.expr);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
         break;
       case "print":
         for (const p of s.parts) if (p.kind === "number") expr(p.expr);
@@ -3359,6 +3823,7 @@ function assigned(body2, into = /* @__PURE__ */ new Set()) {
       case "unitWrite":
       case "unitDo":
       case "tableWrite":
+      case "centerLocation":
         into.add(THE_GAME);
         break;
       case "declare":
@@ -3419,6 +3884,9 @@ function reads(e, into = /* @__PURE__ */ new Set()) {
     case "cond":
     case "tableRead":
       into.add(THE_GAME);
+      break;
+    // What the players did is as it was when the frame began: nothing a loop does within the frame changes it.
+    case "input":
       break;
     case "unitField":
     case "unitAlive":
@@ -3544,7 +4012,7 @@ function checkSleeps(body2, out) {
   };
   body2.forEach(stmt);
 }
-function serializeIr(programs, strings) {
+function serializeIr(programs, strings, input = null) {
   const resolve = (local) => {
     if (local <= 0) return 0;
     const s = strings[local - 1];
@@ -3624,7 +4092,9 @@ function serializeIr(programs, strings) {
       case "return":
         return s.value ? { ...s, value: any(s.value) } : s;
       case "action":
-        return { ...s, record: action2(s.record), ...s.variable ? { variable: { ...s.variable, expr: expr(s.variable.expr) } } : {} };
+        return { ...s, record: action2(s.record), ...s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {} };
+      case "centerLocation":
+        return { ...s, x: expr(s.x), y: expr(s.y) };
       case "print":
         return { ...s, parts: s.parts.map((p) => p.kind === "number" ? { ...p, expr: expr(p.expr) } : p) };
       case "call":
@@ -3635,7 +4105,7 @@ function serializeIr(programs, strings) {
         return s;
     }
   };
-  return JSON.stringify({ version: programs[0]?.version ?? 1, programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...input ? { input } : {}, programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
 }
 
 // compiler/scope.ts
@@ -3677,6 +4147,9 @@ function describe2(v) {
   if (isTable(v)) return `a value the game holds (${v.ident})`;
   if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
   if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isInput(v)) return `what a player does in the game (${v.ident})`;
+  if (isMouse(v)) return "where a player's mouse is (mouse())";
+  if (isChat(v)) return "what a player typed (chatted())";
   if (isPrint(v)) return "a print()";
   if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
@@ -4152,6 +4625,11 @@ var Structured = class {
         if (record) this.scope.bind(d, record);
         continue;
       }
+      if (ts.isCallExpression(init) && (this.isLibraryCall(init, "mouse") || this.isLibraryCall(init, "chatted"))) {
+        const record = this.declareInput(d.name.text, init, d);
+        if (record) this.scope.bind(d, record);
+        continue;
+      }
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) {
@@ -4226,6 +4704,43 @@ var Structured = class {
     }
     return ok ? { kind: "record", fields } : null;
   }
+  /**
+   * `const at = mouse(p)`, `const m = chatted(p, "-give {n}")`: what the player did, taken when the
+   * line runs and kept — a record of numbers, and for a typed line the boolean `if (m)` asks.
+   */
+  declareInput(name, call, at) {
+    const h = this.evaluate(call);
+    if (!h) {
+      this.notConstant(call, "Which player, and what to look for,");
+      return null;
+    }
+    const fields = /* @__PURE__ */ new Map();
+    const keep = (field, value) => {
+      const v = this.newVar(`${name}.${field}`, "number", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: v, init: this.inputValue(value, call), at: this.at(at), label: this.label(at) }, at);
+      fields.set(field, { kind: "var", v });
+    };
+    if (isMouse(h.value)) {
+      keep("x", h.value.x);
+      keep("y", h.value.y);
+      return { kind: "record", fields };
+    }
+    if (isChat(h.value)) {
+      const truth = this.newVar(name, "boolean", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: truth, init: this.inputBool(h.value.matched, call), at: this.at(at), label: this.label(at) }, at);
+      for (const [field, value] of Object.entries(h.value.values)) keep(field, value);
+      return { kind: "record", fields, truth };
+    }
+    this.c.error(call, `Expected mouse() or chatted(), got ${describe2(h.value)}.`);
+    return null;
+  }
+  /** What a player did, as a number of the program: a key or a click counts 1 or 0. */
+  inputValue(v, at) {
+    return this.mark({ kind: "input", input: { ...v.input }, at: this.at(at), label: this.label(at) }, at);
+  }
+  inputBool(v, at) {
+    return this.mark({ kind: "test", expr: this.inputValue(v, at), at: this.at(at), label: this.label(at) }, at);
+  }
   /** Where a declaration's name is, for the editor's hover. */
   sourceOf(node) {
     const p = this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf));
@@ -4297,6 +4812,10 @@ var Structured = class {
     }
     if (isUnitQuery(v)) {
       this.c.error(expr, `${v.ident}() names units and does nothing on its own: for (const u of ${v.ident}(\u2026)) { \u2026 }`);
+      return;
+    }
+    if (isInput(v) || isMouse(v) || isChat(v)) {
+      this.c.error(expr, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const.");
       return;
     }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) {
@@ -4389,6 +4908,26 @@ var Structured = class {
     }
     const parts = this.textOf(e.arguments[0]);
     if (parts) this.emitPrint(parts, to, position, e);
+  }
+  /** `centerLocation(locations.Cursor, at.x, at.y)`: the location known when the script is built, the point the program's. */
+  centerLocation(e) {
+    if (e.arguments.length !== 3) {
+      this.c.error(e, "centerLocation() takes the location and the point: centerLocation(locations.Cursor, x, y).");
+      return;
+    }
+    const h = this.evaluate(e.arguments[0]);
+    if (!h || isGameValue(h.value)) {
+      this.notConstant(e.arguments[0], "The location");
+      return;
+    }
+    const location = h.value;
+    if (typeof location !== "number" || !Number.isInteger(location) || location < 1 || location > 255 || location === 64) {
+      this.c.error(e.arguments[0], "centerLocation() takes one of locations.*, which is moved (not Anywhere).");
+      return;
+    }
+    const x = this.num(e.arguments[1]);
+    const y = this.num(e.arguments[2]);
+    if (x && y) this.emit({ kind: "centerLocation", location, x, y, at: this.at(e), label: this.label(e) }, e);
   }
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   sleepStatement(call) {
@@ -4539,6 +5078,14 @@ var Structured = class {
     }
     if (this.isLibraryCall(e, "print")) {
       this.printStatement(e);
+      return;
+    }
+    if (this.isLibraryCall(e, "centerLocation")) {
+      this.centerLocation(e);
+      return;
+    }
+    if (this.isLibraryCall(e, "keyPressed") || this.isLibraryCall(e, "clicked") || this.isLibraryCall(e, "mouse") || this.isLibraryCall(e, "chatted")) {
+      this.c.error(e, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const.");
       return;
     }
     const callee = this.evaluate(e.expression)?.value;
@@ -4998,6 +5545,15 @@ var Structured = class {
         this.c.error(e, `${h.value.ident}() is a unit, not a number; read one of its fields: ${h.value.ident}(\u2026)?.hp \u2014 or keep it: const u = ${h.value.ident}(\u2026).`);
         return null;
       }
+      if (isInput(h.value)) return this.inputValue(h.value, e);
+      if (isMouse(h.value)) {
+        this.c.error(e, "mouse() is a place on the map: read its x or its y.");
+        return null;
+      }
+      if (isChat(h.value)) {
+        this.c.error(e, "chatted() is what a player typed: test it in an if, or read one of the values its pattern names.");
+        return null;
+      }
       const n = this.asInteger(h, e);
       return n === null ? null : num(n);
     }
@@ -5186,14 +5742,14 @@ var Structured = class {
     return null;
   }
   /**
-   * An action whose argument is a variable: `setResources(P1, "add", n, "ore")`,
-   * `createUnit(P2, unit, count, at)`. The record is built with the variable's place
-   * as 0; the backend does the action with the expression's value in that field.
+   * An action with arguments from the program: `setResources(P1, "add", n, "ore")`,
+   * `createUnit(P2, m.unit, count, at)`. The record is built with each such place as 0;
+   * the backend does the action with the expressions' values in those fields.
    */
   actionWithVars(e, ident, def) {
     const params = scriptParams(def);
     const values = [];
-    let variable = null;
+    const variables = [];
     for (let i = 0; i < e.arguments.length; i++) {
       const a2 = e.arguments[i];
       const h = this.evaluate(a2);
@@ -5201,26 +5757,22 @@ var Structured = class {
         values.push(h.value);
         continue;
       }
-      const p2 = params[i];
-      if (!p2) {
+      const p = params[i];
+      if (!p) {
         this.c.error(a2, `${ident} takes ${params.length} argument${params.length === 1 ? "" : "s"}.`);
         return;
       }
-      const eligible = (p2.arg.kind === "amount" || p2.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type) || p2.arg.kind === "count" && COUNT_ACTIONS.has(def.type);
+      const eligible = (p.arg.kind === "amount" || p.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type) || p.arg.kind === "count" && COUNT_ACTIONS.has(def.type) || p.arg.kind === "unit";
       if (!eligible) {
-        this.c.error(a2, `${ident}'s ${p2.name} must be known when the script is built. Only an amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer) and a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) can be a variable of the program.`);
-        return;
-      }
-      if (variable) {
-        this.c.error(a2, `${ident}: one argument at a time can be a variable of the program.`);
+        this.c.error(a2, `${ident}'s ${p.name} must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.`);
         return;
       }
       const expr = this.num(a2);
       if (!expr) return;
-      variable = { index: i, expr };
+      variables.push({ index: i, expr });
       values.push(0);
     }
-    if (!variable) {
+    if (!variables.length) {
       this.notConstant(e, "A call's arguments");
       return;
     }
@@ -5235,8 +5787,11 @@ var Structured = class {
     } catch (err) {
       throw new ValueError(e, err instanceof Error ? err.message : String(err));
     }
-    const p = params[variable.index];
-    this.emit({ kind: "action", record: { ...record }, variable: { field: p.arg.field, bits: p.arg.kind === "count" ? 8 : 32, name: p.name, expr: variable.expr }, at: this.at(e), label: this.label(e) }, e);
+    const list = variables.map((v) => {
+      const p = params[v.index];
+      return { field: p.arg.field, bits: p.arg.kind === "count" ? 8 : p.arg.kind === "unit" ? 16 : 32, name: p.name, expr: v.expr };
+    });
+    this.emit({ kind: "action", record: { ...record }, variables: list, at: this.at(e), label: this.label(e) }, e);
   }
   /* ── Units on the map, and the game's tables ── */
   /** `u.hp`, `target?.kills`: the unit and the member's name, when the object is a unit of the game. */
@@ -5290,11 +5845,11 @@ var Structured = class {
     return null;
   }
   pick(v, at) {
-    return this.mark({ kind: "pick", by: v.by, filter: { ...v.filter }, ...v.near !== void 0 ? { near: v.near } : {}, at: this.at(at), label: this.label(at) }, at);
+    return this.mark({ kind: "pick", by: v.by, filter: { ...v.filter }, ...v.near !== void 0 ? { near: v.near } : {}, ...v.mouse !== void 0 ? { mouse: v.mouse, within: v.within ?? 48 } : {}, at: this.at(at), label: this.label(at) }, at);
   }
   /** `u.hp` as a number. */
   unitField(e, m) {
-    if (UNIT_FLAGS2.includes(m.name)) {
+    if (UNIT_FLAGS.includes(m.name)) {
       const flag2 = this.mark({ kind: "unitFlag", unit: m.unit, flag: m.name, at: this.at(e), label: this.label(e) }, e);
       return this.mark({ kind: "ternary", cond: flag2, whenTrue: num(1), whenFalse: num(0), at: this.at(e), label: this.label(e) }, e);
     }
@@ -5315,7 +5870,7 @@ var Structured = class {
   /** `u.hp = 40`, `u.energy += 50`, `u.invincible = true`. */
   unitAssign(e, m, op) {
     const { ts } = this;
-    if (UNIT_FLAGS2.includes(m.name)) {
+    if (UNIT_FLAGS.includes(m.name)) {
       if (op !== ts.SyntaxKind.EqualsToken) {
         this.c.error(e, "Booleans take = only.");
         return;
@@ -5544,6 +6099,12 @@ var Structured = class {
       const read = this.tableRead(v, at);
       return read ? this.mark({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at) : FALSE;
     }
+    if (isInput(v)) return this.inputBool(v, at);
+    if (isChat(v)) return this.inputBool(v.matched, at);
+    if (isMouse(v)) {
+      this.c.error(at, "mouse() is a place on the map, not a condition: compare its x or its y.");
+      return FALSE;
+    }
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
@@ -5588,7 +6149,7 @@ var Structured = class {
     if (ts.isPropertyAccessExpression(e)) {
       const member2 = this.unitMember(e);
       if (member2) {
-        if (UNIT_FLAGS2.includes(member2.name)) return this.mark({ kind: "unitFlag", unit: member2.unit, flag: member2.name, at: this.at(e), label: this.label(e) }, e);
+        if (UNIT_FLAGS.includes(member2.name)) return this.mark({ kind: "unitFlag", unit: member2.unit, flag: member2.name, at: this.at(e), label: this.label(e) }, e);
         const field = this.unitField(e, member2);
         return field ? this.mark({ kind: "test", expr: field, at: this.at(e), label: this.label(e) }, e) : FALSE;
       }
@@ -5596,6 +6157,7 @@ var Structured = class {
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") return b.v.kind !== "number" ? boolRef(b.v) : this.mark({ kind: "test", expr: varRef(b.v), at: this.at(e), label: this.label(e) }, e);
+      if (b?.kind === "record" && b.truth) return boolRef(b.truth);
       if (b?.kind === "record") {
         this.c.error(e, "This is a record; test one of its fields.");
         return FALSE;
@@ -5672,9 +6234,25 @@ var Structured = class {
       }
       return op === "==" ? same : same.kind === "not" ? same.expr : { kind: "not", expr: same };
     }
+    const found = (x) => {
+      const b = this.bindingOf(x);
+      return b?.kind === "record" && b.truth ? b.truth : void 0;
+    };
+    const isNull = (x) => {
+      const h = this.evaluate(x);
+      return !!h && (h.value === null || h.value === void 0);
+    };
+    const truth = isNull(e.right) ? found(e.left) : isNull(e.left) ? found(e.right) : void 0;
+    if (truth) {
+      if (op !== "==" && op !== "!=") {
+        this.c.error(e, "What chatted() found compares with null by == and != only.");
+        return FALSE;
+      }
+      return op === "!=" ? boolRef(truth) : { kind: "not", expr: boolRef(truth) };
+    }
     const isBool = (x) => {
       const h = this.evaluate(x);
-      if (h) return typeof h.value === "boolean" || isCondition(h.value) || isRead(h.value) && h.value.equals !== void 0;
+      if (h) return typeof h.value === "boolean" || isCondition(h.value) || isRead(h.value) && h.value.equals !== void 0 || isInput(h.value) && h.value.boolean || isChat(h.value);
       const v = this.varOf(x);
       if (v !== void 0) return v.kind !== "number";
       return this.kindOf(this.c.checker.getTypeAtLocation(x)) === "boolean";
@@ -5815,7 +6393,7 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
   const refs = [];
   const scripts = /* @__PURE__ */ new Map();
@@ -5940,7 +6518,9 @@ function compileScript(ts, files, names, options) {
   if (diagnostics.length > planned.size) return result();
   const collector = new Collector();
   const runtime = createRuntime(names, collector);
+  collector.running = true;
   const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME);
+  collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;
     diagnostics.push({ file: failure.file ?? ENTRY_FILE, line, column: failure.column ?? 1, endLine: line, endColumn: (failure.column ?? 1) + 1, message: failure.message, source: "script" });
@@ -5997,7 +6577,14 @@ function compileScript(ts, files, names, options) {
     }
     hints.push(...check.hints);
   }
-  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
+  let input = null;
+  try {
+    input = inputPlan(ir, names.locations, names.units);
+  } catch (err) {
+    const at = inputsOf(ir).at ?? ir[0]?.at;
+    if (at) diagnostics.push({ file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: err instanceof Error ? err.message : String(err), source: "compiler" });
+  }
+  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
 }
 function checkValuesAsBooleans(ts, checker, sf, programs, error) {
   const isLibraryType = (t, name) => {
@@ -6039,10 +6626,10 @@ function checkValuesAsBooleans(ts, checker, sf, programs, error) {
 var ENTRY_URL = import.meta.url;
 
 // refs.ts
-var IDENT = "[A-Za-z_$][\\w$]*";
+var IDENT2 = "[A-Za-z_$][\\w$]*";
 function findReferences(text, object) {
   const out = [];
-  const re = new RegExp(`(^|[^\\w$.])(${object.replace(/[$]/g, "\\$&")})\\.(${IDENT})`, "g");
+  const re = new RegExp(`(^|[^\\w$.])(${object.replace(/[$]/g, "\\$&")})\\.(${IDENT2})`, "g");
   const starts = [0];
   for (let i = 0; i < text.length; i++) if (text[i] === "\n") starts.push(i + 1);
   const lineOf = (offset) => {
@@ -6485,7 +7072,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "3.3.0";
+var VERSION = "3.4.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -6925,23 +7512,23 @@ function withMember(extras, name, data) {
 }
 function readFiles(extras) {
   const out = {};
-  for (const [name, bytes] of extras) {
+  for (const [name, bytes2] of extras) {
     const path = pathOf(name);
-    if (path) out[path] = decoder.decode(bytes);
+    if (path) out[path] = decoder.decode(bytes2);
   }
   return out;
 }
 function withFiles(extras, files) {
   const next = /* @__PURE__ */ new Map();
-  for (const [name, bytes] of extras) if (!pathOf(name)) next.set(name, bytes);
+  for (const [name, bytes2] of extras) if (!pathOf(name)) next.set(name, bytes2);
   for (const [path, text] of Object.entries(files)) next.set(memberOf(path), encoder.encode(text));
   return next;
 }
 function readManifest(extras) {
-  const bytes = member(extras, MANIFEST_MEMBER);
-  if (!bytes) return null;
+  const bytes2 = member(extras, MANIFEST_MEMBER);
+  if (!bytes2) return null;
   try {
-    const m = JSON.parse(decoder.decode(bytes));
+    const m = JSON.parse(decoder.decode(bytes2));
     if (m.version !== 2 || typeof m.start !== "number" || typeof m.count !== "number" || typeof m.hash !== "string") return null;
     const programs = typeof m.programs === "number" && m.programs >= 0 ? { programs: Math.floor(m.programs) } : {};
     const sources = Array.isArray(m.sources) ? m.sources.map((s) => s && typeof s === "object" && typeof s.file === "string" && typeof s.line === "number" ? { file: s.file, line: s.line } : null) : [];
@@ -6955,10 +7542,10 @@ function readManifest(extras) {
 function withManifest(extras, manifest) {
   return withMember(extras, MANIFEST_MEMBER, manifest ? encoder.encode(JSON.stringify(manifest)) : null);
 }
-function fnv1a(bytes) {
+function fnv1a(bytes2) {
   let h = 2166136261;
-  for (let i = 0; i < bytes.length; i++) {
-    h ^= bytes[i];
+  for (let i = 0; i < bytes2.length; i++) {
+    h ^= bytes2[i];
     h = Math.imul(h, 16777619) >>> 0;
   }
   return h.toString(16).padStart(8, "0");
@@ -7217,7 +7804,7 @@ var ProgramRun = class {
       case "unitVar":
         return this.unitVars.get(e.id) ?? null;
       case "pick":
-        return this.sim.pick(e.by, e.filter, e.near);
+        return this.sim.pick(e.by, e.filter, e.near, e.mouse, e.within);
       case "call": {
         yield* this.call(e.call);
         return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null;
@@ -7330,6 +7917,8 @@ var ProgramRun = class {
       }
       case "tableRead":
         return this.sim.tableRead(e.cell);
+      case "input":
+        return this.sim.input(e.input);
       case "randomInt": {
         const n = yield* this.num(e.bound);
         return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n));
@@ -7569,9 +8158,7 @@ var ProgramRun = class {
       }
       case "action": {
         const record = { ...s.record };
-        if (s.variable) {
-          record[s.variable.field] = yield* this.num(s.variable.expr);
-        }
+        for (const v of s.variables ?? []) record[v.field] = yield* this.num(v.expr);
         this.sim.act(this, record, s.at);
         return "next";
       }
@@ -7579,6 +8166,12 @@ var ProgramRun = class {
         let text = "";
         for (const p of s.parts) text += p.kind === "number" ? String(yield* this.num(p.expr)) : this.sim.partText(p);
         this.sim.print(this, text, s.to, s.at);
+        return "next";
+      }
+      case "centerLocation": {
+        const x = yield* this.num(s.x);
+        const y = yield* this.num(s.y);
+        this.sim.centre(s.location, x, y);
         return "next";
       }
       case "call": {
@@ -7622,6 +8215,14 @@ var ProgramSimulation = class {
   classOf;
   /** Ore and gas by player slot, as the programs' own setResources actions leave them. */
   resources = /* @__PURE__ */ new Map();
+  /** The typed-line patterns of all the programs, in the order the game tries them: the first that matches a line is the one that line is. */
+  chats = [];
+  unitByName;
+  /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
+  queued = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
+  current = this.queued;
+  /** Where each player's mouse is, in map pixels. */
+  mice = /* @__PURE__ */ new Map();
   cycle = 0;
   constructor(programs, options) {
     this.world = options.world ?? new Simulation([], { player: options.player ?? programs[0]?.owner ?? 0, condition: options.condition, random: options.random, strings: options.strings });
@@ -7634,6 +8235,9 @@ var ProgramSimulation = class {
     for (const [n, b] of Object.entries(options.locations ?? {})) this.locations.set(Number(n), { ...b });
     this.tableOf = options.table;
     this.classOf = options.unitClass ?? inClass;
+    this.unitByName = options.unitByName ?? (() => void 0);
+    for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c2) => c2.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
+    this.current = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
     this.runs = programs.map((p, i) => new ProgramRun(this, i, p));
   }
   get player() {
@@ -7694,6 +8298,48 @@ var ProgramSimulation = class {
     if (r.source === "player" && r.fact === "slot") return this.slotOf(r.player) === this.player ? 2 : 0;
     return 0;
   }
+  /* ── what the players do ── */
+  /** A key goes down: the next frame finds it. `player` is a slot (default: the simulated player). */
+  press(key, player = this.player) {
+    this.queued.events.add(`key:${player}:${keyName(key) ?? key}`);
+    return this;
+  }
+  click(button = "left", player = this.player) {
+    this.queued.events.add(`click:${player}:${button}`);
+    return this;
+  }
+  moveMouse(x, y, player = this.player) {
+    this.mice.set(player, { x, y });
+    return this;
+  }
+  /** A player sends a line of chat: the next frame finds it, as the first of the programs' patterns it matches — or not at all. */
+  type(line, player = this.player) {
+    for (const c2 of this.chats) {
+      const values = matchChat(c2, line, this.unitByName);
+      if (values) {
+        this.queued.lines.set(player, { pattern: c2.pattern, values });
+        break;
+      }
+    }
+    return this;
+  }
+  /** What a program's `input` finds this frame. */
+  input(i) {
+    const p = this.slotOf(i.player);
+    switch (i.source) {
+      case "key":
+        return this.current.events.has(`key:${p}:${i.key}`) ? 1 : 0;
+      case "click":
+        return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
+      case "mouse":
+        return this.mice.get(p)?.[i.axis] ?? 0;
+      case "chat": {
+        const line = this.current.lines.get(p);
+        if (!line || line.pattern !== i.pattern) return 0;
+        return i.capture === null ? 1 : line.values[i.capture] ?? 0;
+      }
+    }
+  }
   /* ── units and tables ── */
   /** The living units a filter matches, in table order. */
   matching(f) {
@@ -7702,16 +8348,17 @@ var ProgramSimulation = class {
     return this.units.filter((u) => u.alive && (owner === void 0 || u.owner === owner) && (f.type === void 0 || (f.type >= 230 ? this.classOf(u.type, f.type) : u.type === f.type)) && (!box || u.x >= box.left && u.x <= box.right && u.y >= box.top && u.y <= box.bottom));
   }
   /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
-  pick(by, f, near) {
+  pick(by, f, near, mouse, within) {
     const all = this.matching(f);
     if (all.length === 0) return null;
     if (by === "first") return all[0];
     if (by === "random") return all[Math.min(all.length - 1, Math.floor(this.random() * all.length))];
     const box = near === void 0 ? void 0 : this.locations.get(near);
-    const cx = box ? Math.floor((box.left + box.right) / 2) : 0;
-    const cy = box ? Math.floor((box.top + box.bottom) / 2) : 0;
-    let best = all[0];
-    let least = Infinity;
+    const pointer = mouse === void 0 ? void 0 : this.mice.get(this.slotOf(mouse)) ?? { x: 0, y: 0 };
+    const cx = pointer ? pointer.x : box ? Math.floor((box.left + box.right) / 2) : 0;
+    const cy = pointer ? pointer.y : box ? Math.floor((box.top + box.bottom) / 2) : 0;
+    let best = null;
+    let least = within === void 0 ? Infinity : within + 1;
     for (const u of all) {
       const d = Math.abs(u.x - cx) + Math.abs(u.y - cy);
       if (d < least) {
@@ -7809,6 +8456,8 @@ var ProgramSimulation = class {
   }
   /** One frame: every program in order, from where it left off. */
   step() {
+    this.current = this.queued;
+    this.queued = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
     for (const run of this.runs) {
       try {
         run.tick();
@@ -7876,6 +8525,15 @@ a dying unit is passed over. What a unit can be asked and told is what Magenta's
 working in Remastered: no position, cloak or speed writes. The game's tables (\`stats()\`) are plain
 cells at addresses the IR carries; a speed is four flingy records, a colour two bytes, a name a string.
 
+What the players do \u2014 keys, clicks, the mouse, what they type \u2014 happens on one computer, and two
+plugins the build adds beside this one bring it to all of them in step. chatEvent (before this
+plugin) finds the line the local player typed; this plugin matches it against the programs'
+patterns, there and then, into a number for the pattern and up to three values; MSQC (after this
+plugin) sends those, the keys and the clicks to every computer as the player they came from, and
+keeps each player's mouse in a location. They land in arrays registered by name \u2014 which is how the
+other two plugins' settings reach them \u2014 a cell per player, fresh every frame: an input reads 1 on
+the frame it arrives. The IR's \`input\` lists what is asked for; the editor wrote the settings from it.
+
 Numbers keep one contract with the simulator: 32-bit unsigned, an expression's exact value stored
 below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
 """
@@ -7883,7 +8541,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 4
+IR_VERSION = 5
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -8157,6 +8815,8 @@ class Lowering:
 
     def term(self, e):
         k = e["kind"]
+        if k == "input":
+            return INPUT.read(e["input"], self, e)
         if k == "const":
             return int(e["value"]) & U32
         if k == "var":
@@ -8618,9 +9278,15 @@ class Lowering:
                 EUDJump(exit_)
             self.scan(flt, e, body)
         elif by == "nearest":
-            left, top, right, bottom = self.location_bounds(e["near"])
-            cx, cy = f_div(left + right, 2)[0], f_div(top + bottom, 2)[0]
-            least = fresh(U32)
+            if e.get("mouse") is not None:
+                # A player's mouse, and nothing farther from it than \`within\`.
+                cx = as_var(INPUT.read({"source": "mouse", "axis": "x", "player": e["mouse"]}, self, e))
+                cy = as_var(INPUT.read({"source": "mouse", "axis": "y", "player": e["mouse"]}, self, e))
+                least = fresh(int(e.get("within", 48)) + 1)
+            else:
+                left, top, right, bottom = self.location_bounds(e["near"])
+                cx, cy = f_div(left + right, 2)[0], f_div(top + bottom, 2)[0]
+                least = fresh(U32)
 
             def body(ref, next_, exit_):
                 cu = self.cunit(ref)
@@ -8765,6 +9431,16 @@ class Lowering:
         width, height = right - left, bottom - top
         x, y = cu.posX - f_div(width, 2)[0], cu.posY - f_div(height, 2)[0]
         for i, v in enumerate((x, y, x + width, y + height)):
+            f_dwwrite_epd(base + i, v)
+
+    def center_location(self, st):
+        """A location centred on a point, its size kept."""
+        x, y = self.num(st["x"]), self.num(st["y"])
+        base = EPD(MRGN + (int(st["location"]) - 1) * 20)
+        left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
+        width, height = right - left, bottom - top
+        nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
+        for i, v in enumerate((nx, ny, nx + width, ny + height)):
             f_dwwrite_epd(base + i, v)
 
     def adjust(self, cu, do, amount, percent):
@@ -8937,6 +9613,8 @@ class Lowering:
             self.action(st)
         elif k == "print":
             self.print_(st)
+        elif k == "centerLocation":
+            self.center_location(st)
         elif k == "call":
             self.call(st["call"])
         elif k == "block":
@@ -9028,31 +9706,40 @@ class Lowering:
         resume = Forward()
         self.resumes.append((index, resume))
         self.set_state(index)
-        self.set_wait(frames)
+        # The frame after this one is one frame later: sleep(frames(1)) goes on in the next frame, as the
+        # simulator has it. (Until 3.4 the wait was one frame longer, so a loop sleeping a frame ran every other.)
+        self.set_wait(frames - 1)
         EUDJump(self.frame_end)
         resume << NextTrigger()
 
     def action(self, st):
         r = st["record"]
-        variable = st.get("variable")
         fields = dict(locid1=r["location"], strid=string_of(r["text"]), wavid=string_of(r["wav"]), time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])
-        if variable is None:
+        count = None
+        for variable in st.get("variables") or []:
+            value = as_var(self.num(variable["expr"]))
+            field = variable["field"]
+            if field == "modifier":
+                # A unit count: the byte field is not a variable's place, so the action is done once per
+                # unit \u2014 as many as the variable says, 0 being none (in the record, 0 means "all").
+                count = value
+                continue
+            name = {"target": "player2", "time": "time", "player": "player1", "location": "locid1", "text": "strid", "wav": "wavid", "unitId": "unitid"}.get(field)
+            if name is None:
+                raise Fail("trigscript: no variable can stand in the %s field%s" % (field, where(st)))
+            if name == "unitid":
+                # A unit type the game has: past the table, an action reads what is not a unit.
+                value = fresh(value)
+                if EUDIf()(value >= 228):
+                    value << 228
+                EUDEndIf()
+            fields[name] = value
+        if count is None:
             DoActions(Action(**fields))
             return
-        value = as_var(self.num(variable["expr"]))
-        field = variable["field"]
-        if field == "modifier":
-            # A unit count: the byte field is not a variable's place, so the action is done once per
-            # unit \u2014 as many as the variable says, 0 being none (in the record, 0 means "all").
-            fields["amount"] = 1
-            for _ in EUDLoopRange(0, value):
-                DoActions(Action(**fields))
-            return
-        name = {"target": "player2", "time": "time", "player": "player1", "location": "locid1", "text": "strid", "wav": "wavid", "unitId": "unitid"}.get(field)
-        if name is None:
-            raise Fail("trigscript: no variable can stand in the %s field%s" % (field, where(st)))
-        fields[name] = value
-        DoActions(Action(**fields))
+        fields["amount"] = 1
+        for _ in EUDLoopRange(0, count):
+            DoActions(Action(**fields))
 
     def print_(self, st):
         """Text with values in it: every value first, then the text, shown only on the screen of the player it is for."""
@@ -9214,6 +9901,199 @@ def condition(r):
     return Condition(r["location"], r["player"], r["amount"], r["unitId"], r["comparison"], r["type"], r["resource"], r["flags"], eudx=r.get("mask", 0) or 0)
 
 
+class Input:
+    """What the players do, as it reaches every computer: the cells chatEvent and MSQC write, by the
+    names the editor put in their settings (compiler/input.ts, INPUT_NAMES), and the reads of them."""
+
+    MAX_NUMBER = 0xFFFFF
+
+    def __init__(self, plan):
+        self.plan = plan or {}
+        self.keys = list(self.plan.get("keys", []))
+        self.buttons = list(self.plan.get("buttons", []))
+        self.chats = list(self.plan.get("chats", []))
+        self.mouse_base = self.plan.get("mouseBase")
+        # A person can sit in the map's human slots, which is where MSQC counts the mouse locations from.
+        self.humans = [p for p in range(8) if GetPlayerInfo(p).typestr == "Human"]
+        if plan and not self.humans:
+            raise Fail("trigscript: a program reads keys, clicks, the mouse or chat, and the map has no human player to give any")
+        self.key_cells = [self.register("tsin_key%d" % i, EUDArray(12)) for i in range(len(self.keys))]
+        self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
+        self.captures = max([len(c["captures"]) for c in self.chats] or [0])
+        if self.chats:
+            # Local: what chatEvent found on this computer, and what the patterns made of it.
+            self.heard = self.register("tsin_heard", EUDVariable())
+            self.pointer = self.register("tsin_pointer", EUDVariable())
+            self.length = self.register("tsin_length", EUDVariable())
+            self.register("tsin_pattern", EUDVariable())
+            self.chat_local = self.register("tsin_chat", EUDVariable())
+            self.capture_local = [self.register("tsin_capture%d" % i, EUDVariable()) for i in range(self.captures)]
+            # Everyone's: what MSQC delivered this frame, by player; 0xFFFFFFFF on a frame with nothing.
+            self.chat_in = self.register("tsin_chat_in", EUDArray(12))
+            self.capture_in = [self.register("tsin_capture%d_in" % i, EUDArray(12)) for i in range(self.captures)]
+            self.unit_table = None
+
+    @staticmethod
+    def register(name, cell):
+        EUDRegisterObjectToNamespace(name, cell)
+        return cell
+
+    # \u2500\u2500 reads \u2500\u2500
+    def read(self, i, low, node):
+        source = i.get("source")
+        p = low.one_player(i["player"], node)
+        if source == "key":
+            return self.cell(self.key_cells, self.keys, i["key"], node)[p]
+        if source == "click":
+            return self.cell(self.button_cells, self.buttons, i["button"], node)[p]
+        if source == "mouse":
+            return self.mouse(p, 0 if i["axis"] == "x" else 1, node)
+        if source == "chat":
+            number = self.chat_number(i["pattern"], node)
+            out = fresh(0)
+            if EUDIf()(self.chat_in[p] == number):
+                out << (1 if i.get("capture") is None else self.capture_in[int(i["capture"])][p])
+            EUDEndIf()
+            return out
+        raise Fail("trigscript: unknown input %r%s" % (source, where(node)))
+
+    @staticmethod
+    def cell(cells, names, name, node):
+        if name not in names:
+            raise Fail("trigscript: the IR's input plan has no %r%s" % (name, where(node)))
+        return cells[names.index(name)]
+
+    def chat_number(self, pattern, node):
+        for index, c in enumerate(self.chats):
+            if c["pattern"] == pattern:
+                return index + 1
+        raise Fail("trigscript: the IR's input plan has no pattern %r%s" % (pattern, where(node)))
+
+    def mouse(self, p, axis, node):
+        """MSQC keeps the mouse of the map's first human slot in location \`mouseBase\`, the next slot's in the next."""
+        if self.mouse_base is None:
+            raise Fail("trigscript: the IR's input plan keeps no mouse%s" % where(node))
+        first = min(self.humans)
+        cell = lambda h: EPD(MRGN + (int(self.mouse_base) - 1 + h - first) * 20) + axis
+        if isinstance(p, int):
+            return f_dwread_epd(cell(p)) if p in self.humans else 0
+        out = fresh(0)
+        for h in self.humans:
+            if EUDIf()(p == h):
+                out << f_dwread_epd(cell(h))
+            EUDEndIf()
+        return out
+
+    # \u2500\u2500 the typed line, on the computer it was typed on \u2500\u2500
+    @staticmethod
+    def hash_of(data):
+        """What \`hashed\` makes of the same bytes: capitals A to Z as small letters, h = h \xD7 31 + byte."""
+        h = 0
+        for b in data:
+            if 65 <= b <= 90:
+                b += 32
+            h = (h * 31 + b) & U32
+        return h
+
+    def hashed(self, pos, stop_at_space):
+        """The hash of the line from \`pos\` to its end or, with \`stop_at_space\`, to the next space; \`pos\` moves past it."""
+        h = fresh(0)
+        if EUDWhile()(pos < self.length):
+            ch = fresh(f_bread(self.pointer + pos))
+            if stop_at_space:
+                EUDBreakIf(ch == 32)
+            if EUDIf()([ch >= 65, ch <= 90]):
+                ch += 32
+            EUDEndIf()
+            h << f_mul(h, 31) + ch
+            pos += 1
+        EUDEndWhile()
+        return h
+
+    def units(self):
+        """Unit names by hash, in hash order, for a search by halves: two arrays side by side."""
+        if self.unit_table is None:
+            by_hash = {}
+            for name, unit in self.plan.get("unitNames", []):
+                by_hash.setdefault(self.hash_of(name.encode("utf-8")), int(unit))
+            ordered = sorted(by_hash.items())
+            self.unit_table = (EUDArray([h for h, _ in ordered] or [0]), EUDArray([u for _, u in ordered] or [0]), len(ordered))
+        return self.unit_table
+
+    def capture(self, c, pos, fail):
+        """One value out of the line at \`pos\`, or a jump to \`fail\`."""
+        value = fresh(0)
+        if c["kind"] == "number":
+            digits = fresh(0)
+            if EUDWhile()(pos < self.length):
+                ch = f_bread(self.pointer + pos)
+                EUDBreakIf(ch <= 47)
+                EUDBreakIf(ch >= 58)
+                value << f_mul(value, 10) + ch - 48
+                if EUDIf()(value >= self.MAX_NUMBER + 1):
+                    value << self.MAX_NUMBER
+                EUDEndIf()
+                pos += 1
+                digits += 1
+            EUDEndWhile()
+            EUDJumpIf(digits == 0, fail)
+        elif c["kind"] == "word":
+            h = self.hashed(pos, True)
+            found = fresh(0)
+            for index, word in enumerate(c["words"]):
+                if EUDIf()(h == self.hash_of(word.encode("utf-8"))):
+                    value << index
+                    found << 1
+                EUDEndIf()
+            EUDJumpIf(found == 0, fail)
+        elif c["kind"] == "unit":
+            h = self.hashed(pos, False)
+            hashes, units, count = self.units()
+            lo, hi = fresh(0), fresh(count)
+            if EUDWhile()(lo < hi):
+                mid = f_div(lo + hi, 2)[0]
+                if EUDIf()(hashes[mid] < h):
+                    lo << mid + 1
+                if EUDElse()():
+                    hi << mid
+                EUDEndIf()
+            EUDEndWhile()
+            EUDJumpIf(lo >= count, fail)
+            EUDJumpIfNot(hashes[lo] == h, fail)
+            value << units[lo]
+        else:
+            raise Fail("trigscript: unknown chat capture %r" % (c["kind"],))
+        return value
+
+    def match_line(self):
+        """The line the local player typed against every pattern, in order: the first that fits the whole
+        line gives its number and values to the cells MSQC sends from. Nothing fits: nothing is sent."""
+        DoActions([self.chat_local.SetNumber(0)] + [c.SetNumber(0) for c in self.capture_local])
+        if EUDIf()(self.heard >= 1):
+            done = Forward()
+            for index, chat in enumerate(self.chats):
+                fail = Forward()
+                pos = fresh(0)
+                values = []
+                for seg in chat["segments"]:
+                    if isinstance(seg, str):
+                        data = seg.encode("utf-8")
+                        EUDJumpIf(pos + len(data) >= self.length + 1, fail)
+                        EUDJumpIfNot(f_memcmp(self.pointer + pos, Db(data + b"\\0"), len(data)) == 0, fail)
+                        pos += len(data)
+                    else:
+                        values.append(self.capture(chat["captures"][int(seg)], pos, fail))
+                EUDJumpIfNot(pos == self.length, fail)
+                DoActions(self.chat_local.SetNumber(index + 1))
+                for cell, value in zip(self.capture_local, values):
+                    cell << value
+                EUDJump(done)
+                fail << NextTrigger()
+            done << NextTrigger()
+        EUDEndIf()
+
+
+INPUT = Input(IR.get("input"))
 PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
 
 
@@ -9221,6 +10101,12 @@ def onPluginStart():
     # eudplib's generator starts from the same seed in every game; the game's own randomness (a switch randomized) seeds it.
     if uses_random(IR.get("programs", [])):
         f_randomize()
+
+
+def beforeTriggerExec():
+    # After chatEvent has looked for a typed line, before MSQC sends what it was.
+    if INPUT.chats:
+        INPUT.match_line()
 
 
 def afterTriggerExec():
@@ -9246,14 +10132,14 @@ function snapshotExtras(api) {
   const out = /* @__PURE__ */ new Map();
   for (const name of api.document.extras.list()) {
     if (!isScriptMember(name)) continue;
-    const bytes = api.document.extras.get(name);
-    if (bytes) out.set(name, bytes);
+    const bytes2 = api.document.extras.get(name);
+    if (bytes2) out.set(name, bytes2);
   }
   return out;
 }
 function commitExtras(api, before, after) {
   for (const name of before.keys()) if (!after.has(name)) api.document.extras.remove(name);
-  for (const [name, bytes] of after) if (before.get(name) !== bytes) api.document.extras.set(name, bytes);
+  for (const [name, bytes2] of after) if (before.get(name) !== bytes2) api.document.extras.set(name, bytes2);
 }
 var ScriptService = class {
   api;
@@ -9354,9 +10240,10 @@ var ScriptService = class {
     const artifact = cached && map && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) ? cached : await this.prepare(state.files, map);
     if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
     return {
-      plugins: { trigscript: { ir: "/work/files/trigscript.json" }, eudTurbo: {} },
+      // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
+      plugins: buildPlugins(artifact.compiled.input, "/work/files/trigscript.json"),
       sources: { trigscript: TRIGSCRIPT_PY },
-      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings) }
+      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings, artifact.compiled.input) }
     };
   }
   /** Hear about the library's builds (it runs them on Save, Test Map and export): the log, and where a failure points. */
@@ -9517,7 +10404,7 @@ var ScriptService = class {
   }
 };
 function readManifestBytes(api) {
-  for (const [name, bytes] of snapshotExtras(api)) if (name.toLowerCase().endsWith("build.json")) return bytes;
+  for (const [name, bytes2] of snapshotExtras(api)) if (name.toLowerCase().endsWith("build.json")) return bytes2;
   return null;
 }
 
@@ -10597,9 +11484,9 @@ function createWorkspace(svc, options, mode) {
         setStatus("error", "Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins \u25B8 Manage Plugins\u2026.");
         return;
       }
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const outcome = await api.document.test(bytes, file.name);
-      const kb = Math.round(bytes.length / 1024);
+      const bytes2 = new Uint8Array(await file.arrayBuffer());
+      const outcome = await api.document.test(bytes2, file.name);
+      const kb = Math.round(bytes2.length / 1024);
       setStatus(outcome ? "ok" : "info", outcome?.launched ? `Started the game with ${outcome.path} (${kb} KB).` : outcome ? `Written to ${outcome.path} (${kb} KB)${outcome.message ? ` \u2014 ${outcome.message}` : ""}.` : "The map is built, but this browser has no test folder yet: pick one once under Tools \u25B8 Test Map\u2026, which builds the map the same way.");
     } catch (err) {
       setStatus("error", `Not tested: ${err.message}`);
@@ -10714,7 +11601,8 @@ function createWorkspace(svc, options, mode) {
       }
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
-      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.`);
+      const quiet = r.input ? " Keys, clicks, the mouse and chat are not simulated: they read as nothing." : "";
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.${quiet}`);
       shell.showPanel("simulate");
     } catch (err) {
       setStatus("error", `Simulation stopped: ${err.message}`);

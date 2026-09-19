@@ -1232,10 +1232,483 @@ function defaultScriptNames() {
   return scriptNames();
 }
 
+// compiler/ir.ts
+var IR_VERSION = 5;
+var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
+var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
+var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "call" && e.call.result?.kind === "unit";
+var isNumExpr = (e) => {
+  switch (e.kind) {
+    case "const":
+      return typeof e.value === "number";
+    case "var":
+      return false;
+    // ambiguous by shape; callers know the variable's kind
+    case "unary":
+    case "binary":
+    case "intrinsic":
+    case "read":
+    case "randomInt":
+    case "unitField":
+    case "tableRead":
+    case "input":
+      return true;
+    case "ternary":
+      return isNumExpr(e.whenTrue);
+    case "call":
+      return e.call.result?.kind === "number";
+    default:
+      return false;
+  }
+};
+function declarations(body2) {
+  const out = [];
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        out.push(s.decl);
+        init(s.init);
+        break;
+      case "assign":
+        expr(s.value);
+        break;
+      case "assignBool":
+        init(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        out.push(s.decl);
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        init(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") init(s.value);
+        break;
+      case "if":
+        init(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) init(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        init(s.cond);
+        break;
+      case "for":
+        if (s.cond) init(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) init(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "print":
+        for (const p of s.parts) if (p.kind === "number") expr(p.expr);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    if (c2.result) out.push(c2.result.decl);
+    for (const p of c2.params) {
+      out.push(p.decl);
+      init(p.init);
+    }
+    c2.body.forEach(stmt);
+  };
+  const init = (e) => isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+  };
+  const expr = (e) => {
+    switch (e.kind) {
+      case "unitField":
+        unit(e.unit);
+        break;
+      case "unary":
+        expr(e.expr);
+        break;
+      case "binary":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        bool(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const bool = (b) => {
+    switch (b.kind) {
+      case "unitAlive":
+      case "unitFlag":
+        unit(b.unit);
+        break;
+      case "unitSame":
+        unit(b.left);
+        unit(b.right);
+        break;
+      case "test":
+        expr(b.expr);
+        break;
+      case "compare":
+        expr(b.left);
+        expr(b.right);
+        break;
+      case "and":
+      case "or":
+        b.items.forEach(bool);
+        break;
+      case "not":
+        bool(b.expr);
+        break;
+      case "edge":
+        bool(b.cond);
+        break;
+      case "ternary":
+        bool(b.cond);
+        bool(b.whenTrue);
+        bool(b.whenFalse);
+        break;
+      case "call":
+        call(b.call);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+  return out;
+}
+
+// compiler/input.ts
+var MOUSE_BUTTONS = ["left", "right", "middle"];
+var NAMED_KEYS = {
+  Space: "SPACE",
+  Enter: "ENTER",
+  Escape: "ESC",
+  Tab: "TAB",
+  Shift: "SHIFT",
+  Ctrl: "LCTRL",
+  Alt: "LALT",
+  Left: "LEFT",
+  Up: "UP",
+  Right: "RIGHT",
+  Down: "DOWN",
+  Backspace: "BACK",
+  Delete: "DELETE",
+  Insert: "INSERT",
+  Home: "HOME",
+  End: "END",
+  PageUp: "PGUP",
+  PageDown: "PGDN"
+};
+var LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+var DIGITS = "0123456789".split("");
+var DEAF_KEYS = { F6: "StarCraft: Remastered keeps F6 to itself and reports no press of it (played and seen); F7 and F8 work" };
+var KEY_NAMES = [
+  ...LETTERS,
+  ...DIGITS,
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`).filter((k) => !(k in DEAF_KEYS)),
+  ...Object.keys(NAMED_KEYS),
+  ...DIGITS.map((d) => `Numpad${d}`)
+];
+var KEY_BY_LOWER = new Map(KEY_NAMES.map((k) => [k.toLowerCase(), k]));
+function keyName(v) {
+  return KEY_BY_LOWER.get(v.trim().toLowerCase()) ?? null;
+}
+var MAX_CHAT_CAPTURES = 3;
+var MAX_CHAT_BYTES = 78;
+var IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var bytes = (s) => new TextEncoder().encode(s).length;
+function parseChatPattern(pattern) {
+  if (pattern === "") throw new Error('chatted: the pattern is what the player types, such as "-give {n}".');
+  if (/[\r\n\0]/.test(pattern)) throw new Error("chatted: a typed line is one line.");
+  const segments = [];
+  const captures = [];
+  let text = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "}") throw new Error("chatted: a } without its {. A capture is {name}, {name:unit} or {name:word|word}.");
+    if (ch !== "{") {
+      text += ch;
+      continue;
+    }
+    const end = pattern.indexOf("}", i);
+    if (end < 0) throw new Error("chatted: a { without its }. A capture is {name}, {name:unit} or {name:word|word}.");
+    const inside = pattern.slice(i + 1, end);
+    i = end;
+    const colon = inside.indexOf(":");
+    const name = colon < 0 ? inside : inside.slice(0, colon);
+    const kind = colon < 0 ? "" : inside.slice(colon + 1);
+    if (!IDENT.test(name) || name.startsWith("__")) throw new Error(`chatted: {${inside}} needs a name to be read by: {n}, {unit:unit}, {kind:ore|gas}.`);
+    if (captures.some((c2) => c2.name === name)) throw new Error(`chatted: two captures are called ${name}.`);
+    if (text === "") throw new Error(segments.length === 0 ? 'chatted: a pattern starts with its own word, so that ordinary talk is not taken for it: "-give {n}".' : `chatted: {${name}} follows another capture with nothing between them; put a space or a word there.`);
+    segments.push(text);
+    text = "";
+    if (kind === "") captures.push({ name, kind: "number" });
+    else if (kind === "unit") captures.push({ name, kind: "unit" });
+    else {
+      const words = kind.split("|");
+      if (kind === "number" || kind === "word") throw new Error(`chatted: {${name}} alone is a number; {${name}:unit} a unit type; {${name}:ore|gas} one of the words listed.`);
+      if (words.some((w) => w === "" || /\s/.test(w))) throw new Error(`chatted: {${inside}}: each word of the list is one word, without spaces.`);
+      if (new Set(words.map((w) => w.toLowerCase())).size !== words.length) throw new Error(`chatted: {${inside}} lists a word twice.`);
+      captures.push({ name, kind: "word", words });
+    }
+    segments.push(captures.length - 1);
+  }
+  if (text !== "") segments.push(text);
+  if (captures.length > MAX_CHAT_CAPTURES) throw new Error(`chatted: a pattern reads at most ${MAX_CHAT_CAPTURES} values.`);
+  const unit = captures.findIndex((c2) => c2.kind === "unit");
+  if (unit >= 0 && (unit !== captures.length - 1 || typeof segments[segments.length - 1] === "string")) throw new Error("chatted: a unit's name has spaces in it, so {\u2026:unit} reads the rest of the line and comes last.");
+  const written = segments.filter((s) => typeof s === "string").join("");
+  if (bytes(written) > MAX_CHAT_BYTES) throw new Error(`chatted: the game lets a player type ${MAX_CHAT_BYTES} bytes; the pattern's own text is longer.`);
+  return { pattern, segments, captures };
+}
+var MOUSE_SLOTS = 8;
+var LAST_SLOT = 62;
+function inputsOf(programs) {
+  const sources = [];
+  let mouse = false;
+  let at = null;
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "pick" && u.mouse !== void 0) {
+      mouse = true;
+      at ??= u.at;
+    }
+  };
+  const any = (e) => isUnitExpr(e) ? unit(e) : expr(e);
+  const expr = (e) => {
+    switch (e.kind) {
+      case "input":
+        sources.push(e.input);
+        at ??= e.at;
+        if (e.input.source === "mouse") mouse = true;
+        break;
+      case "unitField":
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        break;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        break;
+      case "unary":
+        expr(e.expr);
+        break;
+      case "binary":
+      case "compare":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        expr(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "and":
+      case "or":
+        e.items.forEach(expr);
+        break;
+      case "not":
+      case "test":
+        expr(e.expr);
+        break;
+      case "edge":
+        expr(e.cond);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) any(p.init);
+    c2.body.forEach(stmt);
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) any(s.init);
+        break;
+      case "assign":
+      case "assignBool":
+        expr(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        expr(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        if (s.value.kind !== "text") expr(s.value);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "if":
+        expr(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) expr(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        expr(s.cond);
+        break;
+      case "for":
+        if (s.cond) expr(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) any(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        break;
+      case "print":
+        for (const p of s.parts) if (p.kind === "number") expr(p.expr);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  for (const p of programs) p.body.forEach(stmt);
+  return { sources, mouse, at };
+}
+function inputPlan(programs, locations, units) {
+  const { sources, mouse } = inputsOf(programs);
+  if (sources.length === 0 && !mouse) return null;
+  const keys = [];
+  const buttons = [];
+  const chats = [];
+  for (const s of sources) {
+    if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
+    else if (s.source === "click" && !buttons.includes(s.button)) buttons.push(s.button);
+    else if (s.source === "chat" && !chats.some((c2) => c2.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
+  }
+  const used = new Set(locations.entries.map((e) => e.value - 1));
+  const free = (slot) => slot >= 0 && slot <= LAST_SLOT && !used.has(slot);
+  let qcLocation = -1;
+  for (let slot = LAST_SLOT; slot >= 0; slot--) if (free(slot)) {
+    qcLocation = slot;
+    break;
+  }
+  if (qcLocation < 0) throw new Error("Reading keys, clicks or chat needs one free location among the map's first 63 for the plugin that carries them between the players' computers; this map uses them all.");
+  let mouseBase = null;
+  if (mouse) {
+    for (let slot = LAST_SLOT - MOUSE_SLOTS + 1; slot >= 0 && mouseBase === null; slot--) {
+      let ok = true;
+      for (let i = 0; i < MOUSE_SLOTS; i++) if (!free(slot + i) || slot + i === qcLocation) ok = false;
+      if (ok) mouseBase = slot + 1;
+    }
+    if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
+  }
+  const plan = { keys, buttons, chats, qcLocation, mouseBase };
+  if (chats.some((c2) => c2.captures.some((x) => x.kind === "unit"))) {
+    const seen = /* @__PURE__ */ new Set();
+    plan.unitNames = [];
+    for (const e of units.entries) {
+      if (e.value >= 228) continue;
+      for (const k of e.keys) {
+        const lower = k.toLowerCase();
+        if (!seen.has(lower)) {
+          seen.add(lower);
+          plan.unitNames.push([lower, e.value]);
+        }
+      }
+    }
+  }
+  return plan;
+}
+
 // compiler/tables.ts
 var TABLE_SIZE = { unit: 228, weapon: 130, upgrade: 61, tech: 44, player: 12 };
-var UNIT_FLAGS = 6701184;
-var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS, stride: 4, width: "bit", bit, boolean: true });
+var UNIT_FLAGS2 = 6701184;
+var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS2, stride: 4, width: "bit", bit, boolean: true });
 var TABLE_FIELDS = {
   unit: [
     { name: "maxHp", doc: "Hit points of units made after the write.", base: 6693712, stride: 4, width: 4, scale: 256 },
@@ -1303,7 +1776,10 @@ var isPrint = (v) => typeof v === "object" && v !== null && v.__trigscript === "
 var isUnitQuery = (v) => typeof v === "object" && v !== null && v.__trigscript === "units";
 var isUnitPick = (v) => typeof v === "object" && v !== null && v.__trigscript === "pick";
 var isTable = (v) => typeof v === "object" && v !== null && v.__trigscript === "table";
-var isGameValue = (v) => isRead(v) || isTable(v) || isUnitPick(v);
+var isInput = (v) => typeof v === "object" && v !== null && v.__trigscript === "input";
+var isMouse = (v) => typeof v === "object" && v !== null && v.__trigscript === "mouse";
+var isChat = (v) => typeof v === "object" && v !== null && v.__trigscript === "chat";
+var isGameValue = (v) => isRead(v) || isTable(v) || isUnitPick(v) || isInput(v) || isMouse(v) || isChat(v);
 function playerColor(v) {
   if (typeof v === "string") {
     const n = PLAYER_COLORS[v.trim().toLowerCase()];
@@ -1334,7 +1810,8 @@ var READ_ARITY = new Map(
   [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
 );
 var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
-var UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "stats"];
+var UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "underMouse", "stats"];
+var INPUT_CALL_NAMES = ["keyPressed", "clicked", "mouse", "chatted", "centerLocation"];
 var ScriptError = class extends Error {
   constructor(message) {
     super(message);
@@ -1346,6 +1823,12 @@ var Collector = class {
   strings = [];
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
+  /**
+   * The script's own statements are running — as opposed to a program's build-time parts, which the
+   * compiler asks for afterwards. What a player does has no meaning there, and `if (keyPressed(…))`
+   * would quietly be true (it is an object), so those functions refuse while this is set.
+   */
+  running = false;
   localString(s) {
     const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
     if (at >= 0) return at + 1;
@@ -1370,6 +1853,7 @@ function describe(v) {
   if (isTable(v)) return `a value the game holds (${v.ident})`;
   if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
   if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isInput(v) || isMouse(v) || isChat(v)) return `what a player does in the game (${isInput(v) ? v.ident : isMouse(v) ? "mouse()" : "chatted()"})`;
   if (isPrint(v)) return "a print()";
   if (Array.isArray(v)) return "an array";
   if (typeof v === "function") return "a function";
@@ -1640,6 +2124,64 @@ function createRuntime(names, collector, options = {}) {
     if (near === 0 || near > 255) throw new ScriptError("nearest: the location to be near is one of locations.*.");
     return pick("nearest", "nearest", filterOf("nearest", filter, { type: argValue("unit", unit, "nearest: unit") }), near);
   };
+  rt.underMouse = (player, filter) => {
+    let within = 48;
+    let rest = filter;
+    if (filter !== void 0 && filter !== null && typeof filter === "object" && !Array.isArray(filter) && "within" in filter) {
+      const { within: w, ...others } = filter;
+      rest = others;
+      if (w !== void 0 && w !== null) {
+        if (typeof w !== "number" || !Number.isInteger(w) || w < 1 || w > 4096) throw new ScriptError(`underMouse: within is a distance in pixels, 1 to 4096 (32 is a tile), got ${describe(w)}.`);
+        within = w;
+      }
+    }
+    const who = onePlayer(player, "underMouse: player", 8);
+    return { ...pick("underMouse", "nearest", filterOf("underMouse", rest, {})), mouse: who, within };
+  };
+  const inputValue = (ident, input, boolean) => {
+    const fail = () => {
+      throw new ScriptError(`${ident} is what a player does while the game runs: it has no value when the script is built. Inside program(), test it in an if or assign it to a let.`);
+    };
+    return { __trigscript: "input", input, boolean, ident, valueOf: fail, toString: fail };
+  };
+  const human = (v, what) => {
+    if (collector.running) throw new ScriptError(`${what.split(":")[0]}() asks what a player does while the game runs: use it inside program().`);
+    return onePlayer(v, what, 8);
+  };
+  rt.keyPressed = (player, key) => {
+    const name = typeof key === "string" ? keyName(key) : null;
+    const deaf = typeof key === "string" ? DEAF_KEYS[key.trim().toUpperCase()] : void 0;
+    if (deaf) throw new ScriptError(`keyPressed: ${deaf}.`);
+    if (!name) throw new ScriptError(`keyPressed: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} \u2026 "F1" \u2026 "Space", "Enter", "Escape", "Left" \u2026; got ${describe(key)}.`);
+    return inputValue(`keyPressed(\u2026, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, "keyPressed: player") }, true);
+  };
+  rt.clicked = (player, button = "left") => {
+    const b = typeof button === "string" ? button.trim().toLowerCase() : "";
+    if (!MOUSE_BUTTONS.includes(b)) throw new ScriptError(`clicked: the button is "left", "right" or "middle", got ${describe(button)}.`);
+    return inputValue(`clicked(\u2026, ${JSON.stringify(b)})`, { source: "click", button: b, player: human(player, "clicked: player") }, true);
+  };
+  rt.mouse = (player) => {
+    const who = human(player, "mouse: player");
+    return Object.freeze({ __trigscript: "mouse", x: inputValue("mouse(\u2026).x", { source: "mouse", axis: "x", player: who }, false), y: inputValue("mouse(\u2026).y", { source: "mouse", axis: "y", player: who }, false) });
+  };
+  rt.chatted = (player, pattern) => {
+    if (typeof pattern !== "string") throw new ScriptError(`chatted: the pattern is text such as "-give {n}", got ${describe(pattern)}.`);
+    let parsed;
+    try {
+      parsed = parseChatPattern(pattern);
+    } catch (err) {
+      throw new ScriptError(err instanceof Error ? err.message : String(err));
+    }
+    const who = human(player, "chatted: player");
+    const values = {};
+    parsed.captures.forEach((c2, i) => {
+      values[c2.name] = inputValue(`chatted(\u2026).${c2.name}`, { source: "chat", pattern, capture: i, player: who }, false);
+    });
+    return Object.freeze({ __trigscript: "chat", pattern: parsed, matched: inputValue("chatted(\u2026)", { source: "chat", pattern, capture: null, player: who }, true), values: Object.freeze(values) });
+  };
+  rt.centerLocation = () => {
+    throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement \u2014 centerLocation(locations.Cursor, x, y).");
+  };
   const tableValue = (kind, field, index, ident, key) => {
     const cell = {
       name: `${kind}.${field.name}`,
@@ -1886,6 +2428,11 @@ ${kw}interface UnitFilter {
   /** Inside this location. */
   at?: Location;
 }
+/** A key keyPressed() knows. F6 is not among them: the game reports no press of it. */
+${kw}type Key = __KEY_NAMES__;
+/** What a chatted() pattern's captures are read as: {n} a number, {unit:unit} a unit type, {kind:ore|gas} the place of the word in its list. */
+${kw}type ChatCapture<C extends string> = C extends \`\${infer N}:unit\` ? { readonly [K in N]: UnitType } : C extends \`\${infer N}:\${string}\` ? { readonly [K in N]: number } : { readonly [K in C]: number };
+${kw}type ChatValues<P extends string> = P extends \`\${string}{\${infer C}}\${infer Rest}\` ? ChatCapture<C> & ChatValues<Rest> : {};
 __STATS_TYPES__
 ${kw}interface ProgramOptions {
   /**
@@ -1930,9 +2477,10 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
  * Math.min / max / abs, clamp(). Everything the body reads from outside (constants, helpers,
  * conditions, actions) is computed when you build \u2014 the editor underlines those parts \u2014 so
  * it cannot depend on the variables, except the amount of setResources / setDeaths /
- * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
- * giveUnits, which can be a variable, and the text of displayText() / print(), which can hold
- * numbers of the program. The game's own values are reads: minerals(P1), deaths(P1, unit), \u2026
+ * setScore / setCountdownTimer, the unit count of createUnit / killUnitAt / removeUnitAt /
+ * giveUnits and an action's unit type, which can be variables, and the text of displayText() /
+ * print(), which can hold numbers of the program. The game's own values are reads:
+ * minerals(P1), deaths(P1, unit), \u2026 and what the players do: keyPressed(), clicked(), mouse(), chatted().
  *
  * A map with a program in it needs StarCraft: Remastered: the programs are built into the
  * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
@@ -2057,6 +2605,35 @@ ${kw}function color(player: Player): string;
  * game's own messages ("Not enough minerals") appear: print(\`Wave \${wave}\`, { to: AllPlayers, position: "center" }).
  */
 ${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
+/**
+ * What the players do, inside program() only. A key, a click and a typed line are true on the one
+ * frame they arrive, so look for them in a loop that runs every frame:
+ * \`while (true) { if (keyPressed(CurrentPlayer, "F2")) \u2026; sleep(frames(1)); }\`. They reach every
+ * player's computer in step, a few frames after they happen. The player is one of P1 \u2026 P8 or
+ * CurrentPlayer \u2014 in a program with \`{ owner: AllPlayers }\`, each player's own keys.
+ * The map gives up a little for it: one free location among the first 63 (nine when the mouse is read),
+ * the Valkyrie unit type, and Player 12 to hold the units that carry the input.
+ */
+/** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
+${kw}function keyPressed(player: Player, key: Key): boolean;
+/** True on the frame a player's press of a mouse button arrives ("left" when none is named). */
+${kw}function clicked(player: Player, button?: "left" | "right" | "middle"): boolean;
+/** Where a player's mouse is on the map, in pixels (32 to a tile): \`const at = mouse(CurrentPlayer);\` keeps the place as it is now. */
+${kw}function mouse(player: Player): { readonly x: number; readonly y: number };
+/** The unit nearest a player's mouse and no farther from it than \`within\` pixels (48 when not given), or null. */
+${kw}function underMouse(player: Player, filter?: UnitFilter & { within?: number }): Unit | null;
+/**
+ * What a player typed, on the frame the line arrives: null, or the values the pattern names.
+ * \`const m = chatted(CurrentPlayer, "-give {n}"); if (m) setResources(CurrentPlayer, "add", m.n, "ore");\`
+ * The pattern's own text is matched exactly and the whole line has to fit it. {n} reads a whole number
+ * (up to 1 048 575), {unit:unit} a unit type by its name \u2014 the rest of the line, so it comes last \u2014
+ * and {kind:ore|gas} one of the listed words, giving its place in the list (0, 1, \u2026); names and words
+ * match whatever the capitals. Up to three values. A game played alone has no chat: test these in a
+ * multiplayer game, which one person can host.
+ */
+${kw}function chatted<const P extends string>(player: Player, pattern: P): ChatValues<P> | null;
+/** Centre a location on a point of the map, in pixels, its size kept; inside program() only. With mouse(): \`centerLocation(locations.Cursor, at.x, at.y)\`, then createUnit() there. */
+${kw}function centerLocation(location: Location, x: number, y: number): void;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -2151,7 +2728,7 @@ ${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number
 }
 function body(kw, typeKw, names, compact) {
   return [
-    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__STATS_TYPES__", statsTypes(typeKw)),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", statsTypes(typeKw)),
     choiceTypes(typeKw),
     functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
     "// \u2500\u2500 Conditions \u2500\u2500",
@@ -2208,7 +2785,7 @@ function owningDeclaration(ts, decl) {
 }
 var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers", "game"]);
 var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "rose", "once", "shared"]);
-var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, ...UNIT_CALL_NAMES, "print"]);
+var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
 var isReadCall = (lib, args) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 function planProgram(ts, checker, arrow, options = {}) {
   const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Map(), constList: [], tree: [], errors: [] };
@@ -2738,196 +3315,6 @@ function mapPosition(mapJson, line, column) {
   return best;
 }
 
-// compiler/ir.ts
-var IR_VERSION = 4;
-var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
-var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
-var UNIT_FLAGS2 = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
-var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "call" && e.call.result?.kind === "unit";
-var isNumExpr = (e) => {
-  switch (e.kind) {
-    case "const":
-      return typeof e.value === "number";
-    case "var":
-      return false;
-    // ambiguous by shape; callers know the variable's kind
-    case "unary":
-    case "binary":
-    case "intrinsic":
-    case "read":
-    case "randomInt":
-    case "unitField":
-    case "tableRead":
-      return true;
-    case "ternary":
-      return isNumExpr(e.whenTrue);
-    case "call":
-      return e.call.result?.kind === "number";
-    default:
-      return false;
-  }
-};
-function declarations(body2) {
-  const out = [];
-  const stmt = (s) => {
-    switch (s.kind) {
-      case "declare":
-        out.push(s.decl);
-        init(s.init);
-        break;
-      case "assign":
-        expr(s.value);
-        break;
-      case "assignBool":
-        init(s.value);
-        break;
-      case "assignUnit":
-        unit(s.value);
-        break;
-      case "unitLoop":
-        out.push(s.decl);
-        s.body.forEach(stmt);
-        break;
-      case "unitWrite":
-        unit(s.unit);
-        init(s.value);
-        break;
-      case "unitDo":
-        unit(s.unit);
-        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
-        break;
-      case "tableWrite":
-        if (s.value.kind !== "text") init(s.value);
-        break;
-      case "if":
-        init(s.cond);
-        s.then.forEach(stmt);
-        s.else?.forEach(stmt);
-        break;
-      case "while":
-        if (s.cond) init(s.cond);
-        s.body.forEach(stmt);
-        break;
-      case "do":
-        s.body.forEach(stmt);
-        init(s.cond);
-        break;
-      case "for":
-        if (s.cond) init(s.cond);
-        s.update.forEach(stmt);
-        s.body.forEach(stmt);
-        break;
-      case "unrolled":
-        s.iterations.forEach((i) => i.forEach(stmt));
-        break;
-      case "switch":
-        expr(s.value);
-        s.cases.forEach((c2) => c2.body.forEach(stmt));
-        break;
-      case "return":
-        if (s.value) init(s.value);
-        break;
-      case "action":
-        if (s.variable) expr(s.variable.expr);
-        break;
-      case "print":
-        for (const p of s.parts) if (p.kind === "number") expr(p.expr);
-        break;
-      case "call":
-        call(s.call);
-        break;
-      case "block":
-        s.body.forEach(stmt);
-        break;
-      default:
-        break;
-    }
-  };
-  const call = (c2) => {
-    if (c2.result) out.push(c2.result.decl);
-    for (const p of c2.params) {
-      out.push(p.decl);
-      init(p.init);
-    }
-    c2.body.forEach(stmt);
-  };
-  const init = (e) => isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
-  const unit = (u) => {
-    if (u.kind === "call") call(u.call);
-  };
-  const expr = (e) => {
-    switch (e.kind) {
-      case "unitField":
-        unit(e.unit);
-        break;
-      case "unary":
-        expr(e.expr);
-        break;
-      case "binary":
-        expr(e.left);
-        expr(e.right);
-        break;
-      case "ternary":
-        bool(e.cond);
-        expr(e.whenTrue);
-        expr(e.whenFalse);
-        break;
-      case "intrinsic":
-        e.args.forEach(expr);
-        break;
-      case "randomInt":
-        expr(e.bound);
-        break;
-      case "call":
-        call(e.call);
-        break;
-      default:
-        break;
-    }
-  };
-  const bool = (b) => {
-    switch (b.kind) {
-      case "unitAlive":
-      case "unitFlag":
-        unit(b.unit);
-        break;
-      case "unitSame":
-        unit(b.left);
-        unit(b.right);
-        break;
-      case "test":
-        expr(b.expr);
-        break;
-      case "compare":
-        expr(b.left);
-        expr(b.right);
-        break;
-      case "and":
-      case "or":
-        b.items.forEach(bool);
-        break;
-      case "not":
-        bool(b.expr);
-        break;
-      case "edge":
-        bool(b.cond);
-        break;
-      case "ternary":
-        bool(b.cond);
-        bool(b.whenTrue);
-        bool(b.whenFalse);
-        break;
-      case "call":
-        call(b.call);
-        break;
-      default:
-        break;
-    }
-  };
-  body2.forEach(stmt);
-  return out;
-}
-
 // compiler/eud.ts
 function checkProgram(program) {
   const errors = [];
@@ -3056,7 +3443,11 @@ function expressions(body2, visit, pick) {
         if (s.value) any(s.value);
         break;
       case "action":
-        if (s.variable) expr(s.variable.expr);
+        for (const v of s.variables ?? []) expr(v.expr);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
         break;
       case "print":
         for (const p of s.parts) if (p.kind === "number") expr(p.expr);
@@ -3230,6 +3621,7 @@ function assigned(body2, into = /* @__PURE__ */ new Set()) {
       case "unitWrite":
       case "unitDo":
       case "tableWrite":
+      case "centerLocation":
         into.add(THE_GAME);
         break;
       case "declare":
@@ -3290,6 +3682,9 @@ function reads(e, into = /* @__PURE__ */ new Set()) {
     case "cond":
     case "tableRead":
       into.add(THE_GAME);
+      break;
+    // What the players did is as it was when the frame began: nothing a loop does within the frame changes it.
+    case "input":
       break;
     case "unitField":
     case "unitAlive":
@@ -3455,6 +3850,9 @@ function describe2(v) {
   if (isTable(v)) return `a value the game holds (${v.ident})`;
   if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
   if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isInput(v)) return `what a player does in the game (${v.ident})`;
+  if (isMouse(v)) return "where a player's mouse is (mouse())";
+  if (isChat(v)) return "what a player typed (chatted())";
   if (isPrint(v)) return "a print()";
   if (isGameFunction(v)) return "a game function";
   if (Array.isArray(v)) return "an array";
@@ -3930,6 +4328,11 @@ var Structured = class {
         if (record) this.scope.bind(d, record);
         continue;
       }
+      if (ts.isCallExpression(init) && (this.isLibraryCall(init, "mouse") || this.isLibraryCall(init, "chatted"))) {
+        const record = this.declareInput(d.name.text, init, d);
+        if (record) this.scope.bind(d, record);
+        continue;
+      }
       const type = this.c.checker.getTypeAtLocation(d.name);
       const kind = this.kindOf(type);
       if (!kind) {
@@ -4004,6 +4407,43 @@ var Structured = class {
     }
     return ok ? { kind: "record", fields } : null;
   }
+  /**
+   * `const at = mouse(p)`, `const m = chatted(p, "-give {n}")`: what the player did, taken when the
+   * line runs and kept — a record of numbers, and for a typed line the boolean `if (m)` asks.
+   */
+  declareInput(name, call, at) {
+    const h = this.evaluate(call);
+    if (!h) {
+      this.notConstant(call, "Which player, and what to look for,");
+      return null;
+    }
+    const fields = /* @__PURE__ */ new Map();
+    const keep = (field, value) => {
+      const v = this.newVar(`${name}.${field}`, "number", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: v, init: this.inputValue(value, call), at: this.at(at), label: this.label(at) }, at);
+      fields.set(field, { kind: "var", v });
+    };
+    if (isMouse(h.value)) {
+      keep("x", h.value.x);
+      keep("y", h.value.y);
+      return { kind: "record", fields };
+    }
+    if (isChat(h.value)) {
+      const truth = this.newVar(name, "boolean", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: truth, init: this.inputBool(h.value.matched, call), at: this.at(at), label: this.label(at) }, at);
+      for (const [field, value] of Object.entries(h.value.values)) keep(field, value);
+      return { kind: "record", fields, truth };
+    }
+    this.c.error(call, `Expected mouse() or chatted(), got ${describe2(h.value)}.`);
+    return null;
+  }
+  /** What a player did, as a number of the program: a key or a click counts 1 or 0. */
+  inputValue(v, at) {
+    return this.mark({ kind: "input", input: { ...v.input }, at: this.at(at), label: this.label(at) }, at);
+  }
+  inputBool(v, at) {
+    return this.mark({ kind: "test", expr: this.inputValue(v, at), at: this.at(at), label: this.label(at) }, at);
+  }
   /** Where a declaration's name is, for the editor's hover. */
   sourceOf(node) {
     const p = this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf));
@@ -4075,6 +4515,10 @@ var Structured = class {
     }
     if (isUnitQuery(v)) {
       this.c.error(expr, `${v.ident}() names units and does nothing on its own: for (const u of ${v.ident}(\u2026)) { \u2026 }`);
+      return;
+    }
+    if (isInput(v) || isMouse(v) || isChat(v)) {
+      this.c.error(expr, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const.");
       return;
     }
     if (Array.isArray(v) && v.length > 0 && v.every(isAction)) {
@@ -4167,6 +4611,26 @@ var Structured = class {
     }
     const parts = this.textOf(e.arguments[0]);
     if (parts) this.emitPrint(parts, to, position, e);
+  }
+  /** `centerLocation(locations.Cursor, at.x, at.y)`: the location known when the script is built, the point the program's. */
+  centerLocation(e) {
+    if (e.arguments.length !== 3) {
+      this.c.error(e, "centerLocation() takes the location and the point: centerLocation(locations.Cursor, x, y).");
+      return;
+    }
+    const h = this.evaluate(e.arguments[0]);
+    if (!h || isGameValue(h.value)) {
+      this.notConstant(e.arguments[0], "The location");
+      return;
+    }
+    const location = h.value;
+    if (typeof location !== "number" || !Number.isInteger(location) || location < 1 || location > 255 || location === 64) {
+      this.c.error(e.arguments[0], "centerLocation() takes one of locations.*, which is moved (not Anywhere).");
+      return;
+    }
+    const x = this.num(e.arguments[1]);
+    const y = this.num(e.arguments[2]);
+    if (x && y) this.emit({ kind: "centerLocation", location, x, y, at: this.at(e), label: this.label(e) }, e);
   }
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   sleepStatement(call) {
@@ -4317,6 +4781,14 @@ var Structured = class {
     }
     if (this.isLibraryCall(e, "print")) {
       this.printStatement(e);
+      return;
+    }
+    if (this.isLibraryCall(e, "centerLocation")) {
+      this.centerLocation(e);
+      return;
+    }
+    if (this.isLibraryCall(e, "keyPressed") || this.isLibraryCall(e, "clicked") || this.isLibraryCall(e, "mouse") || this.isLibraryCall(e, "chatted")) {
+      this.c.error(e, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const.");
       return;
     }
     const callee = this.evaluate(e.expression)?.value;
@@ -4776,6 +5248,15 @@ var Structured = class {
         this.c.error(e, `${h.value.ident}() is a unit, not a number; read one of its fields: ${h.value.ident}(\u2026)?.hp \u2014 or keep it: const u = ${h.value.ident}(\u2026).`);
         return null;
       }
+      if (isInput(h.value)) return this.inputValue(h.value, e);
+      if (isMouse(h.value)) {
+        this.c.error(e, "mouse() is a place on the map: read its x or its y.");
+        return null;
+      }
+      if (isChat(h.value)) {
+        this.c.error(e, "chatted() is what a player typed: test it in an if, or read one of the values its pattern names.");
+        return null;
+      }
       const n = this.asInteger(h, e);
       return n === null ? null : num(n);
     }
@@ -4964,14 +5445,14 @@ var Structured = class {
     return null;
   }
   /**
-   * An action whose argument is a variable: `setResources(P1, "add", n, "ore")`,
-   * `createUnit(P2, unit, count, at)`. The record is built with the variable's place
-   * as 0; the backend does the action with the expression's value in that field.
+   * An action with arguments from the program: `setResources(P1, "add", n, "ore")`,
+   * `createUnit(P2, m.unit, count, at)`. The record is built with each such place as 0;
+   * the backend does the action with the expressions' values in those fields.
    */
   actionWithVars(e, ident, def) {
     const params = scriptParams(def);
     const values = [];
-    let variable = null;
+    const variables = [];
     for (let i = 0; i < e.arguments.length; i++) {
       const a2 = e.arguments[i];
       const h = this.evaluate(a2);
@@ -4979,26 +5460,22 @@ var Structured = class {
         values.push(h.value);
         continue;
       }
-      const p2 = params[i];
-      if (!p2) {
+      const p = params[i];
+      if (!p) {
         this.c.error(a2, `${ident} takes ${params.length} argument${params.length === 1 ? "" : "s"}.`);
         return;
       }
-      const eligible = (p2.arg.kind === "amount" || p2.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type) || p2.arg.kind === "count" && COUNT_ACTIONS.has(def.type);
+      const eligible = (p.arg.kind === "amount" || p.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type) || p.arg.kind === "count" && COUNT_ACTIONS.has(def.type) || p.arg.kind === "unit";
       if (!eligible) {
-        this.c.error(a2, `${ident}'s ${p2.name} must be known when the script is built. Only an amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer) and a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) can be a variable of the program.`);
-        return;
-      }
-      if (variable) {
-        this.c.error(a2, `${ident}: one argument at a time can be a variable of the program.`);
+        this.c.error(a2, `${ident}'s ${p.name} must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.`);
         return;
       }
       const expr = this.num(a2);
       if (!expr) return;
-      variable = { index: i, expr };
+      variables.push({ index: i, expr });
       values.push(0);
     }
-    if (!variable) {
+    if (!variables.length) {
       this.notConstant(e, "A call's arguments");
       return;
     }
@@ -5013,8 +5490,11 @@ var Structured = class {
     } catch (err) {
       throw new ValueError(e, err instanceof Error ? err.message : String(err));
     }
-    const p = params[variable.index];
-    this.emit({ kind: "action", record: { ...record }, variable: { field: p.arg.field, bits: p.arg.kind === "count" ? 8 : 32, name: p.name, expr: variable.expr }, at: this.at(e), label: this.label(e) }, e);
+    const list = variables.map((v) => {
+      const p = params[v.index];
+      return { field: p.arg.field, bits: p.arg.kind === "count" ? 8 : p.arg.kind === "unit" ? 16 : 32, name: p.name, expr: v.expr };
+    });
+    this.emit({ kind: "action", record: { ...record }, variables: list, at: this.at(e), label: this.label(e) }, e);
   }
   /* ── Units on the map, and the game's tables ── */
   /** `u.hp`, `target?.kills`: the unit and the member's name, when the object is a unit of the game. */
@@ -5068,11 +5548,11 @@ var Structured = class {
     return null;
   }
   pick(v, at) {
-    return this.mark({ kind: "pick", by: v.by, filter: { ...v.filter }, ...v.near !== void 0 ? { near: v.near } : {}, at: this.at(at), label: this.label(at) }, at);
+    return this.mark({ kind: "pick", by: v.by, filter: { ...v.filter }, ...v.near !== void 0 ? { near: v.near } : {}, ...v.mouse !== void 0 ? { mouse: v.mouse, within: v.within ?? 48 } : {}, at: this.at(at), label: this.label(at) }, at);
   }
   /** `u.hp` as a number. */
   unitField(e, m) {
-    if (UNIT_FLAGS2.includes(m.name)) {
+    if (UNIT_FLAGS.includes(m.name)) {
       const flag2 = this.mark({ kind: "unitFlag", unit: m.unit, flag: m.name, at: this.at(e), label: this.label(e) }, e);
       return this.mark({ kind: "ternary", cond: flag2, whenTrue: num(1), whenFalse: num(0), at: this.at(e), label: this.label(e) }, e);
     }
@@ -5093,7 +5573,7 @@ var Structured = class {
   /** `u.hp = 40`, `u.energy += 50`, `u.invincible = true`. */
   unitAssign(e, m, op) {
     const { ts } = this;
-    if (UNIT_FLAGS2.includes(m.name)) {
+    if (UNIT_FLAGS.includes(m.name)) {
       if (op !== ts.SyntaxKind.EqualsToken) {
         this.c.error(e, "Booleans take = only.");
         return;
@@ -5322,6 +5802,12 @@ var Structured = class {
       const read = this.tableRead(v, at);
       return read ? this.mark({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at) : FALSE;
     }
+    if (isInput(v)) return this.inputBool(v, at);
+    if (isChat(v)) return this.inputBool(v.matched, at);
+    if (isMouse(v)) {
+      this.c.error(at, "mouse() is a place on the map, not a condition: compare its x or its y.");
+      return FALSE;
+    }
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
     if (isAction(v)) {
       this.c.error(at, "This is an action, not a condition.");
@@ -5366,7 +5852,7 @@ var Structured = class {
     if (ts.isPropertyAccessExpression(e)) {
       const member = this.unitMember(e);
       if (member) {
-        if (UNIT_FLAGS2.includes(member.name)) return this.mark({ kind: "unitFlag", unit: member.unit, flag: member.name, at: this.at(e), label: this.label(e) }, e);
+        if (UNIT_FLAGS.includes(member.name)) return this.mark({ kind: "unitFlag", unit: member.unit, flag: member.name, at: this.at(e), label: this.label(e) }, e);
         const field = this.unitField(e, member);
         return field ? this.mark({ kind: "test", expr: field, at: this.at(e), label: this.label(e) }, e) : FALSE;
       }
@@ -5374,6 +5860,7 @@ var Structured = class {
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "var") return b.v.kind !== "number" ? boolRef(b.v) : this.mark({ kind: "test", expr: varRef(b.v), at: this.at(e), label: this.label(e) }, e);
+      if (b?.kind === "record" && b.truth) return boolRef(b.truth);
       if (b?.kind === "record") {
         this.c.error(e, "This is a record; test one of its fields.");
         return FALSE;
@@ -5450,9 +5937,25 @@ var Structured = class {
       }
       return op === "==" ? same : same.kind === "not" ? same.expr : { kind: "not", expr: same };
     }
+    const found = (x) => {
+      const b = this.bindingOf(x);
+      return b?.kind === "record" && b.truth ? b.truth : void 0;
+    };
+    const isNull = (x) => {
+      const h = this.evaluate(x);
+      return !!h && (h.value === null || h.value === void 0);
+    };
+    const truth = isNull(e.right) ? found(e.left) : isNull(e.left) ? found(e.right) : void 0;
+    if (truth) {
+      if (op !== "==" && op !== "!=") {
+        this.c.error(e, "What chatted() found compares with null by == and != only.");
+        return FALSE;
+      }
+      return op === "!=" ? boolRef(truth) : { kind: "not", expr: boolRef(truth) };
+    }
     const isBool = (x) => {
       const h = this.evaluate(x);
-      if (h) return typeof h.value === "boolean" || isCondition(h.value) || isRead(h.value) && h.value.equals !== void 0;
+      if (h) return typeof h.value === "boolean" || isCondition(h.value) || isRead(h.value) && h.value.equals !== void 0 || isInput(h.value) && h.value.boolean || isChat(h.value);
       const v = this.varOf(x);
       if (v !== void 0) return v.kind !== "number";
       return this.kindOf(this.c.checker.getTypeAtLocation(x)) === "boolean";
@@ -5593,7 +6096,7 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
   const refs = [];
   const scripts = /* @__PURE__ */ new Map();
@@ -5718,7 +6221,9 @@ function compileScript(ts, files, names, options) {
   if (diagnostics.length > planned.size) return result();
   const collector = new Collector();
   const runtime = createRuntime(names, collector);
+  collector.running = true;
   const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME);
+  collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;
     diagnostics.push({ file: failure.file ?? ENTRY_FILE, line, column: failure.column ?? 1, endLine: line, endColumn: (failure.column ?? 1) + 1, message: failure.message, source: "script" });
@@ -5775,7 +6280,14 @@ function compileScript(ts, files, names, options) {
     }
     hints.push(...check.hints);
   }
-  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
+  let input = null;
+  try {
+    input = inputPlan(ir, names.locations, names.units);
+  } catch (err) {
+    const at = inputsOf(ir).at ?? ir[0]?.at;
+    if (at) diagnostics.push({ file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: err instanceof Error ? err.message : String(err), source: "compiler" });
+  }
+  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
 }
 function checkValuesAsBooleans(ts, checker, sf, programs, error) {
   const isLibraryType = (t, name) => {

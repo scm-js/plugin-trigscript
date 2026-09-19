@@ -22,6 +22,7 @@ import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
 import { libraryCallName, libraryName, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { runModules, type LinkedFile } from "./link";
 import { checkProgram } from "./eud";
+import { inputPlan, inputsOf, type InputPlan } from "./input";
 import { declarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
@@ -129,6 +130,8 @@ export interface CompileResult {
   refs: MapReference[];
   /** The programs as IR (`ir.ts`), one per `program()` in order — what eudplib builds into the map on save. A map with any needs StarCraft: Remastered. */
   ir: Program[];
+  /** What the programs read of the players — keys, clicks, the mouse, typed lines — and what carrying it takes from the map (`input.ts`); null when they read none. */
+  input: InputPlan | null;
   /** No errors: `triggers` and `ir` are the complete output. */
   ok: boolean;
 }
@@ -157,7 +160,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
   const refs: MapReference[] = [];
@@ -288,7 +291,9 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   /* ── Run ── */
   const collector = new Collector();
   const runtime = createRuntime(names, collector);
+  collector.running = true;
   const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME);
+  collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;
     diagnostics.push({ file: failure.file ?? ENTRY_FILE, line, column: failure.column ?? 1, endLine: line, endColumn: (failure.column ?? 1) + 1, message: failure.message, source: "script" });
@@ -338,7 +343,15 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     }
     hints.push(...check.hints);
   }
-  return result({ ir, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
+  let input: InputPlan | null = null;
+  try {
+    input = inputPlan(ir, names.locations, names.units);
+  } catch (err) {
+    // No room in the map for what carries input: said where the first input is asked for.
+    const at = inputsOf(ir).at ?? ir[0]?.at;
+    if (at) diagnostics.push({ file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: err instanceof Error ? err.message : String(err), source: "compiler" });
+  }
+  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
 }
 
 /**

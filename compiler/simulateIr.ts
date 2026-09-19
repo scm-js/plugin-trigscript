@@ -22,11 +22,16 @@
  * removed is gone from the next line on. What the simulation does not model is the game
  * itself: nothing moves, nothing fights, `createUnit` makes no unit. The game's tables
  * (`stats()`) hold what the program wrote and otherwise what `table` answers, else 0.
+ *
+ * What the players do is fed in by the caller: `press`, `click`, `type` and `moveMouse` say what
+ * the next frame finds. A key, a click and a typed line last that one frame, as they do in the
+ * game; the mouse stays where it was put.
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, PlayerGroup, ResourceType } from "../vendor/triggers";
 import type { At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
+import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
 
 export const FRAMES_PER_SECOND = 24;
@@ -95,6 +100,8 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
   table?: (cell: TableCell) => number | undefined;
   /** Whether a unit type is of a trigger class (230 Men, 231 Buildings, 232 Factories); default by id range. */
   unitClass?: (type: number, cls: number) => boolean;
+  /** The unit type a name typed in chat means, the name in lower case: what a `{…:unit}` capture asks. Default: no name is known. */
+  unitByName?: (lower: string) => number | undefined;
 }
 
 /** What an expression adds and what it subtracts: the constants exactly, the rest wrapping at 2³² as the game's additions do. */
@@ -210,7 +217,7 @@ class ProgramRun {
     switch (e.kind) {
       case "unitNull": return null;
       case "unitVar": return this.unitVars.get(e.id) ?? null;
-      case "pick": return this.sim.pick(e.by, e.filter, e.near);
+      case "pick": return this.sim.pick(e.by, e.filter, e.near, e.mouse, e.within);
       case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
     }
   }
@@ -297,6 +304,7 @@ class ProgramRun {
       case "read": return this.sim.read(e.read);
       case "unitField": { const u = yield* this.living(e.unit); return u ? u[e.field] : 0; }
       case "tableRead": return this.sim.tableRead(e.cell);
+      case "input": return this.sim.input(e.input);
       case "randomInt": {
         const n = yield* this.num(e.bound);
         return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n));
@@ -495,10 +503,8 @@ class ProgramRun {
       }
       case "action": {
         const record: ActionRecord = { ...s.record };
-        if (s.variable) {
-          // A unit count is that many units (the game does the action once for each), whatever a byte could hold.
-          (record as unknown as Record<string, number>)[s.variable.field as string] = yield* this.num(s.variable.expr);
-        }
+        // A unit count is that many units (the game does the action once for each), whatever a byte could hold.
+        for (const v of s.variables ?? []) (record as unknown as Record<string, number>)[v.field as string] = yield* this.num(v.expr);
         this.sim.act(this, record, s.at);
         return "next";
       }
@@ -508,6 +514,7 @@ class ProgramRun {
         this.sim.print(this, text, s.to, s.at);
         return "next";
       }
+      case "centerLocation": { const x = yield* this.num(s.x); const y = yield* this.num(s.y); this.sim.centre(s.location, x, y); return "next"; }
       case "call": { yield* this.call(s.call); return "next"; }
       case "block": return yield* this.block(s.body, ctx);
       case "remark": return "next";
@@ -547,6 +554,14 @@ export class ProgramSimulation {
   private readonly classOf: (type: number, cls: number) => boolean;
   /** Ore and gas by player slot, as the programs' own setResources actions leave them. */
   private readonly resources = new Map<number, [ore: number, gas: number]>();
+  /** The typed-line patterns of all the programs, in the order the game tries them: the first that matches a line is the one that line is. */
+  private readonly chats: ChatPattern[] = [];
+  private readonly unitByName: (lower: string) => number | undefined;
+  /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
+  private queued: { events: Set<string>; lines: Map<number, { pattern: string; values: number[] }> } = { events: new Set(), lines: new Map() };
+  private current = this.queued;
+  /** Where each player's mouse is, in map pixels. */
+  readonly mice = new Map<number, { x: number; y: number }>();
   cycle = 0;
 
   constructor(programs: Program[], options: ProgramSimulationOptions) {
@@ -560,6 +575,9 @@ export class ProgramSimulation {
     for (const [n, b] of Object.entries(options.locations ?? {})) this.locations.set(Number(n), { ...b });
     this.tableOf = options.table;
     this.classOf = options.unitClass ?? inClass;
+    this.unitByName = options.unitByName ?? (() => undefined);
+    for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c) => c.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
+    this.current = { events: new Set(), lines: new Map() };
     this.runs = programs.map((p, i) => new ProgramRun(this, i, p));
   }
 
@@ -615,6 +633,36 @@ export class ProgramSimulation {
     return 0;
   }
 
+  /* ── what the players do ── */
+
+  /** A key goes down: the next frame finds it. `player` is a slot (default: the simulated player). */
+  press(key: string, player = this.player): this { this.queued.events.add(`key:${player}:${keyName(key) ?? key}`); return this; }
+  click(button: MouseButton = "left", player = this.player): this { this.queued.events.add(`click:${player}:${button}`); return this; }
+  moveMouse(x: number, y: number, player = this.player): this { this.mice.set(player, { x, y }); return this; }
+  /** A player sends a line of chat: the next frame finds it, as the first of the programs' patterns it matches — or not at all. */
+  type(line: string, player = this.player): this {
+    for (const c of this.chats) {
+      const values = matchChat(c, line, this.unitByName);
+      if (values) { this.queued.lines.set(player, { pattern: c.pattern, values }); break; }
+    }
+    return this;
+  }
+
+  /** What a program's `input` finds this frame. */
+  input(i: InputSource): number {
+    const p = this.slotOf(i.player);
+    switch (i.source) {
+      case "key": return this.current.events.has(`key:${p}:${i.key}`) ? 1 : 0;
+      case "click": return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
+      case "mouse": return this.mice.get(p)?.[i.axis] ?? 0;
+      case "chat": {
+        const line = this.current.lines.get(p);
+        if (!line || line.pattern !== i.pattern) return 0;
+        return i.capture === null ? 1 : line.values[i.capture] ?? 0;
+      }
+    }
+  }
+
   /* ── units and tables ── */
 
   /** The living units a filter matches, in table order. */
@@ -628,16 +676,17 @@ export class ProgramSimulation {
   }
 
   /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
-  pick(by: "first" | "nearest" | "random", f: UnitFilter, near?: number): SimUnit | null {
+  pick(by: "first" | "nearest" | "random", f: UnitFilter, near?: number, mouse?: number, within?: number): SimUnit | null {
     const all = this.matching(f);
     if (all.length === 0) return null;
     if (by === "first") return all[0];
     if (by === "random") return all[Math.min(all.length - 1, Math.floor(this.random() * all.length))];
     const box = near === undefined ? undefined : this.locations.get(near);
-    const cx = box ? Math.floor((box.left + box.right) / 2) : 0;
-    const cy = box ? Math.floor((box.top + box.bottom) / 2) : 0;
-    let best = all[0];
-    let least = Infinity;
+    const pointer = mouse === undefined ? undefined : this.mice.get(this.slotOf(mouse)) ?? { x: 0, y: 0 };
+    const cx = pointer ? pointer.x : box ? Math.floor((box.left + box.right) / 2) : 0;
+    const cy = pointer ? pointer.y : box ? Math.floor((box.top + box.bottom) / 2) : 0;
+    let best: SimUnit | null = null;
+    let least = within === undefined ? Infinity : within + 1;
     for (const u of all) { const d = Math.abs(u.x - cx) + Math.abs(u.y - cy); if (d < least) { least = d; best = u; } }
     return best;
   }
@@ -727,6 +776,9 @@ export class ProgramSimulation {
 
   /** One frame: every program in order, from where it left off. */
   step(): void {
+    // What was done since the last frame is what this one finds, and only this one.
+    this.current = this.queued;
+    this.queued = { events: new Set(), lines: new Map() };
     for (const run of this.runs) {
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }
     }

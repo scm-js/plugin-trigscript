@@ -19,6 +19,7 @@ import type { ActionDef, ArgKind, ConditionDef } from "../vendor/triggerDefs";
 import { allTables, defaultScriptNames, type NameTable, type ScriptNames } from "./names";
 import { PLAYER_COLORS, TABLE_FIELDS, type TableKind } from "./tables";
 import { PLAYER_SLOTS } from "./lower";
+import { KEY_NAMES } from "./input";
 
 export const DECLARATIONS_FILE = "trigscript.d.ts";
 
@@ -164,6 +165,11 @@ ${kw}interface UnitFilter {
   /** Inside this location. */
   at?: Location;
 }
+/** A key keyPressed() knows. F6 is not among them: the game reports no press of it. */
+${kw}type Key = __KEY_NAMES__;
+/** What a chatted() pattern's captures are read as: {n} a number, {unit:unit} a unit type, {kind:ore|gas} the place of the word in its list. */
+${kw}type ChatCapture<C extends string> = C extends \`\${infer N}:unit\` ? { readonly [K in N]: UnitType } : C extends \`\${infer N}:\${string}\` ? { readonly [K in N]: number } : { readonly [K in C]: number };
+${kw}type ChatValues<P extends string> = P extends \`\${string}{\${infer C}}\${infer Rest}\` ? ChatCapture<C> & ChatValues<Rest> : {};
 __STATS_TYPES__
 ${kw}interface ProgramOptions {
   /**
@@ -211,9 +217,10 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
  * Math.min / max / abs, clamp(). Everything the body reads from outside (constants, helpers,
  * conditions, actions) is computed when you build — the editor underlines those parts — so
  * it cannot depend on the variables, except the amount of setResources / setDeaths /
- * setScore / setCountdownTimer and the unit count of createUnit / killUnitAt / removeUnitAt /
- * giveUnits, which can be a variable, and the text of displayText() / print(), which can hold
- * numbers of the program. The game's own values are reads: minerals(P1), deaths(P1, unit), …
+ * setScore / setCountdownTimer, the unit count of createUnit / killUnitAt / removeUnitAt /
+ * giveUnits and an action's unit type, which can be variables, and the text of displayText() /
+ * print(), which can hold numbers of the program. The game's own values are reads:
+ * minerals(P1), deaths(P1, unit), … and what the players do: keyPressed(), clicked(), mouse(), chatted().
  *
  * A map with a program in it needs StarCraft: Remastered: the programs are built into the
  * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
@@ -338,6 +345,35 @@ ${kw}function color(player: Player): string;
  * game's own messages ("Not enough minerals") appear: print(\`Wave \${wave}\`, { to: AllPlayers, position: "center" }).
  */
 ${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
+/**
+ * What the players do, inside program() only. A key, a click and a typed line are true on the one
+ * frame they arrive, so look for them in a loop that runs every frame:
+ * \`while (true) { if (keyPressed(CurrentPlayer, "F2")) …; sleep(frames(1)); }\`. They reach every
+ * player's computer in step, a few frames after they happen. The player is one of P1 … P8 or
+ * CurrentPlayer — in a program with \`{ owner: AllPlayers }\`, each player's own keys.
+ * The map gives up a little for it: one free location among the first 63 (nine when the mouse is read),
+ * the Valkyrie unit type, and Player 12 to hold the units that carry the input.
+ */
+/** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
+${kw}function keyPressed(player: Player, key: Key): boolean;
+/** True on the frame a player's press of a mouse button arrives ("left" when none is named). */
+${kw}function clicked(player: Player, button?: "left" | "right" | "middle"): boolean;
+/** Where a player's mouse is on the map, in pixels (32 to a tile): \`const at = mouse(CurrentPlayer);\` keeps the place as it is now. */
+${kw}function mouse(player: Player): { readonly x: number; readonly y: number };
+/** The unit nearest a player's mouse and no farther from it than \`within\` pixels (48 when not given), or null. */
+${kw}function underMouse(player: Player, filter?: UnitFilter & { within?: number }): Unit | null;
+/**
+ * What a player typed, on the frame the line arrives: null, or the values the pattern names.
+ * \`const m = chatted(CurrentPlayer, "-give {n}"); if (m) setResources(CurrentPlayer, "add", m.n, "ore");\`
+ * The pattern's own text is matched exactly and the whole line has to fit it. {n} reads a whole number
+ * (up to 1 048 575), {unit:unit} a unit type by its name — the rest of the line, so it comes last —
+ * and {kind:ore|gas} one of the listed words, giving its place in the list (0, 1, …); names and words
+ * match whatever the capitals. Up to three values. A game played alone has no chat: test these in a
+ * multiplayer game, which one person can host.
+ */
+${kw}function chatted<const P extends string>(player: Player, pattern: P): ChatValues<P> | null;
+/** Centre a location on a point of the map, in pixels, its size kept; inside program() only. With mouse(): \`centerLocation(locations.Cursor, at.x, at.y)\`, then createUnit() there. */
+${kw}function centerLocation(location: Location, x: number, y: number): void;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -430,7 +466,7 @@ function tables(kw: string, names: ScriptNames, compact: boolean): string {
 
 function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean): string {
   return [
-    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__STATS_TYPES__", statsTypes(typeKw)),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", statsTypes(typeKw)),
     choiceTypes(typeKw),
     functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
     "// ── Conditions ──",

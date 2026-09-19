@@ -36,6 +36,15 @@ a dying unit is passed over. What a unit can be asked and told is what Magenta's
 working in Remastered: no position, cloak or speed writes. The game's tables (`stats()`) are plain
 cells at addresses the IR carries; a speed is four flingy records, a colour two bytes, a name a string.
 
+What the players do — keys, clicks, the mouse, what they type — happens on one computer, and two
+plugins the build adds beside this one bring it to all of them in step. chatEvent (before this
+plugin) finds the line the local player typed; this plugin matches it against the programs'
+patterns, there and then, into a number for the pattern and up to three values; MSQC (after this
+plugin) sends those, the keys and the clicks to every computer as the player they came from, and
+keeps each player's mouse in a location. They land in arrays registered by name — which is how the
+other two plugins' settings reach them — a cell per player, fresh every frame: an input reads 1 on
+the frame it arrives. The IR's `input` lists what is asked for; the editor wrote the settings from it.
+
 Numbers keep one contract with the simulator: 32-bit unsigned, an expression's exact value stored
 below zero as 0 and at 2^32 or above wrapped, u8 / u16 saturating at their maximum.
 """
@@ -43,7 +52,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 4
+IR_VERSION = 5
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -317,6 +326,8 @@ class Lowering:
 
     def term(self, e):
         k = e["kind"]
+        if k == "input":
+            return INPUT.read(e["input"], self, e)
         if k == "const":
             return int(e["value"]) & U32
         if k == "var":
@@ -778,9 +789,15 @@ class Lowering:
                 EUDJump(exit_)
             self.scan(flt, e, body)
         elif by == "nearest":
-            left, top, right, bottom = self.location_bounds(e["near"])
-            cx, cy = f_div(left + right, 2)[0], f_div(top + bottom, 2)[0]
-            least = fresh(U32)
+            if e.get("mouse") is not None:
+                # A player's mouse, and nothing farther from it than `within`.
+                cx = as_var(INPUT.read({"source": "mouse", "axis": "x", "player": e["mouse"]}, self, e))
+                cy = as_var(INPUT.read({"source": "mouse", "axis": "y", "player": e["mouse"]}, self, e))
+                least = fresh(int(e.get("within", 48)) + 1)
+            else:
+                left, top, right, bottom = self.location_bounds(e["near"])
+                cx, cy = f_div(left + right, 2)[0], f_div(top + bottom, 2)[0]
+                least = fresh(U32)
 
             def body(ref, next_, exit_):
                 cu = self.cunit(ref)
@@ -925,6 +942,16 @@ class Lowering:
         width, height = right - left, bottom - top
         x, y = cu.posX - f_div(width, 2)[0], cu.posY - f_div(height, 2)[0]
         for i, v in enumerate((x, y, x + width, y + height)):
+            f_dwwrite_epd(base + i, v)
+
+    def center_location(self, st):
+        """A location centred on a point, its size kept."""
+        x, y = self.num(st["x"]), self.num(st["y"])
+        base = EPD(MRGN + (int(st["location"]) - 1) * 20)
+        left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
+        width, height = right - left, bottom - top
+        nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
+        for i, v in enumerate((nx, ny, nx + width, ny + height)):
             f_dwwrite_epd(base + i, v)
 
     def adjust(self, cu, do, amount, percent):
@@ -1097,6 +1124,8 @@ class Lowering:
             self.action(st)
         elif k == "print":
             self.print_(st)
+        elif k == "centerLocation":
+            self.center_location(st)
         elif k == "call":
             self.call(st["call"])
         elif k == "block":
@@ -1188,31 +1217,40 @@ class Lowering:
         resume = Forward()
         self.resumes.append((index, resume))
         self.set_state(index)
-        self.set_wait(frames)
+        # The frame after this one is one frame later: sleep(frames(1)) goes on in the next frame, as the
+        # simulator has it. (Until 3.4 the wait was one frame longer, so a loop sleeping a frame ran every other.)
+        self.set_wait(frames - 1)
         EUDJump(self.frame_end)
         resume << NextTrigger()
 
     def action(self, st):
         r = st["record"]
-        variable = st.get("variable")
         fields = dict(locid1=r["location"], strid=string_of(r["text"]), wavid=string_of(r["wav"]), time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])
-        if variable is None:
+        count = None
+        for variable in st.get("variables") or []:
+            value = as_var(self.num(variable["expr"]))
+            field = variable["field"]
+            if field == "modifier":
+                # A unit count: the byte field is not a variable's place, so the action is done once per
+                # unit — as many as the variable says, 0 being none (in the record, 0 means "all").
+                count = value
+                continue
+            name = {"target": "player2", "time": "time", "player": "player1", "location": "locid1", "text": "strid", "wav": "wavid", "unitId": "unitid"}.get(field)
+            if name is None:
+                raise Fail("trigscript: no variable can stand in the %s field%s" % (field, where(st)))
+            if name == "unitid":
+                # A unit type the game has: past the table, an action reads what is not a unit.
+                value = fresh(value)
+                if EUDIf()(value >= 228):
+                    value << 228
+                EUDEndIf()
+            fields[name] = value
+        if count is None:
             DoActions(Action(**fields))
             return
-        value = as_var(self.num(variable["expr"]))
-        field = variable["field"]
-        if field == "modifier":
-            # A unit count: the byte field is not a variable's place, so the action is done once per
-            # unit — as many as the variable says, 0 being none (in the record, 0 means "all").
-            fields["amount"] = 1
-            for _ in EUDLoopRange(0, value):
-                DoActions(Action(**fields))
-            return
-        name = {"target": "player2", "time": "time", "player": "player1", "location": "locid1", "text": "strid", "wav": "wavid", "unitId": "unitid"}.get(field)
-        if name is None:
-            raise Fail("trigscript: no variable can stand in the %s field%s" % (field, where(st)))
-        fields[name] = value
-        DoActions(Action(**fields))
+        fields["amount"] = 1
+        for _ in EUDLoopRange(0, count):
+            DoActions(Action(**fields))
 
     def print_(self, st):
         """Text with values in it: every value first, then the text, shown only on the screen of the player it is for."""
@@ -1374,6 +1412,199 @@ def condition(r):
     return Condition(r["location"], r["player"], r["amount"], r["unitId"], r["comparison"], r["type"], r["resource"], r["flags"], eudx=r.get("mask", 0) or 0)
 
 
+class Input:
+    """What the players do, as it reaches every computer: the cells chatEvent and MSQC write, by the
+    names the editor put in their settings (compiler/input.ts, INPUT_NAMES), and the reads of them."""
+
+    MAX_NUMBER = 0xFFFFF
+
+    def __init__(self, plan):
+        self.plan = plan or {}
+        self.keys = list(self.plan.get("keys", []))
+        self.buttons = list(self.plan.get("buttons", []))
+        self.chats = list(self.plan.get("chats", []))
+        self.mouse_base = self.plan.get("mouseBase")
+        # A person can sit in the map's human slots, which is where MSQC counts the mouse locations from.
+        self.humans = [p for p in range(8) if GetPlayerInfo(p).typestr == "Human"]
+        if plan and not self.humans:
+            raise Fail("trigscript: a program reads keys, clicks, the mouse or chat, and the map has no human player to give any")
+        self.key_cells = [self.register("tsin_key%d" % i, EUDArray(12)) for i in range(len(self.keys))]
+        self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
+        self.captures = max([len(c["captures"]) for c in self.chats] or [0])
+        if self.chats:
+            # Local: what chatEvent found on this computer, and what the patterns made of it.
+            self.heard = self.register("tsin_heard", EUDVariable())
+            self.pointer = self.register("tsin_pointer", EUDVariable())
+            self.length = self.register("tsin_length", EUDVariable())
+            self.register("tsin_pattern", EUDVariable())
+            self.chat_local = self.register("tsin_chat", EUDVariable())
+            self.capture_local = [self.register("tsin_capture%d" % i, EUDVariable()) for i in range(self.captures)]
+            # Everyone's: what MSQC delivered this frame, by player; 0xFFFFFFFF on a frame with nothing.
+            self.chat_in = self.register("tsin_chat_in", EUDArray(12))
+            self.capture_in = [self.register("tsin_capture%d_in" % i, EUDArray(12)) for i in range(self.captures)]
+            self.unit_table = None
+
+    @staticmethod
+    def register(name, cell):
+        EUDRegisterObjectToNamespace(name, cell)
+        return cell
+
+    # ── reads ──
+    def read(self, i, low, node):
+        source = i.get("source")
+        p = low.one_player(i["player"], node)
+        if source == "key":
+            return self.cell(self.key_cells, self.keys, i["key"], node)[p]
+        if source == "click":
+            return self.cell(self.button_cells, self.buttons, i["button"], node)[p]
+        if source == "mouse":
+            return self.mouse(p, 0 if i["axis"] == "x" else 1, node)
+        if source == "chat":
+            number = self.chat_number(i["pattern"], node)
+            out = fresh(0)
+            if EUDIf()(self.chat_in[p] == number):
+                out << (1 if i.get("capture") is None else self.capture_in[int(i["capture"])][p])
+            EUDEndIf()
+            return out
+        raise Fail("trigscript: unknown input %r%s" % (source, where(node)))
+
+    @staticmethod
+    def cell(cells, names, name, node):
+        if name not in names:
+            raise Fail("trigscript: the IR's input plan has no %r%s" % (name, where(node)))
+        return cells[names.index(name)]
+
+    def chat_number(self, pattern, node):
+        for index, c in enumerate(self.chats):
+            if c["pattern"] == pattern:
+                return index + 1
+        raise Fail("trigscript: the IR's input plan has no pattern %r%s" % (pattern, where(node)))
+
+    def mouse(self, p, axis, node):
+        """MSQC keeps the mouse of the map's first human slot in location `mouseBase`, the next slot's in the next."""
+        if self.mouse_base is None:
+            raise Fail("trigscript: the IR's input plan keeps no mouse%s" % where(node))
+        first = min(self.humans)
+        cell = lambda h: EPD(MRGN + (int(self.mouse_base) - 1 + h - first) * 20) + axis
+        if isinstance(p, int):
+            return f_dwread_epd(cell(p)) if p in self.humans else 0
+        out = fresh(0)
+        for h in self.humans:
+            if EUDIf()(p == h):
+                out << f_dwread_epd(cell(h))
+            EUDEndIf()
+        return out
+
+    # ── the typed line, on the computer it was typed on ──
+    @staticmethod
+    def hash_of(data):
+        """What `hashed` makes of the same bytes: capitals A to Z as small letters, h = h × 31 + byte."""
+        h = 0
+        for b in data:
+            if 65 <= b <= 90:
+                b += 32
+            h = (h * 31 + b) & U32
+        return h
+
+    def hashed(self, pos, stop_at_space):
+        """The hash of the line from `pos` to its end or, with `stop_at_space`, to the next space; `pos` moves past it."""
+        h = fresh(0)
+        if EUDWhile()(pos < self.length):
+            ch = fresh(f_bread(self.pointer + pos))
+            if stop_at_space:
+                EUDBreakIf(ch == 32)
+            if EUDIf()([ch >= 65, ch <= 90]):
+                ch += 32
+            EUDEndIf()
+            h << f_mul(h, 31) + ch
+            pos += 1
+        EUDEndWhile()
+        return h
+
+    def units(self):
+        """Unit names by hash, in hash order, for a search by halves: two arrays side by side."""
+        if self.unit_table is None:
+            by_hash = {}
+            for name, unit in self.plan.get("unitNames", []):
+                by_hash.setdefault(self.hash_of(name.encode("utf-8")), int(unit))
+            ordered = sorted(by_hash.items())
+            self.unit_table = (EUDArray([h for h, _ in ordered] or [0]), EUDArray([u for _, u in ordered] or [0]), len(ordered))
+        return self.unit_table
+
+    def capture(self, c, pos, fail):
+        """One value out of the line at `pos`, or a jump to `fail`."""
+        value = fresh(0)
+        if c["kind"] == "number":
+            digits = fresh(0)
+            if EUDWhile()(pos < self.length):
+                ch = f_bread(self.pointer + pos)
+                EUDBreakIf(ch <= 47)
+                EUDBreakIf(ch >= 58)
+                value << f_mul(value, 10) + ch - 48
+                if EUDIf()(value >= self.MAX_NUMBER + 1):
+                    value << self.MAX_NUMBER
+                EUDEndIf()
+                pos += 1
+                digits += 1
+            EUDEndWhile()
+            EUDJumpIf(digits == 0, fail)
+        elif c["kind"] == "word":
+            h = self.hashed(pos, True)
+            found = fresh(0)
+            for index, word in enumerate(c["words"]):
+                if EUDIf()(h == self.hash_of(word.encode("utf-8"))):
+                    value << index
+                    found << 1
+                EUDEndIf()
+            EUDJumpIf(found == 0, fail)
+        elif c["kind"] == "unit":
+            h = self.hashed(pos, False)
+            hashes, units, count = self.units()
+            lo, hi = fresh(0), fresh(count)
+            if EUDWhile()(lo < hi):
+                mid = f_div(lo + hi, 2)[0]
+                if EUDIf()(hashes[mid] < h):
+                    lo << mid + 1
+                if EUDElse()():
+                    hi << mid
+                EUDEndIf()
+            EUDEndWhile()
+            EUDJumpIf(lo >= count, fail)
+            EUDJumpIfNot(hashes[lo] == h, fail)
+            value << units[lo]
+        else:
+            raise Fail("trigscript: unknown chat capture %r" % (c["kind"],))
+        return value
+
+    def match_line(self):
+        """The line the local player typed against every pattern, in order: the first that fits the whole
+        line gives its number and values to the cells MSQC sends from. Nothing fits: nothing is sent."""
+        DoActions([self.chat_local.SetNumber(0)] + [c.SetNumber(0) for c in self.capture_local])
+        if EUDIf()(self.heard >= 1):
+            done = Forward()
+            for index, chat in enumerate(self.chats):
+                fail = Forward()
+                pos = fresh(0)
+                values = []
+                for seg in chat["segments"]:
+                    if isinstance(seg, str):
+                        data = seg.encode("utf-8")
+                        EUDJumpIf(pos + len(data) >= self.length + 1, fail)
+                        EUDJumpIfNot(f_memcmp(self.pointer + pos, Db(data + b"\0"), len(data)) == 0, fail)
+                        pos += len(data)
+                    else:
+                        values.append(self.capture(chat["captures"][int(seg)], pos, fail))
+                EUDJumpIfNot(pos == self.length, fail)
+                DoActions(self.chat_local.SetNumber(index + 1))
+                for cell, value in zip(self.capture_local, values):
+                    cell << value
+                EUDJump(done)
+                fail << NextTrigger()
+            done << NextTrigger()
+        EUDEndIf()
+
+
+INPUT = Input(IR.get("input"))
 PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
 
 
@@ -1381,6 +1612,12 @@ def onPluginStart():
     # eudplib's generator starts from the same seed in every game; the game's own randomness (a switch randomized) seeds it.
     if uses_random(IR.get("programs", [])):
         f_randomize()
+
+
+def beforeTriggerExec():
+    # After chatEvent has looked for a typed line, before MSQC sends what it was.
+    if INPUT.chats:
+        INPUT.match_line()
 
 
 def afterTriggerExec():
