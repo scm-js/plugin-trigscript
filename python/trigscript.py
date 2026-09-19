@@ -56,7 +56,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 11
+IR_VERSION = 12
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -191,6 +191,48 @@ class ArrayStorage:
             for i in range(self.length):
                 self.set(i, value)
             return
+        v, i = as_var(value), fresh(0)
+        if EUDWhile()(i <= self.length - 1):
+            self.set(i, v)
+            i += 1
+        EUDEndWhile()
+
+
+class SliceStorage:
+    """A window on another array's cells - a row of a grid: cell i is cell `offset + i` of the array it is a window
+    on, `offset` a variable of the program. Past its own end it reads 0 and stores nothing, so a row never reaches
+    into the next; what it is a window on keeps its own ends (and its own width, and its row a player)."""
+
+    def __init__(self, decl, lowering):
+        self.decl = decl
+        self.length = int(decl["length"])
+        self.lowering = lowering
+
+    def of(self):
+        return self.lowering.array(self.decl["slice"]["of"], self.decl)
+
+    def offset(self):
+        return self.lowering.var(self.decl["slice"]["offset"], self.decl).get()
+
+    def get(self, index):
+        if isinstance(index, int):
+            return self.of().get(self.offset() + index) if index < self.length else 0
+        out = fresh(0)
+        if EUDIf()(index <= self.length - 1):
+            out << self.of().get(self.offset() + index)
+        EUDEndIf()
+        return out
+
+    def set(self, index, value):
+        if isinstance(index, int):
+            if index < self.length:
+                self.of().set(self.offset() + index, value)
+            return
+        if EUDIf()(index <= self.length - 1):
+            self.of().set(self.offset() + index, value)
+        EUDEndIf()
+
+    def fill(self, value):
         v, i = as_var(value), fresh(0)
         if EUDWhile()(i <= self.length - 1):
             self.set(i, v)
@@ -546,7 +588,7 @@ class Lowering:
         self.slots = owner_slots(program)
         self.player = None
         self.vars = {}
-        self.arrays = {a["id"]: (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
+        self.arrays = {a["id"]: SliceStorage(a, self) if a.get("slice") else (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
         self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
         self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
         self.resumes = []  # (index, Forward) for every sleep

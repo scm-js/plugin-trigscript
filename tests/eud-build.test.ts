@@ -333,6 +333,27 @@ FIXTURES.destructuring = `program(() => {
   }
 });`;
 
+// Arrays of arrays of a fixed shape: one flat array, a row a window on it (IR 12's `slice`) — read by two indices, a row
+// kept, looped, sorted and filled through its window, whole rows pushed to one that grows, and an array in a record.
+FIXTURES.grids = `program(() => {
+  let g = [[1, 2, 3], [4, 5, 6]];
+  const path: number[][] = [];
+  let p = { hp: 5, trail: [0, 0, 0], seen: [] as number[] };
+  function total(xs: number[]) { let t = 0; for (const x of xs) t += x; return t; }
+  let y = 0;
+  while (true) {
+    y = (y + 1) % 2;
+    const row = g[y];
+    row[0] += 1; g[y][2] = g[1 - y][y] + row[1];
+    row.sort((a, b) => b - a); g[0].fill(total(row));
+    path.push([y, g[y][0]]); if (path.length > 4) path.length = 0;
+    let sum = 0; for (const r of g) sum += r.reduce((s, c) => s + c, 0);
+    p.trail[y] = sum; p.seen.push(total(p.trail)); if (p.seen.length > 8) p.seen.length = 0;
+    displayText(\`\${sum} \${path.length} \${p.seen.length} \${g.findIndex((r) => r[0] > 9)}\`);
+    sleep(seconds(1));
+  }
+});`;
+
 // And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
 // and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.
 FIXTURES.callbacksProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "callbacks.ts"), "utf8");
@@ -355,6 +376,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(11);
+    expect(ir.version).toBe(12);
   });
 });

@@ -243,6 +243,15 @@ class ProgramRun {
     const a = this.arrays.get(array);
     if (!a) throw new Error(`The array ${array} is not one of the program's (line ${at.line}).`);
     const i = yield* this.num(index);
+    if (a.decl.slice) {
+      // A window on another array: inside its own ends, and inside those of what it is a window on.
+      const of = this.arrays.get(a.decl.slice.of);
+      if (!of) throw new Error(`The array ${a.decl.slice.of} is not one of the program's (line ${at.line}).`);
+      const j = (Number(this.read(a.decl.slice.offset)) | 0) + i;
+      if (i >= 0 && i < a.decl.length && j >= 0 && j < (of.decl.dynamic ? of.cells.length : of.decl.length)) return { decl: a.decl, cells: of.cells, i: j };
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a.decl.name}[${i}] is past the end of the row (its length is ${a.decl.length}): ${what}.` });
+      return undefined;
+    }
     const length = a.decl.dynamic ? a.cells.length : a.decl.length;
     if (i >= 0 && i < length) return { ...a, i };
     this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });

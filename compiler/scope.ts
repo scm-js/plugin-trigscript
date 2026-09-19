@@ -23,6 +23,17 @@ export type Binding =
    * a Record, whose every key reads its value or 0); `size` counts them. `as` is how the source reaches it.
    */
   | { kind: "keyed"; as: "record" | "map" | "set"; name: string; domain: number; key: string; values?: ArrayDecl; present?: ArrayDecl; size?: VarDecl }
+  /**
+   * An array of arrays whose shape is known when the script is built — `let grid = [[0, 0, 0], [0, 0, 0]]` — which is one
+   * flat array: `dims` are its sizes from the outside in (the first is 0 when the outer array grows, by whole rows), and
+   * `offset` is where this part of it starts, for the part of a deeper one that `cube[z]` is.
+   */
+  | { kind: "grid"; name: string; a: ArrayDecl; dims: number[]; offset: NumExpr | null }
+  /**
+   * `grid[y]` before anything needs it as an array: `length` cells of `a` from `offset`. Reading `grid[y][x]` goes straight
+   * to the flat array; what wants an array (a loop, a method, a function it is handed to) makes it a window (`ArrayDecl.slice`).
+   */
+  | { kind: "row"; name: string; a: ArrayDecl; offset: NumExpr; length: number }
   /** `truth`: the record stands for something that may not be there (what `chatted()` found): the boolean that says whether it is. */
   | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl };
 

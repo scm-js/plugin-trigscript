@@ -212,15 +212,20 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     ts.forEachChild(node, written);
   };
   const store = (target: TS.Expression | undefined) => {
-    if (target && (ts.isElementAccessExpression(target) || ts.isPropertyAccessExpression(target)) && ts.isIdentifier(target.expression)) {
-      const decl = declarationOf(ts, checker, target.expression);
+    // `grid[y][x] = v`, `waves[i].count++`: a store however deep is a store into the list at the root of it.
+    let root: TS.Expression | undefined = target && (ts.isElementAccessExpression(target) || ts.isPropertyAccessExpression(target)) ? target.expression : undefined;
+    const direct = !!root && ts.isIdentifier(root);
+    while (root && (ts.isElementAccessExpression(root) || ts.isPropertyAccessExpression(root) || ts.isParenthesizedExpression(root) || ts.isNonNullExpression(root))) root = root.expression;
+    if (target && root && ts.isIdentifier(root) && (ts.isElementAccessExpression(target) || ts.isPropertyAccessExpression(target))) {
+      const decl = declarationOf(ts, checker, root);
       if (decl && ts.isVariableDeclaration(decl) && decl.initializer && inside(decl)) {
         const type = checker.getTypeAtLocation(decl.name);
         if (checker.isArrayType(type) || checker.isTupleType(type)) {
           if (plan.consts.has(decl)) forced.add(decl);
           declare(decl);
           // xs.push(v), xs.pop(), xs.length = n and xs[xs.length] = v are what make an array one that grows.
-          const name = target.expression.text;
+          if (!direct) return;
+          const name = root.text;
           const member = ts.isPropertyAccessExpression(target) ? target.name.text : undefined;
           const atLength = ts.isElementAccessExpression(target) && ts.isPropertyAccessExpression(target.argumentExpression) && target.argumentExpression.name.text === "length"
             && ts.isIdentifier(target.argumentExpression.expression) && target.argumentExpression.expression.text === name;

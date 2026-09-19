@@ -23,6 +23,7 @@ export function checkProgram(program: Program): { errors: ProgramDiagnostic[]; h
   const hints: LineHint[] = [];
   // The program's body, then the body of every function that is called: each is checked as the statements it is.
   for (const body of bodiesOf(program)) {
+    WINDOWS = new Map((program.arrays ?? []).flatMap((a) => (a.slice ? [[a.id, a.slice.of] as const] : [])));
     checkSleeps(body, errors, functions);
     checkDivisions(body, errors);
     checkWidths(body, errors, decls);
@@ -196,7 +197,7 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
       case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": into.add(THE_GAME); break;
       case "declare": into.add(s.decl.id); break;
       case "assign": case "assignBool": case "assignUnit": into.add(s.target); break;
-      case "store": case "declareArray": case "push": case "pop": case "setLength": into.add(s.array); break;
+      case "store": case "declareArray": case "push": case "pop": case "setLength": into.add(whole(s.array)); break;
       case "unitLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": case "for": s.body.forEach(stmt); if (s.kind === "for") s.update.forEach(stmt); break;
@@ -223,12 +224,16 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
 /** What stands in `reads()` for "this expression reads the game": an id no variable has. */
 const THE_GAME = "(the game)";
 
+/** A window on an array (a row of a grid) is that array, for what reads and what writes it: set by `checkProgram` for the program it checks. */
+let WINDOWS = new Map<string, string>();
+const whole = (array: string): string => WINDOWS.get(array) ?? array;
+
 /** The variables an expression reads, by id — and `THE_GAME` when it reads a value of the game or tests a condition. */
 function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
   switch (e.kind) {
     case "var": into.add(e.id); break;
-    case "element": into.add(e.array); reads(e.index, into); break;
-    case "length": case "pop": into.add(e.array); break;
+    case "element": into.add(whole(e.array)); reads(e.index, into); break;
+    case "length": case "pop": into.add(whole(e.array)); break;
     case "read": case "cond": case "tableRead": into.add(THE_GAME); break;
     // What the players did is as it was when the frame began: nothing a loop does within the frame changes it.
     case "input": break;

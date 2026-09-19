@@ -21,7 +21,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 11;
+export const IR_VERSION = 12;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -66,6 +66,13 @@ export interface ArrayDecl {
    * one twice the size. Declared again (in a loop, in a function called again) it gives back the block it held.
    */
   dynamic?: boolean;
+  /**
+   * The array is a window on another's cells — a row of a grid (`grid[y]`, which is `length` cells of one flat array):
+   * cell i of it is cell `offset + i` of `of`, where `offset` is a variable of the program set before the window is
+   * used. It has no cells of its own and is never declared; past its own end it reads 0 and stores nothing, as any
+   * array does, so a row never reaches into the next.
+   */
+  slice?: { of: string; offset: string };
   at: At;
 }
 
