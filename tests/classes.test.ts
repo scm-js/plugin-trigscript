@@ -108,6 +108,53 @@ describe("an array of instances", () => {
   });
 });
 
+describe("what a row of an array holds", () => {
+  const SQUAD = "class Vec { constructor(public x: number, public y: number) {} get sum() { return this.x + this.y; } } class Squad { seen: number[] = []; members: Unit[] = []; leader: Unit | null = null; pos = new Vec(1, 2); constructor(public id: number) {} note(n: number) { this.seen.push(n); } get total() { let t = 0; for (const n of this.seen) t += n; return t; } }";
+  it("an array that grows, a row its own: pushed to through a method, read, its length", () => {
+    const sim = run(`${SQUAD} const squads: Squad[] = []; squads.push(new Squad(1)); squads.push(new Squad(2)); squads[0].note(5); squads[1].note(7); squads[1].note(8); squads[0].seen.push(1); print(\`\${squads[0].seen.length} \${squads[1].seen.length} \${squads[0].total} \${squads[1].total} \${squads[1].seen[1]}\`);`);
+    expect(shown(sim)).toEqual(["2 2 6 15 8"]);
+    expect(sim.faults).toEqual([]);
+  });
+  it("an instance inside the row, with its own methods and getters", () => {
+    const sim = run(`${SQUAD} const squads = [new Squad(1), new Squad(2)]; squads[1].pos.x += 10; for (const s of squads) s.pos.y *= 2; print(\`\${squads[0].pos.sum} \${squads[1].pos.sum}\`);`);
+    expect(shown(sim)).toEqual(["5 15"]);
+  });
+  it("a unit, and an array of units", () => {
+    const r = compile(`${SQUAD} const squads = [new Squad(1)]; const u = first({ owner: P1 }); squads[0].leader = u; if (u) squads[0].members.push(u); if (squads[0].leader) print("led"); print(\`\${squads[0].members.length}\`); for (const m of squads[0].members) m.kill();`);
+    expect(r.diagnostics).toEqual([]);
+  });
+  it("sorts and reverses whole rows, the arrays they hold going with them", () => {
+    const sim = run(`${SQUAD} const squads = [new Squad(3), new Squad(1), new Squad(2)]; squads[0].note(30); squads[1].note(10); squads[2].note(20); squads[2].note(21); squads.sort((a, b) => a.id - b.id); print(\`\${squads[0].total} \${squads[1].total} \${squads[2].total}\`); squads.reverse(); print(\`\${squads[0].id}\${squads[1].id}\${squads[2].id} \${squads[0].seen[0]}\`);`);
+    expect(shown(sim)).toEqual(["10 41 30", "321 30"]);
+  });
+  it("sorts by what the arrays in a row say, the row in the hand being a row too", () => {
+    const sim = run(`${SQUAD} const squads = [new Squad(1), new Squad(2), new Squad(3)]; squads[0].note(9); squads[1].note(1); squads[2].note(4); squads[2].note(1); squads.sort((a, b) => a.total - b.total); print(\`\${squads[0].id}\${squads[1].id}\${squads[2].id} \${squads.length}\`);`);
+    expect(shown(sim)).toEqual(["231 3"]);
+    expect(sim.faults).toEqual([]);
+  });
+  it("gives the blocks back when a row goes: pop, length =, a row given a new instance, the array declared again", () => {
+    const r = compile(`${SQUAD} let turn = 0; while (turn < 40) { const squads: Squad[] = []; for (let i = 0; i < 5; i++) { squads.push(new Squad(i)); squads[i].note(i); squads[i].note(turn); } squads.pop(); squads[0] = new Squad(9); squads[0].note(1); squads.length = 2; turn++; } print("ok");`);
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, heapCells: 64 });
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(["ok"]);
+  });
+  it("filter makes rows with arrays of their own", () => {
+    const sim = run(`${SQUAD} const squads = [new Squad(1), new Squad(2), new Squad(3)]; for (const s of squads) s.note(s.id * 10); const odd = squads.filter((s) => s.id % 2 == 1); odd[1].note(5); print(\`\${odd.length} \${odd[1].total} \${squads[2].total}\`);`);
+    expect(shown(sim)).toEqual(["2 35 30"]);
+  });
+  it("a record written out holds them too", () => {
+    const sim = run("const rows: { n: number; tags: number[]; at: { x: number; y: number } }[] = []; let k = 4; rows.push({ n: 1, tags: [k, k + 1], at: { x: 1, y: 2 } }); rows.push({ n: 2, tags: [], at: { x: 3, y: 4 } }); rows[1].tags.push(9); rows[1].tags = [7, 7, 7]; const { n, at: { y } } = rows[1]; print(`${rows[0].tags[1]} ${rows[1].tags.length} ${n} ${y}`);");
+    expect(shown(sim)).toEqual(["5 3 2 4"]);
+  });
+  it("says what a row cannot hold", () => {
+    expect(messages("class T { name = \"x\"; n = 0; } const ts: T[] = []; ts.push(new T());").join("\n")).toMatch(/name is a text/);
+  });
+  it("an array field starts over when it is assigned", () => {
+    const sim = run("class Bag { items: number[] = []; clear() { this.items = []; } } const b = new Bag(); b.items.push(1); b.items.push(2); b.clear(); b.items.push(3); print(`${b.items.length} ${b.items[0]}`);");
+    expect(shown(sim)).toEqual(["1 3"]);
+  });
+});
+
 describe("a method is a function", () => {
   it("called from the second call on, one copy an instance", () => {
     const r = compile(`${COUNTER} const a = new Counter(2); a.bump(); a.bump(); a.bump(); print(\`\${a.n}\`);`);

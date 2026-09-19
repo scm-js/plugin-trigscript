@@ -63,7 +63,7 @@ import { declarationOf, libraryCallName } from "./hoist";
 import { scriptParams } from "./api";
 import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
 import { cellMax } from "./tables";
-import { Scope, THIS, type Binding } from "./scope";
+import { HANDLE_PARTS, Scope, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { I32_MAX, I32_MIN, IR_VERSION, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, eachCall, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
@@ -177,6 +177,11 @@ const KEY_DOMAINS: Record<string, { size: number; what: string }> = {
   tech: { size: 44, what: "a technology" },
 };
 type Keyed = Extract<Binding, { kind: "keyed" }>;
+type Records = Extract<Binding, { kind: "records" }>;
+/** What a row is given: a value a column, and what fills the arrays it holds once the row is there. */
+interface RowValues { cells: Map<string, NumExpr | BoolExpr>; fill: ((of: Records, index: NumExpr) => boolean)[] }
+/** Where a field's value comes from: the script has it, it is written there, or it is something of the program's. */
+type FieldSource = { value: unknown } | { expr: TS.Expression } | { binding: Binding };
 /** A record — and, with `cls`, an instance of a class of the program. */
 type Instance = Extract<Binding, { kind: "record" }>;
 
@@ -702,6 +707,7 @@ export class Structured {
       // `const boss = s`, `const p = this.pos`: another name for the same instance, as it is for an object.
       if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init) || init.kind === ts.SyntaxKind.ThisKeyword) {
         const same = this.bindingOf(init);
+        if (same?.kind === "inner" || same?.kind === "innerUnits") { this.scope.bind(d, this.takenCopy(same, d.name.text, d)); continue; }
         if (same?.kind === "record" && !same.truth) {
           if (!(list.flags & ts.NodeFlags.Const) && this.assigns(this.body.plan.body, d)) { this.c.error(d, `${d.name.text} is another name for a record, and a record is not assigned whole: declare it with const, or copy the fields it needs.`); continue; }
           this.scope.bind(d, same);
@@ -751,8 +757,9 @@ export class Structured {
       }
       const rowClass = this.rowClass(type, d);
       if (rowClass === null) continue;
-      const recordsOf = rowClass ? this.shapeOf(this.instanceType(rowClass)) : this.recordFields(type);
-      if (rowClass && !recordsOf) { this.c.error(d, `An array of instances keeps each field in an array of its own, and that is for numbers and booleans so far; ${this.className(rowClass)} has a field that is neither.`); continue; }
+      const why: string[] = [];
+      const recordsOf = rowClass ? this.shapeOf(this.instanceType(rowClass), why) : this.recordFields(type, why);
+      if (!recordsOf && why.length) { this.c.error(d, `${d.name.text} cannot be an array of ${rowClass ? `${this.className(rowClass)}s` : "records"}: ${why[0]}. A row holds numbers, booleans, units, arrays of those, and records or instances of the same.`); continue; }
       if (recordsOf) {
         const records = this.declareRecords(d.name.text, init, recordsOf, d, rowClass);
         if (records) this.scope.bind(d, records);
@@ -872,32 +879,94 @@ export class Structured {
     return varRef(t);
   }
 
-  /** The fields of an array of records, when a type is one: every property of its element a number or a boolean. */
-  private recordFields(type: TS.Type): Map<string, { kind: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } }> | null {
+  /** What a row of an array of records holds, when a type is such an array. Null — with `why` filled in when a field is what stops it — otherwise. */
+  private recordFields(type: TS.Type, why?: string[]): RowShape | null {
     const { ts } = this;
     const checker = this.c.checker;
     if (!checker.isArrayType(type) && !checker.isTupleType(type)) return null;
     const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
-    if (!element || this.kindOf(element) || !(element.flags & ts.TypeFlags.Object)) return null;
-    return this.shapeOf(element);
+    if (!element || this.kindOf(element) || !(element.flags & ts.TypeFlags.Object) || checker.isArrayType(element) || checker.isTupleType(element)) return null;
+    return this.shapeOf(element, why);
   }
 
-  /** The fields of a record type, or of a class's instances — its methods and accessors are no fields, and a static is the class's. */
-  private shapeOf(element: TS.Type): Map<string, { kind: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } }> | null {
+  /**
+   * The fields of a record type, or of a class's instances — its methods and accessors are no fields, and a static is
+   * the class's. A number, a boolean, a unit, an array of those (which a row keeps as one that grows), a record or an
+   * instance of the same.
+   */
+  private shapeOf(element: TS.Type, why?: string[], depth = 0): RowShape | null {
     const { ts } = this;
     const checker = this.c.checker;
-    const fields = new Map<string, { kind: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } }>();
+    const fields: RowShape = new Map();
+    const no = (what: string) => { why?.push(what); return null; };
+    if (depth > 4) return no("it holds itself, and a row has every one of its cells when the script is built");
     for (const p of checker.getPropertiesOfType(element)) {
       const d = p.valueDeclaration;
       if (d && (ts.isMethodDeclaration(d) || ts.isAccessor(d))) continue;
       const t = checker.getTypeOfSymbol(p);
-      const kind = this.kindOf(t);
-      if (kind !== "number" && kind !== "boolean") return null;
       // `#hp` is kept under the name it is written with, not the one the checker makes of it.
       const key = d && (ts.isPropertyDeclaration(d) || ts.isParameter(d)) ? this.memberKey(d.name as TS.PropertyName) ?? p.name : p.name;
-      fields.set(key, { kind, width: kind === "number" ? this.widthOf(t) : {} });
+      const kind = this.kindOf(t);
+      if (kind === "number" || kind === "boolean") { fields.set(key, { kind, width: kind === "number" ? this.widthOf(t) : {} }); continue; }
+      if (kind === "unit") { fields.set(key, { kind: "unit" }); continue; }
+      if (this.isTextType(t)) return no(`${key} is a text, which an array of records cannot hold yet: keep the texts in a list of the script and the place of one in the row`);
+      if (checker.isArrayType(t) || checker.isTupleType(t)) {
+        const el = checker.getIndexTypeOfType(t, ts.IndexKind.Number);
+        const of = el ? this.kindOf(el) : null;
+        if (of === "unit") fields.set(key, { kind: "squad" });
+        else if (of) fields.set(key, { kind: "list", of, width: of === "number" && el ? this.widthOf(el) : {} });
+        else return no(`${key} is an array of something other than numbers, booleans or units`);
+        continue;
+      }
+      if (!(t.flags & ts.TypeFlags.Object)) return no(`${key} is ${checker.typeToString(t)}`);
+      const inner = this.shapeOf(t, why, depth + 1);
+      if (!inner) return null;
+      const cls = this.classOfType(t);
+      fields.set(key, { kind: "record", shape: inner, ...(cls ? { cls } : {}) });
     }
-    return fields.size ? fields : null;
+    return fields.size ? fields : no("it has no fields");
+  }
+
+  /** A row's shape: what the binding says, or — of an array whose every field is a number or a boolean — read off its arrays. */
+  private rowShape(of: Records): RowShape {
+    return of.shape ?? new Map([...of.fields].map(([f, a]) => [f, { kind: a.kind, width: {} }]));
+  }
+
+  /** The plain arrays a shape is kept in, by the key of each. */
+  private columnsOf(shape: RowShape, prefix = ""): { key: string; kind: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } }[] {
+    const handle = (key: string) => HANDLE_PARTS.map((part) => ({ key: `${key} ${part}`, kind: "number" as const, width: { unsigned: true } }));
+    return [...shape].flatMap(([name, f]) => {
+      const key = prefix + name;
+      switch (f.kind) {
+        case "unit": return UNIT_PARTS.map((part) => ({ key: `${key} ${part}`, kind: "number" as const, width: { unsigned: true } }));
+        case "list": return handle(key);
+        case "squad": return UNIT_PARTS.flatMap((part) => handle(`${key} ${part}`));
+        case "record": return this.columnsOf(f.shape, `${key} `);
+        default: return [{ key, kind: f.kind, width: f.width }];
+      }
+    });
+  }
+
+  /** An array that grows inside a row, as the array of arrays that grow its four columns are. */
+  private listsAt(of: Records, key: string, f: { of: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } }): Lists {
+    const [ptr, len, room, k] = HANDLE_PARTS.map((part) => of.fields.get(`${key} ${part}`)!);
+    return { kind: "lists", name: `${of.name}[…].${key.replace(/ /g, ".")}`, ptr, len, room, k, of: f.of, ...f.width };
+  }
+
+  /** Every array of arrays that grow a row's shape holds: what a row that goes has to give back. */
+  private ownedLists(of: Records, shape = of.shape, prefix = ""): Lists[] {
+    if (!shape) return [];
+    return [...shape].flatMap(([name, f]): Lists[] => {
+      const key = prefix + name;
+      if (f.kind === "list") return [this.listsAt(of, key, f)];
+      if (f.kind === "squad") return UNIT_PARTS.map((part) => this.listsAt(of, `${key} ${part}`, { of: "number", width: { unsigned: true } }));
+      return f.kind === "record" ? this.ownedLists(of, f.shape, `${key} `) : [];
+    });
+  }
+
+  /** The row at `index` gives back the blocks of the arrays it holds. */
+  private releaseRow(of: Records, index: NumExpr, node: TS.Node) {
+    for (const l of this.ownedLists(of)) this.emit({ kind: "declareArray", array: this.innerOf(l, index, node).id, init: [], at: this.at(node), label: this.label(node) }, node);
   }
 
   /**
@@ -937,19 +1006,164 @@ export class Structured {
   }
 
   /** A row of an array of instances from `new Wave(3, 40)`: the instance made, its fields the row's values. Null with a diagnostic. */
-  private newRow(of: { name: string; cls?: TS.ClassDeclaration }, made: TS.NewExpression, shape: ReadonlyMap<string, { kind: "number" | "boolean" }>): Map<string, NumExpr | BoolExpr> | null {
+  private newRow(of: { name: string; cls?: TS.ClassDeclaration }, made: TS.NewExpression, shape: RowShape): RowValues | null {
     const cls = this.classOf(made.expression);
     if (!of.cls || cls !== of.cls) { this.c.error(made, of.cls ? `${of.name} holds instances of ${this.className(of.cls)}, and a row has the fields of that class; this is ${cls ? `a ${this.className(cls)}` : "something else"}.` : `${of.name} holds records written out: { … }.`); return null; }
     const instance = this.instantiate(made, `(new ${this.className(cls)})`);
     if (!instance) return null;
-    const row = new Map<string, NumExpr | BoolExpr>();
-    for (const [field, { kind }] of shape) {
-      const b = instance.fields.get(field);
-      const v = b && this.valueOf(b, kind, made);
-      if (!v) { if (!b) this.c.error(made, `${of.name}: ${field} is missing from what new ${this.className(cls)}() made.`); return null; }
-      row.set(field, v as NumExpr | BoolExpr);
+    const out: RowValues = { cells: new Map(), fill: [] };
+    for (const [field, f] of shape) if (!this.rowField(of.name, field, f, instance.fields.has(field) ? { binding: instance.fields.get(field)! } : undefined, out, made)) return null;
+    // The instance was only made to be the row: the arrays it held were copied into the row's, and give their blocks back.
+    out.fill.push(() => { this.releaseHeld(instance, made); return true; });
+    return out;
+  }
+
+  /** The arrays that grow of a record nothing reaches any more give their blocks back. */
+  private releaseHeld(b: Binding, node: TS.Node) {
+    const free = (a: ArrayDecl) => { if (a.dynamic && !a.through && !a.slice) this.emit({ kind: "declareArray", array: a.id, init: [], at: this.at(node), label: this.label(node) }, node); };
+    if (b.kind === "array") free(b.a);
+    else if (b.kind === "units") [b.ptr, b.epd, b.uid].forEach(free);
+    else if (b.kind === "record") for (const inner of b.fields.values()) this.releaseHeld(inner, node);
+  }
+
+  /**
+   * One field of a row from what it is given — a value the script has, an expression, or something of the program's —
+   * as the values of its columns; an array it holds is filled once the row is there (`fill`), since it is reached
+   * through the row. False with a diagnostic.
+   */
+  private rowField(name: string, key: string, f: RowField, src: FieldSource | undefined, out: RowValues, at: TS.Node): boolean {
+    const { ts } = this;
+    const field = key.replace(/ /g, ".");
+    if (!src) { this.c.error(at, `${name}: ${field} is missing.`); return false; }
+    const where = "expr" in src ? src.expr : at;
+    const zero = (k: string) => HANDLE_PARTS.forEach((part) => out.cells.set(`${k} ${part}`, num(0)));
+    switch (f.kind) {
+      case "number": case "boolean": {
+        let v: NumExpr | BoolExpr | null;
+        if ("value" in src) {
+          if (f.kind === "boolean") { if (typeof src.value !== "boolean") { this.c.error(where, `${name}: ${field} is true or false, got ${describe(src.value)}.`); return false; } v = { kind: "const", value: src.value }; }
+          else { const n = this.asInteger({ value: src.value }, where); v = n === null ? null : num(n); }
+        } else if ("expr" in src) v = f.kind === "number" ? this.num(src.expr) : this.boolValue(src.expr);
+        else v = src.binding.kind === "record" ? null : (this.valueOf(src.binding, f.kind, where) as NumExpr | BoolExpr | null);
+        if (!v) return false;
+        out.cells.set(key, v);
+        return true;
+      }
+      case "unit": {
+        let u: UnitExpr | null;
+        if ("value" in src) { if (src.value !== null && src.value !== undefined) { this.c.error(where, `${name}: ${field} is a unit of the game, got ${describe(src.value)}.`); return false; } u = NO_UNIT; }
+        else u = "expr" in src ? this.unitExpr(src.expr) : (this.valueOf(src.binding, "unit", where) as UnitExpr | null);
+        if (!u) return false;
+        const unit = this.unitTemp(u, where);
+        for (const part of UNIT_PARTS) out.cells.set(`${key} ${part}`, { kind: "unitPart", unit, part, at: this.at(where) });
+        return true;
+      }
+      case "list": {
+        zero(key);
+        out.fill.push((of, index) => {
+          const into = () => this.innerOf(this.listsAt(of, key, f), index, where);
+          if ("value" in src) {
+            if (!Array.isArray(src.value)) { this.c.error(where, `${name}: ${field} is an array, got ${describe(src.value)}.`); return false; }
+            if (src.value.length === 0) return true;
+            const inner = into();
+            for (const v of src.value as unknown[]) {
+              const n = f.of === "boolean" ? (typeof v === "boolean" ? v : null) : this.asInteger({ value: v }, where);
+              if (n === null) { if (f.of === "boolean") this.c.error(where, `Expected true or false, got ${describe(v)}.`); return false; }
+              this.emit({ kind: "push", array: inner.id, value: typeof n === "boolean" ? { kind: "const", value: n } : num(n), at: this.at(where), label: this.label(where) }, where);
+            }
+            return true;
+          }
+          if ("expr" in src) { const e = this.unwrap(src.expr); return ts.isArrayLiteralExpression(e) && e.elements.length === 0 ? true : this.fillInner(into(), f.of, src.expr); }
+          const b = src.binding.kind === "inner" ? { kind: "array" as const, a: this.innerOf(src.binding.lists, src.binding.index, where) } : src.binding.kind === "row" ? { kind: "array" as const, a: this.windowOf(src.binding, where) } : src.binding;
+          if (b.kind !== "array" || b.a.kind !== f.of) { this.c.error(where, `${name}: ${field} is an array of ${f.of}s.`); return false; }
+          this.copyCells(into(), b.a, where);
+          return true;
+        });
+        return true;
+      }
+      case "squad": {
+        for (const part of UNIT_PARTS) zero(`${key} ${part}`);
+        out.fill.push((of, index) => {
+          const i = this.temp(index, where, true);
+          const inners = () => UNIT_PARTS.map((part) => [this.innerOf(this.listsAt(of, `${key} ${part}`, { of: "number", width: { unsigned: true } }), i, where), part] as const);
+          if ("value" in src) { if (Array.isArray(src.value) && src.value.length === 0) return true; this.c.error(where, `${name}: ${field} is an array of units, which starts empty or with units of the game.`); return false; }
+          const e = "expr" in src ? this.unwrap(src.expr) : undefined;
+          if (e && ts.isArrayLiteralExpression(e)) {
+            if (e.elements.length === 0) return true;
+            const into = inners();
+            for (const x of e.elements) {
+              const found = ts.isSpreadElement(x) || ts.isOmittedExpression(x) ? null : this.unitExpr(x);
+              if (!found) { if (ts.isSpreadElement(x) || ts.isOmittedExpression(x)) this.c.error(x, `${field} is written out unit by unit.`); return false; }
+              const unit = this.unitTemp(found, x);
+              for (const [a, part] of into) this.emit({ kind: "push", array: a.id, value: { kind: "unitPart", unit, part, at: this.at(x) }, at: this.at(x), label: this.label(x) }, x);
+            }
+            return true;
+          }
+          const b = e ? this.listOf(e) : "binding" in src ? this.unitsOf(src.binding, where) : undefined;
+          if (b?.kind !== "units") { this.c.error(where, `${name}: ${field} is an array of units.`); return false; }
+          const from = { ptr: b.ptr, epd: b.epd, uid: b.uid };
+          for (const [a, part] of inners()) this.copyCells(a, from[part], where);
+          return true;
+        });
+        return true;
+      }
+      case "record": {
+        let get: (sub: string) => FieldSource | undefined;
+        if ("value" in src) {
+          const o = src.value;
+          if (!o || typeof o !== "object" || Array.isArray(o)) { this.c.error(where, `${name}: ${field} is a record, got ${describe(o)}.`); return false; }
+          get = (sub) => (sub in o ? { value: (o as Record<string, unknown>)[sub] } : undefined);
+        } else {
+          let b: Binding | null | undefined = "binding" in src ? src.binding : undefined;
+          if ("expr" in src) {
+            const e = this.unwrap(src.expr);
+            if (ts.isObjectLiteralExpression(e)) { const from = this.literalSource(e); if (!from) return false; get = from; b = null; }
+            else b = ts.isNewExpression(e) && this.classOf(e.expression) ? this.instantiate(e, `(new ${field})`) : this.bindingOf(e);
+          }
+          if (b !== null) {
+            if (b?.kind !== "record") { if (b !== null) this.c.error(where, `${name}: ${field} is a record: { … }${f.cls ? `, or new ${this.className(f.cls)}(…)` : ""}.`); return false; }
+            if (f.cls && b.cls !== f.cls) { this.c.error(where, `${name}: ${field} is a ${this.className(f.cls)} in every row, since a row has the fields of one class${b.cls ? `; this is a ${this.className(b.cls)}` : ""}.`); return false; }
+            const fields = b.fields;
+            get = (sub) => (fields.has(sub) ? { binding: fields.get(sub)! } : undefined);
+          }
+        }
+        for (const [sub, inner] of f.shape) if (!this.rowField(name, `${key} ${sub}`, inner, get!(sub), out, where)) return false;
+        return true;
+      }
     }
-    return row;
+  }
+
+  /** What `{ count: 4, ...w }` gives each field: the last to say what it is wins, as in JavaScript. Null with a diagnostic. */
+  private literalSource(literal: TS.ObjectLiteralExpression): ((field: string) => FieldSource | undefined) | null {
+    const { ts } = this;
+    const whole = this.evaluate(literal)?.value;
+    if (whole && typeof whole === "object") return (field) => (field in whole ? { value: (whole as Record<string, unknown>)[field] } : undefined);
+    const spreads = new Map<TS.SpreadAssignment, Map<string, Binding>>();
+    for (const x of literal.properties) if (ts.isSpreadAssignment(x)) { const from = this.spreadFields(x.expression); if (!from) return null; spreads.set(x, from); }
+    return (field) => {
+      for (const x of [...literal.properties].reverse()) {
+        if ((ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && (ts.isIdentifier(x.name) || ts.isStringLiteralLike(x.name)) && x.name.text === field) return { expr: ts.isPropertyAssignment(x) ? x.initializer : x.name };
+        const b = ts.isSpreadAssignment(x) ? spreads.get(x)?.get(field) : undefined;
+        if (b) return b.kind === "value" ? { value: b.value } : { binding: b };
+      }
+      return undefined;
+    };
+  }
+
+  /** Every cell of `from` pushed to `into`: what a copy of an array is. */
+  private copyCells(into: ArrayDecl, from: ArrayDecl, node: TS.Node) {
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(index of ${from.name})`, "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, node);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: from.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "push", array: into.id, value: { kind: "element", array: from.id, index: varRef(i), at }, at, label }], at, label }, node);
+  }
+
+  /** A binding as the array of units it is, a row's made one where it is used. */
+  private unitsOf(b: Binding, node: TS.Node): Binding {
+    if (b.kind !== "innerUnits") return b;
+    const i = this.temp(b.index, node, true);
+    return { kind: "units", name: b.name, ptr: this.innerOf(b.ptr, i, node, `${b.name} (ptr)`), epd: this.innerOf(b.epd, i, node, `${b.name} (epd)`), uid: this.innerOf(b.uid, i, node, `${b.name} (uid)`) };
   }
 
   /**
@@ -988,107 +1202,131 @@ export class Structured {
     return num(i);
   }
 
-  private rowOf(of: Extract<Binding, { kind: "records" }>, index: NumExpr): Binding {
-    return { kind: "record", fields: new Map([...of.fields].map(([name, a]) => [name, { kind: "cell", a, index } as Binding])), ...(of.cls ? { cls: of.cls } : {}) };
+  private rowOf(of: Records, index: NumExpr): Binding {
+    const place = (key: string): Place => ({ a: of.fields.get(key)!, index });
+    const build = (shape: RowShape, prefix: string): Map<string, Binding> => new Map([...shape].map(([name, f]): [string, Binding] => {
+      const key = prefix + name;
+      switch (f.kind) {
+        case "unit": return [name, { kind: "unitAt", ptr: place(`${key} ptr`), epd: place(`${key} epd`), uid: place(`${key} uid`) }];
+        case "list": return [name, { kind: "inner", lists: this.listsAt(of, key, f), index }];
+        case "squad": { const [ptr, epd, uid] = UNIT_PARTS.map((part) => this.listsAt(of, `${key} ${part}`, { of: "number", width: { unsigned: true } })); return [name, { kind: "innerUnits", name: `${of.name}[…].${key.replace(/ /g, ".")}`, ptr, epd, uid, index }]; }
+        case "record": return [name, { kind: "record", fields: build(f.shape, `${key} `), ...(f.cls ? { cls: f.cls } : {}) }];
+        default: return [name, { kind: "cell", a: of.fields.get(key)!, index }];
+      }
+    }));
+    return { kind: "record", fields: build(this.rowShape(of), ""), ...(of.cls ? { cls: of.cls } : {}) };
   }
 
   /**
-   * `let waves = [{ count: 4, delay: 2 }, { count: 6, delay: 1 }]`, `let log: Hit[] = []`: an array a field, all of
-   * one length. The fields are the element type's; a record of the list gives each its value.
+   * `let waves = [{ count: 4, delay: 2 }, { count: 6, delay: 1 }]`, `let log: Hit[] = []`: an array a column, all of
+   * one length. The fields are the element type's; a record of the list gives each its value. Declared again, the rows
+   * it had give the blocks of their arrays back first.
    */
-  private declareRecords(name: string, initializer: TS.Expression, shape: NonNullable<ReturnType<Structured["recordFields"]>>, at: TS.Node, cls?: TS.ClassDeclaration): Binding | null {
+  private declareRecords(name: string, initializer: TS.Expression, shape: RowShape, at: TS.Node, cls?: TS.ClassDeclaration): Binding | null {
     const { ts } = this;
     const init = this.unwrap(initializer);
     const grows = this.body.plan.grows.has(at);
-    const rows: Map<string, NumExpr | BoolExpr>[] = [];
+    const rows: RowValues[] = [];
     const whole = this.evaluate(init);
+    const items: (FieldSource | TS.Expression)[] = [];
     if (whole) {
       if (!Array.isArray(whole.value)) { this.c.error(init, `Expected a list of records to start ${name} with, got ${describe(whole.value)}.`); return null; }
-      for (const item of whole.value as unknown[]) {
-        const row = new Map<string, NumExpr | BoolExpr>();
-        for (const [field, { kind }] of shape) {
-          const v = (item as Record<string, unknown> | null)?.[field];
-          if (kind === "boolean") { if (typeof v !== "boolean") { this.c.error(init, `${name}: ${field} is true or false, got ${describe(v)}.`); return null; } row.set(field, { kind: "const", value: v }); }
-          else { const n = this.asInteger({ value: v }, init); if (n === null) return null; row.set(field, num(n)); }
-        }
+      items.push(...(whole.value as unknown[]).map((value) => ({ value })));
+    } else if (ts.isArrayLiteralExpression(init)) items.push(...init.elements);
+    else { this.c.error(init, `${name}'s records have to be written out ([{ … }, { … }]), or it starts empty and is pushed to.`); return null; }
+    for (const item of items) {
+      if ("value" in item) {
+        const row: RowValues = { cells: new Map(), fill: [] };
+        const o = item.value as Record<string, unknown> | null;
+        for (const [field, f] of shape) if (!this.rowField(name, field, f, o && typeof o === "object" && field in o ? { value: o[field] } : { value: undefined }, row, init)) return null;
         rows.push(row);
+        continue;
       }
-    } else if (ts.isArrayLiteralExpression(init)) {
-      for (const item of init.elements) {
-        const literal = this.unwrap(item);
-        if (ts.isNewExpression(literal)) { const row = this.newRow({ name, cls }, literal, shape); if (!row) return null; rows.push(row); continue; }
-        if (!ts.isObjectLiteralExpression(literal)) { this.c.error(item, `${name} is written out record by record: [{ … }, { … }].`); return null; }
-        const row = this.rowValues(name, literal, shape);
-        if (!row) return null;
-        rows.push(row);
-      }
-    } else {
-      this.c.error(init, `${name}'s records have to be written out ([{ … }, { … }]), or it starts empty and is pushed to.`);
-      return null;
+      const literal = this.unwrap(item as TS.Expression);
+      if (!ts.isNewExpression(literal) && !ts.isObjectLiteralExpression(literal)) { this.c.error(item as TS.Expression, `${name} is written out record by record: [{ … }, { … }].`); return null; }
+      const row = ts.isNewExpression(literal) ? this.newRow({ name, cls }, literal, shape) : this.rowValues(name, literal, shape);
+      if (!row) return null;
+      rows.push(row);
     }
     // Written empty, it can only be one that grows — pushed to here, or by a function it is handed to.
     const dynamic = grows || rows.length === 0;
     if (rows.length < (dynamic ? 0 : 1) || rows.length > MAX_ARRAY) { this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} records.` : `An array of a program has 1 to ${MAX_ARRAY} records (got ${rows.length}); one that starts empty is one something pushes to.`); return null; }
     const fields = new Map<string, ArrayDecl>();
-    for (const [field, { kind, width }] of shape) {
-      const a = this.newArray(`${name}.${field}`, kind, rows.length, this.sourceOf(at), width);
+    for (const { key, kind, width } of this.columnsOf(shape)) {
+      const a = this.newArray(`${name}.${key.replace(/ /g, ".")}`, kind, rows.length, this.sourceOf(at), width);
       if (dynamic) a.dynamic = true;
-      fields.set(field, a);
-      this.emit({ kind: "declareArray", array: a.id, init: rows.map((r) => r.get(field)!), at: this.at(at), label: this.label(at) }, at);
+      fields.set(key, a);
     }
-    return { kind: "records", name, fields, ...(cls ? { cls } : {}) };
+    const plain = [...shape.values()].every((f) => f.kind === "number" || f.kind === "boolean");
+    const records: Records = { kind: "records", name, fields, ...(cls ? { cls } : {}), ...(plain ? {} : { shape }) };
+    for (const l of this.ownedLists(records)) this.releaseRows(l, num(0), at);
+    for (const [key, a] of fields) this.emit({ kind: "declareArray", array: a.id, init: rows.map((r) => r.cells.get(key)!), at: this.at(at), label: this.label(at) }, at);
+    for (const [k, row] of rows.entries()) for (const fill of row.fill) if (!fill(records, num(k))) return null;
+    return records;
   }
 
-  /** The values of `{ count: 4, delay: d }` by field, every field of the shape given and no other. */
-  private rowValues(name: string, literal: TS.ObjectLiteralExpression, shape: NonNullable<ReturnType<Structured["recordFields"]>>): Map<string, NumExpr | BoolExpr> | null {
+  /** The values of `{ count: 4, delay: d }` by column, every field of the shape given and no other. */
+  private rowValues(name: string, literal: TS.ObjectLiteralExpression, shape: RowShape): RowValues | null {
+    const from = this.literalSource(literal);
+    if (!from) return null;
+    const out: RowValues = { cells: new Map(), fill: [] };
+    for (const [field, f] of shape) {
+      const src = from(field);
+      if (!src) { this.c.error(literal, `${name}: a record has ${[...shape.keys()].join(", ")}; ${field} is missing.`); return null; }
+      if (!this.rowField(name, field, f, src, out, literal)) return null;
+    }
+    return out;
+  }
+
+  /**
+   * `this.members = []`, `squads[i].seen = [a, b]`, `s.path = other`: an array a record's field leads to starts over
+   * with what it is given, copied — the field stays the array it is, so this is what assigning one comes to. One of a
+   * fixed length takes as many cells as it has.
+   */
+  private assignList(e: TS.BinaryExpression, field: Binding, op: TS.SyntaxKind) {
     const { ts } = this;
-    const row = new Map<string, NumExpr | BoolExpr>();
-    const whole = this.evaluate(literal)?.value as Record<string, unknown> | undefined;
-    for (const [field, { kind }] of shape) {
-      if (whole && typeof whole === "object") {
-        const v = whole[field];
-        if (kind === "boolean") { if (typeof v !== "boolean") { this.c.error(literal, `${name}: ${field} is true or false, got ${describe(v)}.`); return null; } row.set(field, { kind: "const", value: v }); }
-        else { const n = this.asInteger({ value: v }, literal); if (n === null) return null; row.set(field, num(n)); }
-        continue;
-      }
-      // The last to say what the field is wins, as in JavaScript: `{ ...w, count: 9 }` is w with another count, `{ count: 9, ...w }` is w.
-      let p: TS.ObjectLiteralElementLike | undefined;
-      let spread: NumExpr | BoolExpr | undefined;
-      for (const x of [...literal.properties].reverse()) {
-        if ((ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && ts.isIdentifier(x.name) && x.name.text === field) { p = x; break; }
-        if (!ts.isSpreadAssignment(x)) continue;
-        const b = this.spreadFields(x.expression)?.get(field);
-        const v = b && b.kind !== "record" ? this.valueOf(b, kind, x) : null;
-        if (v) { spread = v as NumExpr | BoolExpr; break; }
-      }
-      if (spread) { row.set(field, spread); continue; }
-      if (!p) { this.c.error(literal, `${name}: a record has ${[...shape.keys()].join(", ")}; ${field} is missing.`); return null; }
-      const value = ts.isPropertyAssignment(p) ? p.initializer : (p as TS.ShorthandPropertyAssignment).name;
-      const v = kind === "number" ? this.num(value) : this.boolValue(value);
-      if (!v) return null;
-      row.set(field, v);
+    const at = this.at(e);
+    const label = this.label(e);
+    if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "An array takes = only."); return; }
+    const given = this.unwrap(e.right);
+    const empty = ts.isArrayLiteralExpression(given) && given.elements.length === 0;
+    const b = field.kind === "inner" ? { kind: "array" as const, a: this.innerOf(field.lists, field.index, e) } : this.unitsOf(field, e);
+    if (b.kind === "array") {
+      if (!b.a.dynamic && !b.a.through) { this.c.error(e.left, `${b.a.name} has ${b.a.length} cells for good; assign them one by one, or declare it empty ([]) and push to it, and it is one that can start over.`); return; }
+      this.emit({ kind: "declareArray", array: b.a.id, init: [], at, label }, e);
+      if (!empty) this.fillInner(b.a, b.a.kind, e.right);
+      return;
     }
-    return row;
+    if (b.kind !== "units") return;
+    if (!b.ptr.dynamic) { this.c.error(e.left, `${b.name} has ${b.ptr.length} units for good; assign them one by one, or declare it empty ([]) and push to it.`); return; }
+    const from = empty ? undefined : this.listOf(e.right);
+    if (!empty && from?.kind !== "units") { this.c.error(e.right, `${b.name} starts over empty ([]), or as a copy of another array of units.`); return; }
+    for (const [a, part] of this.unitArrays(b as Extract<Binding, { kind: "units" }>)) {
+      this.emit({ kind: "declareArray", array: a.id, init: [], at, label }, e);
+      if (from?.kind === "units") this.copyCells(a, from[part], e);
+    }
   }
 
-  /** `waves[i] = { count: 1, delay: 2 }`: every field of the record at i. */
+  /** `waves[i] = { count: 1, delay: 2 }`: every field of the record at i. What the row held of arrays goes back first. */
   private storeRow(e: TS.BinaryExpression, op: TS.SyntaxKind) {
     const { ts } = this;
     const left = this.unwrap(e.left);
     const of = ts.isElementAccessExpression(left) ? this.bindingOf(left.expression) : undefined;
     const literal = this.unwrap(e.right);
     if (of?.kind !== "records" || !ts.isElementAccessExpression(left)) { this.c.error(e.left, "An array of records is assigned record by record: waves[i] = { … }."); return; }
-    if (op !== ts.SyntaxKind.EqualsToken || !(ts.isObjectLiteralExpression(literal) || ts.isNewExpression(literal))) { this.c.error(e, `A record of ${of.name} is given whole, ${of.name}[i] = ${of.cls ? `new ${this.className(of.cls)}(…)` : "{ … }"}, or field by field, ${of.name}[i].${[...of.fields.keys()][0]} = 1.`); return; }
-    const shape = new Map([...of.fields].map(([f, a]) => [f, { kind: a.kind, width: {} }]));
+    if (op !== ts.SyntaxKind.EqualsToken || !(ts.isObjectLiteralExpression(literal) || ts.isNewExpression(literal))) { this.c.error(e, `A record of ${of.name} is given whole, ${of.name}[i] = ${of.cls ? `new ${this.className(of.cls)}(…)` : "{ … }"}, or field by field, ${of.name}[i].${[...this.rowShape(of).keys()][0]} = 1.`); return; }
+    const shape = this.rowShape(of);
     const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape) : this.rowValues(of.name, literal, shape);
     const index = this.rowIndex(of, left.argumentExpression);
     if (!row || !index) return;
-    const i = this.temp(index, e);
-    for (const [field, a] of of.fields) this.emit({ kind: "store", array: a.id, index: i, value: row.get(field)!, at: this.at(e), label: this.label(e) }, e);
+    const i = this.temp(index, e, row.fill.length > 0);
+    this.releaseRow(of, i, e);
+    for (const [key, a] of of.fields) this.emit({ kind: "store", array: a.id, index: i, value: row.cells.get(key)!, at: this.at(e), label: this.label(e) }, e);
+    for (const fill of row.fill) if (!fill(of, i)) return;
   }
 
-  /** `waves.push({ … })`, `waves.pop()`: every field's array moves together. */
-  private recordsCall(e: TS.CallExpression, of: Extract<Binding, { kind: "records" }>, method: string) {
+  /** `waves.push({ … })`, `waves.pop()`: every column moves together, and a row that goes gives the blocks of its arrays back. */
+  private recordsCall(e: TS.CallExpression, of: Records, method: string) {
     const { ts } = this;
     const at = this.at(e);
     const label = this.label(e);
@@ -1097,15 +1335,24 @@ export class Structured {
       for (const arg of e.arguments) {
         const literal = this.unwrap(arg);
         if (!ts.isObjectLiteralExpression(literal) && !ts.isNewExpression(literal)) { this.c.error(arg, of.cls ? `${of.name}.push(new ${this.className(of.cls)}(…)) takes an instance made there: a row is the instance, so one kept in a variable would be copied, and changing it afterwards would not change the row.` : `${of.name}.push({ … }) takes a record written out.`); return; }
-        const shape = new Map([...of.fields].map(([f, a]) => [f, { kind: a.kind, width: {} }]));
+        const shape = this.rowShape(of);
         const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape) : this.rowValues(of.name, literal, shape);
         if (!row) return;
-        for (const [field, a] of of.fields) { a.dynamic = true; this.emit({ kind: "push", array: a.id, value: row.get(field)!, at, label }, e); }
+        const place = row.fill.length ? this.newVar(`(row of ${of.name})`, "number", at, { temp: true }) : undefined;
+        if (place) this.emit({ kind: "declare", decl: place, init: { kind: "length", array: [...of.fields.values()][0].id, at }, at, label }, e);
+        for (const [key, a] of of.fields) { a.dynamic = true; this.emit({ kind: "push", array: a.id, value: row.cells.get(key)!, at, label }, e); }
+        for (const fill of row.fill) if (!fill(of, varRef(place!))) return;
       }
       return;
     }
     if (method === "pop" && e.arguments.length === 0) {
-      for (const a of of.fields.values()) { a.dynamic = true; this.emit({ kind: "pop", array: a.id, at, label }, e); }
+      const first = [...of.fields.values()][0];
+      const pops = this.collect(() => {
+        if (of.shape) this.releaseRow(of, { kind: "binary", op: "-", left: { kind: "length", array: first.id, at }, right: num(1), at, label }, e);
+        for (const a of of.fields.values()) { a.dynamic = true; this.emit({ kind: "pop", array: a.id, at, label }, e); }
+      });
+      if (this.ownedLists(of).length) this.emit({ kind: "if", cond: { kind: "compare", op: ">", left: { kind: "length", array: first.id, at }, right: num(0), at, label }, then: pops, at, label }, e);
+      else this.out.push(...pops);
       return;
     }
     this.c.error(e, `An array of records has push({ … }), pop(), length, for…of, and forEach, filter, some, every, findIndex, reduce, sort and reverse; ${method}() is not one of them. (pop() stands on its own: read ${of.name}[${of.name}.length - 1] first for what it takes off.)`);
@@ -1467,6 +1714,7 @@ export class Structured {
   private arrayOf(expr: TS.Expression): Binding | undefined {
     const b = this.bindingOf(expr);
     if (b?.kind === "inner") return { kind: "array", a: this.innerOf(b.lists, b.index, expr) };
+    if (b?.kind === "innerUnits") return this.unitsOf(b, expr);
     return b?.kind === "row" ? { kind: "array", a: this.windowOf(b, expr) } : b;
   }
 
@@ -1813,6 +2061,12 @@ export class Structured {
     // A row is itself, as an array is — the one it is now, whatever its index becomes.
     if (from.kind === "row") return { kind: "array", a: this.windowOf({ ...from, name }, at) };
     if (from.kind === "inner") return { kind: "array", a: this.innerOf(from.lists, from.index, at, name) };
+    if (from.kind === "innerUnits") return this.unitsOf({ ...from, name }, at);
+    if (from.kind === "unitAt") {
+      const v = this.newVar(name, "unit", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: v, init: this.unitAtPlaces(from, at), at: this.at(at), label: this.label(at) }, at);
+      return { kind: "var", v };
+    }
     if (from.kind !== "var" && from.kind !== "cell") return from;
     const like = from.kind === "var" ? from.v : from.a;
     const v = this.newVar(name, like.kind, this.sourceOf(at), { ...(like.bits ? { bits: like.bits } : {}), ...(like.unsigned ? { unsigned: true } : {}) });
@@ -2139,10 +2393,34 @@ export class Structured {
     return over ? (this.searchCall(left, over, left.expression.name.text, as, e.right) as NumExpr | BoolExpr | null) : undefined;
   }
 
+  /** A number where it is kept, read. */
+  private placeRead(p: Place, at: TS.Node): NumExpr {
+    return "v" in p ? varRef(p.v) : { kind: "element", array: p.a.id, index: p.index, at: this.at(at) };
+  }
+
+  /** A unit kept as three numbers, as the unit it is. */
+  private unitAtPlaces(b: Extract<Binding, { kind: "unitAt" }>, at: TS.Node): UnitExpr {
+    return this.mark<UnitExpr>({ kind: "unitAt", ptr: this.placeRead(b.ptr, at), epd: this.placeRead(b.epd, at), uid: this.placeRead(b.uid, at), at: this.at(at) }, at);
+  }
+
+  /** `squads[i].leader = u`: the unit's three numbers, each stored where it is kept. */
+  private storeUnitAt(b: Extract<Binding, { kind: "unitAt" }>, value: UnitExpr, e: TS.Node) {
+    const unit = this.unitTemp(value, e);
+    const at = this.at(e);
+    const label = this.label(e);
+    for (const part of UNIT_PARTS) {
+      const p = b[part];
+      const v: NumExpr = { kind: "unitPart", unit, part, at };
+      if ("v" in p) this.emit({ kind: "assign", target: p.v.id, value: v, at, label }, e);
+      else this.emit({ kind: "store", array: p.a.id, index: p.index, value: v, at, label }, e);
+    }
+  }
+
   /** What a binding is as a value of `kind`, where a method stores or returns the item or its place. */
   private valueOf(b: Binding, kind: Kind, at: TS.Node): NumExpr | BoolExpr | UnitExpr | null {
     if (b.kind === "var" && b.v.kind === kind) return kind === "number" ? varRef(b.v) : kind === "unit" ? unitRef(b.v) : boolRef(b.v);
     if (b.kind === "cell" && b.a.kind === kind) return { kind: "element", array: b.a.id, index: b.index, at: this.at(at) };
+    if (b.kind === "unitAt" && kind === "unit") return this.unitAtPlaces(b, at);
     if (b.kind === "value") {
       if (kind === "boolean" && typeof b.value === "boolean") return { kind: "const", value: b.value };
       if (kind === "number") { const n = this.asInteger({ value: b.value }, at); return n === null ? null : num(n); }
@@ -2392,7 +2670,13 @@ export class Structured {
     let made: List;
     if (over.kind === "grid" || over.kind === "lists") return null;
     if (over.kind === "units" || over.kind === "query") made = { kind: "units", name: given, ptr: grow(`${given} (ptr)`, { kind: "number", unsigned: true }), epd: grow(`${given} (epd)`, { kind: "number", unsigned: true }), uid: grow(`${given} (uid)`, { kind: "number", unsigned: true }) };
-    else if (over.kind === "records") made = { kind: "records", name: given, fields: new Map([...over.fields].map(([field, a]) => [field, grow(`${given}.${field}`, a)])), ...(over.cls ? { cls: over.cls } : {}) };
+    else if (over.kind === "records") {
+      // The columns first, so that — made again, in a loop — the rows it had give the blocks of their arrays back before it starts over.
+      const columns = new Map([...over.fields].map(([field, a]) => { const c = this.newArray(`${given}.${field.replace(/ /g, ".")}`, a.kind, 0, source, { ...(a.bits ? { bits: a.bits } : {}), ...(a.unsigned ? { unsigned: true } : {}) }); c.dynamic = true; return [field, c] as const; }));
+      made = { kind: "records", name: given, fields: columns, ...(over.cls ? { cls: over.cls } : {}), ...(over.shape ? { shape: over.shape } : {}) };
+      for (const l of this.ownedLists(made)) this.releaseRows(l, num(0), e);
+      for (const c of columns.values()) this.emit({ kind: "declareArray", array: c.id, init: [], at, label }, e);
+    }
     else if (over.kind === "array") made = { kind: "array", a: grow(given, over.a) };
     else {
       const kinds = new Set(over.items.map((v) => typeof v));
@@ -2408,7 +2692,16 @@ export class Structured {
           if (!unit) { ok = false; return; }
           for (const [a, part] of this.unitArrays(made)) this.emit({ kind: "push", array: a.id, value: { kind: "unitPart", unit, part, at }, at, label }, e);
         } else if (made.kind === "records" && over.kind === "records" && index?.kind === "var") {
+          const owned = this.ownedLists(made);
+          const place = owned.length ? this.newVar(`(row of ${made.name})`, "number", at, { temp: true }) : undefined;
+          if (place) this.emit({ kind: "declare", decl: place, init: { kind: "length", array: [...made.fields.values()][0].id, at }, at, label }, e);
           for (const [field, a] of made.fields) this.emit({ kind: "push", array: a.id, value: { kind: "element", array: over.fields.get(field)!.id, index: varRef(index.v), at }, at, label }, e);
+          // A row owns the arrays it holds, so the new row gets arrays of its own with the same cells: its handles start over, and are filled.
+          const theirs = this.ownedLists(over);
+          owned.forEach((l, k) => {
+            for (const a of this.handlesOf(l)) this.emit({ kind: "store", array: a.id, index: varRef(place!), value: num(0), at, label }, e);
+            this.copyCells(this.innerAt(l, place!, e), this.innerOf(theirs[k], varRef(index.v), e), e);
+          });
         } else if (made.kind === "array") {
           const value = this.valueOf(item, made.a.kind, e) as NumExpr | BoolExpr | null;
           if (!value) { ok = false; return; }
@@ -2441,10 +2734,26 @@ export class Structured {
       this.emit({ kind: "declare", decl: v, init: { kind: "element", array: a.id, index, at }, at, label }, e);
       return v;
     };
+    if (list.kind === "records" && this.ownedLists(list).length) {
+      // A row that holds arrays is reached through a row, so the hand is one: a row past the end, which goes again when the row is put back.
+      const columns = [...list.fields.values()];
+      const place = this.newVar(`(held of ${list.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: place, init: { kind: "length", array: columns[0].id, at }, at, label }, e);
+      for (const a of columns) { a.dynamic = true; this.emit({ kind: "push", array: a.id, value: { kind: "element", array: a.id, index, at }, at, label }, e); }
+      return { binding: this.rowOf(list, varRef(place)), put: (to) => [...columns.map((a): Stmt => ({ kind: "store", array: a.id, index: to, value: { kind: "element", array: a.id, index: varRef(place), at }, at, label })), ...columns.map((a): Stmt => ({ kind: "pop", array: a.id, at, label }))] };
+    }
     const back = (a: ArrayDecl, v: VarDecl, to: NumExpr): Stmt => ({ kind: "store", array: a.id, index: to, value: a.kind === "number" ? varRef(v) : boolRef(v), at, label });
     if (list.kind === "array") { const v = hold(list.a); return { binding: { kind: "var", v }, put: (to) => [back(list.a, v, to)] }; }
     const held = [...list.fields].map(([field, a]) => [field, a, hold(a)] as const);
-    return { binding: { kind: "record", fields: new Map(held.map(([field, , v]) => [field, { kind: "var", v } as Binding])), ...(list.cls ? { cls: list.cls } : {}) }, put: (to) => held.map(([, a, v]) => back(a, v, to)) };
+    const kept = new Map(held.map(([key, , v]) => [key, v]));
+    // The row in the hand, by its shape: a unit is its three numbers; an array it holds is reached through a row, and this is none.
+    const build = (shape: RowShape, prefix: string): Map<string, Binding> => new Map([...shape].flatMap(([name, f]): [string, Binding][] => {
+      const key = prefix + name;
+      if (f.kind === "unit") return [[name, { kind: "unitAt", ptr: { v: kept.get(`${key} ptr`)! }, epd: { v: kept.get(`${key} epd`)! }, uid: { v: kept.get(`${key} uid`)! } }]];
+      if (f.kind === "record") return [[name, { kind: "record", fields: build(f.shape, `${key} `), ...(f.cls ? { cls: f.cls } : {}) }]];
+      return f.kind === "list" || f.kind === "squad" ? [] : [[name, { kind: "var", v: kept.get(key)! }]];
+    }));
+    return { binding: { kind: "record", fields: build(this.rowShape(list), ""), ...(list.cls ? { cls: list.cls } : {}) }, put: (to) => held.map(([, a, v]) => back(a, v, to)) };
   }
 
   /** `xs.reverse()`: the two ends exchanged, inwards, within the frame. */
@@ -3401,7 +3710,8 @@ export class Structured {
             if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "An array's length takes = only: xs.length = 0 empties it."); return; }
             const value = this.num(e.right);
             if (!value) return;
-            const n = this.temp(value, e);
+            const n = this.temp(value, e, b.kind === "records" && !!b.shape);
+            if (b.kind === "records") for (const l of this.ownedLists(b)) this.releaseRows(l, n, e);
             for (const a of b.kind === "units" ? [b.ptr, b.epd, b.uid] : b.fields.values()) { a.dynamic = true; this.emit({ kind: "setLength", array: a.id, value: n, at: this.at(e), label: this.label(e) }, e); }
             return;
           }
@@ -3439,7 +3749,7 @@ export class Structured {
           if (el) { this.storeElement(e, el, op); return; }
         }
         if (ts.isElementAccessExpression(left)) {
-          const squad = this.bindingOf(left.expression);
+          const squad = this.arrayOf(left.expression);
           if (squad?.kind === "units") {
             if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "A unit takes = only."); return; }
             const found = this.unitExpr(e.right);
@@ -3454,6 +3764,13 @@ export class Structured {
         }
         if (this.setterCall(e, op)) return;
         const field = this.bindingOf(e.left);
+        if (field?.kind === "unitAt") {
+          if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "A unit takes = only."); return; }
+          const value = this.unitExpr(e.right);
+          if (value) this.storeUnitAt(field, value, e);
+          return;
+        }
+        if (field && (field.kind === "inner" || field.kind === "innerUnits" || ((field.kind === "array" || field.kind === "units") && ts.isPropertyAccessExpression(left)))) { this.assignList(e, field, op); return; }
         if (field?.kind === "cell") { this.storeElement(e, { a: field.a, index: field.index }, op); return; }
         if (field?.kind === "records" || (ts.isElementAccessExpression(left) && this.bindingOf(left.expression)?.kind === "records")) { this.storeRow(e, op); return; }
         const target = this.varOf(e.left);
@@ -4723,7 +5040,7 @@ export class Structured {
       if (part?.kind === "row") return num(part.length);
       if (part?.kind === "grid") return this.mark<NumExpr>(this.rowsOf(part, e), e);
       if (part?.kind === "lists") return this.mark<NumExpr>({ kind: "length", array: part.ptr.id, at: this.at(e) }, e);
-      const b = part && part.kind !== "inner" ? part : this.listOf(e.expression);
+      const b = part && part.kind !== "inner" && part.kind !== "innerUnits" ? part : this.listOf(e.expression);
       if (b?.kind === "array") return this.mark<NumExpr>({ kind: "length", array: b.a.id, at: this.at(e) }, e);
       if (b?.kind === "records") return this.mark<NumExpr>({ kind: "length", array: [...b.fields.values()][0].id, at: this.at(e) }, e);
       if (b?.kind === "units") return this.mark<NumExpr>({ kind: "length", array: b.ptr.id, at: this.at(e) }, e);
@@ -5017,8 +5334,12 @@ export class Structured {
       if (got && got.result?.kind !== "unit") { this.c.error(e, `${got.name ?? "This"} does not give a unit.`); return null; }
       return got ? this.mark<UnitExpr>({ kind: "call", call: got }, e) : null;
     }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const kept = this.bindingOf(e);
+      if (kept?.kind === "unitAt") return this.unitAtPlaces(kept, e);
+    }
     if (ts.isElementAccessExpression(e)) {
-      const of = this.bindingOf(e.expression);
+      const of = this.arrayOf(e.expression);
       if (of?.kind === "units") {
         const h = this.evaluate(e.argumentExpression);
         const index = h ? (() => { const i = this.asInteger(h, e.argumentExpression); return i === null ? null : num(i); })() : this.num(e.argumentExpression);

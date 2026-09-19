@@ -439,6 +439,15 @@ FIXTURES.classes = `program(() => {
     hurt(by: number) { super.hurt(by / 2); this.rage++; }
   }
   class Wave { left: number; constructor(public count: number, public delay: number) { this.left = count; } spawn() { if (this.left > 0) this.left--; } get done() { return this.left == 0; } }
+  class Squad {
+    members: Unit[] = []; seen: number[] = []; leader: Unit | null = null; at = new Vec(0, 0);
+    constructor(public owner: number) {}
+    add(u: Unit) { this.members.push(u); this.seen.push(u.hp); if (!this.leader) this.leader = u; }
+    get hp() { let t = 0; for (const m of this.members) t += m.hp; return t; }
+  }
+  const squads: Squad[] = [];
+  squads.push(new Squad(0)); squads.push(new Squad(1));
+  for (const u of allUnits()) if (u.owner == P1) squads[0].add(u); else squads[1].add(u);
   let n = 0;
   const t = new Thing(\`Grunt \${n}\`, 40);
   const b = new Boss(100);
@@ -450,6 +459,13 @@ FIXTURES.classes = `program(() => {
     for (const w of waves) w.spawn();
     if (waves.every((w) => w.done)) waves.push(new Wave(n, 1));
     waves.sort((x, y) => x.left - y.left);
+    squads.sort((x, y) => y.hp - x.hp);
+    const led = squads.filter((q) => q.members.length > 0);
+    const lead = squads[0].leader; if (lead) lead.hp += 1;
+    squads[0].at.add(step); squads[1].seen = [n, n + 1];
+    if (squads.length > 4) { squads.pop(); squads.length = 2; squads[1] = new Squad(n); }
+    if (n % 5 == 0) squads.push(new Squad(n));
+    displayText(\`\${led.length} \${squads[0].hp} \${squads[0].seen.length} \${squads[0].at.far ? 1 : 0}\`);
     if (b instanceof Thing && t.pos.far) displayText(t.label());
     displayText(\`\${b.label()} \${b.rage} \${t.fib(n % 12)} \${Thing.made} \${waves.length} \${t.seen.length}\`);
     sleep(seconds(1));

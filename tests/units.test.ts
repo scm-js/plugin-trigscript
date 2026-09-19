@@ -211,3 +211,25 @@ describe("units: the methods that take a function (slice 8½)", () => {
     expect(errors("unitsOf(P1).forEach((u) => { sleep(seconds(1)); });").join("\n")).toMatch(/for…of over the same list can sleep|loop over units/);
   });
 });
+
+describe("units: in the rows of an array of instances (slice 8½, classes)", () => {
+  it("a unit a row, an array of units a row: kept, read, sorted with the row, filtered into rows of their own", () => {
+    const sim = run(`class Squad { members: Unit[] = []; leader: Unit | null = null; constructor(public owner: number) {} add(u: Unit) { this.members.push(u); if (!this.leader) this.leader = u; } get hp() { let t = 0; for (const m of this.members) t += m.hp; return t; } }
+      const squads = [new Squad(1), new Squad(0)];
+      for (const u of allUnits()) squads[u.owner == P1 ? 1 : 0].add(u);
+      let zergHp = squads[0].hp; let terranHp = squads[1].hp; let terrans = squads[1].members.length;
+      squads.sort((a, b) => a.owner - b.owner);
+      let first = squads[0].members.length; let leadHp = 0; const lead = squads[0].leader; if (lead) leadHp = lead.hp;
+      const big = squads.filter((s) => s.members.length > 2); big[0].members.pop(); let kept = squads[0].members.length; let copy = big[0].members.length;
+      let second = 0; const m = squads[0].members[1]; if (m) second = m.hp;`);
+    expect(sim.value("zergHp")).toBe(70);
+    expect(sim.value("terranHp")).toBe(1565);
+    expect(sim.value("terrans")).toBe(3);
+    expect(sim.value("first")).toBe(3);
+    expect(sim.value("leadHp")).toBe(40);
+    expect(sim.value("kept")).toBe(3);
+    expect(sim.value("copy")).toBe(2);
+    expect(sim.value("second")).toBe(25);
+    expect(sim.faults).toEqual([]);
+  });
+});

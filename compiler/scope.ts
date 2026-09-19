@@ -14,7 +14,11 @@ export type Binding =
    * growing together. `waves[i]` is a record of cells, so what is written through it is written into the array, as an
    * object of a TypeScript array is a reference.
    */
-  | { kind: "records"; name: string; fields: Map<string, ArrayDecl>; cls?: TS.ClassDeclaration }
+  | { kind: "records"; name: string; fields: Map<string, ArrayDecl>; cls?: TS.ClassDeclaration; shape?: RowShape }
+  /** A unit kept as its three numbers, each somewhere a number can be: a field of a row (`squads[i].leader`), or of a row held in temporaries. */
+  | { kind: "unitAt"; ptr: Place; epd: Place; uid: Place }
+  /** `squads[i].members` before anything needs it as an array of units: a row of each of the three arrays of arrays that grow. */
+  | { kind: "innerUnits"; name: string; ptr: Extract<Binding, { kind: "lists" }>; epd: Extract<Binding, { kind: "lists" }>; uid: Extract<Binding, { kind: "lists" }>; index: NumExpr }
   /** An array of units: three arrays of numbers — where each unit is, the same as an EPD, and its slot's uniqueness byte — moving together. */
   | { kind: "units"; name: string; ptr: ArrayDecl; epd: ArrayDecl; uid: ArrayDecl }
   /**
@@ -50,6 +54,31 @@ export type Binding =
 
 /** What `this` is bound under in the scope of a method's body: no declaration of the source stands for it. */
 export const THIS = { kind: -1 } as unknown as TS.Node;
+
+/** Where one number is kept: a cell of an array, or a variable. */
+export type Place = { a: ArrayDecl; index: NumExpr } | { v: VarDecl };
+
+/**
+ * What a row of an array of records holds, by field, when it is more than numbers and booleans. Every field is one or
+ * more plain arrays of the binding's `fields` — *columns*, which is what lets a push, a pop, a sort move a row as a
+ * whole without knowing what is in it. A column's key is the path to it, its parts joined by a space, which no field's
+ * name can hold: `hp`, `leader ptr`, `seen block`, `pos x`, `members epd length`.
+ */
+export type RowShape = Map<string, RowField>;
+export type RowField =
+  | { kind: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } }
+  /** A unit: `ptr`, `epd`, `uid`. */
+  | { kind: "unit" }
+  /** An array that grows, its handle the row's: `block`, `length`, `room`, `size`. The row owns the block. */
+  | { kind: "list"; of: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } }
+  /** An array of units that grows: a handle for each of a unit's three numbers. */
+  | { kind: "squad" }
+  /** A record, or an instance, inside the row: its fields' columns under its name. */
+  | { kind: "record"; shape: RowShape; cls?: TS.ClassDeclaration };
+
+/** The parts of a unit, and of an array's handle, in the order their columns are kept. */
+export const UNIT_PARTS = ["ptr", "epd", "uid"] as const;
+export const HANDLE_PARTS = ["block", "length", "room", "size"] as const;
 
 export class Scope {
   private readonly map = new Map<TS.Node, Binding>();
