@@ -16,7 +16,7 @@
  */
 import type { NameTable } from "./names";
 import type { NumExpr, Program, Stmt, UnitExpr, BoolExpr, Call, At } from "./ir";
-import { isUnitExpr } from "./ir";
+import { bodiesOf, isUnitExpr } from "./ir";
 
 export type MouseButton = "left" | "right" | "middle";
 export const MOUSE_BUTTONS: readonly MouseButton[] = ["left", "right", "middle"];
@@ -253,7 +253,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       default: break;
     }
   };
-  for (const p of programs) p.body.forEach(stmt);
+  for (const p of programs) for (const body of bodiesOf(p)) body.forEach(stmt);
   return { sources, mouse, at };
 }
 

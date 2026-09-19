@@ -24,11 +24,17 @@
  * - `x = y + 3`, `x += y`, `x++`, `x = y * 3`, `x = y / 4`, `y % 4`, `Math.min`, `Math.max`,
  *   `Math.abs`, `clamp()`, `c ? a : b`: arithmetic over variables, each one call of
  *   eudplib's underneath.
- * - Functions declared in the body, and `game()` functions, are inlined at each call.
+ * - Functions declared in the body, and `game()` functions, are inlined at a call.
  *   Arguments pass by value, as in TypeScript: a parameter bound to a build-time value
  *   is that value, one bound to a variable reads that variable directly when the
  *   function never assigns it (free) and is a copy when it does. A function may return a
  *   number or a boolean, through a temp. No recursion.
+ * - A function met a second time is *called* instead, when it can be: one body in the
+ *   built map (`Program.functions`) whose parameters are variables every call sets. It
+ *   can be when it never sleeps, keeps no edge of its own (`rose` / `once`) and compiles
+ *   with every parameter a variable — a parameter that reaches a field only a build-time
+ *   value can fill keeps it inlined. An array reaches a function as itself, so a function
+ *   that takes one is a copy an array passed. See `inline` and `settleFunctions`.
  * - `if (false) …` and `while (false) …` are pruned: what is inside never runs, when the
  *   script is built or in the game.
  * - The amount of `setResources` / `setDeaths` / `setScore` / `setCountdownTimer`, the
@@ -55,7 +61,7 @@ import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGa
 import { cellMax } from "./tables";
 import { Scope, type Binding } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { I32_MAX, I32_MIN, IR_VERSION, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { I32_MAX, I32_MIN, IR_VERSION, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -177,6 +183,36 @@ const unitRef = (v: VarDecl): UnitExpr => ({ kind: "unitVar", id: v.id });
 const NO_UNIT: UnitExpr = { kind: "unitNull" };
 const ORDERS: readonly string[] = ["move", "patrol", "attack"];
 
+/** What a call passes for a parameter: the value a parameter that is a variable is set to, or the array (the record) the parameter stands for. */
+type CallArgument = { init: NumExpr | BoolExpr | UnitExpr; label: string } | { binding: Binding };
+
+/** A function at one set of arrays passed: inlined where it was first met, called from then on (`fn`), or never to be (`never` says why). */
+interface FunctionSite {
+  first?: { call: Call; args: CallArgument[] };
+  fn?: FuncDecl;
+  never?: string;
+  /** Being tried as a called function right now: a call of itself met inside is inlined, and runs into the depth limit as it always did. */
+  busy?: boolean;
+}
+
+/** Whether a node of this kind is anywhere in a piece of IR. */
+function mentions(root: unknown, kind: string): boolean {
+  if (Array.isArray(root)) return root.some((x) => mentions(x, kind));
+  if (!root || typeof root !== "object") return false;
+  const o = root as Record<string, unknown>;
+  if (o.kind === kind) return true;
+  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions(v, kind));
+}
+
+/** Every call in a piece of IR — statements and expressions alike, those inside a call's arguments and body included. */
+function eachCall(root: unknown, visit: (c: Call) => void) {
+  if (Array.isArray(root)) { for (const x of root) eachCall(x, visit); return; }
+  if (!root || typeof root !== "object") return;
+  const o = root as Record<string, unknown>;
+  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call as Call);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
+}
+
 /** What `run()` hands back: the IR, and the way back from any of its nodes to the source, for diagnostics a backend raises. */
 export interface Emitted {
   program: Program;
@@ -196,6 +232,15 @@ export class Structured {
   private out: Stmt[] = [];
   private readonly nodes = new WeakMap<object, TS.Node>();
   private nextId = 0;
+  /** The functions that are called, and what is known of each function at each set of arrays passed to it. */
+  private readonly functions: FuncDecl[] = [];
+  private readonly sites = new Map<string, FunctionSite>();
+  /** Which function of the source a call, inlined or not, is of — and why one stays inlined, for the hint on its line. */
+  private readonly callees = new WeakMap<Call, TS.Node>();
+  private readonly inlinedBecause = new Map<TS.Node, { why: string; name: string; at: At }>();
+  private readonly declared = new Map<FuncDecl, TS.Node>();
+  private readonly identities = new WeakMap<object, number>();
+  private lastIdentity = 0;
 
   constructor(c: StructuredContext) {
     this.c = c;
@@ -215,6 +260,7 @@ export class Structured {
       if (!(err instanceof LowerError)) throw err;
       this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
     }
+    this.settleFunctions(program);
     return { program, nodeOf: (node) => this.nodes.get(node) };
   }
 
@@ -674,7 +720,8 @@ export class Structured {
     const { ts } = this;
     const init = this.unwrap(initializer);
     if (!ts.isArrayLiteralExpression(init) || init.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) { this.c.error(init, `${name} is written out unit by unit ([first(…), nearest(…)]), or starts empty and is pushed to.`); return null; }
-    const dynamic = this.body.plan.grows.has(at);
+    // Written empty, it can only be one that grows — pushed to here, or by a function it is handed to.
+    const dynamic = this.body.plan.grows.has(at) || init.elements.length === 0;
     if (init.elements.length < (dynamic ? 0 : 1) || init.elements.length > MAX_ARRAY) { this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} units.` : `An array of a program has 1 to ${MAX_ARRAY} units; one that starts empty is one something pushes to.`); return null; }
     const units: UnitExpr[] = [];
     for (const x of init.elements) { const u = this.unitExpr(x); if (!u) return null; units.push(this.unitTemp(u, x)); }
@@ -784,7 +831,7 @@ export class Structured {
   private declareRecords(name: string, initializer: TS.Expression, shape: NonNullable<ReturnType<Structured["recordFields"]>>, at: TS.Node): Binding | null {
     const { ts } = this;
     const init = this.unwrap(initializer);
-    const dynamic = this.body.plan.grows.has(at);
+    const grows = this.body.plan.grows.has(at);
     const rows: Map<string, NumExpr | BoolExpr>[] = [];
     const whole = this.evaluate(init);
     if (whole) {
@@ -810,6 +857,8 @@ export class Structured {
       this.c.error(init, `${name}'s records have to be written out ([{ … }, { … }]), or it starts empty and is pushed to.`);
       return null;
     }
+    // Written empty, it can only be one that grows — pushed to here, or by a function it is handed to.
+    const dynamic = grows || rows.length === 0;
     if (rows.length < (dynamic ? 0 : 1) || rows.length > MAX_ARRAY) { this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} records.` : `An array of a program has 1 to ${MAX_ARRAY} records (got ${rows.length}); one that starts empty is one something pushes to.`); return null; }
     const fields = new Map<string, ArrayDecl>();
     for (const [field, { kind, width }] of shape) {
@@ -1218,8 +1267,10 @@ export class Structured {
     if (shared && shared.arguments.length !== 1) { this.c.error(initializer, "shared() takes the initial value: shared([0, 0, 0])."); return null; }
     const init = this.unwrap(shared ? shared.arguments[0] : initializer);
     const width = kind === "number" ? this.widthOf(element) : {};
-    const dynamic = this.body.plan.grows.has(at);
+    const grows = this.body.plan.grows.has(at);
     const make = (length: number) => {
+      // Written empty, it can only be one that grows — pushed to here, or by a function it is handed to.
+      const dynamic = grows || length === 0;
       if (length < (dynamic ? 0 : 1) || length > MAX_ARRAY) { this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} cells (got ${length}).` : `An array of a program has 1 to ${MAX_ARRAY} cells (got ${length}); one that starts empty is one something pushes to.`); return null; }
       const a = this.newArray(name, kind, length, this.sourceOf(at), { shared: !!shared, ...width });
       if (dynamic) a.dynamic = true;
@@ -2022,9 +2073,10 @@ export class Structured {
   }
 
   /**
-   * Inline a function at a call: parameters bound, the body walked, `return` leaving it.
-   * The result — a number or a boolean the checker says the call has — comes back in a
-   * variable of the call's own that dies with the statement.
+   * A function at a call. Inlined — parameters bound, the body walked, `return` leaving it — the first time a function
+   * is met, and every time when it has to be; from the second time on it is *called* when it can be (`callable`), the
+   * first call changed to match. The result — a number, a boolean or a unit the checker says the call has — comes back
+   * in a variable of the call's own that dies with the statement.
    */
   private inline(call: TS.CallExpression, parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression | undefined, target: Body, name: string | undefined, decl: TS.Node): Call | undefined {
     const { ts } = this;
@@ -2037,13 +2089,24 @@ export class Structured {
     const out: Call = { ...(name ? { name } : {}), at: this.at(call), label: this.label(call), params: [], body: [] };
     if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true, ...(kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(call)) : {}) }), kind };
     this.mark(out, call);
+    this.callees.set(out, decl);
     // A function of the body closes over the program's variables; a game function sees only its own.
-    const scope = new Scope(target === this.body && target === this.c.body ? this.topScope : null);
+    const closure = target === this.body && target === this.c.body ? this.topScope : null;
+    const scope = new Scope(closure);
     let ok = true;
+    // The same call as a called function takes it: what each parameter is set to, or the array it stands for. Null once this call can only be inlined.
+    let args: CallArgument[] | null = [];
+    let why = "";
+    const asCalled = (a: CallArgument | string) => {
+      if (typeof a !== "string") { args?.push(a); return; }
+      if (args) why = a;
+      args = null;
+    };
     parameters.forEach((p, i) => {
       if (!ts.isIdentifier(p.name)) { this.c.error(p, "Destructured parameters are not supported in a program."); ok = false; return; }
       if (p.dotDotDotToken) { this.c.error(p, "Rest parameters are not supported in a program."); ok = false; return; }
       const arg = call.arguments[i];
+      const label = `L${line}: ${p.name.text} = ${arg ? arg.getText(this.body.sf) : "its default"}`;
       if (!arg) {
         if (!p.initializer) { this.c.error(call, `Missing argument ${p.name.text}.`); ok = false; return; }
         // The default is the function's own expression: evaluated in its body.
@@ -2052,26 +2115,33 @@ export class Structured {
         this.leaveBody(saved);
         if (!h) { this.notConstant(p.initializer, "A default value"); ok = false; return; }
         scope.bind(p, { kind: "value", value: h.value });
+        asCalled(this.constantArgument(h.value, label, p) ?? `${p.name.text} is ${describe(h.value)}, which only the script has`);
         return;
       }
       const h = this.evaluate(arg);
       // By value: a read passed as an argument is read once, at the call, into a variable of the parameter's own.
-      if (h && !isGameValue(h.value)) { scope.bind(p, { kind: "value", value: h.value }); return; }
+      if (h && !isGameValue(h.value)) {
+        scope.bind(p, { kind: "value", value: h.value });
+        asCalled(this.constantArgument(h.value, label, p) ?? `${p.name.text} is ${describe(h.value)}, which only the script has`);
+        return;
+      }
       const binding = this.bindingOf(arg);
       // An array reaches a function as itself, as it does in TypeScript: what the function stores, the caller sees.
-      if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed") { scope.bind(p, binding); return; }
+      if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed") { scope.bind(p, binding); asCalled({ binding }); return; }
       if (binding?.kind === "record") {
         if (this.assigns(body, p)) { this.c.error(p, `${p.name.text} is a record; a record parameter can have its fields assigned, not be reassigned itself.`); ok = false; return; }
         scope.bind(p, binding);
+        asCalled({ binding });
         return;
       }
       const variable = binding?.kind === "var" ? binding.v : undefined;
       if (variable) {
+        const init = variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable);
+        asCalled({ init, label });
         // By value, as in TypeScript. A parameter the function never assigns can read the caller's variable directly; one it assigns gets a copy.
         if (!this.assigns(body, p)) { scope.bind(p, { kind: "var", v: variable }); return; }
         const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), { ...(variable.bits ? { bits: variable.bits } : {}), ...(variable.unsigned ? { unsigned: true } : {}) });
-        const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
-        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable), label });
+        out.params.push({ decl: copy, init, label });
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
@@ -2080,16 +2150,18 @@ export class Structured {
         const unit = this.unitExpr(arg);
         if (!unit) { ok = false; return; }
         const copy = this.newVar(p.name.text, "unit", this.sourceOfIn(target, p.name));
-        out.params.push({ decl: copy, init: unit, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
+        out.params.push({ decl: copy, init: unit, label });
         scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init: unit, label });
         return;
       }
       const value = ts.isIdentifier(this.unwrap(arg)) ? null : this.numQuietly(arg);
       if (value) {
         // An expression over variables: computed into a variable of the parameter's own.
         const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name), this.widthOf(this.c.checker.getTypeAtLocation(p.name)));
-        out.params.push({ decl: copy, init: value, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
+        out.params.push({ decl: copy, init: value, label });
         scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init: value, label });
         return;
       }
       this.notConstant(arg, "An argument");
@@ -2097,13 +2169,45 @@ export class Structured {
     });
     if (!ok) return out;
     if (call.arguments.length > parameters.length) { this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`); return out; }
+
+    const at = this.sourceOfIn(target, (decl as { name?: TS.Node }).name ?? decl);
+    const site = args ? this.siteOf(decl, args) : undefined;
+    if (site && args) {
+      if (site.fn) return this.calls(out, site.fn, args);
+      if (site.first && !site.never && !site.busy) {
+        // Met a second time: one copy that both calls run, when the function can be one.
+        if (ts.isFunctionDeclaration(decl) && (closure === null || decl.parent !== this.c.body.plan.body)) site.never = "it is declared inside a block or another function, whose variables it may use";
+        else {
+          site.busy = true;
+          let made: FuncDecl | string;
+          try { made = this.callable(parameters, body, target, name ?? "function", decl, kind, args, closure, at); } finally { site.busy = false; }
+          if (typeof made === "string") site.never = made;
+          else {
+            site.fn = made;
+            this.calls(site.first.call, made, site.first.args);
+            site.first = undefined;
+            return this.calls(out, made, args);
+          }
+        }
+      }
+    }
+    const because = site?.never ?? (args ? "" : why);
+    if (because) this.inlinedBecause.set(decl, { why: because, name: name ?? "function", at });
+    out.body = this.walkFunction(body, kind, target, scope);
+    if (site && args && !site.first && !site.fn && !site.never) site.first = { call: out, args };
+    return out;
+  }
+
+  /** A function's body walked with its parameters bound in `scope`: the statements, `return` leaving them. */
+  private walkFunction(body: TS.Block | TS.Expression, kind: Kind | "void", target: Body, scope: Scope): Stmt[] {
+    const { ts } = this;
     const saved = this.enterBody(target);
     const outerScope = this.scope;
     this.scope = scope;
     this.inlineDepth++;
     const fn: Ctx["fn"] = { kind };
     try {
-      out.body = this.collect(() => {
+      return this.collect(() => {
         if (ts.isBlock(body)) this.block(body.statements, { fn });
         else {
           // `game((a: number) => a + 1)`: the expression is what it returns.
@@ -2124,7 +2228,159 @@ export class Structured {
       this.scope = outerScope;
       this.leaveBody(saved);
     }
+  }
+
+  /** A value the script has, as what a parameter that is a variable is set to: a whole number or a boolean, else nothing. */
+  private constantArgument(value: unknown, label: string, parameter: TS.ParameterDeclaration): CallArgument | null {
+    // `hurt(null, 1)`: no unit, for a parameter that is one.
+    if (value === null || value === undefined) return this.kindOf(this.c.checker.getTypeAtLocation(parameter.name)) === "unit" ? { init: NO_UNIT, label } : null;
+    if (typeof value === "boolean") return { init: value ? TRUE : FALSE, label };
+    if (typeof value === "number" && Number.isInteger(value) && value >= I32_MIN && value <= U32_MAX) return { init: num(value), label };
+    return null;
+  }
+
+  private identity(o: object): number {
+    let n = this.identities.get(o);
+    if (!n) { n = ++this.lastIdentity; this.identities.set(o, n); }
+    return n;
+  }
+
+  /** What is known of a function at these arrays: a function that takes an array is one copy an array passed, as a template is. */
+  private siteOf(decl: TS.Node, args: CallArgument[]): FunctionSite {
+    const part = (b: Binding): string => {
+      switch (b.kind) {
+        case "array": return `a${this.identity(b.a)}`;
+        case "records": return `r${[...b.fields.values()].map((a) => this.identity(a)).join(".")}`;
+        case "units": return `u${this.identity(b.ptr)}`;
+        case "keyed": return `k${this.identity(b.values ?? b.present ?? b)}`;
+        // A record kept in a `let` is one object the scope hands back; a row of an array of records is made anew at every use, and so never met twice.
+        default: return `o${this.identity(b)}`;
+      }
+    };
+    const key = `${this.identity(decl)}:${args.map((a) => ("binding" in a ? part(a.binding) : "")).join(",")}`;
+    let site = this.sites.get(key);
+    if (!site) { site = {}; this.sites.set(key, site); }
+    return site;
+  }
+
+  /** `out` as a call of `fn`: the function's parameters, each with this call's argument. */
+  private calls(out: Call, fn: FuncDecl, args: CallArgument[]): Call {
+    out.fn = fn.id;
+    out.body = [];
+    out.params = [];
+    let k = 0;
+    for (const a of args) if ("init" in a) out.params.push({ decl: fn.params[k++], init: a.init, label: a.label });
     return out;
+  }
+
+  /**
+   * The function as one that is called: every parameter a variable of its own (an array parameter the array passed),
+   * the body walked once. Or, in words for the hint on its line, why it cannot be: it sleeps (the program wakes up
+   * inside it, which only the lowering's own jumps can do), it keeps an edge (a latch a call), or it does not compile
+   * that way — a parameter reaches a field only a value known when the script is built can fill. Nothing the attempt
+   * reported is kept: the same lines compile, or fail for good, where the function is inlined.
+   */
+  private callable(parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression, target: Body, name: string, decl: TS.Node, kind: Kind | "void", args: CallArgument[], closure: Scope | null, at: At): FuncDecl | string {
+    const scope = new Scope(closure);
+    const fn: FuncDecl = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
+    for (let i = 0; i < parameters.length; i++) {
+      const p = parameters[i];
+      const a = args[i];
+      if ("binding" in a) { scope.bind(p, a.binding); continue; }
+      const type = this.c.checker.getTypeAtLocation(p.name);
+      const k = this.kindOf(type);
+      if (!k) return `${p.name.getText(target.sf)} is not a number, a boolean or a unit`;
+      const v = this.newVar(p.name.getText(target.sf), k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(type) : {});
+      fn.params.push(v);
+      scope.bind(p, { kind: "var", v });
+    }
+    if (kind !== "void") {
+      const type = this.c.checker.getReturnTypeOfSignature(this.c.checker.getSignatureFromDeclaration(decl as TS.SignatureDeclaration)!);
+      fn.result = { decl: this.newVar(`(${name} result)`, kind, at, { temp: true, ...(kind === "number" ? this.widthOf(type) : {}) }), kind };
+    }
+    const { error } = this.c;
+    const caught: string[] = [];
+    (this.c as { error: StructuredContext["error"] }).error = (_node, message) => { caught.push(message); };
+    try {
+      fn.body = this.walkFunction(body, kind, target, scope);
+    } finally {
+      (this.c as { error: StructuredContext["error"] }).error = error;
+    }
+    if (caught.length) return `with its parameters as variables of the game it does not compile — ${caught[0].replace(/\.$/, "")}`;
+    if (mentions(fn.body, "sleep")) return "it sleeps, and the program wakes up inside it";
+    if (mentions(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
+    this.mark(fn, decl);
+    this.functions.push(fn);
+    this.declared.set(fn, decl);
+    return fn;
+  }
+
+  /**
+   * Once the whole program is walked: which functions are called after all. A call the walk threw away (an attempt that
+   * failed, a first call changed to a called one) no longer counts, so a function left with one call is inlined there
+   * again — its parameters copies — and one with none is dropped. Then a word for the line of each function that is
+   * called, or inlined more than once, and the arrays nothing reaches any more are let go.
+   */
+  private settleFunctions(program: Program) {
+    const byId = new Map(this.functions.map((f) => [f.id, f]));
+    let live: Call[] = [];
+    const reached = new Set<string>();
+    for (;;) {
+      live = [];
+      reached.clear();
+      const visit = (root: unknown) => eachCall(root, (c) => {
+        live.push(c);
+        const f = c.fn ? byId.get(c.fn) : undefined;
+        if (f && !reached.has(f.id)) { reached.add(f.id); visit(f.body); }
+      });
+      visit(program.body);
+      const once = this.functions.find((f) => reached.has(f.id) && live.filter((c) => c.fn === f.id).length === 1);
+      if (!once) break;
+      const c = live.find((x) => x.fn === once.id)!;
+      delete c.fn;
+      c.body = once.body;
+      this.functions.splice(this.functions.indexOf(once), 1);
+      byId.delete(once.id);
+    }
+    const functions = this.functions.filter((f) => reached.has(f.id));
+    if (functions.length) program.functions = functions;
+
+    const tally = new Map<TS.Node, { inlined: number; called: number; copies: FuncDecl[] }>();
+    for (const c of live) {
+      const decl = this.callees.get(c);
+      if (!decl) continue;
+      let t = tally.get(decl);
+      if (!t) { t = { inlined: 0, called: 0, copies: [] }; tally.set(decl, t); }
+      if (c.fn) t.called++; else t.inlined++;
+    }
+    for (const f of functions) tally.get(this.declared.get(f)!)?.copies.push(f);
+    const times = (n: number) => `${n} place${n === 1 ? "" : "s"}`;
+    for (const [decl, t] of tally) {
+      if (t.copies.length) {
+        const copies = t.copies.length;
+        const f = t.copies[0];
+        const also = t.inlined ? ` Inlined at ${times(t.inlined)} more, where an argument is a value only the script has.` : "";
+        f.body.unshift({ kind: "remark", at: f.at, short: copies > 1 ? `called ×${t.called}, ${copies} copies` : `called ×${t.called}`,
+          text: copies > 1
+            ? `Called from ${times(t.called)}: ${copies} copies in the built map, one for each array it is passed.${also}`
+            : `Called from ${times(t.called)}: one copy in the built map, its parameters variables each call sets.${also}` });
+      } else if (t.inlined > 1) {
+        const b = this.inlinedBecause.get(decl);
+        if (b) program.body.unshift({ kind: "remark", at: b.at, short: `inlined ×${t.inlined}`, text: `Inlined at each of its ${t.inlined} calls, a copy of its body each: ${b.why}.` });
+      }
+    }
+
+    const used = new Set<string>();
+    const arrays = (root: unknown) => {
+      if (Array.isArray(root)) { root.forEach(arrays); return; }
+      if (!root || typeof root !== "object") return;
+      const o = root as Record<string, unknown>;
+      if (typeof o.array === "string") used.add(o.array);
+      for (const v of Object.values(o)) if (v && typeof v === "object") arrays(v);
+    };
+    arrays(program.body);
+    arrays(functions);
+    for (let i = this.arrays.length - 1; i >= 0; i--) if (!used.has(this.arrays[i].id)) this.arrays.splice(i, 1);
   }
 
   /** Walk another body (a game function's) until `leaveBody`: its plan, file and thunks. */

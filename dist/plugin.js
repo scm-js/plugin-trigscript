@@ -1362,7 +1362,7 @@ function entryFor(t, value) {
 }
 
 // compiler/ir.ts
-var IR_VERSION = 9;
+var IR_VERSION = 10;
 var HEAP_CELLS = 16384;
 var HEAP_CELLS_MIN = 1024;
 var HEAP_CELLS_MAX = 1 << 20;
@@ -1376,6 +1376,18 @@ var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAtt
 var I32_MAX = 2147483647;
 var I32_MIN = -2147483648;
 var U32_MAX2 = 4294967295;
+function bodiesOf(program) {
+  return [program.body, ...(program.functions ?? []).map((f) => f.body)];
+}
+function programDeclarations(program) {
+  const out = declarations(program.body);
+  for (const f of program.functions ?? []) {
+    out.push(...f.params);
+    if (f.result) out.push(f.result.decl);
+    out.push(...declarations(f.body));
+  }
+  return out;
+}
 var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
 var isNumExpr = (e) => {
   switch (e.kind) {
@@ -1506,7 +1518,7 @@ function declarations(body2) {
   const call = (c2) => {
     if (c2.result) out.push(c2.result.decl);
     for (const p of c2.params) {
-      out.push(p.decl);
+      if (!c2.fn) out.push(p.decl);
       init(p.init);
     }
     c2.body.forEach(stmt);
@@ -1889,7 +1901,7 @@ function inputsOf(programs) {
         break;
     }
   };
-  for (const p of programs) p.body.forEach(stmt);
+  for (const p of programs) for (const body2 of bodiesOf(p)) body2.forEach(stmt);
   return { sources, mouse, at };
 }
 function inputPlan(programs, locations, units) {
@@ -3637,12 +3649,16 @@ function mapPosition(mapJson, line, column) {
 // compiler/eud.ts
 function checkProgram(program) {
   const errors = [];
-  checkSleeps(program.body, errors);
-  checkDivisions(program.body, errors);
-  checkWidths(program.body, errors);
-  checkUnitLoops(program.body, errors);
+  const functions2 = new Map((program.functions ?? []).map((f) => [f.id, f]));
+  const decls = new Map(programDeclarations(program).map((d) => [d.id, d]));
   const hints = [];
-  remarks(program.body, hints);
+  for (const body2 of bodiesOf(program)) {
+    checkSleeps(body2, errors, functions2);
+    checkDivisions(body2, errors);
+    checkWidths(body2, errors, decls);
+    checkUnitLoops(body2, errors);
+    remarks(body2, hints);
+  }
   scans(program, hints);
   return { errors, hints };
 }
@@ -3860,10 +3876,10 @@ function scans(program, out) {
     seen.add(key);
     out.push({ file: at.file, line: at.line, label, note });
   };
-  statements(program.body, (s) => {
+  for (const body2 of bodiesOf(program)) statements(body2, (s) => {
     if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`);
   });
-  expressions(program.body, () => {
+  for (const body2 of bodiesOf(program)) expressions(body2, () => {
   }, (u) => hint(u.at, u.by === "random" ? "scans units \xD72" : "scans units", u.by === "random" ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.` : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));
 }
 function checkDivisions(body2, out) {
@@ -3873,8 +3889,7 @@ function checkDivisions(body2, out) {
     if (!Number.isInteger(d) || d === 0) out.push({ at: e.at, message: `Divide by a whole number other than 0, not ${d}.` });
   });
 }
-function checkWidths(body2, out) {
-  const decls = new Map(declarations(body2).map((d) => [d.id, d]));
+function checkWidths(body2, out, decls) {
   const fits = (id, value, at) => {
     const d = decls.get(id);
     if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
@@ -3909,6 +3924,7 @@ function checkWidths(body2, out) {
         s.cases.forEach((c2) => c2.body.forEach(stmt));
         break;
       case "call":
+        for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at);
         s.call.body.forEach(stmt);
         break;
       case "block":
@@ -3957,7 +3973,8 @@ function remarks(body2, out) {
   };
   body2.forEach(stmt);
 }
-function assigned(body2, into = /* @__PURE__ */ new Set()) {
+function assigned(body2, functions2, into = /* @__PURE__ */ new Set()) {
+  const followed = /* @__PURE__ */ new Set();
   const stmt = (s) => {
     switch (s.kind) {
       case "action":
@@ -4018,6 +4035,11 @@ function assigned(body2, into = /* @__PURE__ */ new Set()) {
     for (const p of c2.params) into.add(p.decl.id);
     if (c2.result) into.add(c2.result.decl.id);
     c2.body.forEach(stmt);
+    const f = c2.fn ? functions2.get(c2.fn) : void 0;
+    if (f && !followed.has(f.id)) {
+      followed.add(f.id);
+      f.body.forEach(stmt);
+    }
   };
   body2.forEach(stmt);
   return into;
@@ -4132,13 +4154,13 @@ function sleepsOnEveryPath(body2) {
   }
   return false;
 }
-function checkSleeps(body2, out) {
+function checkSleeps(body2, out, functions2) {
   const stmt = (s) => {
     switch (s.kind) {
       case "while":
       case "for":
       case "do": {
-        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body).has(id)) : false;
+        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body, functions2).has(id)) : false;
         if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond ? "This loop's condition never changes inside it, and no path around it sleeps. A program runs until it sleeps or ends, all within one frame of the game, so this loop would never give the frame back and the game would freeze. Add sleep(frames(1)) inside it, or change what it tests." : "A loop without an end needs a sleep() on every path around it. A program runs until it sleeps or ends, all within one frame of the game, so this loop would freeze the game. Add sleep(frames(1)) at the end of its body." });
         s.body.forEach(stmt);
         if (s.kind === "for") s.update.forEach(stmt);
@@ -4275,7 +4297,7 @@ function serializeIr(programs, strings, input = null, settings = {}) {
     }
   };
   const heap = settings.heapCells !== void 0 && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a2) => a2.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...input ? { input } : {}, programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...input ? { input } : {}, programs: programs.map((p) => ({ ...p, ...p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}, body: p.body.map(stmt) })) });
 }
 
 // compiler/numbers.ts
@@ -4285,7 +4307,8 @@ function typeNumbers(program) {
   const never = /* @__PURE__ */ new Set();
   const stores = [];
   let settled = false;
-  const decls = new Map(declarations(program.body).map((d) => [d.id, d]));
+  const decls = new Map(programDeclarations(program).map((d) => [d.id, d]));
+  const functions2 = new Map((program.functions ?? []).map((f) => [f.id, f]));
   const arrays = new Map(program.arrays.map((a2) => [a2.id, a2]));
   for (const a2 of program.arrays) if (a2.values && !a2.unsigned && a2.values.every((v) => v >= 0)) never.add(a2.id);
   const mixed = (at, what) => errors.push({ at, message: `${what} mixes a number, which is signed, with a u32. Say which is meant: u32(x) reads a number's 32 bits from 0 up, i32(x) a u32's as a signed number.` });
@@ -4500,6 +4523,8 @@ function typeNumbers(program) {
   let result;
   const call = (c2) => {
     for (const p of c2.params) p.init = valueFor(p.decl, p.init, c2.at);
+    const returned = c2.fn ? functions2.get(c2.fn)?.result?.decl : void 0;
+    if (!settled && returned && c2.result?.kind === "number" && !c2.result.decl.unsigned) stores.push([c2.result.decl.id, { kind: "var", id: returned.id }]);
     const saved = result;
     result = c2.result?.decl;
     c2.body.forEach(stmt);
@@ -4607,7 +4632,15 @@ function typeNumbers(program) {
         break;
     }
   };
-  program.body.forEach(stmt);
+  const everything = () => {
+    program.body.forEach(stmt);
+    for (const f of program.functions ?? []) {
+      result = f.result?.decl;
+      f.body.forEach(stmt);
+      result = void 0;
+    }
+  };
+  everything();
   for (const [id] of stores) never.add(id);
   for (let changed = true; changed; ) {
     changed = false;
@@ -4618,7 +4651,7 @@ function typeNumbers(program) {
   }
   settled = true;
   errors.length = 0;
-  program.body.forEach(stmt);
+  everything();
   return errors;
 }
 
@@ -4700,6 +4733,23 @@ var boolRef = (v) => ({ kind: "var", id: v.id });
 var unitRef = (v) => ({ kind: "unitVar", id: v.id });
 var NO_UNIT = { kind: "unitNull" };
 var ORDERS = ["move", "patrol", "attack"];
+function mentions(root, kind) {
+  if (Array.isArray(root)) return root.some((x) => mentions(x, kind));
+  if (!root || typeof root !== "object") return false;
+  const o = root;
+  if (o.kind === kind) return true;
+  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions(v, kind));
+}
+function eachCall(root, visit) {
+  if (Array.isArray(root)) {
+    for (const x of root) eachCall(x, visit);
+    return;
+  }
+  if (!root || typeof root !== "object") return;
+  const o = root;
+  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
+}
 var Structured = class {
   c;
   ts;
@@ -4713,6 +4763,15 @@ var Structured = class {
   out = [];
   nodes = /* @__PURE__ */ new WeakMap();
   nextId = 0;
+  /** The functions that are called, and what is known of each function at each set of arrays passed to it. */
+  functions = [];
+  sites = /* @__PURE__ */ new Map();
+  /** Which function of the source a call, inlined or not, is of — and why one stays inlined, for the hint on its line. */
+  callees = /* @__PURE__ */ new WeakMap();
+  inlinedBecause = /* @__PURE__ */ new Map();
+  declared = /* @__PURE__ */ new Map();
+  identities = /* @__PURE__ */ new WeakMap();
+  lastIdentity = 0;
   constructor(c2) {
     this.c = c2;
     this.ts = c2.ts;
@@ -4730,6 +4789,7 @@ var Structured = class {
       if (!(err instanceof LowerError)) throw err;
       this.c.error(statements2[statements2.length - 1] ?? this.body.plan.body, err.message);
     }
+    this.settleFunctions(program);
     return { program, nodeOf: (node) => this.nodes.get(node) };
   }
   lineOf(node) {
@@ -5259,7 +5319,7 @@ var Structured = class {
       this.c.error(init, `${name} is written out unit by unit ([first(\u2026), nearest(\u2026)]), or starts empty and is pushed to.`);
       return null;
     }
-    const dynamic = this.body.plan.grows.has(at);
+    const dynamic = this.body.plan.grows.has(at) || init.elements.length === 0;
     if (init.elements.length < (dynamic ? 0 : 1) || init.elements.length > MAX_ARRAY) {
       this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} units.` : `An array of a program has 1 to ${MAX_ARRAY} units; one that starts empty is one something pushes to.`);
       return null;
@@ -5379,7 +5439,7 @@ var Structured = class {
   declareRecords(name, initializer, shape, at) {
     const { ts } = this;
     const init = this.unwrap(initializer);
-    const dynamic = this.body.plan.grows.has(at);
+    const grows = this.body.plan.grows.has(at);
     const rows = [];
     const whole = this.evaluate(init);
     if (whole) {
@@ -5420,6 +5480,7 @@ var Structured = class {
       this.c.error(init, `${name}'s records have to be written out ([{ \u2026 }, { \u2026 }]), or it starts empty and is pushed to.`);
       return null;
     }
+    const dynamic = grows || rows.length === 0;
     if (rows.length < (dynamic ? 0 : 1) || rows.length > MAX_ARRAY) {
       this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} records.` : `An array of a program has 1 to ${MAX_ARRAY} records (got ${rows.length}); one that starts empty is one something pushes to.`);
       return null;
@@ -5927,8 +5988,9 @@ var Structured = class {
     }
     const init = this.unwrap(shared ? shared.arguments[0] : initializer);
     const width = kind === "number" ? this.widthOf(element) : {};
-    const dynamic = this.body.plan.grows.has(at);
+    const grows = this.body.plan.grows.has(at);
     const make = (length) => {
+      const dynamic = grows || length === 0;
       if (length < (dynamic ? 0 : 1) || length > MAX_ARRAY) {
         this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} cells (got ${length}).` : `An array of a program has 1 to ${MAX_ARRAY} cells (got ${length}); one that starts empty is one something pushes to.`);
         return null;
@@ -6944,9 +7006,10 @@ var Structured = class {
     return this.inline(call, arrow.parameters, target.plan.expression ?? arrow.body, target, target.name, arrow);
   }
   /**
-   * Inline a function at a call: parameters bound, the body walked, `return` leaving it.
-   * The result — a number or a boolean the checker says the call has — comes back in a
-   * variable of the call's own that dies with the statement.
+   * A function at a call. Inlined — parameters bound, the body walked, `return` leaving it — the first time a function
+   * is met, and every time when it has to be; from the second time on it is *called* when it can be (`callable`), the
+   * first call changed to match. The result — a number, a boolean or a unit the checker says the call has — comes back
+   * in a variable of the call's own that dies with the statement.
    */
   inline(call, parameters, body2, target, name, decl) {
     const { ts } = this;
@@ -6968,8 +7031,20 @@ var Structured = class {
     const out = { ...name ? { name } : {}, at: this.at(call), label: this.label(call), params: [], body: [] };
     if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true, ...kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(call)) : {} }), kind };
     this.mark(out, call);
-    const scope = new Scope(target === this.body && target === this.c.body ? this.topScope : null);
+    this.callees.set(out, decl);
+    const closure = target === this.body && target === this.c.body ? this.topScope : null;
+    const scope = new Scope(closure);
     let ok = true;
+    let args = [];
+    let why = "";
+    const asCalled = (a2) => {
+      if (typeof a2 !== "string") {
+        args?.push(a2);
+        return;
+      }
+      if (args) why = a2;
+      args = null;
+    };
     parameters.forEach((p, i) => {
       if (!ts.isIdentifier(p.name)) {
         this.c.error(p, "Destructured parameters are not supported in a program.");
@@ -6982,31 +7057,35 @@ var Structured = class {
         return;
       }
       const arg = call.arguments[i];
+      const label = `L${line}: ${p.name.text} = ${arg ? arg.getText(this.body.sf) : "its default"}`;
       if (!arg) {
         if (!p.initializer) {
           this.c.error(call, `Missing argument ${p.name.text}.`);
           ok = false;
           return;
         }
-        const saved2 = this.enterBody(target);
+        const saved = this.enterBody(target);
         const h2 = this.evaluate(p.initializer);
-        this.leaveBody(saved2);
+        this.leaveBody(saved);
         if (!h2) {
           this.notConstant(p.initializer, "A default value");
           ok = false;
           return;
         }
         scope.bind(p, { kind: "value", value: h2.value });
+        asCalled(this.constantArgument(h2.value, label, p) ?? `${p.name.text} is ${describe2(h2.value)}, which only the script has`);
         return;
       }
       const h = this.evaluate(arg);
       if (h && !isGameValue(h.value)) {
         scope.bind(p, { kind: "value", value: h.value });
+        asCalled(this.constantArgument(h.value, label, p) ?? `${p.name.text} is ${describe2(h.value)}, which only the script has`);
         return;
       }
       const binding = this.bindingOf(arg);
       if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed") {
         scope.bind(p, binding);
+        asCalled({ binding });
         return;
       }
       if (binding?.kind === "record") {
@@ -7016,17 +7095,19 @@ var Structured = class {
           return;
         }
         scope.bind(p, binding);
+        asCalled({ binding });
         return;
       }
       const variable = binding?.kind === "var" ? binding.v : void 0;
       if (variable) {
+        const init = variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable);
+        asCalled({ init, label });
         if (!this.assigns(body2, p)) {
           scope.bind(p, { kind: "var", v: variable });
           return;
         }
         const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), { ...variable.bits ? { bits: variable.bits } : {}, ...variable.unsigned ? { unsigned: true } : {} });
-        const label = `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}`;
-        out.params.push({ decl: copy, init: variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable), label });
+        out.params.push({ decl: copy, init, label });
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
@@ -7037,15 +7118,17 @@ var Structured = class {
           return;
         }
         const copy = this.newVar(p.name.text, "unit", this.sourceOfIn(target, p.name));
-        out.params.push({ decl: copy, init: unit, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
+        out.params.push({ decl: copy, init: unit, label });
         scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init: unit, label });
         return;
       }
       const value = ts.isIdentifier(this.unwrap(arg)) ? null : this.numQuietly(arg);
       if (value) {
         const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name), this.widthOf(this.c.checker.getTypeAtLocation(p.name)));
-        out.params.push({ decl: copy, init: value, label: `L${line}: ${p.name.text} = ${arg.getText(this.body.sf)}` });
+        out.params.push({ decl: copy, init: value, label });
         scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init: value, label });
         return;
       }
       this.notConstant(arg, "An argument");
@@ -7056,13 +7139,46 @@ var Structured = class {
       this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`);
       return out;
     }
+    const at = this.sourceOfIn(target, decl.name ?? decl);
+    const site = args ? this.siteOf(decl, args) : void 0;
+    if (site && args) {
+      if (site.fn) return this.calls(out, site.fn, args);
+      if (site.first && !site.never && !site.busy) {
+        if (ts.isFunctionDeclaration(decl) && (closure === null || decl.parent !== this.c.body.plan.body)) site.never = "it is declared inside a block or another function, whose variables it may use";
+        else {
+          site.busy = true;
+          let made;
+          try {
+            made = this.callable(parameters, body2, target, name ?? "function", decl, kind, args, closure, at);
+          } finally {
+            site.busy = false;
+          }
+          if (typeof made === "string") site.never = made;
+          else {
+            site.fn = made;
+            this.calls(site.first.call, made, site.first.args);
+            site.first = void 0;
+            return this.calls(out, made, args);
+          }
+        }
+      }
+    }
+    const because = site?.never ?? (args ? "" : why);
+    if (because) this.inlinedBecause.set(decl, { why: because, name: name ?? "function", at });
+    out.body = this.walkFunction(body2, kind, target, scope);
+    if (site && args && !site.first && !site.fn && !site.never) site.first = { call: out, args };
+    return out;
+  }
+  /** A function's body walked with its parameters bound in `scope`: the statements, `return` leaving them. */
+  walkFunction(body2, kind, target, scope) {
+    const { ts } = this;
     const saved = this.enterBody(target);
     const outerScope = this.scope;
     this.scope = scope;
     this.inlineDepth++;
     const fn = { kind };
     try {
-      out.body = this.collect(() => {
+      return this.collect(() => {
         if (ts.isBlock(body2)) this.block(body2.statements, { fn });
         else {
           try {
@@ -7086,7 +7202,178 @@ var Structured = class {
       this.scope = outerScope;
       this.leaveBody(saved);
     }
+  }
+  /** A value the script has, as what a parameter that is a variable is set to: a whole number or a boolean, else nothing. */
+  constantArgument(value, label, parameter) {
+    if (value === null || value === void 0) return this.kindOf(this.c.checker.getTypeAtLocation(parameter.name)) === "unit" ? { init: NO_UNIT, label } : null;
+    if (typeof value === "boolean") return { init: value ? TRUE : FALSE, label };
+    if (typeof value === "number" && Number.isInteger(value) && value >= I32_MIN && value <= U32_MAX2) return { init: num(value), label };
+    return null;
+  }
+  identity(o) {
+    let n = this.identities.get(o);
+    if (!n) {
+      n = ++this.lastIdentity;
+      this.identities.set(o, n);
+    }
+    return n;
+  }
+  /** What is known of a function at these arrays: a function that takes an array is one copy an array passed, as a template is. */
+  siteOf(decl, args) {
+    const part = (b) => {
+      switch (b.kind) {
+        case "array":
+          return `a${this.identity(b.a)}`;
+        case "records":
+          return `r${[...b.fields.values()].map((a2) => this.identity(a2)).join(".")}`;
+        case "units":
+          return `u${this.identity(b.ptr)}`;
+        case "keyed":
+          return `k${this.identity(b.values ?? b.present ?? b)}`;
+        // A record kept in a `let` is one object the scope hands back; a row of an array of records is made anew at every use, and so never met twice.
+        default:
+          return `o${this.identity(b)}`;
+      }
+    };
+    const key = `${this.identity(decl)}:${args.map((a2) => "binding" in a2 ? part(a2.binding) : "").join(",")}`;
+    let site = this.sites.get(key);
+    if (!site) {
+      site = {};
+      this.sites.set(key, site);
+    }
+    return site;
+  }
+  /** `out` as a call of `fn`: the function's parameters, each with this call's argument. */
+  calls(out, fn, args) {
+    out.fn = fn.id;
+    out.body = [];
+    out.params = [];
+    let k = 0;
+    for (const a2 of args) if ("init" in a2) out.params.push({ decl: fn.params[k++], init: a2.init, label: a2.label });
     return out;
+  }
+  /**
+   * The function as one that is called: every parameter a variable of its own (an array parameter the array passed),
+   * the body walked once. Or, in words for the hint on its line, why it cannot be: it sleeps (the program wakes up
+   * inside it, which only the lowering's own jumps can do), it keeps an edge (a latch a call), or it does not compile
+   * that way — a parameter reaches a field only a value known when the script is built can fill. Nothing the attempt
+   * reported is kept: the same lines compile, or fail for good, where the function is inlined.
+   */
+  callable(parameters, body2, target, name, decl, kind, args, closure, at) {
+    const scope = new Scope(closure);
+    const fn = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
+    for (let i = 0; i < parameters.length; i++) {
+      const p = parameters[i];
+      const a2 = args[i];
+      if ("binding" in a2) {
+        scope.bind(p, a2.binding);
+        continue;
+      }
+      const type = this.c.checker.getTypeAtLocation(p.name);
+      const k = this.kindOf(type);
+      if (!k) return `${p.name.getText(target.sf)} is not a number, a boolean or a unit`;
+      const v = this.newVar(p.name.getText(target.sf), k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(type) : {});
+      fn.params.push(v);
+      scope.bind(p, { kind: "var", v });
+    }
+    if (kind !== "void") {
+      const type = this.c.checker.getReturnTypeOfSignature(this.c.checker.getSignatureFromDeclaration(decl));
+      fn.result = { decl: this.newVar(`(${name} result)`, kind, at, { temp: true, ...kind === "number" ? this.widthOf(type) : {} }), kind };
+    }
+    const { error } = this.c;
+    const caught = [];
+    this.c.error = (_node, message) => {
+      caught.push(message);
+    };
+    try {
+      fn.body = this.walkFunction(body2, kind, target, scope);
+    } finally {
+      this.c.error = error;
+    }
+    if (caught.length) return `with its parameters as variables of the game it does not compile \u2014 ${caught[0].replace(/\.$/, "")}`;
+    if (mentions(fn.body, "sleep")) return "it sleeps, and the program wakes up inside it";
+    if (mentions(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
+    this.mark(fn, decl);
+    this.functions.push(fn);
+    this.declared.set(fn, decl);
+    return fn;
+  }
+  /**
+   * Once the whole program is walked: which functions are called after all. A call the walk threw away (an attempt that
+   * failed, a first call changed to a called one) no longer counts, so a function left with one call is inlined there
+   * again — its parameters copies — and one with none is dropped. Then a word for the line of each function that is
+   * called, or inlined more than once, and the arrays nothing reaches any more are let go.
+   */
+  settleFunctions(program) {
+    const byId = new Map(this.functions.map((f) => [f.id, f]));
+    let live = [];
+    const reached = /* @__PURE__ */ new Set();
+    for (; ; ) {
+      live = [];
+      reached.clear();
+      const visit = (root) => eachCall(root, (c3) => {
+        live.push(c3);
+        const f = c3.fn ? byId.get(c3.fn) : void 0;
+        if (f && !reached.has(f.id)) {
+          reached.add(f.id);
+          visit(f.body);
+        }
+      });
+      visit(program.body);
+      const once = this.functions.find((f) => reached.has(f.id) && live.filter((c3) => c3.fn === f.id).length === 1);
+      if (!once) break;
+      const c2 = live.find((x) => x.fn === once.id);
+      delete c2.fn;
+      c2.body = once.body;
+      this.functions.splice(this.functions.indexOf(once), 1);
+      byId.delete(once.id);
+    }
+    const functions2 = this.functions.filter((f) => reached.has(f.id));
+    if (functions2.length) program.functions = functions2;
+    const tally = /* @__PURE__ */ new Map();
+    for (const c2 of live) {
+      const decl = this.callees.get(c2);
+      if (!decl) continue;
+      let t = tally.get(decl);
+      if (!t) {
+        t = { inlined: 0, called: 0, copies: [] };
+        tally.set(decl, t);
+      }
+      if (c2.fn) t.called++;
+      else t.inlined++;
+    }
+    for (const f of functions2) tally.get(this.declared.get(f))?.copies.push(f);
+    const times = (n) => `${n} place${n === 1 ? "" : "s"}`;
+    for (const [decl, t] of tally) {
+      if (t.copies.length) {
+        const copies = t.copies.length;
+        const f = t.copies[0];
+        const also = t.inlined ? ` Inlined at ${times(t.inlined)} more, where an argument is a value only the script has.` : "";
+        f.body.unshift({
+          kind: "remark",
+          at: f.at,
+          short: copies > 1 ? `called \xD7${t.called}, ${copies} copies` : `called \xD7${t.called}`,
+          text: copies > 1 ? `Called from ${times(t.called)}: ${copies} copies in the built map, one for each array it is passed.${also}` : `Called from ${times(t.called)}: one copy in the built map, its parameters variables each call sets.${also}`
+        });
+      } else if (t.inlined > 1) {
+        const b = this.inlinedBecause.get(decl);
+        if (b) program.body.unshift({ kind: "remark", at: b.at, short: `inlined \xD7${t.inlined}`, text: `Inlined at each of its ${t.inlined} calls, a copy of its body each: ${b.why}.` });
+      }
+    }
+    const used = /* @__PURE__ */ new Set();
+    const arrays = (root) => {
+      if (Array.isArray(root)) {
+        root.forEach(arrays);
+        return;
+      }
+      if (!root || typeof root !== "object") return;
+      const o = root;
+      if (typeof o.array === "string") used.add(o.array);
+      for (const v of Object.values(o)) if (v && typeof v === "object") arrays(v);
+    };
+    arrays(program.body);
+    arrays(functions2);
+    for (let i = this.arrays.length - 1; i >= 0; i--) if (!used.has(this.arrays[i].id)) this.arrays.splice(i, 1);
   }
   /** Walk another body (a game function's) until `leaveBody`: its plan, file and thunks. */
   enterBody(target) {
@@ -8319,7 +8606,7 @@ function compileScript(ts, files, names, options) {
     const index = programs.length;
     ir.push(emitted2.program);
     programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
-    for (const d of declarations(emitted2.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {}, ...d.unsigned ? { unsigned: true } : {} });
+    for (const d of programDeclarations(emitted2.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {}, ...d.unsigned ? { unsigned: true } : {} });
     const check = checkProgram(emitted2.program);
     for (const d of [...mixes, ...check.errors]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
@@ -8822,7 +9109,7 @@ function createScriptEditor(monaco, host, files, active, onChange) {
 }
 
 // version.ts
-var VERSION = "3.6.0";
+var VERSION = "3.7.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -9537,7 +9824,7 @@ var ProgramRun = class {
     const i = yield* this.num(index);
     const length = a2.decl.dynamic ? a2.cells.length : a2.decl.length;
     if (i >= 0 && i < length) return { ...a2, i };
-    this.sim.faults.push({ at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
+    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
     return void 0;
   }
   /**
@@ -9549,7 +9836,7 @@ var ProgramRun = class {
     let room = Math.max(a2.room, HEAP_SMALLEST);
     while (room < cells) room *= 2;
     if (!this.sim.heap.take(room)) {
-      this.sim.faults.push({ at, message: `Out of memory: ${a2.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: ${a2.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
       return false;
     }
     if (a2.room) this.sim.heap.give(a2.room);
@@ -9802,11 +10089,23 @@ var ProgramRun = class {
   }
   *call(c2) {
     if (c2.result) this.declare(c2.result.decl);
-    for (const p of c2.params) {
-      this.declare(p.decl);
-      yield* this.put(p.decl, p.init);
+    const fn = c2.fn ? this.program.functions?.find((f) => f.id === c2.fn) : void 0;
+    if (c2.fn && !fn) throw new Error(`The function ${c2.fn} is not one of the program's (line ${c2.at.line}).`);
+    if (fn) {
+      const values = [];
+      for (const p of c2.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init) : yield* this.init(p.init, p.decl.kind));
+      c2.params.forEach((p, i) => {
+        this.declare(p.decl);
+        if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i]);
+        else this.store(p.decl.id, values[i]);
+      });
+    } else {
+      for (const p of c2.params) {
+        this.declare(p.decl);
+        yield* this.put(p.decl, p.init);
+      }
     }
-    const flow = yield* this.block(c2.body, { fn: { result: c2.result?.decl } });
+    const flow = yield* this.block(fn ? fn.body : c2.body, { fn: { result: c2.result?.decl } });
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c2.at.line}).`);
     return c2.result && c2.result.kind !== "unit" ? this.read(c2.result.decl.id) : 0;
   }
@@ -9924,7 +10223,7 @@ var ProgramRun = class {
             return "next";
           }
           if (i >= 0 && i < a2.cells.length) a2.cells[i] = this.kept(v, a2.decl);
-          else this.sim.faults.push({ at: s.at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${a2.cells.length}): nothing is stored.` });
+          else this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${a2.cells.length}): nothing is stored.` });
           return "next";
         }
         const c2 = yield* this.cell(s.array, s.index, s.at, "nothing is stored");
@@ -10049,6 +10348,7 @@ var ProgramSimulation = class {
   runs;
   events = [];
   /** What the game would let pass without a word and is a mistake all the same: an index past the end of an array. */
+  /** What a program did that is always a mistake — an index past an array's end, a push the heap had no room for — and the frame it happened in. */
   faults = [];
   /**
    * The heap the programs' growing arrays share, counted as the game counts it: blocks are powers of two, a block given
@@ -10423,7 +10723,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 9
+IR_VERSION = 10
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -10870,6 +11170,10 @@ class Lowering:
         self.resumes = []  # (index, Forward) for every sleep
         self.frame_end = None
         self.latches = {}
+        # The functions that are called, by id, and each one's EUDFunc once something has called it.
+        self.functions = {f["id"]: f for f in program.get("functions", [])}
+        self.made = {}
+        self.in_function = 0
 
     # \u2500\u2500 storage \u2500\u2500
     def player_of(self):
@@ -11908,6 +12212,8 @@ class Lowering:
         exit_ << NextTrigger()
 
     def sleep(self, st):
+        if self.in_function:
+            raise Fail("trigscript: sleep inside a function that is called%s" % where(st))
         if st.get("cycles") is not None:
             frames = int(st["cycles"])
         else:
@@ -11996,8 +12302,60 @@ class Lowering:
         """An expression as what a variable of \`kind\` holds."""
         return self.num(e) if kind == "number" else self.unit(e) if kind == "unit" else self.truth(e)
 
+    def function(self, id_, node):
+        """A called function: its parameters' cells, its result's, and its one body \u2014 an EUDFunc of no
+        arguments, since the cells are the program's own (a row a player, as any variable is)."""
+        made = self.made.get(id_)
+        if made is not None:
+            return made
+        f = self.functions.get(id_)
+        if f is None:
+            raise Fail("trigscript: unknown function %r%s" % (id_, where(node)))
+        params = [self.declare(d) for d in f["params"]]
+        kind = f["result"]["kind"] if f.get("result") else "void"
+        result = self.declare(f["result"]["decl"]) if f.get("result") else None
+        lowering = self
+
+        @EUDFunc
+        def body():
+            if result is not None:
+                result.set(NO_UNIT if kind == "unit" else 0)
+            end = Forward()
+            lowering.in_function += 1
+            try:
+                lowering.straight(f["body"], {"fn": {"result": result, "kind": kind, "end": end}})
+            finally:
+                lowering.in_function -= 1
+            end << NextTrigger()
+
+        made = self.made[id_] = (body, params, result)
+        return made
+
+    def call_function(self, call, result):
+        body, params, returned = self.function(call["fn"], call)
+        if len(params) != len(call["params"]):
+            raise Fail("trigscript: %s takes %d values, not %d%s" % (call["fn"], len(params), len(call["params"]), where(call)))
+        # Every argument first, then the parameters: an argument may be a call of this same function. A variable's
+        # own cell is copied when a later argument holds a call, which may be of a function that writes that variable.
+        values = []
+        for i, p in enumerate(call["params"]):
+            v = self.value(p["init"], p["decl"]["kind"])
+            later = any(has_call(q["init"]) for q in call["params"][i + 1:])
+            if later and p["decl"]["kind"] != "unit" and not isinstance(v, int):
+                v = fresh(v)
+            values.append(v)
+        for s, v in zip(params, values):
+            s.set(v)
+        body()
+        if result is None:
+            return 0
+        result.set(returned.get())
+        return result.get()
+
     def call(self, call):
         result = self.declare(call["result"]["decl"]) if call.get("result") else None
+        if call.get("fn") is not None:
+            return self.call_function(call, result)
         if result is not None:
             result.set(NO_UNIT if call["result"]["kind"] == "unit" else 0)
         for p in call["params"]:
@@ -12049,6 +12407,17 @@ class Lowering:
                 f_setcurpl(self.slots[0])
                 self.frame()
             EUDEndIf()
+
+
+def has_call(node):
+    """Whether a call is anywhere in a piece of the IR."""
+    if isinstance(node, list):
+        return any(has_call(x) for x in node)
+    if not isinstance(node, dict):
+        return False
+    if node.get("kind") == "call" and isinstance(node.get("call"), dict):
+        return True
+    return any(has_call(v) for v in node.values() if isinstance(v, (dict, list)))
 
 
 def string_of(value):
@@ -13170,6 +13539,7 @@ var FILE_TEMPLATE = `import { trigger, units, locations, P1 } from "trigscript";
 var SIMULATE_FRAMES = 480;
 var START_LOCATION_UNIT = 214;
 var SIMULATE_ROWS = 200;
+var SIMULATE_FAULTS = 20;
 var CHECK_DELAY_MS = 350;
 var OUTPUT_LINES = 2e3;
 var STATUS_MS = 1e4;
@@ -13520,6 +13890,24 @@ function createWorkspace(svc, options, mode) {
     const { sim, programs: ps, result: r } = simulation;
     const list = el("ul", { className: "tsd-list" });
     list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}. Unit conditions (bring, command, \u2026) count as false and reads of what the simulation does not hold (units, kills, scores) give 0; wait takes no time.`)));
+    const faults = /* @__PURE__ */ new Map();
+    for (const f of ps?.faults ?? []) {
+      const key = `${f.at.file}:${f.at.line}:${f.at.column}:${f.message.replace(/\d+/g, "#")}`;
+      const seen = faults.get(key);
+      if (seen) seen.times++;
+      else faults.set(key, { first: f, times: 1 });
+    }
+    for (const { first: f, times } of [...faults.values()].slice(0, SIMULATE_FAULTS)) {
+      list.append(el(
+        "li",
+        { className: "tsd-fault", title: f.message, onClick: () => goTo(f.at.file, f.at.line, f.at.column) },
+        el("span", { className: "frame" }, `frame ${f.cycle + 1}`),
+        shell.icon("error"),
+        el("span", { className: "msg" }, times > 1 ? `${f.message} (and ${times - 1} more time${times === 2 ? "" : "s"} at this line)` : f.message),
+        el("span", { className: "where" }, where({ file: f.at.file, line: f.at.line }))
+      ));
+    }
+    if (faults.size > SIMULATE_FAULTS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${faults.size - SIMULATE_FAULTS} more lines with a fault`)));
     const rows = [];
     sim.events.forEach((e, i) => {
       const at = r.sources[e.trigger];
@@ -13915,7 +14303,9 @@ function createWorkspace(svc, options, mode) {
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
       const quiet = r.input ? " Keys, clicks, the mouse and chat are not simulated: they read as nothing." : "";
-      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.${quiet}`);
+      const faults = programs?.faults.length ?? 0;
+      const wrong = faults ? ` ${faults} fault${faults === 1 ? "" : "s"}: an array read or written past its end, or out of memory \u2014 first in the list.` : "";
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.${wrong}${quiet}`);
       shell.showPanel("simulate");
     } catch (err) {
       setStatus("error", `Simulation stopped: ${err.message}`);

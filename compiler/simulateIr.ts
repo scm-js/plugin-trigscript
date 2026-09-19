@@ -197,7 +197,7 @@ class ProgramRun {
     const i = yield* this.num(index);
     const length = a.decl.dynamic ? a.cells.length : a.decl.length;
     if (i >= 0 && i < length) return { ...a, i };
-    this.sim.faults.push({ at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
+    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
     return undefined;
   }
 
@@ -210,7 +210,7 @@ class ProgramRun {
     let room = Math.max(a.room, HEAP_SMALLEST);
     while (room < cells) room *= 2;
     if (!this.sim.heap.take(room)) {
-      this.sim.faults.push({ at, message: `Out of memory: ${a.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: ${a.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
       return false;
     }
     if (a.room) this.sim.heap.give(a.room);
@@ -387,11 +387,24 @@ class ProgramRun {
 
   private *call(c: Call): Generator<undefined, Value, undefined> {
     if (c.result) this.declare(c.result.decl);
-    for (const p of c.params) {
-      this.declare(p.decl);
-      yield* this.put(p.decl, p.init);
+    const fn = c.fn ? this.program.functions?.find((f) => f.id === c.fn) : undefined;
+    if (c.fn && !fn) throw new Error(`The function ${c.fn} is not one of the program's (line ${c.at.line}).`);
+    if (fn) {
+      // A called function: every argument first — one of them may be a call of the same function — then its parameters, then its one body.
+      const values: (Value | SimUnit | null)[] = [];
+      for (const p of c.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init as UnitExpr) : yield* this.init(p.init as NumExpr | BoolExpr, p.decl.kind));
+      c.params.forEach((p, i) => {
+        this.declare(p.decl);
+        if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i] as SimUnit | null);
+        else this.store(p.decl.id, values[i] as Value);
+      });
+    } else {
+      for (const p of c.params) {
+        this.declare(p.decl);
+        yield* this.put(p.decl, p.init);
+      }
     }
-    const flow = yield* this.block(c.body, { fn: { result: c.result?.decl } });
+    const flow = yield* this.block(fn ? fn.body : c.body, { fn: { result: c.result?.decl } });
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c.at.line}).`);
     return c.result && c.result.kind !== "unit" ? this.read(c.result.decl.id) : 0;
   }
@@ -485,7 +498,7 @@ class ProgramRun {
           const i = yield* this.num(s.index);
           if (i === a.cells.length) { if (this.grow(a, i + 1, s.at)) a.cells.push(this.kept(v, a.decl)); return "next"; }
           if (i >= 0 && i < a.cells.length) a.cells[i] = this.kept(v, a.decl);
-          else this.sim.faults.push({ at: s.at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${a.cells.length}): nothing is stored.` });
+          else this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${a.cells.length}): nothing is stored.` });
           return "next";
         }
         const c = yield* this.cell(s.array, s.index, s.at, "nothing is stored");
@@ -601,7 +614,8 @@ export class ProgramSimulation {
   readonly runs: ProgramRun[];
   readonly events: ProgramEvent[] = [];
   /** What the game would let pass without a word and is a mistake all the same: an index past the end of an array. */
-  readonly faults: { at: At; message: string }[] = [];
+  /** What a program did that is always a mistake — an index past an array's end, a push the heap had no room for — and the frame it happened in. */
+  readonly faults: { at: At; message: string; cycle: number; program: number }[] = [];
   /**
    * The heap the programs' growing arrays share, counted as the game counts it: blocks are powers of two, a block given
    * back waits in its size's list for the next array that wants that size, and new ground is taken from the bottom up

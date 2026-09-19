@@ -23,7 +23,7 @@
  *   going over the program once without changing it and dropping variables until none is left
  *   that some store could put below zero.
  */
-import { I32_MAX, UNIT_FLAGS, declarations, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
+import { I32_MAX, UNIT_FLAGS, programDeclarations, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
 import type { ProgramDiagnostic } from "./eud";
 
 /** `flex`: a constant from 0 to 2 147 483 647, which is the same whichever way it is read. */
@@ -37,7 +37,8 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   const never = new Set<string>();
   const stores: [string, NumExpr][] = [];
   let settled = false;
-  const decls = new Map<string, VarDecl>(declarations(program.body).map((d) => [d.id, d]));
+  const decls = new Map<string, VarDecl>(programDeclarations(program).map((d) => [d.id, d]));
+  const functions = new Map((program.functions ?? []).map((f) => [f.id, f]));
   /** An array is typed as a variable is, and found never below zero the same way: by everything ever stored into a cell of it. */
   const arrays = new Map(program.arrays.map((a) => [a.id, a]));
   for (const a of program.arrays) if (a.values && !a.unsigned && a.values.every((v) => v >= 0)) never.add(a.id);
@@ -202,7 +203,10 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
 
   let result: VarDecl | undefined;
   const call = (c: Call) => {
+    // A called function's parameter is stored into by every call of it, and what it returned is copied into the call's own result.
     for (const p of c.params) p.init = valueFor(p.decl, p.init, c.at);
+    const returned = c.fn ? functions.get(c.fn)?.result?.decl : undefined;
+    if (!settled && returned && c.result?.kind === "number" && !c.result.decl.unsigned) stores.push([c.result.decl.id, { kind: "var", id: returned.id }]);
     const saved = result;
     result = c.result?.decl;
     c.body.forEach(stmt);
@@ -270,7 +274,11 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   };
 
   // Once to see every store — marking an operation is harmless to repeat, and the casts are kept until the second time — then for good.
-  program.body.forEach(stmt);
+  const everything = () => {
+    program.body.forEach(stmt);
+    for (const f of program.functions ?? []) { result = f.result?.decl; f.body.forEach(stmt); result = undefined; }
+  };
+  everything();
   for (const [id] of stores) never.add(id);
   for (let changed = true; changed;) {
     changed = false;
@@ -278,6 +286,6 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   }
   settled = true;
   errors.length = 0;
-  program.body.forEach(stmt);
+  everything();
   return errors;
 }

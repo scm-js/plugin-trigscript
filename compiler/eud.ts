@@ -9,7 +9,7 @@
  * condition does not mention a variable the body assigns, is an error naming the loop.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { HEAP_CELLS, declarations, heapCells, isUnitExpr, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type UnitExpr } from "./ir";
+import { HEAP_CELLS, bodiesOf, heapCells, isUnitExpr, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
 import type { LineHint, ScriptString } from "./compiler";
 import type { InputPlan } from "./input";
 
@@ -18,12 +18,17 @@ export interface ProgramDiagnostic { at: At; message: string }
 /** A program's faults, each with the node it is at, and what its lines are worth a word about. */
 export function checkProgram(program: Program): { errors: ProgramDiagnostic[]; hints: LineHint[] } {
   const errors: ProgramDiagnostic[] = [];
-  checkSleeps(program.body, errors);
-  checkDivisions(program.body, errors);
-  checkWidths(program.body, errors);
-  checkUnitLoops(program.body, errors);
+  const functions = new Map((program.functions ?? []).map((f) => [f.id, f]));
+  const decls = new Map(programDeclarations(program).map((d) => [d.id, d]));
   const hints: LineHint[] = [];
-  remarks(program.body, hints);
+  // The program's body, then the body of every function that is called: each is checked as the statements it is.
+  for (const body of bodiesOf(program)) {
+    checkSleeps(body, errors, functions);
+    checkDivisions(body, errors);
+    checkWidths(body, errors, decls);
+    checkUnitLoops(body, errors);
+    remarks(body, hints);
+  }
   scans(program, hints);
   return { errors, hints };
 }
@@ -122,8 +127,8 @@ function scans(program: Program, out: LineHint[]) {
     seen.add(key);
     out.push({ file: at.file, line: at.line, label, note });
   };
-  statements(program.body, (s) => { if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
-  expressions(program.body, () => {}, (u) => hint(u.at, u.by === "random" ? "scans units ×2" : "scans units", u.by === "random"
+  for (const body of bodiesOf(program)) statements(body, (s) => { if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
+  for (const body of bodiesOf(program)) expressions(body, () => {}, (u) => hint(u.at, u.by === "random" ? "scans units ×2" : "scans units", u.by === "random"
     ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.`
     : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));
 }
@@ -138,8 +143,7 @@ function checkDivisions(body: Stmt[], out: ProgramDiagnostic[]) {
 }
 
 /** A constant put into a `u8` / `u16` has to fit: the game would stop it at the top without a word. */
-function checkWidths(body: Stmt[], out: ProgramDiagnostic[]) {
-  const decls = new Map(declarations(body).map((d) => [d.id, d]));
+function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, VarDecl>) {
   const fits = (id: string, value: NumExpr | BoolExpr | UnitExpr, at: At) => {
     const d = decls.get(id);
     if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
@@ -155,7 +159,7 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[]) {
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
-      case "call": s.call.body.forEach(stmt); break;
+      case "call": for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at); s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
     }
@@ -182,7 +186,8 @@ function remarks(body: Stmt[], out: LineHint[]) {
 }
 
 /** The variables a statement list assigns (declares count too), by id — and `THE_GAME` when it takes an action, which may change what a read finds. */
-function assigned(body: Stmt[], into = new Set<string>()): Set<string> {
+function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set<string>()): Set<string> {
+  const followed = new Set<string>();
   const stmt = (s: Stmt) => {
     switch (s.kind) {
       case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": into.add(THE_GAME); break;
@@ -200,7 +205,14 @@ function assigned(body: Stmt[], into = new Set<string>()): Set<string> {
       default: break;
     }
   };
-  const call = (c: Call) => { for (const p of c.params) into.add(p.decl.id); if (c.result) into.add(c.result.decl.id); c.body.forEach(stmt); };
+  // What a called function assigns — a variable of the program it closes over, an array it was passed — the call assigns.
+  const call = (c: Call) => {
+    for (const p of c.params) into.add(p.decl.id);
+    if (c.result) into.add(c.result.decl.id);
+    c.body.forEach(stmt);
+    const f = c.fn ? functions.get(c.fn) : undefined;
+    if (f && !followed.has(f.id)) { followed.add(f.id); f.body.forEach(stmt); }
+  };
   body.forEach(stmt);
   return into;
 }
@@ -257,11 +269,11 @@ function sleepsOnEveryPath(body: Stmt[]): boolean {
   return false;
 }
 
-function checkSleeps(body: Stmt[], out: ProgramDiagnostic[]) {
+function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<string, FuncDecl>) {
   const stmt = (s: Stmt) => {
     switch (s.kind) {
       case "while": case "for": case "do": {
-        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body).has(id)) : false;
+        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body, functions).has(id)) : false;
         if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond
           ? "This loop's condition never changes inside it, and no path around it sleeps. A program runs until it sleeps or ends, all within one frame of the game, so this loop would never give the frame back and the game would freeze. Add sleep(frames(1)) inside it, or change what it tests."
           : "A loop without an end needs a sleep() on every path around it. A program runs until it sleeps or ends, all within one frame of the game, so this loop would freeze the game. Add sleep(frames(1)) at the end of its body." });
@@ -350,5 +362,5 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
   };
   // The heap's size goes along only when an array grows and the map's settings changed it: the lowering has the same default.
   const heap = settings.heapCells !== undefined && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a) => a.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, ...(p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}), body: p.body.map(stmt) })) });
 }

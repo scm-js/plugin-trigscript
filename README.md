@@ -96,7 +96,10 @@ the whole list becomes script-generated.
 
 **Simulate** runs the script for 480 frames — twenty seconds of the game at Fastest — in
 a built-in interpreter and lists, in the panel's Simulate view, every action that ran,
-with its frame and source line, plus each program variable's final value. The `trigger()` records run in a trigger
+with its frame and source line, plus each program variable's final value. First in the
+list, marked as errors, is what a program did that is always a mistake and that the game
+passes over in silence — a read or a store past an array's end, a push the heap had no room
+for — one row a line however often a loop came past it. The `trigger()` records run in a trigger
 interpreter (death counters, switches, preserve, list order) and the programs in a
 program interpreter that computes every number the way the game will, the two sharing one
 world, so a program's `setDeaths` is seen by a trigger and the other way round. Reads
@@ -390,13 +393,33 @@ The editor says so at the end of the line: *unrolled ×3*. A `for` over a variab
 or one that assigns its variable in the body, is a loop in the game. An unroll of more
 than 256 iterations is an error that says how to write it as a loop instead.
 
-**Functions are inlined** at every call site, and arguments pass by value, as in
-TypeScript: `function bump(x: number) { x++; }` leaves the caller's variable alone. A
-parameter the function never assigns reads the argument's variable directly; one it
-assigns is a copy made at the call. Locals are their own per call site. A function may
-**return a number or a boolean** — `function canAfford(price: number) { return gold >=
-price; }`, `x = twice(y) + 1`. A function may `sleep`: the program resumes inside it.
-There is no recursion.
+**Functions.** Arguments pass by value, as in TypeScript: `function bump(x: number) { x++; }`
+leaves the caller's variable alone. A function may **return a number, a boolean or a
+unit** — `function canAfford(price: number) { return gold >= price; }`, `x = twice(y) + 1`.
+Locals start afresh at every call. There is no recursion yet.
+
+A function used once is **inlined**: its body is written where the call stands, a
+parameter that was given a value known when the script is built is that value, and one
+given a variable the function never assigns reads that variable directly. A function used
+a second time is **called** instead when it can be: one copy of its body in the built
+map, its parameters variables that every call sets. The source is the same either way and
+means the same; what calling buys is the size of the map — ten calls of a function are
+one body, not ten. The end of the function's line says which it got: *called ×3*, or
+*inlined ×3* with the reason when you hover it. Three things keep a function inlined:
+
+- it **sleeps** — the program wakes up inside it, which only an inlined body can do;
+- a parameter reaches something only a value known when the script is built can fill —
+  `function pay(p: Player, n: number) { setResources(p, "add", n, "ore"); }` needs its
+  player when the map is built, so `pay(P2, 4)` stays inlined (the amount could be a
+  variable; the player cannot) — or an argument is something only the script has, such as
+  text or a list;
+- it uses `rose()` or `once()`, which remember what they saw at each place they are
+  written.
+
+An array reaches a function as itself — what the function stores, the caller sees — and
+which array is settled when the script is built. So a function that takes an array is one
+copy *for each array it is passed*: `total(hp)` and `total(shields)` are two copies, five
+calls of `total(hp)` one. The hint counts them: *called ×5, 2 copies*.
 
 Functions the game runs can live in any file: `game()` marks them.
 
@@ -413,8 +436,8 @@ program(() => {
 });
 ```
 
-A `game()` function follows the program's rules — its body is inlined at each call, and
-what it does is attributed to its own file and line. It sees its parameters and what any
+A `game()` function follows the program's rules — inlined where it is used once, called
+where it is used more, as above — and what it does is attributed to its own file and line. It sees its parameters and what any
 file sees when the script is applied, not the calling program's variables. Calling one
 outside a program is an error: it runs in the game, not when the script is applied.
 
@@ -434,7 +457,8 @@ it, with a note that it ran when the script was applied. That is what makes `bur
 above work — the helper is ordinary TypeScript, it returns two actions, and the program
 runs them. It is also the one rule to keep in mind: a program variable cannot reach a
 condition, an action or a helper, because those are computed before the game starts. A
-parameter of an inlined function that was bound to a value does reach them, so
+parameter of a function that was given a value does reach them — such a function is
+inlined, the parameter being that value — so
 `function spawn(p: Player, n: number) { createUnit(p, units.Zergling, n, spawnAt); }`
 works with `spawn(P2, 4)`.
 
@@ -701,6 +725,18 @@ Still to come: `test()` blocks that run a script against the simulator, a debugg
 steps it, and a gallery of examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
 
+### Coming from 3.6
+
+Nothing a 3.6 script does has changed; what changes is the map it builds into. A function
+used more than once is now one body that is called, where it used to be a copy of its body
+at every call (*Functions*, above), so a script with helpers builds into a smaller map.
+Two things show in the editor: the hint at the end of a function's line, and the Variables
+list, where a called function's parameter and its locals are one variable each instead of
+one for every call. An array written empty — `let found: number[] = []` — is now always one
+that grows, also when the only pushes are inside a function it is handed to. And the
+**Simulate** view lists what the interpreter has long recorded and never shown: a read or a
+store past an array's end, a push the heap had no room for, each with its line.
+
 ### Coming from 3.5
 
 Nothing a 3.5 script does has changed. What is new is arrays, arrays that grow, tables keyed
@@ -860,8 +896,12 @@ a variable of the IR (number or boolean) or a record of them (an object literal)
 in a scope keyed by declaration node so shadowing and inlining resolve as the checker
 does; expressions become IR expressions as written; `&&` / `||` / `!` stay what they are,
 and the lowering short-circuits them; functions declared in the body and `game()`
-functions are inlined per call as `call` nodes — the walker switches to the function's
-own plan, file and thunks for the duration; a call, member access or arithmetic over
+functions are `call` nodes — inlined where a function is first met, the walker switching
+to the function's own plan, file and thunks for the duration, and from the second time on
+a call of one body kept in `Program.functions`, when the function compiles with every
+parameter a variable (the attempt's diagnostics are thrown away, and a first call already
+inlined is changed to match; `settleFunctions` then inlines again whatever is left with one
+call); a call, member access or arithmetic over
 values a parameter was bound to is evaluated on the spot; a `for` whose bounds evaluate
 is unrolled like a `for…of`; an action with a variable argument carries the expression
 beside its record. The thunks are memoised in the bodies, so the script's build-time

@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 10: functions that are called — `Program.functions`, and `Call.fn` naming one: the call sets the function's parameters and runs its one body, where a call without `fn` carries a body of its own.
  * 9: a unit as the three numbers it is (`unitAt`, `unitPart`), which is what lets an array hold units.
  * 8: arrays that grow — `ArrayDecl.dynamic`, `push`, `pop`, `setLength`, `length` — out of a heap the programs share.
  * 7: arrays — `Program.arrays`, `declareArray`, `element` and `store` — of numbers and booleans, indexed by a constant or a variable; a list known when the script was built and indexed by a variable is an array too, one nothing writes (`values`).
@@ -19,7 +20,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 9;
+export const IR_VERSION = 10;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -255,9 +256,28 @@ export interface ActionVariable { field: keyof ActionRecord; bits: 8 | 16 | 32; 
 
 export type CompareOp = "<" | "<=" | ">" | ">=" | "==" | "!=";
 
-/** A function inlined at a call: parameter copies, the body, and what it returns into. */
+/**
+ * A function that is called: one body in the built map, which every `Call` naming it (`fn`) runs. Its parameters are
+ * variables of its own that a call sets; `return` writes `result`, which the call copies into its own. It never sleeps
+ * and never calls itself, directly or round about.
+ */
+export interface FuncDecl {
+  id: string;
+  name: string;
+  params: VarDecl[];
+  result?: { decl: VarDecl; kind: "number" | "boolean" | "unit" };
+  body: Stmt[];
+  at: At;
+}
+
+/**
+ * A function at a call. Inlined (no `fn`): parameter copies, the body, and what it returns into. Called (`fn`): the
+ * function is one of `Program.functions`; `params` are that function's own, each with this call's argument — all of
+ * them worked out before any is set — `body` is empty, and `result` is this call's copy of what the function returned.
+ */
 export interface Call {
   name?: string;
+  fn?: string;
   at: At;
   label: string;
   /** Parameters bound by copy (the function assigns them): a variable each, initialised from the argument. */
@@ -332,8 +352,26 @@ export interface Program {
   perPlayer: boolean;
   /** Every array of the program, those of inlined functions included: what a backend allocates before anything runs. */
   arrays: ArrayDecl[];
+  /** The functions that are called rather than inlined; absent when there is none. */
+  functions?: FuncDecl[];
   body: Stmt[];
   at: At;
+}
+
+/** Every statement list of a program: its body, then the body of each function that is called. */
+export function bodiesOf(program: Pick<Program, "body" | "functions">): Stmt[][] {
+  return [program.body, ...(program.functions ?? []).map((f) => f.body)];
+}
+
+/** Every declaration of a program: its body's, and each called function's parameters, result and body. */
+export function programDeclarations(program: Pick<Program, "body" | "functions">): VarDecl[] {
+  const out = declarations(program.body);
+  for (const f of program.functions ?? []) {
+    out.push(...f.params);
+    if (f.result) out.push(f.result.decl);
+    out.push(...declarations(f.body));
+  }
+  return out;
 }
 
 export const isUnitExpr = (e: NumExpr | BoolExpr | UnitExpr | { kind: "text" }): e is UnitExpr =>
@@ -386,7 +424,8 @@ export function declarations(body: Stmt[]): VarDecl[] {
   };
   const call = (c: Call) => {
     if (c.result) out.push(c.result.decl);
-    for (const p of c.params) { out.push(p.decl); init(p.init); }
+    // A called function's parameters are the function's own: `programDeclarations` lists them once.
+    for (const p of c.params) { if (!c.fn) out.push(p.decl); init(p.init); }
     c.body.forEach(stmt);
   };
   const init = (e: NumExpr | BoolExpr | UnitExpr) => (isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e));

@@ -18,9 +18,11 @@ Everything TypeScript-specific is gone by the time a program reaches the IR:
   built is its value.
 - Records (`let p = { lives: 3, alive: true }`) are a variable per field, named
   `p.lives`, `p.alive`.
-- Functions are inlined at each call as a `call` node holding the body, with
+- A function used once is inlined at its call as a `call` node holding the body, with
   parameter copies where the function assigns a parameter, and a result variable when
-  it returns something. `return` inside the body writes the result and leaves.
+  it returns something. `return` inside the body writes the result and leaves. A function
+  used more than once is, when it can be, one of `Program.functions`, and its `call` nodes
+  name it (`fn`) in place of carrying a body — see *Functions that are called*.
 - `for` loops whose start, bound and step are known, and `for…of` over a known list,
   are unrolled into an `unrolled` node: the body once per value.
 - `if (false)` and `while (false)` are pruned; `if (true)` keeps only its then side.
@@ -43,7 +45,7 @@ What is *not* settled is anything the lowering decides: what a temporary is, how
 ## Programs
 
 ```
-Program { version, name?, owner, owners, perPlayer, arrays: ArrayDecl[], body: Stmt[], at }
+Program { version, name?, owner, owners, perPlayer, arrays: ArrayDecl[], functions?: FuncDecl[], body: Stmt[], at }
 ```
 
 `owner` is the first player slot among the owners (what a simulation runs the program
@@ -160,7 +162,7 @@ size class — a cell each, or a row of twelve each in a per-player program.
 | `print` | `parts`, `to`, `position` | Text with values in it. `parts` are `{ kind: "text", text }`, `{ kind: "number", expr, unsigned? }` (its digits, with a minus sign when it is below zero and not `unsigned`), `{ kind: "name", player }` and `{ kind: "color", player }` (the colour code of the player's colour), a player being a slot or 13 for the current player. `to` is who sees it: a slot, 13, All Players (17) or a force (18–21). `position` is `chat` or `center`, the line the game's own errors use. Every number is evaluated before anything is shown. |
 | `action` | `record`, `variables?` | A trigger action. Each of `variables` names a field of the record that takes an expression's value: `{ field, bits: 8, 16 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, a unit type a 16-bit one (the lowering stops it at 228), an amount with a modifier a 32-bit one. Version 4 had one, as `variable`. |
 | `centerLocation` | `location`, `x`, `y` | Centre a location (1-based) on a point of the map in pixels, its size kept. |
-| `call` | `call` | An inlined function as a statement (its result, if any, unused). |
+| `call` | `call` | A function as a statement (its result, if any, unused): inlined, or with `fn` called. |
 | `block` | `body` | Scoping only. |
 | `remark` | `text`, `short?` | A word for the editor about the line: a loop unrolled when the script was applied. |
 
@@ -219,6 +221,39 @@ Call { name?, at, label, params: { decl, init, label }[], result?: { decl, kind 
 `params` are the parameters bound by copy (the function assigns them), each a variable
 initialised from the argument; a parameter the function only reads is the caller's own
 variable, already substituted in the body. `result` is the variable `return` writes.
+
+### Functions that are called
+
+```
+FuncDecl { id, name, params: VarDecl[], result?: { decl, kind }, body: Stmt[], at }
+Call     { …, fn: "twice#12", params: { decl, init, label }[], result?, body: [] }
+```
+
+Since version 10. A `Call` with `fn` runs the body of that one of `Program.functions`
+instead of a body of its own. Its `params` are the function's parameters, in order, each
+with this call's argument: **every `init` is worked out first, then every parameter is
+set**, since an argument may be a call of the same function (`add(add(1, 2), 3)`). Then the
+body runs; a `return` in it writes the function's `result.decl` and leaves; the call copies
+that into its own `result.decl`, which is what the expression around it reads. (The
+interpreter writes the call's result directly; the two cannot be told apart.) A function's
+parameters, result and locals are variables like any other — a row a player in a per-player
+program — declared once with the function, which is why a function is a program's own and
+never shared between programs.
+
+What the front end guarantees of a function in the list: it never sleeps (so it can be a
+plain subroutine: the lowering makes it an `EUDFunc` of no arguments over the program's own
+cells), it holds no `edge` (a latch belongs to a place in the source, and an inlined body
+is a place each), it never reaches itself through its calls, and at least two calls that
+are part of the program name it — a function left with one is inlined there again before
+the IR is handed on. An array parameter is not a parameter in the IR at all: which array
+it is was settled when the script was built, so the body names that array, and a function
+handed two different arrays is two `FuncDecl`s of one name.
+
+A `remark` first in a function's body is the hint for its line (*called ×3*); one first in
+the program's body the hint for a function inlined more than once, with the reason.
+
+Every pass that walks a program walks `bodiesOf(program)` — the body, then each function's
+— and `programDeclarations(program)` lists the functions' variables with the rest.
 
 ## Units
 

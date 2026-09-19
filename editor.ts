@@ -88,6 +88,8 @@ export const SIMULATE_FRAMES = 480;
 const START_LOCATION_UNIT = 214;
 /** How many of a simulation's events the list shows before it says how many more there were. */
 const SIMULATE_ROWS = 200;
+/** The most lines with a fault the Simulate view lists. */
+const SIMULATE_FAULTS = 20;
 
 const CHECK_DELAY_MS = 350;
 /** Lines the Output view keeps. */
@@ -467,6 +469,21 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const { sim, programs: ps, result: r } = simulation;
     const list = el("ul", { className: "tsd-list" });
     list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}. Unit conditions (bring, command, …) count as false and reads of what the simulation does not hold (units, kills, scores) give 0; wait takes no time.`)));
+    // What a program did that is always a mistake, first: the game says nothing of these (a read past an array's end is 0
+    // there, a store past it nothing), so this is where they are seen. One row a line, however often a loop came past it.
+    const faults = new Map<string, { first: NonNullable<typeof ps>["faults"][number]; times: number }>();
+    for (const f of ps?.faults ?? []) {
+      const key = `${f.at.file}:${f.at.line}:${f.at.column}:${f.message.replace(/\d+/g, "#")}`;
+      const seen = faults.get(key);
+      if (seen) seen.times++; else faults.set(key, { first: f, times: 1 });
+    }
+    for (const { first: f, times } of [...faults.values()].slice(0, SIMULATE_FAULTS)) {
+      list.append(el("li", { className: "tsd-fault", title: f.message, onClick: () => goTo(f.at.file, f.at.line, f.at.column) },
+        el("span", { className: "frame" }, `frame ${f.cycle + 1}`), shell.icon("error"),
+        el("span", { className: "msg" }, times > 1 ? `${f.message} (and ${times - 1} more time${times === 2 ? "" : "s"} at this line)` : f.message),
+        el("span", { className: "where" }, where({ file: f.at.file, line: f.at.line }))));
+    }
+    if (faults.size > SIMULATE_FAULTS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, `and ${faults.size - SIMULATE_FAULTS} more lines with a fault`)));
     // Hand triggers' events (trigger interpreter) and the programs' (program interpreter), in time order.
     const rows: { cycle: number; order: number; line: () => HTMLElement }[] = [];
     sim.events.forEach((e, i) => {
@@ -841,7 +858,9 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const count = sim.events.length + (programs?.events.length ?? 0);
       // Nobody presses a key in a simulation: said, so that a program waiting for one is not taken for broken.
       const quiet = r.input ? " Keys, clicks, the mouse and chat are not simulated: they read as nothing." : "";
-      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.${quiet}`);
+      const faults = programs?.faults.length ?? 0;
+      const wrong = faults ? ` ${faults} fault${faults === 1 ? "" : "s"}: an array read or written past its end, or out of memory — first in the list.` : "";
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.${wrong}${quiet}`);
       shell.showPanel("simulate");
     } catch (err) {
       setStatus("error", `Simulation stopped: ${(err as Error).message}`);

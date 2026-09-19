@@ -82,7 +82,7 @@ describe("structured: loops and branches", () => {
     expect(r.triggers).toEqual([]);
     expect(r.strings).toEqual([]);
     expect(r.ir).toHaveLength(1);
-    expect(r.ir[0]).toMatchObject({ version: 9, owner: 0, owners: [0], perPlayer: false });
+    expect(r.ir[0]).toMatchObject({ version: 10, owner: 0, owners: [0], perPlayer: false });
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, "n")).toBe(6);
@@ -369,8 +369,9 @@ describe("structured: functions", () => {
     expect(value(sim, "total")).toBe(28);
     expect(sim.events.map((e) => e.text ?? e.action.type)).toEqual([ActionType.CreateUnit, "spawned 4 for 1", "some", ActionType.Victory]);
     expect(sim.events[0].action).toMatchObject({ player: 1, unitId: 37, modifier: 5 });
-    // `v` is assigned, so each call copies its argument; `x` only reads, so it is the caller's variable itself.
-    expect(r.variables.filter((v) => v.name === "v")).toHaveLength(3);
+    // `add` is met three times, so it is one copy that is called and `v` its one parameter; `show` is met once and
+    // inlined, where `x` only reads and so is the caller's variable itself.
+    expect(r.variables.filter((v) => v.name === "v")).toHaveLength(1);
     expect(r.variables.filter((v) => v.name === "x")).toHaveLength(0);
   });
 
@@ -385,7 +386,7 @@ describe("structured: functions", () => {
     expect(r.variables.find((v) => v.name === "b")).toMatchObject({ kind: "boolean" });
   });
 
-  it("locals inside functions are their own per call", () => {
+  it("locals inside a function start afresh at every call", () => {
     const r = okProgram(`
       let out = 0;
       function twice(n: number) {
@@ -397,7 +398,8 @@ describe("structured: functions", () => {
       twice(4);
     `);
     expect(value(run(r, 1), "out")).toBe(14);
-    expect(r.variables.filter((v) => v.name === "t").length).toBe(2);
+    // Called twice: one copy in the map, so one `t`, declared again by each call.
+    expect(r.variables.filter((v) => v.name === "t").length).toBe(1);
   });
 
   it("helpers outside the program run when the script is built", () => {
@@ -886,8 +888,8 @@ describe("structured: game functions, returns and records", () => {
       x = pick(x) + pick(1);
     `);
     expect(value(run(r, 1), "x")).toBe(3);
-    // A result is the call's own scratch value, not a variable of the program.
-    expect(r.variables.map((v) => v.name)).toEqual(["x", "y"]);
+    // A result is the call's own scratch value, not a variable of the program; `pick` is called twice, so its `n` is one.
+    expect(r.variables.map((v) => v.name)).toEqual(["x", "y", "n"]);
   });
 
   it("game() functions come from any file, inline at each call, and return values", () => {

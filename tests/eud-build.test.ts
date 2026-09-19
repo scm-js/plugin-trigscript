@@ -253,7 +253,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" ? 2 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" ? 2 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -270,11 +270,41 @@ function build(name: string, src: string): { out: number; triggers: number } {
   return { out, triggers: m ? Number(m[1]) : 0 };
 }
 
+// Functions that are called: parameters and results of each kind, an argument that is a call of the same function, a copy an
+// array, a called function calling another, and — in the second program — cells that are a row a player.
+FIXTURES.functions = `program(() => {
+    let out = 0; let yes = false;
+    let hp = [1, 2, 3]; let shields = [10, 20];
+    function add(a: number, b: number) { return a + b; }
+    function big(n: number) { return n >= 10; }
+    function total(xs: number[]) { let t = 0; for (const x of xs) t = add(t, x); return t; }
+    function weakest(below: number): Unit | null { let best: Unit | null = null; for (const u of unitsOf(P1)) { if (u.hp < below) best = u; } return best; }
+    function hurt(u: Unit | null, by: number) { if (u) u.hp -= by; }
+    while (true) {
+      out = add(add(1, 2), add(out, 4)) + total(hp) + total(hp) + total(shields) + total(shields);
+      yes = big(out) && !big(out - 100);
+      hurt(weakest(30), 5);
+      hurt(weakest(out), 1);
+      if (yes) print(\`out \${out}\`);
+      sleep(seconds(1));
+    }
+  });
+  program(() => {
+    let mine = 0;
+    function earn(n: number) { mine += n; return mine; }
+    while (true) {
+      if (earn(1) + earn(2) > 100) mine = 0;
+      sleep(frames(8));
+    }
+  }, { owner: AllPlayers });`;
 // The numbers probe whole: every signed path of the lowering — a division towards zero by a variable and by a constant, a shift that
 // keeps the sign, a comparison of a number with a u32, a number printed with its minus sign — is in it.
 FIXTURES.numbers = readFileSync(resolve(import.meta.dirname, "..", "probes", "numbers.ts"), "utf8");
 // And the arrays probe: fixed arrays, tables, the heap, records, units and keyed tables in one build.
 FIXTURES.arraysProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "arrays.ts"), "utf8");
+
+// And the functions probe: every kind of called function in one build.
+FIXTURES.functionsProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "functions.ts"), "utf8");
 
 describe.skipIf(!have)("programs build through the eudplib plugin", () => {
   for (const [name, src] of Object.entries(FIXTURES)) {
@@ -294,6 +324,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(9);
+    expect(ir.version).toBe(10);
   });
 });

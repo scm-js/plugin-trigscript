@@ -389,7 +389,7 @@ before the slice is called done, in the Magenta manner.
 | 4 | Input (3.4.0; built 2026-09-18, the probe is `probes/input.ts`) | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |
 | 5 | Signed numbers (3.5.0; the probe is `probes/numbers.ts`, played 2026-09-18: every line as expected, the ore at 75 at the end) | `number` is a signed 32-bit integer, `u32` the unsigned one beside it, `>>>` apart from `>>`, division towards zero; IR 6 | 2–3 days |
 | 6 | Arrays and keyed tables (3.6.0; the probe is `probes/arrays.ts`, played 2026-09-18: step L — 20 000 pushes at 500 a frame — did not stutter, said out of memory once and stopped at 4096, the push the simulator stops at; M found room again in the blocks given back, N had an array a player and one shared; played again 2026-09-19 with the records, the array of units and the Map loops — steps O to Q — all as expected) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` on an array that grows out of a heap; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
-| 7 | Functions that are called (3.7.0) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
+| 7 | Functions that are called (3.7.0; the probe is `probes/functions.ts`, played 2026-09-19: every line as expected — 2000 calls in one frame without a stutter, one Marine at 10 hit points, the per-player line) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
 | 8 | Recursion (3.8.0) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
 | 8½ | The TypeScript people write (3.9.0) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 7–8 days |
 | 9 | `test()` blocks + debugger (3.10.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
@@ -518,6 +518,23 @@ way a template is: `total(hp)` and `total(shields)` are two copies, five calls o
 `total(hp)` one. No array is reached through a value of the game in this slice (that comes
 with slice 8½'s arrays inside things), and slice 8's `fill(grid, x, y)` recurses on the
 same terms. The hint counts the copies.
+
+**As built.** The decision is made while the body is walked, not before: a function is
+inlined where it is first met — exactly as 3.6 did it, so a function used once builds into
+what it always did — and when it is met again (at the same arrays) the compiler tries it as
+a called function, every parameter a variable, and throws the attempt away with its
+diagnostics if it sleeps, holds a `rose()` / `once()` or does not compile that way. When
+the attempt holds, the first call is changed to match. After the walk, a function left
+with one call that is still part of the program (the others were in a body that was thrown
+away) is inlined there again. "More than one place" counts calls as they are emitted, so a
+call in a loop unrolled three times is three. Only functions declared at the top of a
+program's body, and `game()` functions, are called; one declared inside a block may use
+that block's variables and stays inlined. IR 10: `Program.functions`, `Call.fn`. The
+lowering makes each an `EUDFunc` of no arguments — parameters and results are cells of the
+program, a row a player, so nothing of eudplib's own argument passing is used, which is
+also what slice 8 needs to save a frame. Measured on ten calls of a fifteen-statement
+function: 735 objects for 1462, a built map of 53 KB for 81 KB. Also with it: an array
+written empty is one that grows, whoever pushes to it.
 
 With it, the small thing 3.6 left: the simulator has recorded its **faults** since arrays
 came — a read or a store past an end, a push that found no memory — and shows them nowhere.

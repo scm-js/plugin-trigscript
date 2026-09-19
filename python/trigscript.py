@@ -56,7 +56,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 9
+IR_VERSION = 10
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -503,6 +503,10 @@ class Lowering:
         self.resumes = []  # (index, Forward) for every sleep
         self.frame_end = None
         self.latches = {}
+        # The functions that are called, by id, and each one's EUDFunc once something has called it.
+        self.functions = {f["id"]: f for f in program.get("functions", [])}
+        self.made = {}
+        self.in_function = 0
 
     # ── storage ──
     def player_of(self):
@@ -1541,6 +1545,8 @@ class Lowering:
         exit_ << NextTrigger()
 
     def sleep(self, st):
+        if self.in_function:
+            raise Fail("trigscript: sleep inside a function that is called%s" % where(st))
         if st.get("cycles") is not None:
             frames = int(st["cycles"])
         else:
@@ -1629,8 +1635,60 @@ class Lowering:
         """An expression as what a variable of `kind` holds."""
         return self.num(e) if kind == "number" else self.unit(e) if kind == "unit" else self.truth(e)
 
+    def function(self, id_, node):
+        """A called function: its parameters' cells, its result's, and its one body — an EUDFunc of no
+        arguments, since the cells are the program's own (a row a player, as any variable is)."""
+        made = self.made.get(id_)
+        if made is not None:
+            return made
+        f = self.functions.get(id_)
+        if f is None:
+            raise Fail("trigscript: unknown function %r%s" % (id_, where(node)))
+        params = [self.declare(d) for d in f["params"]]
+        kind = f["result"]["kind"] if f.get("result") else "void"
+        result = self.declare(f["result"]["decl"]) if f.get("result") else None
+        lowering = self
+
+        @EUDFunc
+        def body():
+            if result is not None:
+                result.set(NO_UNIT if kind == "unit" else 0)
+            end = Forward()
+            lowering.in_function += 1
+            try:
+                lowering.straight(f["body"], {"fn": {"result": result, "kind": kind, "end": end}})
+            finally:
+                lowering.in_function -= 1
+            end << NextTrigger()
+
+        made = self.made[id_] = (body, params, result)
+        return made
+
+    def call_function(self, call, result):
+        body, params, returned = self.function(call["fn"], call)
+        if len(params) != len(call["params"]):
+            raise Fail("trigscript: %s takes %d values, not %d%s" % (call["fn"], len(params), len(call["params"]), where(call)))
+        # Every argument first, then the parameters: an argument may be a call of this same function. A variable's
+        # own cell is copied when a later argument holds a call, which may be of a function that writes that variable.
+        values = []
+        for i, p in enumerate(call["params"]):
+            v = self.value(p["init"], p["decl"]["kind"])
+            later = any(has_call(q["init"]) for q in call["params"][i + 1:])
+            if later and p["decl"]["kind"] != "unit" and not isinstance(v, int):
+                v = fresh(v)
+            values.append(v)
+        for s, v in zip(params, values):
+            s.set(v)
+        body()
+        if result is None:
+            return 0
+        result.set(returned.get())
+        return result.get()
+
     def call(self, call):
         result = self.declare(call["result"]["decl"]) if call.get("result") else None
+        if call.get("fn") is not None:
+            return self.call_function(call, result)
         if result is not None:
             result.set(NO_UNIT if call["result"]["kind"] == "unit" else 0)
         for p in call["params"]:
@@ -1682,6 +1740,17 @@ class Lowering:
                 f_setcurpl(self.slots[0])
                 self.frame()
             EUDEndIf()
+
+
+def has_call(node):
+    """Whether a call is anywhere in a piece of the IR."""
+    if isinstance(node, list):
+        return any(has_call(x) for x in node)
+    if not isinstance(node, dict):
+        return False
+    if node.get("kind") == "call" and isinstance(node.get("call"), dict):
+        return True
+    return any(has_call(v) for v in node.values() if isinstance(v, (dict, list)))
 
 
 def string_of(value):

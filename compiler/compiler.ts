@@ -24,7 +24,7 @@ import { runModules, type LinkedFile } from "./link";
 import { checkProgram } from "./eud";
 import { typeNumbers } from "./numbers";
 import { inputPlan, inputsOf, type InputPlan } from "./input";
-import { declarations, type Program } from "./ir";
+import { programDeclarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
@@ -339,7 +339,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const index = programs.length;
     ir.push(emitted.program);
     programs.push({ ...(emitted.program.name ? { name: emitted.program.name } : {}), owner, owners, perPlayer: entry.options.perPlayer, source: at });
-    for (const d of declarations(emitted.program.body)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}) });
+    for (const d of programDeclarations(emitted.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}) });
     // What would freeze the game or cannot be built is a fault of the script, said where it is.
     const check = checkProgram(emitted.program);
     for (const d of [...mixes, ...check.errors]) {
