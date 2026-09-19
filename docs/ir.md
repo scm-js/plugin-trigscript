@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 6** (5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 9** (8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -43,7 +43,7 @@ What is *not* settled is anything the lowering decides: what a temporary is, how
 ## Programs
 
 ```
-Program { version, name?, owner, owners, perPlayer, body: Stmt[], at }
+Program { version, name?, owner, owners, perPlayer, arrays: ArrayDecl[], body: Stmt[], at }
 ```
 
 `owner` is the first player slot among the owners (what a simulation runs the program
@@ -68,12 +68,80 @@ call's result). A variable exists from its `declare` statement on; a backend all
 storage in that order. A `unit` variable holds a unit of the game or none; its `declare`,
 a parameter's `init` and a `return` carry a unit expression (below).
 
+## Arrays
+
+```
+ArrayDecl { id, name, kind: "number" | "boolean", length, shared, bits?: 8 | 16, unsigned?, values?: number[], dynamic?, at }
+```
+
+`Program.arrays` lists every array of the program, those of inlined functions included, so a
+backend allocates them before anything runs: `length` cells, known when the script was built;
+twelve rows of that in a per-player program unless `shared`. A cell is typed as a variable is
+(`bits`, `unsigned`). `values` marks a list the script computed when it was built and a program
+indexes with a value of its own — `const price = [50, 100, 150]; price[level]` — which is in the
+map as it loads, is one for every player, and is never stored into (the front end refuses it; a
+boolean list arrives as 1s and 0s). One `ArrayDecl` per list, however often it is read. A
+`const` list the body *stores* into is an ordinary array (`hoist.ts` finds the stores first).
+
+An array is declared by `declareArray`, which sets its cells, and used through `element` (a
+number or a boolean, by the array's kind — as with `var`, the shape alone does not say) and
+`store`. An index is any number expression. **Past either end a read is 0 (false) and a store
+does nothing**; the index is read from 0 up, so one below zero is past the end. A constant
+index is checked when the script is built and is an error; the interpreter records the rest in
+`faults`, since in the game they pass without a word. An array handed to a function is the
+same array (the parameter is bound to it, as a record's is). `for (const x of xs)` arrives as a
+`for` over a hidden index with `x` declared from the cell at the top of the body.
+
+### Arrays that grow, and the heap
+
+`dynamic` marks an array something pushes to, pops from or sets the length of (`hoist.ts` finds those
+before the body is walked; one that is pushed to only through a function's parameter is found when the
+front end meets the push, so a backend goes by the flag in `Program.arrays`, never by the nodes). Its
+`length` is only how many cells it starts with. Its cells are a block of **the heap**: 16 384 cells
+(`HEAP_CELLS`) every program's growing arrays share, handed out in powers of two, four at least. The
+array itself is a handle — where its block is (0: none yet), the cells in use, the block's room and its
+size class — a cell each, or a row of twelve each in a per-player program.
+
+- `push` at a full block takes a block twice the size, copies the cells over and gives the old one back;
+  a block given back waits in its size's list for whoever wants that size next (its first cell links the
+  next), and new ground is taken from the bottom of the heap up. Nothing splits or joins blocks. When
+  there is no block to take, nothing is pushed and the game says so once, in red; the interpreter
+  records a fault. `compiler/simulateIr.ts` counts blocks exactly as `python/trigscript.py` hands them
+  out, so both run out at the same push — a probe expects the same number from each.
+- `declareArray` of a growing array first gives back the block the handle holds. So an array declared in
+  a loop, or in a function called again, holds one block at a time, and what the heap can lose is bounded
+  by the number of declarations; there is no other freeing and no collector.
+- Reads and stores are bounded by the cells in use. `store` at exactly the length is a push, as
+  `xs[xs.length] = v` is in JavaScript; farther out is past the end. `pop` of an empty array is 0
+  (`xs.pop() ?? d` arrives as a `ternary` on the length). `setLength` only cuts.
+- `length` of an array that does not grow never reaches a backend: `numbers.ts` makes it a constant on
+  its final pass, when every push has been met.
+- The top of the heap is the **stack**'s, which grows down towards the blocks (`reserve` / `release` in
+  the lowering, a `stack` count in the interpreter). Nothing uses it yet: it is for the frames a
+  recursive function saves around a call to itself. Locals stay cells of their own — a condition or an
+  action reaches a cell directly, and a frame would make every access a read through a pointer.
+- **Records, units and keyed tables are not nodes either.** An array of records is an array a field
+  (`waves.count`, `waves.delay`), a record of one a front-end binding of cells, so `waves[i].count` is an `element`
+  and `w.delay = 9` a `store`. An array of units is three arrays of numbers — `squad (ptr)`, `(epd)`, `(uid)` —
+  filled from `unitPart` and read back through `unitAt`; a unit is put into a temporary first, so it is found once
+  and not three times. A `Record` / `Map` / `Set` keyed by an id of the game is an array with a cell an id, a `Map`
+  or a `Set` with one of booleans beside it for which keys were set and a count; a loop over one is a `for` over
+  every id with the body under an `if`. A list of the script indexed by a value of the program — numbers, booleans
+  or records — is an array with `values`.
+- `fill`, `includes` and `indexOf` are not nodes: the front end writes them as a loop, the last two as a
+  `call` of its own making with the loop as its body.
+
 ## Statements
 
 | Kind | Fields | Meaning |
 | --- | --- | --- |
 | `declare` | `decl`, `init`, `failed?` | The variable exists from here, holding `init` (a number or boolean expression). `failed` means the initializer did not compile — reported already — and the variable is left unset. |
 | `assign` | `target`, `value` | `target = value` for a number. `x += y` and `x++` arrive as `x = x + y`, `x = x + 1`. |
+| `declareArray` | `array`, `init?` or `fill?` | The array's cells are set, here and now: `init` a value a cell (every value is evaluated before any is stored), `fill` one value for all of them. |
+| `push` | `array`, `value` | One more cell at the end of an array that grows. |
+| `pop` | `array` | `xs.pop();` with its value unused. |
+| `setLength` | `array`, `value` | `xs.length = n`: cut to n cells; an n above the length changes nothing. |
+| `store` | `array`, `index`, `value` | `hp[i] = value`; `hp[i] += v` arrives as a store of `hp[i] + v`. The value is evaluated, then the index; nothing is stored past either end. |
 | `assignBool` | `target`, `value` | `target = value` for a boolean. |
 | `assignUnit` | `target`, `value` | `target = value` for a unit variable. |
 | `unitLoop` | `decl`, `filter`, `body` | `for (const u of unitsAt(…))`: the body once for every unit the filter matches, in the order of the game's unit table, within the frame (the compiler refuses a `sleep` inside). `decl` is the unit of the turn; `break` and `continue` are the loop's. |
@@ -104,6 +172,10 @@ Numbers (`NumExpr`):
 | --- | --- |
 | `const` | `value` (a whole number) |
 | `var` | `id` |
+| `element` | `array`, `index` — a cell of an array of numbers; 0 past either end |
+| `length` | `array` — the cells in use of an array that grows |
+| `unitPart` | `unit`, `part: ptr | epd | uid` — one of the three numbers a unit is kept as: where it is in the game's unit table (0 for none), the same as an EPD, and the slot's uniqueness byte (as it sits in its dword, masked 0xFF00) as it was when the unit was taken. Typed a `u32`: bits to keep, never a number to reckon with |
+| `pop` | `array` — the last cell, which the array then no longer has; 0 when it is empty |
 | `unary` | `op: "-"`, `expr` |
 | `binary` | `op: + - * / % & | ^ << >> >>>`, `left`, `right`, `unsigned?` (on `/` and `%`) |
 | `read` | `read` — a value of the game, taken when the expression is evaluated (below) |
@@ -122,6 +194,8 @@ Booleans (`BoolExpr`):
 | `const` | `value` |
 | `cond` | `record` — a trigger condition, fields known |
 | `var` | `id` of a boolean variable |
+| `element` | `array`, `index` — a cell of an array of booleans; false past either end |
+| `pop` | `array` — of an array of booleans; false when it is empty |
 | `test` | `expr` — a number tested `!= 0` |
 | `compare` | `op: < <= > >= == !=`, `left`, `right`, `unsigned?: true | "left" | "right"` |
 | `and`, `or` | `items` |
@@ -154,6 +228,7 @@ Units (`UnitExpr`):
 | --- | --- |
 | `unitNull` | none |
 | `unitVar` | `id` of a unit variable |
+| `unitAt` | `ptr`, `epd`, `uid` — the unit three numbers name, which `unitPart` gave of one and the program kept in cells of its own. None when `ptr` is 0; re-checked before use like any kept unit |
 | `pick` | `by: first | nearest | random`, `filter`, `near?`, `mouse?`, `within?` — one of the units the filter matches: the first in table order, the nearest to the centre of location `near` by \|dx\| + \|dy\| (the first of equals), or one drawn at random; none when nothing matches. With `mouse` (a player: a slot, or 13) in place of `near`, the nearest to that player's mouse and no farther from it than `within` pixels |
 | `call` | `call` whose result is a unit |
 

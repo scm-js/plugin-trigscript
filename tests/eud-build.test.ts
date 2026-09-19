@@ -159,6 +159,85 @@ const FIXTURES: Record<string, string> = {
       sleep(frames(1));
     }
   });`,
+  arrays: `const price = [50, 100, 150];
+  program(() => {
+    let hp = [10, 20, 30];
+    const seen = [false, false, false];
+    let lives: u8[] = new Array(24).fill(3);
+    let i = 0;
+    function bump(list: number[], by: number) { for (let k = 0; k < list.length; k++) list[k] += by; }
+    while (true) {
+      hp[i] += price[i] - 60;
+      seen[i] = hp[i] < 0;
+      lives[i + 20] -= 1;
+      for (const h of hp) { if (h > 100) setResources(P1, "add", h, "ore"); }
+      let swap = [hp[1], hp[0]];
+      bump(hp, swap[0]);
+      if (seen[i] && lives[i] == 0) displayText(\`\${hp[i]} at \${i}\`);
+      i = (i + 1) % 4;
+      sleep(frames(12));
+    }
+  });`,
+  growing: `program(() => {
+    const queue: number[] = [];
+    let flags = [true];
+    let big: u8[] = new Array(40).fill(3);
+    let n = 0;
+    function add(list: number[], v: number) { list.push(v); }
+    while (true) {
+      queue.push(n, n * 2);
+      add(queue, n + 1);
+      flags.push(queue.includes(n) && queue.indexOf(n * 2) >= 0);
+      big.push(n);
+      queue[queue.length] = 9;
+      if (queue.length > 50) { queue.length = 10; big.length = 0; }
+      const last = queue.pop() ?? 0;
+      if (flags.pop()) setResources(P1, "add", last, "ore");
+      const scratch: number[] = [];
+      for (const q of queue) { if (q > 5) scratch.push(q); }
+      scratch.fill(1);
+      n = scratch.length;
+      sleep(frames(12));
+    }
+  });`,
+  growingPerPlayer: `program(() => {
+    const mine: number[] = [];
+    const all = shared([0]);
+    while (true) {
+      mine.push(mine.length); all.push(mine.pop() ?? 0);
+      sleep(frames(12));
+    }
+  }, { owner: AllPlayers });`,
+  keyed: `const bounty: Record<UnitType, number> = { [units.ZergZergling]: 5, [units.ZergHydralisk]: 15 };
+  const elite = new Set<UnitType>([units.ZergUltralisk]);
+  program(() => {
+    const score: Record<Player, number> = { [P1]: 0 };
+    const lost = new Map<UnitType, number>();
+    const seen = new Set<UnitType>();
+    while (true) {
+      for (const u of unitsOf(P2)) {
+        if (u.hp < 10) {
+          score[u.owner] += bounty[u.type] + (elite.has(u.type) ? 100 : 0);
+          lost.set(u.type, (lost.get(u.type) ?? 0) + 1);
+          seen.add(u.type);
+          u.kill();
+        }
+      }
+      if (seen.size >= 3 && lost.has(units.ZergZergling)) { setResources(P1, "add", score[P1], "ore"); seen.clear(); lost.delete(units.ZergZergling); }
+      sleep(seconds(1));
+    }
+  });`,
+  arraysPerPlayer: `program(() => {
+    let mine = [0, 0, 0];
+    let all = shared([0, 0, 0]);
+    let big = new Array(40).fill(7);
+    let i = 0;
+    while (true) {
+      mine[i] += 1; all[i] += mine[i]; big[i + 30] = all[i];
+      i = (i + 1) % 3;
+      sleep(frames(12));
+    }
+  }, { owner: AllPlayers });`,
   perPlayer: `program(() => {
     let mine = 0;
     let total = shared(0);
@@ -174,7 +253,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" ? 2 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" ? 2 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -194,6 +273,8 @@ function build(name: string, src: string): { out: number; triggers: number } {
 // The numbers probe whole: every signed path of the lowering — a division towards zero by a variable and by a constant, a shift that
 // keeps the sign, a comparison of a number with a u32, a number printed with its minus sign — is in it.
 FIXTURES.numbers = readFileSync(resolve(import.meta.dirname, "..", "probes", "numbers.ts"), "utf8");
+// And the arrays probe: fixed arrays, tables, the heap, records, units and keyed tables in one build.
+FIXTURES.arraysProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "arrays.ts"), "utf8");
 
 describe.skipIf(!have)("programs build through the eudplib plugin", () => {
   for (const [name, src] of Object.entries(FIXTURES)) {
@@ -213,6 +294,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(6);
+    expect(ir.version).toBe(9);
   });
 });

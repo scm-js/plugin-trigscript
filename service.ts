@@ -26,7 +26,7 @@ import { printScript, type PrintOptions } from "./compiler/print";
 import { simulate, type SimulationEvent } from "./compiler/simulate";
 import { DEFAULT_DIST, DIST_STORAGE_KEY } from "./monaco";
 import {
-  buildScript, findBlock, hashFiles, hashText, isScriptMember, readManifest, relocateManifest, scriptState, triggerAtLine, withFiles,
+  DEFAULT_SETTINGS, buildScript, findBlock, hashFiles, hashText, isScriptMember, readManifest, readSettings, relocateManifest, scriptState, triggerAtLine, withFiles, withSettings, type ScriptSettings,
   type BuildOptions, type Extras, type ScriptBlock, type ScriptState,
 } from "./script";
 import { EUDPLIB_SERVICE, type EudplibBuildEvent, type EudplibInput, type EudplibService } from "./vendor/eudplib";
@@ -227,7 +227,7 @@ export class ScriptService {
       // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
       plugins: buildPlugins(artifact.compiled.input, "/work/files/trigscript.json"),
       sources: { trigscript: TRIGSCRIPT_PY },
-      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings, artifact.compiled.input) },
+      files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings, artifact.compiled.input, this.settings()) },
     };
   }
 
@@ -365,6 +365,18 @@ export class ScriptService {
   triggerAt(file: string, line: number): number | null {
     const state = this.state();
     return state?.block && !state.stale ? triggerAtLine(state.block, file, line) : null;
+  }
+
+  /** What the map's author chose about the build (`script.ts#ScriptSettings`); the defaults when no map is open. */
+  settings(): ScriptSettings {
+    return this.api.document.isOpen() ? readSettings(snapshotExtras(this.api)) : { ...DEFAULT_SETTINGS };
+  }
+
+  /** The settings into the archive (the map is modified); the next save builds with them. */
+  writeSettings(settings: ScriptSettings): void {
+    if (!this.api.document.isOpen()) return;
+    const before = snapshotExtras(this.api);
+    commitExtras(this.api, before, withSettings(before, settings));
   }
 
   /** The files as typed, straight into the archive (the map is modified; only applying changes triggers). */

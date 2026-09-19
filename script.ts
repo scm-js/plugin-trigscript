@@ -19,6 +19,7 @@
  */
 import { cloneTrigger, encodeTriggers, type TriggerRecord } from "./vendor/triggers";
 import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
+import { HEAP_CELLS, heapCells } from "./compiler/ir";
 
 /** The archive folder the script's files live in, next to `staredit\`. */
 export const SCRIPT_FOLDER = "trigscript\\";
@@ -27,6 +28,35 @@ export const MANIFEST_MEMBER = `${SCRIPT_FOLDER}build.json`;
 export const ENTRY_MEMBER = `${SCRIPT_FOLDER}${ENTRY_FILE}`;
 
 export type Extras = ReadonlyMap<string, Uint8Array>;
+
+/**
+ * What the map's author chose about how its programs are built, kept with the script (`trigscript\\settings.json`) and
+ * not with the editor: the built map depends on it, so it has to be the same on every computer the map is saved on.
+ * A member that is absent, or a field that is, means the default.
+ */
+export const SETTINGS_MEMBER = `${SCRIPT_FOLDER}settings.json`;
+export interface ScriptSettings {
+  /** The cells of the heap the programs' growing arrays share (`compiler/ir.ts#HEAP_CELLS`). */
+  heapCells: number;
+}
+export const DEFAULT_SETTINGS: ScriptSettings = { heapCells: HEAP_CELLS };
+
+export function readSettings(extras: Extras): ScriptSettings {
+  const bytes = member(extras, SETTINGS_MEMBER);
+  if (!bytes) return { ...DEFAULT_SETTINGS };
+  try {
+    const raw = JSON.parse(decoder.decode(bytes)) as Partial<ScriptSettings> | null;
+    return { heapCells: heapCells(raw?.heapCells) };
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+/** The members with these settings; settings that are all the default leave no member behind. */
+export function withSettings(extras: Extras, settings: ScriptSettings): Map<string, Uint8Array> {
+  const heap = heapCells(settings.heapCells);
+  return withMember(extras, SETTINGS_MEMBER, heap === DEFAULT_SETTINGS.heapCells ? null : encoder.encode(JSON.stringify({ heapCells: heap }, null, 2)));
+}
 
 export interface ScriptManifest {
   version: 2;

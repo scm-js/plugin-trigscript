@@ -10,13 +10,16 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 9: a unit as the three numbers it is (`unitAt`, `unitPart`), which is what lets an array hold units.
+ * 8: arrays that grow — `ArrayDecl.dynamic`, `push`, `pop`, `setLength`, `length` — out of a heap the programs share.
+ * 7: arrays — `Program.arrays`, `declareArray`, `element` and `store` — of numbers and booleans, indexed by a constant or a variable; a list known when the script was built and indexed by a variable is an array too, one nothing writes (`values`).
  * 6: numbers are signed — `VarDecl.unsigned` marks a `u32`, `>>>` is an operator apart from `>>`, and `unsigned` on a division, a `min` / `max`, a printed number and a comparison says which reading the operation takes. The two-sided reading of `+` and `−` that made an unsigned cell mean a difference is gone.
  * 5: what the players do (`input`: keys, clicks, the mouse, typed lines), a pick near a player's mouse, `centerLocation`, and an action with several fields from the program (`variables`, where 4 had one `variable`).
  * 4: units on the map — `unit` variables, `unitLoop`, picks, unit fields, flags and verbs — and the cells of the game's tables (`tableRead` / `tableWrite`).
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 6;
+export const IR_VERSION = 9;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -37,6 +40,46 @@ export interface VarDecl {
   temp?: boolean;
   at: At;
 }
+
+/**
+ * An array of the program: `length` cells of one kind, known when the script is built. A per-player
+ * program has one for every player unless it is `shared`. `values`: a list the script computed when it
+ * was built, which a program only reads — `const price = [50, 100, 150]; price[level]` — one for
+ * everyone, never initialised in the game and never written. Reading past either end gives 0 (false);
+ * a store past either end does nothing.
+ */
+export interface ArrayDecl {
+  id: string;
+  name: string;
+  kind: "number" | "boolean";
+  length: number;
+  shared: boolean;
+  bits?: 8 | 16;
+  unsigned?: boolean;
+  values?: number[];
+  /**
+   * The array grows: something pushes to it, pops from it or sets its length. Its cells are a block of the
+   * programs' heap (`HEAP_CELLS`), reached through a handle — where the block is, how many cells are in use, how
+   * many it has room for — and `length` is only how many it starts with. A block that is full is exchanged for
+   * one twice the size. Declared again (in a loop, in a function called again) it gives back the block it held.
+   */
+  dynamic?: boolean;
+  at: At;
+}
+
+/**
+ * The cells of the heap every program's growing arrays share, unless the map's script settings say otherwise
+ * (`script.ts#ScriptSettings`, carried to the lowering as the IR file's `heap`); a block is a power of two of
+ * them, four at least. Four bytes a cell in the built map, all zeros, so the saved file barely grows with it.
+ */
+export const HEAP_CELLS = 16384;
+export const HEAP_CELLS_MIN = 1024;
+export const HEAP_CELLS_MAX = 1 << 20;
+/** A heap size as the build takes it: whole, within the limits; the default for anything that is not a number. */
+export function heapCells(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(HEAP_CELLS_MAX, Math.max(HEAP_CELLS_MIN, Math.floor(value))) : HEAP_CELLS;
+}
+export const HEAP_SMALLEST = 4;
 
 /** A player's race as the game holds it; what `race(p)` gives and `supply()` takes. */
 export type RaceId = 0 | 1 | 2;
@@ -82,6 +125,11 @@ export type UnitExpr =
    * player), and no farther from it than `within` pixels.
    */
   | { kind: "pick"; by: "first" | "nearest" | "random"; filter: UnitFilter; near?: number; mouse?: number; within?: number; at: At; label: string }
+  /**
+   * The unit three numbers name — what `unitPart` gave of one, kept in cells of the program (an array of units is three
+   * arrays of numbers). None when `ptr` is 0; like any kept unit it is re-checked before use.
+   */
+  | { kind: "unitAt"; ptr: NumExpr; epd: NumExpr; uid: NumExpr; at: At }
   /** A call inlined here whose result is a unit. */
   | { kind: "call"; call: Call };
 
@@ -128,6 +176,17 @@ export const U32_MAX = 0xffffffff;
 export type NumExpr =
   | { kind: "const"; value: number }
   | { kind: "var"; id: string }
+  /** `hp[i]`: a cell of an array of numbers; 0 when the index is past either end. */
+  | { kind: "element"; array: string; index: NumExpr; at: At }
+  /**
+   * One of the three numbers a unit is kept as: where it is in the game's unit table (`ptr`, 0 for none), the same as an
+   * EPD, and the slot's uniqueness byte as it was when the unit was taken. Only ever stored and handed back to `unitAt`.
+   */
+  | { kind: "unitPart"; unit: UnitExpr; part: "ptr" | "epd" | "uid"; at: At }
+  /** `xs.length`. Of an array that does not grow it is a constant, and `numbers.ts` makes it one. */
+  | { kind: "length"; array: string; at: At }
+  /** `xs.pop()`: the last cell, which the array then no longer has; 0 when it is empty. */
+  | { kind: "pop"; array: string; at: At }
   | { kind: "unary"; op: "-"; expr: NumExpr; at: At }
   /** `u32(x)` / `i32(x)`: the same 32 bits read the other way. Nothing is computed; it is there for `numbers.ts`, which works out what each operation reads its sides as. */
   | { kind: "cast"; to: "u32" | "i32"; expr: NumExpr; at: At }
@@ -155,6 +214,10 @@ export type BoolExpr =
   | { kind: "cond"; record: ConditionRecord }
   /** A boolean variable. */
   | { kind: "var"; id: string }
+  /** `alive[i]`: a cell of an array of booleans; false when the index is past either end. */
+  | { kind: "element"; array: string; index: NumExpr; at: At }
+  /** `flags.pop()` of an array of booleans; false when it is empty. */
+  | { kind: "pop"; array: string; at: At }
   /** A number expression tested as a truth value: `!= 0`. */
   | { kind: "test"; expr: NumExpr; at: At; label: string }
   /**
@@ -208,6 +271,16 @@ export type Stmt =
   /** `failed`: the initializer did not compile (reported already); the variable still exists, unset. */
   | { kind: "declare"; decl: VarDecl; init: NumExpr | BoolExpr | UnitExpr; failed?: boolean; at: At; label: string }
   | { kind: "assign"; target: string; value: NumExpr; at: At; label: string }
+  /** `let hp = [a, b, 0]` (`init`, a value a cell) or `new Array(12).fill(v)` (`fill`, one value for every cell): the array's cells are set, here and now. */
+  | { kind: "declareArray"; array: string; init?: (NumExpr | BoolExpr)[]; fill?: NumExpr | BoolExpr; at: At; label: string }
+  /** `hp[i] = value`; nothing happens when the index is past either end (the value is evaluated either way). */
+  | { kind: "store"; array: string; index: NumExpr; value: NumExpr | BoolExpr; at: At; label: string }
+  /** `xs.push(value)`: one more cell at the end. When the heap has no block left for it, nothing is pushed and the game says so once. */
+  | { kind: "push"; array: string; value: NumExpr | BoolExpr; at: At; label: string }
+  /** `xs.pop();` with its value unused. */
+  | { kind: "pop"; array: string; at: At; label: string }
+  /** `xs.length = n`: the array is cut to n cells; an n above its length changes nothing. */
+  | { kind: "setLength"; array: string; value: NumExpr; at: At; label: string }
   | { kind: "assignBool"; target: string; value: BoolExpr; at: At; label: string }
   | { kind: "assignUnit"; target: string; value: UnitExpr; at: At; label: string }
   /**
@@ -257,17 +330,21 @@ export interface Program {
   owner: number;
   owners: number[];
   perPlayer: boolean;
+  /** Every array of the program, those of inlined functions included: what a backend allocates before anything runs. */
+  arrays: ArrayDecl[];
   body: Stmt[];
   at: At;
 }
 
 export const isUnitExpr = (e: NumExpr | BoolExpr | UnitExpr | { kind: "text" }): e is UnitExpr =>
-  e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || (e.kind === "call" && e.call.result?.kind === "unit");
+  e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || (e.kind === "call" && e.call.result?.kind === "unit");
 
 export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr): e is NumExpr => {
   switch (e.kind) {
     case "const": return typeof e.value === "number";
     case "var": return false; // ambiguous by shape; callers know the variable's kind
+    case "element": case "pop": return false; // ambiguous by shape, as a variable is
+    case "length": case "unitPart": return true;
     case "unary": case "cast": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": return true;
     case "ternary": return isNumExpr(e.whenTrue);
     case "call": return e.call.result?.kind === "number";
@@ -282,6 +359,10 @@ export function declarations(body: Stmt[]): VarDecl[] {
     switch (s.kind) {
       case "declare": out.push(s.decl); init(s.init); break;
       case "assign": expr(s.value); break;
+      case "declareArray": s.init?.forEach(init); if (s.fill) init(s.fill); break;
+      case "store": expr(s.index); init(s.value); break;
+      case "push": init(s.value); break;
+      case "setLength": expr(s.value); break;
       case "assignBool": init(s.value); break;
       case "assignUnit": unit(s.value); break;
       case "unitLoop": out.push(s.decl); s.body.forEach(stmt); break;
@@ -309,10 +390,11 @@ export function declarations(body: Stmt[]): VarDecl[] {
     c.body.forEach(stmt);
   };
   const init = (e: NumExpr | BoolExpr | UnitExpr) => (isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e));
-  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); };
+  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); } };
   const expr = (e: NumExpr) => {
     switch (e.kind) {
-      case "unitField": unit(e.unit); break;
+      case "unitField": case "unitPart": unit(e.unit); break;
+      case "element": expr(e.index); break;
       case "unary": case "cast": expr(e.expr); break;
       case "binary": expr(e.left); expr(e.right); break;
       case "ternary": bool(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
@@ -326,6 +408,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
     switch (b.kind) {
       case "unitAlive": case "unitFlag": unit(b.unit); break;
       case "unitSame": unit(b.left); unit(b.right); break;
+      case "element": expr(b.index); break;
       case "test": expr(b.expr); break;
       case "compare": expr(b.left); expr(b.right); break;
       case "and": case "or": b.items.forEach(bool); break;

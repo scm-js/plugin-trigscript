@@ -52,7 +52,7 @@ is, with the same keys where it has one:
 | **Explorer**, at the left (Ctrl+B) | The script's files — `main.ts` is where the script starts, the *New file* icon on the section adds another, and a file's pencil and bin rename and remove it — and under them the **programs** with the variables each keeps in the game. A click goes to the line. |
 | **Tabs**, over the editor | One per open file; a file with problems is red, with their count. Go to Definition on a name another file exports opens that file. |
 | **Run controls**, right of the tabs | Test (F5), Simulate (Ctrl+F5), Apply (Ctrl+Shift+B), Pick from map, the switch between the window and the panel beside the map, and **…** for the rest. |
-| **Panel**, under the editor (Ctrl+J) | **Problems** (Ctrl+Shift+M), **Output** (Ctrl+Shift+U) — what Apply, Test and the builds of the programs reported, with the build log — and **Simulate**. It takes its room from the bottom, and only when asked for or when something failed. |
+| **Panel**, under the editor (Ctrl+J) | **Problems** (Ctrl+Shift+M), **Output** (Ctrl+Shift+U) — what Apply, Test and the builds of the programs reported, with the build log — **Simulate**, and **Settings** (Ctrl+,): what the map's author chose about how its programs are built, kept in the map beside the script so that it builds the same on any computer. It takes its room from the bottom, and only when asked for or when something failed. |
 | **Status bar** | The problem count, whether the script's triggers are in the map (a click applies it), the last build of the programs, the eudplib plugin's state, the cursor. |
 | **Command palette** (F1 or Ctrl+Shift+P) | Every command above under *TrigScript:*, beside Monaco's own. |
 
@@ -244,6 +244,82 @@ is a **record**: a variable per field (`p.lives -= 1`, `if (p.alive)`), nested o
 included, declared types (`let p: { n: u8 } = { n: 0 }`) honoured, and a record passed to
 a function reaches it by reference. They live in the game's memory while the map is
 played and cost the map nothing: no death counters, no switches, no triggers in the list.
+
+**Arrays** hold numbers, booleans, records of those, or units. `let hp = [10, 20, 30]`, `let xs = [a, a * 2, 0]`,
+`let lives: u8[] = new Array(12).fill(3)`; an index is a constant or a variable
+(`hp[i] += 7`, `hp[i + 1]++`), `.length`, `for (const x of xs)` with `break` and `continue`
+(`x` is a copy of the cell, as in TypeScript), `fill(v)`, `includes(v)` and `indexOf(v)`
+(−1 when there is none) all run within the frame. A `const` array the body stores into is an
+array of the program like a `let` one. Cells keep their type: a `u8[]` stops at both ends, a
+`number[]` goes below zero. An array handed to a function is the same array. In a program of
+every player each player has one; `shared([0, 0, 0])` is one for everybody.
+
+A constant index past the end is a compile error. A variable one reads 0 and stores nothing
+— in the game, without a word; Simulate says where it happened, since it is always a mistake.
+
+**An array that something pushes to grows.** `const queue: number[] = []; queue.push(x)`,
+`queue.pop()` (`?? 0` or `!`, since TypeScript has a pop of an empty array undefined: here it
+is 0), `queue.length`, `queue.length = 0`, `queue[queue.length] = x` — also when the push is in
+a function the array was handed to. There is no size to declare. The cells come from one pool
+the map's programs share, 16 384 of them unless **Settings** says otherwise: a block that is
+full is exchanged for one twice the size, and a block given back serves the next array that
+wants that size. An array declared again — in a loop, in a function called again — first gives
+back the block it held, so a scratch array made every round holds one block at a time. A single
+array can reach between a quarter and a half of the pool (the block after 4 096 cells is
+8 192). When the pool has no block left, nothing more is pushed and the game says so once, in
+red; Simulate counts blocks as the game does, so it runs out at the same push. `let xs = []`
+wants its type said (`let xs: number[] = []`).
+
+**An array of records** is an array a field, all growing together: `let waves = [{ count: 4,
+delay: 2 }]`, `waves[i].count += 1`, `waves.push({ count: 6, delay: 1 })`, `waves.pop()`,
+`waves[i] = { … }`. A record taken out of one — `const w = waves[i]`, the variable of
+`for (const w of waves)`, a record handed to a function — is the array's own, as an object of
+a TypeScript array is a reference: `w.delay = 9` writes the array, and `w` stays the record
+it was when `i` moves on. Fields are numbers and booleans, with their declared widths.
+
+**An array of units** keeps the units themselves: `const squad: Unit[] = []`,
+`squad.push(u)`, `squad[i].hp = 10`, `squad.pop()?.kill()`, `for (const u of squad)`,
+`squad.length = 0`. It may be kept across a `sleep()`, which a loop over the game's units may
+not: a unit of it that has died since reads 0, takes no order, and is false in an `if`, as any
+kept unit is.
+
+**A list the script made is a table a program can look things up in.** `const price = [50,
+100, 150]` outside the program, `price[level]` inside it, is in the map once, however often
+it is read, and cannot be written. A list of records is a table a field — the wave table:
+`const waves = [{ unit: units.ZergZergling, count: 4 }, …]` above the program,
+`createUnit(P2, waves[wave].unit, waves[wave].count, at)` inside it.
+
+**Tables keyed by an id of the game** — a unit type, a player, a location, a switch, a weapon,
+an upgrade, a technology — are arrays with a cell for every id, so a key of the game is one
+read:
+
+```ts
+const bounty: Record<UnitType, number> = { [units.ZergZergling]: 5, [units.ZergHydralisk]: 15 };
+
+program(() => {
+  const score: Record<Player, number> = { [P1]: 0 };
+  const lost = new Map<UnitType, number>();
+  const seen = new Set<UnitType>();
+  for (const u of unitsOf(P2)) {
+    if (u.hp < 10) {
+      score[u.owner] += bounty[u.type];
+      lost.set(u.type, (lost.get(u.type) ?? 0) + 1);
+      seen.add(u.type);
+      u.kill();
+    }
+  }
+});
+```
+
+A `Record` is read and written by its keys and reads 0 where nothing was stored; a `Map` has
+`get` (`?? d` for a key never set), `set`, `has`, `delete`, `clear` and `size`; a `Set` has
+`add`, `has`, `delete`, `clear` and `size`. `for (const [key, value] of lost)`, `for (const key
+of seen)`, `lost.keys()` and `lost.values()` go through the keys that are there, in the order
+of the ids — every id is looked at, so the editor marks the line with how many. One made inside the program is the program's, to
+be written while the map is played; one made outside it is the script's, and a program only
+looks things up in it. Keys have to be ids of the game, so that there is a cell for each:
+for numbers of your own an array does it, and `CurrentPlayer` is not a key — in a program of
+every player a plain variable is already one per player.
 
 **Numbers** are whole, and a `number` is what it is in TypeScript as far as 32 bits go:
 signed, from −2 147 483 648 to 2 147 483 647. `a - b` is below zero when `b` is larger,
@@ -624,6 +700,14 @@ the script is applied, as it always was.
 Still to come: `test()` blocks that run a script against the simulator, a debugger that
 steps it, and a gallery of examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
+
+### Coming from 3.5
+
+Nothing a 3.5 script does has changed. What is new is arrays, arrays that grow, tables keyed
+by an id of the game, and the workspace's **Settings** view (above). One thing the compiler
+does differently that a script could notice: of a method call on a value the script made
+(`waves.filter(…)` with a variable of the program among the arguments), what is known when
+the script is built is now the object, not the method read off it.
 
 ### Coming from 3.4
 

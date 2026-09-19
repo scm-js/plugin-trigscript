@@ -382,7 +382,7 @@ before the slice is called done, in the Magenta manner.
 | 3 | `Unit` objects, unit loops, picks, `stats()` (3.3.0; built 2026-09-18, the probe is `probes/units.ts`) | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
 | 4 | Input (3.4.0; built 2026-09-18, the probe is `probes/input.ts`) | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |
 | 5 | Signed numbers (3.5.0; the probe is `probes/numbers.ts`, played 2026-09-18: every line as expected, the ore at 75 at the end) | `number` is a signed 32-bit integer, `u32` the unsigned one beside it, `>>>` apart from `>>`, division towards zero; IR 6 | 2–3 days |
-| 6 | Arrays and keyed tables (3.6.0) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` within a declared capacity; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
+| 6 | Arrays and keyed tables (3.6.0; the probe is `probes/arrays.ts`, played 2026-09-18: step L — 20 000 pushes at 500 a frame — did not stutter, said out of memory once and stopped at 4096, the push the simulator stops at; M found room again in the blocks given back, N had an array a player and one shared; played again 2026-09-19 with the records, the array of units and the Map loops — steps O to Q — all as expected) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` within a declared capacity; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
 | 7 | Functions that are called (3.7.0) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which | 3 days |
 | 8 | Recursion (3.8.0) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
 | 9 | `test()` blocks + debugger (3.9.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
@@ -473,13 +473,20 @@ TypeScript thing in the language.
   field) and of units (three cells each, re-checked on use as a unit variable is). An index
   is a constant or a variable; `for…of`, `.length`, `indexOf`, `includes`, `fill` run within
   the frame. A per-player program has twelve of each, as it has of a variable.
-- `push` / `pop` need a capacity: an array that grows is declared with one, and an
-  unbounded `[]` that is pushed to is an error that says how to give it. A read past the
-  end is 0 and a write past it does nothing — in the game; the simulator fails the test
-  and names the line, since it is always a mistake.
-- **Keyed tables.** `Record<K, V>`, `Map<K, V>` and `Set<K>` whose keys are a set known
-  when the script is built — `Player`, `UnitType`, a location, a union of string literals,
-  a small range of numbers — are an array indexed by the key, so `price[u.type]` or
+- **An array that something pushes to grows** (decided 2026-09-18, when the user asked whether a declared capacity
+  was "truly growable": it was not). `push`, `pop`, `length =`, `xs[xs.length] = v` make an array a handle on a block
+  of a **heap** the programs share — 16 384 cells unless the map's script settings say otherwise (the workspace's
+  Settings view; kept in the map, since the built map depends on it) — handed out in powers of two, a full block
+  exchanged for one twice the size, a block given back kept for the next array of that size. A declaration first gives
+  back what its handle held, so there is no collector and nothing to leak but one block a declaration. Out of memory:
+  nothing is pushed, the game says so once, the simulator — which counts blocks as the game does — records a fault at
+  the same push. The heap's top is the **stack**'s, growing down, for slice 8's saved frames; locals stay cells of
+  their own, because a condition or an action reaches a cell directly and a frame would make every access a read
+  through a pointer. A read past the end is 0 and a write past it does nothing — in the game; the simulator says
+  where, since it is always a mistake.
+- **Keyed tables** (as built: keys are the library's branded ids — unit type, player, location, switch, weapon,
+  upgrade, technology; a union of string literals is a record already, and a range of numbers an array).
+  `Record<K, V>`, `Map<K, V>` and `Set<K>` are an array indexed by the key, so `price[u.type]` or
   `kills.get(CurrentPlayer)` with a key of the game is one read. `get`, `set`, `has`,
   `delete`, `clear`, `size` and `for…of` over the keys. `let s = {}` with fields added later
   is refused by TypeScript itself; its typed form, `Record<K, V>`, is this.

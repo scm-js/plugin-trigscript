@@ -56,7 +56,7 @@ import json
 
 from eudplib import *
 
-IR_VERSION = 6
+IR_VERSION = 9
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -142,6 +142,266 @@ class Storage:
             self.store[self.player_of()] = value
         else:
             self.store << value
+
+
+class ArrayStorage:
+    """An array's cells: `length` of them, twelve rows of that in a per-player program, or - `values` - a list
+    the script computed when it was built, which is in the map as it loads and which nothing writes. An index
+    past either end (read from 0 up, so one below zero too) reads 0 and stores nothing."""
+
+    def __init__(self, decl, per_player, player_of):
+        self.decl = decl
+        self.length = int(decl["length"])
+        self.bits = decl.get("bits")
+        values = decl.get("values")
+        self.rowed = per_player and not decl.get("shared") and values is None
+        self.player_of = player_of
+        self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (12 if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
+
+    def at(self, index):
+        """The cell's place among the store's: the player's row first."""
+        if not self.rowed:
+            return index
+        p = self.player_of()
+        row = p * self.length if isinstance(p, int) else f_mul(p, self.length)
+        return row + index
+
+    def get(self, index):
+        if isinstance(index, int):
+            return self.store[self.at(index)] if index < self.length else 0
+        out = fresh(0)
+        if EUDIf()(index <= self.length - 1):
+            out << self.store[self.at(index)]
+        EUDEndIf()
+        return out
+
+    def set(self, index, value):
+        if self.bits:
+            value = saturate(value, self.bits)
+        if isinstance(index, int):
+            if index < self.length:
+                self.store[self.at(index)] = value
+            return
+        if EUDIf()(index <= self.length - 1):
+            self.store[self.at(index)] = value
+        EUDEndIf()
+
+    def fill(self, value):
+        if self.length <= 16:
+            for i in range(self.length):
+                self.set(i, value)
+            return
+        v, i = as_var(value), fresh(0)
+        if EUDWhile()(i <= self.length - 1):
+            self.set(i, v)
+            i += 1
+        EUDEndWhile()
+
+
+# The heap the programs' growing arrays share. A block is a power of two of cells, four at least; one given back
+# waits in its size's list (its first cell links the next) for whoever wants that size next; new ground is taken
+# from the bottom up, and the stack - recursion's, to come - will take it from the top down. Cell 0 is never
+# handed out: 0 is "no block". compiler/simulateIr.ts counts the same way, so both run out at the same push.
+HEAP_CELLS = min(1 << 20, max(1024, int(IR.get("heap", 16384))))  # the map's script settings, or the default
+HEAP_SMALLEST = 4
+HEAP_ROOMS = []
+while HEAP_SMALLEST << len(HEAP_ROOMS) <= HEAP_CELLS:
+    HEAP_ROOMS.append(HEAP_SMALLEST << len(HEAP_ROOMS))
+_HEAP = {}
+
+
+def heap():
+    """The heap's cells and its functions, made when the first growing array is met."""
+    if _HEAP:
+        return _HEAP
+    cells = EUDArray(HEAP_CELLS)
+    rooms = EUDArray(HEAP_ROOMS + [0xFFFFFFFF])  # initial: the sizes, never written
+    free = EUDArray(len(HEAP_ROOMS))  # initial: no block waits
+    top = EUDVariable(1)  # initial: the heap's own state, for the whole game
+    stack = EUDVariable(HEAP_CELLS)  # initial: the heap's own state
+    said = EUDVariable(0)  # initial: the heap's own state
+
+    @EUDFunc
+    def take(k):
+        """A block of size class k: its place among the cells, or 0 when there is none."""
+        at = EUDVariable()
+        at << free[k]
+        if EUDIf()(at >= 1):
+            free[k] = cells[at]
+            EUDReturn(at)
+        EUDEndIf()
+        end = top + rooms[k]
+        if EUDIf()(end <= stack):
+            at << top
+            top << end
+            EUDReturn(at)
+        EUDEndIf()
+        EUDReturn(0)
+
+    @EUDFunc
+    def give(at, k):
+        cells[at] = free[k]
+        free[k] = at
+
+    @EUDFunc
+    def grow(ptr, length, room, k, need):
+        """Room for `need` cells: a larger block, the cells copied over, the old block given back. Returns the
+        handle as it is now and whether there is room; when the heap has no block left the handle is unchanged."""
+        if EUDIf()(need <= room):
+            EUDReturn(ptr, room, k, 1)
+        EUDEndIf()
+        nk = EUDVariable()
+        nk << 0
+        if EUDIf()(ptr >= 1):
+            nk << k + 1
+        EUDEndIf()
+        if EUDWhile()(rooms[nk] < need):
+            nk += 1
+        EUDEndWhile()
+        if EUDIf()(nk >= len(HEAP_ROOMS)):
+            EUDReturn(ptr, room, k, 0)
+        EUDEndIf()
+        block = take(nk)
+        if EUDIf()(block == 0):
+            EUDReturn(ptr, room, k, 0)
+        EUDEndIf()
+        if EUDIf()(ptr >= 1):
+            if EUDIf()(length >= 1):
+                # An EUDArray's own value is where it is, as an EPD already.
+                f_repmovsd_epd(cells + block, cells + ptr, length)
+            EUDEndIf()
+            give(ptr, k)
+        EUDEndIf()
+        EUDReturn(block, rooms[nk], nk, 1)
+
+    @EUDFunc
+    def push(ptr, length, room, k, value):
+        """One more cell at the end; the handle as it is afterwards. Nothing is pushed when the heap is full."""
+        ptr, room, k, ok = grow(ptr, length, room, k, length + 1)
+        if EUDIf()(ok >= 1):
+            cells[ptr + length] = value
+            length += 1
+        if EUDElse()():
+            if EUDIf()(said == 0):
+                said << 1
+                GetGlobalStringBuffer().print("\x06TrigScript: out of memory - an array could not grow (the programs' arrays share %d cells)." % HEAP_CELLS)
+            EUDEndIf()
+        EUDEndIf()
+        EUDReturn(ptr, length, room, k)
+
+    @EUDFunc
+    def reserve(n):
+        """The stack's: n cells from the top down; their place, or 0 when the heap has grown up to there."""
+        if EUDIf()(top + n <= stack):
+            stack -= n
+            EUDReturn(stack)
+        EUDEndIf()
+        EUDReturn(0)
+
+    @EUDFunc
+    def release(n):
+        stack += n
+
+    _HEAP.update(cells=cells, take=take, give=give, grow=grow, push=push, reserve=reserve, release=release)
+    return _HEAP
+
+
+class ListStorage:
+    """An array that grows: a handle - where its block is among the heap's cells (0: none yet), how many cells are
+    in use, how many the block has room for, and the block's size class - a cell each, or a row of twelve each in
+    a per-player program. Reads and stores are bounded by the cells in use; a store at exactly the length is a push."""
+
+    def __init__(self, decl, per_player, player_of):
+        self.decl = decl
+        self.bits = decl.get("bits")
+        self.rowed = per_player and not decl.get("shared")
+        self.player_of = player_of
+        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no block
+        self.handle = {name: make() for name in ("ptr", "len", "room", "k")}
+        self.heap = heap()
+
+    def field(self, name):
+        cell = self.handle[name]
+        return cell[self.player_of()] if self.rowed else cell
+
+    def put(self, name, value):
+        if self.rowed:
+            self.handle[name][self.player_of()] = value
+        else:
+            self.handle[name] << value
+
+    def length(self):
+        return self.field("len")
+
+    def get(self, index):
+        out = fresh(0)
+        if EUDIf()(as_var(index) < as_var(self.field("len"))):
+            out << self.heap["cells"][self.field("ptr") + index]
+        EUDEndIf()
+        return out
+
+    def push(self, value):
+        if self.bits:
+            value = saturate(value, self.bits)
+        ptr, length, room, k = self.heap["push"](self.field("ptr"), self.field("len"), self.field("room"), self.field("k"), value)
+        for name, v in (("ptr", ptr), ("len", length), ("room", room), ("k", k)):
+            self.put(name, v)
+
+    def set(self, index, value):
+        if self.bits:
+            value = saturate(value, self.bits)
+        i, v, n = as_var(index), fresh(value), as_var(self.field("len"))
+        if EUDIf()(i < n):
+            self.heap["cells"][self.field("ptr") + i] = v
+        if EUDElseIf()(i == n):
+            self.push(v)  # xs[xs.length] = v, as JavaScript has it
+        EUDEndIf()
+
+    def pop(self):
+        out = fresh(0)
+        n = fresh(self.field("len"))
+        if EUDIf()(n >= 1):
+            n -= 1
+            self.put("len", n)
+            out << self.heap["cells"][self.field("ptr") + n]
+        EUDEndIf()
+        return out
+
+    def set_length(self, value):
+        v = as_var(value)
+        if EUDIf()(v < as_var(self.field("len"))):
+            self.put("len", v)
+        EUDEndIf()
+
+    def declare(self, values):
+        """Declared (again): the block it held goes back, and it starts over with these values."""
+        ptr = fresh(self.field("ptr"))
+        if EUDIf()(ptr >= 1):
+            self.heap["give"](ptr, self.field("k"))
+        EUDEndIf()
+        for name in ("ptr", "len", "room", "k"):
+            self.put(name, 0)
+        for v in values:
+            self.push(v)
+
+    def declare_filled(self, value, count):
+        """The same with one value `count` times over: a loop, where a push a cell would be a push a cell in the map."""
+        if count <= 8:
+            self.declare([value] * count)
+            return
+        self.declare([])
+        v, i = as_var(value), fresh(0)
+        if EUDWhile()(i <= count - 1):
+            self.push(v)
+            i += 1
+        EUDEndWhile()
+
+    def fill(self, value):
+        v, i = as_var(value), fresh(0)
+        if EUDWhile()(i < as_var(self.field("len"))):
+            self.heap["cells"][self.field("ptr") + i] = v
+            i += 1
+        EUDEndWhile()
 
 
 class UnitRef:
@@ -237,6 +497,7 @@ class Lowering:
         self.slots = owner_slots(program)
         self.player = None
         self.vars = {}
+        self.arrays = {a["id"]: (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
         self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
         self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
         self.resumes = []  # (index, Forward) for every sleep
@@ -256,6 +517,12 @@ class Lowering:
             s = Storage(decl, self.per_player, self.player_of)
         self.vars[decl["id"]] = s
         return s
+
+    def array(self, id_, node=None):
+        a = self.arrays.get(id_)
+        if a is None:
+            raise Fail("trigscript: unknown array %r%s" % (id_, where(node)))
+        return a
 
     def var(self, id_, node=None):
         s = self.vars.get(id_)
@@ -290,6 +557,13 @@ class Lowering:
             return int(e["value"]) & U32
         if k == "var":
             return self.var(e["id"], e).get()
+        if k == "element":
+            return self.array(e["array"], e).get(self.num(e["index"]))
+        if k == "length":
+            a = self.array(e["array"], e)
+            return a.length() if isinstance(a, ListStorage) else a.length
+        if k == "pop":
+            return self.array(e["array"], e).pop()
         if k == "cast":
             return self.num(e["expr"])
         if k == "unary":
@@ -313,6 +587,8 @@ class Lowering:
             return out
         if k == "unitField":
             return self.unit_field(e)
+        if k == "unitPart":
+            return self.unit_part(e)
         if k == "tableRead":
             return self.table_read(e["cell"], e)
         if k == "ternary":
@@ -542,6 +818,10 @@ class Lowering:
             return condition(e["record"])
         if k == "var":
             return as_var(self.var(e["id"], e).get()) >= 1
+        if k == "element":
+            return as_var(self.array(e["array"], e).get(self.num(e["index"]))) >= 1
+        if k == "pop":
+            return as_var(self.array(e["array"], e).pop()) >= 1
         if k == "test":
             return as_var(self.num(e["expr"])) >= 1
         if k == "compare":
@@ -584,6 +864,10 @@ class Lowering:
             return 1 if e["value"] else 0
         if e["kind"] == "var":
             return self.var(e["id"], e).get()
+        if e["kind"] == "element":
+            return self.array(e["array"], e).get(self.num(e["index"]))
+        if e["kind"] == "pop":
+            return self.array(e["array"], e).pop()
         if e["kind"] == "unitAlive":
             ref = self.unit(e["unit"])
             t = fresh(0)
@@ -645,9 +929,27 @@ class Lowering:
             return self.var(e["id"], e).get()
         if k == "pick":
             return self.pick(e)
+        if k == "unitAt":
+            # A unit kept as three numbers of the program (a cell each of an array of units): re-checked like any kept unit.
+            ptr = self.num(e["ptr"])
+            if isinstance(ptr, int) and ptr == 0:
+                return NO_UNIT
+            return UnitRef(fresh(ptr), fresh(self.num(e["epd"])), fresh(self.num(e["uid"])))
         if k == "call":
             return self.call(e["call"])
         raise Fail("trigscript: unknown unit expression %r%s" % (k, where(e)))
+
+    def unit_part(self, e):
+        """One of the three numbers a unit is kept as. The unit of a loop's turn has no uniqueness byte taken yet: it is read here."""
+        ref = self.unit(e["unit"])
+        if ref.none:
+            return 0
+        part = e["part"]
+        if part == "ptr":
+            return ref.ptr
+        if part == "epd":
+            return ref.epd
+        return f_maskread_epd(ref.epd + OFF_UID, 0xFF00) if ref.uid is None else ref.uid
 
     def when_alive(self, ref, body):
         """`body()` when the unit is still the one that was kept: the slot has a sprite, its order is not
@@ -1089,6 +1391,35 @@ class Lowering:
             self.var(st["target"], st).set(self.num(st["value"]))
         elif k == "assignBool":
             self.var(st["target"], st).set(self.truth(st["value"]))
+        elif k == "declareArray":
+            a = self.array(st["array"], st)
+            cell = self.num if a.decl["kind"] == "number" else self.truth
+            if isinstance(a, ListStorage):
+                if st.get("fill") is not None:
+                    v = cell(st["fill"])
+                    a.declare_filled(v if isinstance(v, int) else fresh(v), int(a.decl["length"]))
+                else:
+                    values = [cell(v) for v in st.get("init", [])]
+                    a.declare([v if isinstance(v, int) else fresh(v) for v in values])
+            elif st.get("fill") is not None:
+                a.fill(cell(st["fill"]))
+            else:
+                # Every value first, then the stores: [b, a] of two cells of the array itself is a swap.
+                values = [cell(v) for v in st.get("init", [])]
+                values = [v if isinstance(v, int) else fresh(v) for v in values]
+                for i, v in enumerate(values):
+                    a.set(i, v)
+        elif k == "push":
+            a = self.array(st["array"], st)
+            a.push((self.num if a.decl["kind"] == "number" else self.truth)(st["value"]))
+        elif k == "pop":
+            self.array(st["array"], st).pop()
+        elif k == "setLength":
+            self.array(st["array"], st).set_length(self.num(st["value"]))
+        elif k == "store":
+            a = self.array(st["array"], st)
+            value = (self.num if a.decl["kind"] == "number" else self.truth)(st["value"])
+            a.set(self.num(st["index"]), value)
         elif k == "if":
             self.if_(st, ctx)
         elif k == "while":

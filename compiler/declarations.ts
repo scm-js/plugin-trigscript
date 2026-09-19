@@ -261,6 +261,8 @@ ${kw}function once(condition: Condition | boolean): boolean;
 /** In a program that runs for several players, a variable they all share instead of one per player: \`let total = shared(0)\`. */
 ${kw}function shared(initial: number): number;
 ${kw}function shared(initial: boolean): boolean;
+${kw}function shared(initial: number[]): number[];
+${kw}function shared(initial: boolean[]): boolean[];
 /** The value kept within low … high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
 ${kw}function clamp(value: number, low: number, high: number): number;
 /** The same 32 bits read as a u32: u32(-1) is 4 294 967 295. Costs nothing in a program; \`x >>> 0\` says the same. */

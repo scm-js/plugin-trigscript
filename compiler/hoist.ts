@@ -57,6 +57,8 @@ export interface ProgramPlan {
   constList: TS.VariableDeclaration[];
   tree: PlanItem[];
   errors: PlanError[];
+  /** The array declarations something pushes to, pops from or sets the length of: arrays that grow. */
+  grows: Set<TS.Node>;
 }
 
 export interface PlanOptions {
@@ -119,7 +121,7 @@ const READ_CALLS = new Set<string>([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPU
 const isReadCall = (lib: string | null, args: number) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {
-  const plan: ProgramPlan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [] };
+  const plan: ProgramPlan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [], grows: new Set() };
   const error = (node: TS.Node, message: string) => plan.errors.push({ node, message });
   const what = options.parameters ? "game()" : "program()";
   if (!ts.isBlock(arrow.body)) {
@@ -149,9 +151,46 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
     // The variable of a for…of is bound per iteration when the loop is unrolled, like a parameter bound to a value.
     if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && ts.isVariableDeclarationList(node.initializer)) for (const d of node.initializer.declarations) declare(d);
     if (ts.isFunctionDeclaration(node)) { declare(node); for (const p of node.parameters) declare(p); }
+    // A Map, a Set or a Record keyed by ids of the game, made inside the body, is the program's: it is there to be written
+    // while the map is played. One made outside the body is the script's, and a program only looks things up in it.
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      let init: TS.Expression = node.initializer;
+      while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
+      if (ts.isNewExpression(init) && ts.isIdentifier(init.expression) && (init.expression.text === "Map" || init.expression.text === "Set")) declare(node);
+      else if (ts.isObjectLiteralExpression(init) && checker.getIndexInfosOfType(checker.getTypeAtLocation(node.name)).length > 0) declare(node);
+    }
     ts.forEachChild(node, collect);
   };
   collect(arrow.body);
+  // A `const` list the body stores into — `const hp = [0, 0, 0]; hp[i] = 5`, which TypeScript allows — is an array of the
+  // program like a `let` one; a list that is only read stays a value of the script, which a program may still look up in.
+  const ARRAY_WRITERS = new Set(["push", "pop", "fill"]);
+  const written = (node: TS.Node) => {
+    if (isFunctionValue(node)) return;
+    let target: TS.Expression | undefined;
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) target = node.left;
+    else if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) target = node.operand;
+    else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ARRAY_WRITERS.has(node.expression.name.text)) target = node.expression;
+    while (target && (ts.isParenthesizedExpression(target) || ts.isNonNullExpression(target))) target = target.expression;
+    if (target && (ts.isElementAccessExpression(target) || ts.isPropertyAccessExpression(target)) && ts.isIdentifier(target.expression)) {
+      const decl = declarationOf(ts, checker, target.expression);
+      if (decl && ts.isVariableDeclaration(decl) && decl.initializer && inside(decl)) {
+        const type = checker.getTypeAtLocation(decl.name);
+        if (checker.isArrayType(type) || checker.isTupleType(type)) {
+          declare(decl);
+          // xs.push(v), xs.pop(), xs.length = n and xs[xs.length] = v are what make an array one that grows.
+          const name = target.expression.text;
+          const member = ts.isPropertyAccessExpression(target) ? target.name.text : undefined;
+          const atLength = ts.isElementAccessExpression(target) && ts.isPropertyAccessExpression(target.argumentExpression) && target.argumentExpression.name.text === "length"
+            && ts.isIdentifier(target.argumentExpression.expression) && target.argumentExpression.expression.text === name;
+          if (member === "push" || member === "pop" || member === "length" || atLength) plan.grows.add(decl);
+        }
+      }
+    }
+    ts.forEachChild(node, written);
+  };
+  const inside = (decl: TS.Node) => { for (let n: TS.Node | undefined = decl; n; n = n.parent) if (n === arrow.body) return true; return false; };
+  written(arrow.body);
 
   /* ── Hoistability ── */
   const gameCall = new Map<TS.Node, boolean>();
@@ -230,7 +269,9 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
       const lib = ts.isCallExpression(e) ? libraryCallName(ts, checker, e) : null;
       if (lib && FORBIDDEN_INSIDE.has(lib)) error(e, `${lib}() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements.`);
       // `random()`, `sleep()`, … are the game's: their callee is never a value, however it is spelt (`ts.random()` through a namespace import).
-      if (!lib || !GAME_CALLS.has(lib)) value(e.expression, items);
+      // Of a method call the object is the value, not the method: `cost.get(u.type)` has to leave `cost` — the Map — in reach, and a
+      // method read off its object on its own has lost it.
+      if (!lib || !GAME_CALLS.has(lib)) value(ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) ? e.expression.expression : e.expression, items);
       for (const a of e.arguments ?? []) value(a, items);
       return;
     }
@@ -286,6 +327,7 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
   const declarations = (list: TS.VariableDeclarationList, items: PlanItem[]) => {
     const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
     for (const d of list.declarations) {
+      if (isConst && plan.game.has(d)) { value(d.initializer, items); continue; }
       if (isConst) {
         if (!d.initializer) { error(d, "A constant needs a value."); continue; }
         if (hoistable(d.initializer)) { plan.consts.set(d, plan.constList.length); plan.constList.push(d); items.push({ kind: "const", decl: d }); continue; }

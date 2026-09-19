@@ -9,7 +9,7 @@
  * condition does not mention a variable the body assigns, is an error naming the loop.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { declarations, isUnitExpr, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type UnitExpr } from "./ir";
+import { HEAP_CELLS, declarations, heapCells, isUnitExpr, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type UnitExpr } from "./ir";
 import type { LineHint, ScriptString } from "./compiler";
 import type { InputPlan } from "./input";
 
@@ -30,14 +30,15 @@ export function checkProgram(program: Program): { errors: ProgramDiagnostic[]; h
 
 /** Every expression of a statement list, calls' bodies included. */
 function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?: (u: UnitExpr & { kind: "pick" }) => void) {
-  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "pick") pick?.(u); };
+  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "pick") pick?.(u); else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); } };
   const any = (e: NumExpr | BoolExpr | UnitExpr) => (isUnitExpr(e) ? unit(e) : expr(e));
   const expr = (e: NumExpr | BoolExpr) => {
     visit(e);
     switch (e.kind) {
-      case "unitField": case "unitAlive": case "unitFlag": unit(e.unit); break;
+      case "unitField": case "unitPart": case "unitAlive": case "unitFlag": unit(e.unit); break;
       case "unitSame": unit(e.left); unit(e.right); break;
       case "unary": case "cast": expr(e.expr); break;
+      case "element": expr(e.index); break;
       case "binary": case "compare": expr(e.left); expr(e.right); break;
       case "ternary": expr(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
       case "intrinsic": e.args.forEach(expr); break;
@@ -55,6 +56,10 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
     switch (s.kind) {
       case "declare": if (!s.failed) any(s.init); break;
       case "assign": case "assignBool": expr(s.value); break;
+      case "declareArray": s.init?.forEach(expr); if (s.fill) expr(s.fill); break;
+      case "store": expr(s.index); expr(s.value); break;
+      case "push": expr(s.value); break;
+      case "setLength": expr(s.value); break;
       case "assignUnit": unit(s.value); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
@@ -183,6 +188,7 @@ function assigned(body: Stmt[], into = new Set<string>()): Set<string> {
       case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": into.add(THE_GAME); break;
       case "declare": into.add(s.decl.id); break;
       case "assign": case "assignBool": case "assignUnit": into.add(s.target); break;
+      case "store": case "declareArray": case "push": case "pop": case "setLength": into.add(s.array); break;
       case "unitLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": case "for": s.body.forEach(stmt); if (s.kind === "for") s.update.forEach(stmt); break;
@@ -206,6 +212,8 @@ const THE_GAME = "(the game)";
 function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
   switch (e.kind) {
     case "var": into.add(e.id); break;
+    case "element": into.add(e.array); reads(e.index, into); break;
+    case "length": case "pop": into.add(e.array); break;
     case "read": case "cond": case "tableRead": into.add(THE_GAME); break;
     // What the players did is as it was when the frame began: nothing a loop does within the frame changes it.
     case "input": break;
@@ -280,7 +288,7 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[]) {
  * named one (`{ index }`). Nothing a program says is written into the map the user edits.
  * `input` is the compile's plan for what the players do (`input.ts`), when a program reads any.
  */
-export function serializeIr(programs: Program[], strings: readonly ScriptString[], input: InputPlan | null = null): string {
+export function serializeIr(programs: Program[], strings: readonly ScriptString[], input: InputPlan | null = null, settings: { heapCells?: number } = {}): string {
   const resolve = (local: number): number | string => {
     if (local <= 0) return 0;
     const s = strings[local - 1];
@@ -289,13 +297,14 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
   const action = (r: ActionRecord) => ({ ...r, text: resolve(r.text), wav: resolve(r.wav) });
   const condition = (r: ConditionRecord): ConditionRecord => ({ ...r });
   // Only actions carry strings, and only inside statements — but a call's body is statements inside an expression, so expressions are walked for calls.
-  const unit = (u: UnitExpr): UnitExpr => (u.kind === "call" ? { ...u, call: call(u.call) } : u);
+  const unit = (u: UnitExpr): UnitExpr => (u.kind === "call" ? { ...u, call: call(u.call) } : u.kind === "unitAt" ? { ...u, ptr: expr(u.ptr), epd: expr(u.epd), uid: expr(u.uid) } : u);
   const any = (e: NumExpr | BoolExpr | UnitExpr): NumExpr | BoolExpr | UnitExpr => (isUnitExpr(e) ? unit(e) : expr(e));
   const expr = <E extends NumExpr | BoolExpr>(e: E): E => {
     switch (e.kind) {
-      case "unitField": case "unitAlive": case "unitFlag": return { ...e, unit: unit(e.unit) };
+      case "unitField": case "unitPart": case "unitAlive": case "unitFlag": return { ...e, unit: unit(e.unit) };
       case "unitSame": return { ...e, left: unit(e.left), right: unit(e.right) };
       case "unary": case "cast": return { ...e, expr: expr(e.expr) };
+      case "element": return { ...e, index: expr(e.index) };
       case "binary": case "compare": return { ...e, left: expr(e.left), right: expr(e.right) };
       case "ternary": return { ...e, cond: expr(e.cond), whenTrue: expr(e.whenTrue), whenFalse: expr(e.whenFalse) } as E;
       case "intrinsic": return { ...e, args: e.args.map(expr) };
@@ -319,6 +328,10 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "unitDo": return { ...s, unit: unit(s.unit), verb: s.verb.do === "damage" || s.verb.do === "heal" ? { ...s.verb, amount: expr(s.verb.amount) } : s.verb };
       case "tableWrite": return s.value.kind === "text" ? s : { ...s, value: expr(s.value) };
       case "assign": return { ...s, value: expr(s.value) };
+      case "declareArray": return { ...s, ...(s.init ? { init: s.init.map(expr) } : {}), ...(s.fill ? { fill: expr(s.fill) } : {}) };
+      case "store": return { ...s, index: expr(s.index), value: expr(s.value) };
+      case "push": return { ...s, value: expr(s.value) };
+      case "setLength": return { ...s, value: expr(s.value) };
       case "assignBool": return { ...s, value: expr(s.value) };
       case "if": return { ...s, cond: expr(s.cond), then: s.then.map(stmt), ...(s.else ? { else: s.else.map(stmt) } : {}) };
       case "while": return { ...s, ...(s.cond ? { cond: expr(s.cond) } : {}), body: s.body.map(stmt) };
@@ -335,5 +348,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       default: return s;
     }
   };
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
+  // The heap's size goes along only when an array grows and the map's settings changed it: the lowering has the same default.
+  const heap = settings.heapCells !== undefined && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a) => a.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, body: p.body.map(stmt) })) });
 }

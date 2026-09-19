@@ -204,14 +204,16 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
   const unit = (u: UnitExpr) => {
     if (u.kind === "call") call(u.call);
     else if (u.kind === "pick" && u.mouse !== undefined) { mouse = true; at ??= u.at; }
+    else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); }
   };
   const any = (e: NumExpr | BoolExpr | UnitExpr) => (isUnitExpr(e) ? unit(e) : expr(e));
   const expr = (e: NumExpr | BoolExpr): void => {
     switch (e.kind) {
       case "input": sources.push(e.input); at ??= e.at; if (e.input.source === "mouse") mouse = true; break;
-      case "unitField": case "unitAlive": case "unitFlag": unit(e.unit); break;
+      case "unitField": case "unitPart": case "unitAlive": case "unitFlag": unit(e.unit); break;
       case "unitSame": unit(e.left); unit(e.right); break;
       case "unary": case "cast": expr(e.expr); break;
+      case "element": expr(e.index); break;
       case "binary": case "compare": expr(e.left); expr(e.right); break;
       case "ternary": expr(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
       case "intrinsic": e.args.forEach(expr); break;
@@ -228,6 +230,9 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
     switch (s.kind) {
       case "declare": if (!s.failed) any(s.init); break;
       case "assign": case "assignBool": expr(s.value); break;
+      case "declareArray": s.init?.forEach(expr); if (s.fill) expr(s.fill); break;
+      case "store": expr(s.index); expr(s.value); break;
+      case "push": case "setLength": expr(s.value); break;
       case "assignUnit": unit(s.value); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;

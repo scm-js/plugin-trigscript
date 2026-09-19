@@ -82,7 +82,7 @@ describe("structured: loops and branches", () => {
     expect(r.triggers).toEqual([]);
     expect(r.strings).toEqual([]);
     expect(r.ir).toHaveLength(1);
-    expect(r.ir[0]).toMatchObject({ version: 6, owner: 0, owners: [0], perPlayer: false });
+    expect(r.ir[0]).toMatchObject({ version: 9, owner: 0, owners: [0], perPlayer: false });
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, "n")).toBe(6);

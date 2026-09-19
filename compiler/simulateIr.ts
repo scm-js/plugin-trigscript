@@ -29,7 +29,8 @@
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, PlayerGroup, ResourceType } from "../vendor/triggers";
-import type { At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
+import { HEAP_CELLS, HEAP_SMALLEST, heapCells } from "./ir";
+import type { ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
@@ -100,6 +101,8 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
   table?: (cell: TableCell) => number | undefined;
   /** Whether a unit type is of a trigger class (230 Men, 231 Buildings, 232 Factories); default by id range. */
   unitClass?: (type: number, cls: number) => boolean;
+  /** The cells of the heap the programs' growing arrays share: the map's script setting; default `HEAP_CELLS`. */
+  heapCells?: number;
   /** The unit type a name typed in chat means, the name in lower case: what a `{…:unit}` capture asks. Default: no name is known. */
   unitByName?: (lower: string) => number | undefined;
 }
@@ -125,6 +128,8 @@ class ProgramRun {
   /** The `u32` variables. */
   readonly unsigned = new Set<string>();
   readonly latches = new Map<object, boolean>();
+  /** The program's arrays: their cells, as a variable's value is kept. */
+  readonly arrays = new Map<string, { decl: ArrayDecl; cells: Value[]; room: number }>();
   body: Exec | null;
   done = false;
   steps = 0;
@@ -136,6 +141,7 @@ class ProgramRun {
     this.sim = sim;
     this.index = index;
     this.program = program;
+    for (const decl of program.arrays ?? []) this.arrays.set(decl.id, { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array<Value>(decl.length).fill(decl.kind === "number" ? 0 : false) });
     this.body = this.run();
   }
 
@@ -175,6 +181,43 @@ class ProgramRun {
     }
   }
 
+  /** A value as a cell of its type keeps it: a `u32` from 0 up, a `u8` / `u16` stopped at its top, anything else signed. */
+  private kept(value: Value, type: { bits?: 8 | 16; unsigned?: boolean }): Value {
+    if (typeof value !== "number") return value;
+    return type.bits ? Math.min(value >>> 0, 2 ** type.bits - 1) : type.unsigned ? value >>> 0 : value | 0;
+  }
+
+  /**
+   * The cell an index names, or undefined past either end — where the game reads 0 and drops a store without a word.
+   * Here it is said (`faults`): an index off the end is a mistake in every script that has one.
+   */
+  private *cell(array: string, index: NumExpr, at: At, what: string): Gen<{ cells: Value[]; decl: ArrayDecl; i: number } | undefined> {
+    const a = this.arrays.get(array);
+    if (!a) throw new Error(`The array ${array} is not one of the program's (line ${at.line}).`);
+    const i = yield* this.num(index);
+    const length = a.decl.dynamic ? a.cells.length : a.decl.length;
+    if (i >= 0 && i < length) return { ...a, i };
+    this.sim.faults.push({ at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
+    return undefined;
+  }
+
+  /**
+   * Room for `cells` in a growing array, as the game finds it (`python/trigscript.py`): a block twice the size from the
+   * heap, the old one given back. False, and said once, when the heap has none left.
+   */
+  private grow(a: { decl: ArrayDecl; cells: Value[]; room: number }, cells: number, at: At): boolean {
+    if (cells <= a.room) return true;
+    let room = Math.max(a.room, HEAP_SMALLEST);
+    while (room < cells) room *= 2;
+    if (!this.sim.heap.take(room)) {
+      this.sim.faults.push({ at, message: `Out of memory: ${a.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
+      return false;
+    }
+    if (a.room) this.sim.heap.give(a.room);
+    a.room = room;
+    return true;
+  }
+
   private declare(decl: VarDecl): void {
     if (decl.kind === "unit") { this.unitVars.set(decl.id, null); return; }
     if (decl.bits) this.bits.set(decl.id, decl.bits);
@@ -190,6 +233,8 @@ class ProgramRun {
       case "unitNull": return null;
       case "unitVar": return this.unitVars.get(e.id) ?? null;
       case "pick": return this.sim.pick(e.by, e.filter, e.near, e.mouse, e.within);
+      // A kept unit is its place in the list, from 1: there is no slot to be reused here, so the three numbers are one.
+      case "unitAt": { const ptr = (yield* this.num(e.ptr)) >>> 0; yield* this.num(e.epd); yield* this.num(e.uid); return ptr >= 1 ? this.sim.units[ptr - 1] ?? null : null; }
       case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
     }
   }
@@ -233,6 +278,9 @@ class ProgramRun {
     switch (e.kind) {
       case "const": return e.value | 0;
       case "var": return Number(this.read(e.id)) | 0;
+      case "element": { const c = yield* this.cell(e.array, e.index, e.at, "it reads 0"); return c ? Number(c.cells[c.i]) | 0 : 0; }
+      case "length": return this.arrays.get(e.array)?.cells.length ?? 0;
+      case "pop": return Number(this.arrays.get(e.array)?.cells.pop() ?? 0) | 0;
       case "unary": return -(yield* this.num(e.expr)) | 0;
       case "cast": return yield* this.num(e.expr);
       case "binary": {
@@ -256,6 +304,7 @@ class ProgramRun {
       }
       case "read": return this.sim.read(e.read) | 0;
       case "unitField": { const u = yield* this.living(e.unit); return u ? u[e.field] | 0 : 0; }
+      case "unitPart": { const u = yield* this.unit(e.unit); return u ? this.sim.units.indexOf(u) + 1 : 0; }
       case "tableRead": return this.sim.tableRead(e.cell) | 0;
       case "input": return this.sim.input(e.input) | 0;
       case "randomInt": {
@@ -284,6 +333,8 @@ class ProgramRun {
       case "const": return e.value;
       case "cond": return this.sim.condition(e.record);
       case "var": return Boolean(this.read(e.id));
+      case "element": { const c = yield* this.cell(e.array, e.index, e.at, "it reads false"); return c ? Boolean(c.cells[c.i]) : false; }
+      case "pop": return Boolean(this.arrays.get(e.array)?.cells.pop() ?? false);
       case "test": return (yield* this.num(e.expr)) !== 0;
       case "compare": {
         let a = yield* this.num(e.left);
@@ -394,6 +445,53 @@ class ProgramRun {
         return "next";
       }
       case "assign": this.store(s.target, yield* this.num(s.value)); return "next";
+      case "declareArray": {
+        const a = this.arrays.get(s.array);
+        if (!a) throw new Error(`The array ${s.array} is not one of the program's (line ${s.at.line}).`);
+        const value = function* (run: ProgramRun, e: NumExpr | BoolExpr): Gen<Value> { return a.decl.kind === "number" ? yield* run.num(e as NumExpr) : yield* run.bool(e as BoolExpr); };
+        if (a.decl.dynamic) {
+          // Declared again, it gives back the block it held and starts over.
+          if (a.room) { this.sim.heap.give(a.room); a.room = 0; }
+          a.cells.length = 0;
+          const fresh: Value[] = [];
+          if (s.fill) { const v = this.kept(yield* value(this, s.fill), a.decl); for (let i = 0; i < a.decl.length; i++) fresh.push(v); }
+          else for (const e of s.init ?? []) fresh.push(this.kept(yield* value(this, e), a.decl));
+          if (fresh.length === 0 || this.grow(a, fresh.length, s.at)) a.cells.push(...fresh);
+          return "next";
+        }
+        if (s.fill) { const v = this.kept(yield* value(this, s.fill), a.decl); a.cells.fill(v); }
+        else for (let i = 0; i < a.decl.length; i++) a.cells[i] = this.kept(s.init?.[i] ? yield* value(this, s.init[i]) : a.decl.kind === "number" ? 0 : false, a.decl);
+        return "next";
+      }
+      case "push": {
+        const a = this.arrays.get(s.array);
+        if (!a) throw new Error(`The array ${s.array} is not one of the program's (line ${s.at.line}).`);
+        const v = a.decl.kind === "boolean" ? yield* this.bool(s.value as BoolExpr) : yield* this.num(s.value as NumExpr);
+        if (this.grow(a, a.cells.length + 1, s.at)) a.cells.push(this.kept(v, a.decl));
+        return "next";
+      }
+      case "pop": this.arrays.get(s.array)?.cells.pop(); return "next";
+      case "setLength": {
+        const a = this.arrays.get(s.array);
+        const n = yield* this.amount(s.value);
+        if (a && n < a.cells.length) a.cells.length = n;
+        return "next";
+      }
+      case "store": {
+        const a = this.arrays.get(s.array);
+        const v = a?.decl.kind === "boolean" ? yield* this.bool(s.value as BoolExpr) : yield* this.num(s.value as NumExpr);
+        // xs[xs.length] = v is a push, as it is in JavaScript; farther out than that is past the end.
+        if (a?.decl.dynamic) {
+          const i = yield* this.num(s.index);
+          if (i === a.cells.length) { if (this.grow(a, i + 1, s.at)) a.cells.push(this.kept(v, a.decl)); return "next"; }
+          if (i >= 0 && i < a.cells.length) a.cells[i] = this.kept(v, a.decl);
+          else this.sim.faults.push({ at: s.at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${a.cells.length}): nothing is stored.` });
+          return "next";
+        }
+        const c = yield* this.cell(s.array, s.index, s.at, "nothing is stored");
+        if (c) c.cells[c.i] = this.kept(v, c.decl);
+        return "next";
+      }
       case "assignBool": this.store(s.target, yield* this.bool(s.value)); return "next";
       case "if": {
         if (yield* this.bool(s.cond)) return yield* this.block(s.then, ctx);
@@ -489,12 +587,40 @@ class ProgramRun {
     for (const [id, v] of this.vars) if (id === name || id.startsWith(`${name}#`)) found = v;
     return found;
   }
+
+  /** An array's cells by its name in the source. */
+  list(name: string): Value[] | undefined {
+    let found: Value[] | undefined;
+    for (const [id, a] of this.arrays) if (id === name || id.startsWith(`${name}#`)) found = a.cells;
+    return found;
+  }
 }
 
 export class ProgramSimulation {
   readonly world: Simulation;
   readonly runs: ProgramRun[];
   readonly events: ProgramEvent[] = [];
+  /** What the game would let pass without a word and is a mistake all the same: an index past the end of an array. */
+  readonly faults: { at: At; message: string }[] = [];
+  /**
+   * The heap the programs' growing arrays share, counted as the game counts it: blocks are powers of two, a block given
+   * back waits in its size's list for the next array that wants that size, and new ground is taken from the bottom up
+   * while the stack (recursion's, to come) takes it from the top down. Only the counting is here: the cells are the arrays' own.
+   */
+  readonly heap = {
+    cells: HEAP_CELLS,
+    top: 1,
+    stack: HEAP_CELLS,
+    free: new Map<number, number>(),
+    take(room: number): boolean {
+      const waiting = this.free.get(room) ?? 0;
+      if (waiting > 0) { this.free.set(room, waiting - 1); return true; }
+      if (this.top + room > this.stack) return false;
+      this.top += room;
+      return true;
+    },
+    give(room: number): void { this.free.set(room, (this.free.get(room) ?? 0) + 1); },
+  };
   readonly maxSteps: number;
   readonly random: () => number;
   private readonly conditionOf?: SimulationOptions["condition"];
@@ -522,6 +648,7 @@ export class ProgramSimulation {
   constructor(programs: Program[], options: ProgramSimulationOptions) {
     this.world = options.world ?? new Simulation([], { player: options.player ?? programs[0]?.owner ?? 0, condition: options.condition, random: options.random, strings: options.strings });
     this.maxSteps = options.maxStepsPerCycle ?? 100_000;
+    this.heap.cells = this.heap.stack = heapCells(options.heapCells);
     this.random = options.random ?? Math.random;
     this.conditionOf = options.condition;
     this.readOf = options.read;
@@ -753,6 +880,8 @@ export class ProgramSimulation {
 
   /** A variable's value by its source name, in a program (the first by default). */
   value(name: string, program = 0): Value | undefined { return this.runs[program]?.value(name); }
+  /** An array's cells, by its name in the source. */
+  list(name: string, program = 0): Value[] | undefined { return this.runs[program]?.list(name); }
 }
 
 /** Run a compile's programs for `cycles` frames. */

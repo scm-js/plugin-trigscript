@@ -29,6 +29,7 @@
 import type { PluginApi } from "@scm-js/plugin-api";
 import { CompileSuperseded, retainCompileWorker } from "./compile";
 import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
+import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, heapCells } from "./compiler/ir";
 import { entryFor } from "./compiler/names";
 import { printScript } from "./compiler/print";
 import { Simulation, type SimulationEvent } from "./compiler/simulate";
@@ -102,6 +103,16 @@ export const PANEL_WIDTH = 760;
 export const PANEL_HEIGHT = 540;
 
 const STYLE = `${SHELL_STYLE}
+.tsd .tsd-settings { box-sizing: border-box; height: 100%; overflow: auto; padding: 8px 20px 12px; font-size: var(--fs-md); }
+.tsd .tsd-settings > * { max-width: 680px; }
+.tsd .tsd-settings h4 { margin: 0 0 4px; font-size: var(--fs-md); font-weight: 600; }
+.tsd .tsd-settings p { margin: 0 0 8px; color: var(--text-dim); line-height: 1.45; }
+.tsd .tsd-settings .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.tsd .tsd-settings input { width: 110px; padding: 2px 6px; font: inherit; font-family: var(--font-mono); color: var(--text); background: var(--bg-1); border: 1px solid var(--border); border-radius: 2px; }
+.tsd .tsd-settings input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+.tsd .tsd-settings button { padding: 2px 8px; font: inherit; color: var(--text); background: var(--bg-3); border: 1px solid var(--border); border-radius: 2px; cursor: pointer; }
+.tsd .tsd-settings button:disabled { opacity: 0.5; cursor: default; }
+.tsd .tsd-settings .now { color: var(--text-faint); }
 .tsd .tsd-list { margin: 0; padding: 2px 0; list-style: none; font-size: var(--fs-md); }
 .tsd .tsd-list li { display: flex; align-items: baseline; gap: 8px; padding: 2px 12px 2px 20px; line-height: 18px; cursor: pointer; }
 .tsd .tsd-list li:hover { background: var(--bg-3); }
@@ -266,6 +277,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     null,
     ...["problems", "output", "panel", "explorer"].map(menuItem),
     null,
+    menuItem("settings"),
+    null,
     { label: "Command Palette…", keys: "F1", disabled: !ready, run: () => palette() },
   ]) });
 
@@ -280,6 +293,34 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const outputEl = el("pre", { className: "tsd-output" });
   const outputView = shell.view({ id: "output", title: "Output", onShow: () => renderOutput(true), actions: [{ icon: "clear-all", title: "Clear the output", run: () => { output = []; renderOutput(); } }] });
   const simulateView = shell.view({ id: "simulate", title: "Simulate" });
+  const settingsView = shell.view({ id: "settings", title: "Settings", onShow: () => renderSettings() });
+
+  /**
+   * The map's script settings (`script.ts#ScriptSettings`): kept in the map beside the script, because the built map
+   * depends on them. One so far — how much memory the arrays that grow share.
+   */
+  function renderSettings() {
+    const open = api.document.isOpen();
+    const now = svc.settings().heapCells;
+    const input = el("input", { type: "number", min: String(HEAP_CELLS_MIN), max: String(HEAP_CELLS_MAX), step: "1024", value: String(now), disabled: !open }) as HTMLInputElement;
+    const size = (cells: number) => (cells * 4 >= 1 << 20 ? `${(cells * 4 / (1 << 20)).toFixed(cells * 4 % (1 << 20) ? 1 : 0)} MB` : `${Math.round(cells * 4 / 1024)} KB`);
+    const said = el("span", { className: "now" }, `cells — ${size(now)} of the built map`);
+    const reset = el("button", { type: "button", disabled: !open || now === HEAP_CELLS }, `Default (${HEAP_CELLS.toLocaleString("en-US")})`) as HTMLButtonElement;
+    const commit = (value: unknown) => {
+      const cells = heapCells(typeof value === "number" && Number.isFinite(value) ? value : HEAP_CELLS);
+      if (cells !== svc.settings().heapCells) { svc.writeSettings({ heapCells: cells }); simulation = null; renderSimulation(); }
+      renderSettings();
+    };
+    input.addEventListener("change", () => commit(input.value === "" ? HEAP_CELLS : Number(input.value)));
+    input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") input.blur(); });
+    reset.addEventListener("click", () => commit(HEAP_CELLS));
+    settingsView.body.replaceChildren(el("div", { className: "tsd-settings" },
+      el("h4", {}, "Memory for arrays that grow"),
+      el("p", {}, "Arrays a program pushes to share one pool of cells; this is its size. A single array can reach between a quarter and a half of it. When the pool runs out, nothing more is pushed and the game says so once."),
+      el("div", { className: "row" }, input, said, reset),
+      el("p", {}, `${HEAP_CELLS_MIN.toLocaleString("en-US")} to ${HEAP_CELLS_MAX.toLocaleString("en-US")} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.`),
+    ));
+  }
 
   const problemsItem = shell.statusItem("left");
   const blockItem = shell.statusItem("left");
@@ -794,7 +835,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       // The programs run from the IR; the trigger() records through the trigger interpreter, sharing one world.
       const player = r.programs[0]?.owner;
       const sim = new Simulation(r.triggers, { strings: r.strings, player });
-      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, ...simulatedMap() }) : null;
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, ...simulatedMap() }) : null;
       for (let i = 0; i < SIMULATE_FRAMES; i++) { sim.step(); programs?.step(); }
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
@@ -947,6 +988,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     { id: "mode", label: mode === "dialog" ? "Open Beside the Map" : "Open in a Window", run: () => switchMode() },
     { id: "problems", label: "Show Problems", key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
     { id: "output", label: "Show Output", key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },
+    { id: "settings", label: "Open Settings", key: { code: "Comma", mod: true }, run: () => { shell.showPanel("settings"); renderSettings(); } },
     { id: "panel", label: "Toggle Panel", key: { code: "KeyJ", mod: true }, run: () => shell.togglePanel() },
     { id: "explorer", label: "Toggle Explorer", key: { code: "KeyB", mod: true }, run: () => shell.toggleSidebar() },
   ];

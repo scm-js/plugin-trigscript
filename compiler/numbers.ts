@@ -38,6 +38,9 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   const stores: [string, NumExpr][] = [];
   let settled = false;
   const decls = new Map<string, VarDecl>(declarations(program.body).map((d) => [d.id, d]));
+  /** An array is typed as a variable is, and found never below zero the same way: by everything ever stored into a cell of it. */
+  const arrays = new Map(program.arrays.map((a) => [a.id, a]));
+  for (const a of program.arrays) if (a.values && !a.unsigned && a.values.every((v) => v >= 0)) never.add(a.id);
   const mixed = (at: At, what: string) => errors.push({ at, message: `${what} mixes a number, which is signed, with a u32. Say which is meant: u32(x) reads a number's 32 bits from 0 up, i32(x) a u32's as a signed number.` });
 
   /** The type two sides of one operation share; an error when one is signed and the other a `u32`. */
@@ -53,6 +56,8 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
     switch (e.kind) {
       case "const": return e.value >= 0 && e.value <= I32_MAX;
       case "var": return !!decls.get(e.id)?.bits || never.has(e.id);
+      case "element": case "pop": return !!arrays.get(e.array)?.bits || never.has(e.array);
+      case "length": return true;
       case "read": case "unitField": case "tableRead": case "input": case "randomInt": return true;
       case "ternary": return nonNegative(e.whenTrue) && nonNegative(e.whenFalse);
       case "intrinsic": return e.unsigned ? false : e.name === "min" ? e.args.every(nonNegative) : e.name === "max" ? e.args.some(nonNegative) : false;
@@ -75,6 +80,10 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
     switch (e.kind) {
       case "const": return [e, e.value < 0 ? "i32" : e.value > I32_MAX ? "u32" : "flex"];
       case "var": return [e, decls.get(e.id)?.unsigned ? "u32" : "i32"];
+      case "element": e.index = num(e.index)[0]; return [e, arrays.get(e.array)?.unsigned ? "u32" : "i32"];
+      case "pop": return [e, arrays.get(e.array)?.unsigned ? "u32" : "i32"];
+      // The length of an array that does not grow is a constant. Only on the pass that is for good: by then the front end has met every push.
+      case "length": { const a = arrays.get(e.array); return settled && a && !a.dynamic ? [{ kind: "const", value: a.length }, "flex"] : [e, "i32"]; }
       case "cast": {
         // Gone only on the pass that is for good: the first one still has to find it here the second time.
         const inner = num(e.expr)[0];
@@ -104,6 +113,8 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       }
       case "randomInt": e.bound = floor(e.bound, e.at); return [e, "i32"];
       case "unitField": unit(e.unit); return [e, "i32"];
+      // A part of a unit is bits to keep, never a number to reckon with: read from 0 up, so nothing clamps or biases it.
+      case "unitPart": unit(e.unit); return [e, "u32"];
       case "ternary": {
         e.cond = bool(e.cond);
         const [a, at] = num(e.whenTrue);
@@ -141,6 +152,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   const bool = (e: BoolExpr): BoolExpr => {
     switch (e.kind) {
       case "test": e.expr = num(e.expr)[0]; return e;
+      case "element": e.index = num(e.index)[0]; return e;
       case "compare": {
         const [left, lt] = num(e.left);
         const [right, rt] = num(e.right);
@@ -165,10 +177,10 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
     }
   };
 
-  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); };
+  const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "unitAt") { u.ptr = num(u.ptr)[0]; u.epd = num(u.epd)[0]; u.uid = num(u.uid)[0]; } };
 
   /** A value stored into a variable: a `u8` / `u16` takes nothing below zero, anything else keeps the 32 bits as they are. */
-  const stored = (decl: VarDecl | undefined, value: NumExpr, at: At): NumExpr => {
+  const stored = (decl: Pick<VarDecl, "id" | "name" | "bits" | "unsigned"> | undefined, value: NumExpr, at: At): NumExpr => {
     if (decl?.bits) return floor(value, at, true);
     const [out, t] = num(value);
     // A constant that the variable's type cannot hold would read as another number altogether: better said than stored.
@@ -202,6 +214,25 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "declare": if (!s.failed) s.init = valueFor(s.decl, s.init, s.at); break;
       case "assign": s.value = stored(decls.get(s.target), s.value, s.at); break;
       case "assignBool": s.value = bool(s.value); break;
+      case "declareArray": {
+        const a = arrays.get(s.array);
+        const cell = (v: NumExpr | BoolExpr) => (a?.kind === "boolean" ? bool(v as BoolExpr) : stored(a, v as NumExpr, s.at));
+        if (s.init) s.init = s.init.map(cell);
+        if (s.fill) s.fill = cell(s.fill);
+        break;
+      }
+      case "push": {
+        const a = arrays.get(s.array);
+        s.value = a?.kind === "boolean" ? bool(s.value as BoolExpr) : stored(a, s.value as NumExpr, s.at);
+        break;
+      }
+      case "setLength": s.value = floor(s.value, s.at); break;
+      case "store": {
+        const a = arrays.get(s.array);
+        s.index = num(s.index)[0];
+        s.value = a?.kind === "boolean" ? bool(s.value as BoolExpr) : stored(a, s.value as NumExpr, s.at);
+        break;
+      }
       case "assignUnit": unit(s.value); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite":
