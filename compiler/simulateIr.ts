@@ -141,6 +141,9 @@ interface Frame {
   arrays: { a: { decl: ArrayDecl; cells: Value[]; room: number }; cells: Value[]; room: number }[];
 }
 
+/** An array's cells, and the room its block has when it is one that grows. */
+interface Held { decl: ArrayDecl; cells: Value[]; room: number }
+
 class ProgramRun {
   readonly vars = new Map<string, Value>();
   /** The variables that hold a unit, or none. */
@@ -150,7 +153,11 @@ class ProgramRun {
   readonly unsigned = new Set<string>();
   readonly latches = new Map<object, boolean>();
   /** The program's arrays: their cells, as a variable's value is kept. */
-  readonly arrays = new Map<string, { decl: ArrayDecl; cells: Value[]; room: number }>();
+  readonly arrays: Map<string, Held> = new (class extends Map<string, Held> {
+    run!: ProgramRun;
+    /** An array that grows inside another is found through the outer one's cells, every time it is asked for. */
+    override get(id: string): Held | undefined { const a = super.get(id); return a?.decl.through ? this.run.inner(a.decl, (k) => super.get(k)) : a; }
+  })();
   body: Exec | null;
   done = false;
   steps = 0;
@@ -166,6 +173,7 @@ class ProgramRun {
     this.sim = sim;
     this.index = index;
     this.program = program;
+    (this.arrays as unknown as { run: ProgramRun }).run = this;
     for (const decl of program.arrays ?? []) this.arrays.set(decl.id, { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array<Value>(decl.length).fill(decl.kind === "number" ? 0 : false) });
     this.body = this.run();
   }
@@ -273,6 +281,32 @@ class ProgramRun {
     if (a.room) this.sim.heap.give(a.room);
     a.room = room;
     return true;
+  }
+
+  /**
+   * The array a handle in another's cells leads to (`ArrayDecl.through`). The cell holds a number that stands for the
+   * block — nothing yet is 0, and the first use makes one, as the game's first push does. A number whose block was given
+   * back (the row was popped, and this is a copy of its handle kept somewhere) leads nowhere: in the game that is some
+   * other array's cells by now, and here it is said.
+   */
+  inner(decl: ArrayDecl, plain: (id: string) => Held | undefined, release = false): Held {
+    const nothing = (): Held => ({ decl, cells: [], room: 0 });
+    const ptrs = plain(decl.through!.ptr);
+    const i = Number(this.read(decl.through!.index)) | 0;
+    if (!ptrs || i < 0 || i >= ptrs.cells.length) return nothing();
+    const ptr = Number(ptrs.cells[i]);
+    if (release) {
+      const held = this.sim.inner.get(ptr);
+      if (held?.room) this.sim.heap.give(held.room);
+      this.sim.inner.delete(ptr);
+      ptrs.cells[i] = 0;
+      return nothing();
+    }
+    if (!ptr) { const made: Held = { decl, cells: [], room: 0 }; ptrs.cells[i] = ++this.sim.lastInner; this.sim.inner.set(this.sim.lastInner, made); return made; }
+    const held = this.sim.inner.get(ptr);
+    if (!held) { this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: decl.at, message: `${decl.name} was given back — the row that held it was popped, cut off or declared again — and this is a copy of its handle: in the game it reads whatever has the block now.` }); return nothing(); }
+    held.decl = decl;
+    return held;
   }
 
   private declare(decl: VarDecl): void {
@@ -562,6 +596,14 @@ class ProgramRun {
         const a = this.arrays.get(s.array);
         if (!a) throw new Error(`The array ${s.array} is not one of the program's (line ${s.at.line}).`);
         const value = function* (run: ProgramRun, e: NumExpr | BoolExpr): Gen<Value> { return a.decl.kind === "number" ? yield* run.num(e as NumExpr) : yield* run.bool(e as BoolExpr); };
+        if (a.decl.through) {
+          // Given back through the outer array's cell, which is 0 again; what it is declared with makes a new one.
+          this.inner(a.decl, (k) => Map.prototype.get.call(this.arrays, k) as Held | undefined, true);
+          const fresh: Value[] = [];
+          for (const e of s.init ?? []) fresh.push(this.kept(yield* value(this, e), a.decl));
+          if (fresh.length) { const made = this.arrays.get(s.array)!; if (this.grow(made, fresh.length, s.at)) made.cells.push(...fresh); }
+          return "next";
+        }
         if (a.decl.dynamic) {
           // Declared again, it gives back the block it held and starts over.
           if (a.room) { this.sim.heap.give(a.room); a.room = 0; }
@@ -721,6 +763,9 @@ export class ProgramSimulation {
    * back waits in its size's list for the next array that wants that size, and new ground is taken from the bottom up
    * up to its end. Only the counting is here: the cells are the arrays' own.
    */
+  /** The arrays that grow inside others, by the number their handle's cell holds. */
+  readonly inner = new Map<number, Held>();
+  lastInner = 0;
   readonly heap = {
     cells: HEAP_CELLS,
     top: 1,

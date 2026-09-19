@@ -377,7 +377,8 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
       if (o.kind === "declareArray" && typeof o.array === "string" && !seen.has(o.array)) {
         seen.add(o.array);
         const a = arrays.get(o.array);
-        if (a && !a.values) { a.dynamic = true; local.push(a.id); }
+        // A window or an array reached through another's cells has no handle of its own for a frame to keep.
+        if (a && !a.values && !a.slice && !a.through) { a.dynamic = true; local.push(a.id); }
       }
       for (const v of Object.values(o)) if (v && typeof v === "object") find(v);
     };

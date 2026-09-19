@@ -73,6 +73,14 @@ export interface ArrayDecl {
    * array does, so a row never reaches into the next.
    */
   slice?: { of: string; offset: string };
+  /**
+   * The array is one that grows *inside* another — `buckets[i]` of `let buckets: number[][] = [[], []]`, the `path` of
+   * `squads[i]`: its handle is not cells of its own but cell `index` (a variable of the program, set before this is
+   * used) of four arrays the outer one keeps, a handle a row. What holds the handle owns the block: the front end gives
+   * a row's block back (`declareArray` of this, empty) before the row goes — popped, cut off, the outer declared again.
+   * A copy of the four cells is a second name for the same block, as a copy of a reference is, and no second owner.
+   */
+  through?: { ptr: string; len: string; room: string; k: string; index: string };
   at: At;
 }
 

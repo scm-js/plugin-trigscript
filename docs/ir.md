@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 11** (10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 12** (11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -73,7 +73,7 @@ a parameter's `init` and a `return` carry a unit expression (below).
 ## Arrays
 
 ```
-ArrayDecl { id, name, kind: "number" | "boolean", length, shared, bits?: 8 | 16, unsigned?, values?: number[], dynamic?, at }
+ArrayDecl { id, name, kind: "number" | "boolean", length, shared, bits?: 8 | 16, unsigned?, values?: number[], dynamic?, slice?, through?, at }
 ```
 
 `Program.arrays` lists every array of the program, those of inlined functions included, so a
@@ -131,6 +131,27 @@ size class — a cell each, or a row of twelve each in a per-player program.
   or records — is an array with `values`.
 - `fill`, `includes` and `indexOf` are not nodes: the front end writes them as a loop, the last two as a
   `call` of its own making with the loop as its body.
+
+### Arrays inside arrays
+
+Since version 12 an `ArrayDecl` may be a way to another's cells instead of cells of its own. Both forms are
+positioned by a variable of the program, which the front end sets before the array is used; neither is ever in a
+frame's `saves`, and a `slice` is never declared.
+
+- `slice: { of, offset }` — a **window**: `length` cells of the array `of`, from cell `offset` (a variable's id).
+  It is a row of an array of arrays whose rows are all one length, which the front end keeps as one flat array
+  (`grid[y][x]` with nothing else asked of the row never makes a window: it is `element(flat, y * width + x)`, the
+  index −1 when `x` is past the row, which reads 0 and stores nothing as any index past an end does). Past its own
+  end a window reads 0 and stores nothing, so a row never reaches into the next; what it is a window on keeps its
+  own ends, width and row a player. It cannot grow.
+- `through: { ptr, len, room, k, index }` — an array that grows **inside** another: its handle is cell `index`
+  (a variable's id) of four arrays of numbers the outer one keeps, a handle a row. It is `dynamic`, and every
+  statement and expression of a growing array works on it; the lowering reads and writes the handle's fields
+  through the four arrays where a growing array of its own has four cells. `declareArray` of it with nothing gives
+  its block back and leaves the row empty — which is how the front end keeps the rule that *what holds the handle
+  owns the block*: before a row goes (popped, cut off by `length =`, the outer array declared again) it is declared
+  empty. A row kept in a `const` is that *place* of the outer array, not a block, so nothing dangles: past the
+  outer's end it reads nothing, and a row pushed there later is what it is then.
 
 ## Statements
 

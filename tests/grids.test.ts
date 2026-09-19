@@ -87,10 +87,8 @@ describe("a grid", () => {
     expect(sim.list("g")).toEqual([0, 0, 0, 5]);
   });
   it("what it is not", () => {
-    expect(messages("let g = [[1, 2], [3, 4]]; g[0].push(5);").join("\n")).toMatch(/one flat array/);
-    expect(messages("let g = [[1, 2], [3]];").join("\n")).toMatch(/not all one length/);
     expect(messages("let g = [[1, 2], [3, 4]]; let v = 0; v = g[0][2];").join("\n")).toMatch(/there is no g\[0\]\[2\]/);
-    expect(messages("let g: number[][] = []; g.push([1, 2]); g.push([1, 2, 3]);").join("\n")).toMatch(/not all one length/);
+    expect(messages("let g = [[1, 2], [3, 4]]; function more(xs: number[]) { xs.push(1); } more(g[0]);").join("\n")).toMatch(/one flat array/);
   });
 });
 
@@ -100,5 +98,54 @@ describe("an array in a record", () => {
     expect(sim.value("n")).toBe(5);
     expect(sim.value("sum")).toBe(17);
     expect(sim.list("p.path")).toEqual([7, 12, 3]);
+  });
+});
+
+describe("arrays that grow, inside an array", () => {
+  it("rows of different lengths, read, stored, pushed to and popped, each its own", () => {
+    const sim = run("let b = [[1, 2], [], [3]]; let i = 1; b[i].push(7); b[i].push(8); b[0][1] += 10; b[2].pop(); let out = 0; out = b[0][1] * 100 + b[i][1] * 10 + b[2].length; let n = 0; n = b.length; let past = 5; past = b[2][0];");
+    expect(sim.value("out")).toBe(1280);
+    expect(sim.value("n")).toBe(3);
+    expect(sim.value("past")).toBe(0);
+  });
+  it("a grid something pushes a cell to is rows that grow", () => {
+    const sim = run("let g = [[1, 2], [3, 4]]; g[0].push(5); let a = 0; let b = 0; a = g[0].length; b = g[1].length;");
+    expect(sim.value("a")).toBe(3);
+    expect(sim.value("b")).toBe(2);
+  });
+  it("the outer one grows too: rows pushed, written out, empty, or copied from an array; popped rows give their blocks back", () => {
+    const sim = run(`const b: number[][] = []; let xs = [4, 5, 6]; b.push([1], [], xs); b[1].push(9); xs[0] = 40;
+      let sum = 0; for (const row of b) for (const c of row) sum += c;
+      b.pop(); b.pop(); let n = 0; n = b.length; b.push([2, 2]); let last = 0; last = b[1].length;`);
+    expect(sim.value("sum")).toBe(25);
+    expect(sim.value("n")).toBe(1);
+    expect(sim.value("last")).toBe(2);
+    expect(sim.faults).toEqual([]);
+  });
+  it("the heap gets every block back: declared again in a loop, cut off, a row assigned", () => {
+    const r = compile("let turns = 0; while (turns < 200) { const b: number[][] = [[], []]; b[0].push(turns); b[0].push(1); b[0].push(2); b[0].push(3); b[0].push(4); b[1].push(turns); b.push([1, 2, 3, 4, 5]); b[1] = [7, 7, 7, 7, 7]; b.length = 1; turns++; }");
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, heapCells: 1024 });
+    expect(sim.value("turns")).toBe(200);
+    expect(sim.faults).toEqual([]);
+  });
+  it("a row is an array: kept, given to a function and to a method, taken out of a pattern", () => {
+    const sim = run(`let b = [[3, 1, 2], [9]]; let i = 0; const row = b[i]; i = 1; row.sort((x, y) => x - y); row.push(4);
+      function total(xs: number[]) { let t = 0; for (const x of xs) t += x; return t; }
+      let both = 0; both = total(b[0]) * 10 + total(b[1]);
+      const sizes = b.map((r) => r.length); let where = 0; where = b.findIndex((r) => r.includes(9));
+      const [first, second] = b; second.push(first[0]); let s = 0; s = b[1][1];`);
+    expect(sim.value("both")).toBe(109);
+    expect(sim.list("sizes")).toEqual([4, 1]);
+    expect(sim.value("where")).toBe(1);
+    expect(sim.value("s")).toBe(1);
+  });
+  it("in a record, under the record's name", () => {
+    const sim = run("let p = { hp: 5, lanes: [[1], [2, 3]] }; p.lanes[0].push(p.hp); let n = 0; n = p.lanes[0].length * 10 + p.lanes[1][1];");
+    expect(sim.value("n")).toBe(23);
+  });
+  it("a row kept in a const is that place in the outer array: popped it reads nothing, and a row pushed there is what it is next", () => {
+    const sim = run("const b: number[][] = []; b.push([1, 2]); b.push([3]); const kept = b[1]; b.pop(); let gone = 5; gone = kept.length; b.push([8, 9, 10]); let back = 0; back = kept.length * 10 + kept[0];");
+    expect(sim.value("gone")).toBe(0);
+    expect(sim.value("back")).toBe(38);
   });
 });

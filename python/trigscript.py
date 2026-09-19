@@ -495,6 +495,28 @@ class ListStorage:
         EUDEndWhile()
 
 
+class InnerListStorage(ListStorage):
+    """An array that grows inside another: its handle is cell `index` of four arrays the outer one keeps (where the
+    block is, how many cells are in use, its room, its size class), `index` a variable of the program. Everything
+    else is a growing array's, which only ever asks for its handle's fields and puts them back."""
+
+    def __init__(self, decl, lowering):
+        self.decl = decl
+        self.bits = decl.get("bits")
+        self.rowed = False
+        self.lowering = lowering
+        self.heap = heap()
+
+    def at(self):
+        return self.lowering.var(self.decl["through"]["index"], self.decl).get()
+
+    def field(self, name):
+        return self.lowering.array(self.decl["through"][name], self.decl).get(self.at())
+
+    def put(self, name, value):
+        self.lowering.array(self.decl["through"][name], self.decl).set(self.at(), value)
+
+
 class UnitRef:
     """A unit of the game as the lowering holds it: the pointer, its EPD, and the slot's uniqueness byte
     (as it sits in its dword, masked 0xFF00). `uid` None is the unit of a loop's turn, there by
@@ -588,7 +610,7 @@ class Lowering:
         self.slots = owner_slots(program)
         self.player = None
         self.vars = {}
-        self.arrays = {a["id"]: SliceStorage(a, self) if a.get("slice") else (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
+        self.arrays = {a["id"]: SliceStorage(a, self) if a.get("slice") else InnerListStorage(a, self) if a.get("through") else (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
         self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
         self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
         self.resumes = []  # (index, Forward) for every sleep

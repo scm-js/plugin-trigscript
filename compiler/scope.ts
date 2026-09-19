@@ -34,6 +34,13 @@ export type Binding =
    * to the flat array; what wants an array (a loop, a method, a function it is handed to) makes it a window (`ArrayDecl.slice`).
    */
   | { kind: "row"; name: string; a: ArrayDecl; offset: NumExpr; length: number }
+  /**
+   * An array of arrays that grow — rows of different lengths, a row something pushes to: four arrays, a handle a row
+   * (where the row's block is in the heap, the cells in use, its room, its size class). `of` is what the rows hold.
+   */
+  | { kind: "lists"; name: string; ptr: ArrayDecl; len: ArrayDecl; room: ArrayDecl; k: ArrayDecl; of: "number" | "boolean"; bits?: 8 | 16; unsigned?: boolean }
+  /** `buckets[i]` before anything needs it as an array: the row at `index`, which becomes an `ArrayDecl.through` where it is used. */
+  | { kind: "inner"; lists: Extract<Binding, { kind: "lists" }>; index: NumExpr }
   /** `truth`: the record stands for something that may not be there (what `chatted()` found): the boolean that says whether it is. */
   | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl };
 

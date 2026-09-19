@@ -355,6 +355,36 @@ that call; such a function is copied into each call rather than called, since ev
 has its own number of them. An array is handed to a function as itself (`total(xs)`), not
 spread into its arguments.
 
+**Arrays inside arrays, and inside records.** `let grid = [[0, 0, 0], [0, 0, 0]]`,
+`new Array(8).fill(0).map(() => new Array(8).fill(0))`, `Array.from({ length: h }, () => …)`,
+three deep if you like: `grid[y][x]`, `grid[y][x] += 1`, `grid.length`, `grid[y].length`,
+`for (const row of grid)`, `grid.forEach((row, y) => …)`, `some`, `every`, `findIndex`,
+`reduce`, `map`. A row is an array like any other — `const row = grid[y]` is the grid's own
+cells, as it is in TypeScript, and takes `fill`, `sort`, `includes`, a function's parameter,
+a pattern (`const [top, bottom] = grid`); `grid[y] = [a, b, c]` sets one. So does an array
+in a record: `let p = { hp: 5, path: [0, 0, 0], seen: [] as number[] }`, `p.path[i]`,
+`p.seen.push(v)`.
+
+How it is kept is the compiler's choice, and the end of the line says which:
+
+- **Every row the same length, and no row growing**, is *one flat array*, read at
+  `y * width + x` — no dearer than an array. A row past its own end reads 0 and stores
+  nothing, so it never reaches into the next row. The outer array may still grow by whole
+  rows: `const path: number[][] = []; path.push([x, y]); path.pop(); path.length = 0`.
+- **Rows of different lengths, or a row something pushes to** (`buckets[i].push(v)`), is
+  *rows that grow*: each row a block of the heap of its own, found through the outer array —
+  a few more triggers a read than a flat one. The outer array grows too
+  (`buckets.push([1, 2], [])`, `buckets.pop()`, `buckets.length = 3`), a row can be given
+  anew (`buckets[i] = [a, b]`, or an array, whose cells are copied), and a row that goes —
+  popped, cut off, the whole declared again in a loop — gives its block back first, so
+  nothing leaks. Two deep; not three.
+
+One thing is not JavaScript's: a row of rows that grow kept in a `const` is that *place* in
+the outer array, not the array that was there. `const last = buckets[2]; buckets.pop();
+buckets.push([7])` leaves `last` reading `[7]`, where JavaScript would still have the row
+that was popped. `filter`, `sort` and `reverse` of an array of arrays are not there yet, nor
+is an array inside an *array of* records (`squads[i].members`), which comes with classes.
+
 **A list the script made is a table a program can look things up in.** `const price = [50,
 100, 150]` outside the program, `price[level]` inside it, is in the map once, however often
 it is read, and cannot be written. A list of records is a table a field — the wave table:
@@ -816,8 +846,7 @@ programs, each a thread of its own with its own variables. A program's text
 takes a string of the map you edit; a `trigger()`'s text is interned into the map when
 the script is applied, as it always was.
 
-Still to come, in this order: the rest of the TypeScript people write — arrays inside
-records and arrays of arrays, a `string` that is a value (a text kept in a variable, a
+Still to come, in this order: the rest of the TypeScript people write — a `string` that is a value (a text kept in a variable, a
 template stored and shown later), classes, a `Map` over any number; then `test()` blocks
 that run a script against the simulator, a debugger that steps it, and a gallery of
 examples. The plan is `docs/eud-plan.md`, and the IR the
@@ -835,6 +864,8 @@ brought the script's standard library to ES2023. `new Array(12)` is an array of 
 where TypeScript's own declaration says `any[]`, so what is read out of one, or made from it
 by `map` or `reduce`, has a type; an array of booleans made that way says so:
 `new Array<boolean>(12).fill(false)`.
+
+Arrays inside arrays and inside records (*Arrays inside arrays*, above) are new as well.
 
 Patterns and spread (*Patterns and spread*, above) are new too, and mended something:
 `const { n, d } = waves[0]` over a list of the script — nothing of the program in it — was

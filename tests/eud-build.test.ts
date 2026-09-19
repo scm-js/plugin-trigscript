@@ -354,6 +354,28 @@ FIXTURES.grids = `program(() => {
   }
 });`;
 
+// Arrays that grow inside an array (IR 12's `through`): rows of different lengths reached through a handle a row, the
+// outer one growing too, rows popped, cut off and assigned giving their blocks back, a row sorted and handed to a function.
+FIXTURES.lists = `program(() => {
+  const b: number[][] = [[1, 2], [], [3]];
+  let fixed = [[5], [6, 7]];
+  let p = { hp: 5, lanes: [[1], [2, 3]] };
+  function total(xs: number[]) { let t = 0; for (const x of xs) t += x; return t; }
+  let n = 0;
+  while (true) {
+    n++;
+    b[n % 3].push(n); fixed[n % 2].push(n); p.lanes[0].push(p.hp);
+    const row = b[0]; row.sort((x, y) => y - x);
+    b.push([n, n + 1], []); b[b.length - 1] = [7, 7, 7];
+    let sum = 0; for (const r of b) sum += total(r);
+    const sizes = b.map((r) => r.length);
+    if (b.length > 6) { b.pop(); b.length = 3; }
+    if (fixed[0].length > 8) fixed[0].length = 0;
+    displayText(\`\${sum} \${sizes.length} \${b.findIndex((r) => r.includes(7))} \${total(p.lanes[0])}\`);
+    sleep(seconds(1));
+  }
+});`;
+
 // And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
 // and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.
 FIXTURES.callbacksProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "callbacks.ts"), "utf8");

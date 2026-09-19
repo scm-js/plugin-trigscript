@@ -696,6 +696,36 @@ things and the strings first):
   copy of a row (`const r = grid[y]`) is a reference, as it is in TypeScript, never a second
   owner. The strings and the map over any number, below, also keep blocks that a value
   owns: the three are designed together.
+  **As built (2026-09-19; no probe played yet).** Three shapes, the compiler choosing:
+  - *A grid* — every row one length, none growing: one flat `ArrayDecl`, `grid[y][x]` an
+    `element` at `y * width + x` whose index is −1 when `x` is past the row (a ternary over
+    an unsigned compare), so nothing is made for a plain read or store. A row wanted as an
+    array (`const row = grid[y]`, a loop, a method, a parameter) is a **window**, IR 12's
+    `ArrayDecl.slice { of, offset }`, which both backends bound by its own length. Any
+    depth. The outer array may grow by whole rows (`dims[0]` is 0 then, the rows are the
+    flat length by the width); started empty, the rows that are pushed say how wide it is
+    (`pushedWidths`).
+  - *Rows that grow* — different lengths, or `b[i].push(…)` / `.pop()` / `.length =`
+    anywhere in the body (`innerGrows`): four arrays, a handle a row, and `b[i]` IR 12's
+    `ArrayDecl.through { ptr, len, room, k, index }`, a growing array whose handle's
+    fields are read through the four. The Python is `InnerListStorage`, thirteen lines
+    over `ListStorage`; the rule that the holder owns the block is the front end's
+    (`releaseRows` before a pop, a `length =`, a declaration run again; `declareArray` of
+    a row with nothing is what gives a block back). Since a row is reached by its *place*,
+    a kept row cannot dangle — it is whatever is at that place — which is safer than the
+    plan feared and differs from JavaScript in one documented way.
+  - *An array in a record* is an array the record's name leads to: `declareRecord` hands
+    the field to `declareArray` / `declareUnits` / `declareGrid` / `declareLists`. Nothing
+    new in the IR.
+  Also: the hoisting pass marks the list at the *root* of a store however deep
+  (`grid[y][x] = v` on a `const`), and the check for a loop that never ends reads a window
+  as the array it is a window on. **Left for the classes part:** an array inside an
+  *array of* records (`squads[i].members`), which is a handle a row as above, the four
+  arrays riding along as fields so that the rows' push / pop / sort / filter move them —
+  and that is where copies of a handle appear (a filtered array's rows name the same
+  blocks), so where ownership has to be said. Also left: `filter` / `sort` / `reverse`
+  of an array of arrays, three deep with rows that grow, and a probe (a grid filled and
+  read back, rows that grow with the outer one cut and the heap found whole).
 - **Strings.** Added 2026-09-19 at the user's word ("I would like native strings… I also do
   want full template strings such as `Wave ${n}`"). One type, `string`, written as
   TypeScript writes it, and nothing to declare beside it — no capacity, which would have
