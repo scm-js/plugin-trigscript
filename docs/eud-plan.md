@@ -50,6 +50,12 @@ and how do we get the best developer experience out of that.
 > the language as it ends up. The cost is probes: slice 5 as planned needed none, and each
 > of these has one to be played. See *The language slices* under Slices; the *Numbers* and
 > *Arrays* paragraphs of the programming model below are superseded by it.
+>
+> **Revised 2026-09-19: a fifth language slice, 8½.** For the same reason the language went
+> before the tooling: callbacks on arrays, destructuring and spread, classes, and a `Map`
+> over any number are what a person writing TypeScript reaches for next, and each changes
+> what the debugger shows and what the examples look like. It takes 3.9.0; `test()` and the
+> debugger move to 3.10.0 and the examples to 3.11.0.
 
 ## What we are aiming for
 
@@ -382,11 +388,12 @@ before the slice is called done, in the Magenta manner.
 | 3 | `Unit` objects, unit loops, picks, `stats()` (3.3.0; built 2026-09-18, the probe is `probes/units.ts`) | the Magenta-verified list as typed objects; the pointer re-check; hints for scans | 3–4 days |
 | 4 | Input (3.4.0; built 2026-09-18, the probe is `probes/input.ts`) | `chatted()` with captures, `keyPressed`, `clicked`, `mouse`, `underMouse`; MSQC and chatEvent composed automatically | 2–3 days |
 | 5 | Signed numbers (3.5.0; the probe is `probes/numbers.ts`, played 2026-09-18: every line as expected, the ore at 75 at the end) | `number` is a signed 32-bit integer, `u32` the unsigned one beside it, `>>>` apart from `>>`, division towards zero; IR 6 | 2–3 days |
-| 6 | Arrays and keyed tables (3.6.0; the probe is `probes/arrays.ts`, played 2026-09-18: step L — 20 000 pushes at 500 a frame — did not stutter, said out of memory once and stopped at 4096, the push the simulator stops at; M found room again in the blocks given back, N had an array a player and one shared; played again 2026-09-19 with the records, the array of units and the Map loops — steps O to Q — all as expected) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` within a declared capacity; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
-| 7 | Functions that are called (3.7.0) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which | 3 days |
+| 6 | Arrays and keyed tables (3.6.0; the probe is `probes/arrays.ts`, played 2026-09-18: step L — 20 000 pushes at 500 a frame — did not stutter, said out of memory once and stopped at 4096, the push the simulator stops at; M found room again in the blocks given back, N had an array a player and one shared; played again 2026-09-19 with the records, the array of units and the Map loops — steps O to Q — all as expected) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` on an array that grows out of a heap; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
+| 7 | Functions that are called (3.7.0) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
 | 8 | Recursion (3.8.0) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
-| 9 | `test()` blocks + debugger (3.9.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
-| 10 | Examples, guide, assistant prompts, registry (3.10.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
+| 8½ | The TypeScript people write (3.9.0) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 7–8 days |
+| 9 | `test()` blocks + debugger (3.10.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
+| 10 | Examples, guide, assistant prompts, registry (3.11.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
 
 **Slice 3 as built**, where it differs from the sections above: the read of a unit's order is
 `orderId` (a property and a method cannot share the name `order`); `underMouse()` waits for
@@ -430,7 +437,7 @@ passed but F6, which the game never reports (silent first in MSQC's settings and
 third, while F7, F8, `1`, Q, W and E answered), so F6 is not a `Key`. MSQC's unit type (the Valkyrie) and its
 player (12) are fixed for now; a map that uses Valkyries has no way to say so yet.
 
-### The language slices (5–8)
+### The language slices (5–8½)
 
 Decided 2026-09-18 with the user. What they share: the source is TypeScript a person would
 write anyway, and where the game cannot follow, the compiler says so at the line.
@@ -490,9 +497,13 @@ TypeScript thing in the language.
   `kills.get(CurrentPlayer)` with a key of the game is one read. `get`, `set`, `has`,
   `delete`, `clear`, `size` and `for…of` over the keys. `let s = {}` with fields added later
   is refused by TypeScript itself; its typed form, `Record<K, V>`, is this.
-- A `Map<number, number>` over *any* key is a hash table with a capacity, a few probes an
-  operation. Not in this slice; after recursion, if wanted. A key that is a string of the
+- A `Map<number, number>` over *any* key is a hash table, a few probes an operation. Not
+  in this slice: it is the last part of slice 8½. A key that is a string of the
   game does not exist: there are no strings when the map is played.
+- Left out of 3.6, and where each went (2026-09-19): an array inside a record and an array
+  of arrays are a part of slice 8½, before the classes that need them; the simulator's
+  faults shown in the Simulate view come with slice 7; arrays in the Explorer and the
+  variables view are slice 9's, with the debugger that draws them anyway.
 
 **7. Functions that are called (3.7.0).** Inlining stays the default because two things
 need it: a function that sleeps (the program resumes inside it, through the lowering's own
@@ -500,6 +511,18 @@ jumps), and a parameter that reaches a field only a value known at build time ca
 (`spawn(P2, 4)`'s player). A function with neither, called from more than one place, becomes
 one copy that is called; the source is the same either way and the end of the line says
 which, as *unrolled ×3* does. What it buys is the size of the built map.
+
+An array parameter stays what it is in 3.6, a name for the caller's array settled when the
+script is built — so a function that takes one is called as one copy *an array passed*, the
+way a template is: `total(hp)` and `total(shields)` are two copies, five calls of
+`total(hp)` one. No array is reached through a value of the game in this slice (that comes
+with slice 8½'s arrays inside things), and slice 8's `fill(grid, x, y)` recurses on the
+same terms. The hint counts the copies.
+
+With it, the small thing 3.6 left: the simulator has recorded its **faults** since arrays
+came — a read or a store past an end, a push that found no memory — and shows them nowhere.
+The Simulate view lists them with their lines, and slice 8's stack overflow joins the same
+list.
 
 **8. Recursion (3.8.0).** eudplib's functions keep their arguments, results and return
 address in cells of their own (`EUDFuncN`: `_fargs`, `_frets`, one `_nptr`), so a call from
@@ -513,6 +536,71 @@ serves every player — it is empty between frames); a depth limit, with a line 
 the simulator; and its parameters are variables, so one that reaches a build-time-only
 field is a compile error. Cost: a store and a load a saved cell a call — fine in the tens
 and hundreds, slow for thousands of calls in a frame; the probe times it.
+
+**8½. The TypeScript people write (3.9.0).** Added 2026-09-19. As 3.6 stands, an array of a
+program has `push`, `pop`, `fill`, `includes`, `indexOf`, `length` and `for…of`, and says so
+when anything else is called; a spread inside an array literal is refused; the only
+destructuring is `for (const [k, v] of m.entries())`; a class is fine outside `program()`,
+where the script simply runs, and nothing inside it. Five parts, in this order, each of which
+can ship alone (but the classes want the arrays inside things first):
+
+- **Callbacks on arrays.** `forEach`, `some`, `every`, `find`, `findIndex`, `findLast`,
+  `reduce`, `map`, `filter`, `sort` and `reverse`. The arrow — or the
+  name of a function — is known when the script is built, so it is inlined into a loop over
+  the cells, the way `includes` and `indexOf` already are functions of the compiler's own. A
+  variable the arrow uses from outside is a cell of the program, so capturing costs nothing
+  and there is no closure when the map is played. What that rules out is a function as a
+  *value*: kept in a variable of the game, put in an array, returned. That is an error at the
+  line, which says the arrow has to be written where it is used. `map` gives an array of the
+  source's length (fixed if the source is, from the heap if not); `filter` always gives one
+  that grows. `sort` wants its comparator — without one JavaScript sorts numbers as text,
+  which nobody means, so the error names `(a, b) => a - b` — and is an insertion sort within
+  the frame, with a hint over a few hundred cells. No `sleep()` in a callback; the message
+  names `for…of`. A chain (`xs.filter(f).map(g)`) makes the array in the middle as written;
+  fusing the two loops is for later, if a probe says it matters. The unit sets (`unitsOf(…)`
+  and the rest) take `forEach`, `some`, `every`, `find` and `filter` the same way, since
+  they are loops already.
+- **Destructuring and spread.** `const { x, y } = mouse(p)`, `const [a, b] = pair`, in a
+  parameter, with defaults, nested, and `[a, b] = [b, a]` through temporaries. `[...xs, v]`
+  and `{ ...r, hp: 5 }` copy cell by cell; `...rest` in a parameter list is the arguments of
+  each call site, which keeps that function inlined under slice 7's rule. All of it is the
+  front end: the IR does not change.
+- **Arrays inside things.** What 3.6 left out: a record with an array for a field
+  (`{ hp: 5, path: [0, 0, 0] }`) and an array of arrays (`grid[y][x]`). Of a *fixed* shape
+  both are the front end's alone: a fixed array in a record is more cells of the record, in
+  an array of records one array of `length × n`; a grid whose two sizes are known is one
+  array read at `y * w + x`, a row past either end reading 0 as a cell does. An inner array
+  that *grows* is the new thing: its handle becomes a value kept in the cells of something
+  else, so the IR gains an array reached through a handle the game holds, where until now
+  every array was a declaration — and 3.6's rule of one block a declaration site no longer
+  covers it. The rule that replaces it: what holds the handle owns the block; `pop`,
+  `length =`, `clear` and declaring the outer again give the inner blocks back first, and a
+  copy of a row (`const r = grid[y]`) is a reference, as it is in TypeScript, never a second
+  owner. The map over any number, below, also keeps blocks that a value owns: the two are
+  designed together.
+- **Classes.** A class used inside a program is a record and its methods functions with the
+  instance first; `new` declares the cells and runs the constructor; a field that is an
+  array (`members: Unit[]`) is the part above. Whether a method is
+  called or inlined is slice 7's rule, nothing of its own. Fields, methods, getters and
+  setters, `static`, `readonly`, `private` and `#x`. `extends` works because the class of
+  every value is known when the script is built — there is no type when the map is played —
+  so `super`, an overridden method and `instanceof` are all settled at build time, and an
+  array of a base class that holds two different subclasses is an error. An array of
+  instances is the array of records 3.6 has.
+- **A map over any number.** `Map<number, V>` and `Set<number>`: open addressing in a block
+  of the heap, exchanged for one twice the size at three quarters full, as an array that
+  grows is. A few probes an operation where a keyed table is one read, so the hint says
+  which one a `Map` became. To decide when it is built: JavaScript iterates a `Map` in the
+  order the keys went in, and keeping that costs a second block of keys — either pay it, or
+  say in the README that the order is not kept.
+
+What stays out, each with an error that says so: a string made while the map is played
+(there are none), a function as a value, generators and `async` (an error already),
+`try` / `throw`, and anything that needs a type at run time (`typeof x === …` on a value of
+the game). One probe, `probes/callbacks.ts`: a sort of 256 cells timed in the frame, a
+`filter` that grows past its first block, a grid filled and read back, an array of arrays
+that grow with the outer one cut and the blocks found again, a class with an array of
+instances, and a `Map` through two doublings.
 
 Slice 1 is where the value is and where the risk is; nothing after it is hard once the IR
 and the Python lowering exist. Slices 2–4 can be reordered by what the user wants to play
@@ -531,8 +619,8 @@ with first; 5 and 6 are what make it feel finished.
   trigger list unreadable and is not recommended.
 - ~~Functions as real calls.~~ Decided 2026-09-18: the compiler chooses (slice 7), and
   recursion follows (slice 8).
-- **A map over any key.** `Map<number, number>` as a hash table with a capacity; after
-  slice 8, if wanted.
+- ~~A map over any key.~~ Decided 2026-09-19: the last part of slice 8½, in the heap
+  rather than with a capacity. What is left open is whether it keeps insertion order.
 - **A limit on scans.** A loop over every unit on every frame in a per-player program is
   twelve scans a frame. A hint is planned; a hard cap is not.
 - **The classic install on the Remastered target.** As of 2.6 every compile still runs the
