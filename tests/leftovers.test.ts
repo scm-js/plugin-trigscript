@@ -1,0 +1,58 @@
+/**
+ * What slice 8½ first left out and then took in: copies of arrays, a Map's keys as an array, a row variable given
+ * another row, a method that returns its instance, a function that makes one, the methods that take a function on an
+ * array of arrays, a spread into a call, and an array of texts. The bodies are run in JavaScript too, and compared.
+ */
+import ts from "typescript";
+import { describe, expect, it } from "vitest";
+import { compileScript, type CompileResult } from "../compiler/compiler";
+import { defaultScriptNames } from "../compiler/names";
+import { simulatePrograms } from "../compiler/simulateIr";
+import { defaultLib } from "../bundle/lib.mjs";
+
+const LIB = defaultLib();
+const NAMES = defaultScriptNames();
+const raw = (body: string): CompileResult => compileScript(ts, { "main.ts": `program(() => {${body}});` }, NAMES, { lib: LIB });
+const compile = (body: string): CompileResult => { const r = raw(body); expect(r.diagnostics.map((d) => d.message)).toEqual([]); return r; };
+const run = (body: string, heapCells?: number) => { const r = compile(body); return simulatePrograms(r.ir, 1, { strings: r.strings, ...(heapCells ? { heapCells } : {}) }); };
+const messages = (body: string) => raw(body).diagnostics.map((d) => d.message);
+const shown = (sim: ReturnType<typeof run>) => sim.events.map((e) => e.text);
+/** What JavaScript itself says of the same lines: the body is run as it is, `print` collecting. */
+const js = (body: string): string[] => { const out: string[] = []; new Function("print", ts.transpile(body, { target: ts.ScriptTarget.ES2023 }))((t: string) => out.push(t)); return out; };
+const same = (body: string, heapCells?: number) => { const sim = run(body, heapCells); expect(sim.faults).toEqual([]); expect(shown(sim)).toEqual(js(body)); };
+const JOIN = "function join(xs: number[]) { let s = ''; for (const x of xs) s += `${x},`; return s; }";
+
+describe("copies of an array", () => {
+  it("slice, with places counted from the end and past either end", () => {
+    same(`${JOIN} const xs = [1, 2, 3, 4, 5]; let a = 1; let b = -1; let far = 99; print(join(xs.slice(a)) + ' ' + join(xs.slice(a, b)) + ' ' + join(xs.slice(-2)) + ' ' + join(xs.slice(far)) + ' ' + join(xs.slice(0, far)) + ' ' + join(xs.slice()) + ' ' + join(xs.slice(3, 1)));`);
+  });
+  it("concat, toSorted and toReversed leave what they were called on as it was", () => {
+    same(`${JOIN} let n = 9; const xs = [3, 1, 2]; const ys = xs.concat([n, 8], 7, xs); const zs = xs.toSorted((a, b) => a - b); const ws = xs.toReversed(); ys[0] = 0; print(join(xs) + ' ' + join(ys) + ' ' + join(zs) + ' ' + join(ws) + ' ' + join(xs.toSorted((a, b) => b - a).slice(0, 2)));`);
+  });
+  it("a Map's keys and values, and a Set, as arrays", () => {
+    same(`${JOIN} const m = new Map<number, number>([[5, 50], [-1, 10]]); const s = new Set<number>([9, 8]); let k = 7; m.set(k, 70); m.delete(5); const ks = [...m.keys()]; const vs = Array.from(m.values()); const all = [...s, ...m.keys(), 1]; ks.push(0); print(join(ks) + ' ' + join(vs) + ' ' + join(all) + ' ' + join(Array.from(s)) + ' ' + m.size);`);
+  });
+});
+
+describe("a variable that is a row", () => {
+  it("is given another row of the same array, and writes through to whichever it is", () => {
+    same("class Wave { constructor(public n: number, public left: number) {} hit() { this.left--; } } const waves = [new Wave(1, 5), new Wave(2, 9), new Wave(3, 7)]; let cur = waves[0]; let best = waves[0]; for (let i = 0; i < waves.length; i++) { cur = waves[i]; cur.hit(); if (cur.left > best.left) best = cur; } best.left = 0; print(`${waves[0].left} ${waves[1].left} ${waves[2].left} ${cur.n} ${best.n}`);");
+  });
+  it("of plain records too; a row of another array is refused", () => {
+    same("let rows = [{ a: 1 }, { a: 2 }]; let r = rows[0]; let k = 1; r = rows[k]; r.a += 10; print(`${rows[0].a} ${rows[1].a}`);");
+    expect(messages("let xs = [{ a: 1 }]; let ys = [{ a: 2 }]; let r = xs[0]; let k = 0; r = ys[k]; r.a = k;").join("\n")).toMatch(/can be given another row of it/);
+  });
+});
+
+describe("a call that gives an instance", () => {
+  const VEC = "class Vec { constructor(public x: number, public y: number) {} add(o: Vec) { this.x += o.x; this.y += o.y; return this; } scale(k: number) { this.x *= k; this.y *= k; return this; } get sum() { return this.x + this.y; } }";
+  it("return this: methods in a chain, as a statement, in a declaration, as a value", () => {
+    same(`${VEC} let k = 3; const v = new Vec(1, 2); const w = new Vec(10, 20); v.add(w).scale(k); const same = v.add(w); same.scale(2); v.scale(1); print(\`\${v.x} \${v.y} \${w.x} \${v.add(w).scale(2).sum}\`);`);
+  });
+  it("a function that makes one, and one that hands back what it was given", () => {
+    same(`${VEC} function make(n: number) { return new Vec(n, n * 2); } function doubled(v: Vec) { v.scale(2); return v; } function total(v: Vec) { return v.sum; } let n = 4; const a = make(n); const b = doubled(a); b.x += 1; const c = make(n + 1).add(a); print(\`\${a.x} \${a.y} \${c.x} \${c.y} \${total(make(7))}\`);`);
+  });
+  it("says so when which instance comes back would only be known in the game", () => {
+    expect(messages(`${VEC} function pick(a: Vec, b: Vec, first: boolean) { if (first) return a; return b; } let f = true; const p = pick(new Vec(1, 1), new Vec(2, 2), f); p.x = 0;`).join("\n")).toMatch(/has to give the same instance/);
+  });
+});
