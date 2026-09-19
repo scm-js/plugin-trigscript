@@ -880,7 +880,7 @@ things and the strings first):
   so `super`, an overridden method and `instanceof` are all settled at build time, and an
   array of a base class that holds two different subclasses is an error. An array of
   instances is the array of records 3.6 has.
-  **As built (2026-09-19; probe `probes/classes.ts`, steps A–K, not played yet).** A class
+  **As built (2026-09-19; probe `probes/classes.ts`, steps A–K, played the same day: every step as expected, nothing in red at step I — so IR 14's Python, a text in the cells of a row stored, copied by `filter`, moved by a sort and given back, holds in the game, as do the rows' arrays and units).** A class
   *declared in the program* (or in a `game()` function) is the program's, as a function
   declared there is; one declared outside stays the script's. That was the decision that
   made the rest small: the hoisting pass already plans every body inside the program, so a
