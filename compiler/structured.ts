@@ -65,7 +65,7 @@ import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGa
 import { cellMax } from "./tables";
 import { Scope, type Binding } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { I32_MAX, I32_MIN, IR_VERSION, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, eachCall, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { I32_MAX, I32_MIN, IR_VERSION, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, eachCall, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -113,7 +113,7 @@ interface Ctx {
   canBreak?: boolean;
   canContinue?: boolean;
   /** Inside an inlined function: what it returns. */
-  fn?: { kind: Kind | "void" };
+  fn?: { kind: Kind | "text" | "void" };
 }
 
 /** What a variable of a program holds. */
@@ -124,6 +124,8 @@ const LABEL_LENGTH = 48;
 /** The most iterations a `for` is unrolled to. */
 export const MAX_UNROLL = 256;
 /** Actions whose unit count may be a variable: doing them with n is doing them bit by bit. */
+/** The actions whose text may be one made while the map is played: played 2026-09-19, each shows a string written over just before it runs. */
+const MADE_TEXT_ACTIONS: ReadonlySet<number> = new Set([ActionType.SetMissionObjectives, ActionType.Transmission, ActionType.LeaderboardControl, ActionType.LeaderboardControlAt, ActionType.LeaderboardResources, ActionType.LeaderboardKills, ActionType.LeaderboardPoints, ActionType.LeaderboardGoalControl, ActionType.LeaderboardGoalControlAt, ActionType.LeaderboardGoalResources, ActionType.LeaderboardGoalKills, ActionType.LeaderboardGoalPoints, ActionType.LeaderboardGreed]);
 const COUNT_ACTIONS: ReadonlySet<number> = new Set([ActionType.CreateUnit, ActionType.CreateUnitWithProperties, ActionType.KillUnitAt, ActionType.RemoveUnitAt, ActionType.GiveUnits]);
 
 /** A value the run computed for a hoisted expression (or a parameter bound to one). */
@@ -184,6 +186,8 @@ const num = (value: number): NumExpr => ({ kind: "const", value });
 const varRef = (v: VarDecl): NumExpr => ({ kind: "var", id: v.id });
 const boolRef = (v: VarDecl): BoolExpr => ({ kind: "var", id: v.id });
 const unitRef = (v: VarDecl): UnitExpr => ({ kind: "unitVar", id: v.id });
+/** A variable as the value it holds, whatever that is. */
+const refOf = (v: VarDecl): NumExpr | BoolExpr | UnitExpr | TextExpr => (v.kind === "number" ? varRef(v) : v.kind === "unit" ? unitRef(v) : v.kind === "text" ? { kind: "textVar", id: v.id } : boolRef(v));
 const NO_UNIT: UnitExpr = { kind: "unitNull" };
 const ORDERS: readonly string[] = ["move", "patrol", "attack"];
 
@@ -334,8 +338,10 @@ export class Structured {
     return a;
   }
 
-  private newVar(name: string, kind: Kind, at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; temp?: boolean } = {}): VarDecl {
-    return { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.temp ? { temp: true } : {}), at };
+  private newVar(name: string, kind: VarDecl["kind"], at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; temp?: boolean; text?: "id" | "made" } = {}): VarDecl {
+    const v: VarDecl = { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.temp ? { temp: true } : {}), ...(kind === "text" ? { text: extra.text ?? "made" } : {}), at };
+    if (kind === "text") this.textKinds.set(v.id, v.text ?? "made");
+    return v;
   }
 
   /* ── Values and bindings ── */
@@ -642,6 +648,9 @@ export class Structured {
     } else if (fn.kind === "unit") {
       const value = this.unitExpr(s.expression);
       if (value) this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    } else if (fn.kind === "text") {
+      const value = this.text(s.expression);
+      if (value) this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
     } else {
       const value = this.boolValue(s.expression);
       this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
@@ -725,13 +734,19 @@ export class Structured {
         if (a) this.scope.bind(d, { kind: "array", a });
         continue;
       }
+      if (this.isTextType(type)) {
+        if (ts.isCallExpression(init) && this.isLibraryCall(init, "shared")) { this.c.error(init, "shared() holds a number or a boolean."); continue; }
+        const v = this.declareText(d.name.text, d.initializer, this.textKept(d.initializer, (left) => ts.isIdentifier(left) && declarationOf(ts, this.c.checker, left) === d), this.sourceOf(d.name), d);
+        this.scope.bind(d, { kind: "var", v });
+        continue;
+      }
       const kind = this.kindOf(type);
       // `const x = xs.find(…)` would be a number or undefined: searchCall says what to write instead.
       if (!kind && ts.isCallExpression(init) && ts.isPropertyAccessExpression(init.expression) && (init.expression.name.text === "find" || init.expression.name.text === "findLast")) {
         const over = this.overOf(init.expression.expression);
         if (over) { this.searchCall(init, over, init.expression.name.text, over.kind === "array" ? over.a.kind : "number"); continue; }
       }
-      if (!kind) { this.c.error(d, `Variables hold numbers, booleans, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
+      if (!kind) { this.c.error(d, `Variables hold numbers, booleans, texts, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
       // `let total = shared(0)`: one cell for every player of a per-player program, initialised with the argument.
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
       if (shared && shared.arguments.length !== 1) { this.c.error(init, "shared() takes the initial value: shared(0) or shared(false)."); continue; }
@@ -1648,8 +1663,17 @@ export class Structured {
         if (known) { items.push({ kind: "value", value: known.value }); continue; }
         const held = this.bindingOf(x);
         if (held && held.kind !== "var" && held.kind !== "cell") { items.push(held); continue; }
+        if (this.isTextTyped(x)) {
+          // A text: a copy of its own, made before anything is stored — which is the whole of `[a, b] = [b, a]`.
+          const given = this.text(x);
+          if (!given) return null;
+          const copy = this.newVar("(taken)", "text", this.at(x), { temp: true, text: "made" });
+          this.emit({ kind: "declare", decl: copy, init: given, at: this.at(x), label: this.label(x) }, x);
+          items.push({ kind: "var", v: copy });
+          continue;
+        }
         const kind = this.kindOf(this.c.checker.getTypeAtLocation(x));
-        if (!kind) { this.c.error(x, `This is ${this.c.checker.typeToString(this.c.checker.getTypeAtLocation(x))}; a pattern takes numbers, booleans, units and records.`); return null; }
+        if (!kind) { this.c.error(x, `This is ${this.c.checker.typeToString(this.c.checker.getTypeAtLocation(x))}; a pattern takes numbers, booleans, texts, units and records.`); return null; }
         const v = this.newVar("(taken)", kind, this.at(x), { temp: true, ...(kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(x)) : {}) });
         this.emitDeclare(v, x, x);
         items.push({ kind: "var", v });
@@ -1693,7 +1717,7 @@ export class Structured {
     if (from.kind !== "var" && from.kind !== "cell") return from;
     const like = from.kind === "var" ? from.v : from.a;
     const v = this.newVar(name, like.kind, this.sourceOf(at), { ...(like.bits ? { bits: like.bits } : {}), ...(like.unsigned ? { unsigned: true } : {}) });
-    const init: NumExpr | BoolExpr | UnitExpr = from.kind === "cell" ? { kind: "element", array: from.a.id, index: from.index, at: this.at(at) } : from.v.kind === "number" ? varRef(from.v) : from.v.kind === "unit" ? unitRef(from.v) : boolRef(from.v);
+    const init: NumExpr | BoolExpr | UnitExpr | TextExpr = from.kind === "cell" ? { kind: "element", array: from.a.id, index: from.index, at: this.at(at) } : refOf(from.v);
     this.emit({ kind: "declare", decl: v, init, at: this.at(at), label: this.label(at) }, at);
     return { kind: "var", v };
   }
@@ -1819,8 +1843,18 @@ export class Structured {
     const to = this.bindingOf(target);
     const el = !to && ts.isElementAccessExpression(target) ? this.elementOf(target) : undefined;
     if (el === null) return false;
-    const kind: Kind | undefined = to?.kind === "var" ? to.v.kind : to?.kind === "cell" ? to.a.kind : el ? el.a.kind : undefined;
+    const kind = to?.kind === "var" ? to.v.kind : to?.kind === "cell" ? to.a.kind : el ? el.a.kind : undefined;
     if (!kind) { this.c.error(target, "A pattern assigns to the program's variables, cells and fields."); return false; }
+    if (kind === "text") {
+      // A text is copied as any value is: taken first, stored once every other has been taken.
+      const given = from.kind === "var" && from.v.kind === "text" ? refOf(from.v) as TextExpr : from.kind === "value" && typeof from.value === "string" ? this.literalText(from.value, target) : null;
+      if (!given || to?.kind !== "var") { this.c.error(target, "Expected a text here."); return false; }
+      // Out of an array written out it is a copy already; out of a record it is the field itself, which a store made earlier in the same pattern may change — so a copy here too.
+      const held = from.kind === "var" && from.v.temp ? given : this.textTemp(given.kind === "textVar" ? this.mark<TextExpr>({ kind: "template", parts: [{ kind: "value", text: given }], at: this.at(target), label: this.label(target) }, target) : given, target);
+      const at = this.at(target), label = this.label(target);
+      stores.push(() => this.emit({ kind: "assignText", target: to.v.id, value: held, at, label }, target));
+      return true;
+    }
     const held = this.takenCopy(from, "(taken)", target);
     const value = this.valueOf(held, kind, target);
     if (!value) return false;
@@ -1974,7 +2008,7 @@ export class Structured {
       // By value, as TypeScript has it: a parameter the function assigns is a variable of its own that starts from what it was handed.
       if (b.kind === "var" && this.assigns(fn.body, p)) {
         const copy = this.newVar(p.name.text, b.v.kind, this.sourceOf(p.name), { ...(b.v.bits ? { bits: b.v.bits } : {}), ...(b.v.unsigned ? { unsigned: true } : {}) });
-        out.params.push({ decl: copy, init: b.v.kind === "number" ? varRef(b.v) : b.v.kind === "unit" ? unitRef(b.v) : boolRef(b.v), label });
+        out.params.push({ decl: copy, init: refOf(b.v), label });
         scope.bind(p, { kind: "var", v: copy });
         return;
       }
@@ -2412,6 +2446,10 @@ export class Structured {
       const filled = ts.isCallExpression(made) && ts.isPropertyAccessExpression(made.expression) && made.expression.name.text === "fill" && made.arguments.length === 1 ? made.arguments[0] : undefined;
       if (filled) kind = this.kindOf(this.c.checker.getTypeAtLocation(filled));
     }
+    if (element && !kind && this.isTextType(element)) {
+      this.c.error(at, `${name} is an array of texts, which a program cannot fill yet. A list of texts the script has can be looked up with a number of the program — const titles = ["Easy", "Hard"] outside the program, titles[level] inside it — and a text a program makes is kept in a variable or a record's field.`);
+      return null;
+    }
     if (!element || (kind !== "number" && kind !== "boolean")) {
       this.c.error(at, `An array of a program holds numbers or booleans; ${name} is ${this.c.checker.typeToString(type)}.`);
       return null;
@@ -2622,8 +2660,14 @@ export class Structured {
         else ok = false;
         continue;
       }
+      if (this.isTextType(ft)) {
+        // `name: "Boss"`: a text variable the record's name leads to, kept by what `p.name = …` anywhere gives it.
+        const keptAs = this.textKept(init, (left) => ts.isPropertyAccessExpression(left) && !!prop && this.c.checker.getSymbolAtLocation(left.name) === prop);
+        fields.set(key, { kind: "var", v: this.declareText(full, init, prop ? keptAs : "made", this.sourceOf(p.name), at) });
+        continue;
+      }
       const kind = this.kindOf(ft);
-      if (!kind) { this.c.error(p, `A record's fields hold numbers, booleans, units or arrays of them; ${full} is ${this.c.checker.typeToString(ft)}.`); ok = false; continue; }
+      if (!kind) { this.c.error(p, `A record's fields hold numbers, booleans, texts, units or arrays of them; ${full} is ${this.c.checker.typeToString(ft)}.`); ok = false; continue; }
       const v = this.newVar(full, kind, this.sourceOf(p.name), kind === "number" ? this.widthOf(ft) : {});
       this.emitDeclare(v, init, at);
       fields.set(key, { kind: "var", v });
@@ -2752,6 +2796,370 @@ export class Structured {
     this.emit({ kind: "print", parts: mergeText(parts), to, position, at: this.at(at), label: this.label(at) }, at);
   }
 
+  /* ── Texts ── */
+
+  /** Whether a type is a string's: `string`, a text written out, a union of those (`undefined` beside it is what `at()` adds, and is nothing here). */
+  private isTextType(type: TS.Type): boolean {
+    const { ts } = this;
+    const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    return bare.length > 0 && bare.every((t) => (t.flags & ts.TypeFlags.StringLike) !== 0);
+  }
+
+  private isTextTyped(e: TS.Expression): boolean {
+    return this.isTextType(this.c.checker.getTypeAtLocation(e));
+  }
+
+  /** A text the script has, as the program's: one of the table, or — with name() or color() in it — one the game fills in. */
+  private literalText(value: string, at: TS.Node): TextExpr {
+    if (hasTextMark(value)) return this.mark<TextExpr>({ kind: "template", parts: mergeText(textParts(value)), at: this.at(at), label: this.label(at) }, at);
+    // A character past U+FFFF is two of JavaScript's and one here, and the game draws none of them.
+    if ([...value].some((ch) => ch.codePointAt(0)! > 0xffff)) this.emit({ kind: "remark", short: "a character the game cannot draw", text: "This text holds a character past U+FFFF (an emoji, a rare ideograph). StarCraft draws nothing for it, and where JavaScript counts it as two characters a program counts it as one.", at: this.at(at) }, at);
+    return { kind: "text", text: value };
+  }
+
+  /** Parts as the text they are: one written out when nothing of the program is in them, the text itself when it is the only part. */
+  private textFrom(parts: TextPart[], at: TS.Node): TextExpr {
+    const merged = mergeText(parts);
+    if (merged.length === 0) return { kind: "text", text: "" };
+    if (merged.length === 1 && merged[0].kind === "text") return { kind: "text", text: merged[0].text };
+    if (merged.length === 1 && merged[0].kind === "value") return merged[0].text;
+    return this.mark<TextExpr>({ kind: "template", parts: merged, at: this.at(at), label: this.label(at) }, at);
+  }
+
+  /** A text as the parts of a larger one. */
+  private partsOf(t: TextExpr): TextPart[] {
+    return t.kind === "text" ? (t.text ? [{ kind: "text", text: t.text }] : []) : t.kind === "template" ? t.parts : [{ kind: "value", text: t }];
+  }
+
+  /** How each text variable met so far is kept, for `textHasId`. */
+  private readonly textKinds = new Map<string, "id" | "made">();
+  private keptAs = (id: string) => this.textKinds.get(id);
+
+  /** A list of texts the script has, as the table a program looks one up in: once a list. */
+  private textTable(list: unknown[], at: TS.Expression): ArrayDecl | null {
+    let a = this.tables.get(list);
+    if (a) return a;
+    if (list.length < 1 || list.length > MAX_ARRAY) { this.c.error(at, `A list a program looks a text up in has 1 to ${MAX_ARRAY} entries (got ${list.length}).`); return null; }
+    const texts = list as string[];
+    if (texts.some((t) => hasTextMark(t))) { this.c.error(at, "A text in this list has name() or color() in it, which the game fills in when it is shown: such a text is written where it is used, not looked up."); return null; }
+    a = this.newArray(at.getText(this.body.sf).replace(/\s+/g, " "), "number", texts.length, this.at(at), { shared: true, values: texts.map((_, i) => i) });
+    a.texts = texts;
+    this.tables.set(list, a);
+    return a;
+  }
+
+  /** Whether a text will have an id whatever happens in the game: written out, picked between two that are, looked up in a list the script has, or a variable kept that way. */
+  private hasId(expr: TS.Expression): boolean {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    let h: Hoisted | undefined;
+    // Asked before the walk reaches the expression: one that cannot be worked out yet is simply not known to have an id.
+    try { h = this.evaluate(e); } catch { return false; }
+    if (h) return !isGameValue(h.value) && (typeof h.value === "number" || typeof h.value === "boolean" || (typeof h.value === "string" && !hasTextMark(h.value)));
+    if (ts.isConditionalExpression(e)) return this.hasId(e.whenTrue) && this.hasId(e.whenFalse);
+    if (ts.isElementAccessExpression(e)) {
+      let list: Hoisted | undefined;
+      try { list = this.evaluate(e.expression); } catch { return false; }
+      return !!list && Array.isArray(list.value) && list.value.length > 0 && list.value.every((v) => typeof v === "string" && !hasTextMark(v));
+    }
+    const b = this.bindingOf(e);
+    return b?.kind === "var" && b.v.kind === "text" && b.v.text === "id";
+  }
+
+  /**
+   * How a text variable is kept: as the id of a text of the built map's table when everything it is ever given has one —
+   * its first value and every `=` in the body — and as a text that is made otherwise (`+=` makes one). `isTarget` says
+   * whether the left of an assignment is this variable.
+   */
+  private textKept(initializer: TS.Expression | undefined, isTarget: (left: TS.Expression) => boolean): "id" | "made" {
+    const { ts } = this;
+    if (initializer && !this.hasId(initializer)) return "made";
+    let made = false;
+    const walk = (n: TS.Node) => {
+      if (made) return;
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && isTarget(this.unwrap(n.left))) {
+        if (n.operatorToken.kind !== ts.SyntaxKind.EqualsToken || !this.hasId(n.right)) made = true;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(this.body.plan.body);
+    return made ? "made" : "id";
+  }
+
+  /** A text variable with its first value. */
+  private declareText(name: string, initializer: TS.Expression, keptAs: "id" | "made", where: At, at: TS.Node, extra: { temp?: boolean } = {}): VarDecl {
+    const v = this.newVar(name, "text", where, { text: keptAs, ...extra });
+    const value = this.text(initializer);
+    const fits = !value || keptAs === "made" || textHasId(value, this.keptAs);
+    if (!fits) this.c.error(initializer, `${name} was taken for a variable that only ever holds texts written in the script, and this one is made while the map is played. Give it such a text where it is declared — let ${name} = String(…) — and it is kept the other way.`);
+    this.emit({ kind: "declare", decl: v, init: value && fits ? value : { kind: "text", text: "" }, ...(value && fits ? {} : { failed: true }), at: this.at(at), label: this.label(at) }, at);
+    if (!extra.temp) this.emit({ kind: "remark", short: keptAs === "id" ? "a text of the map" : "a text that is made", text: keptAs === "id"
+      ? `${name} only ever holds texts written in the script, so it is kept as the text's number in the built map's string table: assigning it and comparing it cost what a number's do, and any action's text takes it.`
+      : `${name} holds a text made while the map is played: its characters are in a block of the memory the programs' arrays and texts share, which ${name} owns — assigning it copies them, and what it held before goes back. At most ${TEXT_BYTES.toLocaleString("en-US")} bytes.`, at: this.at(at) }, at);
+    return v;
+  }
+
+  /** A number where a text's characters are counted from: inside 0 … the text's length, a place below zero counted from the end when `fromEnd`. */
+  private placeIn(of: TextExpr, index: NumExpr, fromEnd: boolean, at: TS.Node): NumExpr {
+    const length: NumExpr = this.mark<NumExpr>({ kind: "textLength", of, at: this.at(at), label: this.label(at) }, at);
+    if (index.kind === "const") {
+      if (index.value >= 0) return index;
+      if (!fromEnd) return num(0);
+      return this.mark<NumExpr>({ kind: "intrinsic", name: "max", args: [this.mark<NumExpr>({ kind: "binary", op: "+", left: length, right: index, at: this.at(at), label: this.label(at) }, at), num(0)], at: this.at(at), label: this.label(at) }, at);
+    }
+    const i = this.temp(index, at);
+    const clamped = this.mark<NumExpr>({ kind: "intrinsic", name: "max", args: [i, num(0)], at: this.at(at), label: this.label(at) }, at);
+    if (!fromEnd) return clamped;
+    const back = this.mark<NumExpr>({ kind: "intrinsic", name: "max", args: [this.mark<NumExpr>({ kind: "binary", op: "+", left: length, right: i, at: this.at(at), label: this.label(at) }, at), num(0)], at: this.at(at), label: this.label(at) }, at);
+    return this.mark<NumExpr>({ kind: "ternary", cond: { kind: "compare", op: "<", left: i, right: num(0), at: this.at(at), label: this.label(at) }, whenTrue: back, whenFalse: clamped, at: this.at(at), label: this.label(at) }, at);
+  }
+
+  /** A text that is looked at more than once while one value is worked out: itself when that costs nothing, else a temporary holding it. */
+  private textTemp(t: TextExpr, at: TS.Node): TextExpr {
+    if (t.kind === "text" || t.kind === "textVar") return t;
+    // What is kept here is kept once, where the statement stands — and a loop's condition is worked out again every turn.
+    if (this.inLoopCondition > 0) this.c.error(at, "This text is worked out through a value kept on the side, and a loop's condition is worked out again every turn: work it out in the loop's body (or before the loop) into a variable, and test that.");
+    const v = this.newVar("(text)", "text", this.at(at), { temp: true, text: "made" });
+    this.textKinds.set(v.id, "made");
+    this.emit({ kind: "declare", decl: v, init: t, at: this.at(at), label: this.label(at) }, at);
+    return { kind: "textVar", id: v.id };
+  }
+
+  /** The one character at a place, or nothing past either end: `s[i]`, `s.charAt(i)`, `s.at(i)`. */
+  private characterAt(of: TextExpr, index: TS.Expression, fromEnd: boolean, at: TS.Node): TextExpr | null {
+    const given = this.num(index);
+    if (!given) return null;
+    const held = this.textTemp(of, at);
+    // A place below zero that is not counted from the end is past the start: nothing.
+    if (!fromEnd && given.kind === "const" && given.value < 0) return { kind: "text", text: "" };
+    const i = this.temp(given, at);
+    const slice = (start: NumExpr): TextExpr => this.mark<TextExpr>({ kind: "textSlice", of: held, start, end: this.mark<NumExpr>({ kind: "binary", op: "+", left: start, right: num(1), at: this.at(at), label: this.label(at) }, at), at: this.at(at), label: this.label(at) }, at);
+    if (i.kind === "const") return slice(i);
+    if (fromEnd) return slice(this.temp(this.placeInSigned(held, i, at), at));
+    return this.mark<TextExpr>({ kind: "textTernary", cond: { kind: "compare", op: "<", left: i, right: num(0), at: this.at(at), label: this.label(at) }, whenTrue: { kind: "text", text: "" }, whenFalse: slice(i), at: this.at(at), label: this.label(at) }, at);
+  }
+
+  /** `at(i)`'s place: counted from the end when below zero, and past the end (so: nothing) when that is still below zero. */
+  private placeInSigned(of: TextExpr, i: NumExpr, at: TS.Node): NumExpr {
+    const length = this.mark<NumExpr>({ kind: "textLength", of, at: this.at(at), label: this.label(at) }, at);
+    const back = this.mark<NumExpr>({ kind: "binary", op: "+", left: length, right: i, at: this.at(at), label: this.label(at) }, at);
+    const whenBelow = this.mark<NumExpr>({ kind: "ternary", cond: { kind: "compare", op: "<", left: back, right: num(0), at: this.at(at), label: this.label(at) }, whenTrue: length, whenFalse: back, at: this.at(at), label: this.label(at) }, at);
+    return this.mark<NumExpr>({ kind: "ternary", cond: { kind: "compare", op: "<", left: i, right: num(0), at: this.at(at), label: this.label(at) }, whenTrue: whenBelow, whenFalse: i, at: this.at(at), label: this.label(at) }, at);
+  }
+
+  private static readonly TEXT_METHODS = "slice, substring, at, charAt, indexOf, includes, startsWith, endsWith, padStart, padEnd, repeat, concat, codePointAt, toString and length";
+
+  /** A method of a text that gives a text. Null with a diagnostic. */
+  private textCall(e: TS.CallExpression, receiver: TS.Expression, method: string): TextExpr | null {
+    const args = e.arguments;
+    const wants = (min: number, max: number, how: string): boolean => {
+      if (args.length >= min && args.length <= max && !args.some((a) => this.ts.isSpreadElement(a))) return true;
+      this.c.error(e, `${method}() takes ${how}.`);
+      return false;
+    };
+    switch (method) {
+      case "toString": case "valueOf": return wants(0, 0, "nothing") ? this.text(receiver) : null;
+      case "concat": {
+        const parts: TextPart[] = [];
+        for (const x of [receiver, ...args]) { const p = this.textOf(x); if (!p) return null; parts.push(...p); }
+        return this.textFrom(parts, e);
+      }
+      case "charAt": case "at": {
+        if (!wants(1, 1, "the character's place")) return null;
+        const of = this.text(receiver);
+        return of ? this.characterAt(of, args[0], method === "at", e) : null;
+      }
+      case "slice": case "substring": {
+        if (!wants(0, 2, "where to start and, optionally, where to stop")) return null;
+        const given = this.text(receiver);
+        if (!given) return null;
+        if (args.length === 0) return given;
+        const of = this.textTemp(given, e);
+        const fromEnd = method === "slice";
+        const a = this.num(args[0]);
+        const b = args[1] ? this.num(args[1]) : undefined;
+        if (!a || b === null) return null;
+        let start = this.placeIn(of, a, fromEnd, e);
+        let end = b ? this.placeIn(of, b, fromEnd, e) : undefined;
+        if (method === "substring" && end) {
+          // substring(5, 2) is substring(2, 5).
+          const s = this.temp(start, e), t = this.temp(end, e);
+          start = this.mark<NumExpr>({ kind: "intrinsic", name: "min", args: [s, t], at: this.at(e), label: this.label(e) }, e);
+          end = this.mark<NumExpr>({ kind: "intrinsic", name: "max", args: [s, t], at: this.at(e), label: this.label(e) }, e);
+        }
+        return this.mark<TextExpr>({ kind: "textSlice", of, start, ...(end ? { end } : {}), at: this.at(e), label: this.label(e) }, e);
+      }
+      case "padStart": case "padEnd": {
+        if (!wants(1, 2, "the length and, optionally, what to fill with")) return null;
+        const of = this.text(receiver);
+        const width = this.num(args[0]);
+        const fill = args[1] ? this.text(args[1]) : ({ kind: "text", text: " " } as TextExpr);
+        if (!of || !width || !fill) return null;
+        return this.mark<TextExpr>({ kind: "textPad", of, side: method === "padStart" ? "start" : "end", width, with: fill, at: this.at(e), label: this.label(e) }, e);
+      }
+      case "repeat": {
+        if (!wants(1, 1, "how many times")) return null;
+        const of = this.text(receiver);
+        const count = this.num(args[0]);
+        return of && count ? this.mark<TextExpr>({ kind: "textRepeat", of, count, at: this.at(e), label: this.label(e) }, e) : null;
+      }
+      default:
+        this.c.error(e, `${method}() is not something a text of a program does; it has ${Structured.TEXT_METHODS}. A text the script has (nothing of the program in it) takes any method JavaScript has.`);
+        return null;
+    }
+  }
+
+  /**
+   * A text of the program: one written out, a variable, a template or texts joined with `+`, `c ? a : b`, a method that
+   * gives a text, `String(n)`, a function's result, a text looked up in a list the script has. Null, with a diagnostic.
+   */
+  private text(expr: TS.Expression): TextExpr | null {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h && !isGameValue(h.value)) {
+      const v = h.value;
+      if (typeof v === "string") return this.literalText(v, e);
+      if (typeof v === "number" || typeof v === "boolean") return { kind: "text", text: String(v) };
+      this.c.error(e, `Expected a text, got ${describe(v)}.`);
+      return null;
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
+      const b = this.bindingOf(e);
+      if (b?.kind === "var" && b.v.kind === "text") return { kind: "textVar", id: b.v.id };
+      if (b?.kind === "var") { const parts = this.textOf(e); return parts ? this.textFrom(parts, e) : null; }
+    }
+    if (ts.isTemplateExpression(e) || (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken)) {
+      const parts = this.textOf(e);
+      return parts ? this.textFrom(parts, e) : null;
+    }
+    if (ts.isConditionalExpression(e)) {
+      const cond = this.bool(e.condition);
+      const whenTrue = this.text(e.whenTrue);
+      const whenFalse = this.text(e.whenFalse);
+      return whenTrue && whenFalse ? this.mark<TextExpr>({ kind: "textTernary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    if (ts.isElementAccessExpression(e)) {
+      // `titles[level]`: a list of texts the script has, the place the program's.
+      const list = this.evaluate(e.expression);
+      if (list && Array.isArray(list.value)) {
+        if (!list.value.every((v) => typeof v === "string")) { this.c.error(e.expression, "A list a program looks a text up in holds texts only."); return null; }
+        const table = this.textTable(list.value, e.expression);
+        const index = table ? this.num(e.argumentExpression) : null;
+        return table && index ? this.mark<TextExpr>({ kind: "textOf", array: table.id, index, at: this.at(e) }, e) : null;
+      }
+      if (this.isTextTyped(e.expression)) {
+        const of = this.text(e.expression);
+        return of ? this.characterAt(of, e.argumentExpression, false, e) : null;
+      }
+    }
+    if (ts.isCallExpression(e)) {
+      if (ts.isIdentifier(e.expression) && e.expression.text === "String" && !this.gameDeclaration(e.expression)) {
+        if (e.arguments.length !== 1) { this.c.error(e, "String() takes the value to write out."); return null; }
+        const parts = this.textOf(e.arguments[0]);
+        return parts ? this.textFrom(parts, e) : null;
+      }
+      if (ts.isPropertyAccessExpression(e.expression)) {
+        const receiver = e.expression.expression;
+        if (this.isTextTyped(receiver)) return this.textCall(e, receiver, e.expression.name.text);
+        // `n.toString()`: the number's digits.
+        if (e.expression.name.text === "toString" && e.arguments.length === 0) { const parts = this.textOf(receiver); return parts ? this.textFrom(parts, e) : null; }
+      }
+      let call: Call | undefined;
+      if (ts.isIdentifier(e.expression)) {
+        const decl = this.gameDeclaration(e.expression);
+        if (decl && ts.isFunctionDeclaration(decl)) call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+      }
+      if (!call) {
+        const callee = this.evaluate(e.expression)?.value;
+        if (isGameFunction(callee)) call = this.gameCall(e, callee);
+        else if (!ts.isIdentifier(e.expression) || !this.gameDeclaration(e.expression)) { this.notConstant(e, "A call's arguments"); return null; }
+      }
+      if (!call) return null;
+      if (call.result?.kind !== "text") { this.c.error(e, "This function does not return a text."); return null; }
+      return this.mark<TextExpr>({ kind: "textCall", call }, e);
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      // `s.at(i) ?? other`: what TypeScript asks for, since at() past either end is undefined there. Any other text is never undefined.
+      const left = this.unwrap(e.left);
+      if (ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "at" && left.arguments.length === 1 && this.isTextTyped(left.expression.expression)) {
+        const given = this.text(left.expression.expression);
+        const index = this.num(left.arguments[0]);
+        if (!given || !index) return null;
+        const of = this.textTemp(given, e);
+        const i = this.temp(index, e, true);
+        const place = this.temp(this.mark<NumExpr>({ kind: "ternary", cond: { kind: "compare", op: "<", left: i, right: num(0), at: this.at(e), label: this.label(e) }, whenTrue: this.mark<NumExpr>({ kind: "binary", op: "+", left: this.mark<NumExpr>({ kind: "textLength", of, at: this.at(e), label: this.label(e) }, e), right: i, at: this.at(e), label: this.label(e) }, e), whenFalse: i, at: this.at(e), label: this.label(e) }, e), e, true);
+        const inside: BoolExpr = { kind: "and", items: [{ kind: "compare", op: ">=", left: place, right: num(0), at: this.at(e), label: this.label(e) }, { kind: "compare", op: "<", left: place, right: this.mark<NumExpr>({ kind: "textLength", of, at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }] };
+        const other = this.text(e.right);
+        if (!other) return null;
+        const one = this.mark<TextExpr>({ kind: "textSlice", of, start: place, end: this.mark<NumExpr>({ kind: "binary", op: "+", left: place, right: num(1), at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
+        return this.mark<TextExpr>({ kind: "textTernary", cond: inside, whenTrue: one, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
+      }
+      return this.text(e.left);
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+      // `s || "none"`: the other text when this one is empty.
+      const given = this.text(e.left);
+      const other = this.text(e.right);
+      if (!given || !other) return null;
+      const of = this.textTemp(given, e);
+      return this.mark<TextExpr>({ kind: "textTernary", cond: { kind: "textCompare", op: "!=", left: of, right: { kind: "text", text: "" }, at: this.at(e), label: this.label(e) }, whenTrue: of, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
+    }
+    this.c.error(e, "Expected a text: one written out, a text variable, a template, or a method of one.");
+    return null;
+  }
+
+  /** `s = value`, `s += more` for a text variable. */
+  private assignText(e: TS.BinaryExpression, target: VarDecl, op: TS.SyntaxKind) {
+    const { ts } = this;
+    let value: TextExpr | null;
+    if (op === ts.SyntaxKind.EqualsToken) value = this.text(e.right);
+    else if (op === ts.SyntaxKind.PlusEqualsToken) { const more = this.textOf(e.right); value = more ? this.textFrom([{ kind: "value", text: { kind: "textVar", id: target.id } }, ...more], e) : null; }
+    else { this.c.error(e, "A text takes = and += only."); return; }
+    if (!value) return;
+    if (target.text === "id" && !textHasId(value, this.keptAs)) { this.c.error(e.right, `${target.name} was taken for a variable that only ever holds texts written in the script, and this one is made while the map is played. Declare it with a made text — let ${target.name} = String(…) — and it is kept the other way.`); return; }
+    this.emit({ kind: "assignText", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
+  }
+
+  /** A method of a text that gives a number: `indexOf`, `codePointAt`. Undefined when the call is not one. */
+  private textNumber(e: TS.CallExpression): NumExpr | null | undefined {
+    const { ts } = this;
+    if (!ts.isPropertyAccessExpression(e.expression) || !this.isTextTyped(e.expression.expression)) return undefined;
+    const method = e.expression.name.text;
+    if (method !== "indexOf" && method !== "codePointAt" && method !== "charCodeAt") return undefined;
+    const of = this.text(e.expression.expression);
+    if (!of) return null;
+    if (method === "indexOf") {
+      if (e.arguments.length < 1 || e.arguments.length > 2) { this.c.error(e, "indexOf() takes the text to find and, optionally, where to start."); return null; }
+      const find = this.text(e.arguments[0]);
+      const from = e.arguments[1] ? this.num(e.arguments[1]) : undefined;
+      if (!find || from === null) return null;
+      return this.mark<NumExpr>({ kind: "textIndexOf", of, find, ...(from ? { from: this.mark<NumExpr>({ kind: "intrinsic", name: "max", args: [from, num(0)], at: this.at(e), label: this.label(e) }, e) } : {}), at: this.at(e), label: this.label(e) }, e);
+    }
+    if (e.arguments.length !== 1) { this.c.error(e, `${method}() takes the character's place.`); return null; }
+    const index = this.num(e.arguments[0]);
+    return index ? this.mark<NumExpr>({ kind: "textCode", of, index, at: this.at(e), label: this.label(e) }, e) : null;
+  }
+
+  /** A condition over texts: two compared, `startsWith` / `endsWith` / `includes`, a text tested as one (it is not empty). Undefined when the expression is none of those. */
+  private textCondition(e: TS.Expression): BoolExpr | undefined {
+    const { ts } = this;
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && this.isTextTyped(e.expression.expression)) {
+      const test = e.expression.name.text;
+      if (test !== "startsWith" && test !== "endsWith" && test !== "includes") return undefined;
+      if (e.arguments.length !== 1) { this.c.error(e, `${test}() takes the text to look for.`); return FALSE; }
+      const of = this.text(e.expression.expression);
+      const find = this.text(e.arguments[0]);
+      return of && find ? this.mark<BoolExpr>({ kind: "textTest", test, of, find, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
+    if (this.isTextTyped(e) && !ts.isBinaryExpression(e) || (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken && this.isTextTyped(e))) {
+      // `if (s)`: the text is not empty.
+      const of = this.text(e);
+      return of ? this.mark<BoolExpr>({ kind: "textCompare", op: "!=", left: of, right: { kind: "text", text: "" }, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
+    return undefined;
+  }
+
   /**
    * A text with the program's values in it, as parts: a template literal, texts joined with +,
    * and in them numbers of the program (their digits), name(p), color(p) and anything known
@@ -2783,13 +3191,14 @@ export class Structured {
       const r = this.textOf(e.right);
       return l && r ? [...l, ...r] : null;
     }
+    if (this.isTextTyped(e)) { const t = this.text(e); return t ? this.partsOf(t) : null; }
     if (this.kindOf(this.c.checker.getTypeAtLocation(e)) === "boolean") { this.c.error(e, "A boolean has no text of its own: write flag ? \"yes\" : \"no\" with both texts known when the script is built, or show a number."); return null; }
     const value = this.num(e);
     return value ? [{ kind: "number", expr: value }] : null;
   }
 
   private isText(e: TS.Expression): boolean {
-    return (this.c.checker.getTypeAtLocation(e).flags & this.ts.TypeFlags.StringLike) !== 0;
+    return this.isTextTyped(e);
   }
 
   /** `print(text, { to: P2, position: "center" })` with the program's values in the text. */
@@ -2949,6 +3358,7 @@ export class Structured {
           if (value) this.emit({ kind: "assignUnit", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
           return;
         }
+        if (target.kind === "text") { this.assignText(e, target, op); return; }
         if (target.kind !== "number") {
           if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "Booleans take = only."); return; }
           this.emit({ kind: "assignBool", target: target.id, value: this.boolValue(e.right), at: this.at(e), label: this.label(e) }, e);
@@ -3268,6 +3678,17 @@ export class Structured {
       });
       return;
     }
+    if (this.isTextTyped(s.expression) && !this.evaluate(s.expression)) {
+      // `for (const ch of s)`: the text walked once, a character a turn.
+      const of = this.text(s.expression);
+      if (!of) return;
+      const v = this.newVar(decl.name.text, "text", this.sourceOf(decl.name), { text: "made" });
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "var", v });
+      const body = this.collect(() => this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope));
+      this.emit({ kind: "textLoop", decl: v, of, body, at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
     const over = this.listOf(s.expression);
     if (over?.kind === "grid" || over?.kind === "lists") {
       const scope = new Scope(this.scope);
@@ -3351,6 +3772,7 @@ export class Structured {
    */
   private switchStatement(s: TS.SwitchStatement, ctx: Ctx) {
     const { ts } = this;
+    if (this.isTextTyped(s.expression) && !this.evaluate(s.expression)) { this.textSwitch(s, ctx); return; }
     const value = this.num(s.expression);
     if (!value) return;
     if (value.kind === "const") { this.c.error(s.expression, "switch over a value known when the script is built: write the case that applies."); return; }
@@ -3366,6 +3788,28 @@ export class Structured {
     const scope = new Scope(this.scope);
     const cases = clauses.map((c, i) => ({ value: values[i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
     this.emit({ kind: "switch", value, cases, at: this.at(s), label: this.label(s) }, s);
+  }
+
+  /** `switch (s)` over a text: which case it is — the first whose text it equals — is worked out as a number, and the switch is over that. */
+  private textSwitch(s: TS.SwitchStatement, ctx: Ctx) {
+    const { ts } = this;
+    const given = this.text(s.expression);
+    if (!given) return;
+    const of = this.textTemp(given, s.expression);
+    const clauses = s.caseBlock.clauses;
+    const at = this.at(s), label = this.label(s);
+    let which: NumExpr = num(-1);
+    const values: (number | null)[] = clauses.map((c, i) => (ts.isDefaultClause(c) ? null : i));
+    for (let i = clauses.length - 1; i >= 0; i--) {
+      const c = clauses[i];
+      if (ts.isDefaultClause(c)) continue;
+      const h = this.evaluate(c.expression);
+      if (!h || typeof h.value !== "string" || hasTextMark(h.value)) { this.notConstant(c.expression, "A case's text"); values[i] = Number.NaN; continue; }
+      which = { kind: "ternary", cond: { kind: "textCompare", op: "==", left: of, right: { kind: "text", text: h.value }, at, label }, whenTrue: num(i), whenFalse: which, at, label };
+    }
+    const scope = new Scope(this.scope);
+    const cases = clauses.map((c, i) => ({ value: values[i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    this.emit({ kind: "switch", value: which, cases, at, label }, s);
   }
 
   /* ── Functions ── */
@@ -3391,7 +3835,7 @@ export class Structured {
     // A copy of a body inside a copy of a body, sixteen times over: what happens from here is decided once the arguments are known.
     const deep = this.inlineDepth >= MAX_INLINE_DEPTH;
     if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) && (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))) { this.c.error(decl, "Generators and async functions are not supported in a program."); return undefined; }
-    const kind = this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? "void";
+    const kind: Kind | "text" | "void" = this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? (this.isTextType(this.c.checker.getTypeAtLocation(call)) ? "text" : "void");
     const line = this.line(call);
     const out: Call = { ...(name ? { name } : {}), at: this.at(call), label: this.label(call), params: [], body: [] };
     if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true, ...(kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(call)) : {}) }), kind };
@@ -3409,6 +3853,8 @@ export class Structured {
       if (args) why = a;
       args = null;
     };
+    // A text owns a block of memory, and what a called function is handed and hands back are plain cells so far.
+    if (kind === "text") asCalled("it returns a text, which a function that is called cannot do yet");
     // `function len({ x, y }: Point)`: taken apart when the function starts, inside its body — a called function's too.
     const patterns: (() => void)[] = [];
     parameters.forEach((p, i) => {
@@ -3456,6 +3902,18 @@ export class Structured {
         return;
       }
       const h = this.evaluate(arg);
+      if (this.isTextType(this.c.checker.getTypeAtLocation(p.name)) && !(h && !isGameValue(h.value) && !this.assigns(body, p))) {
+        // A text of the program: the caller's own variable when the function only reads it, else a variable of the parameter's own that starts as a copy.
+        asCalled(`${p.name.text} is a text, which a function that is called cannot take yet`);
+        const given = this.bindingOf(arg);
+        if (given?.kind === "var" && given.v.kind === "text" && !this.assigns(body, p)) { scope.bind(p, given); return; }
+        const value = this.text(arg);
+        if (!value) { ok = false; return; }
+        const copy = this.newVar(p.name.text, "text", this.sourceOfIn(target, p.name), { text: "made" });
+        out.params.push({ decl: copy, init: value, label });
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
       // By value: a read passed as an argument is read once, at the call, into a variable of the parameter's own.
       if (h && !isGameValue(h.value)) {
         const constant = this.constantArgument(h.value, label, p);
@@ -3529,7 +3987,7 @@ export class Structured {
         else {
           site.busy = true;
           let made: FuncDecl | string;
-          try { made = this.callable(parameters, body, target, name ?? "function", decl, kind, args, closure, at, site); } finally { site.busy = false; site.making = undefined; }
+          try { made = this.callable(parameters, body, target, name ?? "function", decl, kind as Kind | "void" /* a text result keeps `args` null: never here */, args, closure, at, site); } finally { site.busy = false; site.making = undefined; }
           if (typeof made === "string") site.never = made;
           else {
             site.fn = made;
@@ -3563,7 +4021,7 @@ export class Structured {
   }
 
   /** A function's body walked with its parameters bound in `scope`: the statements, `return` leaving them. */
-  private walkFunction(body: TS.Block | TS.Expression, kind: Kind | "void", target: Body, scope: Scope, first?: () => void): Stmt[] {
+  private walkFunction(body: TS.Block | TS.Expression, kind: Kind | "text" | "void", target: Body, scope: Scope, first?: () => void): Stmt[] {
     const { ts } = this;
     const saved = this.enterBody(target);
     const outerScope = this.scope;
@@ -3581,6 +4039,7 @@ export class Structured {
             if (kind === "number") { const value = this.num(body); if (value) this.emit({ kind: "return", value, at: this.at(body), label: this.label(body) }, body); }
             else if (kind === "unit") { const value = this.unitExpr(body); if (value) this.emit({ kind: "return", value, at: this.at(body), label: this.label(body) }, body); }
             else if (kind === "boolean") this.emit({ kind: "return", value: this.boolValue(body), at: this.at(body), label: this.label(body) }, body);
+            else if (kind === "text") { const value = this.text(body); if (value) this.emit({ kind: "return", value, at: this.at(body), label: this.label(body) }, body); }
             else this.expressionStatement(body);
           } catch (err) {
             if (!(err instanceof LowerError)) throw err;
@@ -3853,6 +4312,10 @@ export class Structured {
       const found = this.findOr(e, "number");
       if (found !== undefined) return found as NumExpr | null;
     }
+    if (ts.isPropertyAccessExpression(e) && e.name.text === "length" && this.isTextTyped(e.expression)) {
+      const of = this.text(e.expression);
+      return of ? this.mark<NumExpr>({ kind: "textLength", of, at: this.at(e), label: this.label(e) }, e) : null;
+    }
     if (ts.isPropertyAccessExpression(e) && e.name.text === "length") {
       // The length of a row, or of an array of arrays, is known or worked out without making anything.
       const part = this.bindingOf(e.expression);
@@ -3977,6 +4440,12 @@ export class Structured {
   /** A call as a number: a function of the body or a game function (its result), or an intrinsic over variables. */
   private callValue(e: TS.CallExpression): NumExpr | null {
     const { ts } = this;
+    const ofText = this.textNumber(e);
+    if (ofText !== undefined) return ofText;
+    if (ts.isIdentifier(e.expression) && (e.expression.text === "parseInt" || e.expression.text === "Number" || e.expression.text === "parseFloat") && !this.gameDeclaration(e.expression)) {
+      this.c.error(e, `${e.expression.text}() of a text of the program is not something the game can do yet: keep the number in a variable of its own, and make the text from it.`);
+      return null;
+    }
     if (ts.isPropertyAccessExpression(e.expression) && SEARCHES.has(e.expression.name.text)) {
       const over = this.overOf(e.expression.expression);
       if (over) return this.searchCall(e, over, e.expression.name.text, "number") as NumExpr | null;
@@ -4067,6 +4536,7 @@ export class Structured {
     const params = scriptParams(def);
     const values: unknown[] = [];
     const variables: { index: number; expr: NumExpr }[] = [];
+    let text: TextExpr | undefined;
     for (let i = 0; i < e.arguments.length; i++) {
       const a = e.arguments[i];
       const h = this.evaluate(a);
@@ -4074,6 +4544,15 @@ export class Structured {
       if (h && !isGameValue(h.value)) { values.push(h.value); continue; }
       const p = params[i];
       if (!p) { this.c.error(a, `${ident} takes ${params.length} argument${params.length === 1 ? "" : "s"}.`); return; }
+      if (p.arg.kind === "text") {
+        // The program's text: one of the map's table goes in as its id; one that was made goes through a string the build keeps for this kind of field.
+        const given = this.text(a);
+        if (!given) return;
+        if (!textHasId(given, this.keptAs) && !MADE_TEXT_ACTIONS.has(def.type)) { this.c.error(a, `${ident}'s text is one the game looks up by number, and this text is made while the map is played. The objectives, a leaderboard's label and a transmission's text take a made text; print() and displayText() show one in the chat area; here it has to be a text written in the script.`); return; }
+        text = given;
+        values.push("");
+        continue;
+      }
       const eligible = ((p.arg.kind === "amount" || p.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type)) || (p.arg.kind === "count" && COUNT_ACTIONS.has(def.type)) || p.arg.kind === "unit";
       if (!eligible) {
         this.c.error(a, `${ident}'s ${p.name} must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.`);
@@ -4085,7 +4564,7 @@ export class Structured {
       // The record is built with a stand-in: a unit type any action takes, 0 elsewhere.
       values.push(0);
     }
-    if (!variables.length) { this.notConstant(e, "A call's arguments"); return; }
+    if (!variables.length && !text) { this.notConstant(e, "A call's arguments"); return; }
     let record: ActionRecord;
     try {
       const built = (this.evaluate(e.expression)!.value as (...a: unknown[]) => unknown)(...values);
@@ -4098,7 +4577,7 @@ export class Structured {
       const p = params[v.index];
       return { field: p.arg.field as keyof ActionRecord, bits: p.arg.kind === "count" ? 8 : p.arg.kind === "unit" ? 16 : 32, name: p.name, expr: v.expr };
     });
-    this.emit({ kind: "action", record: { ...record }, variables: list, at: this.at(e), label: this.label(e) }, e);
+    this.emit({ kind: "action", record: { ...record }, ...(list.length ? { variables: list } : {}), ...(text ? { text } : {}), at: this.at(e), label: this.label(e) }, e);
   }
 
   /* ── Units on the map, and the game's tables ── */
@@ -4275,7 +4754,7 @@ export class Structured {
     return this.mark<NumExpr>({ kind: "tableRead", cell: { ...v.cell }, at: this.at(at), label: this.label(at) }, at);
   }
 
-  private tableWrite(e: TS.Node, v: TableValue, value: NumExpr | BoolExpr | { kind: "text"; text: string }, scaled = false) {
+  private tableWrite(e: TS.Node, v: TableValue, value: NumExpr | BoolExpr | TextExpr, scaled = false) {
     if (v.field.readonly) { this.c.error(e, `${v.ident} is read only: the game took no write.`); return; }
     this.emit({ kind: "tableWrite", cell: { ...v.cell }, value, ...(scaled ? { scaled: true } : {}), ...(v.field.boolean && value.kind !== "text" ? { boolean: true } : {}), at: this.at(e), label: this.label(e) }, e);
   }
@@ -4289,7 +4768,13 @@ export class Structured {
     const known = h && !isGameValue(h.value) ? h.value : undefined;
     if (field.special === "name" || field.special === "color") {
       if (!plain) { this.c.error(e, `${v.ident} takes = only.`); return; }
-      if (known === undefined) { this.notConstant(e.right, field.special === "name" ? "A name" : "A colour"); return; }
+      if (known === undefined && field.special === "name") {
+        // A name made while the map is played: the build keeps a string of the table for this unit type and writes the text over it.
+        const made = this.text(e.right);
+        if (made) this.tableWrite(e, v, made);
+        return;
+      }
+      if (known === undefined) { this.notConstant(e.right, "A colour"); return; }
       if (field.special === "color") {
         try { this.tableWrite(e, v, num(playerColor(known))); } catch (err) { this.c.error(e.right, err instanceof Error ? err.message : String(err)); }
         return;
@@ -4378,6 +4863,8 @@ export class Structured {
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return { kind: "not", expr: this.boolInner(e.operand, depth + 1) };
+    const ofTexts = this.textCondition(e);
+    if (ofTexts) return ofTexts;
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
       if (op === ts.SyntaxKind.AmpersandAmpersandToken) return this.mark<BoolExpr>({ kind: "and", items: [this.boolInner(e.left, depth + 1), this.boolInner(e.right, depth + 1)] }, e);
@@ -4504,6 +4991,12 @@ export class Structured {
         same = this.mark<BoolExpr>({ kind: "unitSame", left, right, at: this.at(e), label: this.label(e) }, e);
       }
       return op === "==" ? same : same.kind === "not" ? same.expr : { kind: "not", expr: same };
+    }
+    // Texts: the same characters, or the order of them.
+    if (this.isTextTyped(e.left) && this.isTextTyped(e.right)) {
+      const left = this.text(e.left);
+      const right = this.text(e.right);
+      return left && right ? this.mark<BoolExpr>({ kind: "textCompare", op, left, right, at: this.at(e), label: this.label(e) }, e) : FALSE;
     }
     // What chatted() found, against null: `m != null` asks what `if (m)` asks.
     const found = (x: TS.Expression) => { const b = this.bindingOf(x); return b?.kind === "record" && b.truth ? b.truth : undefined; };

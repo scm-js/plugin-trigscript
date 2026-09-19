@@ -15,8 +15,8 @@
  * Valkyrie) which the map must not use, and Player 12 to hold them.
  */
 import type { NameTable } from "./names";
-import type { NumExpr, Program, Stmt, UnitExpr, BoolExpr, Call, At } from "./ir";
-import { bodiesOf, isUnitExpr } from "./ir";
+import type { NumExpr, Program, Stmt, TextExpr, TextMap, UnitExpr, BoolExpr, Call, At } from "./ir";
+import { bodiesOf, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts } from "./ir";
 
 export type MouseButton = "left" | "right" | "middle";
 export const MOUSE_BUTTONS: readonly MouseButton[] = ["left", "right", "middle"];
@@ -206,8 +206,11 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
     else if (u.kind === "pick" && u.mouse !== undefined) { mouse = true; at ??= u.at; }
     else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); }
   };
-  const any = (e: NumExpr | BoolExpr | UnitExpr) => (isUnitExpr(e) ? unit(e) : expr(e));
+  const any = (e: NumExpr | BoolExpr | UnitExpr | TextExpr) => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e));
+  const looks: TextMap = { num: (e) => { expr(e); return e; }, bool: (e) => { expr(e); return e; }, call: (c) => { call(c); return c; } };
+  const text = (t: TextExpr) => { mapText(t, looks); };
   const expr = (e: NumExpr | BoolExpr): void => {
+    if (mapTextOperands(e, looks)) return;
     switch (e.kind) {
       case "input": sources.push(e.input); at ??= e.at; if (e.input.source === "mouse") mouse = true; break;
       case "unitField": case "unitPart": case "unitAlive": case "unitFlag": unit(e.unit); break;
@@ -234,10 +237,12 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "store": expr(s.index); expr(s.value); break;
       case "push": case "setLength": expr(s.value); break;
       case "assignUnit": unit(s.value); break;
+      case "assignText": text(s.value); break;
+      case "textLoop": text(s.of); s.body.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
-      case "tableWrite": if (s.value.kind !== "text") expr(s.value); break;
+      case "tableWrite": any(s.value); break;
       case "centerLocation": expr(s.x); expr(s.y); break;
       case "if": expr(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) expr(s.cond); s.body.forEach(stmt); break;
@@ -246,8 +251,8 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
-      case "action": for (const v of s.variables ?? []) expr(v.expr); break;
-      case "print": for (const p of s.parts) if (p.kind === "number") expr(p.expr); break;
+      case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
+      case "print": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;

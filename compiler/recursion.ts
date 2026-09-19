@@ -18,11 +18,15 @@
  *
  * A function off every cycle is left exactly as it was, and so is the program's body: only what recurses pays.
  */
-import { STACK_DEPTH, UNIT_FLAGS, declarations, eachCall, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
+import { STACK_DEPTH, UNIT_FLAGS, declarations, eachCall, isTextExpr, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
 import type { ProgramDiagnostic } from "./eud";
 
 type Kind = "number" | "boolean" | "unit";
 type Expr = NumExpr | BoolExpr | UnitExpr;
+/** A kind as a frame counts it. A text never reaches one: a function that calls itself and holds a text is refused below. */
+const framed = (kind: VarDecl["kind"] | undefined): Kind => (kind === undefined || kind === "text" ? "number" : kind);
+/** The nodes that are a text, or are worked out from one. */
+const TEXTUAL: readonly string[] = ["text", "textVar", "textOf", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "assignText", "textLoop"];
 
 const FLAGS: ReadonlySet<string> = new Set(UNIT_FLAGS);
 const CELLS: Record<Kind, number> = { number: 1, boolean: 1, unit: 3 };
@@ -45,8 +49,8 @@ export function frameCells(program: Pick<Program, "body" | "functions">, saves: 
 
 function kindsOf(program: Pick<Program, "body" | "functions">): Map<string, Kind> {
   const out = new Map<string, Kind>();
-  for (const d of declarations(program.body)) out.set(d.id, d.kind);
-  for (const f of program.functions ?? []) for (const d of [...f.params, ...(f.result ? [f.result.decl] : []), ...declarations(f.body)]) out.set(d.id, d.kind);
+  for (const d of declarations(program.body)) out.set(d.id, framed(d.kind));
+  for (const f of program.functions ?? []) for (const d of [...f.params, ...(f.result ? [f.result.decl] : []), ...declarations(f.body)]) out.set(d.id, framed(d.kind));
   return out;
 }
 
@@ -133,6 +137,12 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
     if (mine === undefined) continue;
     f.recursive = true;
 
+    // A text owns a block of the heap, and a frame would have to keep that ownership straight around every call. Not in this cut: said, rather than got wrong.
+    if (TEXTUAL.some((k) => mentions([f.params, f.body], k)) || [...f.params, ...declarations(f.body)].some((d) => d.kind === "text")) {
+      errors.push({ at: f.at, message: `${f.name} calls itself and works with a text, which a function that calls itself cannot do yet. Keep the text outside it — work out the numbers in ${f.name}, and make the text from them where it is called — or show it with print(), whose text can hold the function's numbers.` });
+      continue;
+    }
+
     /** The function's own variables: what a frame brings back, so a read of one needs no copy made before a call. */
     const own = new Set<string>([...f.params, ...(f.result ? [f.result.decl] : []), ...declarations(f.body)].map((d) => d.id));
     const comesBack = (c: Call): boolean => (c.fn ? component.get(c.fn) === mine : risky([c.params.map((p) => p.init), c.body]));
@@ -166,9 +176,9 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
 
     /** A call's arguments, and an inlined call's body. */
     const settleCall = (c: Call, pre: Stmt[], w: Where) => {
-      const inits = operands(c.params.map((p) => ({ e: p.init, kind: p.decl.kind })), pre, w);
+      const inits = operands(c.params.map((p) => ({ e: p.init as Expr, kind: framed(p.decl.kind) })), pre, w);
       c.params.forEach((p, i) => { p.init = inits[i]; });
-      if (!c.fn) c.body = body(c.body, c.result?.kind);
+      if (!c.fn) c.body = body(c.body, c.result ? framed(c.result.kind) : undefined);
     };
 
     /** A value worked out by an `if`: the variable it ends up in. */
@@ -261,7 +271,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
         const value = (e: Expr, k: Kind) => rewrite(e, k, pre, w);
         const arrayKind = (id: string): Kind => arrays.get(id)?.kind ?? "number";
         switch (s.kind) {
-          case "declare": s.init = value(s.init, s.decl.kind); break;
+          case "declare": if (!isTextExpr(s.init)) s.init = value(s.init, framed(s.decl.kind)); break;
           case "assign": s.value = value(s.value, "number") as NumExpr; break;
           case "assignBool": s.value = value(s.value, "boolean") as BoolExpr; break;
           case "assignUnit": s.value = value(s.value, "unit") as UnitExpr; break;
@@ -292,8 +302,8 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = done[1] as NumExpr;
             break;
           }
-          case "tableWrite": if (s.value.kind !== "text") s.value = value(s.value as NumExpr | BoolExpr, s.boolean ? "boolean" : "number") as NumExpr | BoolExpr; break;
-          case "return": if (s.value) s.value = value(s.value, returns ?? "number"); break;
+          case "tableWrite": if (!isTextExpr(s.value)) s.value = value(s.value, s.boolean ? "boolean" : "number") as NumExpr | BoolExpr; break;
+          case "return": if (s.value && !isTextExpr(s.value)) s.value = value(s.value, returns ?? "number"); break;
           case "action": {
             const done = operands((s.variables ?? []).map((v) => ({ e: v.expr, kind: "number" as const })), pre, w) as NumExpr[];
             s.variables?.forEach((v, i) => { v.expr = done[i]; });
@@ -352,7 +362,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
       return out;
     };
 
-    f.body = body(f.body, f.result?.kind);
+    f.body = body(f.body, f.result ? framed(f.result.kind) : undefined);
 
     // Every call that may come back is a statement by now, so a function with no way out is easy to see.
     const never = (statements: Stmt[]): boolean => {

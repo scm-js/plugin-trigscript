@@ -9,7 +9,7 @@
  * condition does not mention a variable the body assigns, is an error naming the loop.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { HEAP_CELLS, STACK_DEPTH, bodiesOf, heapCells, stackDepth, isUnitExpr, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
+import { HEAP_CELLS, STACK_DEPTH, bodiesOf, heapCells, stackDepth, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
 import type { LineHint, ScriptString } from "./compiler";
 import type { InputPlan } from "./input";
 
@@ -28,6 +28,7 @@ export function checkProgram(program: Program): { errors: ProgramDiagnostic[]; h
     checkDivisions(body, errors);
     checkWidths(body, errors, decls);
     checkUnitLoops(body, errors);
+    checkTextLoops(body, errors);
     remarks(body, hints);
   }
   scans(program, hints);
@@ -37,9 +38,12 @@ export function checkProgram(program: Program): { errors: ProgramDiagnostic[]; h
 /** Every expression of a statement list, calls' bodies included. */
 function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?: (u: UnitExpr & { kind: "pick" }) => void) {
   const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "pick") pick?.(u); else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); } };
-  const any = (e: NumExpr | BoolExpr | UnitExpr) => (isUnitExpr(e) ? unit(e) : expr(e));
+  const any = (e: NumExpr | BoolExpr | UnitExpr | TextExpr) => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e));
+  const looks: TextMap = { num: (e) => { expr(e); return e; }, bool: (e) => { expr(e); return e; }, call: (c) => { call(c); return c; } };
+  const text = (t: TextExpr) => { mapText(t, looks); };
   const expr = (e: NumExpr | BoolExpr) => {
     visit(e);
+    if (mapTextOperands(e, looks)) return;
     switch (e.kind) {
       case "unitField": case "unitPart": case "unitAlive": case "unitFlag": unit(e.unit); break;
       case "unitSame": unit(e.left); unit(e.right); break;
@@ -67,10 +71,12 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "push": expr(s.value); break;
       case "setLength": expr(s.value); break;
       case "assignUnit": unit(s.value); break;
+      case "assignText": text(s.value); break;
+      case "textLoop": text(s.of); s.body.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
-      case "tableWrite": if (s.value.kind !== "text") expr(s.value); break;
+      case "tableWrite": any(s.value); break;
       case "if": expr(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) expr(s.cond); s.body.forEach(stmt); break;
       case "do": s.body.forEach(stmt); expr(s.cond); break;
@@ -78,9 +84,9 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
-      case "action": for (const v of s.variables ?? []) expr(v.expr); break;
+      case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
       case "centerLocation": expr(s.x); expr(s.y); break;
-      case "print": for (const p of s.parts) if (p.kind === "number") expr(p.expr); break;
+      case "print": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
@@ -95,7 +101,7 @@ function statements(body: Stmt[], visit: (s: Stmt) => void) {
     visit(s);
     switch (s.kind) {
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
-      case "while": case "do": case "unitLoop": s.body.forEach(stmt); break;
+      case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
@@ -113,6 +119,16 @@ function checkUnitLoops(body: Stmt[], out: ProgramDiagnostic[]) {
     if (s.kind !== "unitLoop") return;
     statements(s.body, (inner) => {
       if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. To do something to one unit at a time, find it again after each sleep: while (true) { const u = first(…); if (!u) break; u.kill(); sleep(seconds(1)); }" });
+    });
+  });
+}
+
+/** A loop over a text walks it once, within the frame: where it has got to is not something a sleep can keep. */
+function checkTextLoops(body: Stmt[], out: ProgramDiagnostic[]) {
+  statements(body, (s) => {
+    if (s.kind !== "textLoop") return;
+    statements(s.body, (inner) => {
+      if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a for…of over a text: the loop walks the text once, within the frame. A loop over its places can sleep between turns: for (let i = 0; i < s.length; i++) { const ch = s[i]; … sleep(frames(2)); }" });
     });
   });
 }
@@ -148,7 +164,7 @@ function checkDivisions(body: Stmt[], out: ProgramDiagnostic[]) {
 
 /** A constant put into a `u8` / `u16` has to fit: the game would stop it at the top without a word. */
 function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, VarDecl>) {
-  const fits = (id: string, value: NumExpr | BoolExpr | UnitExpr, at: At) => {
+  const fits = (id: string, value: NumExpr | BoolExpr | UnitExpr | TextExpr, at: At) => {
     const d = decls.get(id);
     if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
     const max = 2 ** d.bits - 1;
@@ -159,7 +175,7 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, 
       case "declare": if (!s.failed) fits(s.decl.id, s.init, s.at); break;
       case "assign": fits(s.target, s.value, s.at); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
-      case "while": case "do": case "unitLoop": s.body.forEach(stmt); break;
+      case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
@@ -177,7 +193,7 @@ function remarks(body: Stmt[], out: LineHint[]) {
     switch (s.kind) {
       case "remark": if (s.short) out.push({ file: s.at.file, line: s.at.line, label: s.short, note: s.text }); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
-      case "while": case "do": case "unitLoop": s.body.forEach(stmt); break;
+      case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
@@ -196,7 +212,8 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
     switch (s.kind) {
       case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": into.add(THE_GAME); break;
       case "declare": into.add(s.decl.id); break;
-      case "assign": case "assignBool": case "assignUnit": into.add(s.target); break;
+      case "assign": case "assignBool": case "assignUnit": case "assignText": into.add(s.target); break;
+      case "textLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
       case "store": case "declareArray": case "push": case "pop": case "setLength": into.add(whole(s.array)); break;
       case "unitLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
@@ -230,6 +247,9 @@ const whole = (array: string): string => WINDOWS.get(array) ?? array;
 
 /** The variables an expression reads, by id — and `THE_GAME` when it reads a value of the game or tests a condition. */
 function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
+  // A text reads the variables it is made from; a list of texts the script has never changes.
+  const texts: TextMap = { num: (x) => { reads(x, into); return x; }, bool: (x) => { reads(x, into); return x; }, call: (c) => { reads({ kind: "call", call: c }, into); return c; }, text: (t) => { if (t.kind === "textVar") into.add(t.id); return mapText(t, texts); } };
+  if (mapTextOperands(e, texts)) return into;
   switch (e.kind) {
     case "var": into.add(e.id); break;
     case "element": into.add(whole(e.array)); reads(e.index, into); break;
@@ -250,7 +270,7 @@ function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
     case "edge": reads(e.cond, into); break;
     // A call reads what it is handed and what its body reads: `while (xs.some((x) => x > 0))` reads xs.
     case "call":
-      for (const p of e.call.params) if (p.init.kind !== "unitVar" && p.init.kind !== "unitNull") reads(p.init as NumExpr | BoolExpr, into);
+      for (const p of e.call.params) { if (isTextExpr(p.init)) texts.text!(p.init); else if (p.init.kind !== "unitVar" && p.init.kind !== "unitNull") reads(p.init as NumExpr | BoolExpr, into); }
       expressions(e.call.body, (inner) => { if (inner.kind !== "call") reads(inner, into); });
       break;
     default: break;
@@ -322,8 +342,12 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
   const condition = (r: ConditionRecord): ConditionRecord => ({ ...r });
   // Only actions carry strings, and only inside statements — but a call's body is statements inside an expression, so expressions are walked for calls.
   const unit = (u: UnitExpr): UnitExpr => (u.kind === "call" ? { ...u, call: call(u.call) } : u.kind === "unitAt" ? { ...u, ptr: expr(u.ptr), epd: expr(u.epd), uid: expr(u.uid) } : u);
-  const any = (e: NumExpr | BoolExpr | UnitExpr): NumExpr | BoolExpr | UnitExpr => (isUnitExpr(e) ? unit(e) : expr(e));
+  const any = <E extends NumExpr | BoolExpr | UnitExpr | TextExpr>(e: E): E => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e as NumExpr | BoolExpr)) as E;
+  const copies: TextMap = { num: (e) => expr(e), bool: (e) => expr(e), call: (c) => call(c) };
+  const text = (t: TextExpr): TextExpr => mapText(t, copies);
   const expr = <E extends NumExpr | BoolExpr>(e: E): E => {
+    const ofTexts = mapTextOperands(e, copies);
+    if (ofTexts) return ofTexts;
     switch (e.kind) {
       case "unitField": case "unitPart": case "unitAlive": case "unitFlag": return { ...e, unit: unit(e.unit) };
       case "unitSame": return { ...e, left: unit(e.left), right: unit(e.right) };
@@ -350,7 +374,9 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "unitLoop": return { ...s, body: s.body.map(stmt) };
       case "unitWrite": return { ...s, unit: unit(s.unit), value: expr(s.value) };
       case "unitDo": return { ...s, unit: unit(s.unit), verb: s.verb.do === "damage" || s.verb.do === "heal" ? { ...s.verb, amount: expr(s.verb.amount) } : s.verb };
-      case "tableWrite": return s.value.kind === "text" ? s : { ...s, value: expr(s.value) };
+      case "tableWrite": return { ...s, value: any(s.value) };
+      case "assignText": return { ...s, value: text(s.value) };
+      case "textLoop": return { ...s, of: text(s.of), body: s.body.map(stmt) };
       case "assign": return { ...s, value: expr(s.value) };
       case "declareArray": return { ...s, ...(s.init ? { init: s.init.map(expr) } : {}), ...(s.fill ? { fill: expr(s.fill) } : {}) };
       case "store": return { ...s, index: expr(s.index), value: expr(s.value) };
@@ -364,9 +390,9 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "unrolled": return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
       case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
       case "return": return s.value ? { ...s, value: any(s.value) } : s;
-      case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}) };
+      case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}), ...(s.text ? { text: text(s.text) } : {}) };
       case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y) };
-      case "print": return { ...s, parts: s.parts.map((p) => (p.kind === "number" ? { ...p, expr: expr(p.expr) } : p)) };
+      case "print": return { ...s, parts: mapTextParts(s.parts, copies) };
       case "call": return { ...s, call: call(s.call) };
       case "block": return { ...s, body: s.body.map(stmt) };
       default: return s;

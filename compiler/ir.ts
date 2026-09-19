@@ -10,6 +10,8 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 13: texts — a `text` variable (`VarDecl.text`: the id of a text of the built map's table, or a text that was made: where it is, the block of the heap it owns, its length in characters), `TextExpr`, `assignText`, `textLoop`, a text among a `print`'s parts, in an action's text field (`action.text`) and as a unit type's name; `textLength` / `textIndexOf` / `textCode` among the numbers, `textCompare` / `textTest` among the conditions; `ArrayDecl.texts`.
+ * 12: arrays inside things — `ArrayDecl.slice` (a window on another array's cells) and `ArrayDecl.through` (a growing array whose handle is a cell of four others).
  * 11: recursion — `FuncDecl.recursive`, and `Call.saves` on a call that may come back into the function it is in: what that function keeps on the stack around the call.
  * 10: functions that are called — `Program.functions`, and `Call.fn` naming one: the call sets the function's parameters and runs its one body, where a call without `fn` carries a body of its own.
  * 9: a unit as the three numbers it is (`unitAt`, `unitPart`), which is what lets an array hold units.
@@ -21,7 +23,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 12;
+export const IR_VERSION = 13;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -31,7 +33,15 @@ export interface VarDecl {
   id: string;
   name: string;
   /** `unit`: a unit on the map, or none — a pointer the lowering re-checks before each use, since the game reuses a dead unit's slot. */
-  kind: "number" | "boolean" | "unit";
+  kind: "number" | "boolean" | "unit" | "text";
+  /**
+   * How a `text` variable is kept. `id`: it only ever receives texts known when the script is built, so it holds the
+   * text's id in the built map's string table — one cell, assigning is copying a number, any action's text field takes
+   * it. `made`: three cells — where the text is, the block of the heap it owns (0 when it owns none: a text of the
+   * table), its length in characters. What holds a made text owns its block: assigning copies it (a value that was
+   * just made is moved), and assigning or declaring again gives the old block back first.
+   */
+  text?: "id" | "made";
   /** `shared(…)`: one cell for every player of a per-player program. */
   shared: boolean;
   /** A `u8` / `u16` annotation; unset for the full 32 bits. */
@@ -59,6 +69,8 @@ export interface ArrayDecl {
   bits?: 8 | 16;
   unsigned?: boolean;
   values?: number[];
+  /** A list of texts the script has, which a program indexes with a variable (`titles[level]`): `values` are their places here, the lowering's their ids in the built map's table. */
+  texts?: string[];
   /**
    * The array grows: something pushes to it, pops from it or sets its length. Its cells are a block of the
    * programs' heap (`HEAP_CELLS`), reached through a handle — where the block is, how many cells are in use, how
@@ -238,8 +250,89 @@ export type NumExpr =
   | { kind: "ternary"; cond: BoolExpr; whenTrue: NumExpr; whenFalse: NumExpr; at: At; label: string }
   /** `unsigned`, on `min` and `max`: the arguments are compared as `u32`s. `abs` is of a signed number. */
   | { kind: "intrinsic"; name: "min" | "max" | "abs"; args: NumExpr[]; unsigned?: boolean; at: At; label: string }
+  /** `s.length`, in characters (code points). */
+  | { kind: "textLength"; of: TextExpr; at: At; label: string }
+  /** `s.indexOf(find, from)`: the place of the first character of the first match at or after `from`, in characters; −1 when there is none. */
+  | { kind: "textIndexOf"; of: TextExpr; find: TextExpr; from?: NumExpr; at: At; label: string }
+  /** `s.codePointAt(i)`: the character's number; −1 past either end. */
+  | { kind: "textCode"; of: TextExpr; index: NumExpr; at: At; label: string }
   /** A call inlined here: its body runs, its result is the number. */
   | { kind: "call"; call: Call };
+
+/** The most bytes a text that was made holds (UTF-8, its end not counted): what is written past it is cut off, and said. */
+export const TEXT_BYTES = 1023;
+/** The most bytes of a made text an action's field or a unit type's name shows: the room of the table string it is written over. */
+export const TEXT_FIELD_BYTES = 255;
+
+/**
+ * A text. `text` is one known when the script was built; a variable is one of the two ways `VarDecl.text` says; `textOf`
+ * is a cell of a list of texts the script has. Those, and a `ternary` between them, are texts of the built map's table,
+ * which have an id. Everything else is made while the map is played, into a block of the heap that the value owns
+ * until something takes it (a variable, which keeps it) or has used it (a comparison, a `print`, which give it back).
+ */
+export type TextExpr =
+  | { kind: "text"; text: string }
+  | { kind: "textVar"; id: string }
+  | { kind: "textOf"; array: string; index: NumExpr; at: At }
+  /** A template, texts joined with `+`, `String(n)`: the parts one after another. */
+  | { kind: "template"; parts: TextPart[]; at: At; label: string }
+  | { kind: "textTernary"; cond: BoolExpr; whenTrue: TextExpr; whenFalse: TextExpr; at: At; label: string }
+  /** The characters from `start` (0 when absent) up to `end` (the text's end when absent), both already inside 0 … length: `slice`, `substring`, `s[i]`, `at`, `charAt`. */
+  | { kind: "textSlice"; of: TextExpr; start?: NumExpr; end?: NumExpr; at: At; label: string }
+  /** `padStart` / `padEnd`: `with` over and over on that side until the text is `width` characters; unchanged when it is that long already or `with` is empty. */
+  | { kind: "textPad"; of: TextExpr; side: "start" | "end"; width: NumExpr; with: TextExpr; at: At; label: string }
+  /** `s.repeat(n)`; nothing when n is below 1. */
+  | { kind: "textRepeat"; of: TextExpr; count: NumExpr; at: At; label: string }
+  /** A call inlined here whose result is a text: the value is taken out of the call's result, which then holds none. */
+  | { kind: "textCall"; call: Call };
+
+const TEXT_KINDS: ReadonlySet<string> = new Set(["text", "textVar", "textOf", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
+export const isTextExpr = (e: { kind: string }): e is TextExpr => TEXT_KINDS.has(e.kind);
+
+/** What a pass that walks or rewrites every expression does with the numbers, the conditions and the calls inside a text; the texts inside it are walked here. */
+export interface TextMap { num: (e: NumExpr) => NumExpr; bool: (e: BoolExpr) => BoolExpr; call: (c: Call) => Call; /** For a pass that has something of its own to do with a text inside a text; absent, it is walked as the outer one is. */ text?: (t: TextExpr) => TextExpr }
+
+const innerText = (t: TextExpr, f: TextMap): TextExpr => (f.text ? f.text(t) : mapText(t, f));
+
+export function mapTextParts(parts: TextPart[], f: TextMap): TextPart[] {
+  return parts.map((p) => (p.kind === "number" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p));
+}
+
+/** A text with everything it is worked out from handed to `f` — a copy; a pass that only looks gives back what it was handed. */
+export function mapText(t: TextExpr, f: TextMap): TextExpr {
+  switch (t.kind) {
+    case "textOf": return { ...t, index: f.num(t.index) };
+    case "template": return { ...t, parts: mapTextParts(t.parts, f) };
+    case "textTernary": return { ...t, cond: f.bool(t.cond), whenTrue: innerText(t.whenTrue, f), whenFalse: innerText(t.whenFalse, f) };
+    case "textSlice": return { ...t, of: innerText(t.of, f), ...(t.start ? { start: f.num(t.start) } : {}), ...(t.end ? { end: f.num(t.end) } : {}) };
+    case "textPad": return { ...t, of: innerText(t.of, f), width: f.num(t.width), with: innerText(t.with, f) };
+    case "textRepeat": return { ...t, of: innerText(t.of, f), count: f.num(t.count) };
+    case "textCall": return { ...t, call: f.call(t.call) };
+    default: return t;
+  }
+}
+
+/** The same for a number or a condition that is worked out from texts (`s.length`, `a == b`); undefined for any other. */
+export function mapTextOperands<E extends NumExpr | BoolExpr>(e: E, f: TextMap): E | undefined {
+  switch (e.kind) {
+    case "textLength": return { ...e, of: innerText(e.of, f) };
+    case "textIndexOf": return { ...e, of: innerText(e.of, f), find: innerText(e.find, f), ...(e.from ? { from: f.num(e.from) } : {}) };
+    case "textCode": return { ...e, of: innerText(e.of, f), index: f.num(e.index) };
+    case "textCompare": return { ...e, left: innerText(e.left, f), right: innerText(e.right, f) };
+    case "textTest": return { ...e, of: innerText(e.of, f), find: innerText(e.find, f) };
+    default: return undefined;
+  }
+}
+
+/** Whether a text is one of the built map's table whatever happens when the map is played: it has an id. `kinds` says how each variable is kept. */
+export function textHasId(e: TextExpr, kinds: (id: string) => "id" | "made" | undefined): boolean {
+  switch (e.kind) {
+    case "text": case "textOf": return true;
+    case "textVar": return kinds(e.id) === "id";
+    case "textTernary": return textHasId(e.whenTrue, kinds) && textHasId(e.whenFalse, kinds);
+    default: return false;
+  }
+}
 
 export type BoolExpr =
   | { kind: "const"; value: boolean }
@@ -272,6 +365,10 @@ export type BoolExpr =
   /** `rose(c)` / `once(c)`: an edge on a condition, with a latch of its own. */
   | { kind: "edge"; edge: "rose" | "once"; cond: BoolExpr; at: At; label: string }
   | { kind: "ternary"; cond: BoolExpr; whenTrue: BoolExpr; whenFalse: BoolExpr; at: At; label: string }
+  /** Two texts compared: the same characters, or the order of their characters' numbers (which is JavaScript's for every character the game draws). */
+  | { kind: "textCompare"; op: CompareOp; left: TextExpr; right: TextExpr; at: At; label: string }
+  /** `s.startsWith(find)`, `s.endsWith(find)`, `s.includes(find)`. */
+  | { kind: "textTest"; test: "startsWith" | "endsWith" | "includes"; of: TextExpr; find: TextExpr; at: At; label: string }
   /** A call inlined here whose boolean result is tested. */
   | { kind: "call"; call: Call };
 
@@ -281,7 +378,9 @@ export type TextPart =
   /** `unsigned`: printed as a `u32`; unset, a number below zero has its minus sign. */
   | { kind: "number"; expr: NumExpr; unsigned?: boolean }
   | { kind: "name"; player: number }
-  | { kind: "color"; player: number };
+  | { kind: "color"; player: number }
+  /** A text of the program: a variable's, a function's result. */
+  | { kind: "value"; text: TextExpr };
 
 /** A field of an action filled in by the program: `bits` 8 is a unit count (done once per unit), 16 a unit type, 32 an amount. */
 export interface ActionVariable { field: keyof ActionRecord; bits: 8 | 16 | 32; name: string; expr: NumExpr }
@@ -299,7 +398,7 @@ export interface FuncDecl {
   id: string;
   name: string;
   params: VarDecl[];
-  result?: { decl: VarDecl; kind: "number" | "boolean" | "unit" };
+  result?: { decl: VarDecl; kind: "number" | "boolean" | "unit" | "text" };
   recursive?: boolean;
   body: Stmt[];
   at: At;
@@ -324,9 +423,9 @@ export interface Call {
   at: At;
   label: string;
   /** Parameters bound by copy (the function assigns them): a variable each, initialised from the argument. */
-  params: { decl: VarDecl; init: NumExpr | BoolExpr | UnitExpr; label: string }[];
+  params: { decl: VarDecl; init: NumExpr | BoolExpr | UnitExpr | TextExpr; label: string }[];
   /** What the call returns, when it returns something: the variable `return` writes. */
-  result?: { decl: VarDecl; kind: "number" | "boolean" | "unit" };
+  result?: { decl: VarDecl; kind: "number" | "boolean" | "unit" | "text" };
   /** On a call inside a recursive function that may come back into it; such a call is a statement, never inside an expression. */
   saves?: Saves;
   body: Stmt[];
@@ -334,7 +433,11 @@ export interface Call {
 
 export type Stmt =
   /** `failed`: the initializer did not compile (reported already); the variable still exists, unset. */
-  | { kind: "declare"; decl: VarDecl; init: NumExpr | BoolExpr | UnitExpr; failed?: boolean; at: At; label: string }
+  | { kind: "declare"; decl: VarDecl; init: NumExpr | BoolExpr | UnitExpr | TextExpr; failed?: boolean; at: At; label: string }
+  /** `s = value`, `s += "!"`: the text the variable held is given back once the new one is worked out. */
+  | { kind: "assignText"; target: string; value: TextExpr; at: At; label: string }
+  /** `for (const ch of s)`: the body once a character, the text walked once — no `sleep` inside. `decl` is a made text of one character. */
+  | { kind: "textLoop"; decl: VarDecl; of: TextExpr; body: Stmt[]; at: At; label: string }
   | { kind: "assign"; target: string; value: NumExpr; at: At; label: string }
   /** `let hp = [a, b, 0]` (`init`, a value a cell) or `new Array(12).fill(v)` (`fill`, one value for every cell): the array's cells are set, here and now. */
   | { kind: "declareArray"; array: string; init?: (NumExpr | BoolExpr)[]; fill?: NumExpr | BoolExpr; at: At; label: string }
@@ -358,7 +461,7 @@ export type Stmt =
   /** `u.kill()`, `u.order("move", there)`: nothing happens when the unit is none or gone. */
   | { kind: "unitDo"; unit: UnitExpr; verb: UnitVerb; at: At; label: string }
   /** `stats(units.TerranMarine).minerals = 25`. `scaled`: the value is already what the cell stores (a fraction known when the script was built); `boolean`: the value is a truth value, stored 1 or 0. */
-  | { kind: "tableWrite"; cell: TableCell; value: NumExpr | BoolExpr | { kind: "text"; text: string }; scaled?: boolean; boolean?: boolean; at: At; label: string }
+  | { kind: "tableWrite"; cell: TableCell; value: NumExpr | BoolExpr | TextExpr; scaled?: boolean; boolean?: boolean; at: At; label: string }
   | { kind: "if"; cond: BoolExpr; then: Stmt[]; else?: Stmt[]; at: At; label: string }
   /** `cond` absent means `while (true)`. */
   | { kind: "while"; cond?: BoolExpr; body: Stmt[]; at: At; label: string }
@@ -371,11 +474,17 @@ export type Stmt =
   | { kind: "break"; at: At; label: string }
   | { kind: "continue"; at: At; label: string }
   /** Inside an inlined call: leaves it, writing the result first when there is one. */
-  | { kind: "return"; value?: NumExpr | BoolExpr | UnitExpr; at: At; label: string }
+  | { kind: "return"; value?: NumExpr | BoolExpr | UnitExpr | TextExpr; at: At; label: string }
   /** `cycles` is a count of frames (`frames(n)`; `cycles(n)` is the older word for the same). */
   | { kind: "sleep"; ms?: number; cycles?: number; at: At; label: string }
   /** A trigger action; each of `variables` names a field that takes an expression's value instead of the record's. */
-  | { kind: "action"; record: ActionRecord; variables?: ActionVariable[]; at: At; label: string }
+  /**
+   * `text`: the action's text is the program's. One of the table goes into the action as its id. One that was made is
+   * written over a string of the table the build keeps for this kind of field — the objectives, a leaderboard's label, a
+   * transmission: a player has one of each at a time — and only on the computer of a player the action is for, since the
+   * game reads the string again whenever it draws; past `TEXT_FIELD_BYTES` it is cut.
+   */
+  | { kind: "action"; record: ActionRecord; variables?: ActionVariable[]; text?: TextExpr; at: At; label: string }
   /** Centre a location on a point of the map, in pixels, its size kept. */
   | { kind: "centerLocation"; location: number; x: NumExpr; y: NumExpr; at: At; label: string }
   /**
@@ -428,11 +537,12 @@ export function eachCall(root: unknown, visit: (c: Call) => void): void {
   for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
 }
 
-export const isUnitExpr = (e: NumExpr | BoolExpr | UnitExpr | { kind: "text" }): e is UnitExpr =>
+export const isUnitExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is UnitExpr =>
   e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || (e.kind === "call" && e.call.result?.kind === "unit");
 
-export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr): e is NumExpr => {
+export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is NumExpr => {
   switch (e.kind) {
+    case "textLength": case "textIndexOf": case "textCode": return true;
     case "const": return typeof e.value === "number";
     case "var": return false; // ambiguous by shape; callers know the variable's kind
     case "element": case "pop": return false; // ambiguous by shape, as a variable is
@@ -457,10 +567,12 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "setLength": expr(s.value); break;
       case "assignBool": init(s.value); break;
       case "assignUnit": unit(s.value); break;
+      case "assignText": text(s.value); break;
+      case "textLoop": text(s.of); out.push(s.decl); s.body.forEach(stmt); break;
       case "unitLoop": out.push(s.decl); s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); init(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
-      case "tableWrite": if (s.value.kind !== "text") init(s.value); break;
+      case "tableWrite": init(s.value); break;
       case "if": init(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) init(s.cond); s.body.forEach(stmt); break;
       case "do": s.body.forEach(stmt); init(s.cond); break;
@@ -468,9 +580,9 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) init(s.value); break;
-      case "action": for (const v of s.variables ?? []) expr(v.expr); break;
+      case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
       case "centerLocation": expr(s.x); expr(s.y); break;
-      case "print": for (const p of s.parts) if (p.kind === "number") expr(p.expr); break;
+      case "print": parts(s.parts); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
@@ -482,7 +594,20 @@ export function declarations(body: Stmt[]): VarDecl[] {
     for (const p of c.params) { if (!c.fn) out.push(p.decl); init(p.init); }
     c.body.forEach(stmt);
   };
-  const init = (e: NumExpr | BoolExpr | UnitExpr) => (isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e));
+  const init = (e: NumExpr | BoolExpr | UnitExpr | TextExpr) => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e));
+  const parts = (ps: TextPart[]) => { for (const p of ps) { if (p.kind === "number") expr(p.expr); else if (p.kind === "value") text(p.text); } };
+  const text = (t: TextExpr) => {
+    switch (t.kind) {
+      case "textOf": expr(t.index); break;
+      case "template": parts(t.parts); break;
+      case "textTernary": bool(t.cond); text(t.whenTrue); text(t.whenFalse); break;
+      case "textSlice": text(t.of); if (t.start) expr(t.start); if (t.end) expr(t.end); break;
+      case "textPad": text(t.of); expr(t.width); text(t.with); break;
+      case "textRepeat": text(t.of); expr(t.count); break;
+      case "textCall": call(t.call); break;
+      default: break;
+    }
+  };
   const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "unitAt") { expr(u.ptr); expr(u.epd); expr(u.uid); } };
   const expr = (e: NumExpr) => {
     switch (e.kind) {
@@ -493,6 +618,9 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "ternary": bool(e.cond); expr(e.whenTrue); expr(e.whenFalse); break;
       case "intrinsic": e.args.forEach(expr); break;
       case "randomInt": expr(e.bound); break;
+      case "textLength": text(e.of); break;
+      case "textIndexOf": text(e.of); text(e.find); if (e.from) expr(e.from); break;
+      case "textCode": text(e.of); expr(e.index); break;
       case "call": call(e.call); break;
       default: break;
     }
@@ -508,6 +636,8 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "not": bool(b.expr); break;
       case "edge": bool(b.cond); break;
       case "ternary": bool(b.cond); bool(b.whenTrue); bool(b.whenFalse); break;
+      case "textCompare": text(b.left); text(b.right); break;
+      case "textTest": text(b.of); text(b.find); break;
       case "call": call(b.call); break;
       default: break;
     }

@@ -29,8 +29,8 @@
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, PlayerGroup, ResourceType } from "../vendor/triggers";
-import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, heapCells, stackDepth } from "./ir";
-import type { ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
+import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, heapCells, isTextExpr, stackDepth } from "./ir";
+import type { TextExpr, ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
@@ -141,6 +141,39 @@ interface Frame {
   arrays: { a: { decl: ArrayDecl; cells: Value[]; room: number }; cells: Value[]; room: number }[];
 }
 
+/** A text a variable holds: the characters, and the cells of the block of the heap it owns (0: it owns none — a text of the map's table). */
+interface HeldText { s: string; room: number }
+/** A text as an expression gives it. `taken`: the block is the value's own — nothing else holds it — so what receives the value keeps the block or gives it back; a variable's is only looked at. */
+interface TextValue extends HeldText { taken: boolean }
+
+const UTF8 = new TextEncoder();
+/** The bytes a text is in the game, where it is UTF-8. */
+const bytesOf = (s: string): number => UTF8.encode(s).length;
+/** The cells of the block a made text of that many bytes takes: one that says the block's size, the bytes four to a cell, the text's end. */
+export function textRoom(bytes: number): number {
+  let room = HEAP_SMALLEST;
+  while (room < Math.floor(bytes / 4) + 2) room *= 2;
+  return room;
+}
+/** A text cut to at most `bytes` bytes, never inside a character. */
+function cutTo(s: string, bytes: number): string {
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    const n = bytesOf(ch);
+    if (used + n > bytes) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
+/** Two texts by the numbers of their characters, as the game compares their bytes (UTF-8 keeps that order): below zero, zero, above. */
+function compareTexts(a: string, b: string): number {
+  const x = [...a], y = [...b];
+  for (let i = 0; i < x.length && i < y.length; i++) { const d = x[i].codePointAt(0)! - y[i].codePointAt(0)!; if (d) return d; }
+  return x.length - y.length;
+}
+
 /** An array's cells, and the room its block has when it is one that grows. */
 interface Held { decl: ArrayDecl; cells: Value[]; room: number }
 
@@ -148,6 +181,8 @@ class ProgramRun {
   readonly vars = new Map<string, Value>();
   /** The variables that hold a unit, or none. */
   readonly unitVars = new Map<string, SimUnit | null>();
+  /** The variables that hold a text. */
+  readonly textVars = new Map<string, HeldText>();
   readonly bits = new Map<string, 8 | 16>();
   /** The `u32` variables. */
   readonly unsigned = new Set<string>();
@@ -311,6 +346,8 @@ class ProgramRun {
 
   private declare(decl: VarDecl): void {
     if (decl.kind === "unit") { this.unitVars.set(decl.id, null); return; }
+    // A text declared again keeps what it held until the new one is put in it, which is when its block goes back.
+    if (decl.kind === "text") { if (!this.textVars.has(decl.id)) this.textVars.set(decl.id, { s: "", room: 0 }); return; }
     if (decl.bits) this.bits.set(decl.id, decl.bits);
     if (decl.unsigned) this.unsigned.add(decl.id);
     this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
@@ -411,7 +448,136 @@ class ProgramRun {
         return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
       }
       case "call": return Number(yield* this.call(e.call)) | 0;
+      case "textLength": { const t = yield* this.text(e.of); this.used(t); return [...t.s].length; }
+      case "textIndexOf": {
+        const t = yield* this.text(e.of);
+        const find = yield* this.text(e.find);
+        const from = e.from ? Math.max(0, yield* this.num(e.from)) : 0;
+        this.used(t, find);
+        const chars = [...t.s];
+        const at = t.s.indexOf(find.s, chars.slice(0, from).join("").length);
+        return at < 0 || from > chars.length ? (find.s === "" && from <= chars.length ? from : -1) : [...t.s.slice(0, at)].length;
+      }
+      case "textCode": { const t = yield* this.text(e.of); const i = yield* this.num(e.index); this.used(t); return [...t.s][i]?.codePointAt(0) ?? -1; }
     }
+  }
+
+  /* ── texts ── */
+
+  /**
+   * A text that was just made, as the game keeps it (`python/trigscript.py`): past `TEXT_BYTES` it is cut, and its
+   * bytes go into a block of the heap. When the heap has none, the text is empty — and both are said.
+   */
+  private made(s: string, at: At, cameTo = bytesOf(s)): TextValue {
+    if (bytesOf(s) > TEXT_BYTES) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text came to ${cameTo.toLocaleString("en-US")} bytes, and a text that is made holds ${TEXT_BYTES.toLocaleString("en-US")}: it is cut off there, as it is in the game.` });
+      s = cutTo(s, TEXT_BYTES);
+    }
+    const room = textRoom(bytesOf(s));
+    if (!this.sim.heap.take(room)) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: no room for this text (the heap the programs' arrays and texts share is ${this.sim.heap.cells} cells; the script's settings set it). It is empty instead, as it is in the game.` });
+      return { s: "", room: 0, taken: true };
+    }
+    return { s, room, taken: true };
+  }
+
+  /** Values that have been used: a block that was the value's own goes back to the heap. */
+  private used(...values: TextValue[]): void {
+    for (const v of values) if (v.taken && v.room) this.sim.heap.give(v.room);
+  }
+
+  /** A value as something to keep: its own block as it is, a copy of a variable's. */
+  private owned(v: TextValue, at: At): HeldText {
+    if (v.taken || !v.room) return { s: v.s, room: v.room };
+    const copy = this.made(v.s, at);
+    return { s: copy.s, room: copy.room };
+  }
+
+  private *parts(parts: TextPart[], used: TextValue[]): Gen<string> {
+    let out = "";
+    for (const p of parts) {
+      if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      else if (p.kind === "value") { const v = yield* this.text(p.text); used.push(v); out += v.s; }
+      else out += this.sim.partText(p);
+    }
+    return out;
+  }
+
+  private *text(e: TextExpr): Gen<TextValue> {
+    switch (e.kind) {
+      case "text": return { s: e.text, room: 0, taken: true };
+      case "textVar": { const v = this.textVars.get(e.id); if (!v) throw new Error(`The variable ${e.id} was read before it was declared.`); return { ...v, taken: false }; }
+      case "textOf": {
+        const a = this.arrays.get(e.array);
+        const i = yield* this.num(e.index);
+        const found = a?.decl.texts?.[i];
+        if (found === undefined) this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: e.at, message: `${a?.decl.name ?? e.array}[${i}] is past the end of the list (its length is ${a?.decl.texts?.length ?? 0}): it reads an empty text.` });
+        return { s: found ?? "", room: 0, taken: true };
+      }
+      case "template": {
+        const used: TextValue[] = [];
+        const s = yield* this.parts(e.parts, used);
+        const out = this.made(s, e.at);
+        this.used(...used);
+        return out;
+      }
+      case "textTernary": {
+        const v = (yield* this.bool(e.cond)) ? yield* this.text(e.whenTrue) : yield* this.text(e.whenFalse);
+        return { ...this.owned(v, e.at), taken: true };
+      }
+      case "textSlice": {
+        const of = yield* this.text(e.of);
+        const chars = [...of.s];
+        const start = e.start ? Math.min(chars.length, Math.max(0, yield* this.num(e.start))) : 0;
+        const end = e.end ? Math.min(chars.length, Math.max(0, yield* this.num(e.end))) : chars.length;
+        const out = this.made(chars.slice(start, Math.max(start, end)).join(""), e.at);
+        this.used(of);
+        return out;
+      }
+      case "textPad": {
+        const of = yield* this.text(e.of);
+        const width = yield* this.num(e.width);
+        const fill = yield* this.text(e.with);
+        const chars = [...of.s], pad = [...fill.s];
+        let padding = "";
+        if (pad.length) for (let i = 0; chars.length + i < width; i++) padding += pad[i % pad.length];
+        const out = this.made(e.side === "start" ? padding + of.s : of.s + padding, e.at);
+        this.used(of, fill);
+        return out;
+      }
+      case "textRepeat": {
+        const of = yield* this.text(e.of);
+        const n = yield* this.num(e.count);
+        // Past what a text holds there is nothing more to see of it, and JavaScript would run out long before.
+        const out = this.made(n >= 1 ? of.s.repeat(Math.min(n, Math.ceil((TEXT_BYTES + 1) / Math.max(1, bytesOf(of.s))))) : "", e.at, Math.max(0, n) * bytesOf(of.s));
+        this.used(of);
+        return out;
+      }
+      case "textCall": {
+        yield* this.call(e.call);
+        const held = e.call.result ? this.textVars.get(e.call.result.decl.id) : undefined;
+        if (!held) return { s: "", room: 0, taken: true };
+        // Taken out of the call's result, which holds no block from here on.
+        const out: TextValue = { ...held, taken: true };
+        held.room = 0;
+        return out;
+      }
+    }
+  }
+
+  /** A text into a variable: worked out first, then what the variable held goes back. */
+  private *putText(id: string, e: TextExpr, at: At): Gen<void> {
+    const v = this.owned(yield* this.text(e), at);
+    const old = this.textVars.get(id);
+    if (old?.room) this.sim.heap.give(old.room);
+    this.textVars.set(id, v);
+  }
+
+  /** A made text where the game shows at most `TEXT_FIELD_BYTES` of one: an action's field, a unit type's name. */
+  private shown(v: TextValue, at: At, where: string): string {
+    if (!v.room || bytesOf(v.s) <= TEXT_FIELD_BYTES) return v.s;
+    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text is ${bytesOf(v.s)} bytes, and ${where} shows ${TEXT_FIELD_BYTES} of a text that was made: it is cut off there, as it is in the game.` });
+    return cutTo(v.s, TEXT_FIELD_BYTES);
   }
 
   /** A number as the game takes one: the 32 bits from 0 up. What goes to a unit, a table, an action or the map is never below zero by then (the compiler saw to it). */
@@ -463,6 +629,19 @@ class ProgramRun {
       }
       case "ternary": return (yield* this.bool(e.cond)) ? yield* this.bool(e.whenTrue) : yield* this.bool(e.whenFalse);
       case "call": return Boolean(yield* this.call(e.call));
+      case "textCompare": {
+        const a = yield* this.text(e.left);
+        const b = yield* this.text(e.right);
+        this.used(a, b);
+        const d = compareTexts(a.s, b.s);
+        return e.op === "==" ? d === 0 : e.op === "!=" ? d !== 0 : e.op === "<" ? d < 0 : e.op === "<=" ? d <= 0 : e.op === ">" ? d > 0 : d >= 0;
+      }
+      case "textTest": {
+        const of = yield* this.text(e.of);
+        const find = yield* this.text(e.find);
+        this.used(of, find);
+        return e.test === "startsWith" ? of.s.startsWith(find.s) : e.test === "endsWith" ? of.s.endsWith(find.s) : of.s.includes(find.s);
+      }
     }
   }
 
@@ -471,7 +650,8 @@ class ProgramRun {
   }
 
   /** A declaration's, a parameter's or a return's value into its variable, whatever it holds. */
-  private *put(decl: { id: string; kind: VarDecl["kind"] }, e: NumExpr | BoolExpr | UnitExpr): Gen<void> {
+  private *put(decl: { id: string; kind: VarDecl["kind"]; at?: At }, e: NumExpr | BoolExpr | UnitExpr | TextExpr, at?: At): Gen<void> {
+    if (decl.kind === "text" || isTextExpr(e)) { yield* this.putText(decl.id, e as TextExpr, at ?? decl.at ?? { file: "", line: 0, column: 0 }); return; }
     if (decl.kind === "unit") this.unitVars.set(decl.id, yield* this.unit(e as UnitExpr));
     else this.store(decl.id, yield* this.init(e as NumExpr | BoolExpr, decl.kind));
   }
@@ -484,12 +664,12 @@ class ProgramRun {
     if (fn) {
       // A called function: every argument first — one of them may be a call of the same function — then its parameters, then its one body.
       const values: (Value | SimUnit | null)[] = [];
-      for (const p of c.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init as UnitExpr) : yield* this.init(p.init as NumExpr | BoolExpr, p.decl.kind));
+      for (const p of c.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init as UnitExpr) : p.decl.kind === "text" ? 0 : yield* this.init(p.init as NumExpr | BoolExpr, p.decl.kind));
       if (c.saves) kept = this.keep(c);
       c.params.forEach((p, i) => {
         this.declare(p.decl);
         if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i] as SimUnit | null);
-        else this.store(p.decl.id, values[i] as Value);
+        else if (p.decl.kind !== "text") this.store(p.decl.id, values[i] as Value);
       });
     } else {
       for (const p of c.params) {
@@ -501,7 +681,7 @@ class ProgramRun {
     const flow = kept && fn ? ((yield { run: this.block(fn.body, ctx) }) as Flow) : yield* this.block(fn ? fn.body : c.body, ctx);
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c.at.line}).`);
     if (kept) this.bringBack(kept);
-    return c.result && c.result.kind !== "unit" ? this.read(c.result.decl.id) : 0;
+    return c.result && c.result.kind !== "unit" && c.result.kind !== "text" ? this.read(c.result.decl.id) : 0;
   }
 
   /**
@@ -562,6 +742,23 @@ class ProgramRun {
         return "next";
       }
       case "assignUnit": this.unitVars.set(s.target, yield* this.unit(s.value)); return "next";
+      case "assignText": yield* this.putText(s.target, s.value, s.at); return "next";
+      case "textLoop": {
+        this.declare(s.decl);
+        // The text as it is when the loop starts: a copy of a variable's, so that assigning the variable inside changes nothing here.
+        const over = this.owned(yield* this.text(s.of), s.at);
+        let flow: Flow = "next";
+        for (const ch of over.s) {
+          const old = this.textVars.get(s.decl.id);
+          const turn = this.made(ch, s.at);
+          if (old?.room) this.sim.heap.give(old.room);
+          this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
+          flow = yield* this.block(s.body, ctx);
+          if (flow === "break" || flow === "return") break;
+        }
+        if (over.room) this.sim.heap.give(over.room);
+        return flow === "return" ? flow : "next";
+      }
       case "unitLoop": {
         this.declare(s.decl);
         // The units as they are when the loop starts, in table order; one that dies on the way is passed over.
@@ -586,7 +783,7 @@ class ProgramRun {
       }
       case "unitDo": yield* this.unitDo(s.unit, s.verb, s.at); return "next";
       case "tableWrite": {
-        if (s.value.kind === "text") { this.sim.tableWrite(s.cell, 0, false, s.value.text); return "next"; }
+        if (isTextExpr(s.value)) { const v = yield* this.text(s.value); this.sim.tableWrite(s.cell, 0, false, this.shown(v, s.at, "a unit type's name")); this.used(v); return "next"; }
         const value = s.boolean ? ((yield* this.bool(s.value as BoolExpr)) ? 1 : 0) : yield* this.amount(s.value as NumExpr);
         this.sim.tableWrite(s.cell, value, s.scaled === true);
         return "next";
@@ -701,7 +898,7 @@ class ProgramRun {
       case "break": return "break";
       case "continue": return "continue";
       case "return": {
-        if (s.value && ctx.fn?.result) yield* this.put(ctx.fn.result, s.value);
+        if (s.value && ctx.fn?.result) yield* this.put(ctx.fn.result, s.value, s.at);
         return "return";
       }
       case "sleep": {
@@ -713,12 +910,14 @@ class ProgramRun {
         const record: ActionRecord = { ...s.record };
         // A unit count is that many units (the game does the action once for each), whatever a byte could hold.
         for (const v of s.variables ?? []) (record as unknown as Record<string, number>)[v.field as string] = yield* this.amount(v.expr);
+        if (s.text) { const v = yield* this.text(s.text); this.sim.act(this, record, s.at, this.shown(v, s.at, "this action")); this.used(v); return "next"; }
         this.sim.act(this, record, s.at);
         return "next";
       }
       case "print": {
-        let text = "";
-        for (const p of s.parts) text += p.kind === "number" ? String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr)) : this.sim.partText(p);
+        const used: TextValue[] = [];
+        const text = yield* this.parts(s.parts, used);
+        this.used(...used);
         this.sim.print(this, text, s.to, s.at);
         return "next";
       }
@@ -740,6 +939,13 @@ class ProgramRun {
   value(name: string): Value | undefined {
     let found: Value | undefined;
     for (const [id, v] of this.vars) if (id === name || id.startsWith(`${name}#`)) found = v;
+    return found;
+  }
+
+  /** A text variable's characters by its source name (the last declared with that name). */
+  textValue(name: string): string | undefined {
+    let found: string | undefined;
+    for (const [id, v] of this.textVars) if (id === name || id.startsWith(`${name}#`)) found = v.s;
     return found;
   }
 
@@ -970,7 +1176,7 @@ export class ProgramSimulation {
     this.events.push({ cycle: this.cycle, program: run.index, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
 
-  partText(p: Exclude<TextPart, { kind: "number" }>): string {
+  partText(p: Exclude<TextPart, { kind: "number" | "value" }>): string {
     // A colour is a control character in the game; the log keeps the words.
     return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
   }
@@ -981,7 +1187,7 @@ export class ProgramSimulation {
   }
 
   /** An action a program takes: the world's own kinds are applied, the rest logged. */
-  act(run: ProgramRun, a: ActionRecord, at: At): void {
+  act(run: ProgramRun, a: ActionRecord, at: At, programText?: string): void {
     if (a.type === ActionType.SetResources && this.slotOf(a.player) < 12) {
       // Kept as well as logged, so a read of the resources sees what the program did to them.
       const stock = this.stock(a.player);
@@ -1011,7 +1217,7 @@ export class ProgramSimulation {
       case ActionType.Comment: case ActionType.PreserveTrigger: return;
       default: {
         const ev: ProgramEvent = { cycle: this.cycle, program: run.index, at, action: a };
-        const text = this.world.text(a.text);
+        const text = programText ?? this.world.text(a.text);
         if (text !== undefined) ev.text = text;
         this.events.push(ev);
       }
@@ -1042,6 +1248,8 @@ export class ProgramSimulation {
 
   /** A variable's value by its source name, in a program (the first by default). */
   value(name: string, program = 0): Value | undefined { return this.runs[program]?.value(name); }
+  /** A text variable's characters by its source name, in a program (the first by default). */
+  text(name: string, program = 0): string | undefined { return this.runs[program]?.textValue(name); }
   /** An array's cells, by its name in the source. */
   list(name: string, program = 0): Value[] | undefined { return this.runs[program]?.list(name); }
 }

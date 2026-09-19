@@ -84,7 +84,8 @@ describe("arrays: the ends", () => {
     ]);
   });
   it("what an array cannot be", () => {
-    expect(messages("let names = ['a', 'b'];")[0]).toMatch(/An array of a program holds numbers or booleans/);
+    expect(messages("let names = ['a', 'b'];")[0]).toMatch(/names is an array of texts, which a program cannot fill yet/);
+    expect(messages("let marks = [Symbol('a')];")[0]).toMatch(/An array of a program holds numbers or booleans/);
     expect(messages("let n = 3; let xs = new Array(n).fill(0);")[0]).toMatch(/An array's length has to be known when the script is built/);
     expect(messages("let xs = [1, 2]; let ys = [3, 4]; xs = ys;")[0]).toMatch(/An array is assigned cell by cell/);
   });

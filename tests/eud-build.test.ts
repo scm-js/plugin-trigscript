@@ -76,6 +76,41 @@ const FIXTURES: Record<string, string> = {
       sleep(seconds(1));
     }
   });`,
+  strings: `const titles = ["Easy", "Hard", "Insane"];
+  program(() => {
+    let wave = 0;
+    let level = 1;
+    let title = titles[level];
+    let mood = wave > 2 ? "late" : "early";
+    let boss = { name: "Ultralisk", hp: 400 };
+    function tag(what: string, n: number): string { return \`[\${what} \${n}]\`; }
+    function shout(s: string): string { s += "!"; return s; }
+    while (true) {
+      wave += 1;
+      let s = \`Wave \${wave} of \${titles[level]}\`;
+      s += " - " + mood;
+      const kept = s;
+      s = shout(tag(s, wave));
+      print(s);
+      print(\`\${kept} / \${s.length} / \${name(CurrentPlayer)}\`, { to: AllPlayers });
+      if (s == kept || s != "x" || s < kept || s >= title) mood = "late";
+      if (s.startsWith("[W") && s.endsWith("!") && s.includes("of") && !s.includes("boss")) level = (level + 1) % 3;
+      let at = s.indexOf("of", 2) + s.codePointAt(0)! + (s ? 1 : 0);
+      let piece = s.slice(1, -1) + s.substring(4, 2) + s[0] + s.charAt(2) + (s.at(-1) ?? "?") + s.padStart(12, "ab") + s.padEnd(at, ".") + "=".repeat(wave) + (mood || "none");
+      for (const ch of piece) { if (ch == " ") continue; if (ch == "!") break; at += ch.length; }
+      switch (mood) { case "late": at += 1; break; case "early": at += 2; break; default: at = 0; }
+      switch (s) { case "[Wave 1 of Hard - early 1]!": at += 5; break; }
+      boss.name = \`\${boss.name}+\`;
+      title = titles[level];
+      setMissionObjectives(title);
+      setMissionObjectives(\`\${boss.name}: wave \${wave}, \${at}\`);
+      leaderboardKills(\`Kills in wave \${wave}\`, units.TerranMarine);
+      transmission(piece, units.TerranMarine, locations.Anywhere, "set", 2000, "sound\\\\misc\\\\buzz.wav", 1000);
+      stats(units.TerranMarine).name = \`Marine of wave \${wave}\`;
+      stats(units.ZergZergling).name = title;
+      sleep(seconds(2));
+    }
+  }, { owner: AllPlayers });`,
   text: `program(() => {
     let wave = 0;
     const banner = (p: Player) => \`\${color(p)}\${name(p)}\\x01 is here\`;
@@ -253,7 +288,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" ? 2 : name === "recursionProbe" ? 3 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" ? 2 : name === "recursionProbe" ? 3 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -379,6 +414,7 @@ FIXTURES.lists = `program(() => {
 // And the probe of arrays inside arrays: a grid filled and read back, a row past its end, rows that grow with the outer one
 // cut off three thousand times, arrays in a record, rows a player.
 FIXTURES.insideProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "inside.ts"), "utf8");
+FIXTURES.stringsProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "strings.ts"), "utf8");
 
 // And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
 // and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.
@@ -402,6 +438,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(12);
+    expect(ir.version).toBe(13);
   });
 });

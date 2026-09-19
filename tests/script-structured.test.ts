@@ -82,7 +82,7 @@ describe("structured: loops and branches", () => {
     expect(r.triggers).toEqual([]);
     expect(r.strings).toEqual([]);
     expect(r.ir).toHaveLength(1);
-    expect(r.ir[0]).toMatchObject({ version: 12, owner: 0, owners: [0], perPlayer: false });
+    expect(r.ir[0]).toMatchObject({ version: 13, owner: 0, owners: [0], perPlayer: false });
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, "n")).toBe(6);
@@ -514,7 +514,7 @@ describe("structured: diagnostics", () => {
       x /= y;
       x = x ** y;
       wait(x);
-      let s = "text";
+      let s = Symbol("text");
       function f() { f(); }
       f();
       if (bring(P1, units.AnyUnit, locations.Anywhere, ">=", x)) x = 0;
@@ -526,7 +526,7 @@ describe("structured: diagnostics", () => {
     expect(msgs.some((m) => m.startsWith("4:"))).toBe(false);
     expect(msgs).toContain("5:Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>.");
     expect(msgs).toContain("6:wait's milliseconds must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.");
-    expect(msgs.some((m) => m.startsWith("7:Variables hold numbers, booleans, units of the game or records of them ({ lives: 3 }); s is string"))).toBe(true);
+    expect(msgs.some((m) => m.startsWith("7:Variables hold numbers, booleans, texts, units of the game or records of them ({ lives: 3 }); s is symbol"))).toBe(true);
     expect(msgs.some((m) => m.startsWith("8:f calls itself on every path through it"))).toBe(true);
     expect(msgs).toContain("10:A condition's amount is known when the script is built. To compare with a variable of the program, read the value and compare it yourself: bring(…) >= x, without the comparison and the amount inside the call.");
     // A text with a number of the program in it is printed.

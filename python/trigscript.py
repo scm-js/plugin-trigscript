@@ -51,12 +51,24 @@ them one way or the other - a comparison, a division, a shift right, min and max
 says which in the IR (`unsigned`), so nothing here works a type out. Where the game takes nothing below
 zero the compiler has already written max(v, 0), and a store keeps stopping at the top of what it holds.
 In here a number known when the map is built is a Python int holding the 32 bits, 0 to 2^32 - 1.
+
+A text is kept one of two ways, a variable at a time (the IR says which). One that only ever holds texts written in
+the script is the text's id in the built map's string table: a number. One that is made while the map is played is
+three cells - where its bytes are (UTF-8, ended by a 0), the block of the heap it owns (0: none, the bytes are a
+string of the table) and its length in characters. A made text is written into one scratch buffer, measured, and
+copied into a block of just that size, whose first cell says which size; what holds the text owns the block, so
+assigning copies it, a value that was just made is moved, and whatever a variable held goes back to the heap once
+its new value is worked out. compiler/simulateIr.ts takes and gives blocks in the same order, so both run out at
+the same text. A made text in an action's field goes over a string the build keeps for that kind of field, on the
+computer of the player the action is for and nowhere else: the game reads such a string again whenever it draws.
 """
 import json
 
 from eudplib import *
+from eudplib.core.mapdata.stringmap import ForceAddString
+from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 12
+IR_VERSION = 13
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -156,6 +168,9 @@ class ArrayStorage:
         values = decl.get("values")
         self.rowed = per_player and not decl.get("shared") and values is None
         self.player_of = player_of
+        if decl.get("texts") is not None:
+            # A list of texts the script has: a cell is the text's id in the built map's table.
+            values = [text_id(t) for t in decl["texts"]]
         self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (12 if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
 
     def at(self, index):
@@ -331,7 +346,7 @@ def heap():
         EUDEndIf()
         EUDReturn(ptr, length, room, k)
 
-    _HEAP.update(cells=cells, take=take, give=give, grow=grow, push=push)
+    _HEAP.update(cells=cells, rooms=rooms, take=take, give=give, grow=grow, push=push)
     return _HEAP
 
 
@@ -517,6 +532,387 @@ class InnerListStorage(ListStorage):
         self.lowering.array(self.decl["through"][name], self.decl).set(self.at(), value)
 
 
+# ── texts ──
+TEXT_BYTES = 1023  # the most a made text holds; compiler/ir.ts has the same number
+TEXT_FIELD_BYTES = 255  # the room of a string kept for an action's field or a unit type's name
+UNIT_MAP_STRING = 0x660260  # units.dat: the id of the name a map gives a unit type, a word each
+_TEXT = {}
+_SLOTS = {}
+
+
+def texts():
+    """The texts' part of the run time, made when the first text that is made is met."""
+    if _TEXT:
+        return _TEXT
+    h = heap()
+    cells, rooms, take, give = h["cells"], h["rooms"], h["take"], h["give"]
+    # A text being made. It may run one part past its most before it is cut, and a part is at most that long again.
+    scratch = Db(TEXT_BYTES + 1 + TEXT_BYTES + 1 + 8)
+    empty = Db(4)
+    said_cut = EUDVariable(0)  # initial: said once a game
+    said_full = EUDVariable(0)  # initial: said once a game
+    said_field = EUDVariable(0)  # initial: said once a game
+
+    @EUDFunc
+    def count(addr):
+        """How many characters the text at addr is: every byte but those that continue a character (10xxxxxx)."""
+        n = EUDVariable()
+        n << 0
+        br1.seekoffset(addr)
+        if EUDInfLoop()():
+            b = br1.readbyte()
+            EUDBreakIf(b == 0)
+            if EUDIfNot()(b.ExactlyX(0x80, 0xC0)):
+                n += 1
+            EUDEndIf()
+        EUDEndInfLoop()
+        EUDReturn(n)
+
+    @EUDFunc
+    def append(pos, src):
+        """The text at src written at pos, ended by a 0; where that 0 is. A text of the table may be any length, so no
+        more of it than leaves the scratch whole: what is past a text's most is cut by make() anyway."""
+        br1.seekoffset(src)
+        bw1.seekoffset(pos)
+        if EUDWhile()(pos <= scratch + TEXT_BYTES + TEXT_BYTES):
+            b = br1.readbyte()
+            EUDBreakIf(b == 0)
+            bw1.writebyte(b)
+            pos += 1
+        EUDEndWhile()
+        bw1.writebyte(0)
+        EUDReturn(pos)
+
+    @EUDFunc
+    def make(end):
+        """The text in the scratch, which ends at `end`, into a block of its own: where it is, the block, its
+        length in characters. Past what a text holds it is cut, never inside a character."""
+        if EUDIf()(end >= scratch + TEXT_BYTES + 1):
+            end << scratch + TEXT_BYTES
+            if EUDWhile()(f_bread(end).ExactlyX(0x80, 0xC0)):
+                end -= 1
+            EUDEndWhile()
+            f_bwrite(end, 0)
+            if EUDIf()(said_cut == 0):
+                said_cut << 1
+                GetGlobalStringBuffer().print("\x06TrigScript: a text was cut off - one that is made holds %d bytes." % TEXT_BYTES)
+            EUDEndIf()
+        EUDEndIf()
+        need = f_div(end - scratch, 4)[0] + 2
+        k = EUDVariable()
+        k << 0
+        if EUDWhile()(rooms[k] < need):
+            k += 1
+        EUDEndWhile()
+        block = take(k)
+        if EUDIf()(block == 0):
+            if EUDIf()(said_full == 0):
+                said_full << 1
+                GetGlobalStringBuffer().print("\x06TrigScript: out of memory - a text could not be made (the programs' arrays and texts share %d cells)." % HEAP_CELLS)
+            EUDEndIf()
+            EUDReturn(empty, 0, 0)
+        EUDEndIf()
+        cells[block] = k
+        f_repmovsd_epd(cells + block + 1, EPD(scratch), need - 1)
+        addr = f_mul(cells + block + 1, 4) + 0x58A364
+        EUDReturn(addr, block, count(addr))
+
+    @EUDFunc
+    def copy(addr, block, length):
+        """A text as something to keep: itself when it owns no block, else a block of the same size with the same cells."""
+        if EUDIf()(block == 0):
+            EUDReturn(addr, 0, length)
+        EUDEndIf()
+        k = cells[block]
+        mine = take(k)
+        if EUDIf()(mine == 0):
+            if EUDIf()(said_full == 0):
+                said_full << 1
+                GetGlobalStringBuffer().print("\x06TrigScript: out of memory - a text could not be copied (the programs' arrays and texts share %d cells)." % HEAP_CELLS)
+            EUDEndIf()
+            EUDReturn(empty, 0, 0)
+        EUDEndIf()
+        f_repmovsd_epd(cells + mine, cells + block, rooms[k])
+        EUDReturn(f_mul(cells + mine + 1, 4) + 0x58A364, mine, length)
+
+    @EUDFunc
+    def release(block):
+        if EUDIf()(block >= 1):
+            give(block, cells[block])
+        EUDEndIf()
+
+    @EUDFunc
+    def skip(addr, n):
+        """Where character n of the text at addr starts; its end when it has fewer."""
+        br1.seekoffset(addr)
+        if EUDInfLoop()():
+            b = br1.readbyte()
+            EUDBreakIf(b == 0)
+            if EUDIfNot()(b.ExactlyX(0x80, 0xC0)):
+                EUDBreakIf(n == 0)
+                n -= 1
+            EUDEndIf()
+            addr += 1
+        EUDEndInfLoop()
+        EUDReturn(addr)
+
+    @EUDFunc
+    def size(addr):
+        """The bytes of the character that starts at addr; 0 at the text's end."""
+        b = f_bread(addr)
+        n = EUDVariable()
+        n << 1
+        if EUDIf()(b == 0):
+            n << 0
+        if EUDElseIf()(b >= 0xF0):
+            n << 4
+        if EUDElseIf()(b >= 0xE0):
+            n << 3
+        if EUDElseIf()(b >= 0xC0):
+            n << 2
+        EUDEndIf()
+        EUDReturn(n)
+
+    @EUDFunc
+    def slice_(addr, start, end):
+        """Characters start … end - 1 of the text at addr, made."""
+        a = skip(addr, start)
+        z = EUDVariable()
+        z << a
+        if EUDIf()(end >= start + 1):
+            z << skip(a, end - start)
+        EUDEndIf()
+        # A text of the table may be longer than one that is made: no more of it than the scratch holds, and make() cuts.
+        n = z - a
+        if EUDIf()(n >= TEXT_BYTES + 2):
+            n << TEXT_BYTES + 1
+        EUDEndIf()
+        f_memcpy(scratch, a, n)
+        f_bwrite(scratch + n, 0)
+        EUDReturn(*make(scratch + n))
+
+    @EUDFunc
+    def pad(addr, length, width, fill, at_start):
+        """The text with `fill` over and over before or after it until it is `width` characters; as it is when it is that long, or `fill` is empty."""
+        pos = EUDVariable()
+        pos << scratch
+        need = EUDVariable()
+        need << 0
+        if EUDIf()([width >= length + 1, width <= 0x7FFFFFFF, f_bread(fill) >= 1]):
+            need << width - length
+        EUDEndIf()
+        if EUDIf()(at_start == 0):
+            pos << append(pos, addr)
+        EUDEndIf()
+        src = EUDVariable()
+        src << fill
+        if EUDWhile()([need >= 1, pos <= scratch + TEXT_BYTES]):
+            n = size(src)
+            if EUDIf()(n == 0):
+                src << fill
+                n << size(src)
+            EUDEndIf()
+            f_memcpy(pos, src, n)
+            pos += n
+            src += n
+            need -= 1
+        EUDEndWhile()
+        f_bwrite(pos, 0)
+        if EUDIf()([at_start >= 1, pos <= scratch + TEXT_BYTES]):
+            pos << append(pos, addr)
+        EUDEndIf()
+        EUDReturn(*make(pos))
+
+    @EUDFunc
+    def repeat(addr, times):
+        pos = EUDVariable()
+        pos << scratch
+        f_bwrite(pos, 0)
+        if EUDIf()([times <= 0x7FFFFFFF, f_bread(addr) >= 1]):
+            if EUDWhile()([times >= 1, pos <= scratch + TEXT_BYTES]):
+                pos << append(pos, addr)
+                times -= 1
+            EUDEndWhile()
+        EUDEndIf()
+        EUDReturn(*make(pos))
+
+    @EUDFunc
+    def starts(addr, find):
+        """Whether the text at addr starts with the one at find."""
+        br1.seekoffset(addr)
+        br2.seekoffset(find)
+        if EUDInfLoop()():
+            want = br2.readbyte()
+            if EUDIf()(want == 0):
+                EUDReturn(1)
+            EUDEndIf()
+            EUDBreakIfNot(br1.readbyte() == want)
+        EUDEndInfLoop()
+        EUDReturn(0)
+
+    @EUDFunc
+    def find_from(addr, find, start):
+        """The place, in characters, of the first match at or after character `start`; 0xFFFFFFFF when there is none."""
+        if EUDIf()(start >= count(addr) + 1):
+            EUDReturn(0xFFFFFFFF)
+        EUDEndIf()
+        at = skip(addr, start)
+        place = EUDVariable()
+        place << start
+        if EUDInfLoop()():
+            if EUDIf()(starts(at, find) >= 1):
+                EUDReturn(place)
+            EUDEndIf()
+            n = size(at)
+            EUDBreakIf(n == 0)
+            at += n
+            place += 1
+        EUDEndInfLoop()
+        EUDReturn(0xFFFFFFFF)
+
+    @EUDFunc
+    def ends(addr, find):
+        a, b = f_strlen(addr), f_strlen(find)
+        if EUDIf()(b >= a + 1):
+            EUDReturn(0)
+        EUDEndIf()
+        if EUDIf()(f_strcmp(addr + (a - b), find) == 0):
+            EUDReturn(1)
+        EUDEndIf()
+        EUDReturn(0)
+
+    @EUDFunc
+    def code(addr, index):
+        """The number of character `index`; 0xFFFFFFFF past either end."""
+        if EUDIf()(index >= 0x80000000):
+            EUDReturn(0xFFFFFFFF)
+        EUDEndIf()
+        at = skip(addr, index)
+        n = size(at)
+        if EUDIf()(n == 0):
+            EUDReturn(0xFFFFFFFF)
+        EUDEndIf()
+        br1.seekoffset(at)
+        v = EUDVariable()
+        v << br1.readbyte()
+        if EUDIf()(n == 2):
+            v << (v & 0x1F)
+        if EUDElseIf()(n == 3):
+            v << (v & 0x0F)
+        if EUDElseIf()(n == 4):
+            v << (v & 0x07)
+        EUDEndIf()
+        if EUDWhile()(n >= 2):
+            v << f_mul(v, 64) + (br1.readbyte() & 0x3F)
+            n -= 1
+        EUDEndWhile()
+        EUDReturn(v)
+
+    @EUDFunc
+    def show(dst, src):
+        """At most TEXT_FIELD_BYTES bytes of the text at src over the string at dst, never half a character."""
+        used = EUDVariable()
+        used << 0
+        if EUDInfLoop()():
+            n = size(src)
+            EUDBreakIf(n == 0)
+            if EUDIf()(used + n >= TEXT_FIELD_BYTES + 1):
+                if EUDIf()(said_field == 0):
+                    said_field << 1
+                    GetGlobalStringBuffer().print("\x06TrigScript: a text was cut off - an action's text and a unit's name show %d bytes of one that is made." % TEXT_FIELD_BYTES)
+                EUDEndIf()
+                EUDBreak()
+            EUDEndIf()
+            f_memcpy(dst + used, src, n)
+            used += n
+            src += n
+        EUDEndInfLoop()
+        f_bwrite(dst + used, 0)
+
+    @EUDFunc
+    def address(id_):
+        """Where the text of the table with this id is; an empty one for id 0."""
+        if EUDIf()(id_ == 0):
+            EUDReturn(empty)
+        EUDEndIf()
+        EUDReturn(GetMapStringAddr(id_))
+
+    _TEXT.update(scratch=scratch, empty=empty, append=append, count=count, make=make, copy=copy, release=release, slice=slice_, pad=pad, repeat=repeat,
+                 starts=starts, ends=ends, find=find_from, code=code, show=show, size=size, address=address)
+    return _TEXT
+
+
+def slot(kind):
+    """The string of the built map's table kept for one kind of field, made the first time one is asked for: its
+    room in bytes that nothing else shares, which is what ForceAddString is for."""
+    if kind not in _SLOTS:
+        text = "(TrigScript: %s)" % kind
+        _SLOTS[kind] = ForceAddString(text + " " * (TEXT_FIELD_BYTES - len(text)))
+    return _SLOTS[kind]
+
+
+# The actions whose text the game shows from a string it reads again whenever it draws (played 2026-09-19), by the
+# kind of field: a player has one of each at a time, so one string a kind is enough.
+SLOT_OF_ACTION = {12: "objectives", 7: "transmission"}
+for _t in (17, 18, 19, 20, 21, 33, 34, 35, 36, 37, 40):
+    SLOT_OF_ACTION[_t] = "leaderboard"
+
+
+def text_id(text):
+    """The id of a text written in the script; 0 for the empty one, which the table does not hold."""
+    return EncodeString(text) if text else 0
+
+
+class TextVal:
+    """A text as the lowering holds it: where it is, the block it owns (the int 0: none), and its length in
+    characters - an int, a variable, or None when nobody has counted yet. `taken`: the block is the value's own, so
+    what receives the value keeps the block or gives it back; a variable's is only looked at."""
+
+    def __init__(self, addr, block, length, taken):
+        self.addr, self.block, self._length, self.taken = addr, block, length, taken
+
+    def length(self):
+        if self._length is None:
+            self._length = texts()["count"](self.addr)
+        return self._length
+
+
+class TextStorage:
+    """A text variable that is made: three cells, or three rows of twelve in a per-player program."""
+
+    def __init__(self, decl, per_player, player_of):
+        self.decl = decl
+        self.rowed = per_player and not decl.get("shared")
+        self.player_of = player_of
+        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no text yet, and no block
+        self.addr, self.block, self.len = make(), make(), make()
+
+    def cell(self, cell):
+        return cell[self.player_of()] if self.rowed else cell
+
+    def get(self):
+        # A variable that was never given a text is an empty one: its address is 0 until then.
+        addr = fresh(self.cell(self.addr))
+        if EUDIf()(addr == 0):
+            addr << texts()["empty"]
+        EUDEndIf()
+        return TextVal(addr, self.cell(self.block), self.cell(self.len), False)
+
+    def write(self, addr, block, length):
+        for cell, value in ((self.addr, addr), (self.block, block), (self.len, length)):
+            if self.rowed:
+                cell[self.player_of()] = value
+            else:
+                cell << value
+
+    def take_out(self):
+        """The text, and its block with it: the variable holds no block from here on."""
+        v = self.get()
+        out = TextVal(v.addr, fresh(v.block), fresh(v.length()), True)
+        self.write(out.addr, 0, out.length())
+        return out
+
+
 class UnitRef:
     """A unit of the game as the lowering holds it: the pointer, its EPD, and the slot's uniqueness byte
     (as it sits in its dword, masked 0xFF00). `uid` None is the unit of a loop's turn, there by
@@ -632,6 +1028,8 @@ class Lowering:
     def declare(self, decl):
         if decl.get("kind") == "unit":
             s = UnitStorage(decl, self.per_player, self.player_of)
+        elif decl.get("kind") == "text" and decl.get("text") != "id":
+            s = TextStorage(decl, self.per_player, self.player_of)
         else:
             s = Storage(decl, self.per_player, self.player_of)
         self.vars[decl["id"]] = s
@@ -670,6 +1068,8 @@ class Lowering:
     # ── numbers: an int (the 32 bits, 0 … 2^32 - 1) or an EUDVariable ──
     def num(self, e):
         k = e["kind"]
+        if k in ("textLength", "textIndexOf", "textCode"):
+            return self.text_number(e)
         if k == "input":
             return INPUT.read(e["input"], self, e)
         if k == "const":
@@ -975,6 +1375,8 @@ class Lowering:
             return t >= 1
         if k == "call":
             return as_var(self.call(e["call"])) >= 1
+        if k in ("textCompare", "textTest"):
+            return as_var(self.text_truth(e)) >= 1
         raise Fail("trigscript: unknown condition %r%s" % (k, where(e)))
 
     def truth(self, e):
@@ -1425,7 +1827,15 @@ class Lowering:
         addr = self.cell_address(c)
         special = c.get("special")
         if special == "name":
-            f_wwrite(addr, EncodeString(st["value"]["text"]))
+            if self.has_id(st["value"]):
+                f_wwrite(addr, self.text_id_of(st["value"]))
+                return
+            # A name that was made: over the string kept for this unit type, on every computer - a name is nobody's in particular.
+            made = self.text(st["value"])
+            sid = slot("the name of unit type %d" % int(c["index"]))
+            texts()["show"](GetMapStringAddr(sid), made.addr)
+            self.used(made)
+            f_wwrite(addr, sid)
             return
         width = c["width"]
         if st.get("boolean"):
@@ -1495,7 +1905,11 @@ class Lowering:
         if k == "declare":
             s = self.declare(st["decl"])
             if not st.get("failed"):
-                s.set(self.value(st["init"], st["decl"]["kind"]))
+                self.put(s, st["init"], st["decl"]["kind"])
+        elif k == "assignText":
+            self.put(self.var(st["target"], st), st["value"], "text")
+        elif k == "textLoop":
+            self.text_loop(st, ctx)
         elif k == "assignUnit":
             self.var(st["target"], st).set(self.unit(st["value"]))
         elif k == "unitLoop":
@@ -1566,7 +1980,7 @@ class Lowering:
             if fn is None:
                 raise Fail("trigscript: return outside a function%s" % where(st))
             if st.get("value") is not None and fn["result"] is not None:
-                fn["result"].set(self.value(st["value"], fn["kind"]))
+                self.put(fn["result"], st["value"], fn["kind"])
             EUDJump(fn["end"])
             raise Leave()
         elif k == "sleep":
@@ -1679,6 +2093,23 @@ class Lowering:
     def action(self, st):
         r = st["record"]
         fields = dict(locid1=r["location"], strid=string_of(r["text"]), wavid=string_of(r["wav"]), time=r["time"], player1=r["player"], player2=r["target"], unitid=r["unitId"], acttype=r["type"], amount=r["modifier"], flags=r["flags"])
+        shown = None
+        if st.get("text") is not None:
+            if self.has_id(st["text"]):
+                fields["strid"] = self.text_id_of(st["text"])
+            else:
+                kind = SLOT_OF_ACTION.get(int(r["type"]))
+                if kind is None:
+                    raise Fail("trigscript: this action's text cannot be one that is made%s" % where(st))
+                # Over the string kept for this kind of field - on the computer of the player the action is for, which is
+                # the one the program is running as: the game reads the string again whenever it draws, and another
+                # player's text must not be there when it does. Nothing of the script can read the string back.
+                shown = self.text(st["text"])
+                if EUDIf()(IsUserCP()):
+                    texts()["show"](GetMapStringAddr(slot(kind)), shown.addr)
+                EUDEndIf()
+                self.used(shown)
+                fields["strid"] = slot(kind)
         count = None
         for variable in st.get("variables") or []:
             value = as_var(self.num(variable["expr"]))
@@ -1708,10 +2139,15 @@ class Lowering:
     def print_(self, st):
         """Text with values in it: every value first, then the text, shown only on the screen of the player it is for."""
         args = []
+        temps = []
         for part in st["parts"]:
             k = part["kind"]
             if k == "text":
                 args.append(part["text"])
+            elif k == "value":
+                v = self.text(part["text"])
+                temps.append(v)
+                args.append(ptr2s(v.addr))
             elif k == "number":
                 v = self.num(part["expr"])
                 if isinstance(v, int):
@@ -1740,11 +2176,311 @@ class Lowering:
         to = int(st.get("to", CURRENT_PLAYER))
         if to == CURRENT_PLAYER:
             show()
+            self.used(*temps)
             return
         for p in group_slots(to, st):
             f_setcurpl(p)
             show()
         f_setcurpl(self.current())
+        self.used(*temps)
+
+    # ── texts ──
+    def has_id(self, e):
+        """Whether a text is one of the built map's table whatever happens in the game (compiler/ir.ts#textHasId)."""
+        k = e["kind"]
+        if k in ("text", "textOf"):
+            return True
+        if k == "textVar":
+            return not isinstance(self.var(e["id"], e), TextStorage)
+        if k == "textTernary":
+            return self.has_id(e["whenTrue"]) and self.has_id(e["whenFalse"])
+        return False
+
+    def text_id_of(self, e):
+        """The id of a text that has one: an int, or a variable."""
+        k = e["kind"]
+        if k == "text":
+            return text_id(e["text"])
+        if k == "textVar":
+            return self.var(e["id"], e).get()
+        if k == "textOf":
+            return self.array(e["array"], e).get(self.num(e["index"]))
+        if k == "textTernary":
+            t = EUDVariable()
+            if EUDIf()(self.cond(e["cond"])):
+                t << self.text_id_of(e["whenTrue"])
+            if EUDElse()():
+                t << self.text_id_of(e["whenFalse"])
+            EUDEndIf()
+            return t
+        raise Fail("trigscript: this text has no id%s" % where(e))
+
+    def used(self, *values):
+        """Values that have been used: a block that was the value's own goes back to the heap."""
+        for v in values:
+            if v.taken and not isinstance(v.block, int):
+                texts()["release"](v.block)
+
+    def texts_of(self, exprs):
+        """Several texts in the order they are written. A variable's text is only looked at - unless working a later
+        one out runs a call, which may give that variable another text and its block back to the heap: then it is a copy."""
+        out = []
+        for i, e in enumerate(exprs):
+            v = self.text(e)
+            if not v.taken and any(has_call(x) for x in exprs[i + 1:]):
+                v = self.own(v)
+            out.append(v)
+        return out
+
+    def own(self, v):
+        """A value as something to keep: its own block as it is, a copy of a variable's."""
+        if v.taken:
+            return v
+        addr, block, length = texts()["copy"](v.addr, v.block, v.length())
+        return TextVal(addr, block, length, True)
+
+    def put(self, storage, e, kind):
+        """A value into a variable. A text is worked out first - it may be made from what the variable holds - and only then does the block the variable held go back."""
+        if kind != "text":
+            storage.set(self.value(e, kind))
+            return
+        if not isinstance(storage, TextStorage):
+            storage.set(self.text_id_of(e))
+            return
+        v = self.own(self.text(e))
+        addr, block, length = fresh(v.addr), fresh(v.block), fresh(v.length())
+        texts()["release"](storage.cell(storage.block))
+        storage.write(addr, block, length)
+
+    def written(self, parts, st):
+        """The parts of a text in the scratch, and where it ends. Every value is worked out first, since working one
+        out may use the scratch itself; then the parts are written a group at a time, a group being what cannot
+        come to more than a text holds, so that checking where the writing has got to between groups keeps it inside."""
+        T = texts()
+        items, temps = [], []
+        for part in parts:
+            k = part["kind"]
+            if k == "text":
+                data = part["text"].encode("utf-8")[:TEXT_BYTES].decode("utf-8", "ignore")
+                items.append(([data], len(data.encode("utf-8")), None))
+            elif k == "number":
+                v = self.num(part["expr"])
+                if isinstance(v, int):
+                    data = str(v if part.get("unsigned") else signed(v))
+                    items.append(([data], len(data), None))
+                elif part.get("unsigned"):
+                    items.append(([fresh(v)], 10, None))
+                else:
+                    sign, size = fresh(NO_SIGN), fresh(v)
+                    if EUDIf()(size >= SIGN):
+                        sign << MINUS_SIGN
+                        size << 0 - size
+                    EUDEndIf()
+                    items.append(([ptr2s(sign), size], 11, None))
+            elif k == "name":
+                items.append(([PName(self.one_player(part["player"], st))], 25, None))
+            elif k == "color":
+                items.append(([PColor(self.one_player(part["player"], st))], 1, None))
+            elif k == "value":
+                v = self.text(part["text"])
+                if not v.taken and has_call(parts[parts.index(part) + 1:]):
+                    v = self.own(v)
+                temps.append(v)
+                items.append((None, TEXT_BYTES, v))
+            else:
+                raise Fail("trigscript: unknown text part %r%s" % (k, where(st)))
+        pos = fresh(T["scratch"])
+        f_bwrite(pos, 0)
+        group, room, first = [], 0, [True]
+
+        def flush():
+            if not group:
+                return
+            if first[0]:
+                pos << f_dbstr_print(pos, *group)
+            else:
+                if EUDIf()(pos <= T["scratch"] + TEXT_BYTES):
+                    pos << f_dbstr_print(pos, *group)
+                EUDEndIf()
+            first[0] = False
+            del group[:]
+
+        for args, size, value in items:
+            if value is not None:
+                flush()
+                room = 0
+                if first[0]:
+                    pos << T["append"](pos, value.addr)
+                else:
+                    if EUDIf()(pos <= T["scratch"] + TEXT_BYTES):
+                        pos << T["append"](pos, value.addr)
+                    EUDEndIf()
+                first[0] = False
+                continue
+            if room + size > TEXT_BYTES + 1:
+                flush()
+                room = 0
+            group.extend(args)
+            room += size
+        flush()
+        return pos, temps
+
+    def text(self, e):
+        """A text: where it is, its block, its length (TextVal)."""
+        T = texts()
+        k = e["kind"]
+        if k == "text":
+            return TextVal(fresh(GetMapStringAddr(e["text"]) if e["text"] else T["empty"]), 0, len(e["text"]), True)
+        if k == "textVar" and isinstance(self.var(e["id"], e), TextStorage):
+            return self.var(e["id"], e).get()
+        if self.has_id(e):
+            return TextVal(T["address"](as_var(self.text_id_of(e))), 0, None, True)
+        if k == "template":
+            pos, temps = self.written(e["parts"], e)
+            addr, block, length = T["make"](pos)
+            self.used(*temps)
+            return TextVal(addr, block, length, True)
+        if k == "textTernary":
+            addr, block, length = EUDVariable(), EUDVariable(), EUDVariable()
+            if EUDIf()(self.cond(e["cond"])):
+                v = self.own(self.text(e["whenTrue"]))
+                addr << v.addr
+                block << v.block
+                length << v.length()
+            if EUDElse()():
+                v = self.own(self.text(e["whenFalse"]))
+                addr << v.addr
+                block << v.block
+                length << v.length()
+            EUDEndIf()
+            return TextVal(addr, block, length, True)
+        if k == "textSlice":
+            of = self.text(e["of"])
+            start = self.num(e["start"]) if e.get("start") is not None else 0
+            end = self.num(e["end"]) if e.get("end") is not None else 0x7FFFFFFF
+            addr, block, length = T["slice"](of.addr, start, end)
+            self.used(of)
+            return TextVal(addr, block, length, True)
+        if k == "textPad":
+            of, fill = self.texts_of([e["of"], e["with"]])
+            width = self.num(e["width"])
+            addr, block, length = T["pad"](of.addr, of.length(), width, fill.addr, 1 if e["side"] == "start" else 0)
+            self.used(of, fill)
+            return TextVal(addr, block, length, True)
+        if k == "textRepeat":
+            of = self.text(e["of"])
+            addr, block, length = T["repeat"](of.addr, self.num(e["count"]))
+            self.used(of)
+            return TextVal(addr, block, length, True)
+        if k == "textCall":
+            self.call(e["call"])
+            result = e["call"].get("result")
+            if result is None:
+                return TextVal(fresh(T["empty"]), 0, 0, True)
+            return self.var(result["decl"]["id"], e).take_out()
+        raise Fail("trigscript: unknown text %r%s" % (k, where(e)))
+
+    def text_number(self, e):
+        T = texts()
+        k = e["kind"]
+        if k == "textIndexOf":
+            of, find = self.texts_of([e["of"], e["find"]])
+            start = self.num(e["from"]) if e.get("from") is not None else 0
+            out = T["find"](of.addr, find.addr, start)
+            self.used(of, find)
+            return out
+        of = self.text(e["of"])
+        if k == "textLength":
+            n = of.length()
+            out = n if isinstance(n, int) else fresh(n)
+            self.used(of)
+            return out
+        out = T["code"](of.addr, self.num(e["index"]))
+        self.used(of)
+        return out
+
+    def text_truth(self, e):
+        """A comparison of two texts, or a test of one, as 0 / 1."""
+        T = texts()
+        t = fresh(0)
+        if e["kind"] == "textTest":
+            of, find = self.texts_of([e["of"], e["find"]])
+            if e["test"] == "startsWith":
+                t << T["starts"](of.addr, find.addr)
+            elif e["test"] == "endsWith":
+                t << T["ends"](of.addr, find.addr)
+            else:
+                if EUDIfNot()(T["find"](of.addr, find.addr, 0) == 0xFFFFFFFF):
+                    t << 1
+                EUDEndIf()
+            self.used(of, find)
+            return t
+        op = e["op"]
+        if op in ("==", "!=") and self.has_id(e["left"]) and self.has_id(e["right"]):
+            # Two texts of the table: the same text is the same id.
+            a, b = self.text_id_of(e["left"]), self.text_id_of(e["right"])
+            if isinstance(a, int) and isinstance(b, int):
+                return 1 if (a == b) == (op == "==") else 0
+            if EUDIf()(as_var(a) == b):
+                t << 1
+            EUDEndIf()
+        else:
+            a, b = self.texts_of([e["left"], e["right"]])
+            # The difference of the first bytes that differ, as a number of 32 bits: 0, below zero, or above.
+            d = f_strcmp(a.addr, b.addr)
+            self.used(a, b)
+            if op in ("==", "!="):
+                if EUDIf()(d == 0):
+                    t << 1
+                EUDEndIf()
+            else:
+                below = (lambda: d >= SIGN)
+                if op in ("<", ">="):
+                    if EUDIf()(below()):
+                        t << 1
+                    EUDEndIf()
+                else:  # "<=" and ">": whether it is not above
+                    if EUDIf()(EUDOr(d == 0, below())):
+                        t << 1
+                    EUDEndIf()
+                return flipped(t) if op in (">=", ">") else t
+        return flipped(t) if op == "!=" else t
+
+    def text_loop(self, st, ctx):
+        """`for (const ch of s)`: the text walked once, a character a turn, each a made text of its own."""
+        T = texts()
+        turn = self.declare(st["decl"])
+        over = self.own(self.text(st["of"]))
+        held = fresh(over.block)
+        at = fresh(over.addr)
+        head, done = Forward(), Forward()
+        inner = dict(ctx)
+        inner["break"], inner["continue"] = done, head
+        leave = None
+        if ctx.get("fn") is not None:
+            # A return inside the loop leaves through here, so that the text the loop holds goes back first.
+            leave = Forward()
+            inner["fn"] = dict(ctx["fn"], end=leave)
+        head << NextTrigger()
+        n = T["size"](at)
+        EUDJumpIf(n == 0, done)
+        f_memcpy(T["scratch"], at, n)
+        f_bwrite(T["scratch"] + n, 0)
+        addr, block, length = T["make"](T["scratch"] + n)
+        T["release"](turn.cell(turn.block))
+        turn.write(addr, block, length)
+        at += n
+        if self.straight(st["body"], inner):
+            EUDJump(head)
+        done << NextTrigger()
+        T["release"](held)
+        if leave is not None:
+            after = Forward()
+            EUDJump(after)
+            leave << NextTrigger()
+            T["release"](held)
+            EUDJump(ctx["fn"]["end"])
+            after << NextTrigger()
 
     def value(self, e, kind):
         """An expression as what a variable of `kind` holds."""
@@ -1926,11 +2662,12 @@ class Lowering:
         result = self.declare(call["result"]["decl"]) if call.get("result") else None
         if call.get("fn") is not None:
             return self.call_function(call, result)
-        if result is not None:
+        # A text result keeps what it held until `return` puts the next one in it, which is when that block goes back.
+        if result is not None and call["result"]["kind"] != "text":
             result.set(NO_UNIT if call["result"]["kind"] == "unit" else 0)
         for p in call["params"]:
             s = self.declare(p["decl"])
-            s.set(self.value(p["init"], p["decl"]["kind"]))
+            self.put(s, p["init"], p["decl"]["kind"])
         end = Forward()
         self.straight(call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}})
         end << NextTrigger()
@@ -1979,13 +2716,22 @@ class Lowering:
             EUDEndIf()
 
 
+def flipped(t):
+    """1 for 0 and 0 for anything else, in a variable of its own."""
+    out = fresh(0)
+    if EUDIf()(t == 0):
+        out << 1
+    EUDEndIf()
+    return out
+
+
 def has_call(node):
     """Whether a call is anywhere in a piece of the IR."""
     if isinstance(node, list):
         return any(has_call(x) for x in node)
     if not isinstance(node, dict):
         return False
-    if node.get("kind") == "call" and isinstance(node.get("call"), dict):
+    if node.get("kind") in ("call", "textCall") and isinstance(node.get("call"), dict):
         return True
     return any(has_call(v) for v in node.values() if isinstance(v, (dict, list)))
 

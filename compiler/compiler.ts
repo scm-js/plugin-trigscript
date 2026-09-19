@@ -70,8 +70,8 @@ export interface SourceRange {
 
 export interface VariableInfo {
   name: string;
-  /** `unit`: a unit of the game, or none. */
-  kind: "number" | "boolean" | "unit";
+  /** `unit`: a unit of the game, or none. `text`: a string. */
+  kind: "number" | "boolean" | "unit" | "text";
   /** Index into `programs` of the program it belongs to. */
   program: number;
   /** One value for every player of a per-player program (`shared(…)`); otherwise a per-player program has one per player. */

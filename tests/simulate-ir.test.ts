@@ -196,7 +196,9 @@ describe("text with the program's values in it", () => {
     const errors = (src: string) => compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB }).diagnostics.map((d) => `${d.line}:${d.message}`);
     expect(errors("trigger(P1, [always()], [displayText(`${name(P1)} wins`)]);")[0]).toMatch(/^1:name\(\) and color\(\) are filled in by a program while the game runs/);
     expect(errors("program(() => {\n  let flag = true;\n  displayText(`${flag}`);\n});")[0]).toMatch(/^3:A boolean has no text of its own/);
-    expect(errors("program(() => {\n  let n = 1;\n  setMissionObjectives(`${n} left`);\n});")[0]).toMatch(/^3:setMissionObjectives's text must be known when the script is built/);
+    // The objectives take a text that is made (3.9); the name of the next scenario is looked up by the game, and does not.
+    expect(errors("program(() => {\n  let n = 1;\n  setMissionObjectives(`${n} left`);\n});")).toEqual([]);
+    expect(errors("program(() => {\n  let n = 1;\n  setNextScenario(`map ${n}`);\n});")[0]).toMatch(/^3:setNextScenario's text is one the game looks up by number/);
     expect(errors("program(() => {\n  print(\"x\", { to: players.Foes });\n});")[0]).toMatch(/print: to is a player/);
     expect(errors("trigger(P1, [always()], [print(\"x\") as any]);")[0]).toMatch(/print\(\) is a statement of a program/);
   });

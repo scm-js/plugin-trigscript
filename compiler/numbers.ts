@@ -23,7 +23,7 @@
  *   going over the program once without changing it and dropping variables until none is left
  *   that some store could put below zero.
  */
-import { I32_MAX, UNIT_FLAGS, programDeclarations, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
+import { I32_MAX, UNIT_FLAGS, isTextExpr, mapText, mapTextOperands, programDeclarations, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type TextPart, type UnitExpr, type VarDecl } from "./ir";
 import type { ProgramDiagnostic } from "./eud";
 
 /** `flex`: a constant from 0 to 2 147 483 647, which is the same whichever way it is read. */
@@ -58,7 +58,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "const": return e.value >= 0 && e.value <= I32_MAX;
       case "var": return !!decls.get(e.id)?.bits || never.has(e.id);
       case "element": case "pop": return !!arrays.get(e.array)?.bits || never.has(e.array);
-      case "length": return true;
+      case "length": case "textLength": return true;
       case "read": case "unitField": case "tableRead": case "input": case "randomInt": return true;
       case "ternary": return nonNegative(e.whenTrue) && nonNegative(e.whenFalse);
       case "intrinsic": return e.unsigned ? false : e.name === "min" ? e.args.every(nonNegative) : e.name === "max" ? e.args.some(nonNegative) : false;
@@ -137,6 +137,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
         return [e, t === "flex" ? "i32" : t];
       }
       case "call": call(e.call); return [e, e.call.result?.decl.unsigned ? "u32" : "i32"];
+      case "textLength": case "textIndexOf": case "textCode": return [Object.assign(e, mapTextOperands(e, texts)), "i32"];
       default: return [e, "i32"];
     }
   };
@@ -173,10 +174,27 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "ternary": e.cond = bool(e.cond); e.whenTrue = bool(e.whenTrue); e.whenFalse = bool(e.whenFalse); return e;
       case "unitAlive": case "unitFlag": unit(e.unit); return e;
       case "unitSame": unit(e.left); unit(e.right); return e;
+      case "textCompare": case "textTest": return Object.assign(e, mapTextOperands(e, texts));
       case "call": call(e.call); return e;
       default: return e;
     }
   };
+
+  /** A text's numbers are typed as any are; one that is shown says which way it is read, as a `print`'s does. */
+  const shown = (parts: TextPart[]) => {
+    for (const p of parts) {
+      if (p.kind === "value") text(p.text);
+      if (p.kind !== "number") continue;
+      const [value, t] = num(p.expr);
+      p.expr = value;
+      if (t === "u32") p.unsigned = true;
+    }
+  };
+  const text = (t: TextExpr): TextExpr => {
+    if (t.kind === "template") { shown(t.parts); return t; }
+    return Object.assign(t, mapText(t, texts));
+  };
+  const texts: TextMap = { num: (e) => num(e)[0], bool: (e) => bool(e), call: (c) => { call(c); return c; }, text };
 
   const unit = (u: UnitExpr) => { if (u.kind === "call") call(u.call); else if (u.kind === "unitAt") { u.ptr = num(u.ptr)[0]; u.epd = num(u.epd)[0]; u.uid = num(u.uid)[0]; } };
 
@@ -194,7 +212,8 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   };
 
   /** An initial value or a returned one, whose kind is its variable's (`{ kind: "var" }` alone does not say). */
-  const valueFor = <E extends NumExpr | BoolExpr | UnitExpr>(decl: VarDecl, value: E, at: At): E => {
+  const valueFor = <E extends NumExpr | BoolExpr | UnitExpr | TextExpr>(decl: VarDecl, value: E, at: At): E => {
+    if (isTextExpr(value)) return text(value) as E;
     if (decl.kind === "number") return stored(decl, value as NumExpr, at) as E;
     if (decl.kind === "boolean") return bool(value as BoolExpr) as E;
     unit(value as UnitExpr);
@@ -238,6 +257,8 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
         break;
       }
       case "assignUnit": unit(s.value); break;
+      case "assignText": s.value = text(s.value); break;
+      case "textLoop": s.of = text(s.of); s.body.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite":
         unit(s.unit);
@@ -248,7 +269,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
         if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = floor(s.verb.amount, s.at);
         break;
       case "tableWrite":
-        if (s.value.kind !== "text") s.value = s.boolean ? bool(s.value as BoolExpr) : floor(s.value as NumExpr, s.at);
+        s.value = isTextExpr(s.value) ? text(s.value) : s.boolean ? bool(s.value as BoolExpr) : floor(s.value as NumExpr, s.at);
         break;
       case "if": s.cond = bool(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) s.cond = bool(s.cond); s.body.forEach(stmt); break;
@@ -257,16 +278,9 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "switch": s.value = num(s.value)[0]; s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value && result) s.value = valueFor(result, s.value, s.at); break;
-      case "action": for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at); break;
+      case "action": for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at); if (s.text) s.text = text(s.text); break;
       case "centerLocation": s.x = floor(s.x, s.at); s.y = floor(s.y, s.at); break;
-      case "print":
-        for (const p of s.parts) {
-          if (p.kind !== "number") continue;
-          const [value, t] = num(p.expr);
-          p.expr = value;
-          if (t === "u32") p.unsigned = true;
-        }
-        break;
+      case "print": shown(s.parts); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
