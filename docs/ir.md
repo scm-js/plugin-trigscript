@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 12** (11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 13** (12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -60,7 +60,7 @@ the statement as the source has it ("L12: while (x < 3)"), for a log or a debugg
 ## Variables
 
 ```
-VarDecl { id, name, kind: "number" | "boolean" | "unit", shared, bits?: 8 | 16, unsigned?, temp?, at }
+VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | "made", shared, bits?: 8 | 16, unsigned?, temp?, at }
 ```
 
 `id` is unique within the program (`name#n`); `name` is the source's. `shared` is a
@@ -68,7 +68,8 @@ VarDecl { id, name, kind: "number" | "boolean" | "unit", shared, bits?: 8 | 16, 
 `u16` annotation, `unsigned` a `u32`; with neither a number is signed. `temp` marks a backend's scratch value that dies with its statement (a
 call's result). A variable exists from its `declare` statement on; a backend allocates
 storage in that order. A `unit` variable holds a unit of the game or none; its `declare`,
-a parameter's `init` and a `return` carry a unit expression (below).
+a parameter's `init` and a `return` carry a unit expression (below). A `text` variable
+is kept the way `text` says (*Texts*, below).
 
 ## Arrays
 
@@ -334,7 +335,80 @@ would otherwise be ten thousand frames of JavaScript's own stack.
 What cannot recurse: a function that sleeps or holds an `edge` (it is not a called function
 at all, and the front end says so when the inlined copies reach sixteen deep), and a
 `unitLoop` holding a `saves` call (the scan's place in the unit table is the lowering's
-own). A function that calls itself on every path is an error too.
+own). A function that calls itself on every path is an error too. Nor, in version 13, a
+function that works with a text: a frame would have to keep the ownership of its blocks
+straight around every call, and the pass refuses it by name instead.
+
+## Texts
+
+A text is a value, kept one of two ways, a variable at a time (`VarDecl.text`):
+
+- `id` — the variable only ever receives texts known when the script was built, so it is one
+  cell holding the text's id in the *built* map's string table (0 for the empty text, which
+  the table does not hold). The front end decides this by reading the body: the first value
+  and every `=` to the variable have an id, and nothing `+=`s it.
+- `made` — three cells: where the text's bytes are (UTF-8, ended by a 0), the block of the
+  heap it owns (0: none — the bytes are a string of the table), and its length in
+  characters. A block is the heap's (*Arrays that grow*): its first cell is its size class,
+  the bytes follow four to a cell, so a text of `b` bytes takes a block of at least
+  `b / 4 + 2` cells (whole division). The most a made text holds is `TEXT_BYTES`, 1 023.
+
+```
+TextExpr =
+  | { kind: "text", text }                              one written in the script
+  | { kind: "textVar", id }
+  | { kind: "textOf", array, index, at }                a cell of an ArrayDecl with `texts`
+  | { kind: "template", parts, at, label }              made: the parts one after another
+  | { kind: "textTernary", cond, whenTrue, whenFalse, at, label }
+  | { kind: "textSlice", of, start?, end?, at, label }  characters start … end − 1
+  | { kind: "textPad", of, side: "start" | "end", width, with, at, label }
+  | { kind: "textRepeat", of, count, at, label }
+  | { kind: "textCall", call }                          a call whose result is a text
+```
+
+The first three, and a `textTernary` between such, *have an id* whatever happens in the
+game (`textHasId`); everything else is made. A backend works a text out either as its id —
+where only an id will do: an `id` variable, an action's text — or as a text that is
+somewhere. An `ArrayDecl` with `texts` is a list of texts the script has; its `values` are
+places in that list, and a lowering puts the texts' ids in the cells instead.
+
+**Who owns a block.** A variable's text is only looked at by whatever reads it. Any other
+made value owns its block until something takes it: a `declare`, an `assignText`, a
+`return` or a parameter's `init` keeps the block (a variable's text is copied into a block
+of the same size class first); anything that only uses the value — a comparison, a
+`print`, a larger template, an action — gives the block back once it has. The variable's
+old block goes back *after* the new value is worked out, since it may be made from the
+old one (`s += "!"`). A `textTernary` that is not between two ids copies a variable's
+text, so its value always owns. A `textCall` takes the text out of the call's result
+variable, which then holds no block. A `text` result is not reset when a call starts: it
+keeps its block until the next `return` puts another in it. Both backends take and give
+blocks in this order, so they run out of heap at the same text; then the text is empty,
+and the game says so once in red where Simulate records a fault.
+
+Every operand is worked out before anything is written, in the order written. A variable's
+text used as an operand is copied when a later operand holds a call, which may give that
+variable another text.
+
+| Node | Fields | Meaning |
+| --- | --- | --- |
+| `assignText` | `target`, `value` | `s = v`, `s += v` (the front end writes the template) |
+| `textLoop` | `decl`, `of`, `body` | `for (const ch of s)`: the text — a copy of a variable's — walked once, `decl` a made text of one character each turn; no `sleep` inside |
+| `textLength` | `of` | a number: characters (code points), not bytes |
+| `textIndexOf` | `of`, `find`, `from?` | a number: the place in characters of the first match at or after `from`, −1 for none; an empty `find` is found at `from` |
+| `textCode` | `of`, `index` | a number: the character's code point, −1 past either end |
+| `textCompare` | `op`, `left`, `right` | a condition: by the bytes, which is by code point; two ids compare as numbers under `==` and `!=` |
+| `textTest` | `test: startsWith | endsWith | includes`, `of`, `find` | a condition |
+
+A `print`'s and a `template`'s parts gain `{ kind: "value", text }`. An `action` may carry
+`text`, the program's text for its text field: an id goes into the action; a made text is
+written over a string the build keeps for that *kind* of field (`ForceAddString`, 255 bytes:
+`TEXT_FIELD_BYTES`) — the objectives, a leaderboard's label, a transmission — just before
+the action runs, and only on the computer whose player the program is running as
+(`IsUserCP`), because the game reads such a string again whenever it draws. The front end
+lets a made text into those actions only. A `tableWrite` of a unit type's name takes a
+`TextExpr`: an id is written as it is, a made text goes over a string kept for that unit
+type, on every computer. The places a `textSlice` is given are inside 0 … the length
+already: the front end counts from the end and clamps.
 
 ## Units
 

@@ -783,11 +783,78 @@ filled in by the game; the ordinary colour codes work as ever. `displayText` sho
 the current player, as it always has; `print(text, { to, position })` is the way to
 show it to someone else — a player, `AllPlayers`, a force — or, with `position:
 "center"`, on the line in the middle of the screen where the game's own messages ("Not
-enough minerals") appear. Only `displayText` and `print` do this: every other text (a
-mission objective, a leaderboard's label, a transmission) is fixed when the script is
-applied. A boolean has no text of its own, and text is shown, not stored: there are no
-string variables. A text with nothing of the program in it stays the plain Display Text
-action it was. None of a program's texts enter the map's string table.
+enough minerals") appear. A boolean has no text of its own. A text with nothing of the
+program in it stays the plain Display Text action it was. None of a program's texts enter
+the map's string table: they go into the built map's.
+
+**A text is a value.** `string` is a type of a program as `number` is: a variable holds
+one, a function takes and returns one, a record has one for a field, and there is nothing
+to declare beside it — no length, no capacity.
+
+```ts
+let title = wave > 10 ? "Late game" : "Early game";   // texts written in the script
+let line = `Wave ${wave}: ${left} left`;                // a text made in the game
+line += "!";
+if (line != shown) { print(line); shown = line; }
+setMissionObjectives(`${title} - ${line}`);
+```
+
+The compiler keeps a text one of two ways, a variable at a time, and the end of the
+declaration's line says which:
+
+- *A text of the map* — a variable that only ever receives texts written in the script:
+  `"Boss"`, `boss ? "Boss" : "Wave"`, `titles[level]` out of a list the script has. It
+  holds the text's number in the built map's string table. Assigning it and comparing it
+  cost what a number's do, and the text of **any** action takes it.
+- *A text that is made* — a template with the program's values in it, `a + b`, `s += "!"`,
+  `String(n)`, a method's result. Its characters are in a block of the memory the
+  programs' arrays share (the script's Settings set its size), and the variable owns the
+  block: assigning copies the characters, and what the variable held before goes back. A
+  text is a value, as it is in TypeScript, so a copy never follows what it was copied
+  from. A made text holds 1 023 bytes; past that it is cut off, which the game says once
+  in red and Simulate says on the line.
+
+What a text can do: `+`, `+=`, templates, `==` `!=` `<` `<=` `>` `>=`, `if (s)` (it is
+not empty), `switch (s)` over texts written in the script, `length`, `s[i]`, `at()`,
+`charAt()`, `slice()`, `substring()`, `indexOf()`, `includes()`, `startsWith()`,
+`endsWith()`, `padStart()`, `padEnd()`, `repeat()`, `concat()`, `codePointAt()`,
+`String(n)`, `n.toString()`, and `for (const ch of s)`. Anything else is refused by name;
+a text the script has, with nothing of the program in it, takes every method JavaScript
+has, since the script simply runs.
+
+**A character is a character, not a byte.** The game keeps a text as UTF-8, where a
+Korean syllable is three bytes; a program counts what JavaScript counts, so
+`"저글링".length` is 3 and `"저글링"[1]` is `글`. The one difference is a character past
+U+FFFF (an emoji, a rare ideograph): JavaScript counts two and a program one — and the
+game draws nothing for it, which a hint on the line says. Since a character has no fixed
+size in the game's memory, `s[i]` and `slice()` walk the text from its start; over a long
+text, `for (const ch of s)` walks once. That loop runs within the frame, so `sleep()`
+inside it is refused; a loop over the places can sleep between turns, which is how a text
+is typed out a character at a time:
+
+```ts
+let typed = "";
+for (let i = 0; i < line.length; i++) { typed += line[i]; print(typed); sleep(frames(2)); }
+```
+
+`padStart` counts characters, as it does in a browser, and the game's font is
+proportional and a colour code has no width: it does not line columns up.
+
+**A made text outside the chat area.** The objectives, a leaderboard's label, a
+transmission's line and a unit type's name (`stats(units.TerranMarine).name = …`) take a
+made text. The game looks those texts up by number, so the build keeps a string of its
+own for each kind — a player has one objectives text, one leaderboard and one transmission
+at a time — and the text is written over it just before the action runs, up to 255 bytes.
+The game reads such a string again whenever it draws, so the write happens only on the
+computer of the player the action is for: in a program of every player, each sees their
+own. What is on the screen is the text as it was when the action ran; changing the
+variable afterwards changes nothing until the action runs again. Any other action's text
+(`setNextScenario`, a sound's path) is a text of the map or an error that says so.
+
+What is left out for now: a function that calls itself cannot hold a text; a function
+that takes or returns a text is always a copy at each call (the hint on its line says
+why); an array of texts is a list the script has (`titles[level]`), not one a program
+fills; `parseInt`, regular expressions and the words a player typed in chat are not there.
 
 **Time is `sleep`.** `sleep(seconds(15))` gives the frame back and resumes that much
 later; other programs and the map's triggers go on meanwhile. `frames(n)` is the game's
@@ -866,6 +933,11 @@ by `map` or `reduce`, has a type; an array of booleans made that way says so:
 `new Array<boolean>(12).fill(false)`.
 
 Arrays inside arrays and inside records (*Arrays inside arrays*, above) are new as well.
+
+Texts are values now (*A text is a value*, above): `let s = "…"` inside a program was an
+error in 3.8 and is a variable in 3.9, and the objectives, a leaderboard's label, a
+transmission and a unit type's name take a text the program made, where 3.8 refused
+anything but a text written in the script.
 
 Patterns and spread (*Patterns and spread*, above) are new too, and mended something:
 `const { n, d } = waves[0]` over a list of the script — nothing of the program in it — was

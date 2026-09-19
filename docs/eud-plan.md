@@ -825,6 +825,45 @@ things and the strings first):
     the local player either way. Nothing was seen to stop while the transmission was up,
     for all eudplib's warning about a waiting action in its loop. Korean is drawn as
     written; an emoji is not drawn at all, which is what the warning on a literal says.
+    **As built (2026-09-19; probe `probes/strings.ts` built, not yet played).** IR 13: a
+    `text` kind beside number, boolean and unit, `VarDecl.text` (`id` / `made`), one
+    `TextExpr` type that a backend works out either as an id or as a text that is
+    somewhere (`docs/ir.md`, *Texts*). What was decided on the way:
+    - *Which way a variable is kept* is read off the body when it is declared
+      (`structured.ts`, `textKept`): the first value and every `=` to it have an id — a
+      text written out, a `? :` between two, `titles[level]`, another variable kept that
+      way — and nothing `+=`s it. A value the script works out later in the body is asked
+      for then, which is earlier than the walk would have; a helper with a side effect
+      runs once all the same. A record's text field is decided the same way, by the
+      assignments to that property.
+    - *The block* holds its own size class in its first cell, so a variable is the three
+      cells planned (where, block, length) and giving a block back needs nothing more. A
+      copy is a block of the same class and a copy of its cells, whole dwords.
+    - *The length* is counted when a text is made, by walking its bytes once more rather
+      than adding the parts' lengths up: simpler, and a made text is at most 1 023 bytes.
+    - *The scratch* is twice a text's most: parts are written a group at a time, a group
+      being what cannot pass 1 023 bytes, with a check of where the writing has got to
+      between groups; a text of the program goes in through a copy of its own that stops
+      at the scratch's end, since a text of the table may be any length. Then the cut,
+      never inside a character.
+    - *Operands and calls*: a variable's text is only looked at, so when a later operand
+      holds a call — which may give the variable another text — it is copied first.
+    - More than planned, because it cost nothing once the rest was there: `<` `<=` `>`
+      `>=`, `codePointAt`, `concat`, `s || other`, `s.at(i) ?? other`, a text-valued
+      `? :`.
+    - **Less than planned, each refused with a message that says what to do instead:** a
+      function that calls itself cannot hold a text (the plan had its cells saved and
+      zeroed; the recursion pass refuses it); a function that takes or returns a text
+      stays a copy at each call; an array of texts a program fills, and a text in an
+      array of records, wait for the classes, where a row's handles ride along anyway. A
+      text temporary inside a loop's *condition* is refused too, since a condition is
+      worked out again every turn and a temporary is made once.
+    - The simulator keeps JavaScript strings and counts blocks as the lowering does —
+      same sizes, same order — so both run out at the same text.
+    The probe, steps A–R: kept across a sleep, a copy that does not follow, texts of the
+    map chosen by a variable, comparing, Korean counted and cut, pad and repeat, for…of,
+    switch, functions, 3 000 made with the heap whole after, the four fields, a program
+    of every player, an emoji, and a text past 1 023 bytes for the one red line.
   - Out, with an error: a key of a `Map` that is a made string (a union of literals is a
     record already); `parseInt`; regular expressions; a word taken from chat
     (`chatted(p, "-name {word}")`), which can follow once the chat plugin's buffer has been
