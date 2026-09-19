@@ -253,7 +253,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" ? 2 : name === "recursionProbe" ? 3 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" ? 2 : name === "recursionProbe" ? 3 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -375,6 +375,10 @@ FIXTURES.lists = `program(() => {
     sleep(seconds(1));
   }
 });`;
+
+// And the probe of arrays inside arrays: a grid filled and read back, a row past its end, rows that grow with the outer one
+// cut off three thousand times, arrays in a record, rows a player.
+FIXTURES.insideProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "inside.ts"), "utf8");
 
 // And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
 // and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.

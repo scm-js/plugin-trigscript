@@ -1456,6 +1456,7 @@ export class Structured {
     const a = this.newArray(name, shape.kind, total, this.sourceOf(at), shape.kind === "number" ? this.widthOf(shape.leaf) : {});
     if (grows) a.dynamic = true;
     const same = cells.length > 4 && cells.every((v) => v.kind === "const" && v.value === (cells[0] as { value: unknown }).value);
+    this.emit({ kind: "remark", text: `One flat array, ${name}[y][x] read at y × ${dims.slice(1).reduce((n, d) => n * d, 1)} + x: every row has ${dims[1]} cells and none of them grows${grows ? "; whole rows are pushed and popped" : ""}. A row past its own end reads 0.`, short: `flat, ${grows ? "rows" : dims[0]} × ${dims.slice(1).join(" × ")}`, at: this.at(at) }, at);
     this.emit({ kind: "declareArray", array: a.id, ...(same ? { fill: cells[0] } : { init: cells }), at: this.at(at), label: this.label(at) }, at);
     return { kind: "grid", name, a, dims: grows ? [0, ...dims.slice(1)] : dims, offset: null };
   }
@@ -1585,6 +1586,7 @@ export class Structured {
     if (rows.length > MAX_ARRAY) { this.c.error(init, `An array of a program starts with at most ${MAX_ARRAY} rows.`); return null; }
     const make = (part: string) => { const a = this.newArray(`${name} (${part})`, "number", rows.length, this.sourceOf(at), { unsigned: true }); if (dynamic) a.dynamic = true; return a; };
     const lists: Lists = { kind: "lists", name, ptr: make("block"), len: make("length"), room: make("room"), k: make("size"), of: shape.kind, ...(shape.kind === "number" ? this.widthOf(shape.leaf) : {}) };
+    this.emit({ kind: "remark", text: `Rows that grow: each row of ${name} is a block of the heap of its own, found through the outer array — a few more triggers a read than one flat array, which is what it would be with every row one length and nothing pushed to a row.`, short: "rows that grow", at: this.at(at) }, at);
     this.releaseRows(lists, num(0), at);
     for (const a of this.handlesOf(lists)) this.emit({ kind: "declareArray", array: a.id, ...(rows.length > 4 ? { fill: num(0) } : { init: rows.map(() => num(0)) }), at: this.at(at), label: this.label(at) }, at);
     for (const [r, row] of rows.entries()) {

@@ -92,6 +92,15 @@ describe("a grid", () => {
   });
 });
 
+describe("the end of the line says how it is kept", () => {
+  it("flat, or rows that grow", () => {
+    const hints = (body: string) => compile(body).hints.map((h) => h.label);
+    expect(hints("let g = [[1, 2, 3], [4, 5, 6]];")).toContain("flat, 2 × 3");
+    expect(hints("const path: number[][] = []; path.push([1, 2]);")).toContain("flat, rows × 2");
+    expect(hints("let b = [[1, 2], [3]];")).toContain("rows that grow");
+  });
+});
+
 describe("an array in a record", () => {
   it("fixed and growing, read through the record's name", () => {
     const sim = run("let p = { hp: 5, path: [1, 2, 3], seen: [] as number[] }; let i = 1; p.path[i] += 10; p.seen.push(p.path[1]); p.seen.push(p.hp); let n = 0; n = p.seen.length + p.path.length; let sum = 0; for (const s of p.seen) sum += s; const { path } = p; path[0] = 7;");
