@@ -174,3 +174,40 @@ describe("stats(): the game's tables", () => {
     expect(sim.tables.get("player.color:0")).toBe(117);
   });
 });
+
+describe("units: the methods that take a function (slice 8½)", () => {
+  it("the units of the game: forEach, some, every, find, filter, reduce", () => {
+    const sim = run(`let n = 0; unitsOf(P1, { type: units.TerranMarine }).forEach((u) => { n++; u.hp = u.hp + 1; });
+      let hurt = false; hurt = unitsOf(P1).some((u) => u.hp < 30);
+      let all = false; all = allUnits({ type: units.TerranMarine }).every((u) => u.hp > 20);
+      const weak = unitsOf(P1, { type: units.TerranMarine }).find((u) => u.hp < 30); let weakHp = 0; if (weak) weakHp = weak.hp;
+      const none = unitsOf(P1).find((u) => u.hp > 5000); let found = true; found = none != null;
+      const squad = unitsOf(P1).filter((u) => u.hp < 100); let size = 0; size = squad.length;
+      let total = 0; total = unitsOf(P1, { type: units.TerranMarine }).reduce((sum, u) => sum + u.hp, 0);`);
+    expect(sim.value("n")).toBe(2);
+    expect(sim.value("hurt")).toBe(true);
+    expect(sim.value("all")).toBe(true);
+    expect(sim.value("weakHp")).toBe(26);
+    expect(sim.value("found")).toBe(false);
+    expect(sim.value("size")).toBe(2);
+    expect(sim.value("total")).toBe(67);
+    expect(sim.faults).toEqual([]);
+  });
+  it("an array of units: filter, find, sort by a field, reverse, map to numbers", () => {
+    const sim = run(`const mine = allUnits().filter((u) => u.owner == P1);
+      mine.sort((a, b) => a.hp - b.hp);
+      const lowest = mine[0]; let low = 0; if (lowest) low = lowest.hp;
+      mine.reverse(); const top = mine[0]; let high = 0; if (top) high = top.hp;
+      const healthy = mine.find((u) => u.hp == 40); let h = 0; if (healthy) h = healthy.x;
+      const hps = mine.map((u) => u.hp); let where = 0; where = mine.findIndex((u) => u.hp == 25);`);
+    expect(sim.value("low")).toBe(25);
+    expect(sim.value("high")).toBe(1500);
+    expect(sim.value("h")).toBe(100);
+    expect(sim.list("hps")).toEqual([1500, 40, 25]);
+    expect(sim.value("where")).toBe(2);
+  });
+  it("the units of the game have no place and no order", () => {
+    expect(errors("let n = 0; n = unitsOf(P1).findIndex((u) => u.hp > 1);").join("\n")).toMatch(/findIndex|no order/);
+    expect(errors("unitsOf(P1).forEach((u) => { sleep(seconds(1)); });").join("\n")).toMatch(/for…of over the same list can sleep|loop over units/);
+  });
+});

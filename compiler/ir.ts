@@ -349,7 +349,7 @@ export type Stmt =
   | { kind: "while"; cond?: BoolExpr; body: Stmt[]; at: At; label: string }
   | { kind: "do"; body: Stmt[]; cond: BoolExpr; at: At; label: string; condLabel: string }
   /** `for` over a variable: `init` ran already (it is emitted before), this is the loop with its update. */
-  | { kind: "for"; cond?: BoolExpr; update: Stmt[]; body: Stmt[]; at: At; label: string }
+  | { kind: "for"; cond?: BoolExpr; update: Stmt[]; body: Stmt[]; at: At; label: string; /** The loop is `name.sort(…)`: for the hint on its line; a lowering takes no notice. */ sorts?: string }
   /** A loop unrolled when the script was built: the body once per value, in order. */
   | { kind: "unrolled"; iterations: Stmt[][]; at: At; label: string }
   | { kind: "switch"; value: NumExpr; cases: { value: number | null; body: Stmt[] }[]; at: At; label: string }

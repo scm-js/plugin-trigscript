@@ -57,7 +57,7 @@ function configure(monaco: MonacoApi) {
     target: ts.ScriptTarget.ESNext,
     module: ts.ModuleKind.ESNext,
     moduleResolution: BUNDLER_RESOLUTION as unknown as Monaco.typescript.ModuleResolutionKind,
-    lib: ["lib.es2022.d.ts"],
+    lib: ["lib.es2023.d.ts"],
     noEmit: true,
     types: [],
   });

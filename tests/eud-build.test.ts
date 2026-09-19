@@ -253,7 +253,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" ? 2 : name === "recursionProbe" ? 3 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" ? 2 : name === "recursionProbe" ? 3 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -309,6 +309,10 @@ FIXTURES.functionsProbe = readFileSync(resolve(import.meta.dirname, "..", "probe
 // And the recursion probe: frames kept and brought back for numbers, booleans, units and arrays' handles, two functions
 // calling each other, rows a player, and the overflow that stops a program.
 FIXTURES.recursionProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "recursion.ts"), "utf8");
+
+// And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
+// and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.
+FIXTURES.callbacksProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "callbacks.ts"), "utf8");
 
 describe.skipIf(!have)("programs build through the eudplib plugin", () => {
   for (const [name, src] of Object.entries(FIXTURES)) {

@@ -287,6 +287,53 @@ it was when `i` moves on. Fields are numbers and booleans, with their declared w
 not: a unit of it that has died since reads 0, takes no order, and is false in an `if`, as any
 kept unit is.
 
+**The methods that take a function** work on all three kinds of array, and the function is
+written as it is in TypeScript: `hp.forEach((h, i) => { total += h * i; })`,
+`hp.some((h) => h > 20)`, `every`, `findIndex` and `findLastIndex` (−1 when nothing is found),
+`hp.reduce((sum, h) => sum + h, 0)`, `hp.map((h) => h * 2)`, `hp.filter((h) => h > 7)`,
+`hp.sort((a, b) => a - b)` and `hp.reverse()`, and chains of them —
+`cells.filter((c) => c < 20).map((c) => c + 1).reduce((s, c) => s + c, 0)`. The function is
+handed the item, its place and the array, as JavaScript hands them. It is copied into the
+loop the method becomes, so a variable it uses from outside is simply that variable, it costs
+nothing to write one, and the map holds no function. What follows from that is the one thing
+that does not work: a function cannot be *kept* — in a variable, in an array, as something a
+function returns. Write it where it is used, or give the name of one declared with `function`
+in the program (`hp.forEach(report)`).
+
+- `map` makes an array of numbers or of booleans: of the same fixed length when what it runs
+  over is fixed, one that grows when that grows. `filter` always makes one that grows, of
+  whatever it ran over — rows of an array of records stay whole, units stay units. Both are
+  made again each time the line runs and give their block back first, as any declaration does.
+  A chain makes the arrays in the middle as written. Neither can stand in the condition of a
+  loop, which is worked out again every turn: make the array before the loop, or inside it.
+- `find` and `findLast` give a unit or none from an array of units. Of numbers they would give
+  `undefined` when nothing is found, which does not exist when the map is played, so say what
+  it is then — `hp.find((h) => h > 20) ?? -1` — or take the place with `findIndex`; of records,
+  take the place and read `waves[i]`.
+- `reduce` wants what it starts from; without it JavaScript throws on an empty array.
+- `sort` wants its function: without one JavaScript sorts numbers as text, 10 before 9. It
+  sorts where the array stands, within the frame, keeping equals in the order they were in,
+  and gives the same array back. A list nearly in order costs a pass; one in no order its
+  length squared — dozens of items are nothing, hundreds every frame will be felt, and the end
+  of the line says *sorts in the frame*. Records are sorted row by row
+  (`waves.sort((a, b) => a.delay - b.delay)`), units too (`squad.sort((a, b) => a.hp - b.hp)`).
+- No `sleep()` inside such a function: the method is one loop within the frame. A `for…of`
+  over the same array can sleep between its turns.
+
+The units of the game take them as well: `unitsOf(P1).forEach((u) => u.heal(10))`, `some`,
+`every`, `reduce`, `map`, `find` (a unit or null) and `filter`, which is how to keep them —
+`const weak = unitsOf(P1, { type: units.TerranMarine }).filter((u) => u.hp < 20)` is an array
+of units, which can be sorted and kept across a `sleep()`. They come in no order, so there is
+no place and no `sort` until they are in an array.
+
+A list the script made takes them too, the loop written out turn by turn as `for…of` over
+one is: `waves.forEach((w) => createUnit(P2, w.unit, w.count, at))` is one Create Unit a
+wave, and `prices.map((p) => p + bonus)` with `bonus` a variable is an array of the program.
+With nothing of the program in it — `[1, 2, 3].map((x) => x * 2)` — it is still the script's
+own arithmetic, done when the script is built.
+
+`new Array(12).fill(0)` is an array of numbers; for booleans, `new Array<boolean>(12).fill(false)`.
+
 **A list the script made is a table a program can look things up in.** `const price = [50,
 100, 150]` outside the program, `price[level]` inside it, is in the map once, however often
 it is read, and cannot be written. A list of records is a table a field — the wave table:
@@ -754,6 +801,19 @@ inside records and arrays of arrays, classes, a `Map` over any number; then `tes
 that run a script against the simulator, a debugger that steps it, and a gallery of
 examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
+
+### Coming from 3.8
+
+Nothing a 3.8 script does has changed, with one exception that was a mistake before: a
+`forEach` over a list of the script whose function only made actions —
+`waves.forEach((w) => createUnit(P2, w.unit, w.count, at))` — used to build into nothing,
+without a word. It now does what it says. What is new is the array methods that take a
+function (*The methods that take a function*, above), on arrays, arrays of records, arrays
+of units, the units of the game and the script's own lists. `findLast` and `findLastIndex`
+brought the script's standard library to ES2023. `new Array(12)` is an array of numbers
+where TypeScript's own declaration says `any[]`, so what is read out of one, or made from it
+by `map` or `reduce`, has a type; an array of booleans made that way says so:
+`new Array<boolean>(12).fill(false)`.
 
 ### Coming from 3.7
 

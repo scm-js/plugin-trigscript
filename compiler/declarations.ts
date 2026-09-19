@@ -314,12 +314,32 @@ ${kw}const slots: { readonly Empty: Slot<0>; readonly Computer: Slot<1>; readonl
  * notes it at the end of the line). What to look for is known when you build. A loop over units runs
  * within the frame: no sleep() inside it.
  */
+/**
+ * What unitsAt(), unitsOf() and allUnits() give: the units of the game the filter matches, as they are when the line
+ * runs. They come in no order, so there is no place and no sort; filter() keeps them in an array of the program.
+ */
+${kw}interface UnitSet extends Iterable<Unit> {
+  /** \`unitsOf(P1).forEach((u) => u.heal(10));\` */
+  forEach(fn: (unit: Unit) => void): void;
+  some(fn: (unit: Unit) => boolean): boolean;
+  every(fn: (unit: Unit) => boolean): boolean;
+  /** One that matches, or null. */
+  find(fn: (unit: Unit) => boolean): Unit | null;
+  /** The ones that match, kept in an array: \`const weak = unitsOf(P1).filter((u) => u.hp < 20);\` */
+  filter(fn: (unit: Unit) => boolean): Unit[];
+  /** A number from each, in an array. */
+  map(fn: (unit: Unit) => number): number[];
+  map(fn: (unit: Unit) => boolean): boolean[];
+  /** \`const hp = unitsOf(P1).reduce((sum, u) => sum + u.hp, 0);\` */
+  reduce(fn: (so: number, unit: Unit) => number, start: number): number;
+  reduce(fn: (so: boolean, unit: Unit) => boolean, start: boolean): boolean;
+}
 /** The units inside a location: \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.kill();\` */
-${kw}function unitsAt(location: Location, filter?: Omit<UnitFilter, "at">): Iterable<Unit>;
+${kw}function unitsAt(location: Location, filter?: Omit<UnitFilter, "at">): UnitSet;
 /** A player's units: \`for (const u of unitsOf(CurrentPlayer, { type: units.TerranMarine })) u.heal(10);\` */
-${kw}function unitsOf(player: Player, filter?: Omit<UnitFilter, "owner">): Iterable<Unit>;
+${kw}function unitsOf(player: Player, filter?: Omit<UnitFilter, "owner">): UnitSet;
 /** Every unit on the map the filter matches. */
-${kw}function allUnits(filter?: UnitFilter): Iterable<Unit>;
+${kw}function allUnits(filter?: UnitFilter): UnitSet;
 /** The first unit the filter matches, or null. */
 ${kw}function first(filter?: UnitFilter): Unit | null;
 /** The unit of a type nearest to the centre of a location, or null; units.AnyUnit for any type. */
@@ -488,12 +508,24 @@ function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean):
   ].join("\n");
 }
 
+/**
+ * What the standard library gets wrong for a program: `new Array(12)` is an `any[]` there, and everything made from it —
+ * a cell, what `map` or `reduce` gives — is `any` after it, which says nothing of what a variable holds. Here it is an
+ * array of numbers unless it says otherwise (`new Array<boolean>(12).fill(false)`), as a number is what everything is.
+ */
+const ARRAYS = `
+interface ArrayConstructor {
+  new <T = number>(arrayLength: number): T[];
+  <T = number>(arrayLength: number): T[];
+}
+`;
+
 /** The whole declaration file for a set of names. */
 export function generateDeclarations(names: ScriptNames = defaultScriptNames(), options: DeclarationOptions = {}): string {
   const compact = options.compact === true;
   const globals = body("declare ", "", names, compact);
-  if (compact) return `${HEADER}${globals}\n`;
+  if (compact) return `${HEADER}${globals}\n${ARRAYS}`;
   const module = body("export ", "export ", names, false).split("\n").map((l) => (l ? `  ${l}` : l)).join("\n");
-  return `${HEADER}${globals}\n\n// ── The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; ──\ndeclare module "${MODULE_NAME}" {\n${module}\n}\n`;
+  return `${HEADER}${globals}\n${ARRAYS}\n// ── The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; ──\ndeclare module "${MODULE_NAME}" {\n${module}\n}\n`;
 }
 

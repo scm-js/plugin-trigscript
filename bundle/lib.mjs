@@ -1,5 +1,5 @@
 /**
- * The standard library a script is checked against — TypeScript's `lib.es2022.d.ts`
+ * The standard library a script is checked against — TypeScript's `lib.es2023.d.ts` (2023 for `findLast` and `findLastIndex`)
  * and everything it references, concatenated into one file with the reference
  * directives stripped. `bundle/build.mjs` writes it to `dist/lib.d.ts` for the compile
  * worker to fetch; the tests build the same text from `node_modules`.
@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
-export const LIB_ENTRY = "lib.es2022.d.ts";
+export const LIB_ENTRY = "lib.es2023.d.ts";
 
 /** The concatenated library text. */
 export function defaultLib() {

@@ -127,7 +127,10 @@ function scans(program: Program, out: LineHint[]) {
     seen.add(key);
     out.push({ file: at.file, line: at.line, label, note });
   };
-  for (const body of bodiesOf(program)) statements(body, (s) => { if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
+  for (const body of bodiesOf(program)) statements(body, (s) => { if (s.kind === "for" && s.sorts) hint(s.at, "sorts in the frame", `${s.sorts} is sorted where it stands, within the frame: each item is taken in hand and the ones that go after it moved up. Nearly in order already, that is a pass over the list; in no order it is the length squared — a few dozen items are nothing, a few hundred every frame will be felt.`); });
+  // A call that stands in an expression (`unitsOf(P1).some(…)` in an if) has statements of its own, which the walk over statements does not reach.
+  const everywhere = (body: Stmt[], visit: (s: Stmt) => void) => { statements(body, visit); expressions(body, (e) => { if (e.kind === "call") statements(e.call.body, visit); }); };
+  for (const body of bodiesOf(program)) everywhere(body, (s) => { if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
   for (const body of bodiesOf(program)) expressions(body, () => {}, (u) => hint(u.at, u.by === "random" ? "scans units ×2" : "scans units", u.by === "random"
     ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.`
     : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));
@@ -240,7 +243,11 @@ function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
     case "not": reads(e.expr, into); break;
     case "test": reads(e.expr, into); break;
     case "edge": reads(e.cond, into); break;
-    case "call": break;
+    // A call reads what it is handed and what its body reads: `while (xs.some((x) => x > 0))` reads xs.
+    case "call":
+      for (const p of e.call.params) if (p.init.kind !== "unitVar" && p.init.kind !== "unitNull") reads(p.init as NumExpr | BoolExpr, into);
+      expressions(e.call.body, (inner) => { if (inner.kind !== "call") reads(inner, into); });
+      break;
     default: break;
   }
   return into;

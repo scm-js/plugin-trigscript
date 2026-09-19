@@ -119,8 +119,34 @@ const GAME_CALLS = new Set(["random", "sleep", "rose", "once", "shared"]);
  */
 const READ_CALLS = new Set<string>([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
 const isReadCall = (lib: string | null, args: number) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
+/**
+ * The methods that take a function — `xs.map((x) => x * 2)`, `unitsOf(P1).forEach((u) => u.kill())`. Where such a call
+ * is the program's, the function written in it is part of the program as a function declared in the body is: its
+ * parameters are game bindings and its body is walked, since it is inlined into the loop the method becomes.
+ */
+export const CALLBACK_METHODS = new Set(["forEach", "some", "every", "find", "findIndex", "findLast", "findLastIndex", "reduce", "map", "filter", "sort"]);
+
+/** The function written as an argument of one of those methods, when `node` is one. */
+export function isCallbackArgument(ts: typeof TS, node: TS.Node): node is TS.ArrowFunction | TS.FunctionExpression {
+  if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return false;
+  let at: TS.Node = node;
+  while (ts.isParenthesizedExpression(at.parent)) at = at.parent;
+  const call = at.parent;
+  return ts.isCallExpression(call) && call.arguments.includes(at as TS.Expression) && ts.isPropertyAccessExpression(call.expression) && CALLBACK_METHODS.has(call.expression.name.text);
+}
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {
+  // A list a callback writes to (`xs.forEach((x) => out.push(x))`) is the program's, and that is found out after its
+  // `const` was planned as a value of the script: the plan is made again knowing it. The set only grows, so this ends.
+  const forced = new Set<TS.Node>();
+  for (;;) {
+    const before = forced.size;
+    const plan = planOnce(ts, checker, arrow, options, forced);
+    if (forced.size === before) return plan;
+  }
+}
+
+function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions, forced: Set<TS.Node>): ProgramPlan {
   const plan: ProgramPlan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [], grows: new Set() };
   const error = (node: TS.Node, message: string) => plan.errors.push({ node, message });
   const what = options.parameters ? "game()" : "program()";
@@ -177,6 +203,7 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
       if (decl && ts.isVariableDeclaration(decl) && decl.initializer && inside(decl)) {
         const type = checker.getTypeAtLocation(decl.name);
         if (checker.isArrayType(type) || checker.isTupleType(type)) {
+          if (plan.consts.has(decl)) forced.add(decl);
           declare(decl);
           // xs.push(v), xs.pop(), xs.length = n and xs[xs.length] = v are what make an array one that grows.
           const name = target.expression.text;
@@ -191,6 +218,7 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
   };
   const inside = (decl: TS.Node) => { for (let n: TS.Node | undefined = decl; n; n = n.parent) if (n === arrow.body) return true; return false; };
   written(arrow.body);
+  for (const decl of forced) declare(decl);
 
   /* ── Hoistability ── */
   const gameCall = new Map<TS.Node, boolean>();
@@ -198,6 +226,17 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
     let hit = gameCall.get(call);
     if (hit === undefined) { hit = isGameCall(checker, call); gameCall.set(call, hit); }
     return hit;
+  };
+  /** Whether the function given to `forEach` calls the library: an action, a print, anything that is the game's to do. */
+  const doesSomething = (fn: TS.ArrowFunction | TS.FunctionExpression): boolean => {
+    let at: TS.Node = fn;
+    while (ts.isParenthesizedExpression(at.parent)) at = at.parent;
+    const call = at.parent as TS.CallExpression;
+    if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "forEach") return false;
+    let found = false;
+    const look = (n: TS.Node) => { if (found) return; if (ts.isCallExpression(n) && libraryCallName(ts, checker, n)) { found = true; return; } ts.forEachChild(n, look); };
+    look(fn.body);
+    return found;
   };
   const memo = new Map<TS.Node, boolean>();
   const isGameDecl = (decl: TS.Declaration) => plan.game.has(owningDeclaration(ts, decl));
@@ -225,6 +264,10 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
     };
     const check = (n: TS.Node): void => {
       if (!ok) return;
+      // `waves.forEach((w) => createUnit(P2, w.unit, w.count, at))`: nothing of the program is named, but forEach is there for
+      // what its function does, and what this one does is the game's. Run when the script is built it would make actions
+      // nobody receives, and the line would silently do nothing; it is the program's loop, unrolled.
+      if (isCallbackArgument(ts, n) && doesSomething(n)) { ok = false; return; }
       if (isFunctionValue(n)) { scan(n); return; }
       if (ts.isIdentifier(n)) {
         // A property name (`obj.name`, `{ name: v }`) is not a value reference.
@@ -272,7 +315,11 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
       // Of a method call the object is the value, not the method: `cost.get(u.type)` has to leave `cost` — the Map — in reach, and a
       // method read off its object on its own has lost it.
       if (!lib || !GAME_CALLS.has(lib)) value(ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) ? e.expression.expression : e.expression, items);
-      for (const a of e.arguments ?? []) value(a, items);
+      for (const a of e.arguments ?? []) {
+        let fn: TS.Expression = a;
+        while (ts.isParenthesizedExpression(fn)) fn = fn.expression;
+        if (isCallbackArgument(ts, fn)) callback(fn, items); else value(a, items);
+      }
       return;
     }
     if (ts.isBinaryExpression(e)) { value(e.left, items); value(e.right, items); return; }
@@ -290,6 +337,18 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
       return;
     }
     ts.forEachChild(e, (c) => { if (ts.isExpression(c)) value(c, items); });
+  };
+  // The function given to an array method of the program: its parameters and its `let`s are the game's from here on (nothing
+  // outside it can name them, so nothing planned so far is wrong), and its body is planned as a declared function's is.
+  const callback = (fn: TS.ArrowFunction | TS.FunctionExpression, items: PlanItem[]) => {
+    for (const p of fn.parameters) declare(p);
+    collect(fn.body);
+    written(fn.body);
+    memo.clear();
+    if (ts.isBlock(fn.body)) { items.push({ kind: "block", items: block(fn.body.statements) }); return; }
+    const inner: PlanItem[] = [];
+    value(fn.body, inner);
+    items.push({ kind: "block", items: inner });
   };
   const statement = (s: TS.Statement, items: PlanItem[], deferred: PlanItem[]) => {
     if (ts.isVariableStatement(s)) { declarations(s.declarationList, items); return; }

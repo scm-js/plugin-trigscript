@@ -623,6 +623,43 @@ things and the strings first):
   fusing the two loops is for later, if a probe says it matters. The unit sets (`unitsOf(…)`
   and the rest) take `forEach`, `some`, `every`, `find` and `filter` the same way, since
   they are loops already.
+  **As built (2026-09-19; probe played the same day, every step as expected).** Step J —
+  256 cells the wrong way round, some 32 000 turns of the inner loop in one frame —
+  stuttered "for an instant, maybe two frames": the insertion sort stays, and the hint's
+  "hundreds every frame will be felt" is the right size of warning. `compiler/structured.ts`, *Methods that take a
+  function*: `loopOver` is the loop (a list of the program, the units of the game as the
+  loop over units, a list the script has unrolled), `callback` the function inlined with
+  its parameters bound to the item, its place and the list, and the methods are those two.
+  What gives a value — `some`, `every`, `find*`, `reduce` — is a function of the
+  compiler's own with the loop inside it, as `includes` is, so it is worked out again
+  wherever it stands, a loop's condition included; what makes an array emits its
+  statements where it stands, which is why a loop's condition refuses it. The IR did not
+  change (a `for` may carry `sorts`, for the hint; a lowering takes no notice), and the
+  Python needed nothing. Four things were not in the plan:
+  - the hoisting pass had to learn the function: its parameters and its `let`s are the
+    game's, its body is planned as a declared function's is, and a `const` list that only
+    such a function pushes to is found to be the program's after it was planned as the
+    script's — so the plan is made again knowing it (`planProgram` loops until nothing
+    new is forced; the set only grows);
+  - `waves.forEach((w) => createUnit(…))` over a list of the script, with nothing of the
+    program in it, was hoisted whole and ran when the script was built: actions nobody
+    received, no diagnostic, in 3.8 too. A `forEach` whose function calls the library is
+    now the program's, unrolled. `map` and the rest of a script's list stay the script's
+    when nothing of the program is in them;
+  - `find` of numbers: `undefined` does not exist when the map is played, so it is
+    `xs.find(…) ?? value`, and bare it is an error that says so and names `findIndex`; of
+    records the error names `findIndex` and `waves[i]`; of units it is a unit or none;
+  - `new Array(12)` is `any[]` to TypeScript, and `any` went through `map` and `reduce`
+    into variables that then had no kind. The declarations make it `number[]` unless it
+    says otherwise (`new Array<boolean>(12)`). The library moved to ES2023 for `findLast`.
+  Also: the check for a loop whose condition never changes read nothing out of a call in
+  the condition (`while (f(x) > 0)` with `x--` inside was refused; so was `while
+  (xs.some(…))`), and now reads what the call is handed and what its body reads. Left
+  for later: fusing a chain's loops; `toSorted` / `toReversed` / `slice` / `concat`
+  (ES2023 brought the first two into completion; they are refused by name); a method's
+  result as `map`'s element when it is a unit or a record; Simulate stops a frame at
+  100 000 statements, which a sort of 256 cells in no order passes. Probe
+  `probes/callbacks.ts`, steps A–K; J is the 256-cell sort, timed by eye.
 - **Destructuring and spread.** `const { x, y } = mouse(p)`, `const [a, b] = pair`, in a
   parameter, with defaults, nested, and `[a, b] = [b, a]` through temporaries. `[...xs, v]`
   and `{ ...r, hp: 5 }` copy cell by cell; `...rest` in a parameter list is the arguments of

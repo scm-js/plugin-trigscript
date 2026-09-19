@@ -141,7 +141,7 @@ export interface CompileResult {
 }
 
 export interface CompileOptions {
-  /** The standard library's declarations (`lib.es2022.d.ts` and what it references, concatenated). */
+  /** The standard library's declarations (`lib.es2023.d.ts` and what it references, concatenated). */
   lib: string;
 }
 

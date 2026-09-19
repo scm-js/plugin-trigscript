@@ -187,6 +187,15 @@ const unitRef = (v: VarDecl): UnitExpr => ({ kind: "unitVar", id: v.id });
 const NO_UNIT: UnitExpr = { kind: "unitNull" };
 const ORDERS: readonly string[] = ["move", "patrol", "attack"];
 
+/** A list of the program: an array, an array of records, an array of units. */
+type List = Extract<Binding, { kind: "array" | "records" | "units" }>;
+/** What a method that takes a function runs over: a list of the program, the units of the game (`unitsOf(…)`), or a list the script has. */
+type Over = List | { kind: "query"; name: string; filter: Extract<Stmt, { kind: "unitLoop" }>["filter"] } | { kind: "values"; name: string; items: unknown[] };
+/** The methods that give a list: a new one, or (`sort`, `reverse`) the one they were called on. */
+const LIST_MAKERS = new Set(["map", "filter", "sort", "reverse"]);
+/** The methods that take a function and give a value. */
+const SEARCHES = new Set(["some", "every", "find", "findLast", "findIndex", "findLastIndex", "reduce"]);
+
 /** What a call passes for a parameter: the value a parameter that is a variable is set to, or the array (the record) the parameter stands for. */
 type CallArgument = { init: NumExpr | BoolExpr | UnitExpr; label: string } | { binding: Binding };
 
@@ -644,6 +653,12 @@ export class Structured {
         if (record) this.scope.bind(d, record);
         continue;
       }
+      // `let big = hp.filter((h) => h > 100)`: the list the method makes, under the declaration's name.
+      if (ts.isCallExpression(init) && this.makesList(init)) {
+        const made = this.madeList(init, d.name.text, d);
+        if (made) this.scope.bind(d, made);
+        continue;
+      }
       const type = this.c.checker.getTypeAtLocation(d.name);
       // `const w = waves[i]`: the record at i, as it is now — the index is taken once, so moving `i` afterwards does not move `w`.
       if (ts.isElementAccessExpression(init)) {
@@ -677,6 +692,11 @@ export class Structured {
         continue;
       }
       const kind = this.kindOf(type);
+      // `const x = xs.find(…)` would be a number or undefined: searchCall says what to write instead.
+      if (!kind && ts.isCallExpression(init) && ts.isPropertyAccessExpression(init.expression) && (init.expression.name.text === "find" || init.expression.name.text === "findLast")) {
+        const over = this.overOf(init.expression.expression);
+        if (over) { this.searchCall(init, over, init.expression.name.text, over.kind === "array" ? over.a.kind : "number"); continue; }
+      }
       if (!kind) { this.c.error(d, `Variables hold numbers, booleans, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
       // `let total = shared(0)`: one cell for every player of a per-player program, initialised with the argument.
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
@@ -756,7 +776,7 @@ export class Structured {
       for (const [a] of this.unitArrays(of)) { a.dynamic = true; this.emit({ kind: "pop", array: a.id, at, label }, e); }
       return;
     }
-    this.c.error(e, `An array of units has push(unit), pop(), length and for…of; ${method}() is not one of them.`);
+    this.c.error(e, `An array of units has push(unit), pop(), length, for…of, and forEach, filter, some, every, find, findIndex, sort and reverse; ${method}() is not one of them.`);
   }
 
   /** A number of the program as something that can be read twice without being worked out twice: itself when it is a constant or a variable, else a temporary holding it. */
@@ -930,7 +950,7 @@ export class Structured {
       for (const a of of.fields.values()) { a.dynamic = true; this.emit({ kind: "pop", array: a.id, at, label }, e); }
       return;
     }
-    this.c.error(e, `An array of records has push({ … }), pop(), length and for…of; ${method}() is not one of them. (pop() stands on its own: read ${of.name}[${of.name}.length - 1] first for what it takes off.)`);
+    this.c.error(e, `An array of records has push({ … }), pop(), length, for…of, and forEach, filter, some, every, findIndex, reduce, sort and reverse; ${method}() is not one of them. (pop() stands on its own: read ${of.name}[${of.name}.length - 1] first for what it takes off.)`);
   }
 
   /** The `__kind` a branded type of the library carries ("unit", "player", …), if it carries one. */
@@ -1217,8 +1237,486 @@ export class Structured {
         return this.mark<NumExpr | BoolExpr>({ kind: "call", call }, e);
       }
       default:
-        return wrong(`An array of a program has push, pop, fill, includes, indexOf, length and for…of; ${method}() is not one of them.`);
+        return wrong(`An array of a program has push, pop, fill, includes, indexOf, length, for…of, and the methods that take a function (forEach, map, filter, some, every, find, findIndex, reduce, sort) with reverse; ${method}() is not one of them.`);
     }
+  }
+
+  /* ── Methods that take a function ── */
+
+  /** How deep the walk is inside a function given to such a method: nothing in there may sleep. */
+  private inCallback = 0;
+  /** How deep the walk is inside the condition of a loop, which is worked out again every turn: an array cannot be made there. */
+  private inLoopCondition = 0;
+
+  /** The array whose length is the list's. */
+  private lengthArray(list: List): ArrayDecl {
+    return list.kind === "array" ? list.a : list.kind === "units" ? list.ptr : [...list.fields.values()][0];
+  }
+
+  /** Every array of a list: one, an array a field, or a unit's three. */
+  private arraysOf(list: List): ArrayDecl[] {
+    return list.kind === "array" ? [list.a] : list.kind === "units" ? [list.ptr, list.epd, list.uid] : [...list.fields.values()];
+  }
+
+  /** A list, or what makes one: `xs`, `xs.filter(…)`, `xs.map(…).sort(…)`. Making one emits the statements that fill it, so ask once. */
+  private listOf(expr: TS.Expression): Binding | undefined {
+    const { ts } = this;
+    const b = this.bindingOf(expr);
+    if (b) return b;
+    const e = this.unwrap(expr);
+    if (ts.isCallExpression(e) && this.makesList(e)) {
+      // Refused, and said so: an array of nothing stands in, so the one mistake is the one message.
+      return this.madeList(e, undefined, e) ?? { kind: "array", a: this.newArray("(not made)", "number", 1, this.sourceOf(e)) };
+    }
+    return undefined;
+  }
+
+  /** What a method that takes a function runs over: a list of the program, the units of the game, or a list the script has. */
+  private overOf(expr: TS.Expression): Over | undefined {
+    const b = this.listOf(expr);
+    if (b?.kind === "array" || b?.kind === "records" || b?.kind === "units") return b;
+    if (b) return undefined;
+    const h = this.evaluate(expr);
+    if (!h) return undefined;
+    if (isUnitQuery(h.value)) return { kind: "query", name: `${h.value.ident}(…)`, filter: { ...h.value.filter } };
+    if (Array.isArray(h.value)) return { kind: "values", name: expr.getText(this.body.sf).replace(/\s+/g, " ").slice(0, 40), items: h.value as unknown[] };
+    return undefined;
+  }
+
+  private overName(over: Over): string {
+    return over.kind === "array" ? over.a.name : over.name;
+  }
+
+  /** Whether a call is of a method that gives a list — `map`, `filter`, or `sort` / `reverse`, which give their own — on something such a method runs over. */
+  private makesList(e: TS.CallExpression): boolean {
+    const { ts } = this;
+    if (!ts.isPropertyAccessExpression(e.expression) || !LIST_MAKERS.has(e.expression.name.text) || this.body.plan.index.has(e)) return false;
+    const receiver = this.unwrap(e.expression.expression);
+    if (this.bindingOf(receiver)) { const b = this.bindingOf(receiver)!; return b.kind === "array" || b.kind === "records" || b.kind === "units"; }
+    if (ts.isCallExpression(receiver) && this.makesList(receiver)) return true;
+    const h = this.evaluate(receiver);
+    return !!h && (isUnitQuery(h.value) || Array.isArray(h.value));
+  }
+
+  /** The function a method is given: written there, or the name of one declared in the body. */
+  private functionOf(arg: TS.Expression | undefined, method: string, e: TS.Node): { parameters: readonly TS.ParameterDeclaration[]; body: TS.Block | TS.Expression; closure: Scope | null; name?: string } | null {
+    const { ts } = this;
+    if (!arg) { this.c.error(e, `${method}() takes a function: xs.${method}((x) => …).`); return null; }
+    const fn = this.unwrap(arg);
+    if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+      if (fn.asteriskToken || fn.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) { this.c.error(fn, "Generators and async functions are not supported in a program."); return null; }
+      return { parameters: fn.parameters, body: fn.body, closure: this.scope };
+    }
+    if (ts.isIdentifier(fn)) {
+      const decl = this.gameDeclaration(fn);
+      if (decl && ts.isFunctionDeclaration(decl) && decl.body) return { parameters: decl.parameters, body: decl.body, closure: this.body === this.c.body ? this.topScope : null, name: decl.name?.text };
+    }
+    this.c.error(arg, `A function is not a value when the map is played: write it where it is used — xs.${method}((x) => …) — or name one declared with function in the program.`);
+    return null;
+  }
+
+  /**
+   * The function given to a method, inlined with its parameters bound to what the method hands it — the item of the turn,
+   * its place, the list. A variable it uses from outside is the program's own cell, so nothing is captured and nothing
+   * is made when the map is played. `kind` is what it has to give back; "any" takes what it says it returns.
+   */
+  private callback(arg: TS.Expression | undefined, method: string, bound: Binding[], kind: Kind | "void" | "any", e: TS.CallExpression): Call | undefined {
+    const { ts } = this;
+    const fn = this.functionOf(arg, method, e);
+    if (!fn) return undefined;
+    if (kind === "any") {
+      const signature = this.c.checker.getSignaturesOfType(this.c.checker.getTypeAtLocation(arg!), ts.SignatureKind.Call)[0];
+      kind = (signature && this.kindOf(this.c.checker.getReturnTypeOfSignature(signature))) ?? "void";
+    }
+    const at = this.at(arg!);
+    const label = this.label(e);
+    const out: Call = { name: fn.name ?? `${method}'s function`, at, label, params: [], body: [] };
+    if (kind !== "void") out.result = { decl: this.newVar(`(${method}'s function result)`, kind, at, { temp: true }), kind };
+    this.mark(out, arg!);
+    const scope = new Scope(fn.closure);
+    let ok = true;
+    fn.parameters.forEach((p, i) => {
+      if (!ts.isIdentifier(p.name)) { this.c.error(p, "Destructured parameters are not supported in a program."); ok = false; return; }
+      if (p.dotDotDotToken) { this.c.error(p, "Rest parameters are not supported in a program."); ok = false; return; }
+      const b = bound[i];
+      if (!b) {
+        const h = p.initializer ? this.evaluate(p.initializer) : undefined;
+        if (h) { scope.bind(p, { kind: "value", value: h.value }); return; }
+        this.c.error(p, `${method}() hands its function ${bound.length} value${bound.length === 1 ? "" : "s"}; ${p.name.text} would be undefined.`);
+        ok = false;
+        return;
+      }
+      // By value, as TypeScript has it: a parameter the function assigns is a variable of its own that starts from what it was handed.
+      if (b.kind === "var" && this.assigns(fn.body, p)) {
+        const copy = this.newVar(p.name.text, b.v.kind, this.sourceOf(p.name), { ...(b.v.bits ? { bits: b.v.bits } : {}), ...(b.v.unsigned ? { unsigned: true } : {}) });
+        out.params.push({ decl: copy, init: b.v.kind === "number" ? varRef(b.v) : b.v.kind === "unit" ? unitRef(b.v) : boolRef(b.v), label });
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
+      if (b.kind === "value" && this.assigns(fn.body, p)) { this.c.error(p, `${p.name.text} is a value the script has here, not a variable: keep it in a let of the function's own to change it.`); ok = false; return; }
+      scope.bind(p, b);
+    });
+    if (!ok) return undefined;
+    this.inCallback++;
+    try { out.body = this.walkFunction(fn.body, kind, this.body, scope); } finally { this.inCallback--; }
+    return out;
+  }
+
+  /** The function's answer as a condition: what it returns, a number being true when it is not 0. */
+  private predicate(arg: TS.Expression | undefined, method: string, bound: Binding[], e: TS.CallExpression): BoolExpr | null {
+    const call = this.callback(arg, method, bound, "any", e);
+    if (!call) return null;
+    if (call.result?.kind === "boolean") return this.mark<BoolExpr>({ kind: "call", call }, e);
+    if (call.result?.kind === "number") return this.mark<BoolExpr>({ kind: "test", expr: this.mark<NumExpr>({ kind: "call", call }, e), at: this.at(e), label: this.label(e) }, e);
+    this.c.error(arg ?? e, `${method}()'s function answers true or false.`);
+    return null;
+  }
+
+  /** `xs.find(…) ?? 0`: what was found, or the value to the right when nothing was. Undefined when the expression is not that. */
+  private findOr(e: TS.BinaryExpression, as: "number" | "boolean"): NumExpr | BoolExpr | null | undefined {
+    const { ts } = this;
+    const left = this.unwrap(e.left);
+    if (!ts.isCallExpression(left) || !ts.isPropertyAccessExpression(left.expression) || (left.expression.name.text !== "find" && left.expression.name.text !== "findLast")) return undefined;
+    const over = this.overOf(left.expression.expression);
+    return over ? (this.searchCall(left, over, left.expression.name.text, as, e.right) as NumExpr | BoolExpr | null) : undefined;
+  }
+
+  /** What a binding is as a value of `kind`, where a method stores or returns the item or its place. */
+  private valueOf(b: Binding, kind: Kind, at: TS.Node): NumExpr | BoolExpr | UnitExpr | null {
+    if (b.kind === "var" && b.v.kind === kind) return kind === "number" ? varRef(b.v) : kind === "unit" ? unitRef(b.v) : boolRef(b.v);
+    if (b.kind === "value") {
+      if (kind === "boolean" && typeof b.value === "boolean") return { kind: "const", value: b.value };
+      if (kind === "number") { const n = this.asInteger({ value: b.value }, at); return n === null ? null : num(n); }
+    }
+    this.c.error(at, `Expected a ${kind} here.`);
+    return null;
+  }
+
+  /**
+   * The loop a method is: `turn` is called with the item and its place where the loop's body goes. A list of the
+   * program is a loop the game runs, the item what `for…of` would have; the units of the game are the loop over units,
+   * which come in no order and so have no place; a list the script has is unrolled, `turn` called once an item.
+   */
+  private loopOver(over: Over, e: TS.CallExpression, turn: (item: Binding, index: Binding | undefined) => void, reverse = false) {
+    const { ts } = this;
+    const at = this.at(e);
+    const label = this.label(e);
+    const given = e.arguments[0] && this.unwrap(e.arguments[0]);
+    const first = given && (ts.isArrowFunction(given) || ts.isFunctionExpression(given)) ? given.parameters[0] : undefined;
+    const itemName = first && ts.isIdentifier(first.name) ? first.name.text : `(item of ${this.overName(over)})`;
+    if (over.kind === "values") {
+      const items = over.items.map((value, i) => [value, i] as const);
+      for (const [value, i] of reverse ? items.reverse() : items) turn({ kind: "value", value }, { kind: "value", value: i });
+      return;
+    }
+    if (over.kind === "query") {
+      const v = this.newVar(itemName, "unit", at, { temp: true });
+      const body = this.collect(() => turn({ kind: "var", v }, undefined));
+      this.emit({ kind: "unitLoop", decl: v, filter: { ...over.filter }, body, at, label }, e);
+      return;
+    }
+    const i = this.newVar(`(index of ${this.overName(over)})`, "number", at, { temp: true });
+    const length: NumExpr = { kind: "length", array: this.lengthArray(over).id, at };
+    const body = this.collect(() => {
+      let item: Binding;
+      if (over.kind === "records") item = this.rowOf(over, varRef(i));
+      else {
+        const v = over.kind === "units" ? this.newVar(itemName, "unit", at, { temp: true }) : this.newVar(itemName, over.a.kind, at, { temp: true, ...(over.a.bits ? { bits: over.a.bits } : {}), ...(over.a.unsigned ? { unsigned: true } : {}) });
+        this.emit({ kind: "declare", decl: v, init: over.kind === "units" ? this.unitAtIndex(over, varRef(i), e) : { kind: "element", array: over.a.id, index: varRef(i), at }, at, label }, e);
+        item = { kind: "var", v };
+      }
+      turn(item, { kind: "var", v: i });
+    });
+    const step = (by: "+" | "-"): Stmt => ({ kind: "assign", target: i.id, value: { kind: "binary", op: by, left: varRef(i), right: num(1), at, label }, at, label });
+    if (reverse) {
+      this.emit({ kind: "declare", decl: i, init: { kind: "binary", op: "-", left: length, right: num(1), at, label }, at, label }, e);
+      this.emit({ kind: "for", cond: { kind: "compare", op: ">=", left: varRef(i), right: num(0), at, label }, update: [step("-")], body, at, label }, e);
+      return;
+    }
+    // JavaScript takes the length once, before the first turn: what the function pushes is not visited.
+    let end: NumExpr = length;
+    if (this.arraysOf(over).some((a) => a.dynamic)) {
+      const n = this.newVar(`(length of ${this.overName(over)})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: n, init: length, at, label }, e);
+      end = varRef(n);
+    }
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: end, at, label }, update: [step("+")], body, at, label }, e);
+  }
+
+  /** What `turn` is handed, as the arguments of the function: the item, its place where there is one, the list where it is the program's. */
+  private handed(over: Over, item: Binding, index: Binding | undefined): Binding[] {
+    return [item, ...(index ? [index, ...(over.kind === "values" || over.kind === "query" ? [] : [over as Binding])] : [])];
+  }
+
+  /**
+   * A method that takes a function and gives a value — `some`, `every`, `findIndex`, `find`, `reduce` — as a function of
+   * the compiler's own, as `includes` is: the loop inside it, `return` leaving it. Everything is inside the call, so it
+   * is worked out again wherever the expression is, a loop's condition included. `otherwise` is what `find` gives when
+   * nothing is found (`xs.find(…) ?? 0`).
+   */
+  private searchCall(e: TS.CallExpression, over: Over, method: string, as: Kind, otherwise?: TS.Expression): NumExpr | BoolExpr | UnitExpr | null {
+    const at = this.at(e);
+    const label = this.label(e);
+    const name = `${this.overName(over)}.${method}`;
+    const wrong = (what: string) => { this.c.error(e, what); return null; };
+    const fn = e.arguments[0];
+    let ok = true;
+    const ret = (value: NumExpr | BoolExpr | UnitExpr | null): Stmt[] => { if (!value) { ok = false; return []; } return [{ kind: "return", value, at, label } as Stmt]; };
+    let kind: Kind;
+    let body: Stmt[];
+    switch (method) {
+      case "some": case "every": {
+        if (as !== "boolean") return wrong(`${name}(…) is true or false.`);
+        kind = "boolean";
+        const some = method === "some";
+        body = this.collect(() => {
+          this.loopOver(over, e, (item, index) => {
+            const p = this.predicate(fn, method, this.handed(over, item, index), e);
+            if (!p) { ok = false; return; }
+            this.emit({ kind: "if", cond: some ? p : { kind: "not", expr: p }, then: ret(some ? TRUE : FALSE), at, label }, e);
+          });
+          this.out.push(...ret(some ? FALSE : TRUE));
+        });
+        break;
+      }
+      case "findIndex": case "findLastIndex": {
+        if (as !== "number") return wrong(`${name}(…) is a number: the place of what was found, or -1.`);
+        if (over.kind === "query") return wrong("The units of the game come in no order, so none has a place; find() gives the unit.");
+        kind = "number";
+        body = this.collect(() => {
+          this.loopOver(over, e, (item, index) => {
+            const p = this.predicate(fn, method, this.handed(over, item, index), e);
+            if (!p) { ok = false; return; }
+            this.emit({ kind: "if", cond: p, then: ret(this.valueOf(index!, "number", e)), at, label }, e);
+          }, method === "findLastIndex");
+          this.out.push(...ret(num(-1)));
+        });
+        break;
+      }
+      case "find": case "findLast": {
+        if (over.kind === "records") return wrong(`${name}(…) would be a record or undefined, and there is no undefined when the map is played: take its place with ${method === "find" ? "findIndex" : "findLastIndex"}(…), which is -1 when nothing is found, and read ${this.overName(over)}[i].`);
+        if (over.kind === "query" && method === "findLast") return wrong("The units of the game come in no order: find() gives one that matches.");
+        const holds: Kind = over.kind === "units" || over.kind === "query" ? "unit" : over.kind === "array" ? over.a.kind : as;
+        if (as !== holds) return wrong(`${name}(…) gives what ${this.overName(over)} holds: a ${holds}.`);
+        // A unit that was not found is no unit, as first() gives; a number has nothing of the kind.
+        let none: NumExpr | BoolExpr | UnitExpr | null = holds === "unit" ? NO_UNIT : null;
+        if (holds !== "unit") {
+          if (!otherwise) return wrong(`${name}(…) is undefined when nothing is found, and there is no undefined when the map is played: say what it is then — ${name}(…) ?? 0 — or take the place with ${method === "find" ? "findIndex" : "findLastIndex"}(…), which is -1.`);
+          none = holds === "number" ? this.num(otherwise) : this.boolValue(otherwise);
+          if (!none) return null;
+        }
+        kind = holds;
+        body = this.collect(() => {
+          this.loopOver(over, e, (item, index) => {
+            const p = this.predicate(fn, method, this.handed(over, item, index), e);
+            if (!p) { ok = false; return; }
+            this.emit({ kind: "if", cond: p, then: ret(this.valueOf(item, holds, e)), at, label }, e);
+          }, method === "findLast");
+          this.out.push(...ret(none));
+        });
+        break;
+      }
+      case "reduce": {
+        if (as === "unit") return wrong(`${name}(…) adds up to a number or a boolean.`);
+        if (e.arguments.length < 2) return wrong(`${name}() wants what it starts from — ${this.overName(over)}.reduce((sum, x) => sum + x, 0): without it JavaScript throws on an empty array.`);
+        kind = as;
+        const start = as === "number" ? this.num(e.arguments[1]) : this.boolValue(e.arguments[1]);
+        if (!start) return null;
+        const acc = this.newVar(`(${name} so far)`, as, at, { temp: true, ...(as === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(e)) : {}) });
+        body = this.collect(() => {
+          this.emit({ kind: "declare", decl: acc, init: start, at, label }, e);
+          this.loopOver(over, e, (item, index) => {
+            const call = this.callback(fn, method, [{ kind: "var", v: acc }, ...this.handed(over, item, index)], as, e);
+            if (!call) { ok = false; return; }
+            if (as === "number") this.emit({ kind: "assign", target: acc.id, value: this.mark<NumExpr>({ kind: "call", call }, e), at, label }, e);
+            else this.emit({ kind: "assignBool", target: acc.id, value: this.mark<BoolExpr>({ kind: "call", call }, e), at, label }, e);
+          });
+          this.out.push(...ret(as === "number" ? varRef(acc) : boolRef(acc)));
+        });
+        break;
+      }
+      default:
+        return wrong(`${method}() is not a method of ${this.overName(over)} that gives a value.`);
+    }
+    if (!ok) return null;
+    const result = this.newVar(`(${name} result)`, kind, at, { temp: true, ...(kind === "number" && over.kind === "array" && method !== "reduce" && !method.endsWith("Index") ? { ...(over.a.bits ? { bits: over.a.bits } : {}), ...(over.a.unsigned ? { unsigned: true } : {}) } : {}) });
+    const call: Call = { name, at, label, params: [], result: { decl: result, kind }, body };
+    return this.mark<NumExpr | BoolExpr | UnitExpr>({ kind: "call", call }, e);
+  }
+
+  /** `xs.forEach((x) => …)`: the loop, the function its body. */
+  private forEachCall(e: TS.CallExpression, over: Over) {
+    if (e.arguments.length > 1) { this.c.error(e.arguments[1], "forEach() takes the function alone; there is no this in a program."); return; }
+    this.loopOver(over, e, (item, index) => {
+      const call = this.callback(e.arguments[0], "forEach", this.handed(over, item, index), "void", e);
+      if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+    });
+  }
+
+  /**
+   * `xs.map(…)`, `xs.filter(…)`: a new list, named by the declaration it is for or a temporary's. `map` has the length of
+   * what it runs over — fixed when that is, else one that grows; `filter` always grows. `sort` and `reverse` give the list
+   * they were called on, changed in place, as they do in JavaScript. Null with a diagnostic.
+   */
+  private madeList(e: TS.CallExpression, name: string | undefined, where: TS.Node): Binding | null {
+    const { ts } = this;
+    if (!ts.isPropertyAccessExpression(e.expression)) return null;
+    const method = e.expression.name.text;
+    const at = this.at(e);
+    const label = this.label(e);
+    const over = this.overOf(e.expression.expression);
+    if (!over) { this.notConstant(e.expression.expression, `What ${method}() runs over`); return null; }
+    if (method === "sort" || method === "reverse") {
+      if (over.kind === "values" || over.kind === "query") { this.c.error(e, over.kind === "query" ? "The units of the game come in no order; keep them in an array first: unitsOf(…).filter(() => true)." : `${over.name} is a list the script has; ${method}() changes a list in place, which takes an array of the program.`); return null; }
+      if (this.arraysOf(over).some((a) => a.values)) { this.c.error(e, `${this.overName(over)} was computed when the script was built and is only read in a program.`); return null; }
+      return (method === "sort" ? this.sortList(e, over) : this.reverseList(e, over)) ? over : null;
+    }
+    if (this.inLoopCondition > 0) { this.c.error(e, `${method}() makes an array, and a loop's condition is worked out again every turn: make it before the loop, or inside it.`); return null; }
+    if (e.arguments.length > 1) { this.c.error(e.arguments[1], `${method}() takes the function alone; there is no this in a program.`); return null; }
+    const given = name ?? `(${this.overName(over)}.${method})`;
+    const source = this.sourceOf(where);
+    let ok = true;
+    if (method === "map") {
+      const signature = e.arguments[0] ? this.c.checker.getSignaturesOfType(this.c.checker.getTypeAtLocation(e.arguments[0]), ts.SignatureKind.Call)[0] : undefined;
+      const returns = signature ? this.c.checker.getReturnTypeOfSignature(signature) : undefined;
+      const kind = returns ? this.kindOf(returns) : null;
+      if (kind !== "number" && kind !== "boolean") { this.c.error(e, `map() makes an array of numbers or of booleans here${returns ? `; this one would hold ${this.c.checker.typeToString(returns)}` : ""}. For units or records, push to an array in a for…of.`); return null; }
+      const fixed = over.kind === "values" ? over.items.length : over.kind === "query" || this.arraysOf(over).some((a) => a.dynamic) ? null : this.lengthArray(over).length;
+      if (fixed !== null && (fixed < 1 || fixed > MAX_ARRAY)) { this.c.error(e, `An array of a program has 1 to ${MAX_ARRAY} cells (this would have ${fixed}).`); return null; }
+      const a = this.newArray(given, kind, fixed ?? 0, source, kind === "number" && returns ? this.widthOf(returns) : {});
+      if (fixed === null) a.dynamic = true;
+      this.emit({ kind: "declareArray", array: a.id, ...(fixed === null ? { init: [] } : { fill: kind === "number" ? num(0) : FALSE }), at, label }, e);
+      this.loopOver(over, e, (item, index) => {
+        const call = this.callback(e.arguments[0], "map", this.handed(over, item, index), kind, e);
+        if (!call) { ok = false; return; }
+        const value = this.mark<NumExpr | BoolExpr>({ kind: "call", call }, e);
+        if (fixed === null) this.emit({ kind: "push", array: a.id, value, at, label }, e);
+        else this.emit({ kind: "store", array: a.id, index: this.valueOf(index!, "number", e) as NumExpr, value, at, label }, e);
+      });
+      return ok ? { kind: "array", a } : null;
+    }
+    // filter: what it runs over, fewer of them.
+    const grow = (n: string, from: { kind: "number" | "boolean"; bits?: 8 | 16; unsigned?: boolean }) => {
+      const a = this.newArray(n, from.kind, 0, source, { ...(from.bits ? { bits: from.bits } : {}), ...(from.unsigned ? { unsigned: true } : {}) });
+      a.dynamic = true;
+      this.emit({ kind: "declareArray", array: a.id, init: [], at, label }, e);
+      return a;
+    };
+    let made: List;
+    if (over.kind === "units" || over.kind === "query") made = { kind: "units", name: given, ptr: grow(`${given} (ptr)`, { kind: "number", unsigned: true }), epd: grow(`${given} (epd)`, { kind: "number", unsigned: true }), uid: grow(`${given} (uid)`, { kind: "number", unsigned: true }) };
+    else if (over.kind === "records") made = { kind: "records", name: given, fields: new Map([...over.fields].map(([field, a]) => [field, grow(`${given}.${field}`, a)])) };
+    else if (over.kind === "array") made = { kind: "array", a: grow(given, over.a) };
+    else {
+      const kinds = new Set(over.items.map((v) => typeof v));
+      if (kinds.size !== 1 || !(kinds.has("number") || kinds.has("boolean"))) { this.c.error(e, `filter() of a list the script has makes an array of numbers or of booleans; ${over.name} holds something else. A for…of over it runs the same turns.`); return null; }
+      made = { kind: "array", a: grow(given, { kind: kinds.has("number") ? "number" : "boolean" }) };
+    }
+    this.loopOver(over, e, (item, index) => {
+      const p = this.predicate(e.arguments[0], "filter", this.handed(over, item, index), e);
+      if (!p) { ok = false; return; }
+      const keep = this.collect(() => {
+        if (made.kind === "units") {
+          const unit = this.valueOf(item, "unit", e) as UnitExpr | null;
+          if (!unit) { ok = false; return; }
+          for (const [a, part] of this.unitArrays(made)) this.emit({ kind: "push", array: a.id, value: { kind: "unitPart", unit, part, at }, at, label }, e);
+        } else if (made.kind === "records" && over.kind === "records" && index?.kind === "var") {
+          for (const [field, a] of made.fields) this.emit({ kind: "push", array: a.id, value: { kind: "element", array: over.fields.get(field)!.id, index: varRef(index.v), at }, at, label }, e);
+        } else if (made.kind === "array") {
+          const value = this.valueOf(item, made.a.kind, e) as NumExpr | BoolExpr | null;
+          if (!value) { ok = false; return; }
+          this.emit({ kind: "push", array: made.a.id, value, at, label }, e);
+        }
+      });
+      this.emit({ kind: "if", cond: p, then: keep, at, label }, e);
+    });
+    return ok ? made : null;
+  }
+
+  /** `a[i] = b[j]` over every array of a list, a row moved as one. */
+  private moveRow(list: List, to: NumExpr, from: NumExpr, e: TS.Node): Stmt[] {
+    const at = this.at(e);
+    const label = this.label(e);
+    return this.arraysOf(list).map((a): Stmt => ({ kind: "store", array: a.id, index: to, value: { kind: "element", array: a.id, index: from, at }, at, label }));
+  }
+
+  /** A row taken out into temporaries — what a sort holds in its hand, what a swap needs — with what puts it back at a place. */
+  private heldRow(list: List, index: NumExpr, e: TS.Node): { binding: Binding; put: (to: NumExpr) => Stmt[] } {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (list.kind === "units") {
+      const v = this.newVar(`(held of ${list.name})`, "unit", at, { temp: true });
+      this.emit({ kind: "declare", decl: v, init: this.unitAtIndex(list, index, e), at, label }, e);
+      return { binding: { kind: "var", v }, put: (to) => this.unitArrays(list).map(([a, part]): Stmt => ({ kind: "store", array: a.id, index: to, value: { kind: "unitPart", unit: unitRef(v), part, at }, at, label })) };
+    }
+    const hold = (a: ArrayDecl) => {
+      const v = this.newVar(`(held of ${a.name})`, a.kind, at, { temp: true, ...(a.bits ? { bits: a.bits } : {}), ...(a.unsigned ? { unsigned: true } : {}) });
+      this.emit({ kind: "declare", decl: v, init: { kind: "element", array: a.id, index, at }, at, label }, e);
+      return v;
+    };
+    const back = (a: ArrayDecl, v: VarDecl, to: NumExpr): Stmt => ({ kind: "store", array: a.id, index: to, value: a.kind === "number" ? varRef(v) : boolRef(v), at, label });
+    if (list.kind === "array") { const v = hold(list.a); return { binding: { kind: "var", v }, put: (to) => [back(list.a, v, to)] }; }
+    const held = [...list.fields].map(([field, a]) => [field, a, hold(a)] as const);
+    return { binding: { kind: "record", fields: new Map(held.map(([field, , v]) => [field, { kind: "var", v } as Binding])) }, put: (to) => held.map(([, a, v]) => back(a, v, to)) };
+  }
+
+  /** `xs.reverse()`: the two ends exchanged, inwards, within the frame. */
+  private reverseList(e: TS.CallExpression, list: List): boolean {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (e.arguments.length) { this.c.error(e, "reverse() takes no argument."); return false; }
+    const i = this.newVar(`(front of ${this.overName(list)})`, "number", at, { temp: true });
+    const j = this.newVar(`(back of ${this.overName(list)})`, "number", at, { temp: true });
+    const step = (v: VarDecl, by: "+" | "-"): Stmt => ({ kind: "assign", target: v.id, value: { kind: "binary", op: by, left: varRef(v), right: num(1), at, label }, at, label });
+    const body = this.collect(() => {
+      const held = this.heldRow(list, varRef(i), e);
+      this.out.push(...this.moveRow(list, varRef(i), varRef(j), e), ...held.put(varRef(j)), step(i, "+"), step(j, "-"));
+    });
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+    this.emit({ kind: "declare", decl: j, init: { kind: "binary", op: "-", left: { kind: "length", array: this.lengthArray(list).id, at }, right: num(1), at, label }, at, label }, e);
+    this.emit({ kind: "while", cond: { kind: "compare", op: "<", left: varRef(i), right: varRef(j), at, label }, body, at, label }, e);
+    return true;
+  }
+
+  /**
+   * `xs.sort((a, b) => a - b)`: an insertion sort within the frame — each item taken in hand and the larger ones before
+   * it moved up one. It keeps the order of equals, as JavaScript's sort does, and is quick on a list nearly in order;
+   * a list in no order costs its length squared, which is what the hint is about.
+   */
+  private sortList(e: TS.CallExpression, list: List): boolean {
+    const at = this.at(e);
+    const label = this.label(e);
+    const name = this.overName(list);
+    if (!e.arguments[0]) { this.c.error(e, `sort() wants its function — ${name}.sort((a, b) => a - b): without one JavaScript sorts numbers as text, 10 before 9.`); return false; }
+    const i = this.newVar(`(index of ${name})`, "number", at, { temp: true });
+    const j = this.newVar(`(place in ${name})`, "number", at, { temp: true });
+    const next: NumExpr = { kind: "binary", op: "+", left: varRef(j), right: num(1), at, label };
+    let ok = true;
+    const body = this.collect(() => {
+      const held = this.heldRow(list, varRef(i), e);
+      this.emit({ kind: "declare", decl: j, init: { kind: "binary", op: "-", left: varRef(i), right: num(1), at, label }, at, label }, e);
+      const inner = this.collect(() => {
+        let before: Binding;
+        if (list.kind === "records") before = this.rowOf(list, varRef(j));
+        else {
+          const v = list.kind === "units" ? this.newVar("(before)", "unit", at, { temp: true }) : this.newVar("(before)", list.a.kind, at, { temp: true, ...(list.a.bits ? { bits: list.a.bits } : {}), ...(list.a.unsigned ? { unsigned: true } : {}) });
+          this.emit({ kind: "declare", decl: v, init: list.kind === "units" ? this.unitAtIndex(list, varRef(j), e) : { kind: "element", array: list.a.id, index: varRef(j), at }, at, label }, e);
+          before = { kind: "var", v };
+        }
+        const call = this.callback(e.arguments[0], "sort", [before, held.binding], "any", e);
+        if (!call) { ok = false; return; }
+        if (call.result?.kind !== "number") { this.c.error(e.arguments[0], "sort()'s function gives a number — below 0 when a goes first, above when b does: (a, b) => a - b."); ok = false; return; }
+        const after: BoolExpr = { kind: "compare", op: ">", left: this.mark<NumExpr>({ kind: "call", call }, e), right: num(0), at, label };
+        this.emit({ kind: "if", cond: { kind: "not", expr: after }, then: [{ kind: "break", at, label }], at, label }, e);
+        this.out.push(...this.moveRow(list, next, varRef(j), e), { kind: "assign", target: j.id, value: { kind: "binary", op: "-", left: varRef(j), right: num(1), at, label }, at, label });
+      });
+      this.emit({ kind: "while", cond: { kind: "compare", op: ">=", left: varRef(j), right: num(0), at, label }, body: inner, at, label }, e);
+      this.out.push(...held.put(next));
+    });
+    if (!ok) return false;
+    this.emit({ kind: "declare", decl: i, init: num(1), at, label }, e);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: this.lengthArray(list).id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body, at, label, sorts: name }, e);
+    return true;
   }
 
   /** `hp[i] = v`, `hp[i] += v`: a store into a cell. An index that holds a call is evaluated once for the read and once for the store, as two reads of `i` would be. */
@@ -1326,7 +1824,7 @@ export class Structured {
    * Undefined when the expression is neither; null, with a diagnostic, when it is one and cannot compile.
    */
   private elementOf(e: TS.ElementAccessExpression): { a: ArrayDecl; index: NumExpr } | null | undefined {
-    const b = this.bindingOf(e.expression);
+    const b = this.listOf(e.expression);
     if (b?.kind === "keyed") {
       if (b.as !== "record" || !b.values) { this.c.error(e, `${b.name} is read with ${b.as === "map" ? "get(key)" : "has(key)"}, as a ${b.as === "map" ? "Map" : "Set"} is.`); return null; }
       const index = this.keyIndex(b, e.argumentExpression);
@@ -1599,6 +2097,7 @@ export class Structured {
 
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   private sleepStatement(call: TS.CallExpression) {
+    if (this.inCallback > 0) { this.c.error(call, "sleep() inside a function given to an array method: the method is one loop within the frame. A for…of over the same list can sleep between its turns."); return; }
     if (call.arguments.length !== 1) { this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(frames(5))."); return; }
     const h = this.evaluate(call.arguments[0]);
     if (!h) { this.notConstant(call.arguments[0], "A duration"); return; }
@@ -1741,6 +2240,13 @@ export class Structured {
       }
     }
     if (ts.isPropertyAccessExpression(e.expression)) {
+      const method = e.expression.name.text;
+      if (method === "forEach" || SEARCHES.has(method)) {
+        const over = this.overOf(e.expression.expression);
+        if (over && method === "forEach") { this.forEachCall(e, over); return; }
+        if (over) { this.c.error(e, `${this.overName(over)}.${method}(…) is a value: use it in an if or store it.`); return; }
+      }
+      if (LIST_MAKERS.has(method) && this.makesList(e)) { this.madeList(e, undefined, e); return; }
       const list = this.bindingOf(e.expression.expression);
       if (list?.kind === "array") { this.arrayCall(e, list.a, e.expression.name.text, "statement"); return; }
       if (list?.kind === "records") { this.recordsCall(e, list, e.expression.name.text); return; }
@@ -1818,7 +2324,8 @@ export class Structured {
     if (!condition) return undefined;
     const known = this.knownCondition(condition);
     if (known === true) return undefined;
-    return this.bool(condition);
+    this.inLoopCondition++;
+    try { return this.bool(condition); } finally { this.inLoopCondition--; }
   }
 
   private whileStatement(s: TS.WhileStatement, ctx: Ctx) {
@@ -1830,7 +2337,9 @@ export class Structured {
 
   private doStatement(s: TS.DoStatement, ctx: Ctx) {
     const body = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
-    const cond = this.bool(s.expression);
+    this.inLoopCondition++;
+    let cond: BoolExpr;
+    try { cond = this.bool(s.expression); } finally { this.inLoopCondition--; }
     const condLabel = `L${this.line(s)}: while (${s.expression.getText(this.body.sf).replace(/\s+/g, " ")})`;
     this.emit({ kind: "do", body, cond, at: this.at(s), label: this.label(s), condLabel }, s);
   }
@@ -1969,7 +2478,7 @@ export class Structured {
     const decl = ts.isVariableDeclarationList(s.initializer) && s.initializer.declarations.length === 1 ? s.initializer.declarations[0] : undefined;
     if (decl && this.keyedLoop(s, decl, ctx)) return;
     if (!decl || !ts.isIdentifier(decl.name)) { this.c.error(s.initializer, "for…of takes one variable: for (const w of waves) { … }."); return; }
-    const over = this.bindingOf(s.expression);
+    const over = this.listOf(s.expression);
     if (over?.kind === "units") {
       // The unit of the turn is a variable of its own, taken from the three cells: a unit is a reference whichever way it is held.
       const i = this.newVar(`(index of ${over.name})`, "number", this.at(s), { temp: true });
@@ -2138,7 +2647,7 @@ export class Structured {
         asCalled(constant ?? `${p.name.text} is ${describe(h.value)}, which only the script has`);
         return;
       }
-      const binding = this.bindingOf(arg);
+      const binding = this.listOf(arg);
       // An array reaches a function as itself, as it does in TypeScript: what the function stores, the caller sees.
       if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed") { scope.bind(p, binding); asCalled({ binding }); return; }
       if (binding?.kind === "record") {
@@ -2504,8 +3013,12 @@ export class Structured {
         return this.mark<NumExpr>({ kind: "element", array: el.a.id, index: el.index, at: this.at(e) }, e);
       }
     }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const found = this.findOr(e, "number");
+      if (found !== undefined) return found as NumExpr | null;
+    }
     if (ts.isPropertyAccessExpression(e) && e.name.text === "length") {
-      const b = this.bindingOf(e.expression);
+      const b = this.listOf(e.expression);
       if (b?.kind === "array") return this.mark<NumExpr>({ kind: "length", array: b.a.id, at: this.at(e) }, e);
       if (b?.kind === "records") return this.mark<NumExpr>({ kind: "length", array: [...b.fields.values()][0].id, at: this.at(e) }, e);
       if (b?.kind === "units") return this.mark<NumExpr>({ kind: "length", array: b.ptr.id, at: this.at(e) }, e);
@@ -2623,6 +3136,10 @@ export class Structured {
   /** A call as a number: a function of the body or a game function (its result), or an intrinsic over variables. */
   private callValue(e: TS.CallExpression): NumExpr | null {
     const { ts } = this;
+    if (ts.isPropertyAccessExpression(e.expression) && SEARCHES.has(e.expression.name.text)) {
+      const over = this.overOf(e.expression.expression);
+      if (over) return this.searchCall(e, over, e.expression.name.text, "number") as NumExpr | null;
+    }
     if (ts.isPropertyAccessExpression(e.expression)) {
       const list = this.bindingOf(e.expression.expression);
       if (list?.kind === "array") {
@@ -2786,6 +3303,11 @@ export class Structured {
       if (b?.kind === "var" && b.v.kind === "unit") return unitRef(b.v);
       this.c.error(e, "Expected a unit of the game: a variable holding one, first(…), nearest(…) or randomUnit(…).");
       return null;
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && (e.expression.name.text === "find" || e.expression.name.text === "findLast")) {
+      // `squad.find((u) => u.hp < 50)`, `unitsOf(P1).find(…)`: the unit, or none.
+      const over = this.overOf(e.expression.expression);
+      if (over) return this.searchCall(e, over, e.expression.name.text, "unit") as UnitExpr | null;
     }
     if (ts.isCallExpression(e)) {
       let call: Call | undefined;
@@ -3059,6 +3581,16 @@ export class Structured {
       if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       else this.notConstant(e, "A condition");
       return FALSE;
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && SEARCHES.has(e.expression.name.text)) {
+      const over = this.overOf(e.expression.expression);
+      if (over) {
+        // A number (findIndex, a sum) tested as one is `!= 0`, as any number is.
+        const numeric = this.kindOf(this.c.checker.getTypeAtLocation(e)) === "number";
+        const out = this.searchCall(e, over, e.expression.name.text, numeric ? "number" : "boolean");
+        if (!out) return FALSE;
+        return numeric ? this.mark<BoolExpr>({ kind: "test", expr: out as NumExpr, at: this.at(e), label: this.label(e) }, e) : (out as BoolExpr);
+      }
     }
     if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
       const list = this.bindingOf(e.expression.expression);

@@ -139,7 +139,7 @@ describe("arrays that grow", () => {
     const sim = run("let xs = [4, 5, 6]; let v = 5; let at = 9; let none = 9; let has = false; at = xs.indexOf(v); none = xs.indexOf(v + 9); has = xs.includes(6) && !xs.includes(v * 3); let flags = [false, true]; let f = false; f = flags.includes(true); xs.fill(v + 2);");
     expect([sim.value("at"), sim.value("none"), sim.value("has"), sim.value("f")]).toEqual([1, -1, true, true]);
     expect(sim.list("xs")).toEqual([7, 7, 7]);
-    expect(messages("let xs = [1]; xs.sort();")[0]).toMatch(/has push, pop, fill, includes, indexOf, length and for…of; sort\(\) is not one of them/);
+    expect(messages("let xs = [1]; xs.splice(0, 1);")[0]).toMatch(/has push, pop, fill, includes, indexOf, length, for…of, and the methods that take a function .*; splice\(\) is not one of them/);
   });
 });
 
@@ -259,7 +259,7 @@ describe("arrays of records", () => {
   it("what they cannot be", () => {
     expect(messages("let waves = [{ count: 4 }]; waves.push({ delay: 1 });")[0]).toMatch(/count is missing|does not exist|missing/);
     expect(messages("let waves = [{ count: 4 }]; let n = 0; n = waves;")[0]).toMatch(/is an array of records|not assignable/);
-    expect(messages("let waves = [{ count: 4 }]; waves.sort();")[0]).toMatch(/has push\(\{ … \}\), pop\(\), length and for…of/);
+    expect(messages("let waves = [{ count: 4 }]; waves.splice(0, 1);")[0]).toMatch(/has push\(\{ … \}\), pop\(\), length, for…of, and forEach/);
   });
 });
 
@@ -281,6 +281,6 @@ describe("arrays of units", () => {
     expect([sim.value("alive"), sim.value("none"), sim.value("n")]).toEqual([1, 1, 0]);
   });
   it("what they cannot be", () => {
-    expect(messages("const squad: Unit[] = []; const u = first(); if (u) squad.push(u); squad.sort();")[0]).toMatch(/An array of units has push\(unit\), pop\(\), length and for…of/);
+    expect(messages("const squad: Unit[] = []; const u = first(); if (u) squad.push(u); squad.splice(0, 1);")[0]).toMatch(/An array of units has push\(unit\), pop\(\), length, for…of, and forEach/);
   });
 });
