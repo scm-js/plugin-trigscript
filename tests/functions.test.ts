@@ -96,10 +96,12 @@ describe("functions: called or inlined", () => {
     expect(simulate(r).events.map((e) => e.action.player)).toEqual([0, 1]);
   });
 
-  it("an argument only the script has — text, a list — keeps that call inlined", () => {
-    const r = compile("function say(t: string) { displayText(t); } say('a'); say('b');");
+  it("an argument only the script has — a list — keeps that call inlined; a text is a value the game has, since 3.9", () => {
+    const r = compile("function total(xs: number[]) { let t = 0; for (const x of xs) t += x; setDeaths(P1, units.TerranMarine, 'set', t); } total([1, 2]); total([3, 4]);");
     expect(functions(r)).toEqual([]);
-    expect(hint(r, /^inlined ×2$/)?.note).toContain("only the script has");
+    const said = compile("function say(t: string) { displayText(t); } say('a'); say('b');");
+    expect(functions(said).map((f) => f.name)).toEqual(["say"]);
+    expect(simulate(said).events.map((e) => e.text)).toEqual(["a", "b"]);
   });
 
   it("rose() and once() keep a latch a call, so such a function stays inlined", () => {

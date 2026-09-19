@@ -288,7 +288,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" ? 2 : name === "recursionProbe" ? 3 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" ? 2 : name === "leftoversProbe" ? 1 : name === "recursionProbe" ? 3 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -417,6 +417,7 @@ FIXTURES.insideProbe = readFileSync(resolve(import.meta.dirname, "..", "probes",
 FIXTURES.stringsProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "strings.ts"), "utf8");
 FIXTURES.classesProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "classes.ts"), "utf8");
 FIXTURES.mapProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "map.ts"), "utf8");
+FIXTURES.leftoversProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "leftovers.ts"), "utf8");
 
 // Classes: an instance a record, its methods functions with the instance first — called, inlined, calling themselves — what
 // a class extends, statics, a getter and a setter, texts, arrays and an instance inside, and an array of instances.

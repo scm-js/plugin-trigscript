@@ -544,7 +544,7 @@ export function eachCall(root: unknown, visit: (c: Call) => void): void {
   if (Array.isArray(root)) { for (const x of root) eachCall(x, visit); return; }
   if (!root || typeof root !== "object") return;
   const o = root as Record<string, unknown>;
-  if (o.kind === "call" && o.call && typeof o.call === "object") visit(o.call as Call);
+  if ((o.kind === "call" || o.kind === "textCall") && o.call && typeof o.call === "object") visit(o.call as Call);
   for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
 }
 

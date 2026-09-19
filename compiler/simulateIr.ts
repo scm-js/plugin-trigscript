@@ -138,6 +138,8 @@ class Stopped extends Error {}
 interface Frame {
   vars: [string, Value][];
   units: [string, SimUnit | null][];
+  /** The texts the function holds: each keeps its block, and the variable holds none for the length of the call. */
+  texts: [string, HeldText][];
   arrays: { a: { decl: ArrayDecl; cells: Value[]; room: number }; cells: Value[]; room: number }[];
 }
 
@@ -680,13 +682,15 @@ class ProgramRun {
     let kept: Frame | undefined;
     if (fn) {
       // A called function: every argument first — one of them may be a call of the same function — then its parameters, then its one body.
-      const values: (Value | SimUnit | null)[] = [];
-      for (const p of c.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init as UnitExpr) : p.decl.kind === "text" ? 0 : yield* this.init(p.init as NumExpr | BoolExpr, p.decl.kind));
+      const values: (Value | SimUnit | HeldText | null)[] = [];
+      // A text is a copy of its own by the time the parameter takes it: what it was made from may be the parameter itself.
+      for (const p of c.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init as UnitExpr) : p.decl.kind === "text" ? this.owned(yield* this.text(p.init as TextExpr), c.at) : yield* this.init(p.init as NumExpr | BoolExpr, p.decl.kind));
       if (c.saves) kept = this.keep(c);
       c.params.forEach((p, i) => {
         this.declare(p.decl);
         if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i] as SimUnit | null);
-        else if (p.decl.kind !== "text") this.store(p.decl.id, values[i] as Value);
+        else if (p.decl.kind === "text") { const old = this.textVars.get(p.decl.id); if (old?.room) this.sim.heap.give(old.room); this.textVars.set(p.decl.id, values[i] as HeldText); }
+        else this.store(p.decl.id, values[i] as Value);
       });
     } else {
       for (const p of c.params) {
@@ -713,9 +717,10 @@ class ProgramRun {
       throw new Stopped();
     }
     this.depth++;
-    const frame: Frame = { vars: [], units: [], arrays: [] };
+    const frame: Frame = { vars: [], units: [], texts: [], arrays: [] };
     for (const id of saves.vars) {
-      if (this.unitVars.has(id)) frame.units.push([id, this.unitVars.get(id) ?? null]);
+      if (this.textVars.has(id)) { frame.texts.push([id, this.textVars.get(id)!]); this.textVars.set(id, { s: "", room: 0 }); }
+      else if (this.unitVars.has(id)) frame.units.push([id, this.unitVars.get(id) ?? null]);
       else if (this.vars.has(id)) frame.vars.push([id, this.vars.get(id)!]);
     }
     for (const id of saves.arrays) {
@@ -731,6 +736,8 @@ class ProgramRun {
   private bringBack(frame: Frame): void {
     for (const [id, v] of frame.vars) this.vars.set(id, v);
     for (const [id, u] of frame.units) this.unitVars.set(id, u);
+    // The block the inner run left in a text goes back to the heap before the text is the outer run's again.
+    for (const [id, t] of frame.texts) { const left = this.textVars.get(id); if (left?.room) this.sim.heap.give(left.room); this.textVars.set(id, t); }
     for (const k of frame.arrays) {
       // The block the inner run left in the handle goes back to the heap first.
       if (k.a.room) this.sim.heap.give(k.a.room);

@@ -363,7 +363,7 @@ _STACK = {}
 
 
 def frame_cells(saves, kinds):
-    return 1 + 4 * len(saves.get("arrays", [])) + sum(3 if kinds.get(v) == "unit" else 1 for v in saves.get("vars", []))
+    return 1 + 4 * len(saves.get("arrays", [])) + sum(3 if kinds.get(v) in ("unit", "text") else 1 for v in saves.get("vars", []))
 
 
 def largest_frame():
@@ -385,8 +385,9 @@ def largest_frame():
             for x in node:
                 kinds_of(x, into)
         elif isinstance(node, dict):
-            if isinstance(node.get("id"), str) and node.get("kind") in ("number", "boolean", "unit") and "shared" in node:
-                into[node["id"]] = node["kind"]
+            if isinstance(node.get("id"), str) and node.get("kind") in ("number", "boolean", "unit", "text") and "shared" in node:
+                # A text kept as its id is one cell, as a number is; one that was made is three.
+                into[node["id"]] = "number" if node["kind"] == "text" and node.get("text") == "id" else node["kind"]
             for v in node.values():
                 if isinstance(v, (dict, list)):
                     kinds_of(v, into)
@@ -2530,7 +2531,8 @@ class Lowering:
 
         @EUDFunc
         def body():
-            if result is not None:
+            # A text result keeps what it held until `return` puts the next one in it, which is when that block goes back.
+            if result is not None and kind != "text":
                 result.set(NO_UNIT if kind == "unit" else 0)
             end = Forward()
             lowering.in_function += 1
@@ -2563,7 +2565,7 @@ class Lowering:
         entry = {"f": f, "tail": tail, "back": back}
         PushTriggerScope()
         start << NextTrigger()
-        if result is not None:
+        if result is not None and kind != "text":
             result.set(NO_UNIT if kind == "unit" else 0)
         end = Forward()
         self.in_function += 1
@@ -2589,6 +2591,9 @@ class Lowering:
             if isinstance(s, UnitStorage):
                 for cell in (s.ptr, s.epd, s.uid):
                     pairs.append(self.cell_pair(cell, s.rowed))
+            elif isinstance(s, TextStorage):
+                for cell in (s.addr, s.block, s.len):
+                    pairs.append(self.cell_pair(cell, s.rowed))
             elif isinstance(s, Storage):
                 pairs.append(self.cell_pair(s.store, s.rowed))
         for id_ in saves.get("arrays", []):
@@ -2597,6 +2602,10 @@ class Lowering:
                 for name in HANDLE:
                     pairs.append(self.cell_pair(a.handle[name], a.rowed))
         return pairs
+
+    def saved_texts(self, saves):
+        """The made texts among what a frame keeps: each owns a block, which the frame keeps for it."""
+        return [s for s in (self.vars.get(id_) for id_ in saves.get("vars", [])) if isinstance(s, TextStorage)]
 
     def cell_pair(self, cell, rowed):
         if rowed:
@@ -2632,11 +2641,19 @@ class Lowering:
             if isinstance(a, ListStorage):
                 for name in HANDLE:
                     a.put(name, 0)
-        return pairs, mine
+        # A text the function holds keeps its block on the stack; the variable holds none for the length of the call,
+        # so that the inner run's first text does not give the outer run's block back.
+        held = self.saved_texts(saves)
+        for s in held:
+            s.write(0, 0, 0)
+        return pairs, mine, held
 
     def bring_back(self, call, kept):
-        pairs, mine = kept
+        pairs, mine, held = kept
         st = stack()
+        # The block the inner run left in a text goes back to the heap before the text is the outer run's again.
+        for s in held:
+            texts()["release"](s.cell(s.block))
         # The block the inner run left in a handle goes back to the heap before the handle is the outer run's again.
         for id_ in call["saves"].get("arrays", []):
             a = self.array(id_, call)
@@ -2662,6 +2679,11 @@ class Lowering:
         # own cell is copied when a later argument holds a call, which may be of a function that writes that variable.
         values = []
         for i, p in enumerate(call["params"]):
+            if p["decl"]["kind"] == "text":
+                # A text is a copy of its own by the time the parameter takes it: three numbers, read now.
+                t = self.own(self.text(p["init"]))
+                values.append((fresh(t.addr), fresh(t.block), fresh(t.length())))
+                continue
             v = self.value(p["init"], p["decl"]["kind"])
             later = any(has_call(q["init"]) for q in call["params"][i + 1:])
             if later and p["decl"]["kind"] != "unit" and not isinstance(v, int):
@@ -2672,14 +2694,25 @@ class Lowering:
         kept = None
         if call.get("saves"):
             # Copies: an argument may be one of this function's own parameters, which the ones set before it write over.
-            values = [v if isinstance(v, int) else UnitRef(v.ptr if isinstance(v.ptr, int) else fresh(v.ptr), v.epd if isinstance(v.epd, int) else fresh(v.epd), v.uid if v.uid is None or isinstance(v.uid, int) else fresh(v.uid)) if isinstance(v, UnitRef) else fresh(v) for v in values]
+            values = [v if isinstance(v, (int, tuple)) else UnitRef(v.ptr if isinstance(v.ptr, int) else fresh(v.ptr), v.epd if isinstance(v.epd, int) else fresh(v.epd), v.uid if v.uid is None or isinstance(v.uid, int) else fresh(v.uid)) if isinstance(v, UnitRef) else fresh(v) for v in values]
             kept = self.keep(call)
         for s, v in zip(params, values):
-            s.set(v)
+            if isinstance(v, tuple):
+                # What the parameter held from the call before goes back; then it holds this call's text.
+                texts()["release"](s.cell(s.block))
+                s.write(*v)
+            else:
+                s.set(v)
         body()
         if kept is not None:
             self.bring_back(call, kept)
         if result is None:
+            return 0
+        if isinstance(result, TextStorage):
+            # The function's text moves to the call's own result, from where a textCall takes it.
+            v = returned.take_out()
+            texts()["release"](result.cell(result.block))
+            result.write(v.addr, v.block, v.length())
             return 0
         result.set(returned.get())
         return result.get()

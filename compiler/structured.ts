@@ -217,7 +217,7 @@ const LIST_MAKERS = new Set(["map", "filter", "sort", "reverse"]);
 const SEARCHES = new Set(["some", "every", "find", "findLast", "findIndex", "findLastIndex", "reduce"]);
 
 /** What a call passes for a parameter: the value a parameter that is a variable is set to, or the array (the record) the parameter stands for. */
-type CallArgument = { init: NumExpr | BoolExpr | UnitExpr; label: string } | { binding: Binding };
+type CallArgument = { init: NumExpr | BoolExpr | UnitExpr | TextExpr; label: string } | { binding: Binding };
 
 /** What a call that is not written as one hands `inline`: a method's instance, and — for `new`, a getter, a setter — the arguments, that nothing comes back, and what runs first in the body. */
 interface MethodCall { self?: Binding; args?: readonly TS.Expression[]; nothing?: boolean; first?: (scope: Scope) => void; /** The call gives an instance: where the one it returns is kept, and the name one it makes is declared under. */ instance?: { name: string; made?: Binding }; /** What runs before the body, inside the call: the calls before this one in a chain (`v.add(w).scale(2)`), so that they run where the expression does. */ before?: Stmt[] }
@@ -5568,8 +5568,6 @@ export class Structured {
       if (args) why = a;
       args = null;
     };
-    // A text owns a block of memory, and what a called function is handed and hands back are plain cells so far.
-    if (kind === "text") asCalled("it returns a text, which a function that is called cannot do yet");
     // Which instance comes back is settled where the call is: a copy of the body a call.
     if (as.instance) asCalled("it returns an instance, and which one is settled at each call");
     if (as.before?.length) asCalled("it is called on what another call gives, which runs first and inside it");
@@ -5635,11 +5633,12 @@ export class Structured {
       const h = this.evaluate(arg);
       if (this.isTextType(this.c.checker.getTypeAtLocation(p.name)) && !(h && !isGameValue(h.value) && !this.assigns(body, p))) {
         // A text of the program: the caller's own variable when the function only reads it, else a variable of the parameter's own that starts as a copy.
-        asCalled(`${p.name.text} is a text, which a function that is called cannot take yet`);
+        // A function that is called has the parameter for a variable either way, set to a copy at each call.
         const given = this.bindingOf(arg);
-        if (given?.kind === "var" && given.v.kind === "text" && !this.assigns(body, p)) { scope.bind(p, given); return; }
+        if (given?.kind === "var" && given.v.kind === "text" && !this.assigns(body, p)) { scope.bind(p, given); asCalled({ init: { kind: "textVar", id: given.v.id }, label }); return; }
         const value = this.text(arg);
         if (!value) { ok = false; return; }
+        asCalled({ init: value, label });
         const copy = this.newVar(p.name.text, "text", this.sourceOfIn(target, p.name), { text: "made" });
         out.params.push({ decl: copy, init: value, label });
         scope.bind(p, { kind: "var", v: copy });
@@ -5735,7 +5734,7 @@ export class Structured {
         else {
           site.busy = true;
           let made: FuncDecl | string;
-          try { made = this.callable(parameters, body, target, name ?? "function", decl, kind as Kind | "void" /* a text result keeps `args` null: never here */, args, closure, at, site); } finally { site.busy = false; site.making = undefined; }
+          try { made = this.callable(parameters, body, target, name ?? "function", decl, kind, args, closure, at, site); } finally { site.busy = false; site.making = undefined; }
           if (typeof made === "string") site.never = made;
           else {
             site.fn = made;
@@ -5814,6 +5813,7 @@ export class Structured {
     if (value === null || value === undefined) return this.kindOf(this.c.checker.getTypeAtLocation(parameter.name)) === "unit" ? { init: NO_UNIT, label } : null;
     if (typeof value === "boolean") return { init: value ? TRUE : FALSE, label };
     if (typeof value === "number" && Number.isInteger(value) && value >= I32_MIN && value <= U32_MAX) return { init: num(value), label };
+    if (typeof value === "string" && this.isTextType(this.c.checker.getTypeAtLocation(parameter.name))) return { init: this.literalText(value, parameter), label };
     return null;
   }
 
@@ -5860,7 +5860,7 @@ export class Structured {
    * that way — a parameter reaches a field only a value known when the script is built can fill. Nothing the attempt
    * reported is kept: the same lines compile, or fail for good, where the function is inlined.
    */
-  private callable(parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression, target: Body, name: string, decl: TS.Node, kind: Kind | "void", args: CallArgument[], closure: Scope | null, at: At, site: FunctionSite): FuncDecl | string {
+  private callable(parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression, target: Body, name: string, decl: TS.Node, kind: Kind | "text" | "void", args: CallArgument[], closure: Scope | null, at: At, site: FunctionSite): FuncDecl | string {
     const { ts } = this;
     const scope = new Scope(closure);
     const patterns: (() => void)[] = [];
@@ -5874,9 +5874,9 @@ export class Structured {
         continue;
       }
       const type = this.c.checker.getTypeAtLocation(p.name);
-      const k = this.kindOf(type);
-      if (!k) return `${p.name.getText(target.sf)} is not a number, a boolean or a unit`;
-      const v = this.newVar(p.name.getText(target.sf), k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(type) : {});
+      const k: Kind | "text" | null = this.kindOf(type) ?? (this.isTextType(type) ? "text" : null);
+      if (!k) return `${p.name.getText(target.sf)} is not a number, a boolean, a unit or a text`;
+      const v = this.newVar(p.name.getText(target.sf), k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(type) : k === "text" ? { text: "made" } : {});
       fn.params.push(v);
       scope.bind(p, { kind: "var", v });
     }

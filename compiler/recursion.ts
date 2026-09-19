@@ -18,18 +18,17 @@
  *
  * A function off every cycle is left exactly as it was, and so is the program's body: only what recurses pays.
  */
-import { STACK_DEPTH, UNIT_FLAGS, declarations, eachCall, isTextExpr, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
+import { STACK_DEPTH, UNIT_FLAGS, declarations, eachCall, isTextExpr, mapText, mapTextOperands, type TextExpr, type TextMap, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type UnitExpr, type VarDecl } from "./ir";
 import type { ProgramDiagnostic } from "./eud";
 
 type Kind = "number" | "boolean" | "unit";
 type Expr = NumExpr | BoolExpr | UnitExpr;
-/** A kind as a frame counts it. A text never reaches one: a function that calls itself and holds a text is refused below. */
+/** A kind as an expression of the pass has one. A text is never one of those: it is rewritten by `rewriteText`. */
 const framed = (kind: VarDecl["kind"] | undefined): Kind => (kind === undefined || kind === "text" ? "number" : kind);
-/** The nodes that are a text, or are worked out from one. */
-const TEXTUAL: readonly string[] = ["text", "textVar", "textOf", "textAt", "storeText", "releaseText", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "assignText", "textLoop"];
+/** What a frame keeps of a variable, in cells: a text kept as its id is one, as a number is; one that was made is three — where it is, its block, its length. */
+const cellsOf = (d: VarDecl): number => (d.kind === "unit" || (d.kind === "text" && d.text !== "id") ? 3 : 1);
 
 const FLAGS: ReadonlySet<string> = new Set(UNIT_FLAGS);
-const CELLS: Record<Kind, number> = { number: 1, boolean: 1, unit: 3 };
 const HANDLE_CELLS = 4;
 
 /** Whether a node of this kind is anywhere in a piece of IR. */
@@ -42,15 +41,16 @@ function mentions(root: unknown, kind: string): boolean {
 }
 
 /** The cells of one frame: what the call keeps, and where its function returns to. */
-export function frameCells(program: Pick<Program, "body" | "functions">, saves: NonNullable<Call["saves"]>, kinds?: Map<string, Kind>): number {
-  const k = kinds ?? kindsOf(program);
-  return 1 + saves.arrays.length * HANDLE_CELLS + saves.vars.reduce((n, id) => n + CELLS[k.get(id) ?? "number"], 0);
+export function frameCells(program: Pick<Program, "body" | "functions">, saves: NonNullable<Call["saves"]>, cells?: Map<string, number>): number {
+  const k = cells ?? kindsOf(program);
+  return 1 + saves.arrays.length * HANDLE_CELLS + saves.vars.reduce((n, id) => n + (k.get(id) ?? 1), 0);
 }
 
-function kindsOf(program: Pick<Program, "body" | "functions">): Map<string, Kind> {
-  const out = new Map<string, Kind>();
-  for (const d of declarations(program.body)) out.set(d.id, framed(d.kind));
-  for (const f of program.functions ?? []) for (const d of [...f.params, ...(f.result ? [f.result.decl] : []), ...declarations(f.body)]) out.set(d.id, framed(d.kind));
+/** How many cells a frame keeps of each variable. */
+function kindsOf(program: Pick<Program, "body" | "functions">): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const d of declarations(program.body)) out.set(d.id, cellsOf(d));
+  for (const f of program.functions ?? []) for (const d of [...f.params, ...(f.result ? [f.result.decl] : []), ...declarations(f.body)]) out.set(d.id, cellsOf(d));
   return out;
 }
 
@@ -137,12 +137,6 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
     if (mine === undefined) continue;
     f.recursive = true;
 
-    // A text owns a block of the heap, and a frame would have to keep that ownership straight around every call. Not in this cut: said, rather than got wrong.
-    if (TEXTUAL.some((k) => mentions([f.params, f.body], k)) || [...f.params, ...declarations(f.body)].some((d) => d.kind === "text")) {
-      errors.push({ at: f.at, message: `${f.name} calls itself and works with a text, which a function that calls itself cannot do yet. Keep the text outside it — work out the numbers in ${f.name}, and make the text from them where it is called — or show it with print(), whose text can hold the function's numbers.` });
-      continue;
-    }
-
     /** The function's own variables: what a frame brings back, so a read of one needs no copy made before a call. */
     const own = new Set<string>([...f.params, ...(f.result ? [f.result.decl] : []), ...declarations(f.body)].map((d) => d.id));
     const comesBack = (c: Call): boolean => (c.fn ? component.get(c.fn) === mine : risky([c.params.map((p) => p.init), c.body]));
@@ -176,8 +170,10 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
 
     /** A call's arguments, and an inlined call's body. */
     const settleCall = (c: Call, pre: Stmt[], w: Where) => {
-      const inits = operands(c.params.map((p) => ({ e: p.init as Expr, kind: framed(p.decl.kind) })), pre, w);
-      c.params.forEach((p, i) => { p.init = inits[i]; });
+      const plain = c.params.filter((p) => !isTextExpr(p.init));
+      const inits = operands(plain.map((p) => ({ e: p.init as Expr, kind: framed(p.decl.kind) })), pre, w);
+      plain.forEach((p, i) => { p.init = inits[i]; });
+      for (const p of c.params) if (isTextExpr(p.init)) p.init = rewriteText(p.init, pre, w);
       if (!c.fn) c.body = body(c.body, c.result ? framed(c.result.kind) : undefined);
     };
 
@@ -213,9 +209,32 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
       return { kind: "var", id: decl.id };
     };
 
+    /**
+     * A text with every call that may come back taken out of it, into `pre`. One whose own value is such a call is
+     * that call's result afterwards — a text that is looked at, where a `textCall` takes it: a copy, and the result
+     * keeps its block until the next return, as it always does.
+     */
+    const rewriteText = (t: TextExpr, pre: Stmt[], w: Where): TextExpr => {
+      if (!risky(t)) return t;
+      if (t.kind === "textCall") {
+        const c = t.call;
+        if (!comesBack(c)) { settleCall(c, pre, w); return t; }
+        settleCall(c, pre, { at: c.at, label: c.label });
+        pre.push({ kind: "call", call: c, at: c.at, label: c.label });
+        return c.result ? { kind: "textVar", id: c.result.decl.id } : { kind: "text", text: "" };
+      }
+      const inside: TextMap = { num: (x) => rewrite(x, "number", pre, w) as NumExpr, bool: (x) => rewrite(x, "boolean", pre, w) as BoolExpr, call: (c) => c, text: (x) => rewriteText(x, pre, w) };
+      return mapText(t, inside);
+    };
+
     /** An expression with every call that may come back taken out of it, into `pre`. */
     const rewrite = (e: Expr, kind: Kind, pre: Stmt[], w: Where): Expr => {
       if (!risky(e)) return e;
+      // A number or a condition worked out from texts: `f(n - 1).length`, `a == g(n)`.
+      if (e.kind !== "call") {
+        const ofTexts = mapTextOperands(e as NumExpr | BoolExpr, { num: (x) => rewrite(x, "number", pre, w) as NumExpr, bool: (x) => rewrite(x, "boolean", pre, w) as BoolExpr, call: (c) => c, text: (x) => rewriteText(x, pre, w) });
+        if (ofTexts) return ofTexts;
+      }
       const one = (x: Expr, k: Kind) => rewrite(x, k, pre, w);
       switch (e.kind) {
         case "call": {
@@ -271,7 +290,10 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
         const value = (e: Expr, k: Kind) => rewrite(e, k, pre, w);
         const arrayKind = (id: string): Kind => arrays.get(id)?.kind ?? "number";
         switch (s.kind) {
-          case "declare": if (!isTextExpr(s.init)) s.init = value(s.init, framed(s.decl.kind)); break;
+          case "declare": s.init = isTextExpr(s.init) ? rewriteText(s.init, pre, w) : value(s.init, framed(s.decl.kind)); break;
+          case "assignText": s.value = rewriteText(s.value, pre, w); break;
+          case "storeText": s.value = rewriteText(s.value, pre, w); s.index = value(s.index, "number") as NumExpr; break;
+          case "releaseText": s.index = value(s.index, "number") as NumExpr; break;
           case "assign": s.value = value(s.value, "number") as NumExpr; break;
           case "assignBool": s.value = value(s.value, "boolean") as BoolExpr; break;
           case "assignUnit": s.value = value(s.value, "unit") as UnitExpr; break;
@@ -302,11 +324,12 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = done[1] as NumExpr;
             break;
           }
-          case "tableWrite": if (!isTextExpr(s.value)) s.value = value(s.value, s.boolean ? "boolean" : "number") as NumExpr | BoolExpr; break;
-          case "return": if (s.value && !isTextExpr(s.value)) s.value = value(s.value, returns ?? "number"); break;
+          case "tableWrite": s.value = isTextExpr(s.value) ? rewriteText(s.value, pre, w) : (value(s.value, s.boolean ? "boolean" : "number") as NumExpr | BoolExpr); break;
+          case "return": if (s.value) s.value = isTextExpr(s.value) ? rewriteText(s.value, pre, w) : value(s.value, returns ?? "number"); break;
           case "action": {
             const done = operands((s.variables ?? []).map((v) => ({ e: v.expr, kind: "number" as const })), pre, w) as NumExpr[];
             s.variables?.forEach((v, i) => { v.expr = done[i]; });
+            if (s.text) s.text = rewriteText(s.text, pre, w);
             break;
           }
           case "centerLocation": [s.x, s.y] = operands([{ e: s.x, kind: "number" }, { e: s.y, kind: "number" }], pre, w) as NumExpr[]; break;
@@ -314,6 +337,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             const numbers = s.parts.filter((p) => p.kind === "number");
             const done = operands(numbers.map((p) => ({ e: p.expr, kind: "number" as const })), pre, w) as NumExpr[];
             numbers.forEach((p, i) => { p.expr = done[i]; });
+            for (const p of s.parts) if (p.kind === "value") p.text = rewriteText(p.text, pre, w);
             break;
           }
           case "switch":
@@ -350,6 +374,10 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
           }
           case "unrolled": s.iterations = s.iterations.map((i) => body(i, returns)); break;
           case "block": s.body = body(s.body, returns); break;
+          case "textLoop":
+            errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over a text holds such a call: the loop's place in the text is not something a call can keep. Walk it by place — for (let i = 0; i < s.length; i++) — which a call keeps as it keeps any number.` });
+            s.body = body(s.body, returns);
+            break;
           case "unitLoop":
             errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over units holds such a call: the loop's place among the game's units is not something a call can keep. Collect what the loop finds into an array first, and make the calls from a loop over that array.` });
             s.body = body(s.body, returns);

@@ -3,11 +3,13 @@
  * another row, a method that returns its instance, a function that makes one, the methods that take a function on an
  * array of arrays, a spread into a call, and an array of texts. The bodies are run in JavaScript too, and compared.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { compileScript, type CompileResult } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
-import { simulatePrograms } from "../compiler/simulateIr";
+import { ProgramSimulation, simulatePrograms } from "../compiler/simulateIr";
 import { defaultLib } from "../bundle/lib.mjs";
 
 const LIB = defaultLib();
@@ -92,5 +94,60 @@ describe("an array of texts", () => {
     const sim = simulatePrograms(r.ir, 1, { strings: r.strings, heapCells: 128 });
     expect(sim.faults).toEqual([]);
     expect(shown(sim)).toEqual(["again 79|line 79 1!"]);
+  });
+});
+
+describe("a function that takes or returns a text", () => {
+  it("is called from its second call on, as any function is", () => {
+    const body = "function tag(s: string, n: number): string { return `[${s}:${n}]`; } function shout(s: string) { s += '!'; print(s); } let k = 2; const a = tag('a', k); const b = tag(a, k + 1); const c = tag(`w${k}`, 0); shout(a); shout(c); shout('x'); print(`${a} ${b} ${c} ${tag(tag('q', 1), 2).length}`);";
+    const r = compile(body);
+    expect((r.ir[0].functions ?? []).map((f) => f.name).sort()).toEqual(["shout", "tag"]);
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings });
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(js(body));
+  });
+  it("and gives its blocks back however often it is called", () => {
+    const r = compile("function tag(s: string, n: number): string { return `[${s}:${n}]`; } let last = ''; let i = 0; while (i < 300) { last = tag(tag(`t${i}`, i), 1); i++; } print(last);");
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, heapCells: 64 });
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(["[[t299:299]:1]"]);
+  });
+});
+
+describe("a function that calls itself and works with texts", () => {
+  it("keeps its own text across the call, takes one and gives one back", () => {
+    same("function path(n: number): string { const here = `${n}`; if (n <= 0) return here; const rest = path(n - 1); return `${here}>${rest}`; } function bars(n: number, s: string): string { if (n <= 0) return s; return bars(n - 1, s + '|'); } function count(n: number): number { let label = `c${n}`; if (n > 0) count(n - 1); return label.length; } let k = 5; print(`${path(k)} ${bars(k, '')} ${count(12)} ${path(2).length}`);");
+  });
+  it("gives every block back, however deep it went", () => {
+    const r = compile("function path(n: number): string { const here = `${n}`; if (n <= 0) return here; const rest = path(n - 1); return `${here}>${rest}`; } let i = 0; let last = ''; while (i < 40) { last = path(i % 7); i++; } print(last);");
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, heapCells: 96 });
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(["4>3>2>1>0"]);
+  });
+  it("a loop over a text that holds such a call is refused", () => {
+    expect(messages("function f(s: string, n: number): number { let t = 0; for (const ch of s) { if (n > 0) t += f(ch, n - 1); } return t; } let k = 2; k = f('ab', k);").join("\n")).toMatch(/this loop over a text holds such a call/);
+  });
+});
+
+describe("the probe", () => {
+  it("says in the simulator what it expects to say in the game", () => {
+    const r = compileScript(ts, { "main.ts": readFileSync(resolve(import.meta.dirname, "..", "probes", "leftovers.ts"), "utf8") }, NAMES, { lib: LIB });
+    expect(r.diagnostics.map((d) => `${d.line}: ${d.message}`)).toEqual([]);
+    // The simulator makes no units for createUnit: the three Marines of step G are there from the start, and step H's fourth never comes.
+    const marines = [0, 1, 2].map((i) => ({ type: 0, owner: 0, x: 100 + i * 10, y: 100, hp: 40 }));
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, units: marines, locations: { 1: { left: 0, top: 0, right: 256, bottom: 256 } } }).run(24 * 36);
+    const lines = sim.events.map((e) => e.text ?? "").filter((t) => /^[A-Z]: /.test(t));
+    const checked: string[] = [];
+    for (const line of lines) {
+      const m = /^([A-Z]): (.*?)(?: - [^(]*)? \(expect ([^)]*)\)$/.exec(line);
+      if (!m || m[1] === "H") continue;
+      expect(`${m[1]}: ${m[2]}`).toBe(`${m[1]}: ${m[3]}`);
+      checked.push(m[1]);
+    }
+    expect(checked).toEqual(["A", "B", "C", "D", "E", "F", "G"]);
+    expect(sim.faults).toEqual([]);
+    expect(sim.events.some((e) => e.text === "done")).toBe(true);
+    // The functions that take and give texts are called, the one that calls itself among them.
+    expect((r.ir[0].functions ?? []).map((f) => f.name)).toEqual(expect.arrayContaining(["tag", "path", "bars", "kept"]));
   });
 });
