@@ -279,7 +279,13 @@ delay: 2 }]`, `waves[i].count += 1`, `waves.push({ count: 6, delay: 1 })`, `wave
 `waves[i] = { … }`. A record taken out of one — `const w = waves[i]`, the variable of
 `for (const w of waves)`, a record handed to a function — is the array's own, as an object of
 a TypeScript array is a reference: `w.delay = 9` writes the array, and `w` stays the record
-it was when `i` moves on. Fields are numbers and booleans, with their declared widths.
+it was when `i` moves on. A field is a number or a boolean (with its declared width), a
+unit, a text, an array of numbers, booleans or units, or a record of the same: `let squads =
+[{ id: 1, name: "red", leader: first({ owner: P1 }), seen: [] as number[], at: { x: 0, y: 0
+} }]`, `squads[i].seen.push(4)`, `squads[i].name += "!"`. An array in a row is always one
+that grows, and the row owns it, as it owns a text that was made: `pop()`, `length =`,
+`squads[i] = { … }` and declaring the array again give the blocks back, and `filter` gives
+its rows arrays and texts of their own. The line's hint says how many cells a row comes to.
 
 **An array of units** keeps the units themselves: `const squad: Unit[] = []`,
 `squad.push(u)`, `squad[i].hp = 10`, `squad.pop()?.kill()`, `for (const u of squad)`,
@@ -545,6 +551,63 @@ and not a JavaScript engine:
 
 A loop over units (`for (const u of unitsOf(…))`) cannot hold such a call: collect what it
 finds into an array, and recurse from a loop over that.
+
+**Classes** are TypeScript's, declared inside the program like its functions. An instance
+is a record — a variable a field — and a method is a function that is handed the instance,
+so everything above about functions holds for methods: one used once is inlined, one used
+more is called (a copy an instance, as a function that takes an array is a copy an array),
+one may call itself, and one that sleeps is inlined.
+
+```ts
+program(() => {
+  class Wave {
+    static made = 0;
+    left: number;
+    constructor(public unit: UnitType, public count: number) { this.left = count; Wave.made++; }
+    spawn(at: Location) { if (this.left > 0) { createUnit(P2, this.unit, 1, at); this.left--; } }
+    get done() { return this.left == 0; }
+  }
+  class Boss extends Wave {
+    constructor(unit: UnitType) { super(unit, 1); }
+    spawn(at: Location) { super.spawn(at); displayText("The boss is here"); }
+  }
+  const waves = [new Wave(units.ZergZergling, 12), new Wave(units.ZergHydralisk, 6)];
+  const boss = new Boss(units.ZergUltralisk);
+  while (!waves.every((w) => w.done)) {
+    for (const w of waves) w.spawn(locations.Gate);
+    sleep(seconds(1));
+  }
+  boss.spawn(locations.Gate);
+});
+```
+
+Fields with their first values, a constructor, `constructor(public x: number)`, methods,
+`get` and `set`, `static` fields and methods, `readonly`, `private` and `#x`, `extends`
+with `super(…)` and `super.method()`, `abstract`. A field holds what a record's does: a
+number, a boolean, a unit, a text, an array (`members: Unit[] = []`), a record, another
+instance (`pos = new Vec(0, 0)`). `this.members = []` starts the array over.
+
+What makes it work is that **the class of every instance is known when the script is
+built** — nothing of a class is left when the map is played. So an overridden method is
+found by what the instance is, even through a parameter typed as the class it extends;
+`x instanceof Boss` is answered by the compiler, and the branch that is false is not built;
+and the same is where the limits are:
+
+- **An array of instances holds one class**, since a row has the fields of one. `const xs:
+  Wave[] = []` that only ever gets `new Boss(…)` is an array of `Boss`; one that gets both
+  is an error that says to keep an array for each.
+- **`new` where the instance will live**: `const w = new Wave(…)`, a field's first value,
+  `waves.push(new Wave(…))`, `waves[i] = new Wave(…)`, `[new Wave(…), …]`, an argument
+  (`run(new Wave(…))`). A row *is* the instance, so `waves.push(w)` of one kept in a variable
+  is refused rather than quietly copied. `const same = w` is another name for the same one.
+- **A function does not return an instance**, and a variable is not given another one
+  (`w = other`): both would need to know which instance it is while the map is played.
+  Hand the instance to the function, or keep instances in an array and return the place.
+- **A class is declared in the program** (or in a `game()` function) that uses it. One
+  declared outside is the script's: fine for working things out when the script is
+  applied, not something a program can write to.
+- No type parameters, no static blocks, no decorators; a class written as a value
+  (`const C = class { … }`) is refused.
 
 Functions the game runs can live in any file: `game()` marks them.
 
@@ -854,7 +917,8 @@ variable afterwards changes nothing until the action runs again. Any other actio
 What is left out for now: a function that calls itself cannot hold a text; a function
 that takes or returns a text is always a copy at each call (the hint on its line says
 why); an array of texts is a list the script has (`titles[level]`), not one a program
-fills; `parseInt`, regular expressions and the words a player typed in chat are not there.
+fills — a program that needs one keeps an array of records with a text for a field, which a
+row can hold; `parseInt`, regular expressions and the words a player typed in chat are not there.
 
 **Time is `sleep`.** `sleep(seconds(15))` gives the frame back and resumes that much
 later; other programs and the map's triggers go on meanwhile. `frames(n)` is the game's
@@ -913,8 +977,8 @@ programs, each a thread of its own with its own variables. A program's text
 takes a string of the map you edit; a `trigger()`'s text is interned into the map when
 the script is applied, as it always was.
 
-Still to come, in this order: the rest of the TypeScript people write — a `string` that is a value (a text kept in a variable, a
-template stored and shown later), classes, a `Map` over any number; then `test()` blocks
+Still to come, in this order: the last of the TypeScript people write — a `Map` over any
+number; then `test()` blocks
 that run a script against the simulator, a debugger that steps it, and a gallery of
 examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
@@ -938,6 +1002,12 @@ Texts are values now (*A text is a value*, above): `let s = "…"` inside a prog
 error in 3.8 and is a variable in 3.9, and the objectives, a leaderboard's label, a
 transmission and a unit type's name take a text the program made, where 3.8 refused
 anything but a text written in the script.
+
+Classes (*Classes*, above) are new: a `class` inside a program was refused in 3.8. With
+them an array of records learnt to hold more than numbers and booleans — a unit, a text, an
+array that grows, a record inside the record — whether its rows are instances or records
+written out. And `p.trail = []` on an array that grows, a record's or an instance's, starts
+it over where 3.8 said an array is assigned cell by cell.
 
 Patterns and spread (*Patterns and spread*, above) are new too, and mended something:
 `const { n, d } = waves[0]` over a list of the script — nothing of the program in it — was

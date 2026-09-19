@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 13** (12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 14** (13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -358,6 +358,7 @@ TextExpr =
   | { kind: "text", text }                              one written in the script
   | { kind: "textVar", id }
   | { kind: "textOf", array, index, at }                a cell of an ArrayDecl with `texts`
+  | { kind: "textAt", addr, block, chars, index, at }   a made text kept in cell `index` of three arrays
   | { kind: "template", parts, at, label }              made: the parts one after another
   | { kind: "textTernary", cond, whenTrue, whenFalse, at, label }
   | { kind: "textSlice", of, start?, end?, at, label }  characters start … end − 1
@@ -385,6 +386,17 @@ keeps its block until the next `return` puts another in it. Both backends take a
 blocks in this order, so they run out of heap at the same text; then the text is empty,
 and the game says so once in red where Simulate records a fault.
 
+**A text in the cells of arrays** (version 14) is what lets a row of an array of records
+hold one. The three cells of a `made` variable are cells of three arrays instead — `addr`,
+`block`, `chars`, all at one `index` — and a `textAt` reads them as a variable's are read:
+looked at, never owned by the value, cells that were never given a text (0) the empty text.
+Nothing but `storeText` and `releaseText` writes such cells as a text; the front end moves
+them as the plain numbers they are (a sort, a pop), which moves the text with its block, and
+says who owns what: before a row goes it emits a `releaseText` for each text it holds, and
+where a row is copied (`filter`) it zeroes the copy's three cells and `storeText`s the
+original's `textAt` into them, which makes the copy a block of its own. In the simulator
+the number in the cells is a key to the text, so that what moves the numbers moves it.
+
 Every operand is worked out before anything is written, in the order written. A variable's
 text used as an operand is copied when a later operand holds a call, which may give that
 variable another text.
@@ -392,6 +404,8 @@ variable another text.
 | Node | Fields | Meaning |
 | --- | --- | --- |
 | `assignText` | `target`, `value` | `s = v`, `s += v` (the front end writes the template) |
+| `storeText` | `addr`, `block`, `chars`, `index`, `value` | the same into cell `index` of three arrays: `value` is worked out first, then the block the cells held goes back, then the cells take the text — a copy of one that was only looked at |
+| `releaseText` | `block`, `index` | the block cell `index` of `block` names goes back to the heap, and the cell is 0 |
 | `textLoop` | `decl`, `of`, `body` | `for (const ch of s)`: the text — a copy of a variable's — walked once, `decl` a made text of one character each turn; no `sleep` inside |
 | `textLength` | `of` | a number: characters (code points), not bytes |
 | `textIndexOf` | `of`, `find`, `from?` | a number: the place in characters of the first match at or after `from`, −1 for none; an empty `find` is found at `from` |

@@ -880,6 +880,59 @@ things and the strings first):
   so `super`, an overridden method and `instanceof` are all settled at build time, and an
   array of a base class that holds two different subclasses is an error. An array of
   instances is the array of records 3.6 has.
+  **As built (2026-09-19; probe `probes/classes.ts`, steps A–K, not played yet).** A class
+  *declared in the program* (or in a `game()` function) is the program's, as a function
+  declared there is; one declared outside stays the script's. That was the decision that
+  made the rest small: the hoisting pass already plans every body inside the program, so a
+  class's methods, constructor and field values are planned like a declared function's
+  (`hoist.ts`, `classItems`), and the class's name is a game binding, which is what keeps
+  `new Squad(3)` from being worked out as a value of the script.
+  - *An instance* is the `record` binding with its class on it (`scope.ts`, `cls`).
+    `instantiate` / `construct` (`structured.ts`, *Classes*) declare the fields under the
+    declaration's name and run the constructor through `inline`, what the class extends
+    first: a class with no `extends` gets its fields' values before its constructor's first
+    line, one with `extends` when `super(…)` comes back, as JavaScript does it. A field's
+    declaration is a record's (`declareField`, shared with `declareRecord`), so a text, an
+    array, a record and another instance came with it.
+  - *A method, a getter, a setter, a static method* are `inline` with the instance bound
+    to `this` (a key of the scope that no declaration has). The instance goes last among
+    what a called function is handed, as a binding, so slice 7's rule covers it with no
+    rule of its own: a method is called from its second call on, one copy an instance, and
+    one that calls itself is recursion's (probe step D). A method on a *row* is always
+    inlined, a row being a binding made anew each time — see below.
+  - *An overridden method, `super`, `instanceof`* are settled by the class the binding
+    carries, never the declared type, so a `Bird` handed to `f(a: Animal)` runs `Bird`'s
+    methods there. `instanceof` is answered in `evaluate`, so the false branch is pruned.
+  - *Static fields* are variables declared where the class statement stands.
+  - *An array of instances* is the array of records, holding one class: the one every
+    `new` written into it, pushed to it or stored in it names (`rowClass` reads the body),
+    or the declared one. `push(new C(…))`, `xs[i] = new C(…)`, `[new C(…), …]`; pushing an
+    instance kept in a variable is refused rather than copied.
+  - **What a row holds** is what parts 3 and 4 left here. A records binding has a *shape*
+    (`RowShape`): a unit is three columns, an array that grows four (the row's handle —
+    its columns *are* a `lists` binding, so `squads[i].seen` is part 3's `inner` with no
+    new IR), an array of units twelve, a record or an instance its columns under its name,
+    a text three. Every field being plain columns is what keeps push, pop, sort and
+    reverse moving a row whole without knowing what is in it. The row owns its blocks:
+    `pop`, `length =`, `xs[i] = …` and the array declared again give them back
+    (`releaseRow` / `releaseFrom`); `filter` gives its rows arrays and texts of their own;
+    a sort holds a row that owns blocks as a row past the end, since an array in it is
+    reached through a row and temporaries are none.
+  - **IR 14** for the text in a row only: `textAt` (three cells read as a text that is
+    looked at), `storeText`, `releaseText`. Thirty lines of Python, which is what the probe
+    is for; the simulator keeps such a text under the number in its cells.
+  - Also: `this.members = []` (and `p.trail = [a, b]`) starts an array a field leads to
+    over; `const same = s` is another name for an instance; `new` as an argument.
+  - **Left out, each refused with a message:** a function that returns an instance, and a
+    variable given another instance (both need a class at run time); `string[]` a program
+    fills (an array of records with a text for a field does it); an array of arrays, or of
+    records, inside a row; a class expression, type parameters, static blocks, decorators.
+    Still owed from part 4 and not needed by anything here: a text local to a function
+    that calls itself, and a function that takes or returns a text becoming a called one.
+    **Worth doing before 3.9.0 if the probe's size is felt:** `push(new C(…))` makes the
+    instance in variables of its own and copies it into the row (the arrays cell by cell)
+    — the constructor could run on the new row directly. The probe is 690 KB where the
+    others are 130–220.
 - **A map over any number.** `Map<number, V>` and `Set<number>`: open addressing in a block
   of the heap, exchanged for one twice the size at three quarters full, as an array that
   grows is. A few probes an operation where a keyed table is one read, so the hint says
