@@ -238,6 +238,8 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "push": case "setLength": expr(s.value); break;
       case "assignUnit": unit(s.value); break;
       case "assignText": text(s.value); break;
+      case "storeText": expr(s.index); text(s.value); break;
+      case "releaseText": expr(s.index); break;
       case "textLoop": text(s.of); s.body.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;

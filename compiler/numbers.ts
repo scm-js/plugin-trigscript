@@ -258,6 +258,8 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       }
       case "assignUnit": unit(s.value); break;
       case "assignText": s.value = text(s.value); break;
+      case "storeText": s.index = num(s.index)[0]; s.value = text(s.value); break;
+      case "releaseText": s.index = num(s.index)[0]; break;
       case "textLoop": s.of = text(s.of); s.body.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite":

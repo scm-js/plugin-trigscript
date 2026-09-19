@@ -26,7 +26,7 @@ type Expr = NumExpr | BoolExpr | UnitExpr;
 /** A kind as a frame counts it. A text never reaches one: a function that calls itself and holds a text is refused below. */
 const framed = (kind: VarDecl["kind"] | undefined): Kind => (kind === undefined || kind === "text" ? "number" : kind);
 /** The nodes that are a text, or are worked out from one. */
-const TEXTUAL: readonly string[] = ["text", "textVar", "textOf", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "assignText", "textLoop"];
+const TEXTUAL: readonly string[] = ["text", "textVar", "textOf", "textAt", "storeText", "releaseText", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "assignText", "textLoop"];
 
 const FLAGS: ReadonlySet<string> = new Set(UNIT_FLAGS);
 const CELLS: Record<Kind, number> = { number: 1, boolean: 1, unit: 3 };

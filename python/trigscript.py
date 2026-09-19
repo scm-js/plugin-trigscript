@@ -68,7 +68,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 13
+IR_VERSION = 14
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -1908,6 +1908,12 @@ class Lowering:
                 self.put(s, st["init"], st["decl"]["kind"])
         elif k == "assignText":
             self.put(self.var(st["target"], st), st["value"], "text")
+        elif k == "storeText":
+            self.store_text(st)
+        elif k == "releaseText":
+            block, i = self.array(st["block"], st), fresh(self.num(st["index"]))
+            texts()["release"](as_var(block.get(i)))
+            block.set(i, 0)
         elif k == "textLoop":
             self.text_loop(st, ctx)
         elif k == "assignUnit":
@@ -2239,6 +2245,18 @@ class Lowering:
         addr, block, length = texts()["copy"](v.addr, v.block, v.length())
         return TextVal(addr, block, length, True)
 
+    def store_text(self, st):
+        """A text into cell i of three arrays (a row's): worked out first - it may be made from what the cells hold -
+        then the block they held goes back, then they take the text, a copy of one that was only looked at."""
+        v = self.own(self.text(st["value"]))
+        addr, block, length = fresh(v.addr), fresh(v.block), fresh(v.length())
+        i = fresh(self.num(st["index"]))
+        held = self.array(st["block"], st)
+        texts()["release"](as_var(held.get(i)))
+        self.array(st["addr"], st).set(i, addr)
+        held.set(i, block)
+        self.array(st["chars"], st).set(i, length)
+
     def put(self, storage, e, kind):
         """A value into a variable. A text is worked out first - it may be made from what the variable holds - and only then does the block the variable held go back."""
         if kind != "text":
@@ -2333,6 +2351,14 @@ class Lowering:
             return TextVal(fresh(GetMapStringAddr(e["text"]) if e["text"] else T["empty"]), 0, len(e["text"]), True)
         if k == "textVar" and isinstance(self.var(e["id"], e), TextStorage):
             return self.var(e["id"], e).get()
+        if k == "textAt":
+            # Cells that were never given a text are 0: the empty one, as a variable's are.
+            i = fresh(self.num(e["index"]))
+            addr = fresh(self.array(e["addr"], e).get(i))
+            if EUDIf()(addr == 0):
+                addr << T["empty"]
+            EUDEndIf()
+            return TextVal(addr, fresh(self.array(e["block"], e).get(i)), fresh(self.array(e["chars"], e).get(i)), False)
         if self.has_id(e):
             return TextVal(T["address"](as_var(self.text_id_of(e))), 0, None, True)
         if k == "template":

@@ -440,8 +440,8 @@ FIXTURES.classes = `program(() => {
   }
   class Wave { left: number; constructor(public count: number, public delay: number) { this.left = count; } spawn() { if (this.left > 0) this.left--; } get done() { return this.left == 0; } }
   class Squad {
-    members: Unit[] = []; seen: number[] = []; leader: Unit | null = null; at = new Vec(0, 0);
-    constructor(public owner: number) {}
+    members: Unit[] = []; seen: number[] = []; leader: Unit | null = null; at = new Vec(0, 0); name: string;
+    constructor(public owner: number) { this.name = \`Squad \${owner}\`; }
     add(u: Unit) { this.members.push(u); this.seen.push(u.hp); if (!this.leader) this.leader = u; }
     get hp() { let t = 0; for (const m of this.members) t += m.hp; return t; }
   }
@@ -465,6 +465,8 @@ FIXTURES.classes = `program(() => {
     squads[0].at.add(step); squads[1].seen = [n, n + 1];
     if (squads.length > 4) { squads.pop(); squads.length = 2; squads[1] = new Squad(n); }
     if (n % 5 == 0) squads.push(new Squad(n));
+    squads[0].name += "!"; if (squads[1].name == "Squad 1") squads[1].name = "First";
+    displayText(\`\${squads[0].name} \${led[0].name} \${squads[1].name.length}\`);
     displayText(\`\${led.length} \${squads[0].hp} \${squads[0].seen.length} \${squads[0].at.far ? 1 : 0}\`);
     if (b instanceof Thing && t.pos.far) displayText(t.label());
     displayText(\`\${b.label()} \${b.rage} \${t.fib(n % 12)} \${Thing.made} \${waves.length} \${t.seen.length}\`);
@@ -494,6 +496,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(13);
+    expect(ir.version).toBe(14);
   });
 });

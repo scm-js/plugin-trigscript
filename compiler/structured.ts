@@ -63,7 +63,7 @@ import { declarationOf, libraryCallName } from "./hoist";
 import { scriptParams } from "./api";
 import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
 import { cellMax } from "./tables";
-import { HANDLE_PARTS, Scope, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
+import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { I32_MAX, I32_MIN, IR_VERSION, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, eachCall, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
@@ -909,7 +909,7 @@ export class Structured {
       const kind = this.kindOf(t);
       if (kind === "number" || kind === "boolean") { fields.set(key, { kind, width: kind === "number" ? this.widthOf(t) : {} }); continue; }
       if (kind === "unit") { fields.set(key, { kind: "unit" }); continue; }
-      if (this.isTextType(t)) return no(`${key} is a text, which an array of records cannot hold yet: keep the texts in a list of the script and the place of one in the row`);
+      if (this.isTextType(t)) { fields.set(key, { kind: "text" }); continue; }
       if (checker.isArrayType(t) || checker.isTupleType(t)) {
         const el = checker.getIndexTypeOfType(t, ts.IndexKind.Number);
         const of = el ? this.kindOf(el) : null;
@@ -940,6 +940,7 @@ export class Structured {
       switch (f.kind) {
         case "unit": return UNIT_PARTS.map((part) => ({ key: `${key} ${part}`, kind: "number" as const, width: { unsigned: true } }));
         case "list": return handle(key);
+        case "text": return TEXT_PARTS.map((part) => ({ key: `${key} ${part}`, kind: "number" as const, width: { unsigned: true } }));
         case "squad": return UNIT_PARTS.flatMap((part) => handle(`${key} ${part}`));
         case "record": return this.columnsOf(f.shape, `${key} `);
         default: return [{ key, kind: f.kind, width: f.width }];
@@ -964,9 +965,54 @@ export class Structured {
     });
   }
 
-  /** The row at `index` gives back the blocks of the arrays it holds. */
+  /** Every text a row's shape holds, as the three columns each is kept in. */
+  private ownedTexts(of: Records, shape = of.shape, prefix = ""): Extract<Binding, { kind: "textAt" }>[] {
+    if (!shape) return [];
+    return [...shape].flatMap(([name, f]) => {
+      const key = prefix + name;
+      if (f.kind === "text") return [this.textCells(of, key, num(0))];
+      return f.kind === "record" ? this.ownedTexts(of, f.shape, `${key} `) : [];
+    });
+  }
+
+  private textCells(of: Records, key: string, index: NumExpr): Extract<Binding, { kind: "textAt" }> {
+    const [addr, block, chars] = TEXT_PARTS.map((part) => of.fields.get(`${key} ${part}`)!);
+    return { kind: "textAt", addr, block, chars, index };
+  }
+
+  /** Whether a row owns blocks of the heap — arrays that grow, texts — which it gives back when it goes, and which a copy of it has to have its own of. */
+  private owns(of: Records): boolean {
+    return this.ownedLists(of).length + this.ownedTexts(of).length > 0;
+  }
+
+  /** The row at `index` gives back the blocks of the arrays and the texts it holds. */
   private releaseRow(of: Records, index: NumExpr, node: TS.Node) {
-    for (const l of this.ownedLists(of)) this.emit({ kind: "declareArray", array: this.innerOf(l, index, node).id, init: [], at: this.at(node), label: this.label(node) }, node);
+    if (!this.owns(of)) return;
+    const i = this.temp(index, node);
+    for (const l of this.ownedLists(of)) this.emit({ kind: "declareArray", array: this.innerOf(l, i, node).id, init: [], at: this.at(node), label: this.label(node) }, node);
+    for (const t of this.ownedTexts(of)) this.emit({ kind: "releaseText", block: t.block.id, index: i, at: this.at(node), label: this.label(node) }, node);
+  }
+
+  /** The rows from `from` on give their blocks back: they are about to go. */
+  private releaseFrom(of: Records, from: NumExpr, node: TS.Node) {
+    for (const l of this.ownedLists(of)) this.releaseRows(l, from, node);
+    const texts = this.ownedTexts(of);
+    if (!texts.length) return;
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(row of ${of.name})`, "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: i, init: from, at, label }, node);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: texts[0].block.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+      body: texts.map((t): Stmt => ({ kind: "releaseText", block: t.block.id, index: varRef(i), at, label })), at, label }, node);
+  }
+
+  /** A text kept in cells, as the text it is. */
+  private textAtCells(b: Extract<Binding, { kind: "textAt" }>, at: TS.Node): TextExpr {
+    return this.mark<TextExpr>({ kind: "textAt", addr: b.addr.id, block: b.block.id, chars: b.chars.id, index: b.index, at: this.at(at) }, at);
+  }
+
+  private storeTextAt(b: Extract<Binding, { kind: "textAt" }>, value: TextExpr, node: TS.Node) {
+    this.emit({ kind: "storeText", addr: b.addr.id, block: b.block.id, chars: b.chars.id, index: b.index, value, at: this.at(node), label: this.label(node) }, node);
   }
 
   /**
@@ -1021,7 +1067,8 @@ export class Structured {
   /** The arrays that grow of a record nothing reaches any more give their blocks back. */
   private releaseHeld(b: Binding, node: TS.Node) {
     const free = (a: ArrayDecl) => { if (a.dynamic && !a.through && !a.slice) this.emit({ kind: "declareArray", array: a.id, init: [], at: this.at(node), label: this.label(node) }, node); };
-    if (b.kind === "array") free(b.a);
+    if (b.kind === "var" && b.v.kind === "text" && b.v.text === "made") this.emit({ kind: "assignText", target: b.v.id, value: { kind: "text", text: "" }, at: this.at(node), label: this.label(node) }, node);
+    else if (b.kind === "array") free(b.a);
     else if (b.kind === "units") [b.ptr, b.epd, b.uid].forEach(free);
     else if (b.kind === "record") for (const inner of b.fields.values()) this.releaseHeld(inner, node);
   }
@@ -1056,6 +1103,20 @@ export class Structured {
         if (!u) return false;
         const unit = this.unitTemp(u, where);
         for (const part of UNIT_PARTS) out.cells.set(`${key} ${part}`, { kind: "unitPart", unit, part, at: this.at(where) });
+        return true;
+      }
+      case "text": {
+        for (const part of TEXT_PARTS) out.cells.set(`${key} ${part}`, num(0));
+        out.fill.push((of, index) => {
+          let value: TextExpr | null;
+          if ("value" in src) { if (typeof src.value !== "string") { this.c.error(where, `${name}: ${field} is a text, got ${describe(src.value)}.`); return false; } value = this.literalText(src.value, where); }
+          else if ("expr" in src) value = this.text(src.expr);
+          else if (src.binding.kind === "value" && typeof src.binding.value === "string") value = this.literalText(src.binding.value, where);
+          else value = src.binding.kind === "var" && src.binding.v.kind === "text" ? { kind: "textVar", id: src.binding.v.id } : src.binding.kind === "textAt" ? this.textAtCells(src.binding, where) : null;
+          if (!value) { if (!("expr" in src)) this.c.error(where, `${name}: ${field} is a text.`); return false; }
+          this.storeTextAt(this.textCells(of, key, index), value, where);
+          return true;
+        });
         return true;
       }
       case "list": {
@@ -1209,6 +1270,7 @@ export class Structured {
       switch (f.kind) {
         case "unit": return [name, { kind: "unitAt", ptr: place(`${key} ptr`), epd: place(`${key} epd`), uid: place(`${key} uid`) }];
         case "list": return [name, { kind: "inner", lists: this.listsAt(of, key, f), index }];
+        case "text": return [name, this.textCells(of, key, index)];
         case "squad": { const [ptr, epd, uid] = UNIT_PARTS.map((part) => this.listsAt(of, `${key} ${part}`, { of: "number", width: { unsigned: true } })); return [name, { kind: "innerUnits", name: `${of.name}[…].${key.replace(/ /g, ".")}`, ptr, epd, uid, index }]; }
         case "record": return [name, { kind: "record", fields: build(f.shape, `${key} `), ...(f.cls ? { cls: f.cls } : {}) }];
         default: return [name, { kind: "cell", a: of.fields.get(key)!, index }];
@@ -1259,7 +1321,8 @@ export class Structured {
     }
     const plain = [...shape.values()].every((f) => f.kind === "number" || f.kind === "boolean");
     const records: Records = { kind: "records", name, fields, ...(cls ? { cls } : {}), ...(plain ? {} : { shape }) };
-    for (const l of this.ownedLists(records)) this.releaseRows(l, num(0), at);
+    if (!plain) this.emit({ kind: "remark", short: `rows of ${fields.size} cells`, text: `Each row of ${name} is ${fields.size} cells, one in each of ${fields.size} arrays that move together: a number or a boolean is one, a unit three, a text three (where it is, its block, its length), an array that grows four (its block, its length, its room, its size) and an array of units twelve. The row owns the blocks of its arrays and its made texts: they go back when the row does.`, at: this.at(at) }, at);
+    this.releaseFrom(records, num(0), at);
     for (const [key, a] of fields) this.emit({ kind: "declareArray", array: a.id, init: rows.map((r) => r.cells.get(key)!), at: this.at(at), label: this.label(at) }, at);
     for (const [k, row] of rows.entries()) for (const fill of row.fill) if (!fill(records, num(k))) return null;
     return records;
@@ -1319,7 +1382,7 @@ export class Structured {
     const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape) : this.rowValues(of.name, literal, shape);
     const index = this.rowIndex(of, left.argumentExpression);
     if (!row || !index) return;
-    const i = this.temp(index, e, row.fill.length > 0);
+    const i = this.temp(index, e, row.fill.length > 0 || this.owns(of));
     this.releaseRow(of, i, e);
     for (const [key, a] of of.fields) this.emit({ kind: "store", array: a.id, index: i, value: row.cells.get(key)!, at: this.at(e), label: this.label(e) }, e);
     for (const fill of row.fill) if (!fill(of, i)) return;
@@ -1351,7 +1414,7 @@ export class Structured {
         if (of.shape) this.releaseRow(of, { kind: "binary", op: "-", left: { kind: "length", array: first.id, at }, right: num(1), at, label }, e);
         for (const a of of.fields.values()) { a.dynamic = true; this.emit({ kind: "pop", array: a.id, at, label }, e); }
       });
-      if (this.ownedLists(of).length) this.emit({ kind: "if", cond: { kind: "compare", op: ">", left: { kind: "length", array: first.id, at }, right: num(0), at, label }, then: pops, at, label }, e);
+      if (this.owns(of)) this.emit({ kind: "if", cond: { kind: "compare", op: ">", left: { kind: "length", array: first.id, at }, right: num(0), at, label }, then: pops, at, label }, e);
       else this.out.push(...pops);
       return;
     }
@@ -2062,6 +2125,11 @@ export class Structured {
     if (from.kind === "row") return { kind: "array", a: this.windowOf({ ...from, name }, at) };
     if (from.kind === "inner") return { kind: "array", a: this.innerOf(from.lists, from.index, at, name) };
     if (from.kind === "innerUnits") return this.unitsOf({ ...from, name }, at);
+    if (from.kind === "textAt") {
+      const v = this.newVar(name, "text", this.sourceOf(at), { text: "made" });
+      this.emit({ kind: "declare", decl: v, init: this.textAtCells(from, at), at: this.at(at), label: this.label(at) }, at);
+      return { kind: "var", v };
+    }
     if (from.kind === "unitAt") {
       const v = this.newVar(name, "unit", this.sourceOf(at));
       this.emit({ kind: "declare", decl: v, init: this.unitAtPlaces(from, at), at: this.at(at), label: this.label(at) }, at);
@@ -2674,7 +2742,7 @@ export class Structured {
       // The columns first, so that — made again, in a loop — the rows it had give the blocks of their arrays back before it starts over.
       const columns = new Map([...over.fields].map(([field, a]) => { const c = this.newArray(`${given}.${field.replace(/ /g, ".")}`, a.kind, 0, source, { ...(a.bits ? { bits: a.bits } : {}), ...(a.unsigned ? { unsigned: true } : {}) }); c.dynamic = true; return [field, c] as const; }));
       made = { kind: "records", name: given, fields: columns, ...(over.cls ? { cls: over.cls } : {}), ...(over.shape ? { shape: over.shape } : {}) };
-      for (const l of this.ownedLists(made)) this.releaseRows(l, num(0), e);
+      this.releaseFrom(made, num(0), e);
       for (const c of columns.values()) this.emit({ kind: "declareArray", array: c.id, init: [], at, label }, e);
     }
     else if (over.kind === "array") made = { kind: "array", a: grow(given, over.a) };
@@ -2693,7 +2761,7 @@ export class Structured {
           for (const [a, part] of this.unitArrays(made)) this.emit({ kind: "push", array: a.id, value: { kind: "unitPart", unit, part, at }, at, label }, e);
         } else if (made.kind === "records" && over.kind === "records" && index?.kind === "var") {
           const owned = this.ownedLists(made);
-          const place = owned.length ? this.newVar(`(row of ${made.name})`, "number", at, { temp: true }) : undefined;
+          const place = this.owns(made) ? this.newVar(`(row of ${made.name})`, "number", at, { temp: true }) : undefined;
           if (place) this.emit({ kind: "declare", decl: place, init: { kind: "length", array: [...made.fields.values()][0].id, at }, at, label }, e);
           for (const [field, a] of made.fields) this.emit({ kind: "push", array: a.id, value: { kind: "element", array: over.fields.get(field)!.id, index: varRef(index.v), at }, at, label }, e);
           // A row owns the arrays it holds, so the new row gets arrays of its own with the same cells: its handles start over, and are filled.
@@ -2701,6 +2769,11 @@ export class Structured {
           owned.forEach((l, k) => {
             for (const a of this.handlesOf(l)) this.emit({ kind: "store", array: a.id, index: varRef(place!), value: num(0), at, label }, e);
             this.copyCells(this.innerAt(l, place!, e), this.innerOf(theirs[k], varRef(index.v), e), e);
+          });
+          const texts = this.ownedTexts(over);
+          this.ownedTexts(made).forEach((t, k) => {
+            for (const a of [t.addr, t.block, t.chars]) this.emit({ kind: "store", array: a.id, index: varRef(place!), value: num(0), at, label }, e);
+            this.storeTextAt({ ...t, index: varRef(place!) }, this.textAtCells({ ...texts[k], index: varRef(index.v) }, e), e);
           });
         } else if (made.kind === "array") {
           const value = this.valueOf(item, made.a.kind, e) as NumExpr | BoolExpr | null;
@@ -2734,7 +2807,7 @@ export class Structured {
       this.emit({ kind: "declare", decl: v, init: { kind: "element", array: a.id, index, at }, at, label }, e);
       return v;
     };
-    if (list.kind === "records" && this.ownedLists(list).length) {
+    if (list.kind === "records" && this.owns(list)) {
       // A row that holds arrays is reached through a row, so the hand is one: a row past the end, which goes again when the row is put back.
       const columns = [...list.fields.values()];
       const place = this.newVar(`(held of ${list.name})`, "number", at, { temp: true });
@@ -2751,7 +2824,7 @@ export class Structured {
       const key = prefix + name;
       if (f.kind === "unit") return [[name, { kind: "unitAt", ptr: { v: kept.get(`${key} ptr`)! }, epd: { v: kept.get(`${key} epd`)! }, uid: { v: kept.get(`${key} uid`)! } }]];
       if (f.kind === "record") return [[name, { kind: "record", fields: build(f.shape, `${key} `), ...(f.cls ? { cls: f.cls } : {}) }]];
-      return f.kind === "list" || f.kind === "squad" ? [] : [[name, { kind: "var", v: kept.get(key)! }]];
+      return f.kind === "list" || f.kind === "squad" || f.kind === "text" ? [] : [[name, { kind: "var", v: kept.get(key)! }]];
     }));
     return { binding: { kind: "record", fields: build(this.rowShape(list), ""), ...(list.cls ? { cls: list.cls } : {}) }, put: (to) => held.map(([, a, v]) => back(a, v, to)) };
   }
@@ -3447,6 +3520,7 @@ export class Structured {
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
       const b = this.bindingOf(e);
+      if (b?.kind === "textAt") return this.textAtCells(b, e);
       if (b?.kind === "var" && b.v.kind === "text") return { kind: "textVar", id: b.v.id };
       if (b?.kind === "var") { const parts = this.textOf(e); return parts ? this.textFrom(parts, e) : null; }
     }
@@ -3711,7 +3785,7 @@ export class Structured {
             const value = this.num(e.right);
             if (!value) return;
             const n = this.temp(value, e, b.kind === "records" && !!b.shape);
-            if (b.kind === "records") for (const l of this.ownedLists(b)) this.releaseRows(l, n, e);
+            if (b.kind === "records") this.releaseFrom(b, n, e);
             for (const a of b.kind === "units" ? [b.ptr, b.epd, b.uid] : b.fields.values()) { a.dynamic = true; this.emit({ kind: "setLength", array: a.id, value: n, at: this.at(e), label: this.label(e) }, e); }
             return;
           }
@@ -3764,6 +3838,13 @@ export class Structured {
         }
         if (this.setterCall(e, op)) return;
         const field = this.bindingOf(e.left);
+        if (field?.kind === "textAt") {
+          // `waves[i].name = …`, `+= …`: the text worked out — from what the cells hold, for `+=` — and stored, the cells' old block going back.
+          if (op !== ts.SyntaxKind.EqualsToken && op !== ts.SyntaxKind.PlusEqualsToken) { this.c.error(e, "A text takes = and +=."); return; }
+          const given = op === ts.SyntaxKind.EqualsToken ? this.text(e.right) : (() => { const more = this.textOf(e.right); return more ? this.textFrom([{ kind: "value", text: this.textAtCells(field, e.left) }, ...more], e) : null; })();
+          if (given) this.storeTextAt({ ...field, index: this.temp(field.index, e) }, given, e);
+          return;
+        }
         if (field?.kind === "unitAt") {
           if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "A unit takes = only."); return; }
           const value = this.unitExpr(e.right);

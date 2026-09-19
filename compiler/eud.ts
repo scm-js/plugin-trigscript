@@ -72,6 +72,8 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "setLength": expr(s.value); break;
       case "assignUnit": unit(s.value); break;
       case "assignText": text(s.value); break;
+      case "storeText": expr(s.index); text(s.value); break;
+      case "releaseText": expr(s.index); break;
       case "textLoop": text(s.of); s.body.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
@@ -215,6 +217,8 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
       case "assign": case "assignBool": case "assignUnit": case "assignText": into.add(s.target); break;
       case "textLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
       case "store": case "declareArray": case "push": case "pop": case "setLength": into.add(whole(s.array)); break;
+      case "storeText": into.add(whole(s.addr)); break;
+      case "releaseText": into.add(whole(s.block)); break;
       case "unitLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": case "for": s.body.forEach(stmt); if (s.kind === "for") s.update.forEach(stmt); break;
@@ -248,7 +252,7 @@ const whole = (array: string): string => WINDOWS.get(array) ?? array;
 /** The variables an expression reads, by id — and `THE_GAME` when it reads a value of the game or tests a condition. */
 function reads(e: NumExpr | BoolExpr, into = new Set<string>()): Set<string> {
   // A text reads the variables it is made from; a list of texts the script has never changes.
-  const texts: TextMap = { num: (x) => { reads(x, into); return x; }, bool: (x) => { reads(x, into); return x; }, call: (c) => { reads({ kind: "call", call: c }, into); return c; }, text: (t) => { if (t.kind === "textVar") into.add(t.id); return mapText(t, texts); } };
+  const texts: TextMap = { num: (x) => { reads(x, into); return x; }, bool: (x) => { reads(x, into); return x; }, call: (c) => { reads({ kind: "call", call: c }, into); return c; }, text: (t) => { if (t.kind === "textVar") into.add(t.id); if (t.kind === "textAt") into.add(whole(t.addr)); return mapText(t, texts); } };
   if (mapTextOperands(e, texts)) return into;
   switch (e.kind) {
     case "var": into.add(e.id); break;
@@ -376,6 +380,8 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "unitDo": return { ...s, unit: unit(s.unit), verb: s.verb.do === "damage" || s.verb.do === "heal" ? { ...s.verb, amount: expr(s.verb.amount) } : s.verb };
       case "tableWrite": return { ...s, value: any(s.value) };
       case "assignText": return { ...s, value: text(s.value) };
+      case "storeText": return { ...s, index: expr(s.index), value: text(s.value) };
+      case "releaseText": return { ...s, index: expr(s.index) };
       case "textLoop": return { ...s, of: text(s.of), body: s.body.map(stmt) };
       case "assign": return { ...s, value: expr(s.value) };
       case "declareArray": return { ...s, ...(s.init ? { init: s.init.map(expr) } : {}), ...(s.fill ? { fill: expr(s.fill) } : {}) };

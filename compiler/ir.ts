@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 14: a text in the cells of three arrays — `textAt`, `storeText`, `releaseText` — which is what lets a row of an array of records hold one.
  * 13: texts — a `text` variable (`VarDecl.text`: the id of a text of the built map's table, or a text that was made: where it is, the block of the heap it owns, its length in characters), `TextExpr`, `assignText`, `textLoop`, a text among a `print`'s parts, in an action's text field (`action.text`) and as a unit type's name; `textLength` / `textIndexOf` / `textCode` among the numbers, `textCompare` / `textTest` among the conditions; `ArrayDecl.texts`.
  * 12: arrays inside things — `ArrayDecl.slice` (a window on another array's cells) and `ArrayDecl.through` (a growing array whose handle is a cell of four others).
  * 11: recursion — `FuncDecl.recursive`, and `Call.saves` on a call that may come back into the function it is in: what that function keeps on the stack around the call.
@@ -23,7 +24,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 13;
+export const IR_VERSION = 14;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -274,6 +275,12 @@ export type TextExpr =
   | { kind: "text"; text: string }
   | { kind: "textVar"; id: string }
   | { kind: "textOf"; array: string; index: NumExpr; at: At }
+  /**
+   * A text kept in cell `index` of three arrays — where it is, the block of the heap it owns (0 for a text of the map's
+   * table, which owns none), its length in characters: a row's (`waves[i].name`). Looked at, as a variable's is. Cells
+   * that were never given a text are 0, which is the empty text.
+   */
+  | { kind: "textAt"; addr: string; block: string; chars: string; index: NumExpr; at: At }
   /** A template, texts joined with `+`, `String(n)`: the parts one after another. */
   | { kind: "template"; parts: TextPart[]; at: At; label: string }
   | { kind: "textTernary"; cond: BoolExpr; whenTrue: TextExpr; whenFalse: TextExpr; at: At; label: string }
@@ -286,7 +293,7 @@ export type TextExpr =
   /** A call inlined here whose result is a text: the value is taken out of the call's result, which then holds none. */
   | { kind: "textCall"; call: Call };
 
-const TEXT_KINDS: ReadonlySet<string> = new Set(["text", "textVar", "textOf", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
+const TEXT_KINDS: ReadonlySet<string> = new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
 export const isTextExpr = (e: { kind: string }): e is TextExpr => TEXT_KINDS.has(e.kind);
 
 /** What a pass that walks or rewrites every expression does with the numbers, the conditions and the calls inside a text; the texts inside it are walked here. */
@@ -301,7 +308,7 @@ export function mapTextParts(parts: TextPart[], f: TextMap): TextPart[] {
 /** A text with everything it is worked out from handed to `f` — a copy; a pass that only looks gives back what it was handed. */
 export function mapText(t: TextExpr, f: TextMap): TextExpr {
   switch (t.kind) {
-    case "textOf": return { ...t, index: f.num(t.index) };
+    case "textOf": case "textAt": return { ...t, index: f.num(t.index) };
     case "template": return { ...t, parts: mapTextParts(t.parts, f) };
     case "textTernary": return { ...t, cond: f.bool(t.cond), whenTrue: innerText(t.whenTrue, f), whenFalse: innerText(t.whenFalse, f) };
     case "textSlice": return { ...t, of: innerText(t.of, f), ...(t.start ? { start: f.num(t.start) } : {}), ...(t.end ? { end: f.num(t.end) } : {}) };
@@ -436,6 +443,10 @@ export type Stmt =
   | { kind: "declare"; decl: VarDecl; init: NumExpr | BoolExpr | UnitExpr | TextExpr; failed?: boolean; at: At; label: string }
   /** `s = value`, `s += "!"`: the text the variable held is given back once the new one is worked out. */
   | { kind: "assignText"; target: string; value: TextExpr; at: At; label: string }
+  /** A text into cell `index` of the three arrays a `textAt` reads: worked out first, then what the cells held gives its block back, then the cells take the text — a copy of one that is only looked at. */
+  | { kind: "storeText"; addr: string; block: string; chars: string; index: NumExpr; value: TextExpr; at: At; label: string }
+  /** The block cell `index` of `block` names goes back to the heap, and the cell is 0: what a row that holds a text does before it goes. */
+  | { kind: "releaseText"; block: string; index: NumExpr; at: At; label: string }
   /** `for (const ch of s)`: the body once a character, the text walked once — no `sleep` inside. `decl` is a made text of one character. */
   | { kind: "textLoop"; decl: VarDecl; of: TextExpr; body: Stmt[]; at: At; label: string }
   | { kind: "assign"; target: string; value: NumExpr; at: At; label: string }
@@ -568,6 +579,8 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "assignBool": init(s.value); break;
       case "assignUnit": unit(s.value); break;
       case "assignText": text(s.value); break;
+      case "storeText": expr(s.index); text(s.value); break;
+      case "releaseText": expr(s.index); break;
       case "textLoop": text(s.of); out.push(s.decl); s.body.forEach(stmt); break;
       case "unitLoop": out.push(s.decl); s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); init(s.value); break;
@@ -598,7 +611,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
   const parts = (ps: TextPart[]) => { for (const p of ps) { if (p.kind === "number") expr(p.expr); else if (p.kind === "value") text(p.text); } };
   const text = (t: TextExpr) => {
     switch (t.kind) {
-      case "textOf": expr(t.index); break;
+      case "textOf": case "textAt": expr(t.index); break;
       case "template": parts(t.parts); break;
       case "textTernary": bool(t.cond); text(t.whenTrue); text(t.whenFalse); break;
       case "textSlice": text(t.of); if (t.start) expr(t.start); if (t.end) expr(t.end); break;

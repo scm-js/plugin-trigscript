@@ -147,7 +147,22 @@ describe("what a row of an array holds", () => {
     expect(shown(sim)).toEqual(["5 3 2 4"]);
   });
   it("says what a row cannot hold", () => {
-    expect(messages("class T { name = \"x\"; n = 0; } const ts: T[] = []; ts.push(new T());").join("\n")).toMatch(/name is a text/);
+    expect(messages("class T { tags: string[] = []; n = 0; } const ts: T[] = []; ts.push(new T());").join("\n")).toMatch(/tags is an array of something other/);
+  });
+  it("a text: one of the map's or one that is made, read, compared, added to, the row owning its block", () => {
+    const sim = run("class Wave { name: string; constructor(name: string, public n: number) { this.name = name; } get title() { return `${this.name} (${this.n})`; } } const waves: Wave[] = []; let k = 2; waves.push(new Wave(\"Scouts\", 1)); waves.push(new Wave(`Wave ${k}`, k)); waves[1].name += \"!\"; waves[0].name = waves[1].name + \"?\"; if (waves[1].name == \"Wave 2!\") print(\"same\"); for (const w of waves) print(w.title); const { name } = waves[0]; waves[0].name = \"x\"; print(`${name} ${waves[0].name.length}`);");
+    expect(shown(sim)).toEqual(["same", "Wave 2!? (1)", "Wave 2! (2)", "Wave 2!? 1"]);
+    expect(sim.faults).toEqual([]);
+  });
+  it("texts go with their rows through a sort and a filter, and their blocks go back with the rows", () => {
+    const r = compile("class Line { text: string; constructor(public n: number) { this.text = `line ${n}`; } } let turn = 0; let last = \"\"; while (turn < 60) { const lines: Line[] = []; for (let i = 0; i < 4; i++) lines.push(new Line(turn * 10 + 3 - i)); lines.sort((a, b) => a.n - b.n); const even = lines.filter((l) => l.n % 2 == 0); even[0].text += \"+\"; last = `${lines[0].text} ${even[0].text} ${lines[1].text}`; lines.pop(); lines[0] = new Line(7); lines.length = 1; turn++; } print(last);");
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, heapCells: 96 });
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(["line 590 line 590+ line 591"]);
+  });
+  it("a record written out holds a text too", () => {
+    const sim = run("const rows = [{ label: \"a\", n: 1 }, { label: \"b\", n: 2 }]; let k = 5; rows[1].label = `b${k}`; rows.push({ label: \"c\", n: 3 }); print(`${rows[0].label}${rows[1].label}${rows[2].label}`);");
+    expect(shown(sim)).toEqual(["ab5c"]);
   });
   it("an array field starts over when it is assigned", () => {
     const sim = run("class Bag { items: number[] = []; clear() { this.items = []; } } const b = new Bag(); b.items.push(1); b.items.push(2); b.clear(); b.items.push(3); print(`${b.items.length} ${b.items[0]}`);");

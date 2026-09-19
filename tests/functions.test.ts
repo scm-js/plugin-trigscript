@@ -173,7 +173,7 @@ describe("functions: arrays, and functions inside functions", () => {
   it("the functions go to the lowering with the program, their text written out", () => {
     const r = compile("function say(n: number) { displayText(`n`); setDeaths(P1, units.TerranMarine, 'set', n); } let k = 1; say(k); say(k + 1);");
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
-    expect(ir.version).toBe(13);
+    expect(ir.version).toBe(14);
     expect(ir.programs[0].functions).toHaveLength(1);
     expect(JSON.stringify(ir.programs[0].functions)).toContain('"text":"n"');
   });

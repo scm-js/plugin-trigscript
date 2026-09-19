@@ -507,6 +507,12 @@ class ProgramRun {
     switch (e.kind) {
       case "text": return { s: e.text, room: 0, taken: true };
       case "textVar": { const v = this.textVars.get(e.id); if (!v) throw new Error(`The variable ${e.id} was read before it was declared.`); return { ...v, taken: false }; }
+      case "textAt": {
+        // The cells hold the number the text is kept under here (where it is, in the game); 0 is a cell never given one.
+        const c = yield* this.cell(e.addr, e.index, e.at, "it reads as no text");
+        const held = c ? this.cellTexts.get(c.cells[c.i] as number) : undefined;
+        return { s: held?.s ?? "", room: held?.room ?? 0, taken: false };
+      }
       case "textOf": {
         const a = this.arrays.get(e.array);
         const i = yield* this.num(e.index);
@@ -566,6 +572,17 @@ class ProgramRun {
   }
 
   /** A text into a variable: worked out first, then what the variable held goes back. */
+  /** The texts kept in cells of arrays, by the number the cells hold for one: what moves a row moves numbers, and the text goes with them. */
+  private readonly cellTexts = new Map<number, HeldText>();
+  private lastCellText = 0;
+
+  private releaseCellText(key: number): void {
+    const old = key ? this.cellTexts.get(key) : undefined;
+    if (!old) return;
+    if (old.room) this.sim.heap.give(old.room);
+    this.cellTexts.delete(key);
+  }
+
   private *putText(id: string, e: TextExpr, at: At): Gen<void> {
     const v = this.owned(yield* this.text(e), at);
     const old = this.textVars.get(id);
@@ -743,6 +760,29 @@ class ProgramRun {
       }
       case "assignUnit": this.unitVars.set(s.target, yield* this.unit(s.value)); return "next";
       case "assignText": yield* this.putText(s.target, s.value, s.at); return "next";
+      case "storeText": {
+        const v = this.owned(yield* this.text(s.value), s.at);
+        const i = yield* this.num(s.index);
+        const cells = [s.addr, s.block, s.chars].map((id) => this.arrays.get(id));
+        if (cells.some((a) => !a || i < 0 || i >= a.cells.length)) {
+          this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${cells[0]?.decl.name ?? s.addr}[${i}] is past the end of the array (its length is ${cells[0]?.cells.length ?? 0}): nothing is stored.` });
+          if (v.room) this.sim.heap.give(v.room);
+          return "next";
+        }
+        const [addr, block, chars] = cells as Held[];
+        this.releaseCellText(block.cells[i] as number);
+        const key = ++this.lastCellText;
+        this.cellTexts.set(key, v);
+        addr.cells[i] = key;
+        block.cells[i] = v.room ? key : 0;
+        chars.cells[i] = [...v.s].length;
+        return "next";
+      }
+      case "releaseText": {
+        const c = yield* this.cell(s.block, s.index, s.at, "nothing is given back");
+        if (c) { this.releaseCellText(c.cells[c.i] as number); c.cells[c.i] = 0; }
+        return "next";
+      }
       case "textLoop": {
         this.declare(s.decl);
         // The text as it is when the loop starts: a copy of a variable's, so that assigning the variable inside changes nothing here.
