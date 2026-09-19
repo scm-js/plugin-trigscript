@@ -1,5 +1,5 @@
 import type * as TS from "typescript";
-import type { ArrayDecl, NumExpr, VarDecl } from "./ir";
+import type { ArrayDecl, FuncDecl, NumExpr, VarDecl } from "./ir";
 
 /** What a declaration of the body is bound to while it is walked: a build-time value, a variable of the program, or a record of bindings. */
 export type Binding =
@@ -29,6 +29,13 @@ export type Binding =
    * a Record, whose every key reads its value or 0); `size` counts them. `as` is how the source reaches it.
    */
   | { kind: "keyed"; as: "record" | "map" | "set"; name: string; domain: number; key: string; values?: ArrayDecl; present?: ArrayDecl; size?: VarDecl }
+  /**
+   * A `Map` or a `Set` over any number: the entries in the order they went in — `keys`, `values` (a Map's), `live` (false
+   * once deleted) — and `slots`, the table a key is found through: a power of two of cells, each 0 or an entry's place
+   * plus one. `used` counts the slots taken since the table was last made, `dead` the entries deleted and still there,
+   * `walking` the loops going through it now. `fns` are its functions, made when first needed.
+   */
+  | { kind: "hash"; as: "map" | "set"; name: string; slots: ArrayDecl; keys: ArrayDecl; values?: ArrayDecl; live: ArrayDecl; size: VarDecl; mask: VarDecl; used: VarDecl; dead: VarDecl; walking: VarDecl; fns: { find?: FuncDecl; place?: FuncDecl; grow?: FuncDecl; put?: FuncDecl; drop?: FuncDecl } }
   /**
    * An array of arrays whose shape is known when the script is built — `let grid = [[0, 0, 0], [0, 0, 0]]` — which is one
    * flat array: `dims` are its sizes from the outside in (the first is 0 when the outer array grows, by whole rows), and

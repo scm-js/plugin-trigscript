@@ -227,7 +227,9 @@ describe("tables keyed by an id of the game: Record, Map, Set", () => {
     expect(messages("const score: Record<Player, number> = { [P1]: 0 }; for (const p of score) {}").some((m) => /is a Record: it has a value for every key/.test(m) || /iterator|iterable/i.test(m))).toBe(true);
   });
   it("what a key cannot be", () => {
-    expect(messages("const m = new Map<number, number>();")[0]).toMatch(/keys have to be ids of the game/);
+    // Any number is a key since 3.9 (tests/hash.test.ts); a text is not.
+    expect(messages("const m = new Map<number, number>();")).toEqual([]);
+    expect(messages("const m = new Map<string, number>();")[0]).toMatch(/keys have to be numbers, or ids of the game/);
     expect(messages("const score: Record<Player, number> = { [P1]: 0 }; score[CurrentPlayer] += 1;")[0]).toMatch(/CurrentPlayer is not a key of score/);
     expect(messages("const price = new Map<UnitType, number>(); price.forEach(() => {});")[0]).toMatch(/has get, set, has, delete, clear and size; forEach\(\) is not one of them/);
   });

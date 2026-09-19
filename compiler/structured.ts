@@ -178,6 +178,9 @@ const KEY_DOMAINS: Record<string, { size: number; what: string }> = {
 };
 type Keyed = Extract<Binding, { kind: "keyed" }>;
 type Records = Extract<Binding, { kind: "records" }>;
+type Hash = Extract<Binding, { kind: "hash" }>;
+/** The slots a Map or a Set over any number starts with: a power of two, as every size of it is. */
+const HASH_START = 8;
 /** What a row is given: a value a column, and what fills the arrays it holds once the row is there. */
 interface RowValues { cells: Map<string, NumExpr | BoolExpr>; fill: ((of: Records, index: NumExpr) => boolean)[] }
 /** Where a field's value comes from: the script has it, it is written there, or it is something of the program's. */
@@ -766,6 +769,11 @@ export class Structured {
         continue;
       }
       const keyedAs = this.keyedForm(init, type);
+      if (keyedAs && keyedAs !== "record" && this.anyNumberKeys(type)) {
+        const hash = this.declareHash(d.name.text, keyedAs, init, type, d);
+        if (hash) this.scope.bind(d, hash);
+        continue;
+      }
       if (keyedAs) {
         const keyed = this.declareKeyed(d.name.text, keyedAs, init, type, d);
         if (keyed) this.scope.bind(d, keyed);
@@ -1476,6 +1484,14 @@ export class Structured {
     return undefined;
   }
 
+  /** Whether a Map's or a Set's keys are any number — no id of the game, which has a cell for every one. */
+  private anyNumberKeys(type: TS.Type): boolean {
+    const keyType = this.c.checker.getTypeArguments(type as TS.TypeReference)[0];
+    if (!keyType) return false;
+    const brand = this.brandOfType(keyType);
+    return !(brand && KEY_DOMAINS[brand]) && this.kindOf(keyType) === "number";
+  }
+
   /** Whether a declaration is a table keyed by an id of the game: `new Map<K, V>(…)`, `new Set<K>(…)`, or an object literal typed `Record<K, V>`. */
   private keyedForm(init: TS.Expression, type: TS.Type): Keyed["as"] | null {
     const { ts } = this;
@@ -1498,7 +1514,7 @@ export class Structured {
     const key = keyType ? this.brandOfType(keyType) : undefined;
     const domain = key ? KEY_DOMAINS[key] : undefined;
     if (!key || !domain) {
-      this.c.error(at, `${name}'s keys have to be ids of the game — UnitType, Player, Location, Switch, Weapon, Upgrade or Tech — so that there is a cell for every one: ${as === "set" ? "new Set<UnitType>()" : as === "map" ? "new Map<UnitType, number>()" : "Record<UnitType, number>"}. For numbers of your own, an array does it.`);
+      this.c.error(at, `${name}'s keys have to be numbers, or ids of the game — UnitType, Player, Location, Switch, Weapon, Upgrade or Tech: ${as === "set" ? "new Set<UnitType>()" : as === "map" ? "new Map<UnitType, number>()" : "Record<UnitType, number>"}. For numbers of your own, an array does it.`);
       return null;
     }
     const kind = valueType ? this.kindOf(valueType) : null;
@@ -3179,6 +3195,9 @@ export class Structured {
     const inner = init && this.unwrap(init);
     if (inner && ts.isObjectLiteralExpression(inner)) return this.declareRecord(full, inner, ft, p);
     if (inner && ts.isNewExpression(inner) && this.classOf(inner.expression)) return this.instantiate(inner, full);
+    // `counts = new Map<number, number>()`: a table the record's name leads to.
+    const keyedAs = inner ? this.keyedForm(inner, ft) : null;
+    if (inner && keyedAs && keyedAs !== "record") return this.anyNumberKeys(ft) ? this.declareHash(full, keyedAs, inner, ft, p) : this.declareKeyed(full, keyedAs, inner, ft, p);
     // `path: [0, 0, 0]`, `seen: [] as number[]`, `squad: [] as Unit[]`, `grid: [[0, 0], [0, 0]]`: an array the record's name leads to.
     if (this.c.checker.isArrayType(ft) || this.c.checker.isTupleType(ft)) {
       if (!init) { this.c.error(p, `${full} is an array: give it its first value where it is declared — ${full.split(".").pop()} = [] — so that there is an array for the constructor to fill.`); return null; }
@@ -3993,6 +4012,11 @@ export class Structured {
       if (list?.kind === "array") { this.arrayCall(e, list.a, e.expression.name.text, "statement"); return; }
       if (list?.kind === "records") { this.recordsCall(e, list, e.expression.name.text); return; }
       if (list?.kind === "units") { this.unitsCall(e, list, e.expression.name.text); return; }
+      if (list?.kind === "hash") {
+        if (method === "forEach") { this.hashForEach(e, list); return; }
+        this.hashMethod(e, list, method, "statement");
+        return;
+      }
       const made = list?.kind === "keyed" ? list : !list && e.arguments.length && !this.evaluate(e.arguments[0]) ? this.collectionOf(e.expression.expression) : undefined;
       if (made) { this.keyedCall(e, made, e.expression.name.text, "statement"); return; }
       const member = this.unitMember(e.expression);
@@ -4178,6 +4202,27 @@ export class Structured {
       source = this.unwrap(source.expression.expression);
     }
     const bound = this.bindingOf(source);
+    if (bound?.kind === "hash") {
+      // A Map or a Set over any number: its entries in the order they went in.
+      const h = bound;
+      const what = part ?? (h.as === "map" ? "entries" : "keys");
+      const keysOnly = h.as === "set" || what === "keys";
+      const scope = new Scope(this.scope);
+      const names: { node: TS.Node; of: "key" | "value" }[] = [];
+      if (ts.isIdentifier(decl.name)) {
+        if (what === "entries" && h.as === "map") { this.c.error(decl.name, `A Map gives a key and a value a turn: for (const [key, value] of ${h.name}).`); return true; }
+        names.push({ node: decl, of: keysOnly ? "key" : "value" });
+      } else if (ts.isArrayBindingPattern(decl.name) && what === "entries") {
+        const [k, v] = decl.name.elements;
+        if (k && ts.isBindingElement(k) && ts.isIdentifier(k.name)) names.push({ node: k, of: "key" });
+        if (v && ts.isBindingElement(v) && ts.isIdentifier(v.name)) names.push({ node: v, of: h.as === "map" ? "value" : "key" });
+      } else { this.c.error(decl.name, `for…of over ${h.name} takes ${h.as === "map" ? "[key, value]" : "one variable"}.`); return true; }
+      this.hashLoop(h, s, (key, value) => {
+        for (const n of names) scope.bind(n.node, { kind: "var", v: n.of === "key" || !value ? key : value });
+        this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope);
+      });
+      return true;
+    }
     const table = bound?.kind === "keyed" ? bound : undefined;
     if (!table) return false;
     if (table.as === "record" || !table.present) { this.c.error(s.expression, `${table.name} is a Record: it has a value for every key, so there is nothing to go through. A Map or a Set knows which keys it has.`); return true; }
@@ -4365,6 +4410,324 @@ export class Structured {
     const scope = new Scope(this.scope);
     const cases = clauses.map((c, i) => ({ value: values[i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
     this.emit({ kind: "switch", value: which, cases, at, label }, s);
+  }
+
+  /* ── A Map and a Set over any number ── */
+
+  /** Where each such table was declared: where its functions say they are from. */
+  private readonly hashNodes = new WeakMap<Hash, TS.Node>();
+
+  /**
+   * `new Map<number, number>()`, `new Set<number>()`: keys that are any number, where a table keyed by ids of the game has
+   * a cell for every id there is. The entries are kept in the order they went in — three arrays that grow, a key, a
+   * value and whether it is still there — which is the order JavaScript goes through a Map in: a key set again stays
+   * where it was, one deleted and set again goes to the end, one added while a loop goes through is reached by it. A
+   * key is found through `slots`, open addressing over a power of two of cells, made again at twice the size when three
+   * quarters of it is taken. The work is in functions of the table's own (`hashFunction`), called where it is used.
+   */
+  private declareHash(name: string, as: "map" | "set", init: TS.Expression, type: TS.Type, at: TS.Node): Hash | null {
+    const { ts } = this;
+    const args = this.c.checker.getTypeArguments(type as TS.TypeReference);
+    const valueType = as === "map" ? args[1] : undefined;
+    const kind = valueType ? this.kindOf(valueType) : null;
+    if (as === "map" && kind !== "number" && kind !== "boolean") { this.c.error(at, `${name} holds numbers or booleans; for anything more, keep the place of a row of an array of records in it.`); return null; }
+    const where = this.sourceOf(at);
+    const atIr = this.at(at);
+    const label = this.label(at);
+    const grown = (n: string, k: "number" | "boolean", width: { bits?: 8 | 16; unsigned?: boolean } = {}) => { const a = this.newArray(n, k, 0, where, width); a.dynamic = true; return a; };
+    const slots = this.newArray(`${name} (slots)`, "number", HASH_START, where);
+    slots.dynamic = true;
+    const counter = (n: string) => this.newVar(n, "number", where);
+    const h: Hash = {
+      kind: "hash", as, name, slots, keys: grown(`${name} (keys)`, "number"), ...(as === "map" ? { values: grown(`${name} (values)`, kind as "number" | "boolean", kind === "number" ? this.widthOf(valueType!) : {}) } : {}), live: grown(`${name} (has)`, "boolean"),
+      size: counter(`${name}.size`), mask: counter(`${name} (mask)`), used: counter(`${name} (slots taken)`), dead: counter(`${name} (deleted)`), walking: counter(`${name} (loops)`), fns: {},
+    };
+    this.hashNodes.set(h, at);
+    this.emit({ kind: "remark", short: as === "map" ? "a Map over any number" : "a Set over any number", text: `${name}'s keys are any number, so a key is looked for: a few steps to find, set or delete one, where a table keyed by ids of the game (a UnitType, a Player) is one read. It keeps the order its keys went in, as JavaScript does, in arrays that grow out of the memory the programs' arrays share.`, at: atIr }, at);
+    this.emit({ kind: "declareArray", array: slots.id, fill: num(0), at: atIr, label }, at);
+    for (const a of [h.keys, ...(h.values ? [h.values] : []), h.live]) this.emit({ kind: "declareArray", array: a.id, init: [], at: atIr, label }, at);
+    for (const [v, first] of [[h.size, 0], [h.mask, HASH_START - 1], [h.used, 0], [h.dead, 0], [h.walking, 0]] as const) this.emit({ kind: "declare", decl: v, init: num(first), at: atIr, label }, at);
+    // What it starts with: worked out whole when nothing of the program is in it, else the pairs as they are written.
+    const whole = this.evaluate(init)?.value;
+    const constant = (v: unknown): NumExpr | BoolExpr | null => (h.values?.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : (() => { const n = this.asInteger({ value: v }, init); return n === null ? null : num(n); })());
+    if (whole instanceof Map || whole instanceof Set) {
+      for (const [k, v] of whole instanceof Map ? whole.entries() : [...whole.values()].map((x) => [x, true] as const)) {
+        const key = this.asInteger({ value: k }, init);
+        const value = h.values ? constant(v) : undefined;
+        if (key === null || value === null) { if (value === null) this.c.error(init, `${name} holds ${h.values!.kind}s, got ${describe(v)}.`); return null; }
+        this.hashPut(h, num(key), value, at);
+      }
+      return h;
+    }
+    const given = ts.isNewExpression(init) ? init.arguments?.[0] : undefined;
+    if (!given) return h;
+    const list = this.unwrap(given);
+    if (!ts.isArrayLiteralExpression(list)) { this.c.error(given, `${name} starts empty, or with what is written out: ${as === "map" ? "new Map([[1, 10], [2, 20]])" : "new Set([1, 2, 3])"}.`); return null; }
+    for (const item of list.elements) {
+      const pair = this.unwrap(item);
+      if (as === "map" && (!ts.isArrayLiteralExpression(pair) || pair.elements.length !== 2)) { this.c.error(item, "A Map starts with [key, value] pairs."); return null; }
+      const key = this.num(as === "map" ? (pair as TS.ArrayLiteralExpression).elements[0] : item);
+      const value = h.values ? (h.values.kind === "number" ? this.num((pair as TS.ArrayLiteralExpression).elements[1]) : this.boolValue((pair as TS.ArrayLiteralExpression).elements[1])) : undefined;
+      if (!key || value === null) return null;
+      this.hashPut(h, key, value, item);
+    }
+    return h;
+  }
+
+  /** A call of one of a table's functions, as an expression. */
+  private hashCall(h: Hash, which: keyof Hash["fns"], args: (NumExpr | BoolExpr)[], node: TS.Node): Call {
+    const fn = this.hashFunction(h, which);
+    const at = this.at(node);
+    const label = this.label(node);
+    const call: Call = { name: fn.name, fn: fn.id, at, label, params: fn.params.map((decl, k) => ({ decl, init: args[k], label })), body: [] };
+    if (fn.result) call.result = { decl: this.newVar(`(${fn.name} result)`, fn.result.kind === "boolean" ? "boolean" : "number", at, { temp: true }), kind: fn.result.kind };
+    return this.mark(call, node);
+  }
+
+  private hashPut(h: Hash, key: NumExpr, value: NumExpr | BoolExpr | undefined, node: TS.Node) {
+    const call = this.hashCall(h, "put", value === undefined ? [key] : [key, value], node);
+    this.emit({ kind: "call", call, at: call.at, label: call.label }, node);
+  }
+
+  /**
+   * One of a table's functions, made the first time something needs it: `find` (the place of a key's entry, −1 when it
+   * has none), `place` (an entry into the slots), `grow` (the slots made again: without the deleted entries when no loop
+   * is going through them, and twice the size when more than half would be taken), `put` and `drop`.
+   */
+  private hashFunction(h: Hash, which: keyof Hash["fns"]): FuncDecl {
+    const made = h.fns[which];
+    if (made) return made;
+    const node = this.hashNodes.get(h)!;
+    const at = this.at(node);
+    const label = this.label(node);
+    const name = `${h.name}.${which === "put" ? (h.as === "map" ? "set" : "add") : which === "drop" ? "delete" : `(${which})`}`;
+    const local = (n: string, kind: "number" | "boolean" = "number") => this.newVar(`(${n} of ${h.name})`, kind, at, { temp: true });
+    const fn: FuncDecl = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
+    h.fns[which] = fn;
+    const bin = (op: ArithOp, left: NumExpr, right: NumExpr): NumExpr => ({ kind: "binary", op, left, right, at, label });
+    const cmp = (op: CompareOp, left: NumExpr, right: NumExpr): BoolExpr => ({ kind: "compare", op, left, right, at, label });
+    const cell = (a: ArrayDecl, index: NumExpr) => ({ kind: "element" as const, array: a.id, index, at });
+    const set = (v: VarDecl, value: NumExpr): Stmt => ({ kind: "assign", target: v.id, value, at, label });
+    const let_ = (v: VarDecl, init: NumExpr | BoolExpr): Stmt => ({ kind: "declare", decl: v, init, at, label });
+    const store = (a: ArrayDecl, index: NumExpr, value: NumExpr | BoolExpr): Stmt => ({ kind: "store", array: a.id, index, value, at, label });
+    const push = (a: ArrayDecl, value: NumExpr | BoolExpr): Stmt => ({ kind: "push", array: a.id, value, at, label });
+    const when = (cond: BoolExpr, then: Stmt[], otherwise?: Stmt[]): Stmt => ({ kind: "if", cond, then, ...(otherwise ? { else: otherwise } : {}), at, label });
+    const give = (value?: NumExpr | BoolExpr): Stmt => ({ kind: "return", ...(value ? { value } : {}), at, label });
+    const loop = (i: VarDecl, until: NumExpr, body: Stmt[]): Stmt => ({ kind: "for", cond: cmp("<", varRef(i), until), update: [set(i, bin("+", varRef(i), num(1)))], body, at, label });
+    const run = (f: keyof Hash["fns"], args: (NumExpr | BoolExpr)[]): Call => this.hashCall(h, f, args, node);
+    const statement = (call: Call): Stmt => ({ kind: "call", call, at, label });
+    // Where a key's search starts: its two halves folded together, so that keys alike in their low bits (a place packed as x + y * 65536) spread out.
+    const start = (key: NumExpr): NumExpr => bin("&", bin("^", key, bin(">>>", key, num(16))), varRef(h.mask));
+    const next = (s: VarDecl): Stmt => set(s, bin("&", bin("+", varRef(s), num(1)), varRef(h.mask)));
+    const length: NumExpr = { kind: "length", array: h.keys.id, at };
+    switch (which) {
+      case "find": {
+        const key = local("key"), s = local("slot"), e = local("entry");
+        fn.params = [key];
+        fn.result = { decl: local("found"), kind: "number" };
+        fn.body = [
+          let_(s, start(varRef(key))),
+          let_(e, cell(h.slots, varRef(s))),
+          { kind: "while", cond: cmp("!=", varRef(e), num(0)), body: [
+            // An entry that was deleted still holds its slot, so that what was put in after it is still found.
+            when({ kind: "and", items: [cmp("==", cell(h.keys, bin("-", varRef(e), num(1))), varRef(key)), cell(h.live, bin("-", varRef(e), num(1)))] }, [give(bin("-", varRef(e), num(1)))]),
+            next(s),
+            set(e, cell(h.slots, varRef(s))),
+          ], at, label },
+          give(num(-1)),
+        ];
+        break;
+      }
+      case "place": {
+        const i = local("entry"), s = local("slot");
+        fn.params = [i];
+        fn.body = [
+          let_(s, start(cell(h.keys, varRef(i)))),
+          { kind: "while", cond: cmp("!=", cell(h.slots, varRef(s)), num(0)), body: [next(s)], at, label },
+          store(h.slots, varRef(s), bin("+", varRef(i), num(1))),
+          set(h.used, bin("+", varRef(h.used), num(1))),
+        ];
+        break;
+      }
+      case "grow": {
+        const i = local("entry"), j = local("kept"), room = local("room"), n = local("slot"), again = local("entry");
+        const columns = [h.keys, ...(h.values ? [h.values] : []), h.live];
+        fn.body = [
+          // The deleted entries go, the rest closing up in their order — unless a loop is going through them, whose place would move.
+          when({ kind: "and", items: [cmp("==", varRef(h.walking), num(0)), cmp(">", varRef(h.dead), num(0))] }, [
+            let_(j, num(0)),
+            let_(i, num(0)),
+            loop(i, length, [when(cell(h.live, varRef(i)), [...columns.map((a) => store(a, varRef(j), cell(a, varRef(i)))), set(j, bin("+", varRef(j), num(1)))])]),
+            ...columns.map((a): Stmt => ({ kind: "setLength", array: a.id, value: varRef(j), at, label })),
+            set(h.dead, num(0)),
+          ]),
+          let_(room, bin("+", varRef(h.mask), num(1))),
+          { kind: "while", cond: cmp(">", bin("*", bin("+", length, num(1)), num(2)), varRef(room)), body: [set(room, bin("*", varRef(room), num(2)))], at, label },
+          set(h.mask, bin("-", varRef(room), num(1))),
+          { kind: "setLength", array: h.slots.id, value: varRef(room), at, label },
+          let_(n, num(0)),
+          loop(n, varRef(room), [store(h.slots, varRef(n), num(0))]),
+          set(h.used, num(0)),
+          let_(again, num(0)),
+          loop(again, length, [when(cell(h.live, varRef(again)), [statement(run("place", [varRef(again)]))])]),
+        ];
+        break;
+      }
+      case "put": {
+        const key = local("key"), i = local("entry");
+        const value = h.values ? local("value", h.values.kind) : undefined;
+        if (value && h.values) { if (h.values.bits) value.bits = h.values.bits; if (h.values.unsigned) value.unsigned = true; }
+        fn.params = value ? [key, value] : [key];
+        const held = value ? (value.kind === "number" ? varRef(value) : boolRef(value)) : undefined;
+        fn.body = [
+          let_(i, { kind: "call", call: run("find", [varRef(key)]) }),
+          // A key it has keeps its place, as it does in JavaScript: only the value changes.
+          when(cmp(">=", varRef(i), num(0)), [...(held ? [store(h.values!, varRef(i), held)] : []), give()]),
+          when(cmp(">", bin("*", bin("+", varRef(h.used), num(1)), num(4)), bin("*", bin("+", varRef(h.mask), num(1)), num(3))), [statement(run("grow", []))]),
+          push(h.keys, varRef(key)),
+          ...(held ? [push(h.values!, held)] : []),
+          push(h.live, TRUE),
+          statement(run("place", [bin("-", length, num(1))])),
+          set(h.size, bin("+", varRef(h.size), num(1))),
+        ];
+        break;
+      }
+      case "drop": {
+        const key = local("key"), i = local("entry");
+        fn.params = [key];
+        fn.result = { decl: local("deleted", "boolean"), kind: "boolean" };
+        fn.body = [
+          let_(i, { kind: "call", call: run("find", [varRef(key)]) }),
+          when(cmp("<", varRef(i), num(0)), [give(FALSE)]),
+          store(h.live, varRef(i), FALSE),
+          set(h.size, bin("-", varRef(h.size), num(1))),
+          set(h.dead, bin("+", varRef(h.dead), num(1))),
+          give(TRUE),
+        ];
+        break;
+      }
+    }
+    this.mark(fn, node);
+    this.functions.push(fn);
+    return fn;
+  }
+
+  /**
+   * A method of such a table: `get`, `set`, `has`, `delete`, `clear` of a Map; `add`, `has`, `delete`, `clear` of a
+   * Set. `as` is where the call stands, and what comes back is as `arrayCall`'s. `other` is the right of `get(k) ?? other`.
+   */
+  private hashMethod(e: TS.CallExpression, h: Hash, method: string, as: "statement" | "number" | "boolean", other?: TS.Expression): NumExpr | BoolExpr | true | null {
+    const at = this.at(e);
+    const label = this.label(e);
+    const wrong = (what: string) => { this.c.error(e, what); return null; };
+    const key = (): NumExpr | null => {
+      if (e.arguments.length < 1) { this.c.error(e, `${method}() takes a key.`); return null; }
+      return this.num(e.arguments[0]);
+    };
+    switch (method) {
+      case "has": {
+        if (as !== "boolean") return wrong(`${h.name}.has(…) is true or false.`);
+        const k = key();
+        return k ? this.mark<BoolExpr>({ kind: "compare", op: ">=", left: { kind: "call", call: this.hashCall(h, "find", [k], e) }, right: num(0), at, label }, e) : null;
+      }
+      case "get": {
+        if (h.as !== "map" || !h.values) return wrong("A Set has has(), add() and delete().");
+        if (as === "statement") return wrong(`${h.name}.get(…) is a value: use it or store it.`);
+        if ((as === "number") !== (h.values.kind === "number")) return wrong(`${h.name} holds ${h.values.kind}s.`);
+        const k = key();
+        if (!k) return null;
+        // The entry's value, or — for a key it has not got — what `??` names, else 0 or false: there is no undefined when the map is played.
+        const i = this.newVar(`(entry of ${h.name})`, "number", at, { temp: true });
+        const otherwise = other ? (h.values.kind === "number" ? this.num(other) : this.boolValue(other)) : h.values.kind === "number" ? num(0) : FALSE;
+        if (!otherwise) return null;
+        const call: Call = {
+          name: `${h.name}.get`, at, label, params: [], result: { decl: this.newVar(`(${h.name}.get result)`, h.values.kind, at, { temp: true, ...(h.values.bits ? { bits: h.values.bits } : {}), ...(h.values.unsigned ? { unsigned: true } : {}) }), kind: h.values.kind },
+          body: [
+            { kind: "declare", decl: i, init: { kind: "call", call: this.hashCall(h, "find", [k], e) }, at, label },
+            { kind: "if", cond: { kind: "compare", op: ">=", left: varRef(i), right: num(0), at, label }, then: [{ kind: "return", value: { kind: "element", array: h.values.id, index: varRef(i), at }, at, label }], at, label },
+            { kind: "return", value: otherwise, at, label },
+          ],
+        };
+        return this.mark<NumExpr | BoolExpr>({ kind: "call", call }, e);
+      }
+      case "set": case "add": {
+        if ((method === "set") !== (h.as === "map")) return wrong(h.as === "map" ? "A Map takes set(key, value)." : "A Set takes add(key).");
+        if (as !== "statement") return wrong(`${h.name}.${method}(…) stands on its own.`);
+        if (e.arguments.length !== (h.as === "map" ? 2 : 1)) return wrong(h.as === "map" ? "set() takes a key and a value." : "add() takes a key.");
+        const k = key();
+        const value = h.values ? (h.values.kind === "number" ? this.num(e.arguments[1]) : this.boolValue(e.arguments[1])) : undefined;
+        if (!k || value === null) return null;
+        this.hashPut(h, k, value, e);
+        return true;
+      }
+      case "delete": {
+        const k = key();
+        if (!k) return null;
+        const call = this.hashCall(h, "drop", [k], e);
+        if (as === "statement") { this.emit({ kind: "call", call, at, label }, e); return true; }
+        if (as !== "boolean") return wrong(`${h.name}.delete(…) is true when the key was there.`);
+        return this.mark<BoolExpr>({ kind: "call", call }, e);
+      }
+      case "clear": {
+        if (as !== "statement" || e.arguments.length) return wrong(`${h.name}.clear() stands on its own and takes nothing.`);
+        const i = this.newVar(`(slot of ${h.name})`, "number", at, { temp: true });
+        for (const a of [h.keys, ...(h.values ? [h.values] : []), h.live]) this.emit({ kind: "setLength", array: a.id, value: num(0), at, label }, e);
+        this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+        this.emit({ kind: "for", cond: { kind: "compare", op: "<=", left: varRef(i), right: varRef(h.mask), at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "store", array: h.slots.id, index: varRef(i), value: num(0), at, label }], at, label }, e);
+        for (const v of [h.size, h.used, h.dead]) this.emit({ kind: "assign", target: v.id, value: num(0), at, label }, e);
+        return true;
+      }
+      default:
+        return wrong(`${h.as === "map" ? "A Map of a program has get, set, has, delete, clear, size, forEach and for…of (with keys(), values() and entries())" : "A Set of a program has add, has, delete, clear, size, forEach and for…of"}; ${method}() is not one of them.`);
+    }
+  }
+
+  /** `m.forEach((value, key) => …)`, `s.forEach((key) => …)`: the loop, the function its body. */
+  private hashForEach(e: TS.CallExpression, h: Hash) {
+    if (e.arguments.length > 1) { this.c.error(e.arguments[1], "forEach() takes the function alone; there is no this in a program."); return; }
+    this.hashLoop(h, e, (key, value) => {
+      const k: Binding = { kind: "var", v: key };
+      const call = this.callback(e.arguments[0], "forEach", [value ? { kind: "var", v: value } : k, k, h], "void", e);
+      if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+    });
+  }
+
+  /**
+   * A loop through such a table, in the order its keys went in: `turn` is called, where the loop's body goes, with the
+   * key and the value of each entry that is still there. What the body adds is reached, what it deletes is not, as in
+   * JavaScript; while the loop runs the deleted entries stay where they are (`walking`), so that its place holds.
+   */
+  private hashLoop(h: Hash, node: TS.Node, turn: (key: VarDecl, value: VarDecl | undefined) => void) {
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(entry of ${h.name})`, "number", at, { temp: true });
+    const step = (v: VarDecl, by: "+" | "-"): Stmt => ({ kind: "assign", target: v.id, value: { kind: "binary", op: by, left: varRef(v), right: num(1), at, label }, at, label });
+    const body = this.collect(() => {
+      const key = this.newVar(`(key of ${h.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: key, init: { kind: "element", array: h.keys.id, index: varRef(i), at }, at, label }, node);
+      let value: VarDecl | undefined;
+      if (h.values) {
+        value = this.newVar(`(value of ${h.name})`, h.values.kind, at, { temp: true, ...(h.values.bits ? { bits: h.values.bits } : {}), ...(h.values.unsigned ? { unsigned: true } : {}) });
+        this.emit({ kind: "declare", decl: value, init: { kind: "element", array: h.values.id, index: varRef(i), at }, at, label }, node);
+      }
+      turn(key, value);
+    });
+    // A `return` in the body leaves the loop without reaching its end: the loop is counted out before it.
+    const leaving = (list: Stmt[]): Stmt[] => list.flatMap((st): Stmt[] => {
+      switch (st.kind) {
+        case "return": return [step(h.walking, "-"), st];
+        case "if": return [{ ...st, then: leaving(st.then), ...(st.else ? { else: leaving(st.else) } : {}) }];
+        case "while": case "do": case "block": case "unitLoop": case "textLoop": return [{ ...st, body: leaving(st.body) }];
+        case "for": return [{ ...st, body: leaving(st.body), update: leaving(st.update) }];
+        case "unrolled": return [{ ...st, iterations: st.iterations.map(leaving) }];
+        case "switch": return [{ ...st, cases: st.cases.map((c) => ({ ...c, body: leaving(c.body) })) }];
+        default: return [st];
+      }
+    });
+    this.emit(step(h.walking, "+"), node);
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, node);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: h.keys.id, at }, at, label }, update: [step(i, "+")], body: [{ kind: "if", cond: { kind: "element", array: h.live.id, index: varRef(i), at }, then: leaving(body), at, label }], at, label }, node);
+    this.emit(step(h.walking, "-"), node);
   }
 
   /* ── Classes ── */
@@ -4767,7 +5130,7 @@ export class Structured {
       }
       const binding = this.listOf(arg);
       // An array reaches a function as itself, as it does in TypeScript: what the function stores, the caller sees.
-      if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed" || binding?.kind === "grid" || binding?.kind === "lists") { scope.bind(p, binding); asCalled({ binding }); return; }
+      if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed" || binding?.kind === "hash" || binding?.kind === "grid" || binding?.kind === "lists") { scope.bind(p, binding); asCalled({ binding }); return; }
       if (binding?.kind === "record") {
         if (this.assigns(body, p)) { this.c.error(p, `${p.name.text} is a record; a record parameter can have its fields assigned, not be reassigned itself.`); ok = false; return; }
         scope.bind(p, binding);
@@ -4916,6 +5279,7 @@ export class Structured {
         case "records": return `r${[...b.fields.values()].map((a) => this.identity(a)).join(".")}`;
         case "units": return `u${this.identity(b.ptr)}`;
         case "keyed": return `k${this.identity(b.values ?? b.present ?? b)}`;
+        case "hash": return `h${this.identity(b.slots)}`;
         // A record kept in a `let` is one object the scope hands back; a row of an array of records is made anew at every use, and so never met twice.
         default: return `o${this.identity(b)}`;
       }
@@ -5173,6 +5537,7 @@ export class Structured {
     if (ts.isPropertyAccessExpression(e) && e.name.text === "size") {
       const b = this.bindingOf(e.expression);
       if (b?.kind === "keyed" && b.size) return varRef(b.size);
+      if (b?.kind === "hash") return varRef(b.size);
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
@@ -5206,6 +5571,8 @@ export class Structured {
       const list = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "pop" ? this.bindingOf(left.expression.expression) : undefined;
       const getter = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "get" ? left.expression.expression : undefined;
       const bound = getter ? this.bindingOf(getter) : undefined;
+      // `seen.get(k) ?? 100` of a Map over any number: the other value for a key it has not got.
+      if (bound?.kind === "hash" && ts.isCallExpression(left)) return this.hashMethod(left, bound, "get", "number", e.right) as NumExpr | null;
       const table = bound?.kind === "keyed" ? bound : getter && !bound ? this.collectionOf(getter) : undefined;
       if (table?.kind === "keyed" && table.present && ts.isCallExpression(left) && left.arguments.length === 1) {
         // `price.get(k) ?? 100`: the other value for a key that was never set.
@@ -5306,6 +5673,10 @@ export class Structured {
       const list = this.arrayOf(e.expression.expression);
       if (list?.kind === "array") {
         const out = this.arrayCall(e, list.a, e.expression.name.text, "number");
+        return out && out !== true ? (out as NumExpr) : null;
+      }
+      if (list?.kind === "hash") {
+        const out = this.hashMethod(e, list, e.expression.name.text, "number");
         return out && out !== true ? (out as NumExpr) : null;
       }
       const made = list?.kind === "keyed" ? list : !list && e.arguments.length && !this.evaluate(e.arguments[0]) ? this.collectionOf(e.expression.expression) : undefined;
@@ -5735,6 +6106,17 @@ export class Structured {
     }
     const ofTexts = this.textCondition(e);
     if (ofTexts) return ofTexts;
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      // `flags.get(k) ?? false` of a Map over any number: the other value for a key it has not got.
+      const left = this.unwrap(e.left);
+      const table = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "get" ? this.bindingOf(left.expression.expression) : undefined;
+      if (table?.kind === "hash" && ts.isCallExpression(left)) {
+        const numeric = table.values?.kind === "number";
+        const out = this.hashMethod(left, table, "get", numeric ? "number" : "boolean", e.right);
+        if (!out || out === true) return FALSE;
+        return numeric ? this.mark<BoolExpr>({ kind: "test", expr: out as NumExpr, at: this.at(e), label: this.label(e) }, e) : (out as BoolExpr);
+      }
+    }
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
       if (op === ts.SyntaxKind.AmpersandAmpersandToken) return this.mark<BoolExpr>({ kind: "and", items: [this.boolInner(e.left, depth + 1), this.boolInner(e.right, depth + 1)] }, e);
@@ -5796,6 +6178,12 @@ export class Structured {
         // A number of the array (indexOf, a pop of numbers) tested as one is `!= 0`, as any number is.
         const numeric = e.expression.name.text === "indexOf" || (e.expression.name.text === "pop" && list.a.kind === "number");
         const out = this.arrayCall(e, list.a, e.expression.name.text, numeric ? "number" : "boolean");
+        if (!out || out === true) return FALSE;
+        return numeric ? this.mark<BoolExpr>({ kind: "test", expr: out as NumExpr, at: this.at(e), label: this.label(e) }, e) : (out as BoolExpr);
+      }
+      if (list?.kind === "hash") {
+        const numeric = e.expression.name.text === "get" && list.values?.kind === "number";
+        const out = this.hashMethod(e, list, e.expression.name.text, numeric ? "number" : "boolean");
         if (!out || out === true) return FALSE;
         return numeric ? this.mark<BoolExpr>({ kind: "test", expr: out as NumExpr, at: this.at(e), label: this.label(e) }, e) : (out as BoolExpr);
       }
