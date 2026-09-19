@@ -37,7 +37,7 @@ export type Binding =
    * plus one. `used` counts the slots taken since the table was last made, `dead` the entries deleted and still there,
    * `walking` the loops going through it now. `fns` are its functions, made when first needed.
    */
-  | { kind: "hash"; as: "map" | "set"; name: string; slots: ArrayDecl; keys: ArrayDecl; values?: ArrayDecl; live: ArrayDecl; size: VarDecl; mask: VarDecl; used: VarDecl; dead: VarDecl; walking: VarDecl; fns: { find?: FuncDecl; place?: FuncDecl; grow?: FuncDecl; put?: FuncDecl; drop?: FuncDecl } }
+  | { kind: "hash"; as: "map" | "set"; name: string; slots: ArrayDecl; keys: ArrayDecl; values?: ArrayDecl; live: ArrayDecl; size: VarDecl; mask: VarDecl; used: VarDecl; dead: VarDecl; walking: VarDecl; /** The keys are units of the game: each entry's unit, its three numbers, beside the one number it is found by. */ units?: { ptr: ArrayDecl; epd: ArrayDecl; uid: ArrayDecl }; fns: { find?: FuncDecl; place?: FuncDecl; grow?: FuncDecl; put?: FuncDecl; drop?: FuncDecl } }
   /**
    * An array of arrays whose shape is known when the script is built — `let grid = [[0, 0, 0], [0, 0, 0]]` — which is one
    * flat array: `dims` are its sizes from the outside in (the first is 0 when the outer array grows, by whole rows), and

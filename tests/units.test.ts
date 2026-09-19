@@ -233,3 +233,22 @@ describe("units: in the rows of an array of instances (slice 8½, classes)", () 
     expect(sim.faults).toEqual([]);
   });
 });
+
+describe("units: a Map and a Set keyed by units (slice 8½)", () => {
+  it("a number a unit: set, get, has, delete, in the order they went in; a unit that died reads as none in a loop", () => {
+    const sim = run(`const hits = new Map<Unit | null, number>(); const marked = new Set<Unit>();
+      for (const u of allUnits()) { hits.set(u, u.hp); if (u.owner == P2) marked.add(u); }
+      const cc = first({ owner: P1, type: units.TerranCommandCenter }); const ling = first({ owner: P2 });
+      let ccHits = hits.get(cc) ?? -1; let none = hits.get(null) ?? -1; let has = hits.has(ling) ? 1 : 0;
+      hits.set(cc, 7); if (ling) { marked.delete(ling); hits.delete(ling); }
+      let size = hits.size; let markedSize = marked.size; let after = hits.get(ling) ?? -1; let again = hits.get(cc) ?? -1;
+      let order = 0; let total = 0; for (const [u, n] of hits) { if (u) order = order * 10 + (u.owner == P1 ? 1 : 2); total += n; }
+      if (cc) cc.kill(); let alive = 0; for (const u of hits.keys()) if (u) alive++;
+      const keys = [...marked.keys()]; let kept = keys.length;`);
+    expect([sim.value("ccHits"), sim.value("none"), sim.value("has")]).toEqual([1500, -1, 1]);
+    expect([sim.value("size"), sim.value("markedSize"), sim.value("after"), sim.value("again")]).toEqual([4, 1, -1, 7]);
+    expect([sim.value("order"), sim.value("total")]).toEqual([1121, 40 + 25 + 35 + 7]);
+    expect([sim.value("alive"), sim.value("kept")]).toEqual([3, 1]);
+    expect(sim.faults).toEqual([]);
+  });
+});

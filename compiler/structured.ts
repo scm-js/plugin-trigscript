@@ -885,6 +885,14 @@ export class Structured {
   private declareUnits(name: string, initializer: TS.Expression, at: TS.Node): Binding | null {
     const { ts } = this;
     const init = this.unwrap(initializer);
+    if (ts.isArrayLiteralExpression(init) && init.elements.length > 0 && init.elements.every((x) => ts.isSpreadElement(x))) {
+      // `[...squad]`, `[...marked.keys(), ...others]`: a copy, one that grows.
+      const parts: Extract<Binding, { kind: "units" }>[] = [];
+      for (const x of init.elements) { const from = this.listOf((x as TS.SpreadElement).expression); const units = from?.kind === "hash" ? this.hashList(from, "keys", undefined, x) : from; if (units?.kind !== "units") { this.c.error(x, "... here spreads an array of units."); return null; } parts.push(units); }
+      const made = this.emptyLike(parts[0], name, at);
+      for (const from of parts) this.appendList(made, from, at);
+      return made;
+    }
     if (!ts.isArrayLiteralExpression(init) || init.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) { this.c.error(init, `${name} is written out unit by unit ([first(…), nearest(…)]), or starts empty and is pushed to.`); return null; }
     // Written empty, it can only be one that grows — pushed to here, or by a function it is handed to.
     const dynamic = this.body.plan.grows.has(at) || init.elements.length === 0;
@@ -1543,7 +1551,7 @@ export class Structured {
     const keyType = this.c.checker.getTypeArguments(type as TS.TypeReference)[0];
     if (!keyType) return false;
     const brand = this.brandOfType(keyType);
-    return !(brand && KEY_DOMAINS[brand]) && this.kindOf(keyType) === "number";
+    return !(brand && KEY_DOMAINS[brand]) && (this.kindOf(keyType) === "number" || this.kindOf(keyType) === "unit");
   }
 
   /** Whether a declaration is a table keyed by an id of the game: `new Map<K, V>(…)`, `new Set<K>(…)`, or an object literal typed `Record<K, V>`. */
@@ -2482,7 +2490,12 @@ export class Structured {
     try { h = this.evaluate(e); } catch { return undefined; }
     if (h) return this.isPlainList(h.value) ? "array" : undefined;
     if (!ts.isCallExpression(e)) return undefined;
-    if (this.copiesList(e)) return ts.isPropertyAccessExpression(e.expression) && this.peek(e.expression.expression) === "units" ? "units" : "array";
+    if (this.copiesList(e)) {
+      if (!ts.isPropertyAccessExpression(e.expression)) return "array";
+      const of = this.bindingOf(e.expression.expression);
+      if (of?.kind === "hash") return of.units && e.expression.name.text === "keys" ? "units" : "array";
+      return this.peek(e.expression.expression) === "units" ? "units" : "array";
+    }
     if (this.makesList(e)) return "array";
     return undefined;
   }
@@ -2507,6 +2520,12 @@ export class Structured {
 
   /** The keys or the values of a Map or a Set over any number, as an array of their own: in the order they went in. */
   private hashList(h: Hash, what: "keys" | "values", name: string | undefined, where: TS.Node): Binding {
+    if (h.units && !(what === "values" && h.values)) {
+      // The units it is keyed by, as an array of units.
+      const made = this.emptyLike({ kind: "units", name: h.name, ...h.units }, name ?? `(${h.name}.keys)`, where);
+      this.hashLoop(h, where, (key) => { for (const [a, part] of this.unitArrays(made as Extract<Binding, { kind: "units" }>)) this.emit({ kind: "push", array: a.id, value: { kind: "unitPart", unit: unitRef(key), part, at: this.at(where) }, at: this.at(where), label: this.label(where) }, where); });
+      return made;
+    }
     const from = what === "values" && h.values ? h.values : h.keys;
     const a = this.newArray(name ?? `(${h.name}.${what})`, from.kind, 0, this.sourceOf(where), { ...(from.bits ? { bits: from.bits } : {}), ...(from.unsigned ? { unsigned: true } : {}) });
     a.dynamic = true;
@@ -4873,18 +4892,23 @@ export class Structured {
     const slots = this.newArray(`${name} (slots)`, "number", HASH_START, where);
     slots.dynamic = true;
     const counter = (n: string) => this.newVar(n, "number", where);
+    // `Map<Unit, number>`: a unit is found by one number — where it is, with the byte that tells one unit of that place from the next —
+    // so a unit that died and one made where it was are two keys. The unit itself is kept beside it, for a loop to hand back.
+    const unitKeys = args[0] && this.kindOf(args[0]) === "unit";
     const h: Hash = {
       kind: "hash", as, name, slots, keys: grown(`${name} (keys)`, "number"), ...(as === "map" ? { values: grown(`${name} (values)`, kind as "number" | "boolean", kind === "number" ? this.widthOf(valueType!) : {}) } : {}), live: grown(`${name} (has)`, "boolean"),
       size: counter(`${name}.size`), mask: counter(`${name} (mask)`), used: counter(`${name} (slots taken)`), dead: counter(`${name} (deleted)`), walking: counter(`${name} (loops)`), fns: {},
+      ...(unitKeys ? { units: { ptr: grown(`${name} (unit ptr)`, "number", { unsigned: true }), epd: grown(`${name} (unit epd)`, "number", { unsigned: true }), uid: grown(`${name} (unit uid)`, "number", { unsigned: true }) } } : {}),
     };
     this.hashNodes.set(h, at);
     this.emit({ kind: "remark", short: as === "map" ? "a Map over any number" : "a Set over any number", text: `${name}'s keys are any number, so a key is looked for: a few steps to find, set or delete one, where a table keyed by ids of the game (a UnitType, a Player) is one read. It keeps the order its keys went in, as JavaScript does, in arrays that grow out of the memory the programs' arrays share.`, at: atIr }, at);
     this.emit({ kind: "declareArray", array: slots.id, fill: num(0), at: atIr, label }, at);
-    for (const a of [h.keys, ...(h.values ? [h.values] : []), h.live]) this.emit({ kind: "declareArray", array: a.id, init: [], at: atIr, label }, at);
+    for (const a of this.hashColumns(h)) this.emit({ kind: "declareArray", array: a.id, init: [], at: atIr, label }, at);
     for (const [v, first] of [[h.size, 0], [h.mask, HASH_START - 1], [h.used, 0], [h.dead, 0], [h.walking, 0]] as const) this.emit({ kind: "declare", decl: v, init: num(first), at: atIr, label }, at);
     // What it starts with: worked out whole when nothing of the program is in it, else the pairs as they are written.
     const whole = this.evaluate(init)?.value;
     const constant = (v: unknown): NumExpr | BoolExpr | null => (h.values?.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : (() => { const n = this.asInteger({ value: v }, init); return n === null ? null : num(n); })());
+    if (unitKeys && (whole instanceof Map || whole instanceof Set) && whole.size > 0) { this.c.error(init, `${name}'s keys are units of the game, which the script has none of: it starts empty.`); return null; }
     if (whole instanceof Map || whole instanceof Set) {
       for (const [k, v] of whole instanceof Map ? whole.entries() : [...whole.values()].map((x) => [x, true] as const)) {
         const key = this.asInteger({ value: k }, init);
@@ -4901,12 +4925,28 @@ export class Structured {
     for (const item of list.elements) {
       const pair = this.unwrap(item);
       if (as === "map" && (!ts.isArrayLiteralExpression(pair) || pair.elements.length !== 2)) { this.c.error(item, "A Map starts with [key, value] pairs."); return null; }
-      const key = this.num(as === "map" ? (pair as TS.ArrayLiteralExpression).elements[0] : item);
+      const key = this.hashKey(h, as === "map" ? (pair as TS.ArrayLiteralExpression).elements[0] : item);
       const value = h.values ? (h.values.kind === "number" ? this.num((pair as TS.ArrayLiteralExpression).elements[1]) : this.boolValue((pair as TS.ArrayLiteralExpression).elements[1])) : undefined;
       if (!key || value === null) return null;
       this.hashPut(h, key, value, item);
     }
     return h;
+  }
+
+  /** The arrays an entry is kept in, which move together when the deleted ones go. */
+  private hashColumns(h: Hash): ArrayDecl[] {
+    return [h.keys, ...(h.values ? [h.values] : []), h.live, ...(h.units ? [h.units.ptr, h.units.epd, h.units.uid] : [])];
+  }
+
+  /** A key as the number it is found by, and — of a table keyed by units — the unit's three numbers to keep beside it. */
+  private hashKey(h: Hash, expr: TS.Expression): { key: NumExpr; unit?: UnitExpr } | null {
+    if (!h.units) { const key = this.num(expr); return key ? { key } : null; }
+    const found = this.unitExpr(expr);
+    if (!found) return null;
+    const unit = this.unitTemp(found, expr);
+    const at = this.at(expr);
+    const label = this.label(expr);
+    return { unit, key: { kind: "binary", op: "+", left: { kind: "unitPart", unit, part: "ptr", at }, right: { kind: "binary", op: "<<", left: { kind: "unitPart", unit, part: "uid", at }, right: num(16), at, label }, at, label } };
   }
 
   /** A call of one of a table's functions, as an expression. */
@@ -4919,8 +4959,11 @@ export class Structured {
     return this.mark(call, node);
   }
 
-  private hashPut(h: Hash, key: NumExpr, value: NumExpr | BoolExpr | undefined, node: TS.Node) {
-    const call = this.hashCall(h, "put", value === undefined ? [key] : [key, value], node);
+  private hashPut(h: Hash, k: NumExpr | { key: NumExpr; unit?: UnitExpr }, value: NumExpr | BoolExpr | undefined, node: TS.Node) {
+    const { key, unit } = "key" in k ? k : { key: k, unit: undefined };
+    const at = this.at(node);
+    const parts = h.units ? UNIT_PARTS.map((part): NumExpr => ({ kind: "unitPart", unit: unit ?? NO_UNIT, part, at })) : [];
+    const call = this.hashCall(h, "put", [key, ...(value === undefined ? [] : [value]), ...parts], node);
     this.emit({ kind: "call", call, at: call.at, label: call.label }, node);
   }
 
@@ -4986,7 +5029,7 @@ export class Structured {
       }
       case "grow": {
         const i = local("entry"), j = local("kept"), room = local("room"), n = local("slot"), again = local("entry");
-        const columns = [h.keys, ...(h.values ? [h.values] : []), h.live];
+        const columns = this.hashColumns(h);
         fn.body = [
           // The deleted entries go, the rest closing up in their order — unless a loop is going through them, whose place would move.
           when({ kind: "and", items: [cmp("==", varRef(h.walking), num(0)), cmp(">", varRef(h.dead), num(0))] }, [
@@ -5012,7 +5055,9 @@ export class Structured {
         const key = local("key"), i = local("entry");
         const value = h.values ? local("value", h.values.kind) : undefined;
         if (value && h.values) { if (h.values.bits) value.bits = h.values.bits; if (h.values.unsigned) value.unsigned = true; }
-        fn.params = value ? [key, value] : [key];
+        const unit = h.units ? ([[h.units.ptr, local("unit ptr")], [h.units.epd, local("unit epd")], [h.units.uid, local("unit uid")]] as const) : [];
+        for (const [, v] of unit) v.unsigned = true;
+        fn.params = [key, ...(value ? [value] : []), ...unit.map(([, v]) => v)];
         const held = value ? (value.kind === "number" ? varRef(value) : boolRef(value)) : undefined;
         fn.body = [
           let_(i, { kind: "call", call: run("find", [varRef(key)]) }),
@@ -5022,6 +5067,7 @@ export class Structured {
           push(h.keys, varRef(key)),
           ...(held ? [push(h.values!, held)] : []),
           push(h.live, TRUE),
+          ...unit.map(([a, v]) => push(a, varRef(v))),
           statement(run("place", [bin("-", length, num(1))])),
           set(h.size, bin("+", varRef(h.size), num(1))),
         ];
@@ -5055,9 +5101,11 @@ export class Structured {
     const at = this.at(e);
     const label = this.label(e);
     const wrong = (what: string) => { this.c.error(e, what); return null; };
+    let asked: { key: NumExpr; unit?: UnitExpr } | null = null;
     const key = (): NumExpr | null => {
       if (e.arguments.length < 1) { this.c.error(e, `${method}() takes a key.`); return null; }
-      return this.num(e.arguments[0]);
+      asked = this.hashKey(h, e.arguments[0]);
+      return asked?.key ?? null;
     };
     switch (method) {
       case "has": {
@@ -5091,8 +5139,8 @@ export class Structured {
         if (e.arguments.length !== (h.as === "map" ? 2 : 1)) return wrong(h.as === "map" ? "set() takes a key and a value." : "add() takes a key.");
         const k = key();
         const value = h.values ? (h.values.kind === "number" ? this.num(e.arguments[1]) : this.boolValue(e.arguments[1])) : undefined;
-        if (!k || value === null) return null;
-        this.hashPut(h, k, value, e);
+        if (!k || !asked || value === null) return null;
+        this.hashPut(h, asked, value, e);
         return true;
       }
       case "delete": {
@@ -5106,7 +5154,7 @@ export class Structured {
       case "clear": {
         if (as !== "statement" || e.arguments.length) return wrong(`${h.name}.clear() stands on its own and takes nothing.`);
         const i = this.newVar(`(slot of ${h.name})`, "number", at, { temp: true });
-        for (const a of [h.keys, ...(h.values ? [h.values] : []), h.live]) this.emit({ kind: "setLength", array: a.id, value: num(0), at, label }, e);
+        for (const a of this.hashColumns(h)) this.emit({ kind: "setLength", array: a.id, value: num(0), at, label }, e);
         this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
         this.emit({ kind: "for", cond: { kind: "compare", op: "<=", left: varRef(i), right: varRef(h.mask), at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "store", array: h.slots.id, index: varRef(i), value: num(0), at, label }], at, label }, e);
         for (const v of [h.size, h.used, h.dead]) this.emit({ kind: "assign", target: v.id, value: num(0), at, label }, e);
@@ -5138,8 +5186,9 @@ export class Structured {
     const i = this.newVar(`(entry of ${h.name})`, "number", at, { temp: true });
     const step = (v: VarDecl, by: "+" | "-"): Stmt => ({ kind: "assign", target: v.id, value: { kind: "binary", op: by, left: varRef(v), right: num(1), at, label }, at, label });
     const body = this.collect(() => {
-      const key = this.newVar(`(key of ${h.name})`, "number", at, { temp: true });
-      this.emit({ kind: "declare", decl: key, init: { kind: "element", array: h.keys.id, index: varRef(i), at }, at, label }, node);
+      const key = this.newVar(`(key of ${h.name})`, h.units ? "unit" : "number", at, { temp: true });
+      const cell = (a: ArrayDecl): NumExpr => ({ kind: "element", array: a.id, index: varRef(i), at });
+      this.emit({ kind: "declare", decl: key, init: h.units ? { kind: "unitAt", ptr: cell(h.units.ptr), epd: cell(h.units.epd), uid: cell(h.units.uid), at } : cell(h.keys), at, label }, node);
       let value: VarDecl | undefined;
       if (h.values) {
         value = this.newVar(`(value of ${h.name})`, h.values.kind, at, { temp: true, ...(h.values.bits ? { bits: h.values.bits } : {}), ...(h.values.unsigned ? { unsigned: true } : {}) });
