@@ -2938,9 +2938,8 @@ export class Structured {
     const label = this.label(e);
     const over = this.overOf(e.expression.expression);
     if (!over) { this.notConstant(e.expression.expression, `What ${method}() runs over`); return null; }
-    if ((over.kind === "grid" || over.kind === "lists") && method !== "map") { this.c.error(e, `${method}() of an array of arrays is not there yet; a for…of over ${over.name} runs the same turns.`); return null; }
     if (method === "sort" || method === "reverse") {
-      if (over.kind === "grid" || over.kind === "lists") return null;
+      if (over.kind === "grid" || over.kind === "lists") return (method === "sort" ? this.sortList(e, over) : this.reverseList(e, over)) ? over : null;
       if (over.kind === "values" || over.kind === "query") { this.c.error(e, over.kind === "query" ? "The units of the game come in no order; keep them in an array first: unitsOf(…).filter(() => true)." : `${over.name} is a list the script has; ${method}() changes a list in place, which takes an array of the program.`); return null; }
       if (this.arraysOf(over).some((a) => a.values)) { this.c.error(e, `${this.overName(over)} was computed when the script was built and is only read in a program.`); return null; }
       return (method === "sort" ? this.sortList(e, over) : this.reverseList(e, over)) ? over : null;
@@ -2977,7 +2976,7 @@ export class Structured {
       return a;
     };
     let made: List;
-    if (over.kind === "grid" || over.kind === "lists") return null;
+    if (over.kind === "grid" || over.kind === "lists") return this.filterRows(e, over, given, where);
     if (over.kind === "units" || over.kind === "query") made = { kind: "units", name: given, ptr: grow(`${given} (ptr)`, { kind: "number", unsigned: true }), epd: grow(`${given} (epd)`, { kind: "number", unsigned: true }), uid: grow(`${given} (uid)`, { kind: "number", unsigned: true }) };
     else if (over.kind === "records") {
       // The columns first, so that — made again, in a loop — the rows it had give the blocks of their arrays back before it starts over.
@@ -3027,6 +3026,45 @@ export class Structured {
     return ok ? made : null;
   }
 
+  /** `grid.filter(…)`, `buckets.filter(…)`: the rows the function keeps, each a copy of its own — of a grid whole rows of one flat array, of rows that grow a block each. */
+  private filterRows(e: TS.CallExpression, over: Grid | Lists, given: string, where: TS.Node): Binding | null {
+    const at = this.at(e);
+    const label = this.label(e);
+    const source = this.sourceOf(where);
+    let ok = true;
+    if (over.kind === "grid") {
+      if (over.dims.length !== 2 || over.offset) { this.c.error(e, `${over.name} is arrays more than two deep, or a part of one; filter() takes rows two deep.`); return null; }
+      const w = over.dims[1];
+      const flat = this.newArray(given, over.a.kind, 0, source, { ...(over.a.bits ? { bits: over.a.bits } : {}), ...(over.a.unsigned ? { unsigned: true } : {}) });
+      flat.dynamic = true;
+      this.emit({ kind: "declareArray", array: flat.id, init: [], at, label }, e);
+      this.loopOver(over, e, (item, index) => {
+        const p = this.predicate(e.arguments[0], "filter", this.handed(over, item, index), e);
+        if (!p || index?.kind !== "var") { ok = false; return; }
+        const keep = Array.from({ length: w }, (_, k): Stmt => ({ kind: "push", array: flat.id, value: { kind: "element", array: over.a.id, index: this.scaled(varRef(index.v), w, num(k), e), at }, at, label }));
+        this.emit({ kind: "if", cond: p, then: keep, at, label }, e);
+      });
+      return ok ? { kind: "grid", name: given, a: flat, dims: [0, w], offset: null } : null;
+    }
+    const make = (part: string) => { const a = this.newArray(`${given} (${part})`, "number", 0, source, { unsigned: true }); a.dynamic = true; return a; };
+    const made: Lists = { kind: "lists", name: given, ptr: make("block"), len: make("length"), room: make("room"), k: make("size"), of: over.of, ...(over.bits ? { bits: over.bits } : {}), ...(over.unsigned ? { unsigned: true } : {}) };
+    // Made again, in a loop, the rows it had give their blocks back first.
+    this.releaseRows(made, num(0), e);
+    for (const a of this.handlesOf(made)) this.emit({ kind: "declareArray", array: a.id, init: [], at, label }, e);
+    this.loopOver(over, e, (item, index) => {
+      const p = this.predicate(e.arguments[0], "filter", this.handed(over, item, index), e);
+      if (!p || item.kind !== "array") { ok = false; return; }
+      const keep = this.collect(() => {
+        const place = this.newVar(`(row of ${given})`, "number", at, { temp: true });
+        this.emit({ kind: "declare", decl: place, init: { kind: "length", array: made.ptr.id, at }, at, label }, e);
+        for (const a of this.handlesOf(made)) this.emit({ kind: "push", array: a.id, value: num(0), at, label }, e);
+        this.copyCells(this.innerAt(made, place, e), item.a, e);
+      });
+      this.emit({ kind: "if", cond: p, then: keep, at, label }, e);
+    });
+    return ok ? made : null;
+  }
+
   /** `a[i] = b[j]` over every array of a list, a row moved as one. */
   private moveRow(list: List, to: NumExpr, from: NumExpr, e: TS.Node): Stmt[] {
     const at = this.at(e);
@@ -3070,20 +3108,68 @@ export class Structured {
     return { binding: { kind: "record", fields: build(this.rowShape(list), ""), ...(list.cls ? { cls: list.cls } : {}) }, put: (to) => held.map(([, a, v]) => back(a, v, to)) };
   }
 
+  /**
+   * What a sort and a reverse need of a list, whatever its rows are: how many, the row at a place, one row moved onto
+   * another, and a row taken in hand with what puts it back. An array of arrays that grow is its four arrays of handles
+   * seen as an array of records with one field; a grid's rows are runs of its flat array, the hand a run past its end.
+   */
+  private rowOps(list: List | Grid | Lists, e: TS.CallExpression): { length: NumExpr; row: (i: NumExpr) => Binding; move: (to: NumExpr, from: NumExpr) => Stmt[]; hold: (i: NumExpr) => { binding: Binding; put: (to: NumExpr) => Stmt[] } } | null {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (list.kind === "lists") {
+      const view: Records = { kind: "records", name: list.name, fields: new Map(HANDLE_PARTS.map((part, k) => [`row ${part}`, this.handlesOf(list)[k]])), shape: new Map([["row", { kind: "list", of: list.of, width: { ...(list.bits ? { bits: list.bits } : {}), ...(list.unsigned ? { unsigned: true } : {}) } }]]) };
+      const inner = (b: Binding): Binding => (b.kind === "record" ? b.fields.get("row")! : b);
+      return { length: { kind: "length", array: list.ptr.id, at }, row: (i) => inner(this.rowOf(view, i)), move: (to, from) => this.moveRow(view, to, from, e), hold: (i) => { const held = this.heldRow(view, i, e); return { binding: inner(held.binding), put: held.put }; } };
+    }
+    if (list.kind === "grid") {
+      if (list.dims.length !== 2 || list.offset) { this.c.error(e, `${list.name} is arrays more than two deep, or a part of one; its rows are sorted and reversed two deep.`); return null; }
+      if (list.a.values) { this.c.error(e, `${list.name} was computed when the script was built and is only read in a program.`); return null; }
+      const w = list.dims[1];
+      const cellAt = (row: NumExpr, k: number): NumExpr => this.scaled(row, w, num(k), e);
+      const window = (offset: NumExpr): Binding => ({ kind: "array", a: this.windowOf({ kind: "row", name: `${list.name}[…]`, a: list.a, offset, length: w }, e) });
+      return {
+        length: this.rowsOf(list, e),
+        row: (i) => window(this.scaled(i, w, null, e)),
+        move: (to, from) => Array.from({ length: w }, (_, k): Stmt => ({ kind: "store", array: list.a.id, index: cellAt(to, k), value: { kind: "element", array: list.a.id, index: cellAt(from, k), at }, at, label })),
+        hold: (i) => {
+          // The hand is a row past the end, so that what is asked of it — `a[0] - b[0]` — is asked of a row.
+          list.a.dynamic = true;
+          const place = this.newVar(`(held of ${list.name})`, "number", at, { temp: true });
+          this.emit({ kind: "declare", decl: place, init: { kind: "length", array: list.a.id, at }, at, label }, e);
+          for (let k = 0; k < w; k++) this.emit({ kind: "push", array: list.a.id, value: { kind: "element", array: list.a.id, index: cellAt(i, k), at }, at, label }, e);
+          return { binding: window(varRef(place)), put: (to) => [...Array.from({ length: w }, (_, k): Stmt => ({ kind: "store", array: list.a.id, index: cellAt(to, k), value: { kind: "element", array: list.a.id, index: { kind: "binary", op: "+", left: varRef(place), right: num(k), at, label }, at }, at, label })), ...Array.from({ length: w }, (): Stmt => ({ kind: "pop", array: list.a.id, at, label }))] };
+        },
+      };
+    }
+    return {
+      length: { kind: "length", array: this.lengthArray(list).id, at },
+      row: (i) => {
+        if (list.kind === "records") return this.rowOf(list, i);
+        const v = list.kind === "units" ? this.newVar("(before)", "unit", at, { temp: true }) : this.newVar("(before)", list.a.kind, at, { temp: true, ...(list.a.bits ? { bits: list.a.bits } : {}), ...(list.a.unsigned ? { unsigned: true } : {}) });
+        this.emit({ kind: "declare", decl: v, init: list.kind === "units" ? this.unitAtIndex(list, i, e) : { kind: "element", array: list.a.id, index: i, at }, at, label }, e);
+        return { kind: "var", v };
+      },
+      move: (to, from) => this.moveRow(list, to, from, e),
+      hold: (i) => this.heldRow(list, i, e),
+    };
+  }
+
   /** `xs.reverse()`: the two ends exchanged, inwards, within the frame. */
-  private reverseList(e: TS.CallExpression, list: List): boolean {
+  private reverseList(e: TS.CallExpression, list: List | Grid | Lists): boolean {
     const at = this.at(e);
     const label = this.label(e);
     if (e.arguments.length) { this.c.error(e, "reverse() takes no argument."); return false; }
+    const ops = this.rowOps(list, e);
+    if (!ops) return false;
     const i = this.newVar(`(front of ${this.overName(list)})`, "number", at, { temp: true });
     const j = this.newVar(`(back of ${this.overName(list)})`, "number", at, { temp: true });
     const step = (v: VarDecl, by: "+" | "-"): Stmt => ({ kind: "assign", target: v.id, value: { kind: "binary", op: by, left: varRef(v), right: num(1), at, label }, at, label });
-    const body = this.collect(() => {
-      const held = this.heldRow(list, varRef(i), e);
-      this.out.push(...this.moveRow(list, varRef(i), varRef(j), e), ...held.put(varRef(j)), step(i, "+"), step(j, "-"));
-    });
     this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
-    this.emit({ kind: "declare", decl: j, init: { kind: "binary", op: "-", left: { kind: "length", array: this.lengthArray(list).id, at }, right: num(1), at, label }, at, label }, e);
+    this.emit({ kind: "declare", decl: j, init: { kind: "binary", op: "-", left: ops.length, right: num(1), at, label }, at, label }, e);
+    const body = this.collect(() => {
+      const held = ops.hold(varRef(i));
+      this.out.push(...ops.move(varRef(i), varRef(j)), ...held.put(varRef(j)), step(i, "+"), step(j, "-"));
+    });
     this.emit({ kind: "while", cond: { kind: "compare", op: "<", left: varRef(i), right: varRef(j), at, label }, body, at, label }, e);
     return true;
   }
@@ -3093,39 +3179,35 @@ export class Structured {
    * it moved up one. It keeps the order of equals, as JavaScript's sort does, and is quick on a list nearly in order;
    * a list in no order costs its length squared, which is what the hint is about.
    */
-  private sortList(e: TS.CallExpression, list: List): boolean {
+  private sortList(e: TS.CallExpression, list: List | Grid | Lists): boolean {
     const at = this.at(e);
     const label = this.label(e);
     const name = this.overName(list);
     if (!e.arguments[0]) { this.c.error(e, `sort() wants its function — ${name}.sort((a, b) => a - b): without one JavaScript sorts numbers as text, 10 before 9.`); return false; }
+    const ops = this.rowOps(list, e);
+    if (!ops) return false;
     const i = this.newVar(`(index of ${name})`, "number", at, { temp: true });
     const j = this.newVar(`(place in ${name})`, "number", at, { temp: true });
     const next: NumExpr = { kind: "binary", op: "+", left: varRef(j), right: num(1), at, label };
     let ok = true;
     const body = this.collect(() => {
-      const held = this.heldRow(list, varRef(i), e);
+      const held = ops.hold(varRef(i));
       this.emit({ kind: "declare", decl: j, init: { kind: "binary", op: "-", left: varRef(i), right: num(1), at, label }, at, label }, e);
       const inner = this.collect(() => {
-        let before: Binding;
-        if (list.kind === "records") before = this.rowOf(list, varRef(j));
-        else {
-          const v = list.kind === "units" ? this.newVar("(before)", "unit", at, { temp: true }) : this.newVar("(before)", list.a.kind, at, { temp: true, ...(list.a.bits ? { bits: list.a.bits } : {}), ...(list.a.unsigned ? { unsigned: true } : {}) });
-          this.emit({ kind: "declare", decl: v, init: list.kind === "units" ? this.unitAtIndex(list, varRef(j), e) : { kind: "element", array: list.a.id, index: varRef(j), at }, at, label }, e);
-          before = { kind: "var", v };
-        }
+        const before = ops.row(varRef(j));
         const call = this.callback(e.arguments[0], "sort", [before, held.binding], "any", e);
         if (!call) { ok = false; return; }
         if (call.result?.kind !== "number") { this.c.error(e.arguments[0], "sort()'s function gives a number — below 0 when a goes first, above when b does: (a, b) => a - b."); ok = false; return; }
         const after: BoolExpr = { kind: "compare", op: ">", left: this.mark<NumExpr>({ kind: "call", call }, e), right: num(0), at, label };
         this.emit({ kind: "if", cond: { kind: "not", expr: after }, then: [{ kind: "break", at, label }], at, label }, e);
-        this.out.push(...this.moveRow(list, next, varRef(j), e), { kind: "assign", target: j.id, value: { kind: "binary", op: "-", left: varRef(j), right: num(1), at, label }, at, label });
+        this.out.push(...ops.move(next, varRef(j)), { kind: "assign", target: j.id, value: { kind: "binary", op: "-", left: varRef(j), right: num(1), at, label }, at, label });
       });
       this.emit({ kind: "while", cond: { kind: "compare", op: ">=", left: varRef(j), right: num(0), at, label }, body: inner, at, label }, e);
       this.out.push(...held.put(next));
     });
     if (!ok) return false;
     this.emit({ kind: "declare", decl: i, init: num(1), at, label }, e);
-    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: this.lengthArray(list).id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body, at, label, sorts: name }, e);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: ops.length, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body, at, label, sorts: name }, e);
     return true;
   }
 
@@ -5240,7 +5322,20 @@ export class Structured {
   private inline(call: TS.Expression, parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression | undefined, target: Body, name: string | undefined, decl: TS.Node, as: MethodCall = {}): Call | undefined {
     const { ts } = this;
     // What is handed over: a call's arguments — or, where `call` is not one (`new Squad(P1)`, a getter read, a setter's `=`), what `as` says.
-    const given: readonly TS.Expression[] = as.args ?? (ts.isCallExpression(call) ? call.arguments : []);
+    const written: readonly TS.Expression[] = as.args ?? (ts.isCallExpression(call) ? call.arguments : []);
+    // `f(...xs)`: an argument a cell, when the script knows how many there are — a list it has, an array of a fixed length.
+    const given: TS.Expression[] = [];
+    const spread = new Map<number, Binding>();
+    for (const arg of written) {
+      if (!ts.isSpreadElement(arg)) { given.push(arg); continue; }
+      const known = this.evaluate(arg.expression);
+      const list = known ? undefined : this.listOf(arg.expression);
+      const items: Binding[] | null = known ? (Array.isArray(known.value) ? (known.value as unknown[]).map((value): Binding => ({ kind: "value", value })) : null)
+        : list?.kind === "array" && !list.a.dynamic ? Array.from({ length: list.a.length }, (_, k): Binding => ({ kind: "cell", a: list.a, index: num(k) }))
+        : list?.kind === "units" && !list.ptr.dynamic ? Array.from({ length: list.ptr.length }, (_, k): Binding => ({ kind: "unitAt", ptr: { a: list.ptr, index: num(k) }, epd: { a: list.epd, index: num(k) }, uid: { a: list.uid, index: num(k) } })) : null;
+      if (!items) { this.c.error(arg, "... in a call spreads a list the script has, or an array of a fixed length: how many arguments a call has is settled when the script is built. An array that grows is handed over as itself — f(xs)."); return undefined; }
+      for (const item of items) { spread.set(given.length, item); given.push(arg); }
+    }
     const what = name ?? "The function";
     if (!body) { this.c.error(call, "The function has no body."); return undefined; }
     // A copy of a body inside a copy of a body, sixteen times over: what happens from here is decided once the arguments are known.
@@ -5279,9 +5374,9 @@ export class Structured {
         const k = element ? this.kindOf(element) : null;
         if (!ts.isIdentifier(p.name) || (k !== "number" && k !== "boolean")) { this.c.error(p, "The rest of the arguments is an array of numbers or of booleans: ...ns: number[]."); ok = false; return; }
         const values: (NumExpr | BoolExpr)[] = [];
-        for (const x of given.slice(i)) {
-          if (ts.isSpreadElement(x)) { this.c.error(x, "An array is handed to a function as itself — f(xs) — not spread into its arguments."); ok = false; return; }
-          const v = k === "number" ? this.num(x) : this.boolValue(x);
+        for (const [j, x] of given.slice(i).entries()) {
+          const item = spread.get(i + j);
+          const v = item ? (this.valueOf(item, k, x) as NumExpr | BoolExpr | null) : k === "number" ? this.num(x) : this.boolValue(x);
           if (!v) { ok = false; return; }
           values.push(v);
         }
@@ -5305,6 +5400,19 @@ export class Structured {
       }
       const arg = given[i];
       const label = `L${line}: ${p.name.text} = ${arg ? arg.getText(this.body.sf) : "its default"}`;
+      const item = spread.get(i);
+      if (item && arg) {
+        // One of what `...xs` spread: a value of the script as it is, a cell or a unit into a variable of the parameter's own.
+        if (item.kind === "value") { scope.bind(p, item); asCalled(this.constantArgument(item.value, label, p) ?? `${p.name.text} is ${describe(item.value)}, which only the script has`); return; }
+        const k = this.kindOf(this.c.checker.getTypeAtLocation(p.name));
+        const init = k ? this.valueOf(item, k, arg) : null;
+        if (!k || !init) { ok = false; return; }
+        const copy = this.newVar(p.name.text, k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(p.name)) : {});
+        out.params.push({ decl: copy, init, label });
+        scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init, label });
+        return;
+      }
       if (!arg) {
         if (!p.initializer) { this.c.error(call, `Missing argument ${p.name.text}.`); ok = false; return; }
         // The default is the function's own expression: evaluated in its body.

@@ -56,3 +56,26 @@ describe("a call that gives an instance", () => {
     expect(messages(`${VEC} function pick(a: Vec, b: Vec, first: boolean) { if (first) return a; return b; } let f = true; const p = pick(new Vec(1, 1), new Vec(2, 2), f); p.x = 0;`).join("\n")).toMatch(/has to give the same instance/);
   });
 });
+
+describe("the methods that take a function, on an array of arrays", () => {
+  const ROWS = "function show(g: number[][]) { let s = ''; for (const r of g) { for (const x of r) s += `${x},`; s += '|'; } return s; }";
+  it("a grid: sort by a cell, reverse, filter", () => {
+    same(`${ROWS} let n = 3; let pts = [[5, 1], [2, 2], [9, 3], [n, 4]]; pts.sort((a, b) => a[0] - b[0]); const s1 = show(pts); pts.reverse(); const far = pts.filter((p) => p[0] > n); print(s1 + ' ' + show(pts) + ' ' + show(far) + ' ' + far.length);`);
+  });
+  it("rows that grow: sort by length, reverse, filter into rows of their own", () => {
+    same(`${ROWS} let n = 7; const b: number[][] = [[1, 2, 3], [], [4, 5]]; b[1].push(n); b[1].push(8); b[1].push(9); b[1].push(10); b.sort((x, y) => x.length - y.length); const s1 = show(b); b.reverse(); const long = b.filter((r) => r.length > 2); print(s1 + ' ' + show(b) + ' ' + show(long));`, 256);
+  });
+  it("filter's rows are copies of their own, where JavaScript's are the same rows: said in the guide", () => {
+    const sim = run("const b: number[][] = [[1, 2, 3], [4]]; const long = b.filter((r) => r.length > 2); long[0].push(99); let pts = [[5, 1], [2, 2]]; const far = pts.filter((p) => p[0] > 3); far[0][1] = 77; print(`${b[0].length} ${long[0].length} ${pts[0][1]} ${far[0][1]}`);", 256);
+    expect(shown(sim)).toEqual(["3 4 1 77"]);
+  });
+});
+
+describe("a spread into a call", () => {
+  it("of an array of a fixed length (a tuple, which is what TypeScript asks of one), of a list the script has, into a rest of arguments", () => {
+    same("function vol(a: number, b: number, c: number) { return a * b * c; } function sum(...ns: number[]) { let t = 0; for (const n of ns) t += n; return t; } const dims: [number, number, number] = [2, 3, 4]; let box: [number, number, number] = [1, 1, 1]; let k = 5; box[1] = k; box[2] = k + 1; print(`${vol(...box)} ${vol(...dims)} ${sum(1, ...box, ...dims)} ${vol(k, ...([2, 3] as [number, number]))}`);");
+  });
+  it("of an array that grows is refused, since the call's arguments are counted when the script is built", () => {
+    expect(messages("function f(a: number, b: number) { return a + b; } const xs: number[] = []; xs.push(1); xs.push(2); let n = f(...(xs as [number, number]));").join("\n")).toMatch(/An array that grows is handed over as itself/);
+  });
+});
