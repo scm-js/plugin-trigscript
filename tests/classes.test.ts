@@ -101,6 +101,16 @@ describe("an array of instances", () => {
     const sim = run(`${WAVE} const waves = [new Wave(3, 1), new Wave(1, 2), new Wave(2, 3)]; waves.sort((a, b) => a.count - b.count); waves[0].spawn(); const open = waves.filter((w) => !w.done); print(\`\${waves[0].count}\${waves[1].count}\${waves[2].count} \${open.length}\`);`);
     expect(shown(sim)).toEqual(["123 2"]);
   });
+  it("is made straight on its row — and apart, then copied, when what new is handed may read the array", () => {
+    const r = compile(`${WAVE} const waves: Wave[] = []; let n = 4; waves.push(new Wave(n, 2)); waves.push(new Wave(waves.length + 10, 3)); waves[0] = new Wave(waves[0].count * 2, waves.length); print(\`\${waves[0].count} \${waves[0].left} \${waves[0].delay} \${waves[1].count}\`);`);
+    expect(shown(simulatePrograms(r.ir, 1, { strings: r.strings }))).toEqual(["8 8 2 11"]);
+    // The first push declares no variable for a field: the constructor's assignments are stores into the row.
+    const names: string[] = [];
+    const walk = (x: unknown) => { if (Array.isArray(x)) x.forEach(walk); else if (x && typeof x === "object") { const o = x as Record<string, unknown>; if (o.kind === "declare") names.push((o.decl as { name: string }).name); Object.values(o).forEach(walk); } };
+    walk(r.ir);
+    expect(names.filter((name) => name.startsWith("(new Wave)")).length).toBe(6);
+    expect(names.some((name) => name.startsWith("waves[…]"))).toBe(false);
+  });
   it("holds one class", () => {
     expect(messages("class A { n = 0; } class B extends A { m = 0; } const xs: A[] = []; xs.push(new A()); xs.push(new B());").join("\n")).toMatch(/holds one class/);
   });

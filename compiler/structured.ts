@@ -1051,10 +1051,51 @@ export class Structured {
     return this.c.checker.getDeclaredTypeOfSymbol(this.c.checker.getSymbolAtLocation(cls.name ?? cls)!);
   }
 
-  /** A row of an array of instances from `new Wave(3, 40)`: the instance made, its fields the row's values. Null with a diagnostic. */
-  private newRow(of: { name: string; cls?: TS.ClassDeclaration }, made: TS.NewExpression, shape: RowShape): RowValues | null {
+  /**
+   * A row of an array of instances from `new Wave(3, 40)`: a row of nothing, and the constructor run on it — the row is
+   * `this`, so what the class declares and what the constructor assigns go straight into its cells. When what `new` is
+   * handed may read the array itself (`waves.push(new Wave(waves.length))`, a call among the arguments), the row is not
+   * there yet in JavaScript while they are worked out: then the instance is made on its own and copied in. Null with a diagnostic.
+   */
+  private newRow(of: { name: string; cls?: TS.ClassDeclaration }, made: TS.NewExpression, shape: RowShape, held?: Records): RowValues | null {
+    const { ts } = this;
     const cls = this.classOf(made.expression);
     if (!of.cls || cls !== of.cls) { this.c.error(made, of.cls ? `${of.name} holds instances of ${this.className(of.cls)}, and a row has the fields of that class; this is ${cls ? `a ${this.className(cls)}` : "something else"}.` : `${of.name} holds records written out: { … }.`); return null; }
+    let reads = false;
+    const look = (n: TS.Node) => {
+      if (reads) return;
+      if (ts.isCallExpression(n)) { reads = true; return; }
+      if (held && (ts.isIdentifier(n) || ts.isPropertyAccessExpression(n) || n.kind === ts.SyntaxKind.ThisKeyword) && this.bindingOf(n as TS.Expression) === held) { reads = true; return; }
+      ts.forEachChild(n, look);
+    };
+    for (const arg of made.arguments ?? []) if (!this.evaluate(arg)) look(arg);
+    if (reads) return this.copiedRow(of, made, shape, cls);
+    const out: RowValues = { cells: new Map(this.columnsOf(shape).map(({ key, kind }) => [key, kind === "number" ? num(0) : FALSE])), fill: [] };
+    out.fill.push((records, index) => {
+      const self = this.rowOf(records, index) as Instance;
+      this.onRow.set(self, { of: records, index, shape });
+      return this.construct(cls, made.arguments ?? [], self, made, `${of.name}[…]`);
+    });
+    return out;
+  }
+
+  /** The rows a constructor is running on, by the instance each is: where a field's first value goes. */
+  private readonly onRow = new WeakMap<Instance, { of: Records; index: NumExpr; shape: RowShape }>();
+
+  /** A field of a row given a value while its constructor runs: what the class declares it with, or the constructor's parameter that declares it. */
+  private rowFieldGiven(self: Instance, key: string, src: FieldSource, at: TS.Node): boolean {
+    const row = this.onRow.get(self)!;
+    const f = row.shape.get(key);
+    if (!f) { this.c.error(at, `${row.of.name} has no ${key} in its rows.`); return false; }
+    const out: RowValues = { cells: new Map(), fill: [] };
+    if (!this.rowField(row.of.name, key, f, src, out, at)) return false;
+    // An array's handle and a text's cells are nothing in a new row, and are filled below: only what is a value is stored.
+    if (f.kind !== "list" && f.kind !== "squad" && f.kind !== "text") for (const [column, value] of out.cells) this.emit({ kind: "store", array: row.of.fields.get(column)!.id, index: row.index, value, at: this.at(at), label: this.label(at) }, at);
+    return out.fill.every((fill) => fill(row.of, row.index));
+  }
+
+  /** The instance made in variables of its own, and its fields the row's values. */
+  private copiedRow(of: { name: string }, made: TS.NewExpression, shape: RowShape, cls: TS.ClassDeclaration): RowValues | null {
     const instance = this.instantiate(made, `(new ${this.className(cls)})`);
     if (!instance) return null;
     const out: RowValues = { cells: new Map(), fill: [] };
@@ -1379,7 +1420,7 @@ export class Structured {
     if (of?.kind !== "records" || !ts.isElementAccessExpression(left)) { this.c.error(e.left, "An array of records is assigned record by record: waves[i] = { … }."); return; }
     if (op !== ts.SyntaxKind.EqualsToken || !(ts.isObjectLiteralExpression(literal) || ts.isNewExpression(literal))) { this.c.error(e, `A record of ${of.name} is given whole, ${of.name}[i] = ${of.cls ? `new ${this.className(of.cls)}(…)` : "{ … }"}, or field by field, ${of.name}[i].${[...this.rowShape(of).keys()][0]} = 1.`); return; }
     const shape = this.rowShape(of);
-    const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape) : this.rowValues(of.name, literal, shape);
+    const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape, of) : this.rowValues(of.name, literal, shape);
     const index = this.rowIndex(of, left.argumentExpression);
     if (!row || !index) return;
     const i = this.temp(index, e, row.fill.length > 0 || this.owns(of));
@@ -1399,7 +1440,7 @@ export class Structured {
         const literal = this.unwrap(arg);
         if (!ts.isObjectLiteralExpression(literal) && !ts.isNewExpression(literal)) { this.c.error(arg, of.cls ? `${of.name}.push(new ${this.className(of.cls)}(…)) takes an instance made there: a row is the instance, so one kept in a variable would be copied, and changing it afterwards would not change the row.` : `${of.name}.push({ … }) takes a record written out.`); return; }
         const shape = this.rowShape(of);
-        const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape) : this.rowValues(of.name, literal, shape);
+        const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape, of) : this.rowValues(of.name, literal, shape);
         if (!row) return;
         const place = row.fill.length ? this.newVar(`(row of ${of.name})`, "number", at, { temp: true }) : undefined;
         if (place) this.emit({ kind: "declare", decl: place, init: { kind: "length", array: [...of.fields.values()][0].id, at }, at, label }, e);
@@ -4454,6 +4495,7 @@ export class Structured {
           for (const p of ctor.parameters) {
             if (!ts.getModifiers(p)?.length || !ts.isIdentifier(p.name)) continue;
             const from = scope.lookup(p);
+            if (from && this.onRow.has(self)) { this.rowFieldGiven(self, p.name.text, from.kind === "value" ? { value: from.value } : { binding: from }, p); continue; }
             const field = from && this.parameterField(from, `${name}.${p.name.text}`, p);
             if (field) self.fields.set(p.name.text, field);
           }
@@ -4492,6 +4534,8 @@ export class Structured {
       if (!key) { this.c.error(m.name, "A field's name is written out."); continue; }
       // `declare hp: number`, or a field what the class extends already made and this one only types again.
       if (!m.initializer && self.fields.has(key)) continue;
+      // On a row the cells are there already, and nothing: the field's first value is stored into them.
+      if (this.onRow.has(self)) { if (m.initializer) this.rowFieldGiven(self, key, { expr: m.initializer }, m); continue; }
       const held = this.declareField(`${name}.${key}`, m.initializer, this.c.checker.getTypeAtLocation(m.name), this.c.checker.getSymbolAtLocation(m.name), m, m.name, m);
       if (held) self.fields.set(key, held);
     }
