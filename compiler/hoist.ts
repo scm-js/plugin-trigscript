@@ -170,9 +170,16 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     else if (p.dotDotDotToken) error(p, "Rest parameters are not supported in a game function.");
     else declare(p);
   }
-  const isFunctionValue = (n: TS.Node) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isClassExpression(n) || ts.isClassDeclaration(n);
+  // A class *declared* in the body is the program's, as a function declared there is (see `classItems`); one written as a value is not.
+  const isFunctionValue = (n: TS.Node) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isClassExpression(n);
   const collect = (node: TS.Node) => {
     if (isFunctionValue(node)) return;
+    // `class Squad { … }`: `new Squad()` is an instance of the program's, so the name is never a value of the script; what its
+    // constructor, methods and accessors take are the game's, as a declared function's parameters are.
+    if (ts.isClassDeclaration(node)) {
+      declare(node);
+      for (const m of node.members) if (ts.isConstructorDeclaration(m) || ts.isMethodDeclaration(m) || ts.isAccessor(m)) for (const p of m.parameters) declare(p);
+    }
     if (ts.isVariableDeclarationList(node) && !(node.flags & ts.NodeFlags.Const)) for (const d of node.declarations) declare(d);
     // The variable of a for…of is bound per iteration when the loop is unrolled, like a parameter bound to a value.
     if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && ts.isVariableDeclarationList(node.initializer)) for (const d of node.initializer.declarations) declare(d);
@@ -396,12 +403,22 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
       if (s.body) deferred.push({ kind: "block", items: block(s.body.statements) });
       return;
     }
+    if (ts.isClassDeclaration(s)) { deferred.push({ kind: "block", items: classItems(s) }); return; }
     if (ts.isReturnStatement(s)) { value(s.expression, items); return; }
     if (ts.isSwitchStatement(s)) { value(s.expression, items); for (const c of s.caseBlock.clauses) { if (ts.isCaseClause(c)) value(c.expression, items); items.push({ kind: "block", items: block(c.statements) }); } return; }
     if (ts.isForOfStatement(s) || ts.isForInStatement(s)) { value(s.expression, items); items.push({ kind: "block", items: block([s.statement]) }); return; }
     if (ts.isLabeledStatement(s)) { statement(s.statement, items, deferred); return; }
     if (ts.isThrowStatement(s)) { value(s.expression, items); return; }
     // break / continue / empty / types: nothing runs at build time.
+  };
+  // What a class of the body computes when the script is built: inside a field's first value, and inside each body, as a declared function's.
+  const classItems = (c: TS.ClassDeclaration): PlanItem[] => {
+    const items: PlanItem[] = [];
+    for (const m of c.members) {
+      if (ts.isPropertyDeclaration(m)) value(m.initializer, items);
+      else if ((ts.isConstructorDeclaration(m) || ts.isMethodDeclaration(m) || ts.isAccessor(m)) && m.body) items.push({ kind: "block", items: block(m.body.statements) });
+    }
+    return items;
   };
   const declarations = (list: TS.VariableDeclarationList, items: PlanItem[]) => {
     const isConst = (list.flags & ts.NodeFlags.Const) !== 0;

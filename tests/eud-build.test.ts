@@ -416,6 +416,46 @@ FIXTURES.lists = `program(() => {
 FIXTURES.insideProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "inside.ts"), "utf8");
 FIXTURES.stringsProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "strings.ts"), "utf8");
 
+// Classes: an instance a record, its methods functions with the instance first — called, inlined, calling themselves — what
+// a class extends, statics, a getter and a setter, texts, arrays and an instance inside, and an array of instances.
+FIXTURES.classes = `program(() => {
+  class Vec { constructor(public x: number, public y: number) {} add(o: Vec) { this.x += o.x; this.y += o.y; } get far() { return this.x + this.y > 100; } }
+  class Thing {
+    static made = 0;
+    #id = 0;
+    name: string;
+    pos = new Vec(0, 0);
+    seen: number[] = [];
+    constructor(name: string, public hp: number) { this.name = name; Thing.made++; this.#id = Thing.made; }
+    get id() { return this.#id; }
+    set life(v: number) { this.hp = v < 0 ? 0 : v; }
+    hurt(by: number) { this.life = this.hp - by; this.seen.push(by); }
+    fib(n: number): number { return n < 2 ? n : this.fib(n - 1) + this.fib(n - 2); }
+    label(): string { return \`\${this.name} #\${this.id} \${this.hp}\`; }
+  }
+  class Boss extends Thing {
+    rage = 1;
+    constructor(hp: number) { super("Boss", hp * 2); }
+    hurt(by: number) { super.hurt(by / 2); this.rage++; }
+  }
+  class Wave { left: number; constructor(public count: number, public delay: number) { this.left = count; } spawn() { if (this.left > 0) this.left--; } get done() { return this.left == 0; } }
+  let n = 0;
+  const t = new Thing(\`Grunt \${n}\`, 40);
+  const b = new Boss(100);
+  const step = new Vec(3, 4);
+  const waves = [new Wave(2, 10), new Wave(3, 20)];
+  while (true) {
+    n++;
+    t.hurt(n); t.hurt(1); b.hurt(n); t.pos.add(step); b.pos.add(step);
+    for (const w of waves) w.spawn();
+    if (waves.every((w) => w.done)) waves.push(new Wave(n, 1));
+    waves.sort((x, y) => x.left - y.left);
+    if (b instanceof Thing && t.pos.far) displayText(t.label());
+    displayText(\`\${b.label()} \${b.rage} \${t.fib(n % 12)} \${Thing.made} \${waves.length} \${t.seen.length}\`);
+    sleep(seconds(1));
+  }
+});`;
+
 // And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
 // and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.
 FIXTURES.callbacksProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "callbacks.ts"), "utf8");

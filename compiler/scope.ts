@@ -14,7 +14,7 @@ export type Binding =
    * growing together. `waves[i]` is a record of cells, so what is written through it is written into the array, as an
    * object of a TypeScript array is a reference.
    */
-  | { kind: "records"; name: string; fields: Map<string, ArrayDecl> }
+  | { kind: "records"; name: string; fields: Map<string, ArrayDecl>; cls?: TS.ClassDeclaration }
   /** An array of units: three arrays of numbers — where each unit is, the same as an EPD, and its slot's uniqueness byte — moving together. */
   | { kind: "units"; name: string; ptr: ArrayDecl; epd: ArrayDecl; uid: ArrayDecl }
   /**
@@ -41,8 +41,15 @@ export type Binding =
   | { kind: "lists"; name: string; ptr: ArrayDecl; len: ArrayDecl; room: ArrayDecl; k: ArrayDecl; of: "number" | "boolean"; bits?: 8 | 16; unsigned?: boolean }
   /** `buckets[i]` before anything needs it as an array: the row at `index`, which becomes an `ArrayDecl.through` where it is used. */
   | { kind: "inner"; lists: Extract<Binding, { kind: "lists" }>; index: NumExpr }
-  /** `truth`: the record stands for something that may not be there (what `chatted()` found): the boolean that says whether it is. */
-  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl };
+  /**
+   * `truth`: the record stands for something that may not be there (what `chatted()` found): the boolean that says whether it is.
+   * `cls`: the record is an instance — `new Squad()` — and this is its class, known when the script is built, which is what a
+   * method call, a getter, `instanceof` and an overridden method are settled by.
+   */
+  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration };
+
+/** What `this` is bound under in the scope of a method's body: no declaration of the source stands for it. */
+export const THIS = { kind: -1 } as unknown as TS.Node;
 
 export class Scope {
   private readonly map = new Map<TS.Node, Binding>();
