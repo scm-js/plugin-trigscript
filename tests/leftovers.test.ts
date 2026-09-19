@@ -79,3 +79,18 @@ describe("a spread into a call", () => {
     expect(messages("function f(a: number, b: number) { return a + b; } const xs: number[] = []; xs.push(1); xs.push(2); let n = f(...(xs as [number, number]));").join("\n")).toMatch(/An array that grows is handed over as itself/);
   });
 });
+
+describe("an array of texts", () => {
+  it("is filled, read, written, searched, joined and gone through", () => {
+    same("const names: string[] = []; let n = 3; names.push('red'); names.push(`wave ${n}`, 'blue'); names[0] += '!'; names[2] = names[1] + '?'; let s = ''; for (const t of names) s += `[${t}]`; names.forEach((t, i) => { s += `${i}${t.length}`; }); const last = names.pop() ?? ''; print(`${s} ${names.length} ${last} ${names.join(', ')} ${names.indexOf('wave 3')} ${names.includes('red!') ? 1 : 0} ${names.includes('red') ? 1 : 0} ${names.join()}`);");
+  });
+  it("starts with what it is given, is a field of a class, is handed to a function", () => {
+    same("class Log { lines: string[] = []; add(t: string) { this.lines.push(t); } } function count(xs: string[], what: string) { let c = 0; for (const x of xs) if (x == what) c++; return c; } let k = 2; const tags = ['a', `b${k}`, 'a']; const log = new Log(); log.add('x'); log.add(`y${k}`); log.add(log.lines[0]); tags[0] = 'c'; print(`${count(tags, 'a')} ${count(log.lines, 'x')} ${tags.join('')} ${log.lines.join('-')}`);");
+  });
+  it("gives its blocks back: popped, cut off, written over, declared again", () => {
+    const r = compile("let turn = 0; let last = ''; while (turn < 80) { const lines: string[] = []; for (let i = 0; i < 6; i++) lines.push(`line ${turn} ${i}`); lines[0] = `again ${turn}`; lines[1] += '!'; lines.pop(); lines.length = 2; last = lines.join('|'); turn++; } print(last);");
+    const sim = simulatePrograms(r.ir, 1, { strings: r.strings, heapCells: 128 });
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(["again 79|line 79 1!"]);
+  });
+});

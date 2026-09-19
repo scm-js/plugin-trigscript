@@ -15,6 +15,8 @@ export type Binding =
    * object of a TypeScript array is a reference.
    */
   | { kind: "records"; name: string; fields: Map<string, ArrayDecl>; cls?: TS.ClassDeclaration; shape?: RowShape }
+  /** `const names: string[] = []`: an array of texts a program fills — an array of records with the one field `text`, which is what keeps each text's cells and owns its block. */
+  | { kind: "texts"; name: string; rows: Extract<Binding, { kind: "records" }> }
   /** A unit kept as its three numbers, each somewhere a number can be: a field of a row (`squads[i].leader`), or of a row held in temporaries. */
   | { kind: "unitAt"; ptr: Place; epd: Place; uid: Place }
   /** A text kept in cell `index` of three arrays: a row's (`waves[i].name`). */

@@ -179,6 +179,9 @@ const KEY_DOMAINS: Record<string, { size: number; what: string }> = {
 type Keyed = Extract<Binding, { kind: "keyed" }>;
 type Records = Extract<Binding, { kind: "records" }>;
 type Hash = Extract<Binding, { kind: "hash" }>;
+type Texts = Extract<Binding, { kind: "texts" }>;
+/** The one field of the array of records an array of texts is. No field of a script can be called it. */
+const TEXT_FIELD = "(text)";
 /** The slots a Map or a Set over any number starts with: a power of two, as every size of it is. */
 const HASH_START = 8;
 /** What a row is given: a value a column, and what fills the arrays it holds once the row is there. */
@@ -404,6 +407,11 @@ export class Structured {
       // `waves[i]` of an array of records: a record whose fields are the cells at i.
       const obj = this.bindingOf(e.expression) ?? this.recordTables(e);
       // `grid[y]`: a row of it, which costs nothing until something needs it as an array.
+      if (obj?.kind === "texts") {
+        const at = this.evaluate(e.argumentExpression);
+        const index = at ? (() => { const i = this.asInteger(at, e.argumentExpression); return i === null ? null : num(i); })() : this.num(e.argumentExpression);
+        return index ? this.textAtIndex(obj, index) : undefined;
+      }
       if (obj?.kind === "grid") return this.partOf(obj, e.argumentExpression, e);
       if (obj?.kind === "lists") {
         const h = this.evaluate(e.argumentExpression);
@@ -810,6 +818,11 @@ export class Structured {
       if (keyedAs) {
         const keyed = this.declareKeyed(d.name.text, keyedAs, init, type, d);
         if (keyed) this.scope.bind(d, keyed);
+        continue;
+      }
+      if ((this.c.checker.isArrayType(type) || this.c.checker.isTupleType(type)) && this.isTextType(this.c.checker.getIndexTypeOfType(type, ts.IndexKind.Number) ?? type)) {
+        const texts = this.declareTexts(d.name.text, d.initializer, d);
+        if (texts) this.scope.bind(d, texts);
         continue;
       }
       if (this.c.checker.isArrayType(type) || this.c.checker.isTupleType(type)) {
@@ -1395,6 +1408,11 @@ export class Structured {
       if (!row) return null;
       rows.push(row);
     }
+    return this.recordsFrom(name, shape, rows, init, at, grows, cls);
+  }
+
+  /** The arrays of an array of records, a column each, declared with the rows it starts with. */
+  private recordsFrom(name: string, shape: RowShape, rows: RowValues[], init: TS.Node, at: TS.Node, grows: boolean, cls?: TS.ClassDeclaration): Records | null {
     // Written empty, it can only be one that grows — pushed to here, or by a function it is handed to.
     const dynamic = grows || rows.length === 0;
     if (rows.length < (dynamic ? 0 : 1) || rows.length > MAX_ARRAY) { this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} records.` : `An array of a program has 1 to ${MAX_ARRAY} records (got ${rows.length}); one that starts empty is one something pushes to.`); return null; }
@@ -1406,7 +1424,7 @@ export class Structured {
     }
     const plain = [...shape.values()].every((f) => f.kind === "number" || f.kind === "boolean");
     const records: Records = { kind: "records", name, fields, ...(cls ? { cls } : {}), ...(plain ? {} : { shape }) };
-    if (!plain) this.emit({ kind: "remark", short: `rows of ${fields.size} cells`, text: `Each row of ${name} is ${fields.size} cells, one in each of ${fields.size} arrays that move together: a number or a boolean is one, a unit three, a text three (where it is, its block, its length), an array that grows four (its block, its length, its room, its size) and an array of units twelve. The row owns the blocks of its arrays and its made texts: they go back when the row does.`, at: this.at(at) }, at);
+    if (!plain && !shape.has(TEXT_FIELD)) this.emit({ kind: "remark", short: `rows of ${fields.size} cells`, text: `Each row of ${name} is ${fields.size} cells, one in each of ${fields.size} arrays that move together: a number or a boolean is one, a unit three, a text three (where it is, its block, its length), an array that grows four (its block, its length, its room, its size) and an array of units twelve. The row owns the blocks of its arrays and its made texts: they go back when the row does.`, at: this.at(at) }, at);
     this.releaseFrom(records, num(0), at);
     for (const [key, a] of fields) this.emit({ kind: "declareArray", array: a.id, init: rows.map((r) => r.cells.get(key)!), at: this.at(at), label: this.label(at) }, at);
     for (const [k, row] of rows.entries()) for (const fill of row.fill) if (!fill(records, num(k))) return null;
@@ -3472,6 +3490,7 @@ export class Structured {
       const gridShape = this.gridType(ft);
       if (gridShape) return this.declareGrid(full, init, gridShape, p) ?? this.declareLists(full, init, gridShape, p) ?? null;
       if (element && this.kindOf(element) === "unit") return this.declareUnits(full, init, p);
+      if (element && this.isTextType(element)) return this.declareTexts(full, init, p);
       const a = this.declareArray(full, init, ft, p);
       return a ? { kind: "array", a } : null;
     }
@@ -3845,7 +3864,20 @@ export class Structured {
       if (got && got.result?.kind !== "text") { const parts = this.textOf(e); return parts ? this.textFrom(parts, e) : null; }
       return got ? this.mark<TextExpr>({ kind: "textCall", call: got }, e) : null;
     }
-    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) {
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
+      const of = this.bindingOf(e.expression.expression);
+      if (of?.kind === "texts" && e.expression.name.text === "join") return this.textsJoin(e, of);
+      if (of?.kind === "texts" && e.expression.name.text === "pop" && e.arguments.length === 0) {
+        // What it takes off, kept — a copy, since the row's own goes back with the row.
+        const at = this.at(e);
+        const last = this.newVar("(popped)", "text", at, { temp: true, text: "made" });
+        const length: NumExpr = { kind: "length", array: [...of.rows.fields.values()][0].id, at };
+        this.emit({ kind: "declare", decl: last, init: this.textAtCells(this.textAtIndex(of, { kind: "binary", op: "-", left: length, right: num(1), at, label: this.label(e) }), e), at, label: this.label(e) }, e);
+        this.recordsCall(e, of.rows, "pop");
+        return { kind: "textVar", id: last.id };
+      }
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
       if (b?.kind === "textAt") return this.textAtCells(b, e);
       if (b?.kind === "var" && b.v.kind === "text") return { kind: "textVar", id: b.v.id };
@@ -4107,7 +4139,9 @@ export class Structured {
             if (rows) this.emit({ kind: "setLength", array: b.a.id, value: this.scaled(rows, b.dims.slice(1).reduce((n, d) => n * d, 1), null, e), at: this.at(e), label: this.label(e) }, e);
             return;
           }
-          if (b?.kind === "records" || b?.kind === "units") {
+          const sized = b?.kind === "texts" ? b.rows : b;
+          if (sized?.kind === "records" || sized?.kind === "units") {
+            const b = sized;
             if (op !== ts.SyntaxKind.EqualsToken) { this.c.error(e, "An array's length takes = only: xs.length = 0 empties it."); return; }
             const value = this.num(e.right);
             if (!value) return;
@@ -4288,6 +4322,14 @@ export class Structured {
       if (list?.kind === "array") { this.arrayCall(e, list.a, e.expression.name.text, "statement"); return; }
       if (list?.kind === "records") { this.recordsCall(e, list, e.expression.name.text); return; }
       if (list?.kind === "units") { this.unitsCall(e, list, e.expression.name.text); return; }
+      if (list?.kind === "texts") {
+        if (method === "forEach") {
+          this.textsLoop(list, e, (item, i) => { const call = this.callback(e.arguments[0], "forEach", [item, { kind: "var", v: i }, list], "void", e); if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e); });
+          return;
+        }
+        this.textsCall(e, list, method);
+        return;
+      }
       if (list?.kind === "hash") {
         if (method === "forEach") { this.hashForEach(e, list); return; }
         this.hashMethod(e, list, method, "statement");
@@ -4566,6 +4608,12 @@ export class Structured {
       return;
     }
     const over = this.listOf(s.expression);
+    if (over?.kind === "texts") {
+      // `for (const t of names)`: the text at each place, as it is when the turn reads it.
+      const scope = new Scope(this.scope);
+      this.textsLoop(over, s, (item) => { scope.bind(decl, item); this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope); });
+      return;
+    }
     if (over?.kind === "grid" || over?.kind === "lists") {
       const scope = new Scope(this.scope);
       this.loopOf(over, s, decl.name.text, (row) => { scope.bind(decl, row); this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope); });
@@ -4686,6 +4734,117 @@ export class Structured {
     const scope = new Scope(this.scope);
     const cases = clauses.map((c, i) => ({ value: values[i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
     this.emit({ kind: "switch", value: which, cases, at, label }, s);
+  }
+
+  /* ── An array of texts ── */
+
+  /**
+   * `const names: string[] = []`, `let lines = ["a", `b${n}`]`: an array of texts a program fills. It is an array of
+   * records with one field, so a text is what it is in a row — three cells, the row owning its block — and what gives
+   * rows their blocks back gives these theirs.
+   */
+  private declareTexts(name: string, initializer: TS.Expression, at: TS.Node): Texts | null {
+    const { ts } = this;
+    const init = this.unwrap(initializer);
+    const shape: RowShape = new Map([[TEXT_FIELD, { kind: "text" }]]);
+    const rows: RowValues[] = [];
+    const whole = this.evaluate(init);
+    const items: FieldSource[] = [];
+    if (whole) {
+      if (!Array.isArray(whole.value)) { this.c.error(init, `Expected a list of texts to start ${name} with, got ${describe(whole.value)}.`); return null; }
+      items.push(...(whole.value as unknown[]).map((value) => ({ value })));
+    } else if (ts.isArrayLiteralExpression(init) && !init.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) items.push(...init.elements.map((expr) => ({ expr })));
+    else { this.c.error(init, `${name} is written out text by text (["a", \`b\${n}\`]), or starts empty and is pushed to.`); return null; }
+    for (const item of items) {
+      const row: RowValues = { cells: new Map(), fill: [] };
+      if (!this.rowField(name, TEXT_FIELD, { kind: "text" }, item, row, init)) return null;
+      rows.push(row);
+    }
+    const records = this.recordsFrom(name, shape, rows, init, at, this.body.plan.grows.has(at), undefined);
+    if (!records) return null;
+    this.emit({ kind: "remark", short: "an array of texts", text: `${name} holds texts a program makes: each is three cells — where it is, the block of the memory the programs share that it owns, its length — and its block goes back when the text is replaced, popped or cut off.`, at: this.at(at) }, at);
+    return { kind: "texts", name, rows: records };
+  }
+
+  /** `names[i]` as the text kept there. */
+  private textAtIndex(of: Texts, index: NumExpr): Extract<Binding, { kind: "textAt" }> {
+    return this.textCells(of.rows, TEXT_FIELD, index);
+  }
+
+  /** `names.push(t)`, `names.pop()` standing on their own. */
+  private textsCall(e: TS.CallExpression, of: Texts, method: string) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const columns = [...of.rows.fields.values()];
+    if (method === "push" && e.arguments.length > 0) {
+      for (const arg of e.arguments) {
+        const value = this.text(arg);
+        if (!value) return;
+        // Worked out before the row is there: `names.push(names[0])` reads the array as it was.
+        const held = this.newVar("(pushed)", "text", at, { temp: true, text: "made" });
+        this.emit({ kind: "declare", decl: held, init: value, at, label }, arg);
+        const place = this.newVar(`(row of ${of.name})`, "number", at, { temp: true });
+        this.emit({ kind: "declare", decl: place, init: { kind: "length", array: columns[0].id, at }, at, label }, arg);
+        for (const a of columns) { a.dynamic = true; this.emit({ kind: "push", array: a.id, value: num(0), at, label }, arg); }
+        this.storeTextAt(this.textAtIndex(of, varRef(place)), { kind: "textVar", id: held.id }, arg);
+        this.emit({ kind: "assignText", target: held.id, value: { kind: "text", text: "" }, at, label }, arg);
+      }
+      return;
+    }
+    if (method === "pop" && e.arguments.length === 0) { this.recordsCall(e, of.rows, "pop"); return; }
+    this.c.error(e, `An array of texts has push(text), pop(), length, [i], for…of, forEach, includes, indexOf and join; ${method}() is not one of them.`);
+  }
+
+  /** `names.includes(t)`, `names.indexOf(t)`: a function of the compiler's own, a loop over the texts that compares each. */
+  private textsSearch(e: TS.CallExpression, of: Texts, method: "includes" | "indexOf"): NumExpr | BoolExpr | null {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (e.arguments.length !== 1) { this.c.error(e, `${method}() takes the text to look for.`); return null; }
+    const wanted = this.text(e.arguments[0]);
+    if (!wanted) return null;
+    const w = this.newVar(`(${method} of ${of.name})`, "text", at, { temp: true, text: "made" });
+    const i = this.newVar(`(index of ${of.name})`, "number", at, { temp: true });
+    const result = this.newVar(`(${of.name}.${method} result)`, method === "includes" ? "boolean" : "number", at, { temp: true });
+    const same: BoolExpr = { kind: "textCompare", op: "==", left: this.textAtCells(this.textAtIndex(of, varRef(i)), e), right: { kind: "textVar", id: w.id }, at, label };
+    const call: Call = {
+      name: `${of.name}.${method}`, at, label, params: [{ decl: w, init: wanted, label }], result: { decl: result, kind: method === "includes" ? "boolean" : "number" },
+      body: [
+        { kind: "declare", decl: i, init: num(0), at, label },
+        { kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: [...of.rows.fields.values()][0].id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "if", cond: same, then: [{ kind: "return", value: method === "includes" ? TRUE : varRef(i), at, label }], at, label }], at, label },
+        { kind: "return", value: method === "includes" ? FALSE : num(-1), at, label },
+      ],
+    };
+    return this.mark<NumExpr | BoolExpr>({ kind: "call", call }, e);
+  }
+
+  /** `names.join(", ")`: the texts one after another with the separator between, made where the call stands. */
+  private textsJoin(e: TS.CallExpression, of: Texts): TextExpr | null {
+    const at = this.at(e);
+    const label = this.label(e);
+    const between = e.arguments[0] ? this.text(e.arguments[0]) : { kind: "text" as const, text: "," };
+    if (!between) return null;
+    const sep = this.newVar("(separator)", "text", at, { temp: true, text: "made" });
+    const out = this.newVar(`(${of.name}.join)`, "text", at, { temp: true, text: "made" });
+    const i = this.newVar(`(index of ${of.name})`, "number", at, { temp: true });
+    const add = (t: TextExpr): Stmt => ({ kind: "assignText", target: out.id, value: { kind: "template", parts: [{ kind: "value", text: { kind: "textVar", id: out.id } }, { kind: "value", text: t }], at, label }, at, label });
+    this.emit({ kind: "declare", decl: sep, init: between, at, label }, e);
+    this.emit({ kind: "declare", decl: out, init: { kind: "text", text: "" }, at, label }, e);
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: [...of.rows.fields.values()][0].id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+      body: [{ kind: "if", cond: { kind: "compare", op: ">", left: varRef(i), right: num(0), at, label }, then: [add({ kind: "textVar", id: sep.id })], at, label }, add(this.textAtCells(this.textAtIndex(of, varRef(i)), e))], at, label }, e);
+    return { kind: "textVar", id: out.id };
+  }
+
+  /** A loop over an array of texts: `turn` is called, where the body goes, with the text at each place and the place. As many as there are when the loop starts. */
+  private textsLoop(of: Texts, node: TS.Node, turn: (item: Binding, index: VarDecl) => void) {
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(index of ${of.name})`, "number", at, { temp: true });
+    const n = this.newVar(`(length of ${of.name})`, "number", at, { temp: true });
+    const body = this.collect(() => turn(this.textAtIndex(of, varRef(i)), i));
+    this.emit({ kind: "declare", decl: n, init: { kind: "length", array: [...of.rows.fields.values()][0].id, at }, at, label }, node);
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, node);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: varRef(n), at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body, at, label }, node);
   }
 
   /* ── A Map and a Set over any number ── */
@@ -5469,7 +5628,7 @@ export class Structured {
       }
       const binding = this.listOf(arg);
       // An array reaches a function as itself, as it does in TypeScript: what the function stores, the caller sees.
-      if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed" || binding?.kind === "hash" || binding?.kind === "grid" || binding?.kind === "lists") { scope.bind(p, binding); asCalled({ binding }); return; }
+      if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed" || binding?.kind === "hash" || binding?.kind === "texts" || binding?.kind === "grid" || binding?.kind === "lists") { scope.bind(p, binding); asCalled({ binding }); return; }
       if (binding?.kind === "record") {
         if (this.assigns(body, p)) { this.c.error(p, `${p.name.text} is a record; a record parameter can have its fields assigned, not be reassigned itself.`); ok = false; return; }
         scope.bind(p, binding);
@@ -5624,6 +5783,7 @@ export class Structured {
         case "units": return `u${this.identity(b.ptr)}`;
         case "keyed": return `k${this.identity(b.values ?? b.present ?? b)}`;
         case "hash": return `h${this.identity(b.slots)}`;
+        case "texts": return `t${this.identity(b.rows)}`;
         // A record kept in a `let` is one object the scope hands back; a row of an array of records is made anew at every use, and so never met twice.
         default: return `o${this.identity(b)}`;
       }
@@ -5876,6 +6036,7 @@ export class Structured {
       const b = part && part.kind !== "inner" && part.kind !== "innerUnits" ? part : this.listOf(e.expression);
       if (b?.kind === "array") return this.mark<NumExpr>({ kind: "length", array: b.a.id, at: this.at(e) }, e);
       if (b?.kind === "records") return this.mark<NumExpr>({ kind: "length", array: [...b.fields.values()][0].id, at: this.at(e) }, e);
+      if (b?.kind === "texts") return this.mark<NumExpr>({ kind: "length", array: [...b.rows.fields.values()][0].id, at: this.at(e) }, e);
       if (b?.kind === "units") return this.mark<NumExpr>({ kind: "length", array: b.ptr.id, at: this.at(e) }, e);
     }
     if (ts.isPropertyAccessExpression(e) && e.name.text === "size") {
@@ -6022,6 +6183,11 @@ export class Structured {
       if (list?.kind === "hash") {
         const out = this.hashMethod(e, list, e.expression.name.text, "number");
         return out && out !== true ? (out as NumExpr) : null;
+      }
+      if (list?.kind === "texts") {
+        if (e.expression.name.text === "indexOf") return this.textsSearch(e, list, "indexOf") as NumExpr | null;
+        this.c.error(e, `${list.name}.${e.expression.name.text}(…) is not a number: an array of texts has indexOf(text) and length for those.`);
+        return null;
       }
       const made = list?.kind === "keyed" ? list : !list && e.arguments.length && !this.evaluate(e.arguments[0]) ? this.collectionOf(e.expression.expression) : undefined;
       if (made) {
@@ -6525,6 +6691,7 @@ export class Structured {
         if (!out || out === true) return FALSE;
         return numeric ? this.mark<BoolExpr>({ kind: "test", expr: out as NumExpr, at: this.at(e), label: this.label(e) }, e) : (out as BoolExpr);
       }
+      if (list?.kind === "texts" && e.expression.name.text === "includes") return (this.textsSearch(e, list, "includes") as BoolExpr | null) ?? FALSE;
       if (list?.kind === "hash") {
         const numeric = e.expression.name.text === "get" && list.values?.kind === "number";
         const out = this.hashMethod(e, list, e.expression.name.text, numeric ? "number" : "boolean");

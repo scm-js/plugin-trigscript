@@ -97,7 +97,7 @@ describe("what is said", () => {
     expect(messages("const m = new Map<string, number>(); m.set('a', 1);").join("\n")).toMatch(/keys have to be numbers/);
   });
   it("a method it has not got", () => {
-    expect(messages("const m = new Map<number, number>(); const ks = [...m.keys()];").length).toBeGreaterThan(0);
+    expect(messages("const m = new Map<number, number>(); m.set(1, 2).set(3, 4);").length).toBeGreaterThan(0);
   });
   it("a table keyed by ids of the game is still one read", () => {
     const r = compile("const price = new Map<UnitType, number>(); price.set(units.TerranMarine, 50); let p = price.get(units.TerranMarine) ?? 0;");
