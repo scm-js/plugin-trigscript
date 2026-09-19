@@ -390,7 +390,7 @@ before the slice is called done, in the Magenta manner.
 | 5 | Signed numbers (3.5.0; the probe is `probes/numbers.ts`, played 2026-09-18: every line as expected, the ore at 75 at the end) | `number` is a signed 32-bit integer, `u32` the unsigned one beside it, `>>>` apart from `>>`, division towards zero; IR 6 | 2–3 days |
 | 6 | Arrays and keyed tables (3.6.0; the probe is `probes/arrays.ts`, played 2026-09-18: step L — 20 000 pushes at 500 a frame — did not stutter, said out of memory once and stopped at 4096, the push the simulator stops at; M found room again in the blocks given back, N had an array a player and one shared; played again 2026-09-19 with the records, the array of units and the Map loops — steps O to Q — all as expected) | `number[]`, `boolean[]`, arrays of records and of units, a variable index, `for…of`, `push` / `pop` on an array that grows out of a heap; `Record<K, V>`, `Map<K, V>` and `Set<K>` over a key set known when the script is built | 4–5 days |
 | 7 | Functions that are called (3.7.0; the probe is `probes/functions.ts`, played 2026-09-19: every line as expected — 2000 calls in one frame without a stutter, one Marine at 10 hit points, the per-player line) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
-| 8 | Recursion (3.8.0; the probe is `probes/recursion.ts`, played 2026-09-19: as expected, the overflow said in red where the third program stopped and the first going on to its end) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
+| 8 | Recursion (3.8.0; the probe is `probes/recursion.ts`, played 2026-09-19: as expected — `fib(20)`, 21 891 calls in one frame, with basically no pause; the overflow said in red where the third program stopped and the first going on to its end) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
 | 8½ | The TypeScript people write (3.9.0) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 7–8 days |
 | 9 | `test()` blocks + debugger (3.10.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
 | 10 | Examples, guide, assistant prompts, registry (3.11.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
@@ -586,10 +586,11 @@ is the return address. The interpreter runs such a body apart from its caller, s
 thousand calls deep was ten thousand frames of JavaScript's stack and ended the browser's
 before the map's. Refused: such a call inside a loop over units, and a function that calls
 itself on every path. Along the way: a parameter given a plain value may be assigned in the
-function, and `c ? 1 : 0` is a number. What the probe has to say is step J — `fib(20)`,
-21 891 calls in one frame — since a frame brought back is some thirty triggers a cell; if
-that pause is too long, the stack can become variable triggers chained frame by frame,
-which brings a frame back in a trigger a cell.
+function, and `c ? 1 : 0` is a number. What the probe had to say was step J — `fib(20)`,
+21 891 calls in one frame — since a frame brought back is some thirty triggers a cell.
+Played 2026-09-19: basically no pause. So the stack stays the plain array it is; had it
+been slow, it could have become variable triggers chained frame by frame, which brings a
+frame back in a trigger a cell, and that is where to start if a script ever needs more.
 
 **8½. The TypeScript people write (3.9.0).** Added 2026-09-19. As 3.6 stands, an array of a
 program has `push`, `pop`, `fill`, `includes`, `indexOf`, `length` and `for…of`, and says so
