@@ -63,7 +63,10 @@ and how do we get the best developer experience out of that.
 > is a number, and a text made while the map is played is bytes in the heap slice 6 built.
 > One type, `string`, no capacity to declare. See *Strings* in the slice.
 
-> **Where it stands, 2026-09-19 (night): slice 8½ is built and played, and 3.9.0 is not
+> **Shipped as 3.9.0 on 2026-09-19**, at the user's word, after the documentation pass
+> below. What follows is how it stood the evening before, kept as the record of the slice.
+>
+> **Where it stood, 2026-09-19 (night): slice 8½ built and played, 3.9.0 not yet
 > shipped.** All six parts — the methods that take a function, patterns and spread, arrays
 > inside things, texts, classes, a `Map` and a `Set` over any number — are on `main` of this
 > repository *locally*: nothing is pushed, the version still says 3.8.0, `dist/` is not
@@ -111,6 +114,15 @@ and how do we get the best developer experience out of that.
 >   keeps a made text's three cells and leaves the variable with no block for the call).
 >   `eachCall` had never counted a `textCall`, which no called function had been inside
 >   before.
+>
+> **The documentation pass (2026-09-19, last before shipping).** The README's language
+> reference got headings and a contents table inside *Programs*, a section *What a program
+> does not have*, examples where a part had none, and `tests/readme.test.ts`, which compiles
+> every example and checks what one says it prints. Writing the first of them found a
+> mistake older than the slice: `while (queue.length > 0) { const i = queue.pop()!; … }` was
+> refused as a loop whose condition never changes, because the check saw a `pop()` written
+> as a statement and not one whose value is used. Mended in `eud.ts` (`assigned`), front
+> end only, nothing for a probe.
 >
 > One probe for what reaches the Python or the game anew, `probes/leftovers.ts`, steps A–H:
 > **played 2026-09-19, every step as expected** — nothing in red at C (400 calls of a
@@ -1060,11 +1072,12 @@ with first; 5 and 6 are what make it feel finished.
   `UnitType` the table entry, renamed in slice 1 (no users yet, so no migration).
 - ~~Signed numbers.~~ Decided 2026-09-18: `number` is signed, `u32` is the unsigned type
   beside it (slice 5).
-- **Reads on the classic target.** Planned in slice 2 for parity, with cost hints; they
-  could be Remastered-only if the decomposition cost makes them a trap.
-- **Where the built map goes.** Beside the source as `<name>-eud.scx`, like Magenta. The
-  alternative, writing the payload into the source map, would make the editor's own
-  trigger list unreadable and is not recommended.
+- ~~Reads on the classic target.~~ Void since 3.0.0 (2026-09-18): a program is Remastered
+  only, so there is no classic target for a read to compile on. `trigger()` stays what it
+  was, on every version of the game.
+- ~~Where the built map goes.~~ Decided 2026-09-18 (3.0.0): nowhere of its own. Saving
+  builds the programs into the file being written, and the editor keeps the map as it is
+  edited inside that file and gives it back on open. There is no `<name>-eud.scx`.
 - ~~Functions as real calls.~~ Decided 2026-09-18: the compiler chooses (slice 7), and
   recursion follows (slice 8).
 - ~~A map over any key.~~ Decided 2026-09-19: the last part of slice 8½, in the heap
@@ -1076,21 +1089,23 @@ with first; 5 and 6 are what make it feel finished.
   to a function: the class's bodies planned on their own and found again from its value.
 - ~~Strings.~~ Decided 2026-09-19: a value of the language, in slice 8½ — a text of the
   table as its id, a made text as bytes in the heap, no capacity declared; a character is a
-  code point. Left open: which fields besides `print` show a made text, which the probe
-  answers.
-- **A limit on scans.** A loop over every unit on every frame in a per-player program is
-  twelve scans a frame. A hint is planned; a hard cap is not.
-- **The classic install on the Remastered target.** As of 2.6 every compile still runs the
-  classic backend and Build still writes the classic block into the source map, so a script on
-  the Remastered target must fit Classic's limits (death counters free, the forms of division
-  Classic takes) and pays Classic's trigger counts. No limit can be lifted until that is
-  optional. The choice: a Remastered script skips the classic block entirely (the source map
-  then carries the script but no playable triggers of its own), or keeps a classic block only
-  for what Classic can express and leaves the rest to the built map. To settle before slice 2,
-  since reads and text cannot compile on Classic as they are.
+  code point. Which fields besides `print` show a made text was answered by the spike,
+  played 2026-09-19: the objectives, a leaderboard's label, a transmission's line and a unit
+  type's name, each re-read by the game on every draw, so written only on the computers of
+  the players the action is for.
+- ~~A limit on scans.~~ Decided with slice 3 (3.3.0): the hint at the end of the line
+  (*scans units*), and no hard cap — a scan inside a loop that runs every frame is the
+  author's choice, and the hint is what makes it one.
+- ~~The classic install on the Remastered target.~~ Void since 3.0.0 (2026-09-18): the
+  classic back end for programs is gone, so nothing of a program is installed into the
+  source map and no limit of Classic's applies to one. The script's `trigger()` records
+  are the only block the map you edit carries.
 - ~~Rate limiting the server.~~ There is no server: the build runs in the editor.
 - ~~Offline.~~ Solved by the eudplib plugin: after its one-time download every build is
   local, on the desktop as on the web.
+
+Nothing is open as of 2026-09-19. What slice 9 has to decide — how a `test()` presses
+a key, what the debugger shows of a row — comes up when that slice is designed.
 
 ## Facts this plan leans on
 
