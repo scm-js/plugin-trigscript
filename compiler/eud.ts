@@ -236,9 +236,12 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
     if (c.result) into.add(c.result.decl.id);
     c.body.forEach(stmt);
     const f = c.fn ? functions.get(c.fn) : undefined;
-    if (f && !followed.has(f.id)) { followed.add(f.id); f.body.forEach(stmt); }
+    if (f && !followed.has(f.id)) { followed.add(f.id); f.body.forEach(stmt); pops(f.body); }
   };
+  // A pop() whose value is used — `const i = queue.pop()!` — is an expression, and shortens the array as the statement does.
+  const pops = (stmts: Stmt[]) => expressions(stmts, (e) => { if (e.kind === "pop") into.add(whole(e.array)); });
   body.forEach(stmt);
+  pops(body);
   return into;
 }
 

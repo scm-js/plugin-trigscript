@@ -143,6 +143,12 @@ describe("arrays that grow", () => {
     expect(sim.list("xs")).toEqual([7, 7, 7]);
     expect(messages("let xs = [1]; xs.splice(0, 1);")[0]).toMatch(/has push, pop, fill, includes, indexOf, length, for…of, and the methods that take a function .*; splice\(\) is not one of them/);
   });
+  it("a loop until the array is empty ends when pop()'s value is what empties it", () => {
+    const sim = run("const queue: number[] = []; let k = 3; let sum = 0; queue.push(k, 4, 5); while (queue.length > 0) { const v = queue.pop()!; sum += v; }");
+    expect([sim.value("sum"), sim.faults]).toEqual([12, []]);
+    expect(messages("const squad: Unit[] = []; for (const u of unitsOf(P1)) squad.push(u); while (squad.length > 0) { squad.pop()?.kill(); }")).toEqual([]);
+    expect(messages("const queue: number[] = []; let k = 3; queue.push(k); while (queue.length > 0) { k += 1; }")[0]).toMatch(/^This loop's condition never changes inside it/);
+  });
 });
 
 describe("the arrays probe (probes/arrays.ts), which is played in the game, says the same here", () => {

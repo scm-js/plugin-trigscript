@@ -97,6 +97,16 @@ describe("an array of texts", () => {
   });
 });
 
+describe("what JavaScript does at the edges, found while the README's comparison with TypeScript was written", () => {
+  it("pop() ?? other of an empty array of texts is the other text, and an empty text popped is itself", () => {
+    same("const q: string[] = []; let k = 1; q.push(`a${k}`); q.push(''); print(`[${q.pop() ?? 'none'}]`); print(q.pop() ?? 'none'); print(q.pop() ?? 'none'); print(`${q.length}`);");
+  });
+  it("a comma in a for's update runs both, in order", () => {
+    same("let a = 0; let n = 6; for (let i = 0, j = n; i < j; i++, j--) a += i + j; print(`${a}`);");
+    same("let a = 0; let b = 0; let n = 3; for (let i = 0; i < n; i++, a += 2) b += a; print(`${a} ${b}`);");
+  });
+});
+
 describe("a function that takes or returns a text", () => {
   it("is called from its second call on, as any function is", () => {
     const body = "function tag(s: string, n: number): string { return `[${s}:${n}]`; } function shout(s: string) { s += '!'; print(s); } let k = 2; const a = tag('a', k); const b = tag(a, k + 1); const c = tag(`w${k}`, 0); shout(a); shout(c); shout('x'); print(`${a} ${b} ${c} ${tag(tag('q', 1), 2).length}`);";

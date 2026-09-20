@@ -1825,7 +1825,7 @@ export class Structured {
         return this.mark<NumExpr | BoolExpr>({ kind: "call", call }, e);
       }
       default:
-        return wrong(`An array of a program has push, pop, fill, includes, indexOf, length, for…of, and the methods that take a function (forEach, map, filter, some, every, find, findIndex, reduce, sort) with reverse; ${method}() is not one of them.`);
+        return wrong(`An array of a program has push, pop, fill, includes, indexOf, length, for…of, and the methods that take a function (forEach, map, filter, some, every, find, findIndex, reduce, sort) with reverse, and the copies (slice, concat, toSorted, toReversed); ${method}() is not one of them.`);
     }
   }
 
@@ -3891,7 +3891,9 @@ export class Structured {
         const at = this.at(e);
         const last = this.newVar("(popped)", "text", at, { temp: true, text: "made" });
         const length: NumExpr = { kind: "length", array: [...of.rows.fields.values()][0].id, at };
-        this.emit({ kind: "declare", decl: last, init: this.textAtCells(this.textAtIndex(of, { kind: "binary", op: "-", left: length, right: num(1), at, label: this.label(e) }), e), at, label: this.label(e) }, e);
+        // Of an empty array it is no text, and nothing is read: JavaScript's undefined, which `?? other` below answers.
+        const held = this.textAtCells(this.textAtIndex(of, { kind: "binary", op: "-", left: length, right: num(1), at, label: this.label(e) }), e);
+        this.emit({ kind: "declare", decl: last, init: this.mark<TextExpr>({ kind: "textTernary", cond: { kind: "compare", op: ">", left: length, right: num(0), at, label: this.label(e) }, whenTrue: held, whenFalse: { kind: "text", text: "" }, at, label: this.label(e) }, e), at, label: this.label(e) }, e);
         this.recordsCall(e, of.rows, "pop");
         return { kind: "textVar", id: last.id };
       }
@@ -3967,6 +3969,15 @@ export class Structured {
         if (!other) return null;
         const one = this.mark<TextExpr>({ kind: "textSlice", of, start: place, end: this.mark<NumExpr>({ kind: "binary", op: "+", left: place, right: num(1), at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
         return this.mark<TextExpr>({ kind: "textTernary", cond: inside, whenTrue: one, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
+      }
+      // `names.pop() ?? other`: the other text when the array was empty, as JavaScript's undefined would have it.
+      const popped = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "pop" && left.arguments.length === 0 ? this.bindingOf(left.expression.expression) : undefined;
+      if (popped?.kind === "texts") {
+        const before = this.temp({ kind: "length", array: [...popped.rows.fields.values()][0].id, at: this.at(e) }, e, true);
+        const last = this.text(e.left);
+        const other = this.text(e.right);
+        if (!last || !other) return null;
+        return this.mark<TextExpr>({ kind: "textTernary", cond: { kind: "compare", op: ">", left: before, right: num(0), at: this.at(e), label: this.label(e) }, whenTrue: last, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
       }
       return this.text(e.left);
     }
@@ -4122,6 +4133,8 @@ export class Structured {
     if (h) { this.hoistedStatement(e, h); return; }
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
+      // `i++, j--`, as a for's update has it: one after the other.
+      if (op === ts.SyntaxKind.CommaToken) { this.expressionStatement(e.left); this.expressionStatement(e.right); return; }
       if (op === ts.SyntaxKind.EqualsToken && (ts.isArrayLiteralExpression(this.unwrap(e.left)) || ts.isObjectLiteralExpression(this.unwrap(e.left)))) {
         // `[a, b] = [b, a]`, `({ x, y } = p)`: every value taken first, then every store.
         const from = this.patternSource(e.right, e);
