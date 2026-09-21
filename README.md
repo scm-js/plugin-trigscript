@@ -49,11 +49,12 @@ is, with the same keys where it has one:
 
 | Where | What is there |
 | --- | --- |
-| **Explorer**, at the left (Ctrl+B) | The script's files — `main.ts` is where the script starts, the *New file* icon on the section adds another, and a file's pencil and bin rename and remove it — and under them the **programs** with the variables each keeps in the game. A click goes to the line. |
-| **Tabs**, over the editor | One per open file; a file with problems is red, with their count. Go to Definition on a name another file exports opens that file. |
-| **Run controls**, right of the tabs | Test (F5), Simulate (Ctrl+F5), Apply (Ctrl+Shift+B), Pick from map, the switch between the window and the panel beside the map, and **…** for the rest. |
-| **Panel**, under the editor (Ctrl+J) | **Problems** (Ctrl+Shift+M), **Output** (Ctrl+Shift+U) — what Apply, Test and the builds of the programs reported, with the build log — **Simulate**, and **Settings** (Ctrl+,): what the map's author chose about how its programs are built, kept in the map beside the script so that it builds the same on any computer. It takes its room from the bottom, and only when asked for or when something failed. |
-| **Status bar** | The problem count, whether the script's triggers are in the map (a click applies it), the last build of the programs, the eudplib plugin's state, the cursor. |
+| **Activity bar**, at the far left | The Explorer and **Testing**; the icon of the view that is showing hides the sidebar. Testing carries the count of the tests that fail. |
+| **Explorer**, at the left (Ctrl+B) | The script's files as a tree — `main.ts` is where the script starts; *New file* and *New folder* are on the section and on a folder's row, a row's pencil and bin rename and remove it, and its right-click menu has all of them — and under them the **programs** with the variables each keeps in the game. A click goes to the line. See [Folders](#folders). |
+| **Tabs**, over the editor | One per open file; a file with problems is red, with their count, and two files of one name say their folder. Go to Definition on a name another file exports opens that file. |
+| **Run controls**, right of the tabs | Play (F5), Simulate (Ctrl+F5), Apply (Ctrl+Shift+B), Pick from map, the switch between the window and the panel beside the map, and **…** for the rest. |
+| **Panel**, under the editor (Ctrl+J) | **Problems** (Ctrl+Shift+M), **Output** (Ctrl+Shift+U) — what Apply, Play and the builds of the programs reported, with the build log — **Simulate**, **Test Results**, and **Settings** (Ctrl+,): what the map's author chose about how its programs are built, kept in the map beside the script so that it builds the same on any computer. It takes its room from the bottom, and only when asked for or when something failed. |
+| **Status bar** | The problem count, the tests (`12 passed`, or `1 failed` in red; a click opens Testing), whether the script's triggers are in the map (a click applies it), the last build of the programs, the eudplib plugin's state, the cursor. |
 | **Command palette** (F1 or Ctrl+Shift+P) | Every command above under *TrigScript:*, beside Monaco's own. |
 
 Something that needs an answer — the triggers were edited outside the script, the map
@@ -73,9 +74,10 @@ has an error, the map is still saved, with the triggers from the last script tha
 compiled, and a notice names the file and line.
 
 **Apply** does the first half on demand, which is how to see the generated triggers in
-the Trigger Editor without saving. **Test** applies, builds the map exactly as Save would
+the Trigger Editor without saving. **Play** applies, builds the map exactly as Save would
 and hands it to Test Map: on the desktop the game starts with it, in a browser it goes
-into the test folder you picked once.
+into the test folder you picked once. (It was called Test until 3.10, when the script's
+own [tests](#tests) took the word; F5 and what it does are as they were.)
 
 The Trigger Editor shows the script's triggers with a `script` badge and will not edit
 them; *Open TrigScript* there jumps to the file and line. The Text Trigger Editor fences
@@ -105,13 +107,239 @@ interpreter (death counters, switches, preserve, list order) and the programs in
 program interpreter that computes every number the way the game will, the two sharing one
 world, so a program's `setDeaths` is seen by a trigger and the other way round. Reads
 find what the simulation holds — death counters, the resources the programs themselves
-set, the clock — and 0 for what it does not (unit counts, kills, scores); a printed text
-shows with its numbers filled in and "Player 1" for a name. Unit conditions answer "false".
-Units are the ones placed on the map, where they were placed and with the hit points their
-type and their own settings give, inside the map's locations as they are drawn: a loop
-over units, a pick, `kill()`, `give()`, a hit-point write all work on that list, and
-`stats()` holds what the program wrote. Nothing moves or fights, and `createUnit` makes no unit. The same interpreters are what the test suite uses to prove
-programs behave.
+set, the clock, the units — and 0 for what it does not (scores, the countdown); a printed
+text shows with its numbers filled in and "Player 1" for a name.
+
+**The simulated world has units.** It starts from the ones placed on the map, where they
+were placed and with the hit points their type and their own settings give, inside the
+map's locations as they are drawn. From there `createUnit` makes units at the location's
+centre with the hit points and shields their type has — what a program wrote into
+`stats()` before counts — and `createUnitWithProperties` applies the map's slot;
+`giveUnits`, `moveUnit` (to the centre of where it goes), `killUnitAt`, `removeUnitAt`
+with their counts, `modifyHitPoints` and its kin, `moveLocation` and `setInvincibility` do
+what they say; `bring`, `command`, `commandTheMost` and the rest count what is there, and
+a unit that is killed is a death of its type for its owner. A unit takes the lowest free
+place of the game's unit table, and a place that is used again is not the place it was:
+a `Map<Unit, V>` or a variable that kept the dead unit does not find the new one, as in
+the game. **The players are the map's**: a program owned by a force or by All Players
+runs once a frame for each of its human and computer players, each with their own
+variables, a force in an action is each of its players and in a condition all of them
+together, and every line of the list says whose it is.
+
+What stays out, because it cannot be known without the game: nothing walks, nothing
+fights, nothing is built over time, nothing is in the way of anything (a unit that is made
+always finds room), energy starts at 0 unless a properties slot says otherwise, and no
+unit dies but by the script — or, in a test, by the test. The order of the unit table is
+the simulator's own rule, not the game's. The same world is what the script's
+[tests](#tests) run in.
+
+### Folders
+
+A file's name may have folders in it, and the Explorer shows them as a tree: folders
+first, `main.ts` first of the files. No folder means anything to TrigScript — `tests/` is
+a habit, not a rule. The archive the files are kept in has no empty folder, so a folder is
+there while a file is in it: *New Folder…* asks for the folder's name and goes straight
+on to its first file's.
+
+Renaming a file or a folder (the pencil; a folder before the name moves a file) and
+dragging a row onto a folder, or onto the empty space under the tree for the top, **take
+the imports along**: every `import … from "./path"` that named a file that moved, and the
+moved files' own, are rewritten so the script compiles after as it did before, written
+the way they were (with `.js`, as a folder with an `index.ts`, or bare). It is one change:
+the notification that says what moved has an **Undo**. `main.ts` stays where it is.
+Removing a folder asks once and says how many files go.
+
+### Tests
+
+A script can test itself. A test is ordinary TypeScript that runs in the editor's
+simulator after every change that compiles — never in the game, and it costs the map
+nothing. The names are [Vitest](https://vitest.dev)'s, imported from `"trigscript"`
+(`test`, `it`, `describe`, `beforeEach`, `afterEach`, `test.only`, `test.skip`,
+`test.each`, `expect`); they are not globals, so a script's own `test` is its own.
+
+```ts
+import { test, expect, program, createUnit, killUnitAt, countUnits, print, sleep, frames, P1, P2, units, locations } from "trigscript";
+
+// A Marine on the beacon calls the next wave, each bigger than the last.
+program(() => {
+  let wave = 0;
+  while (true) {
+    if (countUnits(P1, units.TerranMarine, locations.Beacon) > 0) {
+      wave += 1;
+      createUnit(P2, units.ZergZergling, wave * 4, locations.Spawn);
+      print(`Wave ${wave}`);
+      killUnitAt(P1, units.TerranMarine, "All", locations.Beacon);
+    }
+    sleep(frames(1));
+  }
+}, { name: "waves" });
+
+test("the second wave is bigger", (sim) => {
+  sim.place(P1, units.TerranMarine, locations.Beacon);
+  sim.until(() => sim.program("waves").wave === 1);
+  sim.place(P1, units.TerranMarine, locations.Beacon);
+  sim.until(() => sim.program("waves").wave === 2);
+  expect(sim.count(P2, units.ZergZergling, locations.Spawn)).toBe(12);
+  expect(sim).toHavePrinted("Wave 2");
+});
+```
+
+**Where tests are.** In a file whose name ends in `.test.ts`, in any folder, or beside
+what they test in any other file. The entry file runs first, so the programs are there;
+then each test file runs, linked as any file is, so it can import the script's own
+functions and test them as plain TypeScript. A test file is never part of the build:
+importing one from a file that is not a test file is an error, and so is a `program()` or
+a `trigger()` inside one. Test files are kept in the map with the rest of the source and
+go when the source is left out of a copy.
+
+**What a test gets.** `sim`, a world of its own for each test: [the simulated
+world](#use) — the map's placed units, locations and players, the script's programs at
+frame 0 and its `trigger()`s beside them — with `random()` seeded the same every time
+(`sim.seed(n)` for another run). A test is not `async`: nothing in `sim` waits.
+
+| `sim.` | |
+| --- | --- |
+| `place(player, type, at, count?)`, `kill(unit, by?)`, `remove(unit)`, `give(unit, to)`, `move(unit, to)` | What the test does to the world. `place` gives the units back; `kill` is what a fight is in a test, `by` the player whose kill it is. |
+| `frames(n)`, `seconds(n)`, `until(() => …, most?)`, `frame` | Time. `until` fails the test when `most` frames pass first (2400 unless said), so no test hangs. |
+| `press(key)`, `click(button)`, `type(line)`, `moveMouse(x, y)` | What a player does, found by the next frame; a player may be named last. |
+| `count(player, type, at?)`, `units(filter?)`, `resources(player)`, `deaths(player, type)`, `kills(player, type)`, `switch(n)`, `location(n)` | The world read back. |
+| `program(name?, player?)` | A program's variables by their names in the source: numbers, booleans, texts, arrays, a record as an object, a unit. The program by the `name` its options give it — `program(() => { … }, { name: "waves" })`, which the Explorer shows too — or by its place in the script from 0; of a per-player program, `player`'s. |
+| `printed(player?)`, `events`, `faults` | What was shown, everything that happened by frame, and what went wrong. |
+
+`expect` has `toBe`, `toEqual`, `not`, `toBeTruthy` / `toBeFalsy`, `toBeNull`,
+`toBeDefined` / `toBeUndefined`, the four comparisons, `toContain`, `toHaveLength`,
+`toMatch`, `toThrow`, and two of its own: `expect(sim).toHavePrinted(text | RegExp, { to?
+})` and `expect(sim).toHaveFaulted(/depth/)`. **A fault the test did not ask for fails
+it**: an index outside its array, the stack's depth, the heap full — what the game passes
+over in silence. So does anything the test throws, and a frame past 100 000 statements.
+
+**A test file, and the script's own functions as plain TypeScript.** What a test file
+imports is the same module the map is built from, so a helper is tested without a world
+and a program with one:
+
+```ts
+// main.ts
+import { program, setResources, sleep, seconds, P1 } from "trigscript";
+
+// Worked out when the script is built: the program reads the list.
+export const bounty = (wave: number) => 50 + wave * 25;
+const bounties = [0, 1, 2, 3, 4, 5, 6, 7].map(bounty);
+
+program(() => {
+  let wave = 0;
+  while (wave < 7) {
+    sleep(seconds(10));
+    wave += 1;
+    setResources(P1, "add", bounties[wave], "ore");
+  }
+}, { name: "income" });
+
+// tests/income.test.ts
+import { test, expect, describe, P1 } from "trigscript";
+import { bounty } from "../main";
+
+describe("the bounty", () => {
+  test("grows by the wave", () => {
+    expect(bounty(0)).toBe(50);
+    expect(bounty(4)).toBe(150);
+  });
+
+  test("is paid every ten seconds", (sim) => {
+    sim.seconds(9);
+    expect(sim.resources(P1).ore).toBe(0);
+    // Not sim.seconds(21): a sleep wakes on the frame after it ends, and until() need not know.
+    sim.until(() => sim.program("income").wave === 3);
+    expect(sim.resources(P1).ore).toBe(75 + 100 + 125);
+    expect(sim.frame).toBeLessThan(31 * 24);
+  });
+});
+```
+
+**Keys and chat.** What a player does is said before the frame that finds it:
+
+```ts
+import { test, expect, program, keyPressed, chatted, setResources, print, sleep, frames, CurrentPlayer } from "trigscript";
+
+program(() => {
+  let shop = false;
+  while (true) {
+    if (keyPressed(CurrentPlayer, "F2")) { shop = !shop; print(shop ? "Shop open" : "Shop closed"); }
+    const give = chatted(CurrentPlayer, "-give {n}");
+    if (give && shop) setResources(CurrentPlayer, "add", give.n, "ore");
+    sleep(frames(1));
+  }
+}, { name: "shop" });
+
+test("-give pays only while the shop is open", (sim) => {
+  sim.type("-give 100").frames(2);
+  expect(sim.resources(0 as Player).ore).toBe(0);
+  sim.press("F2").frames(1);
+  expect(sim.program("shop").shop).toBe(true);
+  sim.type("-give 100").frames(2);
+  expect(sim.resources(0 as Player).ore).toBe(100);
+  expect(sim.printed()).toEqual(["Shop open"]);
+});
+```
+
+**Hooks, cases, and a fault that is asked for.** `beforeEach` runs on the test's own
+world, `test.each` makes a test a row, and a fault the test expects is said so:
+
+```ts
+import { test, describe, beforeEach, expect, program, createUnit, sleep, frames, P1, units, locations, type Sim } from "trigscript";
+
+program(() => {
+  const queue = [3, 1, 2];
+  let served = 0;
+  let next = 0;
+  while (true) {
+    if (next < 4) { createUnit(P1, units.TerranMarine, queue[next], locations.Base); served += queue[next]; next += 1; }
+    sleep(frames(1));
+  }
+}, { name: "barracks" });
+
+describe("the barracks", () => {
+  beforeEach((sim) => { sim.frames(1); });
+
+  test.each([[0, 3], [1, 4], [2, 6]])("after %i more frames %i Marines stand at the base", (sim: Sim, more: number, marines: number) => {
+    sim.frames(more);
+    expect(sim.count(P1, units.TerranMarine, locations.Base)).toBe(marines);
+  });
+
+  test("the fourth order reads past the end of the queue, and the simulator says so", (sim) => {
+    sim.frames(3);
+    expect(sim).toHaveFaulted(/queue\[3\] is past the end/);
+    expect(sim.units({ owner: P1 }).every((u) => u.hp === u.maxHp)).toBe(true);
+  });
+});
+```
+
+Without that last `toHaveFaulted` the test fails by itself, at the program's line: a read
+past an array's end is 0 in the game and nobody is told, which is what makes it worth a
+test's while.
+
+Without the map's player settings (a test of the compiler, a map with no players set) the
+world has one player; `test(name, { as: P2 }, (sim) => { … })` says which.
+
+**In the workspace**, as VS Code does it:
+
+- A mark in the margin beside every `test(` and `describe(`: not run, passed, failed,
+  skipped. A click runs that one.
+- A failure is said where it is — `expected 8, got 6` at the end of the failing
+  `expect`'s line, the two values in full on hover — and a test that threw says what at
+  the line that threw.
+- The **Testing** view in the activity bar: folder, file, `describe`, test, each with its
+  mark; run all, a file, a `describe` or one; run the failed ones; show only the failing.
+- **Test Results** in the panel: the chosen test's message, what it printed, and what
+  happened by frame, each a link to its line.
+- Tests run again after every compile that goes through, a run dropped by the next
+  keystroke. If all of them take more than two seconds, only the open file's run by
+  themselves and the rest wait for *Run All*.
+- A failing test is a warning in Problems at its line, and a build's log says so; an
+  `only` left in is a warning too. **Settings ▸ Tests ▸ A failing test refuses the build**
+  is kept in the map: with it on, Save, Test Map and an export say which test fails and
+  write the map without applying the script again.
+- Palette: *Run All Tests*, *Run Test at Cursor*, *Run Failed Tests*. *New File…* in a
+  folder called `tests` proposes `<the open file>.test.ts` with one test written in it.
 
 A script with programs shows, at the right of the status bar, whether the eudplib plugin
 is running and whether its runtime is on this machine yet. The runtime — Pyodide, a
@@ -153,7 +381,7 @@ is the comparison in one table. Programs are most of this reference:
 | [Owners and per-player programs](#owners-and-per-player-programs) | one program for every player, `shared()` |
 | [What a program does not have](#what-a-program-does-not-have) | the parts of TypeScript a program refuses, and what to write instead |
 
-After those, *Coming from 3.8* and the sections under it say what each version changed.
+After those, *Coming from 3.9* and the sections under it say what each version changed.
 
 ### TrigScript beside TypeScript
 
@@ -1250,6 +1478,18 @@ that run a script against the simulator, a debugger that steps it, and a gallery
 examples. The plan is `docs/eud-plan.md`, and the IR the
 compiler hands eudplib is `docs/ir.md`.
 
+### Coming from 3.9
+
+Nothing of the language has changed; a 3.9 script builds into the same map. What is new is
+around it. The Explorer shows [folders](#folders), and moving a file takes its imports
+along. The simulator's world [has units and players](#use): `createUnit` makes them, the
+unit conditions count them, and a program of a force runs for each of its players — so
+Simulate of a script that makes units says more than it did, and a line of its list that
+said a unit condition was false may now say otherwise. The script can carry its own
+[tests](#tests). **Test (F5) is now Play (F5)**, since "test" came to mean those. A
+program can be given a name — `program(() => { … }, { name: "waves" })` — which the
+Explorer shows and a test asks for.
+
 ### Coming from 3.8
 
 Nothing a 3.8 script does has changed, with one exception that was a mistake before: a
@@ -1419,11 +1659,13 @@ The layout:
 | `plugin.ts` | Activation: the menu item, the claim on the generated block (`api.triggers.claim`), the commands. |
 | `service.ts` | What the plugin does to the map: names off `api.settings` / `api.names` / `api.query`, the members through `api.document.extras`, an apply as one `document.update`, and its part in saving (`attach`): `buildSteps.before` applies a script that is newer than its block, and a contribution to the eudplib plugin's build hands over the IR, `python/trigscript.py` and eudTurbo. A compile is `prepare`d into an artifact stamped with the map's id and a hash of its names, and `install` refuses an artifact whose map is not the one in front — the dialog compiles once and installs that, never a second run. |
 | `editor.ts` | The dialog: the file list and Monaco, plain DOM in the editor's own classes. |
+| `tree.ts` | The files as folders, and a move that takes the imports with it. Pure over strings. |
+| `testState.ts` | What the workspace shows of a compile's test report: results kept between runs, marks, the failures said at their lines, the warnings, the Testing view's tree. |
 | `monaco.ts` | Monaco from `dist/` on jsDelivr's GitHub mirror (the tag `DIST_TAG` names; the workers start as blob module workers), one model per file under `file:///` so imports resolve, the theme. The plugin storage key `monacoDist` overrides where the files are fetched from — set `scmjs.plugin.trigscript.monacoDist` in the browser to `"http://localhost:3000/dist"` while developing. |
 | `bundle/`, `dist/` | `npm run bundle` builds Monaco with esbuild — the editor core, its features and the TypeScript language alone, styles injected by the module and the codicon font inlined, plus the two workers — and writes `lib.d.ts`, the standard library the compile worker checks scripts against (`bundle/lib.mjs`), into `dist/`, which is committed. A CDN's on-the-fly bundler turns Monaco's lazy language chunks into standalone bundles carrying a second editor core, which is why the plugin carries its own. After a Monaco bump: rebuild, commit, tag `monaco-<version>-<n>`, move `DIST_TAG`. |
 | `compile.ts` | Compiling in a worker: a blob worker `importScripts` TypeScript from the CDN, fetches `lib.d.ts` once, and imports this plugin's own compiler module by the `blob:` URL the editor's loader gave it; a request the script does not answer in fifteen seconds (an endless loop outside `program()`) terminates the worker. A main-thread fallback loads TypeScript through a `<script>` tag. |
 | `script.ts` | The files, the block and its manifest: hashing (the block, and every record on its own), finding the block by content, staleness and what a stale block can still be taken apart into, planning a build. Pure over a trigger list and a map of the members. |
-| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, collects the map references, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and turns each `program()` — and the `game()` functions it calls — through `structured.ts` (with `scope.ts`, what a name is bound to, and `tables.ts`, the game's tables) into the IR (`ir.ts`, `docs/ir.md`); `input.ts` sets up what the programs read of keys, mouse and chat, `numbers.ts` writes into every operation whether it reads its 32 bits as a `number` or a `u32`, `recursion.ts` finds the functions that call themselves and what each call has to keep, and `eud.ts` checks the result (a loop that never sleeps, a constant divisor, a constant that does not fit its width) and serialises it with every text written out; `python/trigscript.py` is the other half, the euddraft plugin that lowers the IR to eudplib, embedded by `npm run embed`; `simulate.ts` is the trigger-cycle interpreter and `simulateIr.ts` the program interpreter, which computes every number the way the Python does; `lower.ts` is what the raw level still needs (condition negation, hyper triggers); `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
+| `compiler/` | The language. `names.ts` and `declarations.ts` generate the `.d.ts`; `runtime.ts` is the library the script calls; `compiler.ts` checks the files as one `ts.createProgram`, collects the map references, emits them through `hoist.ts`'s transformer, links and runs them (`link.ts`), and turns each `program()` — and the `game()` functions it calls — through `structured.ts` (with `scope.ts`, what a name is bound to, and `tables.ts`, the game's tables) into the IR (`ir.ts`, `docs/ir.md`); `input.ts` sets up what the programs read of keys, mouse and chat, `numbers.ts` writes into every operation whether it reads its 32 bits as a `number` or a `u32`, `recursion.ts` finds the functions that call themselves and what each call has to keep, and `eud.ts` checks the result (a loop that never sleeps, a constant divisor, a constant that does not fit its width) and serialises it with every text written out; `python/trigscript.py` is the other half, the euddraft plugin that lowers the IR to eudplib, embedded by `npm run embed`; `simulate.ts` is the trigger-cycle interpreter and `simulateIr.ts` the program interpreter, which computes every number the way the Python does, the two over the one world of `world.ts` (the unit table, the players and forces, what is done to units and what the unit conditions count); `testing.ts` is the script's own `test()`s — the registry the script fills as it runs, `sim` and `expect`, and the runner, whose report is plain data because it crosses from the compile worker; `lower.ts` is what the raw level still needs (condition negation, hyper triggers); `print.ts` is the inverse for records; `api.ts` and `record.ts` are the shared vocabulary. Nothing in here touches the DOM or the editor. |
 | `python/trigscript.py` | The Remastered lowering: the euddraft plugin that turns the IR into eudplib code, handed to the eudplib plugin with every build. `npm run embed` writes it into `compiler/generated/trigscriptPy.ts`; `tests/python.test.ts` fails when the two drift. `scripts/build-fixture.mts` builds a script into a playable map under Node through a plugin-eudplib checkout; `probes/` holds a probe script for each part of the language (`arrays.ts`, `recursion.ts`, `strings.ts`, `classes.ts`, `map.ts`, …): every line prints what it expects, a test plays it in the simulator against those lines, and the built map — in the ignored `fixtures/` folder, since it sits on a Blizzard map — is played in the game before the part ships, which is the only place the Python really runs. |
 | `vendor/` | The tables the compiler reads, copied from the editor: the trigger record layout and its codec, the condition and action definitions, the unit names, the flag names. The editor is the source of truth; copy them again when it changes. |
 | `dist/plugin.js`, `dist/compiler.js` | The bundle the editor loads, and the compiler alone (`compiler/entry.ts`) for the compile worker of a copy compiled into the editor, which has no `blob:` module to hand it; `npm run build` writes both — commit both before tagging (CI commits and checks `plugin.js` on its own). |

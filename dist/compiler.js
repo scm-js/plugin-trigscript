@@ -612,13 +612,3172 @@ var TRIGGER_OPTION_NAMES = [
 ];
 var MODULE_NAME = "trigscript";
 
+// compiler/world.ts
+var UNIT_SLOTS = 1700;
+var FACTORIES = /* @__PURE__ */ new Set([106, 111, 113, 114, 131, 132, 133, 154, 155, 160, 167]);
+var inClass = (type, cls) => cls === 229 ? true : cls === 230 ? type < 106 : cls === 231 ? type >= 106 && type <= 202 : FACTORIES.has(type);
+var Players = class {
+  /** The slots in the game, in order. */
+  slots;
+  /** No player settings were given: one player, whom every force and the current player mean. */
+  loose;
+  forces;
+  constructor(options, only) {
+    this.loose = !options.players;
+    this.slots = options.players ? [...new Set(options.players)].filter((p) => p >= 0 && p < 12).sort((a2, b) => a2 - b) : [only];
+    this.forces = options.forces ?? {};
+  }
+  /** The slots a player or a group names, as `current` sees it. A group nobody is in is empty. */
+  of(group, current) {
+    if (group < 12) return [group];
+    if (group === PlayerGroup.CurrentPlayer) return [current];
+    if (this.loose) return group <= PlayerGroup.Force4 ? [current] : [group];
+    const force = this.forces[current];
+    switch (group) {
+      case PlayerGroup.AllPlayers:
+        return [...this.slots];
+      case PlayerGroup.Force1:
+      case PlayerGroup.Force2:
+      case PlayerGroup.Force3:
+      case PlayerGroup.Force4:
+        return this.slots.filter((p) => this.forces[p] === group - PlayerGroup.Force1);
+      case PlayerGroup.Allies:
+        return this.slots.filter((p) => p !== current && force !== void 0 && this.forces[p] === force);
+      case PlayerGroup.Foes:
+      case PlayerGroup.NonAlliedVictoryPlayers:
+        return this.slots.filter((p) => p !== current && (force === void 0 || this.forces[p] !== force));
+      case PlayerGroup.NeutralPlayers:
+        return [11];
+      default:
+        return [];
+    }
+  }
+  /** Whether a trigger with these owners (the record's 27 flags) runs for a slot. */
+  owns(owners, slot) {
+    if (owners[slot] || owners[PlayerGroup.AllPlayers]) return true;
+    for (let f = 0; f < 4; f++) if (owners[PlayerGroup.Force1 + f] && (this.loose || this.forces[slot] === f)) return true;
+    return false;
+  }
+};
+var compare = (value, comparison, amount) => {
+  const n = amount >>> 0;
+  return comparison === Comparison.AtLeast ? value >= n : comparison === Comparison.AtMost ? value <= n : comparison === Comparison.Exactly ? value === n : false;
+};
+var World = class {
+  /** Every unit there has been, in the order they were made; one that is gone stays in the list, `alive` false. */
+  units = [];
+  locations = /* @__PURE__ */ new Map();
+  players;
+  /** What a type is made with. Replaceable: the programs' simulation answers from the tables a program may have written. */
+  stats;
+  /** A unit died by `kill`: the death is the caller's to count, in the table its script's counters are in. */
+  onDeath = () => {
+  };
+  table = [];
+  uids = [];
+  classOf;
+  properties;
+  /** Kills by player and type of what was killed. */
+  killed = /* @__PURE__ */ new Map();
+  constructor(options, only) {
+    this.players = new Players(options, only);
+    this.classOf = options.unitClass ?? inClass;
+    this.stats = options.unitStats ?? (() => void 0);
+    this.properties = options.properties ?? (() => void 0);
+    for (const [n, b] of Object.entries(options.locations ?? {})) this.locations.set(Number(n), { ...b });
+    for (const u of options.units ?? []) this.make(u);
+  }
+  /* ── the unit table ── */
+  /** A unit on the map, in the lowest free place of the table. Null when the table is full, as the game makes no unit then. */
+  make(init) {
+    let slot = 0;
+    while (slot < UNIT_SLOTS && this.table[slot]) slot++;
+    if (slot >= UNIT_SLOTS) return null;
+    const uid = this.uids[slot] === void 0 ? 0 : this.uids[slot] + 1 & 255;
+    this.uids[slot] = uid;
+    const hp = init.hp ?? init.maxHp ?? 1;
+    const shields = init.shields ?? init.maxShields ?? 0;
+    const unit = {
+      x: 0,
+      y: 0,
+      energy: 0,
+      kills: 0,
+      orderId: 3,
+      cooldown: 0,
+      resources: 0,
+      stim: 0,
+      ensnare: 0,
+      plague: 0,
+      lockdown: 0,
+      maelstrom: 0,
+      irradiate: 0,
+      stasis: 0,
+      hallucinated: false,
+      cloaked: false,
+      burrowed: false,
+      invincible: false,
+      underAttack: false,
+      ...init,
+      hp,
+      maxHp: init.maxHp ?? hp,
+      shields,
+      maxShields: init.maxShields ?? shields,
+      alive: true,
+      slot,
+      uid
+    };
+    this.table[slot] = unit;
+    this.units.push(unit);
+    return unit;
+  }
+  /** A unit of a type as the game makes one: the type's hit points and shields, at a point. */
+  create(type, owner, x, y, properties) {
+    const s = this.stats(type) ?? {};
+    const maxHp = Math.max(1, s.hp ?? 1);
+    const maxShields = Math.max(0, s.shields ?? 0);
+    const part = (max, percent, least) => percent === void 0 ? max : Math.max(least, Math.ceil(max * Math.min(100, Math.max(0, percent)) / 100));
+    return this.make({
+      type,
+      owner,
+      x,
+      y,
+      maxHp,
+      maxShields,
+      hp: part(maxHp, properties?.hpPercent, 1),
+      shields: part(maxShields, properties?.shieldPercent, 0),
+      energy: properties?.energyPercent === void 0 ? s.energy ?? 0 : Math.floor(200 * Math.min(100, Math.max(0, properties.energyPercent)) / 100),
+      resources: properties?.resources ?? 0,
+      cloaked: properties?.cloaked ?? false,
+      burrowed: properties?.burrowed ?? false,
+      hallucinated: properties?.hallucinated ?? false,
+      invincible: properties?.invincible ?? false
+    });
+  }
+  /** Off the map, its place free for the next unit made. `killed`: it died — counted as a death, and as a kill of `by` when someone is named. */
+  gone(unit, killed, by) {
+    if (!unit.alive) return;
+    unit.alive = false;
+    if (this.table[unit.slot] === unit) this.table[unit.slot] = null;
+    if (!killed) return;
+    this.onDeath(unit);
+    if (by !== void 0) this.killed.set(unit.type * 4096 + by, (this.killed.get(unit.type * 4096 + by) ?? 0) + 1);
+  }
+  /** The unit that was in a place when its uniqueness byte was `uid`: the one there now, or one long gone. */
+  at(slot, uid) {
+    const now = this.table[slot];
+    if (now && now.uid === uid) return now;
+    return this.units.find((u) => u.slot === slot && u.uid === uid) ?? null;
+  }
+  /** The units on the map, in the order of the table. */
+  living() {
+    const out = [];
+    for (const u of this.table) if (u) out.push(u);
+    return out;
+  }
+  typed(u, type) {
+    return type === void 0 || (type >= 229 ? this.classOf(u.type, type) : u.type === type);
+  }
+  inside(u, location) {
+    const box = location === void 0 || location === 0 ? void 0 : this.locations.get(location);
+    return !box || u.x >= box.left && u.x <= box.right && u.y >= box.top && u.y <= box.bottom;
+  }
+  /** The living units of these owners (any, when undefined), of a type or a class, inside a location — in table order. */
+  matching(owners, type, location) {
+    return this.living().filter((u) => (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location));
+  }
+  centreOf(location) {
+    const b = this.locations.get(location);
+    return b ? { x: Math.floor((b.left + b.right) / 2), y: Math.floor((b.top + b.bottom) / 2) } : { x: 0, y: 0 };
+  }
+  /** A location centred on a point, its size kept. */
+  centre(location, x, y) {
+    const b = this.locations.get(location) ?? { left: 0, top: 0, right: 0, bottom: 0 };
+    const w = b.right - b.left;
+    const h = b.bottom - b.top;
+    const left = x - Math.floor(w / 2);
+    const top = y - Math.floor(h / 2);
+    this.locations.set(location, { left, top, right: left + w, bottom: top + h });
+  }
+  /** The kills these players have of a type or a class. */
+  kills(owners, type) {
+    let n = 0;
+    for (const [key, count] of this.killed) if (owners.includes(key % 4096) && (type >= 229 ? this.classOf(Math.floor(key / 4096), type) : Math.floor(key / 4096) === type)) n += count;
+    return n;
+  }
+  /* ── conditions ── */
+  /** The number a unit condition compares, as `current` asks it; undefined for a condition that is not about units. */
+  quantity(c2, current) {
+    const owners = this.players.of(c2.player, current);
+    switch (c2.type) {
+      case ConditionType.Bring:
+        return this.matching(owners, c2.unitId, c2.location).length;
+      case ConditionType.Command:
+        return this.matching(owners, c2.unitId).length;
+      case ConditionType.Kill:
+        return this.kills(owners, c2.unitId);
+      default:
+        return void 0;
+    }
+  }
+  /** Whether a unit condition holds; undefined for a condition that is not about units. */
+  holds(c2, current) {
+    const n = this.quantity(c2, current);
+    if (n !== void 0) return compare(n, c2.comparison, c2.amount);
+    const most = c2.type === ConditionType.CommandTheMost || c2.type === ConditionType.CommandTheMostAt;
+    const least = c2.type === ConditionType.CommandTheLeast || c2.type === ConditionType.CommandTheLeastAt;
+    if (!most && !least) return void 0;
+    const at = c2.type === ConditionType.CommandTheMostAt || c2.type === ConditionType.CommandTheLeastAt ? c2.location : void 0;
+    const mine = this.matching([current], c2.unitId, at).length;
+    return this.players.slots.filter((p) => p !== current).every((p) => {
+      const theirs = this.matching([p], c2.unitId, at).length;
+      return most ? mine >= theirs : mine <= theirs;
+    });
+  }
+  /* ── actions ── */
+  /** The first `count` of a list; 0 is all of them. */
+  some(list, count) {
+    return count > 0 ? list.slice(0, count) : list;
+  }
+  /**
+   * An action on units, done as `current`. True when it was one of the world's — the caller
+   * logs it either way. `made`, when given, receives the units a Create Unit made.
+   */
+  act(a2, current, made) {
+    const owners = this.players.of(a2.player, current);
+    switch (a2.type) {
+      case ActionType.CreateUnit:
+      case ActionType.CreateUnitWithProperties: {
+        const { x, y } = this.centreOf(a2.location);
+        const properties = a2.type === ActionType.CreateUnitWithProperties ? this.properties(a2.target) : void 0;
+        for (const owner of owners) if (owner < 12) for (let i = 0; i < Math.max(1, a2.modifier); i++) {
+          const u = this.create(a2.unitId, owner, x, y, properties);
+          if (u) made?.push(u);
+        }
+        return true;
+      }
+      case ActionType.KillUnit:
+        for (const u of this.matching(owners, a2.unitId)) this.gone(u, true);
+        return true;
+      case ActionType.RemoveUnit:
+        for (const u of this.matching(owners, a2.unitId)) this.gone(u, false);
+        return true;
+      case ActionType.KillUnitAt:
+        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) this.gone(u, true);
+        return true;
+      case ActionType.RemoveUnitAt:
+        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) this.gone(u, false);
+        return true;
+      case ActionType.GiveUnits: {
+        const to = this.players.of(a2.target, current)[0];
+        if (to !== void 0 && to < 12) for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) u.owner = to;
+        return true;
+      }
+      case ActionType.MoveUnit: {
+        const { x, y } = this.centreOf(a2.target);
+        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) {
+          u.x = x;
+          u.y = y;
+        }
+        return true;
+      }
+      case ActionType.MoveLocation: {
+        const u = this.matching(owners, a2.unitId, a2.location)[0];
+        const p = u ?? this.centreOf(a2.location);
+        this.centre(a2.target, p.x, p.y);
+        return true;
+      }
+      case ActionType.ModifyHitPoints:
+        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) u.hp = Math.max(1, Math.ceil(u.maxHp * Math.min(100, a2.target) / 100));
+        return true;
+      case ActionType.ModifyShields:
+        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) u.shields = Math.ceil(u.maxShields * Math.min(100, a2.target) / 100);
+        return true;
+      case ActionType.ModifyEnergy:
+        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) u.energy = Math.floor(200 * Math.min(100, a2.target) / 100);
+        return true;
+      case ActionType.ModifyResourceAmount:
+        for (const u of this.some(this.matching(owners, a2.unitId, a2.location), a2.modifier)) u.resources = Math.min(65535, a2.target >>> 0);
+        return true;
+      case ActionType.SetInvincibility:
+        for (const u of this.matching(owners, a2.unitId, a2.location)) u.invincible = a2.modifier === UnitState.Enable ? true : a2.modifier === UnitState.Disable ? false : !u.invincible;
+        return true;
+      default:
+        return false;
+    }
+  }
+};
+
+// compiler/simulate.ts
+var Simulation = class {
+  triggers;
+  /** The simulated player: the only one, without the map's player settings; with them, the one inputs and logs default to. */
+  player;
+  /** The player a trigger or a program is running as right now: who Current Player is. */
+  current;
+  /** The units, the locations and who the players are. */
+  game;
+  events = [];
+  switches = new Uint8Array(SWITCH_COUNT);
+  deaths = /* @__PURE__ */ new Map();
+  /** Trigger × player, for the triggers that ran without Preserve. */
+  done = /* @__PURE__ */ new Set();
+  options;
+  cycle = 0;
+  constructor(triggers, options = {}) {
+    this.triggers = triggers;
+    this.options = options;
+    this.player = options.player ?? options.players?.[0] ?? (triggers.map((t) => t.players.findIndex((v, i) => v && i < 12)).find((p) => p >= 0) ?? 0);
+    this.current = this.player;
+    this.game = new World(options, this.player);
+    this.game.onDeath = (u) => this.deaths.set(u.type * 4096 + u.owner, (this.deaths.get(u.type * 4096 + u.owner) ?? 0) + 1 >>> 0);
+  }
+  /** A player's deaths of a unit; a group's are its players' together. */
+  death(player, unit) {
+    let n = 0;
+    for (const p of this.game.players.of(player, this.current)) n += this.deaths.get(unit * 4096 + p) ?? 0;
+    return n >>> 0;
+  }
+  /** Set for a player, or for each player of a group. */
+  setDeath(player, unit, value) {
+    for (const p of this.game.players.of(player, this.current)) this.deaths.set(unit * 4096 + p, value >>> 0);
+  }
+  /** A Set Deaths action: set to, add or subtract, for each player the action names. */
+  changeDeath(player, unit, modifier, amount) {
+    const n = amount >>> 0;
+    for (const p of this.game.players.of(player, this.current)) {
+      const cur = this.deaths.get(unit * 4096 + p) ?? 0;
+      this.deaths.set(unit * 4096 + p, (modifier === SetModifier.SetTo ? n : modifier === SetModifier.Add ? cur + n : Math.max(0, cur - n)) >>> 0);
+    }
+  }
+  text(index) {
+    const { strings } = this.options;
+    if (!strings || index === 0) return void 0;
+    if (typeof strings === "function") return strings(index) ?? void 0;
+    const s = strings[index - 1];
+    return s && "text" in s ? s.text : void 0;
+  }
+  /** Run one trigger cycle. */
+  step() {
+    let runs = 0;
+    const limit = this.options.maxRunsPerCycle ?? 1e5;
+    for (const player of this.game.players.slots) {
+      this.current = player;
+      for (let i = 0; i < this.triggers.length; i++) {
+        const t = this.triggers[i];
+        if (this.done.has(i * 12 + player) || t.flags & TriggerFlag.Disabled) continue;
+        if (!this.game.players.owns(t.players, player)) continue;
+        if (!t.conditions.every((c2) => this.condition(c2))) continue;
+        if (++runs > limit) throw new Error(`More than ${limit} trigger runs in one cycle.`);
+        let preserve = (t.flags & TriggerFlag.Preserve) !== 0;
+        for (const a2 of t.actions) {
+          if (a2.flags & ActionFlag.Disabled) continue;
+          if (a2.type === ActionType.PreserveTrigger) preserve = true;
+          else this.action(a2, i);
+        }
+        if (!preserve) this.done.add(i * 12 + player);
+      }
+    }
+    this.current = this.player;
+    this.cycle++;
+  }
+  run(cycles2) {
+    for (let i = 0; i < cycles2; i++) this.step();
+    return this;
+  }
+  condition(c2) {
+    if (c2.flags & ConditionFlag.Disabled) return true;
+    switch (c2.type) {
+      case ConditionType.Always:
+        return true;
+      case ConditionType.Never:
+        return false;
+      case ConditionType.Deaths:
+        return compare2(this.death(c2.player, c2.unitId), c2.comparison, c2.amount);
+      case ConditionType.Switch:
+        return c2.comparison === SwitchState.Set ? this.switches[c2.resource] === 1 : this.switches[c2.resource] === 0;
+      default:
+        return this.options.condition?.(c2, this) ?? this.game.holds(c2, this.current) ?? false;
+    }
+  }
+  action(a2, trigger) {
+    switch (a2.type) {
+      case ActionType.SetDeaths:
+        this.changeDeath(a2.player, a2.unitId, a2.modifier, a2.target);
+        return;
+      case ActionType.SetSwitch: {
+        const i = a2.target;
+        if (i < 0 || i >= SWITCH_COUNT) return;
+        switch (a2.modifier) {
+          case SwitchAction.Set:
+            this.switches[i] = 1;
+            break;
+          case SwitchAction.Clear:
+            this.switches[i] = 0;
+            break;
+          case SwitchAction.Toggle:
+            this.switches[i] ^= 1;
+            break;
+          case SwitchAction.Randomize:
+            this.switches[i] = (this.options.random ?? Math.random)() < 0.5 ? 0 : 1;
+            break;
+        }
+        return;
+      }
+      case ActionType.Comment:
+        return;
+      default: {
+        this.game.act(a2, this.current);
+        const ev = { cycle: this.cycle, trigger, player: this.current, action: a2 };
+        const text = this.text(a2.text);
+        if (text !== void 0) ev.text = text;
+        this.events.push(ev);
+      }
+    }
+  }
+};
+function compare2(value, comparison, amount) {
+  const n = amount >>> 0;
+  switch (comparison) {
+    case Comparison.AtLeast:
+      return value >= n;
+    case Comparison.AtMost:
+      return value <= n;
+    case Comparison.Exactly:
+      return value === n;
+    default:
+      return false;
+  }
+}
+
+// compiler/ir.ts
+var IR_VERSION = 14;
+var HEAP_CELLS = 16384;
+var HEAP_CELLS_MIN = 1024;
+var HEAP_CELLS_MAX = 1 << 20;
+function heapCells(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(HEAP_CELLS_MAX, Math.max(HEAP_CELLS_MIN, Math.floor(value))) : HEAP_CELLS;
+}
+var HEAP_SMALLEST = 4;
+var STACK_DEPTH = 1024;
+var STACK_DEPTH_MIN = 16;
+var STACK_DEPTH_MAX = 65536;
+var STACK_CELLS_MAX = 1 << 20;
+function stackDepth(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(STACK_DEPTH_MAX, Math.max(STACK_DEPTH_MIN, Math.floor(value))) : STACK_DEPTH;
+}
+var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
+var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
+var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var I32_MAX = 2147483647;
+var I32_MIN = -2147483648;
+var U32_MAX = 4294967295;
+var TEXT_BYTES = 1023;
+var TEXT_FIELD_BYTES = 255;
+var TEXT_KINDS = /* @__PURE__ */ new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
+var isTextExpr = (e) => TEXT_KINDS.has(e.kind);
+var innerText = (t, f) => f.text ? f.text(t) : mapText(t, f);
+function mapTextParts(parts, f) {
+  return parts.map((p) => p.kind === "number" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p);
+}
+function mapText(t, f) {
+  switch (t.kind) {
+    case "textOf":
+    case "textAt":
+      return { ...t, index: f.num(t.index) };
+    case "template":
+      return { ...t, parts: mapTextParts(t.parts, f) };
+    case "textTernary":
+      return { ...t, cond: f.bool(t.cond), whenTrue: innerText(t.whenTrue, f), whenFalse: innerText(t.whenFalse, f) };
+    case "textSlice":
+      return { ...t, of: innerText(t.of, f), ...t.start ? { start: f.num(t.start) } : {}, ...t.end ? { end: f.num(t.end) } : {} };
+    case "textPad":
+      return { ...t, of: innerText(t.of, f), width: f.num(t.width), with: innerText(t.with, f) };
+    case "textRepeat":
+      return { ...t, of: innerText(t.of, f), count: f.num(t.count) };
+    case "textCall":
+      return { ...t, call: f.call(t.call) };
+    default:
+      return t;
+  }
+}
+function mapTextOperands(e, f) {
+  switch (e.kind) {
+    case "textLength":
+      return { ...e, of: innerText(e.of, f) };
+    case "textIndexOf":
+      return { ...e, of: innerText(e.of, f), find: innerText(e.find, f), ...e.from ? { from: f.num(e.from) } : {} };
+    case "textCode":
+      return { ...e, of: innerText(e.of, f), index: f.num(e.index) };
+    case "textCompare":
+      return { ...e, left: innerText(e.left, f), right: innerText(e.right, f) };
+    case "textTest":
+      return { ...e, of: innerText(e.of, f), find: innerText(e.find, f) };
+    default:
+      return void 0;
+  }
+}
+function textHasId(e, kinds) {
+  switch (e.kind) {
+    case "text":
+    case "textOf":
+      return true;
+    case "textVar":
+      return kinds(e.id) === "id";
+    case "textTernary":
+      return textHasId(e.whenTrue, kinds) && textHasId(e.whenFalse, kinds);
+    default:
+      return false;
+  }
+}
+function bodiesOf(program) {
+  return [program.body, ...(program.functions ?? []).map((f) => f.body)];
+}
+function programDeclarations(program) {
+  const out = declarations(program.body);
+  for (const f of program.functions ?? []) {
+    out.push(...f.params);
+    if (f.result) out.push(f.result.decl);
+    out.push(...declarations(f.body));
+  }
+  return out;
+}
+function eachCall(root, visit) {
+  if (Array.isArray(root)) {
+    for (const x of root) eachCall(x, visit);
+    return;
+  }
+  if (!root || typeof root !== "object") return;
+  const o = root;
+  if ((o.kind === "call" || o.kind === "textCall") && o.call && typeof o.call === "object") visit(o.call);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
+}
+var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
+var isNumExpr = (e) => {
+  switch (e.kind) {
+    case "textLength":
+    case "textIndexOf":
+    case "textCode":
+      return true;
+    case "const":
+      return typeof e.value === "number";
+    case "var":
+      return false;
+    // ambiguous by shape; callers know the variable's kind
+    case "element":
+    case "pop":
+      return false;
+    // ambiguous by shape, as a variable is
+    case "length":
+    case "unitPart":
+      return true;
+    case "unary":
+    case "cast":
+    case "binary":
+    case "intrinsic":
+    case "read":
+    case "randomInt":
+    case "unitField":
+    case "tableRead":
+    case "input":
+      return true;
+    case "ternary":
+      return isNumExpr(e.whenTrue);
+    case "call":
+      return e.call.result?.kind === "number";
+    default:
+      return false;
+  }
+};
+function declarations(body2) {
+  const out = [];
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        out.push(s.decl);
+        init(s.init);
+        break;
+      case "assign":
+        expr(s.value);
+        break;
+      case "declareArray":
+        s.init?.forEach(init);
+        if (s.fill) init(s.fill);
+        break;
+      case "store":
+        expr(s.index);
+        init(s.value);
+        break;
+      case "push":
+        init(s.value);
+        break;
+      case "setLength":
+        expr(s.value);
+        break;
+      case "assignBool":
+        init(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "assignText":
+        text(s.value);
+        break;
+      case "storeText":
+        expr(s.index);
+        text(s.value);
+        break;
+      case "releaseText":
+        expr(s.index);
+        break;
+      case "textLoop":
+        text(s.of);
+        out.push(s.decl);
+        s.body.forEach(stmt);
+        break;
+      case "unitLoop":
+        out.push(s.decl);
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        init(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        init(s.value);
+        break;
+      case "if":
+        init(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) init(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        init(s.cond);
+        break;
+      case "for":
+        if (s.cond) init(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) init(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        if (s.text) text(s.text);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "print":
+        parts(s.parts);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    if (c2.result) out.push(c2.result.decl);
+    for (const p of c2.params) {
+      if (!c2.fn) out.push(p.decl);
+      init(p.init);
+    }
+    c2.body.forEach(stmt);
+  };
+  const init = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
+  const parts = (ps) => {
+    for (const p of ps) {
+      if (p.kind === "number") expr(p.expr);
+      else if (p.kind === "value") text(p.text);
+    }
+  };
+  const text = (t) => {
+    switch (t.kind) {
+      case "textOf":
+      case "textAt":
+        expr(t.index);
+        break;
+      case "template":
+        parts(t.parts);
+        break;
+      case "textTernary":
+        bool(t.cond);
+        text(t.whenTrue);
+        text(t.whenFalse);
+        break;
+      case "textSlice":
+        text(t.of);
+        if (t.start) expr(t.start);
+        if (t.end) expr(t.end);
+        break;
+      case "textPad":
+        text(t.of);
+        expr(t.width);
+        text(t.with);
+        break;
+      case "textRepeat":
+        text(t.of);
+        expr(t.count);
+        break;
+      case "textCall":
+        call(t.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "unitAt") {
+      expr(u.ptr);
+      expr(u.epd);
+      expr(u.uid);
+    }
+  };
+  const expr = (e) => {
+    switch (e.kind) {
+      case "unitField":
+      case "unitPart":
+        unit(e.unit);
+        break;
+      case "element":
+        expr(e.index);
+        break;
+      case "unary":
+      case "cast":
+        expr(e.expr);
+        break;
+      case "binary":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        bool(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "textLength":
+        text(e.of);
+        break;
+      case "textIndexOf":
+        text(e.of);
+        text(e.find);
+        if (e.from) expr(e.from);
+        break;
+      case "textCode":
+        text(e.of);
+        expr(e.index);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const bool = (b) => {
+    switch (b.kind) {
+      case "unitAlive":
+      case "unitFlag":
+        unit(b.unit);
+        break;
+      case "unitSame":
+        unit(b.left);
+        unit(b.right);
+        break;
+      case "element":
+        expr(b.index);
+        break;
+      case "test":
+        expr(b.expr);
+        break;
+      case "compare":
+        expr(b.left);
+        expr(b.right);
+        break;
+      case "and":
+      case "or":
+        b.items.forEach(bool);
+        break;
+      case "not":
+        bool(b.expr);
+        break;
+      case "edge":
+        bool(b.cond);
+        break;
+      case "ternary":
+        bool(b.cond);
+        bool(b.whenTrue);
+        bool(b.whenFalse);
+        break;
+      case "textCompare":
+        text(b.left);
+        text(b.right);
+        break;
+      case "textTest":
+        text(b.of);
+        text(b.find);
+        break;
+      case "call":
+        call(b.call);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+  return out;
+}
+
+// compiler/tables.ts
+var TABLE_SIZE = { unit: 228, weapon: 130, upgrade: 61, tech: 44, player: 12 };
+var UNIT_FLAGS2 = 6701184;
+var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS2, stride: 4, width: "bit", bit, boolean: true });
+var TABLE_FIELDS = {
+  unit: [
+    { name: "maxHp", doc: "Hit points of units made after the write.", base: 6693712, stride: 4, width: 4, scale: 256 },
+    { name: "maxShields", doc: "Shield points of units made after the write.", base: 6688256, stride: 2, width: 2 },
+    { name: "armor", doc: "Armour, before upgrades.", base: 6684360, stride: 1, width: 1 },
+    { name: "minerals", doc: "What the unit costs in minerals.", base: 6699144, stride: 2, width: 2 },
+    { name: "gas", doc: "What the unit costs in gas.", base: 6683904, stride: 2, width: 2 },
+    { name: "buildTime", doc: "Seconds to build, on the game's clock; a fraction is fine when the number is known when you build (1.5).", base: 6685736, stride: 2, width: 2, scale: 15 },
+    { name: "supplyUsed", doc: "Supply the unit takes; a Zergling is 0.5.", base: 6700264, stride: 1, width: 1, scale: 2 },
+    { name: "supplyProvided", doc: "Supply the unit provides, for the ones made after the write.", base: 6702792, stride: 1, width: 1, scale: 2 },
+    { name: "sight", doc: "Sight range in tiles, up to 11.", base: 6697528, stride: 1, width: 1 },
+    { name: "groundWeapon", doc: "The weapon used against ground units (weapons.*); units already on the map switch too.", base: 6698680, stride: 1, width: 1, type: "Weapon" },
+    { name: "airWeapon", doc: "The weapon used against air units (weapons.*); weapons.None for none.", base: 6690528, stride: 1, width: 1, type: "Weapon" },
+    { name: "size", doc: "What concussive and explosive damage scale by: 0 independent, 1 small, 2 medium, 3 large.", base: 6693248, stride: 1, width: 1 },
+    { name: "speed", doc: "Top speed in pixels a frame (a Marine walks at 4, a Vulture at 6.67), for units made after the write: the type's flingy is switched to table control and given this speed, with acceleration and stopping distance to match. A fraction is fine when the number is known when you build.", base: 7118584, stride: 4, width: 4, scale: 256, writeOnly: true, special: "speed" },
+    { name: "name", doc: "The name shown for the type: text known when you build.", base: 6685280, stride: 2, width: 2, writeOnly: true, special: "name", type: "string" },
+    flag("detector", 15, "Sees cloaked and burrowed units in its sight range."),
+    flag("permanentCloak", 22, "Always cloaked, for units made after the write."),
+    flag("cloakable", 9, "Has the ability to cloak (the flag alone gives no button)."),
+    flag("burrowable", 20, "Has the ability to burrow (the flag alone gives no button)."),
+    flag("regenerates", 7, "Hit points climb back over time, as a Zerg unit's do; units already on the map follow at once."),
+    flag("invincible", 29, "Cannot be hurt, for units made after the write."),
+    flag("hero", 6, "A hero unit."),
+    flag("organic", 16, "A Medic can heal it; units already on the map follow."),
+    flag("mechanical", 30, "An SCV can repair it; units already on the map follow."),
+    flag("robotic", 14, "Immune to the spells robotic units are immune to.")
+  ],
+  weapon: [
+    { name: "damage", doc: "Damage of one hit, before upgrades.", base: 6647472, stride: 2, width: 2 },
+    { name: "bonus", doc: "Extra damage per upgrade level.", base: 6649464, stride: 2, width: 2 },
+    { name: "cooldown", doc: "Frames between attacks.", base: 6647736, stride: 1, width: 1 },
+    { name: "factor", doc: "Hits per attack.", base: 6644960, stride: 1, width: 1 },
+    { name: "range", doc: "Range in pixels, 32 a tile.", base: 6648944, stride: 4, width: 4 },
+    { name: "minRange", doc: "The least range in pixels: nothing closer can be shot.", base: 6646296, stride: 4, width: 4 }
+  ],
+  upgrade: [
+    { name: "minerals", doc: "The first level's mineral cost.", base: 6641472, stride: 2, width: 2 },
+    { name: "gas", doc: "The first level's gas cost.", base: 6641728, stride: 2, width: 2 },
+    { name: "time", doc: "Seconds the first level takes, on the game's clock.", base: 6642560, stride: 2, width: 2, scale: 15 },
+    { name: "maxLevel", doc: "How many times it can be researched. Read only: the game took no write.", base: 6641408, stride: 1, width: 1, readonly: true }
+  ],
+  tech: [
+    { name: "minerals", doc: "Mineral cost of the research.", base: 6644296, stride: 2, width: 2 },
+    { name: "gas", doc: "Gas cost of the research.", base: 6644208, stride: 2, width: 2 },
+    { name: "time", doc: "Seconds the research takes, on the game's clock.", base: 6644696, stride: 2, width: 2, scale: 15 },
+    { name: "energy", doc: "Energy a cast takes.", base: 6644608, stride: 2, width: 2 }
+  ],
+  player: [
+    { name: "color", doc: `The colour the player's units and minimap dots are drawn in: one of colors.*, or "teal". Takes effect at once.`, base: 5774710, stride: 1, width: 1, writeOnly: true, special: "color", type: "PlayerColor | ColorName" },
+    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade" } },
+    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech" } }
+  ]
+};
+var PLAYER_COLORS = { red: 111, blue: 165, teal: 159, purple: 164, orange: 179, brown: 19, white: 255, yellow: 135, green: 117 };
+var MINIMAP_COLOR_OFFSET = 5774806 - 5774710;
+var TABLE_BRAND = { unit: "unit", weapon: "weapon", upgrade: "upgrade", tech: "tech", player: "player" };
+var tableOfBrand = (brand) => Object.keys(TABLE_BRAND).find((k) => TABLE_BRAND[k] === brand);
+var cellMax = (width) => width === "bit" ? 1 : width === 4 ? 4294967295 : 2 ** (width * 8) - 1;
+
+// compiler/input.ts
+var MOUSE_BUTTONS = ["left", "right", "middle"];
+var NAMED_KEYS = {
+  Space: "SPACE",
+  Enter: "ENTER",
+  Escape: "ESC",
+  Tab: "TAB",
+  Shift: "SHIFT",
+  Ctrl: "LCTRL",
+  Alt: "LALT",
+  Left: "LEFT",
+  Up: "UP",
+  Right: "RIGHT",
+  Down: "DOWN",
+  Backspace: "BACK",
+  Delete: "DELETE",
+  Insert: "INSERT",
+  Home: "HOME",
+  End: "END",
+  PageUp: "PGUP",
+  PageDown: "PGDN"
+};
+var LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+var DIGITS = "0123456789".split("");
+var DEAF_KEYS = { F6: "StarCraft: Remastered keeps F6 to itself and reports no press of it (played and seen); F7 and F8 work" };
+var KEY_NAMES = [
+  ...LETTERS,
+  ...DIGITS,
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`).filter((k) => !(k in DEAF_KEYS)),
+  ...Object.keys(NAMED_KEYS),
+  ...DIGITS.map((d) => `Numpad${d}`)
+];
+var KEY_BY_LOWER = new Map(KEY_NAMES.map((k) => [k.toLowerCase(), k]));
+function keyName(v) {
+  return KEY_BY_LOWER.get(v.trim().toLowerCase()) ?? null;
+}
+var MAX_CHAT_CAPTURES = 3;
+var MAX_CHAT_BYTES = 78;
+var MAX_CHAT_NUMBER = 1048575;
+var IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var bytes = (s) => new TextEncoder().encode(s).length;
+function parseChatPattern(pattern) {
+  if (pattern === "") throw new Error('chatted: the pattern is what the player types, such as "-give {n}".');
+  if (/[\r\n\0]/.test(pattern)) throw new Error("chatted: a typed line is one line.");
+  const segments = [];
+  const captures = [];
+  let text = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "}") throw new Error("chatted: a } without its {. A capture is {name}, {name:unit} or {name:word|word}.");
+    if (ch !== "{") {
+      text += ch;
+      continue;
+    }
+    const end = pattern.indexOf("}", i);
+    if (end < 0) throw new Error("chatted: a { without its }. A capture is {name}, {name:unit} or {name:word|word}.");
+    const inside = pattern.slice(i + 1, end);
+    i = end;
+    const colon = inside.indexOf(":");
+    const name = colon < 0 ? inside : inside.slice(0, colon);
+    const kind = colon < 0 ? "" : inside.slice(colon + 1);
+    if (!IDENT.test(name) || name.startsWith("__")) throw new Error(`chatted: {${inside}} needs a name to be read by: {n}, {unit:unit}, {kind:ore|gas}.`);
+    if (captures.some((c2) => c2.name === name)) throw new Error(`chatted: two captures are called ${name}.`);
+    if (text === "") throw new Error(segments.length === 0 ? 'chatted: a pattern starts with its own word, so that ordinary talk is not taken for it: "-give {n}".' : `chatted: {${name}} follows another capture with nothing between them; put a space or a word there.`);
+    segments.push(text);
+    text = "";
+    if (kind === "") captures.push({ name, kind: "number" });
+    else if (kind === "unit") captures.push({ name, kind: "unit" });
+    else {
+      const words = kind.split("|");
+      if (kind === "number" || kind === "word") throw new Error(`chatted: {${name}} alone is a number; {${name}:unit} a unit type; {${name}:ore|gas} one of the words listed.`);
+      if (words.some((w) => w === "" || /\s/.test(w))) throw new Error(`chatted: {${inside}}: each word of the list is one word, without spaces.`);
+      if (new Set(words.map((w) => w.toLowerCase())).size !== words.length) throw new Error(`chatted: {${inside}} lists a word twice.`);
+      captures.push({ name, kind: "word", words });
+    }
+    segments.push(captures.length - 1);
+  }
+  if (text !== "") segments.push(text);
+  if (captures.length > MAX_CHAT_CAPTURES) throw new Error(`chatted: a pattern reads at most ${MAX_CHAT_CAPTURES} values.`);
+  const unit = captures.findIndex((c2) => c2.kind === "unit");
+  if (unit >= 0 && (unit !== captures.length - 1 || typeof segments[segments.length - 1] === "string")) throw new Error("chatted: a unit's name has spaces in it, so {\u2026:unit} reads the rest of the line and comes last.");
+  const written = segments.filter((s) => typeof s === "string").join("");
+  if (bytes(written) > MAX_CHAT_BYTES) throw new Error(`chatted: the game lets a player type ${MAX_CHAT_BYTES} bytes; the pattern's own text is longer.`);
+  return { pattern, segments, captures };
+}
+function matchChat(p, line, unitByName) {
+  let pos = 0;
+  const out = [];
+  for (let s = 0; s < p.segments.length; s++) {
+    const seg = p.segments[s];
+    if (typeof seg === "string") {
+      if (!line.startsWith(seg, pos)) return null;
+      pos += seg.length;
+      continue;
+    }
+    const c2 = p.captures[seg];
+    if (c2.kind === "number") {
+      const m = /^\d+/.exec(line.slice(pos));
+      if (!m) return null;
+      pos += m[0].length;
+      out.push(Math.min(Number(m[0]), MAX_CHAT_NUMBER));
+    } else if (c2.kind === "unit") {
+      const id = unitByName(line.slice(pos).toLowerCase());
+      if (id === void 0) return null;
+      pos = line.length;
+      out.push(id);
+    } else {
+      const m = /^\S+/.exec(line.slice(pos));
+      const at = m ? c2.words.findIndex((w) => w.toLowerCase() === m[0].toLowerCase()) : -1;
+      if (!m || at < 0) return null;
+      pos += m[0].length;
+      out.push(at);
+    }
+  }
+  return pos === line.length ? out : null;
+}
+var MOUSE_SLOTS = 8;
+var LAST_SLOT = 62;
+function inputsOf(programs) {
+  const sources = [];
+  let mouse = false;
+  let at = null;
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "pick" && u.mouse !== void 0) {
+      mouse = true;
+      at ??= u.at;
+    } else if (u.kind === "unitAt") {
+      expr(u.ptr);
+      expr(u.epd);
+      expr(u.uid);
+    }
+  };
+  const any = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e);
+  const looks = { num: (e) => {
+    expr(e);
+    return e;
+  }, bool: (e) => {
+    expr(e);
+    return e;
+  }, call: (c2) => {
+    call(c2);
+    return c2;
+  } };
+  const text = (t) => {
+    mapText(t, looks);
+  };
+  const expr = (e) => {
+    if (mapTextOperands(e, looks)) return;
+    switch (e.kind) {
+      case "input":
+        sources.push(e.input);
+        at ??= e.at;
+        if (e.input.source === "mouse") mouse = true;
+        break;
+      case "unitField":
+      case "unitPart":
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        break;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        break;
+      case "unary":
+      case "cast":
+        expr(e.expr);
+        break;
+      case "element":
+        expr(e.index);
+        break;
+      case "binary":
+      case "compare":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        expr(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "and":
+      case "or":
+        e.items.forEach(expr);
+        break;
+      case "not":
+      case "test":
+        expr(e.expr);
+        break;
+      case "edge":
+        expr(e.cond);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) any(p.init);
+    c2.body.forEach(stmt);
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) any(s.init);
+        break;
+      case "assign":
+      case "assignBool":
+        expr(s.value);
+        break;
+      case "declareArray":
+        s.init?.forEach(expr);
+        if (s.fill) expr(s.fill);
+        break;
+      case "store":
+        expr(s.index);
+        expr(s.value);
+        break;
+      case "push":
+      case "setLength":
+        expr(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "assignText":
+        text(s.value);
+        break;
+      case "storeText":
+        expr(s.index);
+        text(s.value);
+        break;
+      case "releaseText":
+        expr(s.index);
+        break;
+      case "textLoop":
+        text(s.of);
+        s.body.forEach(stmt);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        expr(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        any(s.value);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "if":
+        expr(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) expr(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        expr(s.cond);
+        break;
+      case "for":
+        if (s.cond) expr(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) any(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        if (s.text) text(s.text);
+        break;
+      case "print":
+        mapTextParts(s.parts, looks);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  for (const p of programs) for (const body2 of bodiesOf(p)) body2.forEach(stmt);
+  return { sources, mouse, at };
+}
+function inputPlan(programs, locations, units) {
+  const { sources, mouse } = inputsOf(programs);
+  if (sources.length === 0 && !mouse) return null;
+  const keys = [];
+  const buttons = [];
+  const chats = [];
+  for (const s of sources) {
+    if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
+    else if (s.source === "click" && !buttons.includes(s.button)) buttons.push(s.button);
+    else if (s.source === "chat" && !chats.some((c2) => c2.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
+  }
+  const used = new Set(locations.entries.map((e) => e.value - 1));
+  const free = (slot) => slot >= 0 && slot <= LAST_SLOT && !used.has(slot);
+  let qcLocation = -1;
+  for (let slot = LAST_SLOT; slot >= 0; slot--) if (free(slot)) {
+    qcLocation = slot;
+    break;
+  }
+  if (qcLocation < 0) throw new Error("Reading keys, clicks or chat needs one free location among the map's first 63 for the plugin that carries them between the players' computers; this map uses them all.");
+  let mouseBase = null;
+  if (mouse) {
+    for (let slot = LAST_SLOT - MOUSE_SLOTS + 1; slot >= 0 && mouseBase === null; slot--) {
+      let ok = true;
+      for (let i = 0; i < MOUSE_SLOTS; i++) if (!free(slot + i) || slot + i === qcLocation) ok = false;
+      if (ok) mouseBase = slot + 1;
+    }
+    if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
+  }
+  const plan = { keys, buttons, chats, qcLocation, mouseBase };
+  if (chats.some((c2) => c2.captures.some((x) => x.kind === "unit"))) {
+    const seen = /* @__PURE__ */ new Set();
+    plan.unitNames = [];
+    for (const e of units.entries) {
+      if (e.value >= 228) continue;
+      for (const k of e.keys) {
+        const lower = k.toLowerCase();
+        if (!seen.has(lower)) {
+          seen.add(lower);
+          plan.unitNames.push([lower, e.value]);
+        }
+      }
+    }
+  }
+  return plan;
+}
+
+// compiler/simulateIr.ts
+var FRAMES_PER_SECOND = 24;
+var FRAMES_PER_GAME_SECOND = 16;
+var U32 = 4294967296;
+var UNIT_FIELD_MAX = { hp: 16777215, shields: 16777215, energy: 255, kills: 255, cooldown: 255, resources: 65535, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
+var Halt = class extends Error {
+};
+var Stopped = class extends Error {
+};
+var UTF8 = new TextEncoder();
+var bytesOf = (s) => UTF8.encode(s).length;
+function textRoom(bytes2) {
+  let room = HEAP_SMALLEST;
+  while (room < Math.floor(bytes2 / 4) + 2) room *= 2;
+  return room;
+}
+function cutTo(s, bytes2) {
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    const n = bytesOf(ch);
+    if (used + n > bytes2) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
+function compareTexts(a2, b) {
+  const x = [...a2], y = [...b];
+  for (let i = 0; i < x.length && i < y.length; i++) {
+    const d = x[i].codePointAt(0) - y[i].codePointAt(0);
+    if (d) return d;
+  }
+  return x.length - y.length;
+}
+var newCommon = () => ({ ids: /* @__PURE__ */ new Set(), vars: /* @__PURE__ */ new Map(), unitVars: /* @__PURE__ */ new Map(), textVars: /* @__PURE__ */ new Map(), arrays: /* @__PURE__ */ new Map() });
+var Cells = class extends Map {
+  ids;
+  common;
+  constructor(ids, common) {
+    super();
+    this.ids = ids;
+    this.common = common;
+  }
+  get(id) {
+    return this.ids.has(id) ? this.common.get(id) : super.get(id);
+  }
+  has(id) {
+    return this.ids.has(id) ? this.common.has(id) : super.has(id);
+  }
+  set(id, value) {
+    if (this.ids.has(id)) this.common.set(id, value);
+    else super.set(id, value);
+    return this;
+  }
+};
+var ProgramRun = class {
+  vars;
+  /** The variables that hold a unit, or none. */
+  unitVars;
+  /** The variables that hold a text. */
+  textVars;
+  bits = /* @__PURE__ */ new Map();
+  /** The `u32` variables. */
+  unsigned = /* @__PURE__ */ new Set();
+  latches = /* @__PURE__ */ new Map();
+  /** The program's arrays: their cells, as a variable's value is kept. */
+  arrays = new class extends Map {
+    run;
+    /** An array that grows inside another is found through the outer one's cells, every time it is asked for. */
+    get(id) {
+      const a2 = super.get(id);
+      return a2?.decl.through ? this.run.inner(a2.decl, (k) => super.get(k)) : a2;
+    }
+  }();
+  body;
+  done = false;
+  steps = 0;
+  /** How many calls deep the program is in functions that call themselves: frames on the stack. Nothing is on it between frames. */
+  depth = 0;
+  /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
+  apart = [];
+  sim;
+  index;
+  program;
+  /** The player this run is: who Current Player is while it runs. */
+  player;
+  common;
+  constructor(sim, index, program, player, common = newCommon()) {
+    this.sim = sim;
+    this.index = index;
+    this.program = program;
+    this.player = player;
+    this.common = common;
+    this.vars = new Cells(common.ids, common.vars);
+    this.unitVars = new Cells(common.ids, common.unitVars);
+    this.textVars = new Cells(common.ids, common.textVars);
+    this.arrays.run = this;
+    for (const decl of program.arrays ?? []) {
+      const held = (decl.shared ? common.arrays.get(decl.id) : void 0) ?? { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array(decl.length).fill(decl.kind === "number" ? 0 : false) };
+      if (decl.shared) common.arrays.set(decl.id, held);
+      this.arrays.set(decl.id, held);
+    }
+    this.body = this.run();
+  }
+  *run() {
+    const flow = yield* this.block(this.program.body, {});
+    void flow;
+    return "next";
+  }
+  /** One frame: resume the body until it gives the frame back or ends. */
+  tick() {
+    if (this.done || !this.body) return;
+    this.steps = 0;
+    try {
+      if (this.drive()) {
+        this.done = true;
+        this.body = null;
+      }
+    } catch (err) {
+      this.apart.length = 0;
+      if (!(err instanceof Stopped)) throw err;
+      this.done = true;
+      this.body = null;
+      this.depth = 0;
+    }
+  }
+  /** The run until it gives the frame back (false) or ends (true): the body, and above it each body that was handed over to be run apart. */
+  drive() {
+    let send;
+    for (; ; ) {
+      const top = this.apart[this.apart.length - 1] ?? this.body;
+      const r = top.next(send);
+      send = void 0;
+      if (r.done) {
+        if (!this.apart.length) return true;
+        this.apart.pop();
+        send = r.value;
+      } else if (r.value === void 0) return false;
+      else this.apart.push(r.value.run);
+    }
+  }
+  step() {
+    if (++this.steps > this.sim.maxSteps) throw new Halt(`A program ran more than ${this.sim.maxSteps} statements in one frame: is there a loop with no sleep() in it?`);
+  }
+  /* ── storage ── */
+  read(id, at) {
+    const v = this.vars.get(id);
+    if (v === void 0) throw new Error(`The variable ${id} was read before it was declared${at ? ` (line ${at.line})` : ""}.`);
+    return v;
+  }
+  /** A number is kept as its type reads the 32 bits: a `u32` 0 and up, a `u8` / `u16` stopped at its top, anything else signed. */
+  store(id, value) {
+    if (typeof value === "number") {
+      const bits = this.bits.get(id);
+      this.vars.set(id, bits ? Math.min(value >>> 0, 2 ** bits - 1) : this.unsigned.has(id) ? value >>> 0 : value | 0);
+    } else {
+      this.vars.set(id, value);
+    }
+  }
+  /** A value as a cell of its type keeps it: a `u32` from 0 up, a `u8` / `u16` stopped at its top, anything else signed. */
+  kept(value, type) {
+    if (typeof value !== "number") return value;
+    return type.bits ? Math.min(value >>> 0, 2 ** type.bits - 1) : type.unsigned ? value >>> 0 : value | 0;
+  }
+  /**
+   * The cell an index names, or undefined past either end — where the game reads 0 and drops a store without a word.
+   * Here it is said (`faults`): an index off the end is a mistake in every script that has one.
+   */
+  *cell(array, index, at, what) {
+    const a2 = this.arrays.get(array);
+    if (!a2) throw new Error(`The array ${array} is not one of the program's (line ${at.line}).`);
+    const i = yield* this.num(index);
+    if (a2.decl.slice) {
+      const of = this.arrays.get(a2.decl.slice.of);
+      if (!of) throw new Error(`The array ${a2.decl.slice.of} is not one of the program's (line ${at.line}).`);
+      const j = (Number(this.read(a2.decl.slice.offset)) | 0) + i;
+      if (i >= 0 && i < a2.decl.length && j >= 0 && j < (of.decl.dynamic ? of.cells.length : of.decl.length)) return { decl: a2.decl, cells: of.cells, i: j };
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the row (its length is ${a2.decl.length}): ${what}.` });
+      return void 0;
+    }
+    const length = a2.decl.dynamic ? a2.cells.length : a2.decl.length;
+    if (i >= 0 && i < length) return { ...a2, i };
+    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
+    return void 0;
+  }
+  /**
+   * Room for `cells` in a growing array, as the game finds it (`python/trigscript.py`): a block twice the size from the
+   * heap, the old one given back. False, and said once, when the heap has none left.
+   */
+  grow(a2, cells, at) {
+    if (cells <= a2.room) return true;
+    let room = Math.max(a2.room, HEAP_SMALLEST);
+    while (room < cells) room *= 2;
+    if (!this.sim.heap.take(room)) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: ${a2.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
+      return false;
+    }
+    if (a2.room) this.sim.heap.give(a2.room);
+    a2.room = room;
+    return true;
+  }
+  /**
+   * The array a handle in another's cells leads to (`ArrayDecl.through`). The cell holds a number that stands for the
+   * block — nothing yet is 0, and the first use makes one, as the game's first push does. A number whose block was given
+   * back (the row was popped, and this is a copy of its handle kept somewhere) leads nowhere: in the game that is some
+   * other array's cells by now, and here it is said.
+   */
+  inner(decl, plain, release = false) {
+    const nothing = () => ({ decl, cells: [], room: 0 });
+    const ptrs = plain(decl.through.ptr);
+    const i = Number(this.read(decl.through.index)) | 0;
+    if (!ptrs || i < 0 || i >= ptrs.cells.length) return nothing();
+    const ptr = Number(ptrs.cells[i]);
+    if (release) {
+      const held2 = this.sim.inner.get(ptr);
+      if (held2?.room) this.sim.heap.give(held2.room);
+      this.sim.inner.delete(ptr);
+      ptrs.cells[i] = 0;
+      return nothing();
+    }
+    if (!ptr) {
+      const made = { decl, cells: [], room: 0 };
+      ptrs.cells[i] = ++this.sim.lastInner;
+      this.sim.inner.set(this.sim.lastInner, made);
+      return made;
+    }
+    const held = this.sim.inner.get(ptr);
+    if (!held) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: decl.at, message: `${decl.name} was given back \u2014 the row that held it was popped, cut off or declared again \u2014 and this is a copy of its handle: in the game it reads whatever has the block now.` });
+      return nothing();
+    }
+    held.decl = decl;
+    return held;
+  }
+  declare(decl) {
+    if (decl.shared && this.program.perPlayer) this.common.ids.add(decl.id);
+    if (decl.kind === "unit") {
+      this.unitVars.set(decl.id, null);
+      return;
+    }
+    if (decl.kind === "text") {
+      if (!this.textVars.has(decl.id)) this.textVars.set(decl.id, { s: "", room: 0 });
+      return;
+    }
+    if (decl.bits) this.bits.set(decl.id, decl.bits);
+    if (decl.unsigned) this.unsigned.add(decl.id);
+    this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
+  }
+  /* ── units ── */
+  /** The unit an expression names; null for none. A unit that has died is still the value — what reads it finds it gone. */
+  *unit(e) {
+    switch (e.kind) {
+      case "unitNull":
+        return null;
+      case "unitVar":
+        return this.unitVars.get(e.id) ?? null;
+      case "pick":
+        return this.sim.pick(e.by, e.filter, e.near, e.mouse, e.within);
+      // A kept unit is its place in the table, from 1, and the place's uniqueness byte: a unit made since in that place is another.
+      case "unitAt": {
+        const ptr = (yield* this.num(e.ptr)) >>> 0;
+        yield* this.num(e.epd);
+        const uid = (yield* this.num(e.uid)) >>> 0;
+        return ptr >= 1 ? this.sim.game.at(ptr - 1, uid) : null;
+      }
+      case "call": {
+        yield* this.call(e.call);
+        return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null;
+      }
+    }
+  }
+  /** The unit, when there is one and it is still on the map. */
+  *living(e) {
+    const u = yield* this.unit(e);
+    return u?.alive ? u : null;
+  }
+  *unitDo(e, verb, at) {
+    const u = yield* this.living(e);
+    const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
+    if (!u) return;
+    switch (verb.do) {
+      case "kill":
+      case "remove":
+        this.sim.game.gone(u, verb.do === "kill");
+        this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at);
+        break;
+      case "give": {
+        const to = this.sim.slotOf(verb.to);
+        if (to < 12) u.owner = to;
+        break;
+      }
+      case "order":
+        this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order });
+        break;
+      case "locate":
+        this.sim.centre(verb.location, u.x, u.y);
+        break;
+      case "damage":
+      case "heal": {
+        const step = verb.percent ? Math.floor(u.maxHp * 256 * amount / 100) : amount * 256;
+        const raw = verb.do === "damage" ? Math.max(0, u.hp * 256 - step) : Math.min(u.maxHp * 256, u.hp * 256 + step);
+        u.hp = Math.ceil(raw / 256);
+        if (u.hp === 0) {
+          this.sim.game.gone(u, true);
+          this.sim.unitEvent(this, ActionType.KillUnit, u, at);
+        }
+        break;
+      }
+    }
+  }
+  /* ── expressions ── */
+  /**
+   * A number, the way the game computes it (`python/trigscript.py`): 32 bits, given here as the
+   * signed reading of them (`| 0`). + − × and the bitwise operators are the same bits whichever
+   * way they are read; what reads them one way or the other — ÷, %, a shift right, min and max, a
+   * comparison — says which in the IR. A divisor of 0 gives 0, as `(a / 0) | 0` does.
+   */
+  *num(e) {
+    switch (e.kind) {
+      case "const":
+        return e.value | 0;
+      case "var":
+        return Number(this.read(e.id)) | 0;
+      case "element": {
+        const c2 = yield* this.cell(e.array, e.index, e.at, "it reads 0");
+        return c2 ? Number(c2.cells[c2.i]) | 0 : 0;
+      }
+      case "length":
+        return this.arrays.get(e.array)?.cells.length ?? 0;
+      case "pop":
+        return Number(this.arrays.get(e.array)?.cells.pop() ?? 0) | 0;
+      case "unary":
+        return -(yield* this.num(e.expr)) | 0;
+      case "cast":
+        return yield* this.num(e.expr);
+      case "binary": {
+        const a2 = yield* this.num(e.left);
+        const b = yield* this.num(e.right);
+        switch (e.op) {
+          case "+":
+            return a2 + b | 0;
+          case "-":
+            return a2 - b | 0;
+          case "*":
+            return Math.imul(a2, b);
+          case "/":
+            return b === 0 ? 0 : e.unsigned ? Math.floor((a2 >>> 0) / (b >>> 0)) | 0 : a2 / b | 0;
+          case "%":
+            return b === 0 ? 0 : e.unsigned ? (a2 >>> 0) % (b >>> 0) | 0 : a2 % b | 0;
+          case "&":
+            return a2 & b;
+          case "|":
+            return a2 | b;
+          case "^":
+            return a2 ^ b;
+          // A shift by 32 or more (or by a number below zero) leaves nothing but the sign, where JavaScript would shift by the remainder.
+          case "<<":
+            return b >>> 0 >= 32 ? 0 : a2 << b;
+          case ">>":
+            return b >>> 0 >= 32 ? a2 < 0 ? -1 : 0 : a2 >> b;
+          case ">>>":
+            return b >>> 0 >= 32 ? 0 : a2 >>> b | 0;
+        }
+        return 0;
+      }
+      case "read":
+        return this.sim.read(e.read) | 0;
+      case "unitField": {
+        const u = yield* this.living(e.unit);
+        return u ? u[e.field] | 0 : 0;
+      }
+      case "unitPart": {
+        const u = yield* this.unit(e.unit);
+        return u ? e.part === "uid" ? u.uid : u.slot + 1 : 0;
+      }
+      case "tableRead":
+        return this.sim.tableRead(e.cell) | 0;
+      case "input":
+        return this.sim.input(e.input) | 0;
+      case "randomInt": {
+        const n = (yield* this.num(e.bound)) >>> 0;
+        return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n)) | 0;
+      }
+      case "ternary":
+        return (yield* this.bool(e.cond)) ? yield* this.num(e.whenTrue) : yield* this.num(e.whenFalse);
+      case "intrinsic": {
+        const args = [];
+        for (const a2 of e.args) args.push(yield* this.num(a2));
+        if (e.name === "abs") return Math.abs(args[0]) | 0;
+        const seen = e.unsigned ? args.map((a2) => a2 >>> 0) : args;
+        return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
+      }
+      case "call":
+        return Number(yield* this.call(e.call)) | 0;
+      case "textLength": {
+        const t = yield* this.text(e.of);
+        this.used(t);
+        return [...t.s].length;
+      }
+      case "textIndexOf": {
+        const t = yield* this.text(e.of);
+        const find = yield* this.text(e.find);
+        const from = e.from ? Math.max(0, yield* this.num(e.from)) : 0;
+        this.used(t, find);
+        const chars = [...t.s];
+        const at = t.s.indexOf(find.s, chars.slice(0, from).join("").length);
+        return at < 0 || from > chars.length ? find.s === "" && from <= chars.length ? from : -1 : [...t.s.slice(0, at)].length;
+      }
+      case "textCode": {
+        const t = yield* this.text(e.of);
+        const i = yield* this.num(e.index);
+        this.used(t);
+        return [...t.s][i]?.codePointAt(0) ?? -1;
+      }
+    }
+  }
+  /* ── texts ── */
+  /**
+   * A text that was just made, as the game keeps it (`python/trigscript.py`): past `TEXT_BYTES` it is cut, and its
+   * bytes go into a block of the heap. When the heap has none, the text is empty — and both are said.
+   */
+  made(s, at, cameTo = bytesOf(s)) {
+    if (bytesOf(s) > TEXT_BYTES) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text came to ${cameTo.toLocaleString("en-US")} bytes, and a text that is made holds ${TEXT_BYTES.toLocaleString("en-US")}: it is cut off there, as it is in the game.` });
+      s = cutTo(s, TEXT_BYTES);
+    }
+    const room = textRoom(bytesOf(s));
+    if (!this.sim.heap.take(room)) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: no room for this text (the heap the programs' arrays and texts share is ${this.sim.heap.cells} cells; the script's settings set it). It is empty instead, as it is in the game.` });
+      return { s: "", room: 0, taken: true };
+    }
+    return { s, room, taken: true };
+  }
+  /** Values that have been used: a block that was the value's own goes back to the heap. */
+  used(...values) {
+    for (const v of values) if (v.taken && v.room) this.sim.heap.give(v.room);
+  }
+  /** A value as something to keep: its own block as it is, a copy of a variable's. */
+  owned(v, at) {
+    if (v.taken || !v.room) return { s: v.s, room: v.room };
+    const copy = this.made(v.s, at);
+    return { s: copy.s, room: copy.room };
+  }
+  *parts(parts, used) {
+    let out = "";
+    for (const p of parts) {
+      if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      else if (p.kind === "value") {
+        const v = yield* this.text(p.text);
+        used.push(v);
+        out += v.s;
+      } else out += this.sim.partText(p);
+    }
+    return out;
+  }
+  *text(e) {
+    switch (e.kind) {
+      case "text":
+        return { s: e.text, room: 0, taken: true };
+      case "textVar": {
+        const v = this.textVars.get(e.id);
+        if (!v) throw new Error(`The variable ${e.id} was read before it was declared.`);
+        return { ...v, taken: false };
+      }
+      case "textAt": {
+        const c2 = yield* this.cell(e.addr, e.index, e.at, "it reads as no text");
+        const held = c2 ? this.cellTexts.get(c2.cells[c2.i]) : void 0;
+        return { s: held?.s ?? "", room: held?.room ?? 0, taken: false };
+      }
+      case "textOf": {
+        const a2 = this.arrays.get(e.array);
+        const i = yield* this.num(e.index);
+        const found = a2?.decl.texts?.[i];
+        if (found === void 0) this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: e.at, message: `${a2?.decl.name ?? e.array}[${i}] is past the end of the list (its length is ${a2?.decl.texts?.length ?? 0}): it reads an empty text.` });
+        return { s: found ?? "", room: 0, taken: true };
+      }
+      case "template": {
+        const used = [];
+        const s = yield* this.parts(e.parts, used);
+        const out = this.made(s, e.at);
+        this.used(...used);
+        return out;
+      }
+      case "textTernary": {
+        const v = (yield* this.bool(e.cond)) ? yield* this.text(e.whenTrue) : yield* this.text(e.whenFalse);
+        return { ...this.owned(v, e.at), taken: true };
+      }
+      case "textSlice": {
+        const of = yield* this.text(e.of);
+        const chars = [...of.s];
+        const start = e.start ? Math.min(chars.length, Math.max(0, yield* this.num(e.start))) : 0;
+        const end = e.end ? Math.min(chars.length, Math.max(0, yield* this.num(e.end))) : chars.length;
+        const out = this.made(chars.slice(start, Math.max(start, end)).join(""), e.at);
+        this.used(of);
+        return out;
+      }
+      case "textPad": {
+        const of = yield* this.text(e.of);
+        const width = yield* this.num(e.width);
+        const fill = yield* this.text(e.with);
+        const chars = [...of.s], pad = [...fill.s];
+        let padding = "";
+        if (pad.length) for (let i = 0; chars.length + i < width; i++) padding += pad[i % pad.length];
+        const out = this.made(e.side === "start" ? padding + of.s : of.s + padding, e.at);
+        this.used(of, fill);
+        return out;
+      }
+      case "textRepeat": {
+        const of = yield* this.text(e.of);
+        const n = yield* this.num(e.count);
+        const out = this.made(n >= 1 ? of.s.repeat(Math.min(n, Math.ceil((TEXT_BYTES + 1) / Math.max(1, bytesOf(of.s))))) : "", e.at, Math.max(0, n) * bytesOf(of.s));
+        this.used(of);
+        return out;
+      }
+      case "textCall": {
+        yield* this.call(e.call);
+        const held = e.call.result ? this.textVars.get(e.call.result.decl.id) : void 0;
+        if (!held) return { s: "", room: 0, taken: true };
+        const out = { ...held, taken: true };
+        held.room = 0;
+        return out;
+      }
+    }
+  }
+  /** A text into a variable: worked out first, then what the variable held goes back. */
+  /** The texts kept in cells of arrays, by the number the cells hold for one: what moves a row moves numbers, and the text goes with them. */
+  cellTexts = /* @__PURE__ */ new Map();
+  lastCellText = 0;
+  releaseCellText(key) {
+    const old = key ? this.cellTexts.get(key) : void 0;
+    if (!old) return;
+    if (old.room) this.sim.heap.give(old.room);
+    this.cellTexts.delete(key);
+  }
+  *putText(id, e, at) {
+    const v = this.owned(yield* this.text(e), at);
+    const old = this.textVars.get(id);
+    if (old?.room) this.sim.heap.give(old.room);
+    this.textVars.set(id, v);
+  }
+  /** A made text where the game shows at most `TEXT_FIELD_BYTES` of one: an action's field, a unit type's name. */
+  shown(v, at, where) {
+    if (!v.room || bytesOf(v.s) <= TEXT_FIELD_BYTES) return v.s;
+    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text is ${bytesOf(v.s)} bytes, and ${where} shows ${TEXT_FIELD_BYTES} of a text that was made: it is cut off there, as it is in the game.` });
+    return cutTo(v.s, TEXT_FIELD_BYTES);
+  }
+  /** A number as the game takes one: the 32 bits from 0 up. What goes to a unit, a table, an action or the map is never below zero by then (the compiler saw to it). */
+  *amount(e) {
+    return (yield* this.num(e)) >>> 0;
+  }
+  *bool(e) {
+    switch (e.kind) {
+      case "const":
+        return e.value;
+      case "cond":
+        return this.sim.condition(e.record);
+      case "var":
+        return Boolean(this.read(e.id));
+      case "element": {
+        const c2 = yield* this.cell(e.array, e.index, e.at, "it reads false");
+        return c2 ? Boolean(c2.cells[c2.i]) : false;
+      }
+      case "pop":
+        return Boolean(this.arrays.get(e.array)?.cells.pop() ?? false);
+      case "test":
+        return (yield* this.num(e.expr)) !== 0;
+      case "compare": {
+        let a2 = yield* this.num(e.left);
+        let b = yield* this.num(e.right);
+        if (e.unsigned === true || e.unsigned === "left") a2 = a2 >>> 0;
+        if (e.unsigned === true || e.unsigned === "right") b = b >>> 0;
+        switch (e.op) {
+          case "<":
+            return a2 < b;
+          case "<=":
+            return a2 <= b;
+          case ">":
+            return a2 > b;
+          case ">=":
+            return a2 >= b;
+          case "==":
+            return a2 === b;
+          case "!=":
+            return a2 !== b;
+        }
+        return false;
+      }
+      case "and": {
+        for (const i of e.items) if (!(yield* this.bool(i))) return false;
+        return true;
+      }
+      case "or": {
+        for (const i of e.items) if (yield* this.bool(i)) return true;
+        return false;
+      }
+      case "not":
+        return !(yield* this.bool(e.expr));
+      case "random":
+        return this.sim.random() < 0.5;
+      case "unitAlive":
+        return (yield* this.living(e.unit)) !== null;
+      case "unitSame": {
+        const a2 = yield* this.unit(e.left);
+        const b = yield* this.unit(e.right);
+        return a2 !== null && a2 === b;
+      }
+      case "unitFlag": {
+        const u = yield* this.living(e.unit);
+        return u ? u[e.flag] : false;
+      }
+      case "edge": {
+        const held = yield* this.bool(e.cond);
+        const was = this.latches.get(e) ?? false;
+        if (held) {
+          if (was) return false;
+          this.latches.set(e, true);
+          return true;
+        }
+        if (e.edge === "rose") this.latches.set(e, false);
+        return false;
+      }
+      case "ternary":
+        return (yield* this.bool(e.cond)) ? yield* this.bool(e.whenTrue) : yield* this.bool(e.whenFalse);
+      case "call":
+        return Boolean(yield* this.call(e.call));
+      case "textCompare": {
+        const a2 = yield* this.text(e.left);
+        const b = yield* this.text(e.right);
+        this.used(a2, b);
+        const d = compareTexts(a2.s, b.s);
+        return e.op === "==" ? d === 0 : e.op === "!=" ? d !== 0 : e.op === "<" ? d < 0 : e.op === "<=" ? d <= 0 : e.op === ">" ? d > 0 : d >= 0;
+      }
+      case "textTest": {
+        const of = yield* this.text(e.of);
+        const find = yield* this.text(e.find);
+        this.used(of, find);
+        return e.test === "startsWith" ? of.s.startsWith(find.s) : e.test === "endsWith" ? of.s.endsWith(find.s) : of.s.includes(find.s);
+      }
+    }
+  }
+  *init(e, kind) {
+    return kind === "number" ? yield* this.num(e) : yield* this.bool(e);
+  }
+  /** A declaration's, a parameter's or a return's value into its variable, whatever it holds. */
+  *put(decl, e, at) {
+    if (decl.kind === "text" || isTextExpr(e)) {
+      yield* this.putText(decl.id, e, at ?? decl.at ?? { file: "", line: 0, column: 0 });
+      return;
+    }
+    if (decl.kind === "unit") this.unitVars.set(decl.id, yield* this.unit(e));
+    else this.store(decl.id, yield* this.init(e, decl.kind));
+  }
+  *call(c2) {
+    if (c2.result) this.declare(c2.result.decl);
+    const fn = c2.fn ? this.program.functions?.find((f) => f.id === c2.fn) : void 0;
+    if (c2.fn && !fn) throw new Error(`The function ${c2.fn} is not one of the program's (line ${c2.at.line}).`);
+    let kept;
+    if (fn) {
+      const values = [];
+      for (const p of c2.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init) : p.decl.kind === "text" ? this.owned(yield* this.text(p.init), c2.at) : yield* this.init(p.init, p.decl.kind));
+      if (c2.saves) kept = this.keep(c2);
+      c2.params.forEach((p, i) => {
+        this.declare(p.decl);
+        if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i]);
+        else if (p.decl.kind === "text") {
+          const old = this.textVars.get(p.decl.id);
+          if (old?.room) this.sim.heap.give(old.room);
+          this.textVars.set(p.decl.id, values[i]);
+        } else this.store(p.decl.id, values[i]);
+      });
+    } else {
+      for (const p of c2.params) {
+        this.declare(p.decl);
+        yield* this.put(p.decl, p.init);
+      }
+    }
+    const ctx = { fn: { result: c2.result?.decl } };
+    const flow = kept && fn ? yield { run: this.block(fn.body, ctx) } : yield* this.block(fn ? fn.body : c2.body, ctx);
+    if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c2.at.line}).`);
+    if (kept) this.bringBack(kept);
+    return c2.result && c2.result.kind !== "unit" && c2.result.kind !== "text" ? this.read(c2.result.decl.id) : 0;
+  }
+  /**
+   * A call that may come back into the function it is in: what that function holds goes on the stack, as the game
+   * keeps it (`python/trigscript.py`) — its variables, and the handle of each array declared in it, which is "no block"
+   * for the length of the call. Past the depth the map allows the program stops, and says where.
+   */
+  keep(c2) {
+    const saves = c2.saves;
+    if (this.depth >= this.sim.stackDepth) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: c2.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
+      throw new Stopped();
+    }
+    this.depth++;
+    const frame = { vars: [], units: [], texts: [], arrays: [] };
+    for (const id of saves.vars) {
+      if (this.textVars.has(id)) {
+        frame.texts.push([id, this.textVars.get(id)]);
+        this.textVars.set(id, { s: "", room: 0 });
+      } else if (this.unitVars.has(id)) frame.units.push([id, this.unitVars.get(id) ?? null]);
+      else if (this.vars.has(id)) frame.vars.push([id, this.vars.get(id)]);
+    }
+    for (const id of saves.arrays) {
+      const a2 = this.arrays.get(id);
+      if (!a2) continue;
+      frame.arrays.push({ a: a2, cells: a2.cells, room: a2.room });
+      a2.cells = [];
+      a2.room = 0;
+    }
+    return frame;
+  }
+  bringBack(frame) {
+    for (const [id, v] of frame.vars) this.vars.set(id, v);
+    for (const [id, u] of frame.units) this.unitVars.set(id, u);
+    for (const [id, t] of frame.texts) {
+      const left = this.textVars.get(id);
+      if (left?.room) this.sim.heap.give(left.room);
+      this.textVars.set(id, t);
+    }
+    for (const k of frame.arrays) {
+      if (k.a.room) this.sim.heap.give(k.a.room);
+      k.a.cells = k.cells;
+      k.a.room = k.room;
+    }
+    this.depth--;
+  }
+  /* ── statements ── */
+  *block(body2, ctx) {
+    for (const s of body2) {
+      const flow = yield* this.stmt(s, ctx);
+      if (flow !== "next") return flow;
+    }
+    return "next";
+  }
+  *stmt(s, ctx) {
+    this.step();
+    switch (s.kind) {
+      case "declare": {
+        this.declare(s.decl);
+        if (!s.failed) yield* this.put(s.decl, s.init);
+        return "next";
+      }
+      case "assignUnit":
+        this.unitVars.set(s.target, yield* this.unit(s.value));
+        return "next";
+      case "assignText":
+        yield* this.putText(s.target, s.value, s.at);
+        return "next";
+      case "storeText": {
+        const v = this.owned(yield* this.text(s.value), s.at);
+        const i = yield* this.num(s.index);
+        const cells = [s.addr, s.block, s.chars].map((id) => this.arrays.get(id));
+        if (cells.some((a2) => !a2 || i < 0 || i >= a2.cells.length)) {
+          this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${cells[0]?.decl.name ?? s.addr}[${i}] is past the end of the array (its length is ${cells[0]?.cells.length ?? 0}): nothing is stored.` });
+          if (v.room) this.sim.heap.give(v.room);
+          return "next";
+        }
+        const [addr, block, chars] = cells;
+        this.releaseCellText(block.cells[i]);
+        const key = ++this.lastCellText;
+        this.cellTexts.set(key, v);
+        addr.cells[i] = key;
+        block.cells[i] = v.room ? key : 0;
+        chars.cells[i] = [...v.s].length;
+        return "next";
+      }
+      case "releaseText": {
+        const c2 = yield* this.cell(s.block, s.index, s.at, "nothing is given back");
+        if (c2) {
+          this.releaseCellText(c2.cells[c2.i]);
+          c2.cells[c2.i] = 0;
+        }
+        return "next";
+      }
+      case "textLoop": {
+        this.declare(s.decl);
+        const over = this.owned(yield* this.text(s.of), s.at);
+        let flow = "next";
+        for (const ch of over.s) {
+          const old = this.textVars.get(s.decl.id);
+          const turn = this.made(ch, s.at);
+          if (old?.room) this.sim.heap.give(old.room);
+          this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
+          flow = yield* this.block(s.body, ctx);
+          if (flow === "break" || flow === "return") break;
+        }
+        if (over.room) this.sim.heap.give(over.room);
+        return flow === "return" ? flow : "next";
+      }
+      case "unitLoop": {
+        this.declare(s.decl);
+        for (const u of this.sim.matching(s.filter)) {
+          if (!u.alive) continue;
+          this.unitVars.set(s.decl.id, u);
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") break;
+          if (flow === "return") return flow;
+        }
+        return "next";
+      }
+      case "unitWrite": {
+        const u = yield* this.living(s.unit);
+        const field = s.field;
+        if (field === "invincible") {
+          const on = yield* this.bool(s.value);
+          if (u) u.invincible = on;
+          return "next";
+        }
+        const value = yield* this.amount(s.value);
+        if (!u) return "next";
+        u[field] = Math.min(value, UNIT_FIELD_MAX[field] ?? 4294967295);
+        if (field === "hp" && u.hp === 0) {
+          this.sim.game.gone(u, true);
+          this.sim.unitEvent(this, ActionType.KillUnit, u, s.at);
+        }
+        return "next";
+      }
+      case "unitDo":
+        yield* this.unitDo(s.unit, s.verb, s.at);
+        return "next";
+      case "tableWrite": {
+        if (isTextExpr(s.value)) {
+          const v = yield* this.text(s.value);
+          this.sim.tableWrite(s.cell, 0, false, this.shown(v, s.at, "a unit type's name"));
+          this.used(v);
+          return "next";
+        }
+        const value = s.boolean ? (yield* this.bool(s.value)) ? 1 : 0 : yield* this.amount(s.value);
+        this.sim.tableWrite(s.cell, value, s.scaled === true);
+        return "next";
+      }
+      case "assign":
+        this.store(s.target, yield* this.num(s.value));
+        return "next";
+      case "declareArray": {
+        const a2 = this.arrays.get(s.array);
+        if (!a2) throw new Error(`The array ${s.array} is not one of the program's (line ${s.at.line}).`);
+        const value = function* (run, e) {
+          return a2.decl.kind === "number" ? yield* run.num(e) : yield* run.bool(e);
+        };
+        if (a2.decl.through) {
+          this.inner(a2.decl, (k) => Map.prototype.get.call(this.arrays, k), true);
+          const fresh = [];
+          for (const e of s.init ?? []) fresh.push(this.kept(yield* value(this, e), a2.decl));
+          if (fresh.length) {
+            const made = this.arrays.get(s.array);
+            if (this.grow(made, fresh.length, s.at)) made.cells.push(...fresh);
+          }
+          return "next";
+        }
+        if (a2.decl.dynamic) {
+          if (a2.room) {
+            this.sim.heap.give(a2.room);
+            a2.room = 0;
+          }
+          a2.cells.length = 0;
+          const fresh = [];
+          if (s.fill) {
+            const v = this.kept(yield* value(this, s.fill), a2.decl);
+            for (let i = 0; i < a2.decl.length; i++) fresh.push(v);
+          } else for (const e of s.init ?? []) fresh.push(this.kept(yield* value(this, e), a2.decl));
+          if (fresh.length === 0 || this.grow(a2, fresh.length, s.at)) a2.cells.push(...fresh);
+          return "next";
+        }
+        if (s.fill) {
+          const v = this.kept(yield* value(this, s.fill), a2.decl);
+          a2.cells.fill(v);
+        } else for (let i = 0; i < a2.decl.length; i++) a2.cells[i] = this.kept(s.init?.[i] ? yield* value(this, s.init[i]) : a2.decl.kind === "number" ? 0 : false, a2.decl);
+        return "next";
+      }
+      case "push": {
+        const a2 = this.arrays.get(s.array);
+        if (!a2) throw new Error(`The array ${s.array} is not one of the program's (line ${s.at.line}).`);
+        const v = a2.decl.kind === "boolean" ? yield* this.bool(s.value) : yield* this.num(s.value);
+        if (this.grow(a2, a2.cells.length + 1, s.at)) a2.cells.push(this.kept(v, a2.decl));
+        return "next";
+      }
+      case "pop":
+        this.arrays.get(s.array)?.cells.pop();
+        return "next";
+      case "setLength": {
+        const a2 = this.arrays.get(s.array);
+        const n = yield* this.amount(s.value);
+        if (a2 && n < a2.cells.length) a2.cells.length = n;
+        return "next";
+      }
+      case "store": {
+        const a2 = this.arrays.get(s.array);
+        const v = a2?.decl.kind === "boolean" ? yield* this.bool(s.value) : yield* this.num(s.value);
+        if (a2?.decl.dynamic) {
+          const i = yield* this.num(s.index);
+          if (i === a2.cells.length) {
+            if (this.grow(a2, i + 1, s.at)) a2.cells.push(this.kept(v, a2.decl));
+            return "next";
+          }
+          if (i >= 0 && i < a2.cells.length) a2.cells[i] = this.kept(v, a2.decl);
+          else this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${a2.cells.length}): nothing is stored.` });
+          return "next";
+        }
+        const c2 = yield* this.cell(s.array, s.index, s.at, "nothing is stored");
+        if (c2) c2.cells[c2.i] = this.kept(v, c2.decl);
+        return "next";
+      }
+      case "assignBool":
+        this.store(s.target, yield* this.bool(s.value));
+        return "next";
+      case "if": {
+        if (yield* this.bool(s.cond)) return yield* this.block(s.then, ctx);
+        return s.else ? yield* this.block(s.else, ctx) : "next";
+      }
+      case "while": {
+        for (; ; ) {
+          if (s.cond && !(yield* this.bool(s.cond))) return "next";
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+        }
+      }
+      case "do": {
+        for (; ; ) {
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+          if (!(yield* this.bool(s.cond))) return "next";
+        }
+      }
+      case "for": {
+        for (; ; ) {
+          if (s.cond && !(yield* this.bool(s.cond))) return "next";
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+          const up = yield* this.block(s.update, ctx);
+          if (up === "return") return up;
+        }
+      }
+      case "unrolled": {
+        for (const iteration of s.iterations) {
+          const flow = yield* this.block(iteration, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+        }
+        return "next";
+      }
+      case "switch": {
+        const v = yield* this.num(s.value);
+        let from = s.cases.findIndex((c2) => c2.value !== null && (c2.value | 0) === v);
+        if (from < 0) from = s.cases.findIndex((c2) => c2.value === null);
+        if (from < 0) return "next";
+        for (let i = from; i < s.cases.length; i++) {
+          const flow = yield* this.block(s.cases[i].body, ctx);
+          if (flow === "break") return "next";
+          if (flow !== "next") return flow;
+        }
+        return "next";
+      }
+      case "break":
+        return "break";
+      case "continue":
+        return "continue";
+      case "return": {
+        if (s.value && ctx.fn?.result) yield* this.put(ctx.fn.result, s.value, s.at);
+        return "return";
+      }
+      case "sleep": {
+        const n = s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * FRAMES_PER_SECOND));
+        for (let i = 0; i < n; i++) yield;
+        return "next";
+      }
+      case "action": {
+        const record = { ...s.record };
+        for (const v of s.variables ?? []) record[v.field] = yield* this.amount(v.expr);
+        if (s.text) {
+          const v = yield* this.text(s.text);
+          this.sim.act(this, record, s.at, this.shown(v, s.at, "this action"));
+          this.used(v);
+          return "next";
+        }
+        this.sim.act(this, record, s.at);
+        return "next";
+      }
+      case "print": {
+        const used = [];
+        const text = yield* this.parts(s.parts, used);
+        this.used(...used);
+        this.sim.print(this, text, s.to, s.at);
+        return "next";
+      }
+      case "centerLocation": {
+        const x = yield* this.amount(s.x);
+        const y = yield* this.amount(s.y);
+        this.sim.centre(s.location, x, y);
+        return "next";
+      }
+      case "call": {
+        yield* this.call(s.call);
+        return "next";
+      }
+      case "block":
+        return yield* this.block(s.body, ctx);
+      case "remark":
+        return "next";
+    }
+  }
+  /** The unit a variable holds, by its source name; null for none or a unit that is gone. */
+  unitValue(name) {
+    let found = null;
+    for (const [id, u] of [...this.unitVars, ...this.common.unitVars]) if (id === name || id.startsWith(`${name}#`)) found = u;
+    return found?.alive ? found : null;
+  }
+  /** A user variable's value by its source name (the last declared with that name). */
+  value(name) {
+    let found;
+    for (const [id, v] of [...this.vars, ...this.common.vars]) if (id === name || id.startsWith(`${name}#`)) found = v;
+    return found;
+  }
+  /** A text variable's characters by its source name (the last declared with that name). */
+  textValue(name) {
+    let found;
+    for (const [id, v] of [...this.textVars, ...this.common.textVars]) if (id === name || id.startsWith(`${name}#`)) found = v.s;
+    return found;
+  }
+  /**
+   * What the source calls `name`, whatever it is: a number, a boolean, a text, an array's cells, a unit (null for none or
+   * one that is gone), a record as an object of its fields, an array of records as a list of them. Undefined for no such name.
+   */
+  lookup(name) {
+    const value = this.value(name);
+    if (value !== void 0) return value;
+    const text = this.textValue(name);
+    if (text !== void 0) return text;
+    const list = this.list(name);
+    if (list !== void 0) return [...list];
+    for (const id of [...this.unitVars.keys(), ...this.common.unitVars.keys()]) if (id === name || id.startsWith(`${name}#`)) return this.unitValue(name);
+    const field = (id) => id.startsWith(`${name}.`) ? id.slice(name.length + 1).split("#")[0] : null;
+    const record = {};
+    for (const [id, v] of [...this.vars, ...this.common.vars]) {
+      const f = field(id);
+      if (f && !f.includes(" (")) record[f] = v;
+    }
+    for (const [id, v] of [...this.textVars, ...this.common.textVars]) {
+      const f = field(id);
+      if (f) record[f] = v.s;
+    }
+    if (Object.keys(record).length) return record;
+    const rows = [];
+    for (const [id, a2] of this.arrays) {
+      const f = field(id);
+      if (f) a2.cells.forEach((cell, i) => {
+        (rows[i] ??= {})[f] = cell;
+      });
+    }
+    return rows.length ? rows : void 0;
+  }
+  /** An array's cells by its name in the source. */
+  list(name) {
+    let found;
+    for (const [id, a2] of this.arrays) if (id === name || id.startsWith(`${name}#`)) found = a2.cells;
+    return found;
+  }
+};
+var ProgramSimulation = class {
+  world;
+  runs;
+  events = [];
+  /** What the game would let pass without a word and is a mistake all the same: an index past the end of an array. */
+  /** What a program did that is always a mistake — an index past an array's end, a push the heap had no room for — and the frame it happened in. */
+  faults = [];
+  /**
+   * The heap the programs' growing arrays share, counted as the game counts it: blocks are powers of two, a block given
+   * back waits in its size's list for the next array that wants that size, and new ground is taken from the bottom up
+   * up to its end. Only the counting is here: the cells are the arrays' own.
+   */
+  /** The arrays that grow inside others, by the number their handle's cell holds. */
+  inner = /* @__PURE__ */ new Map();
+  lastInner = 0;
+  heap = {
+    cells: HEAP_CELLS,
+    top: 1,
+    stack: HEAP_CELLS,
+    free: /* @__PURE__ */ new Map(),
+    take(room) {
+      const waiting = this.free.get(room) ?? 0;
+      if (waiting > 0) {
+        this.free.set(room, waiting - 1);
+        return true;
+      }
+      if (this.top + room > this.stack) return false;
+      this.top += room;
+      return true;
+    },
+    give(room) {
+      this.free.set(room, (this.free.get(room) ?? 0) + 1);
+    }
+  };
+  /** How deep the stack of a function that calls itself goes; it is an array of its own in the built map, so the heap has no part in it. */
+  stackDepth = STACK_DEPTH;
+  maxSteps;
+  random;
+  conditionOf;
+  readOf;
+  nameOf;
+  /** The units, the locations and who the players are: the trigger interpreter's, so both see one game. */
+  game;
+  /** What the programs wrote into the game's tables, as the cell stores it; a name as its text. */
+  tables = /* @__PURE__ */ new Map();
+  tableOf;
+  /** Ore and gas by player slot, as the programs' own setResources actions leave them. */
+  resources = /* @__PURE__ */ new Map();
+  /** The typed-line patterns of all the programs, in the order the game tries them: the first that matches a line is the one that line is. */
+  chats = [];
+  unitByName;
+  /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
+  queued = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
+  current = this.queued;
+  /** Where each player's mouse is, in map pixels. */
+  mice = /* @__PURE__ */ new Map();
+  cycle = 0;
+  constructor(programs, options) {
+    this.world = options.world ?? new Simulation([], {
+      player: options.player ?? (options.players ? void 0 : programs[0]?.owner ?? 0),
+      condition: options.condition,
+      random: options.random,
+      strings: options.strings,
+      players: options.players,
+      forces: options.forces,
+      units: options.units,
+      locations: options.locations,
+      unitClass: options.unitClass,
+      properties: options.properties
+    });
+    this.game = this.world.game;
+    if (options.world) {
+      for (const [n, b] of Object.entries(options.locations ?? {})) this.game.locations.set(Number(n), { ...b });
+      for (const u of options.units ?? []) this.game.make(u);
+    }
+    this.maxSteps = options.maxStepsPerCycle ?? 1e5;
+    this.heap.cells = this.heap.stack = heapCells(options.heapCells);
+    this.stackDepth = stackDepth(options.stackDepth);
+    this.random = options.random ?? Math.random;
+    this.conditionOf = options.condition;
+    this.readOf = options.read;
+    this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
+    this.tableOf = options.table;
+    const cellOf = (name, type) => {
+      const f = TABLE_FIELDS.unit.find((x) => x.name === name);
+      return { name: `unit.${name}`, base: f.base, stride: f.stride, index: type, width: f.width, ...f.scale ? { scale: f.scale } : {} };
+    };
+    const given = options.unitStats ?? this.game.stats;
+    this.game.stats = (type) => {
+      const g = given(type) ?? {};
+      return { ...g, hp: this.tableRead(cellOf("maxHp", type)) || g.hp, shields: this.tableRead(cellOf("maxShields", type)) || g.shields };
+    };
+    this.unitByName = options.unitByName ?? (() => void 0);
+    for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c2) => c2.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
+    this.current = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
+    this.runs = programs.flatMap((p, i) => {
+      const common = newCommon();
+      const slots = this.ownersOf(p);
+      return (p.perPlayer ? slots : slots.slice(0, 1)).map((slot) => new ProgramRun(this, i, p, slot, common));
+    });
+  }
+  /** The simulated player: the only one without the map's player settings, else the one a key, a click and a log default to. */
+  get player() {
+    return this.world.player;
+  }
+  /** The units there have been, in the order they were made; one that is gone stays, `alive` false. */
+  get units() {
+    return this.game.units;
+  }
+  get locations() {
+    return this.game.locations;
+  }
+  /** The slots a program runs for: its owners who are in the game. */
+  ownersOf(p) {
+    const players = this.game.players;
+    if (players.loose) return [this.world.player];
+    const out = [];
+    for (const o of p.owners?.length ? p.owners : [p.owner]) for (const slot of players.of(o, this.world.player)) if (players.slots.includes(slot) && !out.includes(slot)) out.push(slot);
+    return out.sort((a2, b) => a2 - b);
+  }
+  /** Deaths, switches, always and never against the world; anything else the caller's, else false. */
+  condition(c2) {
+    switch (c2.type) {
+      case ConditionType.Always:
+        return true;
+      case ConditionType.Never:
+        return false;
+      case ConditionType.Deaths: {
+        const v = this.world.death(c2.player, c2.unitId);
+        const n = c2.amount >>> 0;
+        return c2.comparison === Comparison.AtLeast ? v >= n : c2.comparison === Comparison.AtMost ? v <= n : c2.comparison === Comparison.Exactly ? v === n : false;
+      }
+      case ConditionType.Switch:
+        return c2.comparison === SwitchState.Set ? this.world.switches[c2.resource] === 1 : this.world.switches[c2.resource] === 0;
+      default:
+        return this.conditionOf?.(c2, this.world) ?? this.game.holds(c2, this.world.current) ?? false;
+    }
+  }
+  /** The players a player number means, to the run that is running. */
+  slotsOf(player) {
+    return this.game.players.of(player, this.world.current);
+  }
+  /** The one player a player number means where one is wanted (a mouse, a name, a table's row): the first of a group. */
+  slotOf(player) {
+    return this.slotsOf(player)[0] ?? player;
+  }
+  /** A player's ore and gas; a group's are its players' together. */
+  resourcesOf(player) {
+    let ore = 0, gas = 0;
+    for (const p of this.slotsOf(player)) if (p < 12) {
+      const s = this.stockOf(p);
+      ore += s[0];
+      gas += s[1];
+    }
+    return [ore % U32, gas % U32];
+  }
+  stockOf(slot) {
+    let r = this.resources.get(slot);
+    if (!r) {
+      r = [0, 0];
+      this.resources.set(slot, r);
+    }
+    return r;
+  }
+  /** The quantity a comparing condition tests, where the simulation holds it. */
+  quantity(c2) {
+    switch (c2.type) {
+      case ConditionType.Deaths:
+        return this.world.death(c2.player, c2.unitId);
+      case ConditionType.Accumulate: {
+        const slots = this.slotsOf(c2.player).filter((p) => p < 12);
+        if (slots.length === 0) return void 0;
+        let ore = 0, gas = 0;
+        for (const p of slots) {
+          const s = this.stockOf(p);
+          ore += s[0];
+          gas += s[1];
+        }
+        return (c2.resource === ResourceType.Ore ? ore : c2.resource === ResourceType.Gas ? gas : ore + gas) % U32;
+      }
+      case ConditionType.ElapsedTime:
+        return Math.floor(this.cycle / FRAMES_PER_GAME_SECOND);
+      default:
+        return this.game.quantity(c2, this.world.current);
+    }
+  }
+  /** What a read finds: the caller's answer, else the simulation's own, else 0. */
+  read(r) {
+    const given = this.readOf?.(r, this);
+    if (given !== void 0) return Math.max(0, Math.trunc(given)) % U32;
+    if (r.source === "condition") return this.quantity(r.record) ?? 0;
+    if (r.source === "player" && r.fact === "slot") return this.game.players.slots.includes(this.slotOf(r.player)) ? 2 : 0;
+    return 0;
+  }
+  /* ── what the players do ── */
+  /** A key goes down: the next frame finds it. `player` is a slot (default: the simulated player). */
+  press(key, player = this.player) {
+    this.queued.events.add(`key:${player}:${keyName(key) ?? key}`);
+    return this;
+  }
+  click(button = "left", player = this.player) {
+    this.queued.events.add(`click:${player}:${button}`);
+    return this;
+  }
+  moveMouse(x, y, player = this.player) {
+    this.mice.set(player, { x, y });
+    return this;
+  }
+  /** A player sends a line of chat: the next frame finds it, as the first of the programs' patterns it matches — or not at all. */
+  type(line, player = this.player) {
+    for (const c2 of this.chats) {
+      const values = matchChat(c2, line, this.unitByName);
+      if (values) {
+        this.queued.lines.set(player, { pattern: c2.pattern, values });
+        break;
+      }
+    }
+    return this;
+  }
+  /** What a program's `input` finds this frame. */
+  input(i) {
+    const p = this.slotOf(i.player);
+    switch (i.source) {
+      case "key":
+        return this.current.events.has(`key:${p}:${i.key}`) ? 1 : 0;
+      case "click":
+        return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
+      case "mouse":
+        return this.mice.get(p)?.[i.axis] ?? 0;
+      case "chat": {
+        const line = this.current.lines.get(p);
+        if (!line || line.pattern !== i.pattern) return 0;
+        return i.capture === null ? 1 : line.values[i.capture] ?? 0;
+      }
+    }
+  }
+  /* ── units and tables ── */
+  /** The living units a filter matches, in table order. */
+  matching(f) {
+    return this.game.matching(f.owner === void 0 ? void 0 : this.slotsOf(f.owner), f.type, f.at);
+  }
+  /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
+  pick(by, f, near, mouse, within) {
+    const all = this.matching(f);
+    if (all.length === 0) return null;
+    if (by === "first") return all[0];
+    if (by === "random") return all[Math.min(all.length - 1, Math.floor(this.random() * all.length))];
+    const box = near === void 0 ? void 0 : this.locations.get(near);
+    const pointer = mouse === void 0 ? void 0 : this.mice.get(this.slotOf(mouse)) ?? { x: 0, y: 0 };
+    const cx = pointer ? pointer.x : box ? Math.floor((box.left + box.right) / 2) : 0;
+    const cy = pointer ? pointer.y : box ? Math.floor((box.top + box.bottom) / 2) : 0;
+    let best = null;
+    let least = within === void 0 ? Infinity : within + 1;
+    for (const u of all) {
+      const d = Math.abs(u.x - cx) + Math.abs(u.y - cy);
+      if (d < least) {
+        least = d;
+        best = u;
+      }
+    }
+    return best;
+  }
+  /** A location centred on a point, its size kept. */
+  centre(location, x, y) {
+    this.game.centre(location, x, y);
+  }
+  cellKey(c2) {
+    return `${c2.name}:${c2.player ? this.slotOf(c2.index) : c2.index}${c2.key !== void 0 ? `:${c2.key}` : ""}`;
+  }
+  /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
+  tableRead(c2) {
+    const stored = this.tables.get(this.cellKey(c2));
+    if (typeof stored === "number") return Math.floor(stored / (c2.scale ?? 1));
+    const given = this.tableOf?.(c2);
+    return given === void 0 ? 0 : Math.max(0, Math.trunc(given));
+  }
+  /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
+  tableWrite(c2, value, scaled, text) {
+    if (text !== void 0) {
+      this.tables.set(this.cellKey(c2), text);
+      return;
+    }
+    const raw = scaled ? value : value * (c2.scale ?? 1);
+    this.tables.set(this.cellKey(c2), Math.min(raw, cellMax(c2.width)));
+  }
+  /** What a program did to a unit, for the log: the game's nearest action, with the unit in words. */
+  unitEvent(run, type, u, at, extra = {}) {
+    const what = `unit ${u.slot} (type ${u.type}, P${u.owner + 1})`;
+    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...extra.location ? { location: extra.location } : {} }, text: extra.text ? `${extra.text}: ${what}` : what });
+  }
+  partText(p) {
+    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
+  }
+  /** A printed text: an event like a Display Text action's, the text already filled in. */
+  print(run, text, to, at) {
+    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
+  }
+  /** An action a program takes: the world's own kinds are applied, the rest logged. */
+  act(run, a2, at, programText) {
+    if (a2.type === ActionType.SetResources) {
+      const n = a2.target >>> 0;
+      const set = (cur) => a2.modifier === SetModifier.SetTo ? n : a2.modifier === SetModifier.Add ? (cur + n) % U32 : Math.max(0, cur - n);
+      for (const slot of this.slotsOf(a2.player)) {
+        if (slot >= 12) continue;
+        const stock = this.stockOf(slot);
+        if (a2.unitId === ResourceType.Ore || a2.unitId === ResourceType.OreAndGas) stock[0] = set(stock[0]);
+        if (a2.unitId === ResourceType.Gas || a2.unitId === ResourceType.OreAndGas) stock[1] = set(stock[1]);
+      }
+    }
+    switch (a2.type) {
+      case ActionType.SetDeaths:
+        this.world.changeDeath(a2.player, a2.unitId, a2.modifier, a2.target);
+        return;
+      case ActionType.SetSwitch: {
+        const i = a2.target;
+        if (i < 0 || i >= SWITCH_COUNT) return;
+        switch (a2.modifier) {
+          case SwitchAction.Set:
+            this.world.switches[i] = 1;
+            break;
+          case SwitchAction.Clear:
+            this.world.switches[i] = 0;
+            break;
+          case SwitchAction.Toggle:
+            this.world.switches[i] ^= 1;
+            break;
+          case SwitchAction.Randomize:
+            this.world.switches[i] = this.random() < 0.5 ? 0 : 1;
+            break;
+        }
+        return;
+      }
+      case ActionType.Comment:
+      case ActionType.PreserveTrigger:
+        return;
+      default: {
+        this.game.act(a2, run.player);
+        const ev = { cycle: this.cycle, program: run.index, player: run.player, at, action: a2 };
+        const text = programText ?? this.world.text(a2.text);
+        if (text !== void 0) ev.text = text;
+        this.events.push(ev);
+      }
+    }
+  }
+  /** One frame: every program in order, from where it left off. */
+  step() {
+    this.current = this.queued;
+    this.queued = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
+    for (const run of this.runs) {
+      this.world.current = run.player;
+      try {
+        run.tick();
+      } catch (err) {
+        if (err instanceof Halt) throw new Error(err.message);
+        throw err;
+      }
+    }
+    this.world.current = this.world.player;
+    this.cycle++;
+  }
+  run(cycles2) {
+    for (let i = 0; i < cycles2; i++) this.step();
+    return this;
+  }
+  /** Whether every program has ended. */
+  finished() {
+    return this.runs.every((r) => r.done);
+  }
+  /** A program's run: the program by its place in the list or its name, and of a per-player program the player's (the first by default). */
+  runOf(program = 0, player) {
+    return this.runs.find((r) => (typeof program === "number" ? r.index === program : r.program.name === program) && (player === void 0 || r.player === player));
+  }
+  /** The unit a variable holds by its source name, in a program (the first by default). */
+  unit(name, program = 0, player) {
+    return this.runOf(program, player)?.unitValue(name) ?? null;
+  }
+  /** A variable's value by its source name, in a program (the first by default). */
+  value(name, program = 0, player) {
+    return this.runOf(program, player)?.value(name);
+  }
+  /** A text variable's characters by its source name, in a program (the first by default). */
+  text(name, program = 0, player) {
+    return this.runOf(program, player)?.textValue(name);
+  }
+  /** An array's cells, by its name in the source. */
+  list(name, program = 0, player) {
+    return this.runOf(program, player)?.list(name);
+  }
+};
+
+// compiler/testing.ts
+var ExpectError = class extends Error {
+  expected;
+  actual;
+  constructor(message, expected, actual) {
+    super(message);
+    this.name = "ExpectError";
+    this.expected = expected;
+    this.actual = actual;
+  }
+};
+var DEFAULT_SEED = 24301;
+var UNTIL_FRAMES = 2400;
+var isTestFile = (path) => /\.test\.ts$/i.test(path);
+var TestRegistry = class _TestRegistry {
+  root = { kind: "suite", name: "", at: { file: "", line: 0 }, mode: "run", parent: null, children: [], before: [], after: [] };
+  current = this.root;
+  /** Set for the length of a run of tests: a `test()` reached then would register into nothing that runs. */
+  running = false;
+  where = () => ({ file: "", line: 0 });
+  get empty() {
+    return this.root.children.length === 0;
+  }
+  guard(what) {
+    if (this.running) throw new Error(`${what} inside a test: a test is declared when the script runs, not while another is running.`);
+  }
+  addTest(mode, name, a2, b, args = []) {
+    this.guard("test()");
+    if (typeof name !== "string" || !name) throw new Error("test(name, (sim) => { \u2026 }): the name is a text.");
+    const fn = typeof a2 === "function" ? a2 : b;
+    const options = typeof a2 === "function" ? void 0 : a2;
+    if (typeof fn !== "function") throw new Error(`test("${name}"): the second argument is the test's function, (sim) => { \u2026 }.`);
+    if (fn.constructor?.name === "AsyncFunction") throw new Error(`test("${name}"): a test is not async. Nothing in sim waits: sim.frames(n) and sim.until(\u2026) have run by the time they return.`);
+    const as = options && typeof options === "object" && typeof options.as === "number" ? options.as : void 0;
+    this.current.children.push({ kind: "test", name, at: this.where(), mode, parent: this.current, fn, args, ...as !== void 0 ? { as } : {} });
+  }
+  addSuite(mode, name, body2) {
+    this.guard("describe()");
+    if (typeof name !== "string" || !name) throw new Error("describe(name, () => { \u2026 }): the name is a text.");
+    if (typeof body2 !== "function") throw new Error(`describe("${name}"): the second argument is a function that declares the tests.`);
+    const suite = { kind: "suite", name, at: this.where(), mode, parent: this.current, children: [], before: [], after: [] };
+    this.current.children.push(suite);
+    const outer = this.current;
+    this.current = suite;
+    try {
+      body2();
+    } finally {
+      this.current = outer;
+    }
+  }
+  /** `%s`, `%d`, `%i`, `%j` and `%o` take the row's values in turn, `$name` a field of a row that is an object; a name with neither gets the row's number. */
+  static title(name, row, index) {
+    let i = 0;
+    let used = false;
+    let out = name.replace(/%([sdijo%])/g, (_m, c2) => {
+      if (c2 === "%") return "%";
+      used = true;
+      const v = row[i++];
+      return c2 === "j" || c2 === "o" ? JSON.stringify(v) : String(v);
+    });
+    const first = row[0];
+    if (first && typeof first === "object") out = out.replace(/\$([A-Za-z_][\w]*)/g, (m, k) => {
+      if (!(k in first)) return m;
+      used = true;
+      return String(first[k]);
+    });
+    return used ? out : `${out} (${index + 1})`;
+  }
+  /** The functions a script imports. */
+  library() {
+    const each = (mode, suite) => (rows) => (name, fn) => {
+      if (!Array.isArray(rows)) throw new Error("each([\u2026]): the cases are a list.");
+      rows.forEach((row, i) => {
+        const args = Array.isArray(row) ? row : [row];
+        const title = _TestRegistry.title(String(name), args, i);
+        if (suite) this.addSuite(mode, title, () => fn(...args));
+        else this.addTest(mode, title, fn, void 0, args);
+      });
+    };
+    const test = Object.assign((name, a2, b) => this.addTest("run", name, a2, b), {
+      only: Object.assign((name, a2, b) => this.addTest("only", name, a2, b), { each: each("only", false) }),
+      skip: Object.assign((name, a2, b) => this.addTest("skip", name, a2, b), { each: each("skip", false) }),
+      each: each("run", false)
+    });
+    const describe3 = Object.assign((name, body2) => this.addSuite("run", name, body2), {
+      only: Object.assign((name, body2) => this.addSuite("only", name, body2), { each: each("only", true) }),
+      skip: Object.assign((name, body2) => this.addSuite("skip", name, body2), { each: each("skip", true) }),
+      each: each("run", true)
+    });
+    const hook = (list, what) => (fn) => {
+      this.guard(`${what}()`);
+      if (typeof fn !== "function") throw new Error(`${what}((sim) => { \u2026 }) takes a function.`);
+      this.current[list].push(fn);
+    };
+    return { test, it: test, describe: describe3, beforeEach: hook("before", "beforeEach"), afterEach: hook("after", "afterEach"), expect };
+  }
+};
+var TESTING_NAMES = ["test", "it", "describe", "beforeEach", "afterEach", "expect"];
+var show = (v) => {
+  if (typeof v === "string") return JSON.stringify(v);
+  if (typeof v === "function") return "a function";
+  if (v instanceof RegExp) return String(v);
+  if (v instanceof TestSim) return "sim";
+  try {
+    return JSON.stringify(v, (_, x) => typeof x === "bigint" ? String(x) : x === void 0 ? "undefined" : x) ?? String(v);
+  } catch {
+    return String(v);
+  }
+};
+var brief = (v) => {
+  const s = show(v);
+  return s.length > 60 ? `${s.slice(0, 57)}\u2026` : s;
+};
+function same(a2, b) {
+  if (Object.is(a2, b)) return true;
+  if (typeof a2 !== "object" || typeof b !== "object" || a2 === null || b === null) return false;
+  if (Array.isArray(a2) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a2).filter((k) => a2[k] !== void 0);
+  const kb = Object.keys(b).filter((k) => b[k] !== void 0);
+  return ka.length === kb.length && ka.every((k) => same(a2[k], b[k]));
+}
+function expect(actual) {
+  const make = (not) => {
+    const check = (holds, what, expected) => {
+      if (holds !== not) return;
+      const got = actual instanceof TestSim ? "" : `, got ${brief(actual)}`;
+      throw new ExpectError(`expected ${not ? "not " : ""}${what}${got}`, expected === void 0 ? void 0 : show(expected), actual instanceof TestSim ? void 0 : show(actual));
+    };
+    const number = (name) => {
+      if (typeof actual !== "number") throw new ExpectError(`${name}: ${brief(actual)} is not a number`);
+      return actual;
+    };
+    const sim = (name) => {
+      if (!(actual instanceof TestSim)) throw new ExpectError(`${name} is asked of the world: expect(sim).${name}(\u2026)`);
+      return actual;
+    };
+    return {
+      toBe: (e) => check(Object.is(actual, e), brief(e), e),
+      toEqual: (e) => check(same(actual, e), brief(e), e),
+      toBeTruthy: () => check(!!actual, "something true"),
+      toBeFalsy: () => check(!actual, "something false"),
+      toBeNull: () => check(actual === null, "null"),
+      toBeDefined: () => check(actual !== void 0, "a value"),
+      toBeUndefined: () => check(actual === void 0, "undefined"),
+      toBeGreaterThan: (n) => check(number("toBeGreaterThan") > n, `more than ${n}`, n),
+      toBeGreaterThanOrEqual: (n) => check(number("toBeGreaterThanOrEqual") >= n, `${n} or more`, n),
+      toBeLessThan: (n) => check(number("toBeLessThan") < n, `less than ${n}`, n),
+      toBeLessThanOrEqual: (n) => check(number("toBeLessThanOrEqual") <= n, `${n} or less`, n),
+      toContain: (e) => check(typeof actual === "string" ? actual.includes(String(e)) : Array.isArray(actual) && actual.some((x) => same(x, e)), `something that contains ${brief(e)}`, e),
+      toHaveLength: (n) => check(actual?.length === n, `a length of ${n}`, n),
+      toMatch: (e) => check(typeof actual === "string" && (typeof e === "string" ? actual.includes(e) : e.test(actual)), `a text that matches ${brief(e)}`, e),
+      toThrow: (e) => {
+        if (typeof actual !== "function") throw new ExpectError("toThrow is asked of a function: expect(() => \u2026).toThrow()");
+        let thrown;
+        let threw = false;
+        try {
+          actual();
+        } catch (err) {
+          threw = true;
+          thrown = err;
+        }
+        const message = thrown instanceof Error ? thrown.message : String(thrown);
+        check(threw && (e === void 0 || (typeof e === "string" ? message.includes(e) : e.test(message))), e === void 0 ? "the function to throw" : `the function to throw ${brief(e)}`);
+      },
+      /** A text shown to a player: all of it, or a pattern it matches. `to`: only what that player was shown. */
+      toHavePrinted: (e, options) => {
+        const lines = sim("toHavePrinted").printed(options?.to);
+        if (lines.some((l) => typeof e === "string" ? l === e || l.includes(e) : e.test(l)) !== not) return;
+        throw new ExpectError(`expected ${not ? "nothing" : "something"} printed that matches ${brief(e)}; printed: ${lines.length ? lines.map((l) => JSON.stringify(l)).join(", ") : "nothing"}`, show(e), show(lines));
+      },
+      /** The simulator said a program did what is always a mistake; asking for it is what lets a test go on past it. */
+      toHaveFaulted: (e) => {
+        const s = sim("toHaveFaulted");
+        s.faultsExpected = true;
+        const messages = s.faults.map((f) => f.message);
+        if (messages.some((m) => e === void 0 ? true : typeof e === "string" ? m.includes(e) : e.test(m)) !== not) return;
+        throw new ExpectError(`expected ${not ? "no" : "a"} fault${e === void 0 ? "" : ` that matches ${brief(e)}`}; faults: ${messages.length ? messages.join(" | ") : "none"}`, e === void 0 ? void 0 : show(e), show(messages));
+      }
+    };
+  };
+  return { ...make(false), not: make(true) };
+}
+var mulberry = (seed) => () => {
+  let t = seed += 1831565813;
+  t = Math.imul(t ^ t >>> 15, t | 1);
+  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+  return ((t ^ t >>> 14) >>> 0) / 4294967296;
+};
+var TestSim = class {
+  /** Set by `expect(sim).toHaveFaulted`: the faults are the test's business, and do not fail it by themselves. */
+  faultsExpected = false;
+  rng = mulberry(DEFAULT_SEED);
+  world;
+  programs;
+  constructor(triggers, ir, strings, options, as) {
+    const random = () => this.rng();
+    const stats = options.unitStats ?? {};
+    this.world = new Simulation(triggers, {
+      strings,
+      random,
+      units: options.units,
+      locations: options.locations,
+      players: options.players,
+      forces: options.forces,
+      unitStats: (type) => stats[type],
+      properties: (slot) => options.properties?.[slot - 1] ?? void 0,
+      ...as !== void 0 ? { player: as } : options.players ? {} : { player: ir[0]?.owner !== void 0 && ir[0].owner < 12 ? ir[0].owner : void 0 }
+    });
+    const names = options.unitNames ?? {};
+    this.programs = new ProgramSimulation(ir, { world: this.world, strings, random, heapCells: options.heapCells, stackDepth: options.stackDepth, unitStats: (type) => stats[type], unitByName: (lower) => names[lower] });
+  }
+  /** How many frames have run. */
+  get frame() {
+    return this.programs.cycle;
+  }
+  /** `random()` from this number on: the same run every time. Before anything that draws one. */
+  seed(n) {
+    this.rng = mulberry(n >>> 0);
+    return this;
+  }
+  /* ── time ── */
+  frames(n = 1) {
+    for (let i = 0; i < n; i++) {
+      this.world.step();
+      this.programs.step();
+    }
+    return this;
+  }
+  seconds(n) {
+    return this.frames(Math.round(n * FRAMES_PER_SECOND));
+  }
+  /** Frames until `done()` is true: asked before the first and after each. The test fails when `most` frames pass. */
+  until(done, most = UNTIL_FRAMES) {
+    for (let i = 0; ; i++) {
+      if (done()) return this;
+      if (i >= most) throw new ExpectError(`until: still not true after ${most} frames`);
+      this.frames(1);
+    }
+  }
+  /* ── what the test does to the world ── */
+  /** Units of a type for a player at a location's centre; they are given back. */
+  place(player, type, at, n = 1) {
+    const { x, y } = this.world.game.centreOf(at);
+    const made = [];
+    for (let i = 0; i < n; i++) {
+      const u = this.world.game.create(type, player, x, y);
+      if (u) made.push(u);
+    }
+    return made;
+  }
+  /** What a fight is in a test. `by`: the player the kill is counted for. */
+  kill(unit, by) {
+    this.world.game.gone(unit, true, by);
+    return this;
+  }
+  remove(unit) {
+    this.world.game.gone(unit, false);
+    return this;
+  }
+  give(unit, to) {
+    if (unit.alive) unit.owner = to;
+    return this;
+  }
+  /** A unit to a location's centre, or to a point. */
+  move(unit, to) {
+    const p = typeof to === "number" ? this.world.game.centreOf(to) : to;
+    if (unit.alive) {
+      unit.x = p.x;
+      unit.y = p.y;
+    }
+    return this;
+  }
+  /* ── what the players do ── */
+  press(key, player) {
+    this.programs.press(key, player);
+    return this;
+  }
+  click(button = "left", player) {
+    this.programs.click(button, player);
+    return this;
+  }
+  type(line, player) {
+    this.programs.type(line, player);
+    return this;
+  }
+  moveMouse(x, y, player) {
+    this.programs.moveMouse(x, y, player);
+    return this;
+  }
+  /* ── the world read back ── */
+  owners(player) {
+    return this.world.game.players.of(player, this.world.player);
+  }
+  count(player, type, at) {
+    return this.world.game.matching(this.owners(player), type, at).length;
+  }
+  /** The units on the map, in the order of the game's unit table. */
+  units(filter = {}) {
+    return this.world.game.matching(filter.owner === void 0 ? void 0 : this.owners(filter.owner), filter.type, filter.at);
+  }
+  resources(player) {
+    const [ore, gas] = this.programs.resourcesOf(player);
+    return { ore, gas };
+  }
+  deaths(player, type) {
+    return this.world.death(player, type);
+  }
+  kills(player, type) {
+    return this.world.game.kills(this.owners(player), type);
+  }
+  switch(n) {
+    return this.world.switches[n] === 1;
+  }
+  /** Where a location is now. */
+  location(n) {
+    const b = this.world.game.locations.get(n);
+    return b ? { ...b } : void 0;
+  }
+  /**
+   * A program's variables by the names in the source: numbers, booleans, texts, arrays, a
+   * record as an object, a unit (null for none). The program by its name (its `name`
+   * option) or its place in the script; of a per-player program, `player`'s. A name the
+   * program does not have is undefined.
+   */
+  program(name = 0, player) {
+    const run = this.programs.runOf(name, player);
+    if (!run) {
+      const known = [...new Set(this.programs.runs.map((r) => r.program.name).filter(Boolean))];
+      throw new Error(typeof name === "number" ? `There is no program ${name}: the script has ${new Set(this.programs.runs.map((r) => r.index)).size}.` : `There is no program named "${name}"${player !== void 0 ? ` that runs for P${player + 1}` : ""}. ${known.length ? `Named: ${known.join(", ")}.` : 'A program is named by its option: program(() => { \u2026 }, { name: "waves" }).'}`);
+    }
+    return new Proxy({}, { get: (_, key) => typeof key === "string" ? run.lookup(key) : void 0, has: (_, key) => typeof key === "string" && run.lookup(key) !== void 0 });
+  }
+  /** What was shown, in order: to everybody, or what one player saw. */
+  printed(player) {
+    const shown = (to, runner) => player === void 0 || this.world.game.players.of(to, runner).includes(player);
+    const lines = [];
+    this.world.events.forEach((e, i) => {
+      if (e.action.type === ActionType.DisplayText && e.text !== void 0 && shown(e.action.player || 13, e.player)) lines.push({ frame: e.cycle, order: i, text: e.text });
+    });
+    this.programs.events.forEach((e, i) => {
+      if (e.action.type === ActionType.DisplayText && e.text !== void 0 && shown(e.action.player || 13, e.player)) lines.push({ frame: e.cycle, order: this.world.events.length + i, text: e.text });
+    });
+    return lines.sort((a2, b) => a2.frame - b.frame || a2.order - b.order).map((l) => l.text);
+  }
+  /** Everything that happened, by frame. `sourceOf` says where a trigger came from. */
+  log(sourceOf = () => null) {
+    const out = [];
+    this.world.events.forEach((e, i) => {
+      const at = sourceOf(e.trigger);
+      out.push({ frame: e.cycle, order: i, player: e.player, text: e.text ?? `action ${e.action.type}`, ...at ? { file: at.file, line: at.line } : {} });
+    });
+    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: e.text ?? `action ${e.action.type}`, file: e.at.file, line: e.at.line }));
+    return out.sort((a2, b) => a2.frame - b.frame || a2.order - b.order).map(({ order: _order, ...e }) => e);
+  }
+  get events() {
+    return this.log();
+  }
+  get faults() {
+    return this.programs.faults;
+  }
+};
+var idOf = (node) => {
+  const names = [];
+  for (let n = node; n && n.parent; n = n.parent) names.unshift(n.name);
+  return `${node.at.file}::${names.join(" > ")}`;
+};
+function listTests(registry) {
+  const list = [];
+  const cases = /* @__PURE__ */ new Map();
+  const seen = /* @__PURE__ */ new Map();
+  const walk = (suite, path) => {
+    for (const node of suite.children) {
+      let id = idOf(node);
+      const n = (seen.get(id) ?? 0) + 1;
+      seen.set(id, n);
+      if (n > 1) id = `${id} #${n}`;
+      list.push({ id, kind: node.kind, name: node.name, path, file: node.at.file, line: node.at.line, mode: node.mode });
+      if (node.kind === "suite") walk(node, [...path, node.name]);
+      else cases.set(id, node);
+    }
+  };
+  walk(registry.root, []);
+  return { list, cases };
+}
+function runTests(registry, ctx, options) {
+  const started = Date.now();
+  const { list, cases } = listTests(registry);
+  const only = list.filter((t) => t.mode === "only").map((t) => ({ file: t.file, line: t.line }));
+  const narrowed = new Set(only.map((o) => o.file));
+  const results = [];
+  registry.running = true;
+  try {
+    for (const info of list) {
+      const test = cases.get(info.id);
+      if (!test) continue;
+      if (options.files && !options.files.includes(info.file)) continue;
+      if (options.ids && !options.ids.some((id) => info.id === id || info.id.startsWith(`${id} > `))) continue;
+      const chain = [];
+      for (let s = test.parent; s; s = s.parent) chain.unshift(s);
+      const skipped = test.mode === "skip" || chain.some((s) => s.mode === "skip") || narrowed.has(info.file) && test.mode !== "only" && !chain.some((s) => s.mode === "only");
+      if (skipped) {
+        results.push({ id: info.id, status: "skipped", printed: [], events: [], frames: 0, ms: 0 });
+        continue;
+      }
+      results.push(runOne(info.id, test, chain, ctx, options.world ?? {}));
+    }
+  } finally {
+    registry.running = false;
+  }
+  return { list, results, only, ms: Date.now() - started };
+}
+function runOne(id, test, chain, ctx, world) {
+  const began = Date.now();
+  let sim = null;
+  const done = (extra) => ({
+    id,
+    status: "passed",
+    printed: sim?.printed() ?? [],
+    events: (sim?.log((t) => ctx.sources[t] ?? null) ?? []).slice(0, 500),
+    frames: sim?.frame ?? 0,
+    ms: Date.now() - began,
+    ...extra
+  });
+  try {
+    sim = new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);
+    for (const s of chain) for (const h of s.before) h(sim);
+    const returned = test.fn(sim, ...test.args);
+    if (returned && typeof returned.then === "function") throw new Error("A test is not async: what it returned is a promise. Nothing in sim waits.");
+    for (const s of [...chain].reverse()) for (const h of s.after) h(sim);
+    const fault = sim.faultsExpected ? void 0 : sim.faults[0];
+    if (fault) return done({ status: "failed", message: `${fault.message} (frame ${fault.cycle + 1})`, at: { file: fault.at.file, line: fault.at.line, column: fault.at.column } });
+    return done({});
+  } catch (err) {
+    const at = ctx.locate(err) ?? test.at;
+    const message = err instanceof Error ? err.message : String(err);
+    return done({ status: "failed", message, at, ...err instanceof ExpectError ? { expected: err.expected, actual: err.actual } : {} });
+  }
+}
+
 // compiler/record.ts
 var CONDITION_FIELDS = ["type", "location", "player", "amount", "unitId", "comparison", "resource"];
 var ACTION_FIELDS = ["type", "location", "text", "wav", "time", "player", "target", "unitId", "modifier"];
 
 // compiler/lower.ts
 var PLAYER_SLOTS = 12;
-var U32_MAX = 4294967295;
+var U32_MAX2 = 4294967295;
 var LowerError = class extends Error {
 };
 var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
@@ -637,11 +3796,11 @@ function negateCondition(c2) {
     case Comparison.AtLeast:
       return n === 0 ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtMost, amount: n - 1 }];
     case Comparison.AtMost:
-      return n === U32_MAX ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtLeast, amount: n + 1 }];
+      return n === U32_MAX2 ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtLeast, amount: n + 1 }];
     case Comparison.Exactly: {
       const out = [];
       if (n > 0) out.push({ ...c2, comparison: Comparison.AtMost, amount: n - 1 });
-      if (n < U32_MAX) out.push({ ...c2, comparison: Comparison.AtLeast, amount: n + 1 });
+      if (n < U32_MAX2) out.push({ ...c2, comparison: Comparison.AtLeast, amount: n + 1 });
       return out;
     }
     default:
@@ -1232,793 +4391,6 @@ function defaultScriptNames() {
   return scriptNames();
 }
 
-// compiler/ir.ts
-var IR_VERSION = 14;
-var HEAP_CELLS_MAX = 1 << 20;
-var STACK_DEPTH = 1024;
-var STACK_CELLS_MAX = 1 << 20;
-var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
-var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
-var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
-var I32_MAX = 2147483647;
-var I32_MIN = -2147483648;
-var U32_MAX2 = 4294967295;
-var TEXT_BYTES = 1023;
-var TEXT_KINDS = /* @__PURE__ */ new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
-var isTextExpr = (e) => TEXT_KINDS.has(e.kind);
-var innerText = (t, f) => f.text ? f.text(t) : mapText(t, f);
-function mapTextParts(parts, f) {
-  return parts.map((p) => p.kind === "number" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p);
-}
-function mapText(t, f) {
-  switch (t.kind) {
-    case "textOf":
-    case "textAt":
-      return { ...t, index: f.num(t.index) };
-    case "template":
-      return { ...t, parts: mapTextParts(t.parts, f) };
-    case "textTernary":
-      return { ...t, cond: f.bool(t.cond), whenTrue: innerText(t.whenTrue, f), whenFalse: innerText(t.whenFalse, f) };
-    case "textSlice":
-      return { ...t, of: innerText(t.of, f), ...t.start ? { start: f.num(t.start) } : {}, ...t.end ? { end: f.num(t.end) } : {} };
-    case "textPad":
-      return { ...t, of: innerText(t.of, f), width: f.num(t.width), with: innerText(t.with, f) };
-    case "textRepeat":
-      return { ...t, of: innerText(t.of, f), count: f.num(t.count) };
-    case "textCall":
-      return { ...t, call: f.call(t.call) };
-    default:
-      return t;
-  }
-}
-function mapTextOperands(e, f) {
-  switch (e.kind) {
-    case "textLength":
-      return { ...e, of: innerText(e.of, f) };
-    case "textIndexOf":
-      return { ...e, of: innerText(e.of, f), find: innerText(e.find, f), ...e.from ? { from: f.num(e.from) } : {} };
-    case "textCode":
-      return { ...e, of: innerText(e.of, f), index: f.num(e.index) };
-    case "textCompare":
-      return { ...e, left: innerText(e.left, f), right: innerText(e.right, f) };
-    case "textTest":
-      return { ...e, of: innerText(e.of, f), find: innerText(e.find, f) };
-    default:
-      return void 0;
-  }
-}
-function textHasId(e, kinds) {
-  switch (e.kind) {
-    case "text":
-    case "textOf":
-      return true;
-    case "textVar":
-      return kinds(e.id) === "id";
-    case "textTernary":
-      return textHasId(e.whenTrue, kinds) && textHasId(e.whenFalse, kinds);
-    default:
-      return false;
-  }
-}
-function bodiesOf(program) {
-  return [program.body, ...(program.functions ?? []).map((f) => f.body)];
-}
-function programDeclarations(program) {
-  const out = declarations(program.body);
-  for (const f of program.functions ?? []) {
-    out.push(...f.params);
-    if (f.result) out.push(f.result.decl);
-    out.push(...declarations(f.body));
-  }
-  return out;
-}
-function eachCall(root, visit) {
-  if (Array.isArray(root)) {
-    for (const x of root) eachCall(x, visit);
-    return;
-  }
-  if (!root || typeof root !== "object") return;
-  const o = root;
-  if ((o.kind === "call" || o.kind === "textCall") && o.call && typeof o.call === "object") visit(o.call);
-  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
-}
-var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
-var isNumExpr = (e) => {
-  switch (e.kind) {
-    case "textLength":
-    case "textIndexOf":
-    case "textCode":
-      return true;
-    case "const":
-      return typeof e.value === "number";
-    case "var":
-      return false;
-    // ambiguous by shape; callers know the variable's kind
-    case "element":
-    case "pop":
-      return false;
-    // ambiguous by shape, as a variable is
-    case "length":
-    case "unitPart":
-      return true;
-    case "unary":
-    case "cast":
-    case "binary":
-    case "intrinsic":
-    case "read":
-    case "randomInt":
-    case "unitField":
-    case "tableRead":
-    case "input":
-      return true;
-    case "ternary":
-      return isNumExpr(e.whenTrue);
-    case "call":
-      return e.call.result?.kind === "number";
-    default:
-      return false;
-  }
-};
-function declarations(body2) {
-  const out = [];
-  const stmt = (s) => {
-    switch (s.kind) {
-      case "declare":
-        out.push(s.decl);
-        init(s.init);
-        break;
-      case "assign":
-        expr(s.value);
-        break;
-      case "declareArray":
-        s.init?.forEach(init);
-        if (s.fill) init(s.fill);
-        break;
-      case "store":
-        expr(s.index);
-        init(s.value);
-        break;
-      case "push":
-        init(s.value);
-        break;
-      case "setLength":
-        expr(s.value);
-        break;
-      case "assignBool":
-        init(s.value);
-        break;
-      case "assignUnit":
-        unit(s.value);
-        break;
-      case "assignText":
-        text(s.value);
-        break;
-      case "storeText":
-        expr(s.index);
-        text(s.value);
-        break;
-      case "releaseText":
-        expr(s.index);
-        break;
-      case "textLoop":
-        text(s.of);
-        out.push(s.decl);
-        s.body.forEach(stmt);
-        break;
-      case "unitLoop":
-        out.push(s.decl);
-        s.body.forEach(stmt);
-        break;
-      case "unitWrite":
-        unit(s.unit);
-        init(s.value);
-        break;
-      case "unitDo":
-        unit(s.unit);
-        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
-        break;
-      case "tableWrite":
-        init(s.value);
-        break;
-      case "if":
-        init(s.cond);
-        s.then.forEach(stmt);
-        s.else?.forEach(stmt);
-        break;
-      case "while":
-        if (s.cond) init(s.cond);
-        s.body.forEach(stmt);
-        break;
-      case "do":
-        s.body.forEach(stmt);
-        init(s.cond);
-        break;
-      case "for":
-        if (s.cond) init(s.cond);
-        s.update.forEach(stmt);
-        s.body.forEach(stmt);
-        break;
-      case "unrolled":
-        s.iterations.forEach((i) => i.forEach(stmt));
-        break;
-      case "switch":
-        expr(s.value);
-        s.cases.forEach((c2) => c2.body.forEach(stmt));
-        break;
-      case "return":
-        if (s.value) init(s.value);
-        break;
-      case "action":
-        for (const v of s.variables ?? []) expr(v.expr);
-        if (s.text) text(s.text);
-        break;
-      case "centerLocation":
-        expr(s.x);
-        expr(s.y);
-        break;
-      case "print":
-        parts(s.parts);
-        break;
-      case "call":
-        call(s.call);
-        break;
-      case "block":
-        s.body.forEach(stmt);
-        break;
-      default:
-        break;
-    }
-  };
-  const call = (c2) => {
-    if (c2.result) out.push(c2.result.decl);
-    for (const p of c2.params) {
-      if (!c2.fn) out.push(p.decl);
-      init(p.init);
-    }
-    c2.body.forEach(stmt);
-  };
-  const init = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
-  const parts = (ps) => {
-    for (const p of ps) {
-      if (p.kind === "number") expr(p.expr);
-      else if (p.kind === "value") text(p.text);
-    }
-  };
-  const text = (t) => {
-    switch (t.kind) {
-      case "textOf":
-      case "textAt":
-        expr(t.index);
-        break;
-      case "template":
-        parts(t.parts);
-        break;
-      case "textTernary":
-        bool(t.cond);
-        text(t.whenTrue);
-        text(t.whenFalse);
-        break;
-      case "textSlice":
-        text(t.of);
-        if (t.start) expr(t.start);
-        if (t.end) expr(t.end);
-        break;
-      case "textPad":
-        text(t.of);
-        expr(t.width);
-        text(t.with);
-        break;
-      case "textRepeat":
-        text(t.of);
-        expr(t.count);
-        break;
-      case "textCall":
-        call(t.call);
-        break;
-      default:
-        break;
-    }
-  };
-  const unit = (u) => {
-    if (u.kind === "call") call(u.call);
-    else if (u.kind === "unitAt") {
-      expr(u.ptr);
-      expr(u.epd);
-      expr(u.uid);
-    }
-  };
-  const expr = (e) => {
-    switch (e.kind) {
-      case "unitField":
-      case "unitPart":
-        unit(e.unit);
-        break;
-      case "element":
-        expr(e.index);
-        break;
-      case "unary":
-      case "cast":
-        expr(e.expr);
-        break;
-      case "binary":
-        expr(e.left);
-        expr(e.right);
-        break;
-      case "ternary":
-        bool(e.cond);
-        expr(e.whenTrue);
-        expr(e.whenFalse);
-        break;
-      case "intrinsic":
-        e.args.forEach(expr);
-        break;
-      case "randomInt":
-        expr(e.bound);
-        break;
-      case "textLength":
-        text(e.of);
-        break;
-      case "textIndexOf":
-        text(e.of);
-        text(e.find);
-        if (e.from) expr(e.from);
-        break;
-      case "textCode":
-        text(e.of);
-        expr(e.index);
-        break;
-      case "call":
-        call(e.call);
-        break;
-      default:
-        break;
-    }
-  };
-  const bool = (b) => {
-    switch (b.kind) {
-      case "unitAlive":
-      case "unitFlag":
-        unit(b.unit);
-        break;
-      case "unitSame":
-        unit(b.left);
-        unit(b.right);
-        break;
-      case "element":
-        expr(b.index);
-        break;
-      case "test":
-        expr(b.expr);
-        break;
-      case "compare":
-        expr(b.left);
-        expr(b.right);
-        break;
-      case "and":
-      case "or":
-        b.items.forEach(bool);
-        break;
-      case "not":
-        bool(b.expr);
-        break;
-      case "edge":
-        bool(b.cond);
-        break;
-      case "ternary":
-        bool(b.cond);
-        bool(b.whenTrue);
-        bool(b.whenFalse);
-        break;
-      case "textCompare":
-        text(b.left);
-        text(b.right);
-        break;
-      case "textTest":
-        text(b.of);
-        text(b.find);
-        break;
-      case "call":
-        call(b.call);
-        break;
-      default:
-        break;
-    }
-  };
-  body2.forEach(stmt);
-  return out;
-}
-
-// compiler/input.ts
-var MOUSE_BUTTONS = ["left", "right", "middle"];
-var NAMED_KEYS = {
-  Space: "SPACE",
-  Enter: "ENTER",
-  Escape: "ESC",
-  Tab: "TAB",
-  Shift: "SHIFT",
-  Ctrl: "LCTRL",
-  Alt: "LALT",
-  Left: "LEFT",
-  Up: "UP",
-  Right: "RIGHT",
-  Down: "DOWN",
-  Backspace: "BACK",
-  Delete: "DELETE",
-  Insert: "INSERT",
-  Home: "HOME",
-  End: "END",
-  PageUp: "PGUP",
-  PageDown: "PGDN"
-};
-var LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-var DIGITS = "0123456789".split("");
-var DEAF_KEYS = { F6: "StarCraft: Remastered keeps F6 to itself and reports no press of it (played and seen); F7 and F8 work" };
-var KEY_NAMES = [
-  ...LETTERS,
-  ...DIGITS,
-  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`).filter((k) => !(k in DEAF_KEYS)),
-  ...Object.keys(NAMED_KEYS),
-  ...DIGITS.map((d) => `Numpad${d}`)
-];
-var KEY_BY_LOWER = new Map(KEY_NAMES.map((k) => [k.toLowerCase(), k]));
-function keyName(v) {
-  return KEY_BY_LOWER.get(v.trim().toLowerCase()) ?? null;
-}
-var MAX_CHAT_CAPTURES = 3;
-var MAX_CHAT_BYTES = 78;
-var IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
-var bytes = (s) => new TextEncoder().encode(s).length;
-function parseChatPattern(pattern) {
-  if (pattern === "") throw new Error('chatted: the pattern is what the player types, such as "-give {n}".');
-  if (/[\r\n\0]/.test(pattern)) throw new Error("chatted: a typed line is one line.");
-  const segments = [];
-  const captures = [];
-  let text = "";
-  for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern[i];
-    if (ch === "}") throw new Error("chatted: a } without its {. A capture is {name}, {name:unit} or {name:word|word}.");
-    if (ch !== "{") {
-      text += ch;
-      continue;
-    }
-    const end = pattern.indexOf("}", i);
-    if (end < 0) throw new Error("chatted: a { without its }. A capture is {name}, {name:unit} or {name:word|word}.");
-    const inside = pattern.slice(i + 1, end);
-    i = end;
-    const colon = inside.indexOf(":");
-    const name = colon < 0 ? inside : inside.slice(0, colon);
-    const kind = colon < 0 ? "" : inside.slice(colon + 1);
-    if (!IDENT.test(name) || name.startsWith("__")) throw new Error(`chatted: {${inside}} needs a name to be read by: {n}, {unit:unit}, {kind:ore|gas}.`);
-    if (captures.some((c2) => c2.name === name)) throw new Error(`chatted: two captures are called ${name}.`);
-    if (text === "") throw new Error(segments.length === 0 ? 'chatted: a pattern starts with its own word, so that ordinary talk is not taken for it: "-give {n}".' : `chatted: {${name}} follows another capture with nothing between them; put a space or a word there.`);
-    segments.push(text);
-    text = "";
-    if (kind === "") captures.push({ name, kind: "number" });
-    else if (kind === "unit") captures.push({ name, kind: "unit" });
-    else {
-      const words = kind.split("|");
-      if (kind === "number" || kind === "word") throw new Error(`chatted: {${name}} alone is a number; {${name}:unit} a unit type; {${name}:ore|gas} one of the words listed.`);
-      if (words.some((w) => w === "" || /\s/.test(w))) throw new Error(`chatted: {${inside}}: each word of the list is one word, without spaces.`);
-      if (new Set(words.map((w) => w.toLowerCase())).size !== words.length) throw new Error(`chatted: {${inside}} lists a word twice.`);
-      captures.push({ name, kind: "word", words });
-    }
-    segments.push(captures.length - 1);
-  }
-  if (text !== "") segments.push(text);
-  if (captures.length > MAX_CHAT_CAPTURES) throw new Error(`chatted: a pattern reads at most ${MAX_CHAT_CAPTURES} values.`);
-  const unit = captures.findIndex((c2) => c2.kind === "unit");
-  if (unit >= 0 && (unit !== captures.length - 1 || typeof segments[segments.length - 1] === "string")) throw new Error("chatted: a unit's name has spaces in it, so {\u2026:unit} reads the rest of the line and comes last.");
-  const written = segments.filter((s) => typeof s === "string").join("");
-  if (bytes(written) > MAX_CHAT_BYTES) throw new Error(`chatted: the game lets a player type ${MAX_CHAT_BYTES} bytes; the pattern's own text is longer.`);
-  return { pattern, segments, captures };
-}
-var MOUSE_SLOTS = 8;
-var LAST_SLOT = 62;
-function inputsOf(programs) {
-  const sources = [];
-  let mouse = false;
-  let at = null;
-  const unit = (u) => {
-    if (u.kind === "call") call(u.call);
-    else if (u.kind === "pick" && u.mouse !== void 0) {
-      mouse = true;
-      at ??= u.at;
-    } else if (u.kind === "unitAt") {
-      expr(u.ptr);
-      expr(u.epd);
-      expr(u.uid);
-    }
-  };
-  const any = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e);
-  const looks = { num: (e) => {
-    expr(e);
-    return e;
-  }, bool: (e) => {
-    expr(e);
-    return e;
-  }, call: (c2) => {
-    call(c2);
-    return c2;
-  } };
-  const text = (t) => {
-    mapText(t, looks);
-  };
-  const expr = (e) => {
-    if (mapTextOperands(e, looks)) return;
-    switch (e.kind) {
-      case "input":
-        sources.push(e.input);
-        at ??= e.at;
-        if (e.input.source === "mouse") mouse = true;
-        break;
-      case "unitField":
-      case "unitPart":
-      case "unitAlive":
-      case "unitFlag":
-        unit(e.unit);
-        break;
-      case "unitSame":
-        unit(e.left);
-        unit(e.right);
-        break;
-      case "unary":
-      case "cast":
-        expr(e.expr);
-        break;
-      case "element":
-        expr(e.index);
-        break;
-      case "binary":
-      case "compare":
-        expr(e.left);
-        expr(e.right);
-        break;
-      case "ternary":
-        expr(e.cond);
-        expr(e.whenTrue);
-        expr(e.whenFalse);
-        break;
-      case "intrinsic":
-        e.args.forEach(expr);
-        break;
-      case "randomInt":
-        expr(e.bound);
-        break;
-      case "and":
-      case "or":
-        e.items.forEach(expr);
-        break;
-      case "not":
-      case "test":
-        expr(e.expr);
-        break;
-      case "edge":
-        expr(e.cond);
-        break;
-      case "call":
-        call(e.call);
-        break;
-      default:
-        break;
-    }
-  };
-  const call = (c2) => {
-    for (const p of c2.params) any(p.init);
-    c2.body.forEach(stmt);
-  };
-  const stmt = (s) => {
-    switch (s.kind) {
-      case "declare":
-        if (!s.failed) any(s.init);
-        break;
-      case "assign":
-      case "assignBool":
-        expr(s.value);
-        break;
-      case "declareArray":
-        s.init?.forEach(expr);
-        if (s.fill) expr(s.fill);
-        break;
-      case "store":
-        expr(s.index);
-        expr(s.value);
-        break;
-      case "push":
-      case "setLength":
-        expr(s.value);
-        break;
-      case "assignUnit":
-        unit(s.value);
-        break;
-      case "assignText":
-        text(s.value);
-        break;
-      case "storeText":
-        expr(s.index);
-        text(s.value);
-        break;
-      case "releaseText":
-        expr(s.index);
-        break;
-      case "textLoop":
-        text(s.of);
-        s.body.forEach(stmt);
-        break;
-      case "unitLoop":
-        s.body.forEach(stmt);
-        break;
-      case "unitWrite":
-        unit(s.unit);
-        expr(s.value);
-        break;
-      case "unitDo":
-        unit(s.unit);
-        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
-        break;
-      case "tableWrite":
-        any(s.value);
-        break;
-      case "centerLocation":
-        expr(s.x);
-        expr(s.y);
-        break;
-      case "if":
-        expr(s.cond);
-        s.then.forEach(stmt);
-        s.else?.forEach(stmt);
-        break;
-      case "while":
-        if (s.cond) expr(s.cond);
-        s.body.forEach(stmt);
-        break;
-      case "do":
-        s.body.forEach(stmt);
-        expr(s.cond);
-        break;
-      case "for":
-        if (s.cond) expr(s.cond);
-        s.update.forEach(stmt);
-        s.body.forEach(stmt);
-        break;
-      case "unrolled":
-        s.iterations.forEach((i) => i.forEach(stmt));
-        break;
-      case "switch":
-        expr(s.value);
-        s.cases.forEach((c2) => c2.body.forEach(stmt));
-        break;
-      case "return":
-        if (s.value) any(s.value);
-        break;
-      case "action":
-        for (const v of s.variables ?? []) expr(v.expr);
-        if (s.text) text(s.text);
-        break;
-      case "print":
-        mapTextParts(s.parts, looks);
-        break;
-      case "call":
-        call(s.call);
-        break;
-      case "block":
-        s.body.forEach(stmt);
-        break;
-      default:
-        break;
-    }
-  };
-  for (const p of programs) for (const body2 of bodiesOf(p)) body2.forEach(stmt);
-  return { sources, mouse, at };
-}
-function inputPlan(programs, locations, units) {
-  const { sources, mouse } = inputsOf(programs);
-  if (sources.length === 0 && !mouse) return null;
-  const keys = [];
-  const buttons = [];
-  const chats = [];
-  for (const s of sources) {
-    if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
-    else if (s.source === "click" && !buttons.includes(s.button)) buttons.push(s.button);
-    else if (s.source === "chat" && !chats.some((c2) => c2.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
-  }
-  const used = new Set(locations.entries.map((e) => e.value - 1));
-  const free = (slot) => slot >= 0 && slot <= LAST_SLOT && !used.has(slot);
-  let qcLocation = -1;
-  for (let slot = LAST_SLOT; slot >= 0; slot--) if (free(slot)) {
-    qcLocation = slot;
-    break;
-  }
-  if (qcLocation < 0) throw new Error("Reading keys, clicks or chat needs one free location among the map's first 63 for the plugin that carries them between the players' computers; this map uses them all.");
-  let mouseBase = null;
-  if (mouse) {
-    for (let slot = LAST_SLOT - MOUSE_SLOTS + 1; slot >= 0 && mouseBase === null; slot--) {
-      let ok = true;
-      for (let i = 0; i < MOUSE_SLOTS; i++) if (!free(slot + i) || slot + i === qcLocation) ok = false;
-      if (ok) mouseBase = slot + 1;
-    }
-    if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
-  }
-  const plan = { keys, buttons, chats, qcLocation, mouseBase };
-  if (chats.some((c2) => c2.captures.some((x) => x.kind === "unit"))) {
-    const seen = /* @__PURE__ */ new Set();
-    plan.unitNames = [];
-    for (const e of units.entries) {
-      if (e.value >= 228) continue;
-      for (const k of e.keys) {
-        const lower = k.toLowerCase();
-        if (!seen.has(lower)) {
-          seen.add(lower);
-          plan.unitNames.push([lower, e.value]);
-        }
-      }
-    }
-  }
-  return plan;
-}
-
-// compiler/tables.ts
-var TABLE_SIZE = { unit: 228, weapon: 130, upgrade: 61, tech: 44, player: 12 };
-var UNIT_FLAGS2 = 6701184;
-var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS2, stride: 4, width: "bit", bit, boolean: true });
-var TABLE_FIELDS = {
-  unit: [
-    { name: "maxHp", doc: "Hit points of units made after the write.", base: 6693712, stride: 4, width: 4, scale: 256 },
-    { name: "maxShields", doc: "Shield points of units made after the write.", base: 6688256, stride: 2, width: 2 },
-    { name: "armor", doc: "Armour, before upgrades.", base: 6684360, stride: 1, width: 1 },
-    { name: "minerals", doc: "What the unit costs in minerals.", base: 6699144, stride: 2, width: 2 },
-    { name: "gas", doc: "What the unit costs in gas.", base: 6683904, stride: 2, width: 2 },
-    { name: "buildTime", doc: "Seconds to build, on the game's clock; a fraction is fine when the number is known when you build (1.5).", base: 6685736, stride: 2, width: 2, scale: 15 },
-    { name: "supplyUsed", doc: "Supply the unit takes; a Zergling is 0.5.", base: 6700264, stride: 1, width: 1, scale: 2 },
-    { name: "supplyProvided", doc: "Supply the unit provides, for the ones made after the write.", base: 6702792, stride: 1, width: 1, scale: 2 },
-    { name: "sight", doc: "Sight range in tiles, up to 11.", base: 6697528, stride: 1, width: 1 },
-    { name: "groundWeapon", doc: "The weapon used against ground units (weapons.*); units already on the map switch too.", base: 6698680, stride: 1, width: 1, type: "Weapon" },
-    { name: "airWeapon", doc: "The weapon used against air units (weapons.*); weapons.None for none.", base: 6690528, stride: 1, width: 1, type: "Weapon" },
-    { name: "size", doc: "What concussive and explosive damage scale by: 0 independent, 1 small, 2 medium, 3 large.", base: 6693248, stride: 1, width: 1 },
-    { name: "speed", doc: "Top speed in pixels a frame (a Marine walks at 4, a Vulture at 6.67), for units made after the write: the type's flingy is switched to table control and given this speed, with acceleration and stopping distance to match. A fraction is fine when the number is known when you build.", base: 7118584, stride: 4, width: 4, scale: 256, writeOnly: true, special: "speed" },
-    { name: "name", doc: "The name shown for the type: text known when you build.", base: 6685280, stride: 2, width: 2, writeOnly: true, special: "name", type: "string" },
-    flag("detector", 15, "Sees cloaked and burrowed units in its sight range."),
-    flag("permanentCloak", 22, "Always cloaked, for units made after the write."),
-    flag("cloakable", 9, "Has the ability to cloak (the flag alone gives no button)."),
-    flag("burrowable", 20, "Has the ability to burrow (the flag alone gives no button)."),
-    flag("regenerates", 7, "Hit points climb back over time, as a Zerg unit's do; units already on the map follow at once."),
-    flag("invincible", 29, "Cannot be hurt, for units made after the write."),
-    flag("hero", 6, "A hero unit."),
-    flag("organic", 16, "A Medic can heal it; units already on the map follow."),
-    flag("mechanical", 30, "An SCV can repair it; units already on the map follow."),
-    flag("robotic", 14, "Immune to the spells robotic units are immune to.")
-  ],
-  weapon: [
-    { name: "damage", doc: "Damage of one hit, before upgrades.", base: 6647472, stride: 2, width: 2 },
-    { name: "bonus", doc: "Extra damage per upgrade level.", base: 6649464, stride: 2, width: 2 },
-    { name: "cooldown", doc: "Frames between attacks.", base: 6647736, stride: 1, width: 1 },
-    { name: "factor", doc: "Hits per attack.", base: 6644960, stride: 1, width: 1 },
-    { name: "range", doc: "Range in pixels, 32 a tile.", base: 6648944, stride: 4, width: 4 },
-    { name: "minRange", doc: "The least range in pixels: nothing closer can be shot.", base: 6646296, stride: 4, width: 4 }
-  ],
-  upgrade: [
-    { name: "minerals", doc: "The first level's mineral cost.", base: 6641472, stride: 2, width: 2 },
-    { name: "gas", doc: "The first level's gas cost.", base: 6641728, stride: 2, width: 2 },
-    { name: "time", doc: "Seconds the first level takes, on the game's clock.", base: 6642560, stride: 2, width: 2, scale: 15 },
-    { name: "maxLevel", doc: "How many times it can be researched. Read only: the game took no write.", base: 6641408, stride: 1, width: 1, readonly: true }
-  ],
-  tech: [
-    { name: "minerals", doc: "Mineral cost of the research.", base: 6644296, stride: 2, width: 2 },
-    { name: "gas", doc: "Gas cost of the research.", base: 6644208, stride: 2, width: 2 },
-    { name: "time", doc: "Seconds the research takes, on the game's clock.", base: 6644696, stride: 2, width: 2, scale: 15 },
-    { name: "energy", doc: "Energy a cast takes.", base: 6644608, stride: 2, width: 2 }
-  ],
-  player: [
-    { name: "color", doc: `The colour the player's units and minimap dots are drawn in: one of colors.*, or "teal". Takes effect at once.`, base: 5774710, stride: 1, width: 1, writeOnly: true, special: "color", type: "PlayerColor | ColorName" },
-    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade" } },
-    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech" } }
-  ]
-};
-var PLAYER_COLORS = { red: 111, blue: 165, teal: 159, purple: 164, orange: 179, brown: 19, white: 255, yellow: 135, green: 117 };
-var MINIMAP_COLOR_OFFSET = 5774806 - 5774710;
-var TABLE_BRAND = { unit: "unit", weapon: "weapon", upgrade: "upgrade", tech: "tech", player: "player" };
-var tableOfBrand = (brand) => Object.keys(TABLE_BRAND).find((k) => TABLE_BRAND[k] === brand);
-var cellMax = (width) => width === "bit" ? 1 : width === 4 ? 4294967295 : 2 ** (width * 8) - 1;
-
 // compiler/runtime.ts
 var DEATHS_TABLE_ADDRESS = 5808996;
 var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
@@ -2520,6 +4892,10 @@ function createRuntime(names, collector, options = {}) {
             out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
             break;
           }
+          case "name":
+            if (typeof value !== "string" || !value) throw new ScriptError(`program: name is a text, got ${describe(value)}.`);
+            out.name = value;
+            break;
           case "comments":
           case "variableUnits":
             throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
@@ -2700,6 +5076,8 @@ ${kw}interface ProgramOptions {
    * their own copy (a variable declared with shared() is one cell they all share).
    */
   owner?: Player | readonly Player[];
+  /** What the program is called: in the Explorer's list, and by a test \u2014 sim.program("waves"). */
+  name?: string;
 }
 `;
 }
@@ -3032,12 +5410,123 @@ interface ArrayConstructor {
   <T = number>(arrayLength: number): T[];
 }
 `;
+var TESTING = `
+// \u2500\u2500 Tests: they run in the editor's simulator, never in the game, and cost the map nothing \u2500\u2500
+
+/** A unit of the simulated game, as a test sees it. */
+export interface SimUnit {
+  readonly type: UnitType; readonly owner: Player; readonly x: number; readonly y: number;
+  readonly hp: number; readonly maxHp: number; readonly shields: number; readonly maxShields: number; readonly energy: number;
+  readonly kills: number; readonly resources: number; readonly invincible: boolean; readonly burrowed: boolean; readonly cloaked: boolean; readonly hallucinated: boolean;
+  /** Still on the map. */
+  readonly alive: boolean;
+}
+
+/**
+ * The world a test is handed, new for every test: the map's placed units and locations, the script's
+ * programs at frame 0 and its trigger()s beside them, random() the same every run. Units are made, given,
+ * moved, killed and counted; nothing walks, fights or is built, and nothing dies but by the script or the test.
+ */
+export interface Sim {
+  /** Units for a player at a location's centre, as createUnit() makes them. They are given back. */
+  place(player: Player, type: UnitType, at: Location, count?: number): SimUnit[];
+  /** A unit dies: what a fight is in a test. \`by\`: the player whose kill it is. */
+  kill(unit: SimUnit, by?: Player): this;
+  /** A unit goes without dying. */
+  remove(unit: SimUnit): this;
+  give(unit: SimUnit, to: Player): this;
+  /** A unit to a location's centre, or to a point in pixels. */
+  move(unit: SimUnit, to: Location | { x: number; y: number }): this;
+
+  /** Run the game for so many frames (24 a second at Fastest). */
+  frames(n?: number): this;
+  seconds(n: number): this;
+  /** Run until \`done()\` is true. The test fails when \`most\` frames pass first (2400 unless said), so no test hangs. */
+  until(done: () => unknown, most?: number): this;
+  /** The frames run so far. */
+  readonly frame: number;
+  /** random() from this number on. Before anything that draws one. */
+  seed(n: number): this;
+
+  /** A key goes down for the next frame: what keyPressed() finds. */
+  press(key: Key, player?: Player): this;
+  click(button?: "left" | "right" | "middle", player?: Player): this;
+  /** A line of chat, for the next frame: what chatted() finds. */
+  type(line: string, player?: Player): this;
+  moveMouse(x: number, y: number, player?: Player): this;
+
+  count(player: Player, type: UnitType, at?: Location): number;
+  /** The units on the map, in the order of the game's unit table. */
+  units(filter?: { owner?: Player; type?: UnitType; at?: Location }): SimUnit[];
+  resources(player: Player): { ore: number; gas: number };
+  deaths(player: Player, type: UnitType): number;
+  kills(player: Player, type: UnitType): number;
+  switch(n: Switch): boolean;
+  /** Where a location is now: a program may have moved it. */
+  location(n: Location): { left: number; top: number; right: number; bottom: number } | undefined;
+
+  /**
+   * A program's variables, by their names in the source: numbers, booleans, texts, arrays, a record as an
+   * object, a unit (null for none). The program by the name its options give it \u2014 program(() => { \u2026 },
+   * { name: "waves" }) \u2014 or by its place in the script, from 0. Of a per-player program, \`player\`'s.
+   */
+  program(name?: string | number, player?: Player): Readonly<Record<string, any>>;
+
+  /** What was shown, in order: to anybody, or what one player saw. */
+  printed(player?: Player): string[];
+  /** Everything that happened, by frame. */
+  readonly events: readonly { frame: number; text: string; player: number; file?: string; line?: number }[];
+  /** What a program did that is always a mistake: an index past an array's end, the stack's depth, the heap full. One the test did not ask for (expect(sim).toHaveFaulted) fails it. */
+  readonly faults: readonly { message: string; cycle: number }[];
+}
+
+export interface Expectation<T> {
+  toBe(expected: T): void;
+  toEqual(expected: unknown): void;
+  toBeTruthy(): void;
+  toBeFalsy(): void;
+  toBeNull(): void;
+  toBeDefined(): void;
+  toBeUndefined(): void;
+  toBeGreaterThan(n: number): void;
+  toBeGreaterThanOrEqual(n: number): void;
+  toBeLessThan(n: number): void;
+  toBeLessThanOrEqual(n: number): void;
+  toContain(item: unknown): void;
+  toHaveLength(n: number): void;
+  toMatch(pattern: RegExp | string): void;
+  toThrow(message?: RegExp | string): void;
+  /** expect(sim): a text was shown \u2014 all of it, a part of it, or a pattern. \`to\`: to that player. */
+  toHavePrinted(text: RegExp | string, options?: { to?: Player }): void;
+  /** expect(sim): the simulator said a program did what is always a mistake. Asking is what lets the test go on past it. */
+  toHaveFaulted(message?: RegExp | string): void;
+}
+export function expect<T>(actual: T): Expectation<T> & { readonly not: Expectation<T> };
+
+export interface TestOptions {
+  /** Without the map's player settings the world has one player: this one. */
+  as?: Player;
+}
+type TestBody<A extends readonly unknown[] = []> = (sim: Sim, ...args: A) => void;
+interface TestEach<F> { <T>(cases: readonly T[]): (name: string, fn: F extends "suite" ? (...args: T extends readonly unknown[] ? T : [T]) => void : TestBody<T extends readonly unknown[] ? T : [T]>) => void }
+interface TestCall { (name: string, fn: TestBody): void; (name: string, options: TestOptions, fn: TestBody): void; each: TestEach<"test"> }
+interface SuiteCall { (name: string, body: () => void): void; each: TestEach<"suite"> }
+/** A test: ordinary TypeScript, run in the simulator after every compile that goes through. Not async: nothing in sim waits. */
+export const test: TestCall & { only: TestCall; skip: TestCall };
+export const it: typeof test;
+/** Tests under one name. */
+export const describe: SuiteCall & { only: SuiteCall; skip: SuiteCall };
+/** Before each test of this describe (or of the file) and of those inside it. */
+export function beforeEach(fn: (sim: Sim) => void): void;
+export function afterEach(fn: (sim: Sim) => void): void;
+`;
 function generateDeclarations(names = defaultScriptNames(), options = {}) {
   const compact = options.compact === true;
   const globals = body("declare ", "", names, compact);
   if (compact) return `${HEADER}${globals}
 ${ARRAYS}`;
-  const module = body("export ", "export ", names, false).split("\n").map((l) => l ? `  ${l}` : l).join("\n");
+  const module = `${body("export ", "export ", names, false)}
+${TESTING}`.split("\n").map((l) => l ? `  ${l}` : l).join("\n");
   return `${HEADER}${globals}
 ${ARRAYS}
 // \u2500\u2500 The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; \u2500\u2500
@@ -3661,10 +6150,10 @@ function resolveModule(files, from, spec) {
   return null;
 }
 var SOURCE_URL_PREFIX = "trigscript://";
-function runModules(files, entry, library, moduleName) {
+function runModules(files, entry, library, moduleName, options = {}) {
   const names = new Set(files.keys());
   const cache = /* @__PURE__ */ new Map();
-  const globals = Object.keys(library);
+  const globals = Object.keys(library).filter((k) => !options.imported?.includes(k));
   const load = (file) => {
     const hit = cache.get(file);
     if (hit) return hit.exports;
@@ -3687,6 +6176,7 @@ function runModules(files, entry, library, moduleName) {
   };
   try {
     load(entry);
+    for (const file of options.then ?? []) load(file);
     return null;
   } catch (err) {
     return locate(err, files);
@@ -5873,17 +8363,17 @@ var Structured = class _Structured {
         }
       }
       if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init) || init.kind === ts.SyntaxKind.ThisKeyword) {
-        const same = this.bindingOf(init);
-        if (same?.kind === "inner" || same?.kind === "innerUnits") {
-          this.scope.bind(d, this.takenCopy(same, d.name.text, d));
+        const same2 = this.bindingOf(init);
+        if (same2?.kind === "inner" || same2?.kind === "innerUnits") {
+          this.scope.bind(d, this.takenCopy(same2, d.name.text, d));
           continue;
         }
-        if (same?.kind === "record" && !same.truth) {
+        if (same2?.kind === "record" && !same2.truth) {
           if (!(list.flags & ts.NodeFlags.Const) && this.assigns(this.body.plan.body, d)) {
             this.c.error(d, `${d.name.text} is another name for a record, and a record is not assigned whole: declare it with const, or copy the fields it needs.`);
             continue;
           }
-          this.scope.bind(d, same);
+          this.scope.bind(d, same2);
           continue;
         }
       }
@@ -7178,7 +9668,7 @@ var Structured = class _Structured {
         const i = this.newVar(`(index of ${a2.name})`, "number", at, { temp: true });
         const result = this.newVar(`(${a2.name}.${method} result)`, method === "includes" ? "boolean" : "number", at, { temp: true });
         const cell = { kind: "element", array: a2.id, index: varRef(i), at };
-        const same = a2.kind === "number" ? { kind: "compare", op: "==", left: cell, right: varRef(w), at, label } : { kind: "or", items: [{ kind: "and", items: [cell, boolRef(w)] }, { kind: "and", items: [{ kind: "not", expr: cell }, { kind: "not", expr: boolRef(w) }] }] };
+        const same2 = a2.kind === "number" ? { kind: "compare", op: "==", left: cell, right: varRef(w), at, label } : { kind: "or", items: [{ kind: "and", items: [cell, boolRef(w)] }, { kind: "and", items: [{ kind: "not", expr: cell }, { kind: "not", expr: boolRef(w) }] }] };
         const found = [{ kind: "return", value: method === "includes" ? TRUE : varRef(i), at, label }];
         const call = {
           name: `${a2.name}.${method}`,
@@ -7188,7 +9678,7 @@ var Structured = class _Structured {
           result: { decl: result, kind: method === "includes" ? "boolean" : "number" },
           body: [
             { kind: "declare", decl: i, init: num(0), at, label },
-            { kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: a2.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "if", cond: same, then: found, at, label }], at, label },
+            { kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: a2.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "if", cond: same2, then: found, at, label }], at, label },
             { kind: "return", value: method === "includes" ? FALSE : num(-1), at, label }
           ]
         };
@@ -7392,9 +9882,9 @@ var Structured = class _Structured {
     }
     const a2 = this.newArray(name, shape.kind, total, this.sourceOf(at), shape.kind === "number" ? this.widthOf(shape.leaf) : {});
     if (grows) a2.dynamic = true;
-    const same = cells.length > 4 && cells.every((v) => v.kind === "const" && v.value === cells[0].value);
+    const same2 = cells.length > 4 && cells.every((v) => v.kind === "const" && v.value === cells[0].value);
     this.emit({ kind: "remark", text: `One flat array, ${name}[y][x] read at y \xD7 ${dims.slice(1).reduce((n, d) => n * d, 1)} + x: every row has ${dims[1]} cells and none of them grows${grows ? "; whole rows are pushed and popped" : ""}. A row past its own end reads 0.`, short: `flat, ${grows ? "rows" : dims[0]} \xD7 ${dims.slice(1).join(" \xD7 ")}`, at: this.at(at) }, at);
-    this.emit({ kind: "declareArray", array: a2.id, ...same ? { fill: cells[0] } : { init: cells }, at: this.at(at), label: this.label(at) }, at);
+    this.emit({ kind: "declareArray", array: a2.id, ...same2 ? { fill: cells[0] } : { init: cells }, at: this.at(at), label: this.label(at) }, at);
     return { kind: "grid", name, a: a2, dims: grows ? [0, ...dims.slice(1)] : dims, offset: null };
   }
   /** The cells of a row given to a grid — `grid.push([x, y])`, `grid[i] = [0, 0, 0]`: written out, and as many as a row has. */
@@ -8964,8 +11454,8 @@ var Structured = class _Structured {
       }
       const a2 = make(values.length);
       if (!a2) return null;
-      const same = values.length > 4 && values.every((v) => v.value === values[0].value);
-      this.emit({ kind: "declareArray", array: a2.id, ...same ? { fill: values[0] } : { init: values }, at: this.at(at), label: this.label(at) }, at);
+      const same2 = values.length > 4 && values.every((v) => v.value === values[0].value);
+      this.emit({ kind: "declareArray", array: a2.id, ...same2 ? { fill: values[0] } : { init: values }, at: this.at(at), label: this.label(at) }, at);
       return a2;
     }
     const one = (e) => kind === "number" ? this.num(e) : this.boolValue(e);
@@ -10847,7 +13337,7 @@ var Structured = class _Structured {
     const w = this.newVar(`(${method} of ${of.name})`, "text", at, { temp: true, text: "made" });
     const i = this.newVar(`(index of ${of.name})`, "number", at, { temp: true });
     const result = this.newVar(`(${of.name}.${method} result)`, method === "includes" ? "boolean" : "number", at, { temp: true });
-    const same = { kind: "textCompare", op: "==", left: this.textAtCells(this.textAtIndex(of, varRef(i)), e), right: { kind: "textVar", id: w.id }, at, label };
+    const same2 = { kind: "textCompare", op: "==", left: this.textAtCells(this.textAtIndex(of, varRef(i)), e), right: { kind: "textVar", id: w.id }, at, label };
     const call = {
       name: `${of.name}.${method}`,
       at,
@@ -10856,7 +13346,7 @@ var Structured = class _Structured {
       result: { decl: result, kind: method === "includes" ? "boolean" : "number" },
       body: [
         { kind: "declare", decl: i, init: num(0), at, label },
-        { kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: [...of.rows.fields.values()][0].id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "if", cond: same, then: [{ kind: "return", value: method === "includes" ? TRUE : varRef(i), at, label }], at, label }], at, label },
+        { kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: [...of.rows.fields.values()][0].id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "if", cond: same2, then: [{ kind: "return", value: method === "includes" ? TRUE : varRef(i), at, label }], at, label }], at, label },
         { kind: "return", value: method === "includes" ? FALSE : num(-1), at, label }
       ]
     };
@@ -11995,7 +14485,7 @@ var Structured = class _Structured {
   constantArgument(value, label, parameter) {
     if (value === null || value === void 0) return this.kindOf(this.c.checker.getTypeAtLocation(parameter.name)) === "unit" ? { init: NO_UNIT, label } : null;
     if (typeof value === "boolean") return { init: value ? TRUE : FALSE, label };
-    if (typeof value === "number" && Number.isInteger(value) && value >= I32_MIN && value <= U32_MAX2) return { init: num(value), label };
+    if (typeof value === "number" && Number.isInteger(value) && value >= I32_MIN && value <= U32_MAX) return { init: num(value), label };
     if (typeof value === "string" && this.isTextType(this.c.checker.getTypeAtLocation(parameter.name))) return { init: this.literalText(value, parameter), label };
     return null;
   }
@@ -12233,7 +14723,7 @@ var Structured = class _Structured {
       this.c.error(at, `Only whole numbers exist in the game (got ${v}).`);
       return null;
     }
-    if (v < I32_MIN || v > U32_MAX2) {
+    if (v < I32_MIN || v > U32_MAX) {
       this.c.error(at, `A number of the game has 32 bits: \u22122 147 483 648 to 2 147 483 647, or up to 4 294 967 295 as a u32 (got ${v}).`);
       return null;
     }
@@ -13181,18 +15671,18 @@ var Structured = class _Structured {
         return !!h && (h.value === null || h.value === void 0);
       };
       const side = none(e.left) ? e.right : none(e.right) ? e.left : null;
-      let same;
+      let same2;
       if (side) {
         const unit = this.unitExpr(side);
         if (!unit) return FALSE;
-        same = { kind: "not", expr: this.mark({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) };
+        same2 = { kind: "not", expr: this.mark({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) };
       } else {
         const left = this.unitExpr(e.left);
         const right = this.unitExpr(e.right);
         if (!left || !right) return FALSE;
-        same = this.mark({ kind: "unitSame", left, right, at: this.at(e), label: this.label(e) }, e);
+        same2 = this.mark({ kind: "unitSame", left, right, at: this.at(e), label: this.label(e) }, e);
       }
-      return op === "==" ? same : same.kind === "not" ? same.expr : { kind: "not", expr: same };
+      return op === "==" ? same2 : same2.kind === "not" ? same2.expr : { kind: "not", expr: same2 };
     }
     if (this.isTextTyped(e.left) && this.isTextTyped(e.right)) {
       const left = this.text(e.left);
@@ -13229,8 +15719,8 @@ var Structured = class _Structured {
       }
       const l2 = this.boolInner(e.left, depth + 1);
       const r2 = this.boolInner(e.right, depth + 1);
-      const same = { kind: "or", items: [{ kind: "and", items: [l2, r2] }, { kind: "and", items: [{ kind: "not", expr: l2 }, { kind: "not", expr: r2 }] }] };
-      return op === "==" ? same : { kind: "not", expr: same };
+      const same2 = { kind: "or", items: [{ kind: "and", items: [l2, r2] }, { kind: "and", items: [{ kind: "not", expr: l2 }, { kind: "not", expr: r2 }] }] };
+      return op === "==" ? same2 : { kind: "not", expr: same2 };
     }
     const l = this.num(e.left);
     const r = this.num(e.right);
@@ -13360,7 +15850,7 @@ function compileScript(ts, files, names, options) {
   const diagnostics = [];
   const result = (extra = {}) => {
     diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, tests: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
   const refs = [];
   const scripts = /* @__PURE__ */ new Map();
@@ -13436,8 +15926,8 @@ function compileScript(ts, files, names, options) {
     const sf = d.file;
     const pos = sf && d.start !== void 0 ? position(sf, d.start, d.start + (d.length ?? 0)) : { line: 1, column: 1, endLine: 1, endColumn: 1 };
     const file = sf ? sf.fileName : ENTRY_FILE;
-    const where = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
-    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where + renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), source: "typescript" });
+    const where2 = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
+    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where2 + renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), source: "typescript" });
   }
   if (diagnostics.length) return result();
   const plans = /* @__PURE__ */ new Map();
@@ -13463,6 +15953,13 @@ function compileScript(ts, files, names, options) {
       ts.forEachChild(node, visit);
     };
     visit(sf);
+    if (!isTestFile(name)) {
+      for (const st of sf.statements) {
+        const spec = (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier && ts.isStringLiteralLike(st.moduleSpecifier) ? st.moduleSpecifier : null;
+        const target = spec ? resolveModule(new Set(fileNames), name, spec.text) : null;
+        if (spec && target && isTestFile(target)) nodeError(spec, `${target} is a test file, and a test file is never part of the build: only another test file imports one. What both need belongs in a file of its own.`);
+      }
+    }
     checkValuesAsBooleans(ts, checker, sf, plans, (node, message) => nodeError(node, message));
   }
   if (diagnostics.length) return result();
@@ -13484,9 +15981,15 @@ function compileScript(ts, files, names, options) {
   }
   if (diagnostics.length > planned.size) return result();
   const collector = new Collector();
-  const runtime = createRuntime(names, collector);
+  const registry = new TestRegistry();
+  const where = (err) => {
+    const at = locate(err, linked);
+    return at.file ? { file: at.file, line: at.line ?? 1, ...at.column ? { column: at.column } : {} } : null;
+  };
+  registry.where = () => where(new Error()) ?? { file: ENTRY_FILE, line: 1 };
+  const runtime = { ...createRuntime(names, collector), ...registry.library() };
   collector.running = true;
-  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME);
+  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort() });
   collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;
@@ -13518,6 +16021,11 @@ function compileScript(ts, files, names, options) {
   const hints = [];
   const ir = [];
   for (const entry of collector.entries) {
+    const from = sourceOf(entry.kind === "trigger" ? entry.at : entry.descriptor.at);
+    if (from && isTestFile(from.file)) {
+      diagnostics.push({ file: from.file, line: from.line, column: 1, endLine: from.line, endColumn: 2, message: `${entry.kind}() in a test file: a test file is never part of the build, so what it declares would not be in the map. Declare it in a file main.ts imports, and test it from here.`, source: "compiler" });
+      continue;
+    }
     if (entry.kind === "trigger") {
       triggers.push(entry.record);
       sources.push(sourceOf(entry.at));
@@ -13533,6 +16041,7 @@ function compileScript(ts, files, names, options) {
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
     const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    if (entry.options.name) emitted2.program.name = entry.options.name;
     const mixes = typeNumbers(emitted2.program);
     markRecursion(emitted2.program);
     const index = programs.length;
@@ -13554,7 +16063,11 @@ function compileScript(ts, files, names, options) {
     const at = inputsOf(ir).at ?? ir[0]?.at;
     if (at) diagnostics.push({ file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: err instanceof Error ? err.message : String(err), source: "compiler" });
   }
-  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
+  let tests = null;
+  if (!registry.empty) {
+    tests = options.tests && diagnostics.length === 0 ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests) : { list: listTests(registry).list, results: [], only: [], ms: 0 };
+  }
+  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints, tests });
 }
 function checkValuesAsBooleans(ts, checker, sf, programs, error) {
   const isLibraryType = (t, name) => {

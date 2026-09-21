@@ -2,7 +2,7 @@
  * The README's examples compile. Every fenced `ts` block is compiled with the real compiler against a map that
  * has the locations the examples name; a block that calls neither `program()` nor `trigger()` is lines of a
  * program's body, and is compiled inside one. A block of several
- * files says so with a `// name.ts` line before each.
+ * files says so with a `// name.ts` line before each (`// tests/name.test.ts` for one in a folder).
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -29,14 +29,14 @@ function blocks(): { line: number; code: string }[] {
 }
 
 function files(code: string): Record<string, string> {
-  if (!/^\/\/ \w+\.ts$/m.test(code)) {
+  if (!/^\/\/ [\w./-]+\.ts$/m.test(code)) {
     if (/\b(program|trigger)\(/.test(code)) return { "main.ts": code };
     return { "main.ts": `program(() => {\n${code}\n});` };
   }
   const out: Record<string, string> = {};
   let file = "";
   for (const l of code.split("\n")) {
-    const named = /^\/\/ (\w+\.ts)$/.exec(l);
+    const named = /^\/\/ ([\w./-]+\.ts)$/.exec(l);
     if (named) { file = named[1]; out[file] = ""; } else if (file) out[file] += `${l}\n`;
   }
   return out;
@@ -49,6 +49,18 @@ describe("the README's examples", () => {
     const r = compileScript(ts, files(code), NAMES, { lib: LIB });
     expect(r.diagnostics.map((d) => `${d.file}:${d.line} ${d.message}`)).toEqual([]);
     expect(r.triggers.length + (r.ir?.length ?? 0)).toBeGreaterThan(0);
+  });
+  it("an example that carries a test() passes it", () => {
+    // Every location the examples name is a box of its own, side by side.
+    const locations = Object.fromEntries(NAMES.locations.entries.map((e) => [e.value, { left: e.value * 1000, top: 0, right: e.value * 1000 + 200, bottom: 200 }]));
+    let ran = 0;
+    for (const { line, code } of all) {
+      if (!/\btest\(/.test(code)) continue;
+      const r = compileScript(ts, files(code), NAMES, { lib: LIB, tests: { world: { locations } } });
+      expect([line, r.tests?.results.map((t) => [t.id, t.status, t.message])]).toEqual([line, r.tests?.results.map((t) => [t.id, "passed", undefined])]);
+      ran += r.tests?.results.length ?? 0;
+    }
+    expect(ran).toBeGreaterThan(0);
   });
   it("a print with `// what it shows` beside it shows that in Simulate", () => {
     for (const { line, code } of all) {

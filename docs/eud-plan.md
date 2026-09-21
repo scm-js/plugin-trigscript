@@ -136,6 +136,15 @@ and how do we get the best developer experience out of that.
 > slice 9, `test()` and the debugger (3.10.0), then slice 10, the examples (3.11.0) — and
 > the debugger now has a call stack, arrays, rows, texts, instances and maps to show, which
 > is why it waited.
+>
+> **Revised 2026-09-20: slice 9 designed, and split in two.** The user asked for folders in
+> the Explorer ("so someone can do /tests or whatever and put their stuff in there") and
+> for a good experience around the test blocks. Looking at what that takes found that the
+> screen is the smaller half: the simulator's world makes no unit, so the example test this
+> plan has carried since its first day — six Zerglings after a wave — cannot pass in it.
+> Slice 9 is now folders, a world that holds units, and `test()` (3.10.0); the debugger is
+> slice 9½ (3.11.0), and the examples move to 3.12.0. See *Slice 9* under Slices; the
+> *`test()` blocks* paragraph of *The tooling* is superseded by it.
 
 ## What we are aiming for
 
@@ -363,8 +372,8 @@ same IR (the classic backend lowers the IR to triggers; the trigger interpreter 
 `trigger()` records and for the classic backend's own tests). Unit conditions stop
 answering "false": `bring()` counts the simulated units.
 
-**`test()` blocks.** Ordinary TypeScript run when the script is built, against the
-simulator, so a script checks itself:
+**`test()` blocks.** (As first planned; *Slice 9* under Slices is the design.) Ordinary
+TypeScript run when the script is built, against the simulator, so a script checks itself:
 
 ```ts
 test("the first wave spawns after the beacon", (sim) => {
@@ -472,8 +481,9 @@ before the slice is called done, in the Magenta manner.
 | 7 | Functions that are called (3.7.0; the probe is `probes/functions.ts`, played 2026-09-19: every line as expected — 2000 calls in one frame without a stutter, one Marine at 10 hit points, the per-player line) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
 | 8 | Recursion (3.8.0; the probe is `probes/recursion.ts`, played 2026-09-19: as expected — `fib(20)`, 21 891 calls in one frame, with basically no pause; the overflow said in red where the third program stopped and the first going on to its end) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
 | 8½ | The TypeScript people write (3.9.0; built 2026-09-19, not shipped; the probes are `probes/callbacks.ts`, `inside.ts`, `strings.ts`, `classes.ts` and `map.ts`, all played 2026-09-19 with every step as expected) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; `string` as a value — a text of the table as its id, a text that was made as bytes in the heap; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 10–11 days |
-| 9 | `test()` blocks + debugger (3.10.0) | Tests panel, frame stepping, breakpoints, a call stack, arrays in the variables view, the world table | 3–4 days, no probe |
-| 10 | Examples, guide, assistant prompts, registry (3.11.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
+| 9 | Folders, a world that holds units, `test()` (3.10.0; built 2026-09-20, see *Slice 9* below and its *As built*) | the Explorer as a tree; `createUnit`, give, move and the kills by place acting on the simulated units; `*.test.ts` files and `test()` in any file, run after every compile, with their marks in the margin, a Testing view and the failing line said at the line | 6–8 days, no probe |
+| 9½ | The debugger (3.11.0) | frame stepping, breakpoints, a call stack, arrays, rows, texts, instances and maps in the variables view, the world table; *Debug this test* starts it on the world a test made | 3–4 days, no probe |
+| 10 | Examples, guide, assistant prompts, registry (3.12.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
 
 **Slice 3 as built**, where it differs from the sections above: the read of a unit's order is
 `orderId` (a property and a method cannot share the name `order`); `underMouse()` waits for
@@ -1066,6 +1076,195 @@ Slice 1 is where the value is and where the risk is; nothing after it is hard on
 and the Python lowering exist. Slices 2–4 can be reordered by what the user wants to play
 with first; 5 and 6 are what make it feel finished.
 
+### Slice 9: folders, a world that holds units, `test()` (3.10.0)
+
+Designed 2026-09-20 with the user. Three parts in this order, because each is what the next
+stands on; none reaches the Python or the game, so there is no probe. The debugger, which
+shared this slice, is 9½ below.
+
+**Part 1. Folders in the Explorer.** Less is missing than it looks. A file's name may
+already have folders in it (`FILE_NAME` in `script.ts`), it is kept in the map under
+`trigscript\` with the folders as they are, and `import "../main"` already resolves
+(`resolveModule` in `compiler/link.ts`). What is flat is the list the Explorer draws
+(`renderFiles` in `editor.ts` shows each whole path as one row). So this part is the
+Explorer only:
+
+- A tree: folders before files, `main.ts` first of all, a folder opened and closed by its
+  row, which ones are open kept with the workspace's layout (`api.storage`). A folder's row
+  carries the count of the problems under it.
+- *New File…* and *New Folder…* on a folder's row and on the section's title. An archive
+  has no empty folder, so a folder is there while a file is in it, as in git: *New Folder…*
+  asks for the folder's name and goes straight on to the first file's.
+- Rename and move, of a file or of a folder, by the pencil and by dragging a row onto a
+  folder. The imports that pointed at what moved, and the moved files' own, are rewritten:
+  the linker already knows which specifiers are paths, so it is a rewrite of those, shown
+  as one undoable change. Removing a folder asks once and says how many files go.
+- Two tabs with the same base name show their folder beside it.
+
+No folder has a meaning. `tests/` is a habit, not a rule: what makes a file a test file is
+its name (part 3).
+
+**Part 2. A world that holds units.** The simulator (`compiler/simulateIr.ts`) has the
+units the caller hands it, the map's locations as boxes, picks, loops, every field and verb
+of a unit, the keys, the mouse and the chat. What it says of itself is "nothing moves,
+nothing fights, `createUnit` makes no unit", and a test of almost any real map stops there.
+What the world comes to do, each as the game does it where that can be known without the
+game:
+
+- `createUnit` and `createUnitWithProperties` make units at the location's centre, with the
+  hit points, shields and energy the game's tables give the type (the `table` the caller
+  already supplies), the properties applied. A unit takes the lowest free place of the unit
+  table and a place used again has its uniqueness byte moved on, so a `Map<Unit, V>` keyed
+  by a dead unit does not find the new one, as step H of the leftovers probe showed in the
+  game and the simulator could not.
+- `giveUnits`, `moveUnit` (to the centre of where it goes), `killUnitAt` / `removeUnitAt`
+  with their counts, `modifyUnitHitPoints` and its kin, `moveLocation` onto a unit,
+  `setInvincibility`; `order` goes on changing the order's id and nothing else.
+- The conditions that count units (`bring`, `command`, `commandTheMost` and the rest)
+  answer from the list, and kills and deaths a program or a test causes are counted.
+- The start: the map's placed units, as Simulate has them today.
+- **Several players.** Today the world runs one player and takes any force to be that one.
+  A program owned by a force runs once for each of its players in the game, each with its
+  own variables; the world comes to do the same, forces read from the map's player
+  settings as the lowering reads them. This is the piece whose size is least known. If it
+  proves large, tests ship with one player a world (`test(name, { as: P2 }, …)`) and the
+  world of several players follows in 9½; the plan's own example *per-player lives* needs
+  it before slice 10.
+
+What stays out, said in the README in these words: nothing walks, nothing fights, nothing is
+built over time, nothing is in the way of anything (a `createUnit` always finds room), and
+no unit dies but by the program or by the test. `sim.kill(unit)` is what a fight is in a
+test. Simulate gets all of this for nothing, since it is the same world.
+
+**Part 3. `test()`.**
+
+*Where tests are.* Two places, and no third:
+
+- A file whose name ends in `.test.ts`, in any folder. The entry file runs first, so the
+  programs are there; then each test file runs, linked as any file is, so it can import the
+  script's own functions and test them as plain TypeScript. A test file is never part of
+  the build: importing one from a file that is not a test file is an error, and so is a
+  `program()` or a `trigger()` inside one.
+- `test()` written in any other file, beside what it tests. It registers and costs the map
+  nothing. Slice 10 needs this: an example is one file with its test in it.
+
+Test files are kept in the map with the rest of the source and go when the source is
+stripped.
+
+*What a test is.* Ordinary TypeScript that runs in the editor, never in the game, after a
+compile that went through. Each test gets a world of its own: the map's placed units and
+locations, the compiled programs at frame 0, `random()` seeded with the same number every
+time (`sim.seed(n)` for another). A test's function is not `async`; one that is gets an
+error, since nothing in `sim` waits. The names are Vitest's, so there is nothing to learn:
+`test`, `describe`, `beforeEach`, `test.only`, `test.skip`, `test.each`, `expect`, all from
+`"trigscript"`.
+
+```ts
+import { test, expect, P1, P2, units, locations } from "trigscript";
+
+test("the second wave is bigger", (sim) => {
+  sim.place(P1, units.TerranMarine, locations.Beacon);
+  sim.until(() => sim.program("waves").wave === 2);
+  expect(sim.count(P2, units.ZergZergling, locations.Spawn)).toBe(8);
+  expect(sim).toHavePrinted("Wave 2");
+});
+```
+
+| `sim.` | |
+| --- | --- |
+| `place(player, type, at, n?)`, `kill(unit)`, `remove(unit)`, `give(unit, to)` | what the test does to the world; `place` gives the units back |
+| `frames(n)`, `seconds(n)`, `until(() => …, most?)` | time; `until` fails the test when `most` frames pass (2400 unless said), so no test hangs |
+| `press`, `click`, `type`, `moveMouse` | the interpreter's own, there since slice 4 |
+| `count(player, type, at?)`, `units(filter)`, `resources(player)`, `deaths(player, type)`, `switch(n)` | the world read back |
+| `program(name)` | a program's variables by the names in the source: numbers, booleans, texts, arrays, records. The readers are in the interpreter already (`variable`, `text`, `array`). For a program with several players, `program(name, player)` |
+| `printed(player?)`, `events`, `faults` | what was shown, everything that happened, what went wrong |
+
+`expect` has `toBe`, `toEqual`, `not`, the four comparisons, `toContain`, `toBeTruthy`, and
+two of its own: `expect(sim).toHavePrinted(text | RegExp, { to? })` and
+`expect(sim).toHaveFaulted(/depth/)`. A fault the test did not expect fails it without
+being asked for: an index outside its array, the stack's depth, the heap full, a frame
+past 100 000 statements.
+
+*In the workspace.* As VS Code does it, since that is what the workspace is laid out as:
+
+- A mark in the margin beside every `test(` and `describe(`: not run, passed, failed.
+  Clicking it runs that one; its menu has *Run* and, from 9½, *Debug*.
+- A failure is said where it is: "expected 8, got 6" at the end of the failing `expect`'s
+  line, the two values in full on hover. A test that threw says what at the line that threw.
+- A **Testing** view beside the Explorer, which is when the activity bar this plan expected
+  arrives: folder, file, `describe`, test, each with its mark; run all, a folder, a file or
+  one; show only the failing.
+- A **Test Results** view in the panel under the editor: the chosen test's message, what it
+  printed, its events by frame, each a link to its line.
+- Tests run again after every compile that went through, the run dropped by the next
+  keystroke. If all of them take more than two seconds, only the open file's run by
+  themselves and the rest wait for *Run All*. The status bar has the count (`12 passed`,
+  or `1 failed` in the colour of an error), a click opening the Testing view.
+- A failing test is a warning in Problems at its line, and on Save the build's log says so;
+  a setting of the map (the Settings view of slice 6) makes a failing test refuse the
+  build. A `test.only` left in is a warning too.
+- Palette: *Run All Tests*, *Run Test at Cursor*, *Run Failed Tests*. *New File…* in a
+  folder called `tests` proposes `<the open file>.test.ts` with one test written in it.
+
+*The word "Test".* The workspace's **Test (F5)** builds the map and hands it to Test Map.
+With tests in the language that name is taken twice, so the action becomes **Play (F5)**
+("build the map and start it in the game"); F5 and what it does stay.
+
+*Our own tests.* `tests/testing.test.ts` for the runner and the matchers; `tests/world.test.ts`
+for part 2, with the leftovers probe's steps G and H now played in the simulator; the
+README's examples that carry a `test()` are run by `tests/readme.test.ts`.
+
+**Order of work and size.** Folders, a day. The world, two to three days, more if several
+players are. `test()`, the runner and its API a day, the workspace around it two to three.
+Ships as 3.10.0 in the usual order: the plugin's commit and tag, scm-js (pin, vendored
+copy, the guide's TrigScript section with a *Tests* part and new pictures of the Explorer
+and the Testing view, the catalogue note), the registry, the assistant's prompt.
+
+**As built (2026-09-20; no probe, since nothing reaches the Python or the game; proven by
+`tests/tree.test.ts`, `tests/world.test.ts`, `tests/testing.test.ts`,
+`tests/test-state.test.ts`, the README's own example, and a headless run of the workspace
+in the editor).** What differs from the design above, and what building it found:
+
+- *Several players fit.* The world of several players is in 3.10.0 (`compiler/world.ts`:
+  `Players`), so nothing of it is left for 9½. With the map's player settings a program of
+  a force runs once a frame for each of its human and computer players, a trigger of a
+  force once for each, a group in an action is each of its players and in a condition all
+  of them together. Without them the world has the one player, as it always had, and
+  `test(name, { as: P2 }, …)` says which: it stayed, for that case only.
+- *A program had no name.* `sim.program("waves")` needed one, so `program()` took a `name`
+  option; the Explorer's Programs list shows it too. `const waves = program(…)` was
+  considered and left: `program()` returns nothing, and a constant of nothing reads badly.
+- *The tests' names are imports, not globals.* A global is a parameter of the function a
+  file runs in, so a script's own top-level `test` — or `order`, `name`, `random`, which
+  bite today — is "already declared". `test`, `describe`, `expect` and the hooks are
+  therefore in the module only (`runModules`' `imported`). The older globals' clash is
+  worth its own look: a file that imports what it uses could run without them.
+- *Undo of a move* is the notification's **Undo** (the inverse move, imports with it), not
+  Monaco's undo stack: a moved file is a new model, and its history goes with the old one.
+- *The unit table's order* is the simulator's rule (lowest free place, uniqueness byte
+  moved on at reuse), said as such in the README. What the game does was not probed; the
+  rule is the worst case for what keeps a unit, which is what a test wants to see.
+- *Added beyond the table:* `sim.move`, `sim.kills`, `sim.location`, `sim.frame`,
+  `afterEach`, `it`, `toHaveLength`, `toMatch`, `toThrow`, `toBeNull`, `toBeDefined`.
+- *Left for 9½:* *Debug* on a test's mark, and folding in the Testing view's tree.
+- *Found, not changed:* in a per-player program `let total = shared(0)` is put to 0 again
+  by every player's run as it comes to the declaration, on the first frame — the lowering
+  does the same (`statement` → `declare` → `put`), so the simulator now shows it. Whether
+  a shared variable should be initialised once is a question for the language, not for
+  this slice.
+- The two probe tests that placed their Marines by hand because `createUnit` made none
+  (`leftovers`, `classes`) now let the world make them, and the leftovers one checks step
+  H, which the simulator could not play before.
+
+### Slice 9½: the debugger (3.11.0)
+
+As *The tooling* says, with what the language became since: a call stack (called functions
+and the frames of one that calls itself), arrays, rows, texts, instances and maps in the
+variables view, the world as a table of units. New with the split: *Debug* on a test's
+mark starts the debugger on the world that test made, stopped at the test's first
+`sim.frames` / `until`, so a failing test is where a debugging session begins. Whatever of
+the world of several players did not fit 3.10.0 comes here.
+
 ## Open decisions
 
 - ~~The name for a unit on the map.~~ Decided 2026-09-17: `Unit` is the unit on the map,
@@ -1104,8 +1303,16 @@ with first; 5 and 6 are what make it feel finished.
 - ~~Offline.~~ Solved by the eudplib plugin: after its one-time download every build is
   local, on the desktop as on the web.
 
-Nothing is open as of 2026-09-19. What slice 9 has to decide — how a `test()` presses
-a key, what the debugger shows of a row — comes up when that slice is designed.
+- ~~Where tests live.~~ Decided 2026-09-20: a `*.test.ts` file in any folder, or `test()`
+  in any file; no folder has a meaning (the user asked for folders, not for a rule).
+- ~~How a `test()` presses a key.~~ `sim.press` and its kin, the interpreter's own since
+  slice 4.
+- ~~Several players in one world~~ (slice 9, part 2). Decided 2026-09-20: wanted; if it
+  proves large, 3.10.0 ships with one player a world (`test(name, { as: P2 }, …)`) and the
+  world of several players follows in 9½.
+- ~~Test (F5) becomes Play (F5).~~ Decided 2026-09-20: renamed, so that "test" means one
+  thing in the workspace.
+- What the debugger shows of a row comes up when 9½ is designed.
 
 ## Facts this plan leans on
 
