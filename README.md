@@ -1477,10 +1477,9 @@ a message that says so, none is passed over in silence:
 | A `Map` whose values are texts or records, or whose keys are texts | the place of a row of an array of records as the value |
 | Writing a unit's position, cloak or tint | the game refuses these itself (*Units*) |
 
-Still to come, in this order: `test()` blocks
-that run a script against the simulator, a debugger that steps it, and a gallery of
-examples. The plan is `docs/eud-plan.md`, and the IR the
-compiler hands eudplib is `docs/ir.md`.
+Still to come, in this order: a debugger that steps a script in the simulator, started
+from a test if you like, and a gallery of examples with their tests. The plan is
+`docs/eud-plan.md`, and the IR the compiler hands eudplib is `docs/ir.md`.
 
 ### Coming from 3.9
 

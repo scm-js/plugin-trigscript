@@ -481,9 +481,10 @@ before the slice is called done, in the Magenta manner.
 | 7 | Functions that are called (3.7.0; the probe is `probes/functions.ts`, played 2026-09-19: every line as expected — 2000 calls in one frame without a stutter, one Marine at 10 hit points, the per-player line) | a function that never sleeps and whose parameters go only where a variable may go is one copy in the map, called from every site; the rest stay inlined; a hint says which; a function that takes an array is one copy an array passed; the simulator's faults shown in the Simulate view | 3 days |
 | 8 | Recursion (3.8.0; the probe is `probes/recursion.ts`, played 2026-09-19: as expected — `fib(20)`, 21 891 calls in one frame, with basically no pause; the overflow said in red where the third program stopped and the first going on to its end) | a function on a cycle of the call graph saves its frame on a stack around the call; a depth limit that says so in the game and fails a test | 3–4 days |
 | 8½ | The TypeScript people write (3.9.0; built 2026-09-19, not shipped; the probes are `probes/callbacks.ts`, `inside.ts`, `strings.ts`, `classes.ts` and `map.ts`, all played 2026-09-19 with every step as expected) | `forEach` / `map` / `filter` / `some` / `every` / `find` / `reduce` / `sort` with the arrow inlined into the loop; destructuring and spread; arrays inside records and arrays of arrays; `string` as a value — a text of the table as its id, a text that was made as bytes in the heap; a class as a record and its functions; `Map<number, V>` and `Set<number>` over any key | 10–11 days |
-| 9 | Folders, a world that holds units, `test()` (3.10.0; built 2026-09-20, see *Slice 9* below and its *As built*) | the Explorer as a tree; `createUnit`, give, move and the kills by place acting on the simulated units; `*.test.ts` files and `test()` in any file, run after every compile, with their marks in the margin, a Testing view and the failing line said at the line | 6–8 days, no probe |
-| 9½ | The debugger (3.11.0) | frame stepping, breakpoints, a call stack, arrays, rows, texts, instances and maps in the variables view, the world table; *Debug this test* starts it on the world a test made | 3–4 days, no probe |
-| 10 | Examples, guide, assistant prompts, registry (3.12.0) | the five examples as fixtures; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language | 2 days, no probe |
+| 9 | Folders, a world that holds units, `test()` (shipped 2026-09-20 as 3.10.1, see *Slice 9* below and its *As built*) | the Explorer as a tree; `createUnit`, give, move and the kills by place acting on the simulated units; `*.test.ts` files and `test()` in any file, run after every compile, with their marks in the margin, a Testing view and the failing line said at the line | 6–8 days, no probe |
+| 9¼ | What an outside review found (shipped 2026-09-20 as 3.10.2, see *The outside review* below) | the hover says what a number is; the script is never compiled on the page; a save whose build fails says what was saved; CI compares `dist/compiler.js` with its source | half a day, no probe |
+| 9½ | The debugger (3.11.0) | frame stepping, breakpoints, a call stack, arrays, rows, texts, instances and maps in the variables view, the world table; *Debug this test* starts it on the world a test made; a test says when it leaned on something the simulator does not model; every diagnostic has a code | 4–5 days, no probe |
+| 10 | Examples, guide, assistant prompts, registry (3.12.0) | the five examples as fixtures, each with its tests; README and the user guide's Remastered section; scmjs.dev's Write Triggers knows the whole language; a view of what the script asks of the map; a map of our own so that CI runs the build tests | 3 days, no probe |
 
 **Slice 3 as built**, where it differs from the sections above: the read of a unit's order is
 `orderId` (a property and a method cannot share the name `order`); `underMouse()` waits for
@@ -1265,6 +1266,63 @@ mark starts the debugger on the world that test made, stopped at the test's firs
 `sim.frames` / `until`, so a failing test is where a debugging session begins. Whatever of
 the world of several players did not fit 3.10.0 comes here.
 
+Two things from *The outside review* are built with it, because both are about how far a
+result of the simulator can be trusted, which is what a debugger is asked:
+
+- **What the simulator assumed.** The interpreter answers 0 for a read it does not model
+  and goes on. It already knows which reads those are, so it records each one it answered
+  that way, with the node's position. Simulate and Test Results list them under the run
+  (*assumed 0: `stats(u).speed`, waves.ts:14*), and a per-map setting beside *a failing
+  test refuses the build* makes a test that leaned on one fail, unless the test supplied
+  the value (`sim.assume(…)`, the name to be settled when it is designed). A test that
+  passes then says something about the game and not only about the simulator.
+- **A code on every diagnostic.** `ScriptDiagnostic` gains `code` (`TS1234` for the
+  checker's own, `TRIG###` for the compiler's, kept in one table with a line of the README
+  each), Monaco shows it and links it, and the assistant matches on it and no longer on
+  the wording, which is then free to improve.
+
+### The outside review (3.10.2)
+
+A review of 3.9.0 by another model, 2026-09-19 (the user's `~/trigScriptReport.md`). Most
+of it restated this plan's order — tests, then a debugger, then examples — and what it said
+of the simulator was overtaken by 3.10 a day later. Its five findings in the source were
+each checked against the code. Four were real and the fifth (what a failed build says)
+was half there; all shipped as 3.10.2 on 2026-09-20, with a sixth it had not seen:
+
+- *The hover of a variable* said every number was 0 … 4 294 967 295 and never below 0,
+  false since slice 5. `describeVariable` (`compiler/compiler.ts`) says signed, `u32`, a
+  small width, text, unit or boolean; `tests/hover.test.ts`. The hovers of `program()` and
+  `game()` said the same of numbers, and that every function is inlined.
+- *The compile worker's fallback* ran the script on the main thread, where nothing stops an
+  endless loop outside `program()`. It is gone: the blob module, then a fresh worker on
+  the release's `dist/compiler.js`, then `CompilerUnavailable`, remembered for five seconds
+  so that typing does not start a worker a keystroke.
+- *Not in the review:* the plugin fetched as its one built bundle (from the registry, not
+  compiled into the editor) gave its worker a blob that exports the plugin and no
+  compiler, and every compile failed without either fallback taking over. The worker says
+  so as it says a failed import, and the bundle route takes over
+  (`tests/compile-worker.test.ts`; seen working in the editor, headlessly).
+- *A save whose build fails* still writes the map and its script — the editor's decision,
+  and a good one. The status bar now says **Saved without its programs**, and a build that
+  went well says **edited since** once the script changes.
+- *CI* compared only `dist/plugin.js` with its source at a tag. The shared workflow takes
+  `artifacts`, and this repository names `dist/compiler.js`.
+- *Old words:* "death-counter state machines" in the editor's plugin table, "unsigned,
+  stops at 0" at the head of `structured.ts`.
+
+Taken from the rest: the two parts of 9½ above, and for slice 10 a read-only view of what
+the script asks of the map (the locations MSQC reserves, what it needs of Player 12, the
+strings a made text is written through) and a small map of our own, so that
+`tests/eud-build.test.ts` runs in CI where Blizzard's maps cannot be.
+
+Not taken, and why: a project folder with a command line and a lock file (one author, and
+one file that holds the map and its script is a decision of 3.0 — the versions that built a
+map can go into the manifest when someone asks where a build came from); what a line costs
+while the game runs (research; the size of the built map is already in the log); a slice
+to take `structured.ts` apart (pieces come out as they change, while the language still
+moves); words on the toolbar's buttons (a judgement from one picture — wait for someone
+watched using it).
+
 ## Open decisions
 
 - ~~The name for a unit on the map.~~ Decided 2026-09-17: `Unit` is the unit on the map,
@@ -1313,6 +1371,9 @@ the world of several players did not fit 3.10.0 comes here.
 - ~~Test (F5) becomes Play (F5).~~ Decided 2026-09-20: renamed, so that "test" means one
   thing in the workspace.
 - What the debugger shows of a row comes up when 9½ is designed.
+- What a test calls the value it supplies for a read the simulator does not model
+  (`sim.assume`?), and whether leaning on one fails a test by default or by the map's
+  setting: with 9½.
 
 ## Facts this plan leans on
 
