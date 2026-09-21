@@ -26,6 +26,8 @@ jobs:
     uses: scm-js/.github/.github/workflows/plugin-ci.yml@main
     # The compile worker of a copy built into the editor imports this release's
     # `dist/compiler.js`, so it is checked at a tag and committed on main like the bundle.
+    # `dist/testing.js` and its declarations are what another repository's tests import at
+    # a tag to run triggers, so they are held to the same rule.
     with:
-      artifacts: dist/compiler.js
+      artifacts: dist/compiler.js dist/testing.js dist/testing.d.ts
     secrets: inherit
