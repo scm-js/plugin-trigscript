@@ -124,7 +124,8 @@ a `Map<Unit, V>` or a variable that kept the dead unit does not find the new one
 the game. **The players are the map's**: a program owned by a force or by All Players
 runs once a frame for each of its human and computer players, each with their own
 variables, a force in an action is each of its players and in a condition all of them
-together, and every line of the list says whose it is.
+together, and every line of the list says whose it is — what several players did alike in
+a frame is one line for all of them (`P1–P8 · …`).
 
 What stays out, because it cannot be known without the game: nothing walks, nothing
 fights, nothing is built over time, nothing is in the way of anything (a unit that is made

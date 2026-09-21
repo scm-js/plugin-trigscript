@@ -3849,11 +3849,15 @@ var TestSim = class {
   /** Everything that happened, by frame. `sourceOf` says where a trigger came from. */
   log(sourceOf = () => null) {
     const out = [];
+    const say = (action2, text) => {
+      const name = actionDef(action2.type)?.name ?? `Action ${action2.type}`;
+      return text !== void 0 ? `${name} \u2014 ${text}` : name;
+    };
     this.world.events.forEach((e, i) => {
       const at = sourceOf(e.trigger);
-      out.push({ frame: e.cycle, order: i, player: e.player, text: e.text ?? `action ${e.action.type}`, ...at ? { file: at.file, line: at.line } : {} });
+      out.push({ frame: e.cycle, order: i, player: e.player, text: say(e.action, e.text), ...at ? { file: at.file, line: at.line } : {} });
     });
-    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: e.text ?? `action ${e.action.type}`, file: e.at.file, line: e.at.line }));
+    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: say(e.action, e.text), file: e.at.file, line: e.at.line }));
     return out.sort((a2, b) => a2.frame - b.frame || a2.order - b.order).map(({ order: _order, ...e }) => e);
   }
   get events() {
@@ -16912,7 +16916,7 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
 }
 
 // version.ts
-var VERSION = "3.10.0";
+var VERSION = "3.10.1";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -17624,6 +17628,33 @@ function testTree(list) {
 function idsUnder(node) {
   if (node.kind === "test" || node.kind === "suite") return [node.info.id];
   return node.children.flatMap(idsUnder);
+}
+function playersLabel(players) {
+  const sorted = [...new Set(players)].sort((a2, b) => a2 - b);
+  const parts = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    parts.push(j - i >= 2 ? `P${sorted[i] + 1}\u2013P${sorted[j] + 1}` : sorted.slice(i, j + 1).map((p) => `P${p + 1}`).join(", "));
+    i = j;
+  }
+  return parts.join(", ");
+}
+function foldPlayers(events) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Map();
+  for (const e of events) {
+    const key = `${e.frame}|${e.file ?? ""}|${e.line ?? 0}|${e.text}`;
+    const first = seen.get(key);
+    if (first) {
+      if (!first.players.includes(e.player)) first.players.push(e.player);
+      continue;
+    }
+    const row = { ...e, players: [e.player] };
+    seen.set(key, row);
+    out.push(row);
+  }
+  return out;
 }
 function summary(c2) {
   if (c2.total === 0) return null;
@@ -22355,20 +22386,27 @@ function createWorkspace(svc, options, mode) {
       if (r.expected !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "expected"), el("span", { className: "msg" }, r.expected)));
       if (r.actual !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "got"), el("span", { className: "msg" }, r.actual)));
     }
-    for (const line of r.printed) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "printed"), el("span", { className: "msg" }, line)));
+    const printed = [];
+    for (const line of r.printed) {
+      const last = printed[printed.length - 1];
+      if (last?.line === line) last.times++;
+      else printed.push({ line, times: 1 });
+    }
+    for (const { line, times } of printed) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "printed"), el("span", { className: "msg" }, line), times > 1 ? el("span", { className: "src" }, `\xD7${times}`) : void 0));
     const several = new Set(r.events.map((e) => e.player)).size > 1;
-    for (const e of r.events.slice(0, SIMULATE_ROWS)) {
+    const events = foldPlayers(r.events);
+    for (const e of events.slice(0, SIMULATE_ROWS)) {
       list.append(el(
         "li",
         { onClick: () => {
           if (e.file && e.line) goTo(e.file, e.line);
         } },
         el("span", { className: "frame" }, `frame ${e.frame + 1}`),
-        el("span", { className: "msg note" }, `${several ? `P${e.player + 1} \xB7 ` : ""}${e.text}`),
+        el("span", { className: "msg note" }, `${several ? `${playersLabel(e.players)} \xB7 ` : ""}${e.text}`),
         el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "")
       ));
     }
-    if (r.events.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${r.events.length - SIMULATE_ROWS} more`)));
+    if (events.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${events.length - SIMULATE_ROWS} more`)));
     resultsView.body.replaceChildren(list);
   };
   const runTests2 = async (filter = {}) => {
@@ -22442,31 +22480,25 @@ function createWorkspace(svc, options, mode) {
       ));
     }
     if (faults.size > SIMULATE_FAULTS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${faults.size - SIMULATE_FAULTS} more lines with a fault`)));
-    const rows = [];
     const several = sim.game.players.slots.length > 1;
-    const whose = (player) => several ? `P${player + 1} \xB7 ` : "";
-    sim.events.forEach((e, i) => {
-      const at = r.sources[e.trigger];
-      rows.push({ cycle: e.cycle, order: i, line: () => el(
+    const flat = [
+      ...sim.events.map((e, i) => {
+        const at = r.sources[e.trigger];
+        return { frame: e.cycle, order: i, player: e.player, text: describeEvent(e), file: at?.file, line: at?.line, column: 1, title: `Trigger #${e.trigger + 1}` };
+      }),
+      ...(ps?.events ?? []).map((e, i) => ({ frame: e.cycle, order: sim.events.length + i, player: e.player, text: describeEvent(e), file: e.at.file, line: e.at.line, column: e.at.column, title: `Program ${e.program + 1}` }))
+    ].sort((x, y) => x.frame - y.frame || x.order - y.order);
+    const rows = foldPlayers(flat).map((e) => ({
+      line: () => el(
         "li",
-        { title: `Trigger #${e.trigger + 1}`, onClick: () => {
-          if (at) goTo(at.file, at.line);
+        { title: e.title, onClick: () => {
+          if (e.file && e.line) goTo(e.file, e.line, e.column);
         } },
-        el("span", { className: "frame" }, `frame ${e.cycle + 1}`),
-        el("span", { className: "msg" }, `${whose(e.player)}${describeEvent(e)}`),
-        el("span", { className: "where" }, where(at))
-      ) });
-    });
-    ps?.events.forEach((e, i) => {
-      rows.push({ cycle: e.cycle, order: sim.events.length + i, line: () => el(
-        "li",
-        { title: `Program ${e.program + 1}`, onClick: () => goTo(e.at.file, e.at.line, e.at.column) },
-        el("span", { className: "frame" }, `frame ${e.cycle + 1}`),
-        el("span", { className: "msg" }, `${whose(e.player)}${describeEvent(e)}`),
-        el("span", { className: "where" }, where({ file: e.at.file, line: e.at.line }))
-      ) });
-    });
-    rows.sort((a2, b) => a2.cycle - b.cycle || a2.order - b.order);
+        el("span", { className: "frame" }, `frame ${e.frame + 1}`),
+        el("span", { className: "msg" }, `${several ? `${playersLabel(e.players)} \xB7 ` : ""}${e.text}`),
+        el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "?")
+      )
+    }));
     if (rows.length === 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} frames.`)));
     for (const row of rows.slice(0, SIMULATE_ROWS)) list.append(row.line());
     if (rows.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));

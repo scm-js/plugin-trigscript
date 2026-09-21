@@ -14,7 +14,8 @@
  * array's end, the stack's depth, the heap full). Nothing here touches the DOM, and what
  * `runTests` returns is plain data: it crosses from the compile worker to the editor.
  */
-import { ActionType, type TriggerRecord } from "../vendor/triggers";
+import { ActionType, type ActionRecord, type TriggerRecord } from "../vendor/triggers";
+import { actionDef } from "../vendor/triggerDefs";
 import type { At, Program } from "./ir";
 import type { ScriptString } from "./runtime";
 import { Simulation } from "./simulate";
@@ -405,8 +406,10 @@ export class TestSim {
   /** Everything that happened, by frame. `sourceOf` says where a trigger came from. */
   log(sourceOf: (trigger: number) => Where | null = () => null): TestEvent[] {
     const out: (TestEvent & { order: number })[] = [];
-    this.world.events.forEach((e, i) => { const at = sourceOf(e.trigger); out.push({ frame: e.cycle, order: i, player: e.player, text: e.text ?? `action ${e.action.type}`, ...(at ? { file: at.file, line: at.line } : {}) }); });
-    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: e.text ?? `action ${e.action.type}`, file: e.at.file, line: e.at.line }));
+    // As Simulate says it: the action by its name, and its text when it has one.
+    const say = (action: ActionRecord, text?: string) => { const name = actionDef(action.type)?.name ?? `Action ${action.type}`; return text !== undefined ? `${name} — ${text}` : name; };
+    this.world.events.forEach((e, i) => { const at = sourceOf(e.trigger); out.push({ frame: e.cycle, order: i, player: e.player, text: say(e.action, e.text), ...(at ? { file: at.file, line: at.line } : {}) }); });
+    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: say(e.action, e.text), file: e.at.file, line: e.at.line }));
     return out.sort((a, b) => a.frame - b.frame || a.order - b.order).map(({ order: _order, ...e }) => e);
   }
   get events(): TestEvent[] { return this.log(); }

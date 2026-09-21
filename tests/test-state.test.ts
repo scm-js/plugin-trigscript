@@ -1,7 +1,7 @@
 /** `testState.ts`: what the workspace shows of a compile's test report. */
 import { describe, expect, it } from "vitest";
 import type { TestInfo, TestReport, TestResult } from "../compiler/testing";
-import { countTests, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, stateOf, summary, testTree, warningsOf } from "../testState";
+import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, playersLabel, stateOf, summary, testTree, warningsOf } from "../testState";
 
 const info = (file: string, path: string[], name: string, line: number, kind: "suite" | "test" = "test"): TestInfo => ({ id: `${file}::${[...path, name].join(" > ")}`, kind, name, path, file, line, mode: "run" });
 const result = (id: string, status: TestResult["status"], extra: Partial<TestResult> = {}): TestResult => ({ id, status, printed: [], events: [], frames: 0, ms: 1, ...extra });
@@ -38,5 +38,14 @@ describe("what is shown", () => {
     const shape = (nodes: ReturnType<typeof testTree>): unknown[] => nodes.map((n) => [n.kind === "folder" || n.kind === "file" ? n.path : n.info.name, shape(n.children)]);
     expect(shape(testTree(LIST))).toEqual([["tests", [["tests/ai", [["tests/ai/bases.test.ts", [["expands", []]]]]]]], ["main.ts", [["waves", [["first", []], ["second", []]]]]]]);
     expect(idsUnder(testTree(LIST)[1])).toEqual([LIST[0].id]);
+  });
+});
+
+describe("several players", () => {
+  it("names them as ranges, and folds what they did alike in a frame into one line", () => {
+    expect([playersLabel([0, 1, 2, 3, 4, 5, 6, 7]), playersLabel([2, 0]), playersLabel([0, 1, 2, 5, 7])]).toEqual(["P1–P8", "P1, P3", "P1–P3, P6, P8"]);
+    const e = (frame: number, player: number, text: string, line = 3) => ({ frame, player, text, file: "main.ts", line });
+    const folded = foldPlayers([e(0, 0, "Set Resources"), e(0, 0, "Display Text Message — hello"), e(0, 1, "Set Resources"), e(0, 1, "Display Text Message — hello"), e(1, 0, "Set Resources"), e(1, 1, "Set Resources", 9)]);
+    expect(folded.map((x) => [x.frame, x.players, x.text, x.line])).toEqual([[0, [0, 1], "Set Resources", 3], [0, [0, 1], "Display Text Message — hello", 3], [1, [0], "Set Resources", 3], [1, [1], "Set Resources", 9]]);
   });
 });

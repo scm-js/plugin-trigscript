@@ -120,6 +120,37 @@ export function idsUnder(node: TestNode): string[] {
   return node.children.flatMap(idsUnder);
 }
 
+/** "P1–P8", "P1, P3": who a line is for, runs of neighbours as a range. */
+export function playersLabel(players: readonly number[]): string {
+  const sorted = [...new Set(players)].sort((a, b) => a - b);
+  const parts: string[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    parts.push(j - i >= 2 ? `P${sorted[i] + 1}–P${sorted[j] + 1}` : sorted.slice(i, j + 1).map((p) => `P${p + 1}`).join(", "));
+    i = j;
+  }
+  return parts.join(", ");
+}
+
+/**
+ * The lines of one frame that say the same thing from the same place for several players, as one line for all of
+ * them: a trigger of All Players in a game of eight is one row, not eight. The first of them keeps its place.
+ */
+export function foldPlayers<T extends { frame: number; text: string; player: number; file?: string; line?: number }>(events: readonly T[]): (T & { players: number[] })[] {
+  const out: (T & { players: number[] })[] = [];
+  const seen = new Map<string, T & { players: number[] }>();
+  for (const e of events) {
+    const key = `${e.frame}|${e.file ?? ""}|${e.line ?? 0}|${e.text}`;
+    const first = seen.get(key);
+    if (first) { if (!first.players.includes(e.player)) first.players.push(e.player); continue; }
+    const row = { ...e, players: [e.player] };
+    seen.set(key, row);
+    out.push(row);
+  }
+  return out;
+}
+
 /** What the status bar says: `12 passed`, `1 failed`, and what is left over. */
 export function summary(c: TestCounts): { text: string; failed: boolean } | null {
   if (c.total === 0) return null;

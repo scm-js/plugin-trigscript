@@ -315,6 +315,7 @@ var ACTIONS_BY_NAME = byName(ACTION_DEFS);
 var BRIEFING_BY_TYPE = byType(BRIEFING_ACTION_DEFS);
 var BRIEFING_BY_NAME = byName(BRIEFING_ACTION_DEFS);
 var conditionDef = (type) => CONDITIONS_BY_TYPE.get(type);
+var actionDef = (type, briefing = false) => (briefing ? BRIEFING_BY_TYPE : ACTIONS_BY_TYPE).get(type);
 var PLAYER_GROUP_CHOICES = [
   ...Array.from({ length: 12 }, (_, i) => ({ value: i, label: `Player ${i + 1}`, aliases: [`P${i + 1}`] })),
   { value: PlayerGroup.None, label: "None", aliases: ["Player 13"] },
@@ -3679,11 +3680,15 @@ var TestSim = class {
   /** Everything that happened, by frame. `sourceOf` says where a trigger came from. */
   log(sourceOf = () => null) {
     const out = [];
+    const say = (action2, text) => {
+      const name = actionDef(action2.type)?.name ?? `Action ${action2.type}`;
+      return text !== void 0 ? `${name} \u2014 ${text}` : name;
+    };
     this.world.events.forEach((e, i) => {
       const at = sourceOf(e.trigger);
-      out.push({ frame: e.cycle, order: i, player: e.player, text: e.text ?? `action ${e.action.type}`, ...at ? { file: at.file, line: at.line } : {} });
+      out.push({ frame: e.cycle, order: i, player: e.player, text: say(e.action, e.text), ...at ? { file: at.file, line: at.line } : {} });
     });
-    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: e.text ?? `action ${e.action.type}`, file: e.at.file, line: e.at.line }));
+    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: say(e.action, e.text), file: e.at.file, line: e.at.line }));
     return out.sort((a2, b) => a2.frame - b.frame || a2.order - b.order).map(({ order: _order, ...e }) => e);
   }
   get events() {

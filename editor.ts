@@ -43,7 +43,7 @@ import {
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
 import { FILE_NAME } from "./script";
 import { isTestFile, type TestInfo, type TestRunOptions } from "./compiler/testing";
-import { countTests, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
+import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, playersLabel, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
 import { testName } from "./service";
 import { applyMoves, buildTree, filesUnder, folderOf, movesOf, refuseMoves, tabLabels, validFolder, type Moves, type TreeNode } from "./tree";
 import { ProgramSimulation, type ProgramEvent, type ProgramSimulationOptions, type SimBounds, type SimUnitInit } from "./compiler/simulateIr";
@@ -709,13 +709,17 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       if (r.expected !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "expected"), el("span", { className: "msg" }, r.expected)));
       if (r.actual !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "got"), el("span", { className: "msg" }, r.actual)));
     }
-    for (const line of r.printed) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "printed"), el("span", { className: "msg" }, line)));
+    // The same line several times over — to each of eight players, say — is one row that says how often.
+    const printed: { line: string; times: number }[] = [];
+    for (const line of r.printed) { const last = printed[printed.length - 1]; if (last?.line === line) last.times++; else printed.push({ line, times: 1 }); }
+    for (const { line, times } of printed) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "printed"), el("span", { className: "msg" }, line), times > 1 ? el("span", { className: "src" }, `×${times}`) : undefined));
     const several = new Set(r.events.map((e) => e.player)).size > 1;
-    for (const e of r.events.slice(0, SIMULATE_ROWS)) {
+    const events = foldPlayers(r.events);
+    for (const e of events.slice(0, SIMULATE_ROWS)) {
       list.append(el("li", { onClick: () => { if (e.file && e.line) goTo(e.file, e.line); } },
-        el("span", { className: "frame" }, `frame ${e.frame + 1}`), el("span", { className: "msg note" }, `${several ? `P${e.player + 1} · ` : ""}${e.text}`), el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "")));
+        el("span", { className: "frame" }, `frame ${e.frame + 1}`), el("span", { className: "msg note" }, `${several ? `${playersLabel(e.players)} · ` : ""}${e.text}`), el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "")));
     }
-    if (r.events.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, `and ${r.events.length - SIMULATE_ROWS} more`)));
+    if (events.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, `and ${events.length - SIMULATE_ROWS} more`)));
     resultsView.body.replaceChildren(list);
   };
 
@@ -772,20 +776,16 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     }
     if (faults.size > SIMULATE_FAULTS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, `and ${faults.size - SIMULATE_FAULTS} more lines with a fault`)));
     // Hand triggers' events (trigger interpreter) and the programs' (program interpreter), in time order.
-    const rows: { cycle: number; order: number; line: () => HTMLElement }[] = [];
-    // With several players in the game, each line says whose it is.
+    // With several players in the game each line says whose it is, and what several of them did alike in a frame is one line.
     const several = sim.game.players.slots.length > 1;
-    const whose = (player: number) => (several ? `P${player + 1} · ` : "");
-    sim.events.forEach((e, i) => {
-      const at = r.sources[e.trigger];
-      rows.push({ cycle: e.cycle, order: i, line: () => el("li", { title: `Trigger #${e.trigger + 1}`, onClick: () => { if (at) goTo(at.file, at.line); } },
-        el("span", { className: "frame" }, `frame ${e.cycle + 1}`), el("span", { className: "msg" }, `${whose(e.player)}${describeEvent(e)}`), el("span", { className: "where" }, where(at))) });
-    });
-    ps?.events.forEach((e, i) => {
-      rows.push({ cycle: e.cycle, order: sim.events.length + i, line: () => el("li", { title: `Program ${e.program + 1}`, onClick: () => goTo(e.at.file, e.at.line, e.at.column) },
-        el("span", { className: "frame" }, `frame ${e.cycle + 1}`), el("span", { className: "msg" }, `${whose(e.player)}${describeEvent(e)}`), el("span", { className: "where" }, where({ file: e.at.file, line: e.at.line }))) });
-    });
-    rows.sort((a, b) => a.cycle - b.cycle || a.order - b.order);
+    const flat = [
+      ...sim.events.map((e, i) => { const at = r.sources[e.trigger]; return { frame: e.cycle, order: i, player: e.player, text: describeEvent(e), file: at?.file, line: at?.line, column: 1, title: `Trigger #${e.trigger + 1}` }; }),
+      ...(ps?.events ?? []).map((e, i) => ({ frame: e.cycle, order: sim.events.length + i, player: e.player, text: describeEvent(e), file: e.at.file as string | undefined, line: e.at.line as number | undefined, column: e.at.column, title: `Program ${e.program + 1}` })),
+    ].sort((x, y) => x.frame - y.frame || x.order - y.order);
+    const rows = foldPlayers(flat).map((e) => ({
+      line: () => el("li", { title: e.title, onClick: () => { if (e.file && e.line) goTo(e.file, e.line, e.column); } },
+        el("span", { className: "frame" }, `frame ${e.frame + 1}`), el("span", { className: "msg" }, `${several ? `${playersLabel(e.players)} · ` : ""}${e.text}`), el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "?")),
+    }));
     if (rows.length === 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "—"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} frames.`)));
     for (const row of rows.slice(0, SIMULATE_ROWS)) list.append(row.line());
     if (rows.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));
