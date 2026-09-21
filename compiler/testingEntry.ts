@@ -3,8 +3,8 @@
  * format's parser, the trigger-cycle interpreter and its world, the game's unit names (what
  * the parser needs to be told) and the record constants a test compares against. Bundled
  * on its own as `dist/testing.js` (with its declarations in `dist/testing.d.ts`) and
- * committed like `dist/compiler.js`, so a plugin takes this repository as a git
- * devDependency at a tag and imports `scmjs-plugin-trigscript/testing`.
+ * committed like `dist/compiler.js`, so a plugin takes the tarball of one of this
+ * repository's tags as a devDependency and imports `scmjs-plugin-trigscript/testing`.
  *
  * The plugin itself never loads it. Not to be confused with `testing.ts`, which is the
  * script language's own `test()`.
