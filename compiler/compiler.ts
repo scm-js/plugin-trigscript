@@ -18,9 +18,10 @@
 import type * as TS from "typescript";
 import type { TriggerRecord } from "../vendor/triggers";
 import { MODULE_NAME } from "./api";
+import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type TestReport, type TestRunOptions } from "./testing";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
 import { libraryCallName, libraryName, planProgram, transformer, type ProgramPlan } from "./hoist";
-import { runModules, type LinkedFile } from "./link";
+import { locate, resolveModule, runModules, type LinkedFile } from "./link";
 import { checkProgram } from "./eud";
 import { typeNumbers } from "./numbers";
 import { markRecursion, settleRecursion } from "./recursion";
@@ -136,6 +137,8 @@ export interface CompileResult {
   ir: Program[];
   /** What the programs read of the players — keys, clicks, the mouse, typed lines — and what carrying it takes from the map (`input.ts`); null when they read none. */
   input: InputPlan | null;
+  /** The script's `test()`s, and what running them found; null when it has none, or did not compile that far. */
+  tests: TestReport | null;
   /** No errors: `triggers` and `ir` are the complete output. */
   ok: boolean;
 }
@@ -143,6 +146,8 @@ export interface CompileResult {
 export interface CompileOptions {
   /** The standard library's declarations (`lib.es2023.d.ts` and what it references, concatenated). */
   lib: string;
+  /** Run the script's tests after a compile that went through: the world they start from, and which of them. Absent: they are listed and not run. */
+  tests?: TestRunOptions;
 }
 
 export { LowerError };
@@ -164,7 +169,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, tests: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
   const refs: MapReference[] = [];
@@ -270,6 +275,14 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       ts.forEachChild(node, visit);
     };
     visit(sf);
+    // A test file is never part of the build: nothing that is may lean on one.
+    if (!isTestFile(name)) {
+      for (const st of sf.statements) {
+        const spec = (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier && ts.isStringLiteralLike(st.moduleSpecifier) ? st.moduleSpecifier : null;
+        const target = spec ? resolveModule(new Set(fileNames), name, spec.text) : null;
+        if (spec && target && isTestFile(target)) nodeError(spec, `${target} is a test file, and a test file is never part of the build: only another test file imports one. What both need belongs in a file of its own.`);
+      }
+    }
     // Outside the programs, a condition or an action is a value: testing one as a boolean is a mistake TypeScript lets pass.
     checkValuesAsBooleans(ts, checker, sf, plans, (node, message) => nodeError(node, message));
   }
@@ -294,9 +307,13 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
 
   /* ── Run ── */
   const collector = new Collector();
-  const runtime = createRuntime(names, collector);
+  const registry = new TestRegistry();
+  const where = (err: unknown) => { const at = locate(err, linked); return at.file ? { file: at.file, line: at.line ?? 1, ...(at.column ? { column: at.column } : {}) } : null; };
+  registry.where = () => where(new Error()) ?? { file: ENTRY_FILE, line: 1 };
+  const runtime = { ...createRuntime(names, collector), ...registry.library() };
   collector.running = true;
-  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME);
+  // The entry first, so the programs are there; then the test files, which nothing imports.
+  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort() });
   collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;
@@ -327,6 +344,11 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const hints: LineHint[] = [];
   const ir: Program[] = [];
   for (const entry of collector.entries) {
+    const from = sourceOf(entry.kind === "trigger" ? entry.at : entry.descriptor.at);
+    if (from && isTestFile(from.file)) {
+      diagnostics.push({ file: from.file, line: from.line, column: 1, endLine: from.line, endColumn: 2, message: `${entry.kind}() in a test file: a test file is never part of the build, so what it declares would not be in the map. Declare it in a file main.ts imports, and test it from here.`, source: "compiler" });
+      continue;
+    }
     if (entry.kind === "trigger") { triggers.push(entry.record); sources.push(sourceOf(entry.at)); continue; }
     const file = fileNames[entry.descriptor.at[0]];
     const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
@@ -335,6 +357,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
     const emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    if (entry.options.name) emitted.program.name = entry.options.name;
     // What every number is read as, written into the operations that care, before anything looks at the program.
     const mixes = typeNumbers(emitted.program);
     markRecursion(emitted.program);
@@ -360,7 +383,14 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const at = inputsOf(ir).at ?? ir[0]?.at;
     if (at) diagnostics.push({ file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: err instanceof Error ? err.message : String(err), source: "compiler" });
   }
-  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints });
+  // The tests: listed whatever else, run when the caller gave them a world and the script is whole.
+  let tests: TestReport | null = null;
+  if (!registry.empty) {
+    tests = options.tests && diagnostics.length === 0
+      ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests)
+      : { list: listTests(registry).list, results: [], only: [], ms: 0 };
+  }
+  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints, tests });
 }
 
 /**

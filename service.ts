@@ -24,6 +24,7 @@ import { TRIGSCRIPT_PY } from "./compiler/generated/trigscriptPy";
 import { scriptNames, type ScriptNames } from "./compiler/names";
 import { printScript, type PrintOptions } from "./compiler/print";
 import { simulate, type SimulationEvent } from "./compiler/simulate";
+import type { TestResult, TestRunOptions, TestWorld } from "./compiler/testing";
 import { DEFAULT_DIST, DIST_STORAGE_KEY } from "./monaco";
 import {
   DEFAULT_SETTINGS, buildScript, findBlock, hashFiles, hashText, isScriptMember, readManifest, readSettings, relocateManifest, scriptState, triggerAtLine, withFiles, withSettings, type ScriptSettings,
@@ -37,6 +38,14 @@ import { EUDPLIB_SERVICE, type EudplibBuildEvent, type EudplibInput, type Eudpli
  * and the names it was made against — another map in front by the time the worker
  * answers, or a location renamed meanwhile, is refused rather than installed.
  */
+/** The start location is a unit of the file and not of the game. */
+const START_LOCATION_UNIT = 214;
+/** OWNR: the slots that are in a game. */
+const OWNER_COMPUTER = 5;
+const OWNER_HUMAN = 6;
+/** "counting > deeper > the test", from a result's id. */
+export const testName = (t: Pick<TestResult, "id">) => t.id.replace(/^.*?::/, "");
+
 export interface ScriptArtifact {
   /** The files as compiled — the snapshot, not whatever the archive holds now. */
   files: ScriptFiles;
@@ -210,9 +219,59 @@ export class ScriptService {
     const state = this.state();
     if (!state?.files || !state.unbuilt) return;
     if (state.stale) throw new Error("The script's triggers were edited or removed outside the script, so it was not applied. Open Triggers ▸ TrigScript… and press Apply to choose what becomes of them.");
+    const guard = this.settings().testsGuardBuild;
+    if (guard) this.guardTests((await this.prepare(state.files, this.names(), { world: this.world() })).compiled);
     const out = await this.build(state.files);
     if (out.refused === "errors") throw new Error(firstFault(out.compiled.diagnostics));
     if (out.refused) throw new Error("The map changed while the script was compiling; save again.");
+  }
+
+  /**
+   * The world a simulation and every test start from, as plain data: the map's placed units (start locations apart) with
+   * the hit points their type and their own percentage give, its locations as boxes, the human and computer players in
+   * their forces, what each unit type is made with, the Create Unit with Properties slots, and the script's settings.
+   */
+  world(): TestWorld {
+    const scn = this.api.document.scenario();
+    if (!scn) return {};
+    const unitStats: NonNullable<TestWorld["unitStats"]> = {};
+    for (const view of this.api.settings.unitTypes()) unitStats[view.id] = { hp: view.hitPoints, shields: view.shields };
+    const part = (max: number, percent: number, valid: boolean) => (valid ? Math.max(1, Math.ceil((max * Math.min(100, percent)) / 100)) : max);
+    const units = scn.units.filter((u) => u.unitId !== START_LOCATION_UNIT).map((u) => {
+      const t = unitStats[u.unitId] ?? {};
+      const hp = t.hp ?? 1, shields = t.shields ?? 0;
+      return {
+        type: u.unitId, owner: u.owner, x: u.x, y: u.y,
+        // validStates says which of a placed unit's own figures are set: 2 hit points, 4 shields, 64 the state flags.
+        maxHp: hp, hp: part(hp, u.hitPointsPercent, (u.validStates & 2) !== 0),
+        maxShields: shields, shields: shields ? part(shields, u.shieldPercent, (u.validStates & 4) !== 0) : 0,
+        resources: u.resourceAmount,
+        ...((u.validStates & 64) !== 0 ? { cloaked: (u.stateFlags & 1) !== 0, burrowed: (u.stateFlags & 2) !== 0, hallucinated: (u.stateFlags & 8) !== 0, invincible: (u.stateFlags & 16) !== 0 } : {}),
+      };
+    });
+    const locations: NonNullable<TestWorld["locations"]> = {};
+    scn.locations.forEach((l, i) => { if (l.right > l.left || l.bottom > l.top) locations[i + 1] = { left: l.left, top: l.top, right: l.right, bottom: l.bottom }; });
+    // Who is in the game: the map's human and computer players, each in the force the map puts them in.
+    const players = scn.playerTypes.slice(0, 8).flatMap((type, slot) => (type === OWNER_HUMAN || type === OWNER_COMPUTER ? [slot] : []));
+    const forces = Object.fromEntries(scn.forces.playerForce.slice(0, 8).map((force, slot) => [slot, force]));
+    const properties = (scn.cuwp ?? []).map((c) => {
+      const state = (bit: number) => ((c.validProperties & bit) !== 0 ? (c.stateFlags & bit) !== 0 : undefined);
+      return {
+        hpPercent: c.validFields & 2 ? c.hitPointsPercent : undefined, shieldPercent: c.validFields & 4 ? c.shieldsPercent : undefined,
+        energyPercent: c.validFields & 8 ? c.energyPercent : undefined, resources: c.validFields & 16 ? c.resources : undefined,
+        cloaked: state(1), burrowed: state(2), hallucinated: state(8), invincible: state(16),
+      };
+    });
+    const settings = this.settings();
+    return { units, locations, ...(players.length ? { players, forces } : {}), unitStats, properties, heapCells: settings.heapCells, stackDepth: settings.stackDepth };
+  }
+
+  /** With the map's setting on, a failing test refuses the build: said as the first of them, and how many. */
+  private guardTests(compiled: CompileResult): void {
+    const failed = (compiled.tests?.results ?? []).filter((t) => t.status === "failed");
+    if (failed.length === 0) return;
+    const first = failed[0];
+    throw new Error(`Not built: ${failed.length === 1 ? "a test fails" : `${failed.length} tests fail`} — ${testName(first)}: ${first.message ?? "failed"}. (The script's settings make a failing test refuse the build.)`);
   }
 
   /** The programs for the library's build: the IR as a data file, the lowering as a source, eudTurbo so the game runs them every frame. */
@@ -221,8 +280,11 @@ export class ScriptService {
     if (!state?.files) throw new Error("The map has no script.");
     const map = this.names();
     const cached = this.lastArtifact;
-    const artifact = cached && map && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) ? cached : await this.prepare(state.files, map);
+    const guard = this.settings().testsGuardBuild;
+    const fresh = cached && map && cached.context === map.context && cached.document === this.documentId() && hashFiles(cached.files) === hashFiles(state.files) && (!guard || !cached.compiled.tests || cached.compiled.tests.results.length > 0);
+    const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : undefined);
     if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
+    if (guard) this.guardTests(artifact.compiled);
     return {
       // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
       plugins: buildPlugins(artifact.compiled.input, "/work/files/trigscript.json"),
@@ -286,12 +348,12 @@ export class ScriptService {
    * map in front and its names as they are now (`map`, when the caller already has them —
    * the editor keeps a copy that follows the map's events).
    */
-  async prepare(input: ScriptInput, map: MapNames | null = this.names()): Promise<ScriptArtifact> {
+  async prepare(input: ScriptInput, map: MapNames | null = this.names(), tests?: TestRunOptions): Promise<ScriptArtifact> {
     if (!map) throw new Error("No map is open.");
     const files = this.filesOf(input);
     const document = this.documentId();
     const archived = hashFiles(this.state()?.files ?? {});
-    const compiled = await this.compiler({ files, names: map.names }, this.dist());
+    const compiled = await this.compiler({ files, names: map.names, ...(tests ? { tests } : {}) }, this.dist());
     const artifact = { files, compiled, document, context: map.context, archived };
     this.lastArtifact = artifact;
     return artifact;

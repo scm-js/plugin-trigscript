@@ -43,6 +43,8 @@ export interface ProgramOptions {
   owners: number[];
   /** Runs for several players at once: every variable is per player. */
   perPlayer: boolean;
+  /** What a test calls the program: `sim.program("waves")`. Without it, the constant the program is kept in. */
+  name?: string;
 }
 
 /** What `seconds(2)`, `minutes(1)` and `frames(5)` return: a length of time for `sleep()`; `cycles` counts frames. */
@@ -650,6 +652,10 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
             out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
             break;
           }
+          case "name":
+            if (typeof value !== "string" || !value) throw new ScriptError(`program: name is a text, got ${describe(value)}.`);
+            out.name = value;
+            break;
           case "comments":
           case "variableUnits":
             throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);

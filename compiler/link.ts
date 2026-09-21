@@ -50,10 +50,11 @@ const SOURCE_URL_PREFIX = "trigscript://";
  * Run the entry module with the library in scope. Resolves to null when the script ran
  * to the end, else to the error it threw, located when possible.
  */
-export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string, library: Record<string, unknown>, moduleName: string): RunError | null {
+export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string, library: Record<string, unknown>, moduleName: string, options: { imported?: readonly string[]; then?: readonly string[] } = {}): RunError | null {
   const names = new Set(files.keys());
   const cache = new Map<string, { exports: Record<string, unknown> }>();
-  const globals = Object.keys(library);
+  // `imported`: names the module has and the globals do not — a script may well have a `test` of its own.
+  const globals = Object.keys(library).filter((k) => !options.imported?.includes(k));
   const load = (file: string): Record<string, unknown> => {
     const hit = cache.get(file);
     if (hit) return hit.exports;
@@ -78,6 +79,8 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
   };
   try {
     load(entry);
+    // `then`: files nothing imports and that run all the same, after the entry — the test files.
+    for (const file of options.then ?? []) load(file);
     return null;
   } catch (err) {
     return locate(err, files);

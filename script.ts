@@ -40,15 +40,17 @@ export interface ScriptSettings {
   heapCells: number;
   /** How many calls deep a function that calls itself may go (`compiler/ir.ts#STACK_DEPTH`). */
   stackDepth: number;
+  /** A failing `test()` refuses the build: Save, Test Map and an export say so and write the map as it stands. */
+  testsGuardBuild: boolean;
 }
-export const DEFAULT_SETTINGS: ScriptSettings = { heapCells: HEAP_CELLS, stackDepth: STACK_DEPTH };
+export const DEFAULT_SETTINGS: ScriptSettings = { heapCells: HEAP_CELLS, stackDepth: STACK_DEPTH, testsGuardBuild: false };
 
 export function readSettings(extras: Extras): ScriptSettings {
   const bytes = member(extras, SETTINGS_MEMBER);
   if (!bytes) return { ...DEFAULT_SETTINGS };
   try {
     const raw = JSON.parse(decoder.decode(bytes)) as Partial<ScriptSettings> | null;
-    return { heapCells: heapCells(raw?.heapCells), stackDepth: stackDepth(raw?.stackDepth) };
+    return { heapCells: heapCells(raw?.heapCells), stackDepth: stackDepth(raw?.stackDepth), testsGuardBuild: raw?.testsGuardBuild === true };
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -62,6 +64,7 @@ export function withSettings(extras: Extras, settings: Partial<ScriptSettings>):
   const depth = stackDepth(settings.stackDepth);
   if (heap !== DEFAULT_SETTINGS.heapCells) chosen.heapCells = heap;
   if (depth !== DEFAULT_SETTINGS.stackDepth) chosen.stackDepth = depth;
+  if (settings.testsGuardBuild === true) chosen.testsGuardBuild = true;
   return withMember(extras, SETTINGS_MEMBER, Object.keys(chosen).length ? encoder.encode(JSON.stringify(chosen, null, 2)) : null);
 }
 

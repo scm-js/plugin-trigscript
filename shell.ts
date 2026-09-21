@@ -25,6 +25,9 @@ const ICONS = {
   target: "ebf8",
   ellipsis: "ea7c",
   "new-file": "ea7f",
+  "new-folder": "ea80",
+  folder: "ea83",
+  "folder-opened": "eaf7",
   edit: "ea73",
   trash: "ea81",
   close: "ea76",
@@ -43,6 +46,13 @@ const ICONS = {
   "clear-all": "eabf",
   "circle-filled": "ea71",
   package: "eb29",
+  files: "eaf0",
+  filter: "eaf1",
+  "run-all": "eb9e",
+  "run-errors": "ebde",
+  "circle-outline": "eabc",
+  "circle-slash": "eabd",
+  "pass-filled": "ebb3",
 } as const;
 
 export type IconName = keyof typeof ICONS;
@@ -53,6 +63,8 @@ export interface ShellLayout {
   panel: boolean;
   panelHeight: number;
   panelView: string;
+  /** Which of the sidebar's views is shown; the Explorer unless said. */
+  sidebarView?: string;
 }
 
 export const DEFAULT_LAYOUT: ShellLayout = { sidebar: true, sidebarWidth: 180, panel: false, panelHeight: 180, panelView: "problems" };
@@ -62,6 +74,8 @@ export const COMPACT_LAYOUT: ShellLayout = { sidebar: true, sidebarWidth: 136, p
 export interface TabSpec {
   id: string;
   label: string;
+  /** Said faintly beside the label: the folder, for tabs whose files share a name. */
+  about?: string;
   title?: string;
   /** Problems in the file: the label turns red and carries the count. */
   problems?: number;
@@ -83,6 +97,15 @@ export interface SectionHandle {
   body: HTMLElement;
   setHidden(hidden: boolean): void;
   expand(): void;
+}
+
+/** A view of the sidebar, with its icon in the activity bar. */
+export interface SidebarViewHandle {
+  body: HTMLElement;
+  /** The count on the icon; null or 0 for none. `kind` colours it. */
+  badge(count: number | null, kind?: "error"): void;
+  /** Show the sidebar on this view. */
+  show(): void;
 }
 
 export interface ViewHandle {
@@ -143,6 +166,8 @@ export interface Shell {
   iconButton(spec: ActionSpec): ActionHandle;
   action(spec: ActionSpec): ActionHandle;
   section(spec: { title: string; actions?: ActionSpec[] }): SectionHandle;
+  /** Another view of the sidebar beside the Explorer: its icon joins the activity bar, which shows once there are two. */
+  sidebarView(spec: { id: string; title: string; icon: IconName; actions?: ActionSpec[] }): SidebarViewHandle;
   toggleSidebar(show?: boolean): void;
   /** `onShow`: the view was put on screen — what could not be done while it was detached (scrolling to its end) can be now. */
   view(spec: { id: string; title: string; actions?: ActionSpec[]; onShow?: () => void }): ViewHandle;
@@ -153,7 +178,8 @@ export interface Shell {
   statusItem(side: "left" | "right"): StatusItemHandle;
   notify(spec: NotificationSpec): void;
   dismiss(key: string): void;
-  menu(anchor: HTMLElement, items: (MenuItem | null)[]): void;
+  /** Under the anchor's right end; with `at` (a pointer's clientX / clientY), where the pointer is — a context menu. */
+  menu(anchor: HTMLElement, items: (MenuItem | null)[], at?: { x: number; y: number }): void;
   dispose(): void;
 }
 
@@ -171,6 +197,20 @@ ${Object.entries(ICONS).map(([name, code]) => `.tsd-i-${name}::before { content:
 @keyframes tsd-spin { to { transform: rotate(360deg); } }
 
 .tsd-body { flex: 1; min-height: 0; display: flex; }
+.tsd-activity { flex: none; width: 40px; display: flex; flex-direction: column; align-items: stretch; background: var(--bg-2); border-right: 1px solid var(--border); }
+.tsd-activity[hidden] { display: none; }
+.tsd-compact .tsd-activity { width: 32px; }
+.tsd-activity button { position: relative; height: 40px; border: none; border-left: 2px solid transparent; background: none; color: var(--text-faint); cursor: pointer; }
+.tsd-compact .tsd-activity button { height: 34px; }
+.tsd-activity button:hover { color: var(--text); }
+.tsd-activity button.tsd-active { color: var(--text); border-left-color: var(--gold); }
+.tsd-activity button .tsd-i { font-size: 22px; }
+.tsd-compact .tsd-activity button .tsd-i { font-size: 18px; }
+.tsd-activity .tsd-badge { position: absolute; right: 4px; bottom: 5px; min-width: 14px; height: 14px; padding: 0 3px; box-sizing: border-box; border-radius: 7px; background: var(--sel-hi); color: var(--bg-0); font-size: 9px; font-weight: 700; line-height: 14px; text-align: center; }
+.tsd-activity .tsd-badge.tsd-error { background: var(--danger); color: #fff; }
+.tsd-sidebar-title .tsd-grow { flex: 1; }
+.tsd-sidebar-title .tsd-icon-button { margin-left: 2px; }
+.tsd-sidebar-body { flex: 1; min-height: 0; overflow: auto; }
 .tsd-sidebar { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--bg-1); overflow: hidden; }
 .tsd-sidebar-title { flex: none; height: 32px; display: flex; align-items: center; padding: 0 12px 0 16px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); }
 .tsd-sections { flex: 1; min-height: 0; overflow: auto; }
@@ -193,6 +233,9 @@ ${Object.entries(ICONS).map(([name, code]) => `.tsd-i-${name}::before { content:
 .tsd-row .tsd-row-actions { display: flex; margin-left: auto; }
 .tsd-row:hover .tsd-icon-button, .tsd-row.tsd-active .tsd-icon-button { display: inline-flex; }
 .tsd-row .tsd-i { font-size: 14px; }
+.tsd-row.tsd-folder { gap: 4px; }
+.tsd-row.tsd-drop, .tsd-rows.tsd-drop { background: var(--sel); color: var(--text); }
+.tsd-row.tsd-dragged { opacity: 0.5; }
 .tsd-ts { flex: none; font-size: 9px; font-weight: 700; letter-spacing: -0.02em; color: var(--sel-hi); }
 
 .tsd-icon-button { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: none; border-radius: var(--radius-lg); background: none; color: var(--text-dim); cursor: pointer; }
@@ -219,6 +262,7 @@ ${Object.entries(ICONS).map(([name, code]) => `.tsd-i-${name}::before { content:
 .tsd-tab .tsd-icon-button .tsd-i { font-size: 14px; }
 .tsd-tab:hover .tsd-icon-button, .tsd-tab.tsd-active .tsd-icon-button { visibility: visible; }
 .tsd-tab .tsd-pad { width: 6px; }
+.tsd-tab .tsd-about { color: var(--text-faint); font-size: var(--fs-sm); }
 .tsd-actions { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 8px; }
 .tsd-editor { flex: 1; min-height: 0; position: relative; }
 
@@ -297,7 +341,10 @@ export function createShell(options: ShellOptions): Shell {
   const actionsEl = el("div", { className: "tsd-actions" });
   const editorHost = el("div", { className: "tsd-editor" });
   const sectionsEl = el("div", { className: "tsd-sections" });
-  const sidebar = el("div", { className: "tsd-sidebar" }, el("div", { className: "tsd-sidebar-title" }, "Explorer"), sectionsEl);
+  const sidebarTitle = el("div", { className: "tsd-sidebar-title" }, "Explorer");
+  const sidebarHolder = el("div", { className: "tsd-sidebar-body" }, sectionsEl);
+  const sidebar = el("div", { className: "tsd-sidebar" }, sidebarTitle, sidebarHolder);
+  const activity = el("div", { className: "tsd-activity", role: "tablist", ariaLabel: "Views", hidden: true });
   const sidebarSash = el("div", { className: "tsd-sash tsd-sash-v" });
   const panelTabs = el("div", { className: "tsd-panel-tabs", role: "tablist" });
   const panelActions = el("div", { className: "tsd-panel-actions" });
@@ -314,7 +361,7 @@ export function createShell(options: ShellOptions): Shell {
     panel,
   );
   const root = el("div", { className: options.compact ? "tsd tsd-compact" : "tsd" },
-    el("div", { className: "tsd-body" }, sidebar, sidebarSash, main),
+    el("div", { className: "tsd-body" }, activity, sidebar, sidebarSash, main),
     el("div", { className: "tsd-statusbar", role: "status" }, statusLeft, statusRight),
     notifications,
   );
@@ -357,6 +404,35 @@ export function createShell(options: ShellOptions): Shell {
     layout.panelHeight = Math.max(PANEL_MIN, Math.min(main.clientHeight - 120, from - dy));
   });
 
+  /* ── The sidebar's views ── */
+  interface SideView { id: string; title: string; body: HTMLElement; actions: HTMLElement[]; button: HTMLButtonElement; badge: HTMLElement }
+  const sideViews = new Map<string, SideView>();
+  const showSide = (id: string) => {
+    const v = sideViews.get(id) ?? sideViews.get("explorer");
+    if (!v) return;
+    layout.sidebarView = v.id;
+    for (const [key, other] of sideViews) { other.button.classList.toggle("tsd-active", key === v.id && layout.sidebar); other.button.ariaSelected = String(key === v.id && layout.sidebar); }
+    sidebarTitle.replaceChildren(el("span", { className: "tsd-grow" }, v.title), ...v.actions);
+    sidebarHolder.replaceChildren(v.body);
+  };
+  const addSide = (spec: { id: string; title: string; icon: IconName; actions?: ActionSpec[] }, body: HTMLElement): SideView => {
+    const badge = el("span", { className: "tsd-badge", hidden: true });
+    // As VS Code: the icon of the view that is showing hides the sidebar, any other shows its view.
+    const button = el("button", { type: "button", role: "tab", title: spec.title, ariaLabel: spec.title, onClick: () => {
+      if (layout.sidebar && layout.sidebarView === spec.id) layout.sidebar = false;
+      else { layout.sidebar = true; layout.sidebarView = spec.id; }
+      applyLayout();
+      showSide(layout.sidebarView ?? "explorer");
+      saveLayout();
+    } }, icon(spec.icon), badge) as HTMLButtonElement;
+    const view: SideView = { id: spec.id, title: spec.title, body, actions: (spec.actions ?? []).map((a) => iconButton(a).element), button, badge };
+    sideViews.set(spec.id, view);
+    activity.append(button);
+    activity.hidden = sideViews.size < 2;
+    return view;
+  };
+  addSide({ id: "explorer", title: "Explorer", icon: "files" }, sectionsEl);
+
   /* ── The panel's views ── */
   const views = new Map<string, { tab: HTMLElement; badge: HTMLElement; body: HTMLElement; actions: HTMLElement[]; onShow?: () => void }>();
   const closePanel = iconButton({ icon: "close", title: "Hide the panel (Ctrl+J)", run: () => togglePanel() });
@@ -386,7 +462,7 @@ export function createShell(options: ShellOptions): Shell {
 
   /* ── Menus ── */
   let closeMenu: (() => void) | null = null;
-  const menu = (anchor: HTMLElement, items: (MenuItem | null)[]) => {
+  const menu = (anchor: HTMLElement, items: (MenuItem | null)[], at?: { x: number; y: number }) => {
     closeMenu?.();
     const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const box = el("div", { className: "tsd-menu", role: "menu" });
@@ -414,8 +490,8 @@ export function createShell(options: ShellOptions): Shell {
     root.append(box);
     const r = anchor.getBoundingClientRect();
     const o = root.getBoundingClientRect();
-    box.style.top = `${r.bottom - o.top + 2}px`;
-    box.style.left = `${Math.max(4, Math.min(r.right - o.left - box.offsetWidth, o.width - box.offsetWidth - 4))}px`;
+    box.style.top = `${Math.max(4, Math.min((at ? at.y : r.bottom + 2) - o.top, o.height - box.offsetHeight - 4))}px`;
+    box.style.left = `${Math.max(4, Math.min(at ? at.x - o.left : r.right - o.left - box.offsetWidth, o.width - box.offsetWidth - 4))}px`;
     closeMenu = close;
     document.addEventListener("pointerdown", outside, true);
     box.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
@@ -448,6 +524,7 @@ export function createShell(options: ShellOptions): Shell {
   };
 
   applyLayout();
+  showSide("explorer");
 
   return {
     root,
@@ -466,6 +543,7 @@ export function createShell(options: ShellOptions): Shell {
         },
           el("span", { className: "tsd-ts" }, "TS"),
           el("span", { className: t.problems ? "tsd-problem" : undefined }, t.problems ? `${t.label} ${t.problems}` : t.label),
+          t.about ? el("span", { className: "tsd-about" }, t.about) : undefined,
           t.closable ? iconButton({ icon: "close", title: "Close", run: () => options.onTabClose(t.id) }).element : el("span", { className: "tsd-pad" }),
         );
         if (on) queueMicrotask(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
@@ -494,9 +572,20 @@ export function createShell(options: ShellOptions): Shell {
       sectionsEl.append(section);
       return { body, setHidden: (hidden) => { section.hidden = hidden; }, expand: () => setCollapsed(false) };
     },
+    sidebarView(spec) {
+      const body = el("div", { className: "tsd-sections" });
+      const view = addSide(spec, body);
+      if (layout.sidebarView === spec.id) showSide(spec.id);
+      return {
+        body,
+        badge(count, kind) { view.badge.hidden = !count; view.badge.textContent = count ? String(count) : ""; view.badge.classList.toggle("tsd-error", kind === "error"); },
+        show() { layout.sidebar = true; applyLayout(); showSide(spec.id); saveLayout(); },
+      };
+    },
     toggleSidebar(show) {
       layout.sidebar = show ?? !layout.sidebar;
       applyLayout();
+      showSide(layout.sidebarView ?? "explorer");
       saveLayout();
     },
     view(spec) {

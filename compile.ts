@@ -20,6 +20,7 @@ import type * as TS from "typescript";
 import { compileScript, type CompileResult, type ScriptFiles } from "./compiler/compiler";
 import { ENTRY_URL } from "./compiler/entry";
 import type { ScriptNames } from "./compiler/names";
+import type { TestRunOptions } from "./compiler/testing";
 import { DEFAULT_DIST } from "./monaco";
 import { VERSION } from "./version";
 
@@ -52,6 +53,8 @@ export const COMPILE_TIMEOUT_MS = 15_000;
 export interface CompileInput {
   files: ScriptFiles;
   names: ScriptNames;
+  /** Run the script's tests after the compile: the world they start from, and which of them. */
+  tests?: TestRunOptions;
 }
 
 interface CompileRequest extends CompileInput {
@@ -73,7 +76,7 @@ importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, libUrl, files, names } = e.data;
+  const { id, moduleUrl, libUrl, files, names, tests } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
@@ -83,7 +86,7 @@ self.onmessage = async (e) => {
       if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
       lib = await r.text();
     }
-    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib }) });
+    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib, tests }) });
   } catch (err) {
     postMessage({ id, error: String((err && err.message) || err) });
   }
@@ -219,7 +222,7 @@ function loadLib(url: string): Promise<string> {
 
 async function compileHere(input: CompileInput, lib: string): Promise<CompileResult> {
   const [ts, text] = await Promise.all([loadTypeScript(), loadLib(lib)]);
-  return compileScript(ts, input.files, input.names, { lib: text });
+  return compileScript(ts, input.files, input.names, { lib: text, tests: input.tests });
 }
 
 export class CompileSuperseded extends Error {
@@ -243,7 +246,7 @@ export function compileInBackground(input: CompileInput, dist: string = DEFAULT_
   }
   return new Promise<CompileResult>((resolve, reject) => {
     pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
-    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: lib, files: input.files, names: input.names };
+    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: lib, files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}) };
     w.postMessage(req);
   }).catch((err: Error) => {
     if (err.message === "worker unavailable") return compileHere(input, lib);

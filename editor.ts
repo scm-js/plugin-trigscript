@@ -4,7 +4,7 @@
  * in the worker (`compile.ts`). Apply writes the script's `trigger()` records into the
  * trigger list as its block (`service.ts`); saving or testing the map does the same by
  * itself, and that is also when the programs are built — into the file, by the eudplib
- * plugin. Test does both and hands the result to Test Map.
+ * plugin. Play does both and hands the result to Test Map.
  *
  * It is laid out as VS Code is (`shell.ts`): the files in an Explorer with the programs
  * and their variables under them, tabs over the editor with the run controls at their
@@ -37,14 +37,18 @@ import { Simulation, type SimulationEvent } from "./compiler/simulate";
 import { actionDef } from "./vendor/triggerDefs";
 import { PlayerGroup } from "./vendor/triggers";
 import {
-  BUILD_TIME_CLASS, createScriptEditor, loadMonaco, refreshLineHints, releaseScriptEditor, setCompilerMarkers, setLineHints, setDeclarations, setHoverVariables, setMapRefs,
+  BUILD_TIME_CLASS, TEST_MARK_CLASS, createScriptEditor, loadMonaco, refreshLineHints, releaseScriptEditor, setCompilerMarkers, setLineHints, setDeclarations, setHoverVariables, setMapRefs,
   type LocationRef, type MonacoApi, type ScriptEditor,
 } from "./monaco";
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
-import { FILE_NAME, type ScriptSettings } from "./script";
+import { FILE_NAME } from "./script";
+import { isTestFile, type TestInfo, type TestRunOptions } from "./compiler/testing";
+import { countTests, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
+import { testName } from "./service";
+import { applyMoves, buildTree, filesUnder, folderOf, movesOf, refuseMoves, tabLabels, validFolder, type Moves, type TreeNode } from "./tree";
 import { ProgramSimulation, type ProgramEvent, type ProgramSimulationOptions, type SimBounds, type SimUnitInit } from "./compiler/simulateIr";
 import { positionIn, type BuildRefusal, type MapNames, type ScriptArtifact, type ScriptService } from "./service";
-import { COMPACT_LAYOUT, DEFAULT_LAYOUT, SHELL_STYLE, createShell, type ShellLayout } from "./shell";
+import { COMPACT_LAYOUT, DEFAULT_LAYOUT, SHELL_STYLE, createShell, type IconName, type ShellLayout } from "./shell";
 import type { EudplibBuildEvent, EudplibService } from "./vendor/eudplib";
 
 export const TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
@@ -82,11 +86,25 @@ export const FILE_TEMPLATE = `import { trigger, units, locations, P1 } from "tri
 // Helpers this file exports are imported by main.ts: import { … } from "./name";
 `;
 
+/** What a new test file starts with: one test, which passes. */
+export const TEST_TEMPLATE = `import { test, expect, units, locations, P1 } from "trigscript";
+
+// A test runs here, in the simulator, after every change that compiles: never in the game, and it costs the map nothing.
+// sim is a world of its own for each test: the map's placed units and locations, and the script's programs at frame 0.
+test("the script runs for a second", (sim) => {
+  sim.seconds(1);
+  expect(sim.frame).toBe(24);
+});
+`;
+
 /** Frames the Simulate button runs. */
 /** Twenty seconds of the game at Fastest. */
 export const SIMULATE_FRAMES = 480;
 /** Start Location: a marker of the map, not a unit of the game. */
 const START_LOCATION_UNIT = 214;
+/** OWNR: the slots that are in a game. */
+const OWNER_COMPUTER = 5;
+const OWNER_HUMAN = 6;
 /** How many of a simulation's events the list shows before it says how many more there were. */
 const SIMULATE_ROWS = 200;
 /** The most lines with a fault the Simulate view lists. */
@@ -98,6 +116,8 @@ const OUTPUT_LINES = 2000;
 /** How long a good outcome stays in the status bar, and an answer in the corner. */
 const STATUS_MS = 10_000;
 const NOTICE_MS = 8_000;
+/** When running every test takes longer than this, only the open file's run by themselves after a compile. */
+const TESTS_SLOW_MS = 2_000;
 /** The key the shortcuts are written with. */
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl";
 
@@ -126,6 +146,19 @@ const STYLE = `${SHELL_STYLE}
 .tsd .tsd-list .frame { flex: none; min-width: 72px; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-sm); }
 .tsd .tsd-list .note { color: var(--text-dim); }
 .tsd .tsd-output { margin: 0; padding: 4px 20px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); }
+.tsd .tsd-list li.tsd-warning .tsd-i { color: var(--warn); }
+.tsd .tsd-rows .tsd-empty { padding: 6px 12px 6px 20px; color: var(--text-faint); white-space: normal; line-height: 1.45; cursor: default; }
+.tsd .tsd-test-passed { color: var(--ok); }
+.tsd .tsd-test-failed { color: var(--danger); }
+.tsd .tsd-test-none, .tsd .tsd-test-skipped { color: var(--text-faint); }
+.${TEST_MARK_CLASS} { cursor: pointer; font: normal normal normal 14px/18px codicon; text-align: center; color: var(--text-faint); }
+.${TEST_MARK_CLASS}::before { content: "\\eabc"; }
+.${TEST_MARK_CLASS}-passed { color: var(--ok); }
+.${TEST_MARK_CLASS}-passed::before { content: "\\eba4"; }
+.${TEST_MARK_CLASS}-failed { color: var(--danger); }
+.${TEST_MARK_CLASS}-failed::before { content: "\\ea87"; }
+.${TEST_MARK_CLASS}-skipped::before { content: "\\eabd"; }
+.${TEST_MARK_CLASS}-note { color: var(--danger); font-style: italic; opacity: 0.9; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 
@@ -244,7 +277,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   let outline: Pick<CompileResult, "programs" | "variables"> | null = null;
   /** The eudplib plugin's service, followed while the workspace is open. */
   let library: EudplibService | null = svc.library();
-  /** Test is under way: the script applied, the map built as Save would, handed to Test Map. */
+  /** Play is under way: the script applied, the map built as Save would, handed to Test Map. */
   let testing = false;
   let cancelled = false;
   /** Renames the map made to things the script names, waiting for the user's word. */
@@ -266,7 +299,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   root.prepend(el("style", undefined, STYLE));
   const hostEl = shell.editorHost;
 
-  const testAction = shell.action({ icon: "play", title: `Test (F5): apply the script, build the map as Save would and hand it to Test Map`, run: () => { void test(); } });
+  // "Test" is what the script's test() blocks are; building the map and starting it in the game is Play.
+  const testAction = shell.action({ icon: "play", title: `Play (F5): apply the script, build the map as Save would and start it in the game through Test Map`, run: () => { void test(); } });
   const simulateAction = shell.action({ icon: "beaker", title: `Simulate (${MOD}+F5): run the script's triggers and programs for ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} seconds of the game) in a built-in interpreter and list what happened`, run: () => { void simulateNow(); } });
   const applyAction = shell.action({ icon: "check", title: `Apply (${MOD}+Shift+B): run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list`, run: () => { void build(); } });
   const pickAction = shell.action({ icon: "target", title: "Pick from map: click a location or a unit on the map to put its name at the cursor", run: () => { void pickFromMap(); } });
@@ -276,9 +310,11 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const moreAction = shell.action({ icon: "ellipsis", title: "More actions…", run: () => shell.menu(moreAction.element, [
     menuItem("save"),
     null,
-    ...["import", "newFile"].map(menuItem),
+    ...["import", "newFile", "newFolder"].map(menuItem),
     null,
-    ...["problems", "output", "panel", "explorer"].map(menuItem),
+    ...["runTests", "runFailedTests"].map(menuItem),
+    null,
+    ...["problems", "output", "panel", "explorer", "testing"].map(menuItem),
     null,
     menuItem("settings"),
     null,
@@ -286,7 +322,10 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   ]) });
 
   const fileList = el("ul", { className: "tsd-rows" });
-  shell.section({ title: "Script", actions: [{ icon: "new-file", title: "New file…: main.ts imports it with import { … } from \"./name\"", run: () => { void newFile(); } }] }).body.append(fileList);
+  shell.section({ title: "Script", actions: [
+    { icon: "new-file", title: "New file…: main.ts imports it with import { … } from \"./name\"", run: () => { void newFile(); } },
+    { icon: "new-folder", title: "New folder…: a folder is there while a file is in it, so its first file is asked for next", run: () => { void newFolder(); } },
+  ] }).body.append(fileList);
   const programList = el("ul", { className: "tsd-rows" });
   const programsSection = shell.section({ title: "Programs" });
   programsSection.body.append(programList);
@@ -296,7 +335,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const outputEl = el("pre", { className: "tsd-output" });
   const outputView = shell.view({ id: "output", title: "Output", onShow: () => renderOutput(true), actions: [{ icon: "clear-all", title: "Clear the output", run: () => { output = []; renderOutput(); } }] });
   const simulateView = shell.view({ id: "simulate", title: "Simulate" });
+  const resultsView = shell.view({ id: "tests", title: "Test Results" });
   const settingsView = shell.view({ id: "settings", title: "Settings", onShow: () => renderSettings() });
+  const testingList = el("ul", { className: "tsd-rows" });
+  const testingView = shell.sidebarView({ id: "testing", title: "Testing", icon: "beaker", actions: [
+    { icon: "run-all", title: "Run all tests", run: () => { void runTests(); } },
+    { icon: "run-errors", title: "Run the tests that failed", run: () => { void runFailedTests(); } },
+    { icon: "filter", title: "Show only the tests that fail", run: () => { onlyFailing = !onlyFailing; renderTesting(); } },
+  ] });
+  testingView.body.append(testingList);
 
   /**
    * The map's script settings (`script.ts#ScriptSettings`): kept in the map beside the script, because the built map
@@ -308,7 +355,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const count = (n: number) => n.toLocaleString("en-US");
     const size = (cells: number) => (cells * 4 >= 1 << 20 ? `${(cells * 4 / (1 << 20)).toFixed(cells * 4 % (1 << 20) ? 1 : 0)} MB` : `${Math.round(cells * 4 / 1024)} KB`);
     /** One number of the settings: the field, what it comes to, and the way back to the default. */
-    const row = (o: { key: keyof ScriptSettings; min: number; max: number; step: number; normal: number; fit: (v: unknown) => number; said: (now: number) => string }) => {
+    const row = (o: { key: "heapCells" | "stackDepth"; min: number; max: number; step: number; normal: number; fit: (v: unknown) => number; said: (now: number) => string }) => {
       const now = settings[o.key];
       const input = el("input", { type: "number", min: String(o.min), max: String(o.max), step: String(o.step), value: String(now), disabled: !open }) as HTMLInputElement;
       const reset = el("button", { type: "button", disabled: !open || now === o.normal }, `Default (${count(o.normal)})`) as HTMLButtonElement;
@@ -321,6 +368,12 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       input.addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") input.blur(); });
       reset.addEventListener("click", () => commit(o.normal));
       return el("div", { className: "row" }, input, el("span", { className: "now" }, o.said(now)), reset);
+    };
+    const guardRow = () => {
+      const box = el("input", { type: "checkbox", checked: settings.testsGuardBuild, disabled: !open }) as HTMLInputElement;
+      box.style.width = "auto";
+      box.addEventListener("change", () => { svc.writeSettings({ ...svc.settings(), testsGuardBuild: box.checked }); renderSettings(); });
+      return el("label", { className: "row" }, box, el("span", {}, "A failing test refuses the build"));
     };
     // What a call deep costs this script: the largest frame any of its functions keeps, as it was last compiled.
     const frame = result?.ok ? largestFrame(result.ir) : 0;
@@ -338,10 +391,14 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       el("p", {}, "How many calls deep a function that calls itself may go. Around each such call the function's variables are kept on a stack, which is only in the built map when some function calls itself. A call past the limit stops the program, and the game says where; Simulate stops at the same call."),
       row({ key: "stackDepth", min: STACK_DEPTH_MIN, max: STACK_DEPTH_MAX, step: 256, normal: STACK_DEPTH, fit: stackDepth, said: stack }),
       el("p", {}, `${count(STACK_DEPTH_MIN)} to ${count(STACK_DEPTH_MAX)} calls. The limit costs nothing until it is reached, but each call deep keeps and brings back every variable of its function, so thousands of calls within one frame make the game stutter. Kept in the map, like the pool above.`),
+      el("h4", {}, "Tests"),
+      el("p", {}, "The script's test() blocks run in the simulator after every compile that goes through. A failing test is a warning. With this on it also refuses the build: Save, Test Map and an export then say which test fails and write the map without the script applied again."),
+      guardRow(),
     ));
   }
 
   const problemsItem = shell.statusItem("left");
+  const testsItem = shell.statusItem("left");
   const blockItem = shell.statusItem("left");
   const staleItem = shell.statusItem("left");
   const renamesItem = shell.statusItem("left");
@@ -351,18 +408,26 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const programsItem = shell.statusItem("right");
   const cursorItem = shell.statusItem("right");
 
+  /** The script's tests and what they last said. */
+  let tests: TestState = NO_TESTS;
+  /** The test the Test Results view is on. */
+  let chosenTest: string | null = null;
+  let onlyFailing = false;
+  /** Running every test took more than `TESTS_SLOW_MS` the last time. */
+  let testsSlow = false;
+  let testsRunning = false;
   /** The files with a tab, in the order they were opened. */
   let openTabs: string[] = [normalizePath(options.file ?? ENTRY_FILE)];
-  /** What Apply, Test and the builds of the programs reported, oldest first. */
+  /** What Apply, Play and the builds of the programs reported, oldest first. */
   let output: string[] = [];
-  /** The last build of the programs (Save, Test Map or Test ran it), for the status bar. */
+  /** The last build of the programs (Save, Test Map or Play ran it), for the status bar. */
   let buildState: { kind: "busy" | "ok" | "error"; text: string } | null = null;
   /** Lines the build under way has streamed; a build that streams none hands its log over at the end. */
   let streamed = 0;
 
   /** The log, kept at its end unless the user has scrolled up to read. */
   const renderOutput = (toEnd = false) => {
-    if (output.length === 0) { outputView.body.replaceChildren(el("div", { className: "tsd-empty" }, "What Apply, Test and the builds of the programs report is kept here.")); return; }
+    if (output.length === 0) { outputView.body.replaceChildren(el("div", { className: "tsd-empty" }, "What Apply, Play and the builds of the programs report is kept here.")); return; }
     const scroller = outputView.body.parentElement;
     const atEnd = toEnd || !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
     outputEl.textContent = output.join("\n");
@@ -429,23 +494,107 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     editor.editor.focus();
   };
 
+  /** The folders of the Explorer that are closed; kept with the layout, so the tree comes back as it was left. */
+  const COLLAPSED_KEY = "explorer.collapsed";
+  let collapsed = new Set(api.storage.get<string[]>(COLLAPSED_KEY, []));
+  const setCollapsed = (next: Set<string>) => { collapsed = next; api.storage.set(COLLAPSED_KEY, [...next]); };
+  /** What is being dragged in the Explorer: a file's path or a folder's. */
+  let dragged: string | null = null;
+
+  /** Rows take a drop by being a folder (or the list, for the top): the dragged file or folder goes into it. */
+  const acceptDrops = (target: HTMLElement, folder: string) => {
+    const can = () => dragged !== null && folderOf(dragged) !== folder && dragged !== folder && !`${folder}/`.startsWith(`${dragged}/`);
+    target.addEventListener("dragover", (e) => { if (!can()) return; e.preventDefault(); e.stopPropagation(); target.classList.add("tsd-drop"); });
+    target.addEventListener("dragleave", () => target.classList.remove("tsd-drop"));
+    target.addEventListener("drop", (e) => {
+      target.classList.remove("tsd-drop");
+      if (!can() || dragged === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const name = dragged.split("/").pop()!;
+      moveTo(dragged, folder ? `${folder}/${name}` : name);
+    });
+  };
+  const draggable = (row: HTMLElement, path: string) => {
+    row.draggable = true;
+    row.addEventListener("dragstart", (e) => { dragged = path; e.dataTransfer?.setData("text/plain", path); if (e.dataTransfer) e.dataTransfer.effectAllowed = "move"; row.classList.add("tsd-dragged"); });
+    row.addEventListener("dragend", () => { dragged = null; row.classList.remove("tsd-dragged"); });
+  };
+  // Below the last row is the top of the script.
+  acceptDrops(fileList, "");
+
   const renderFiles = () => {
     const active = editor?.active() ?? openTabs[0] ?? ENTRY_FILE;
-    const paths = Object.keys(files).sort((a, b) => (a === ENTRY_FILE ? -1 : b === ENTRY_FILE ? 1 : a.localeCompare(b)));
+    const paths = Object.keys(files);
     const broken = new Map<string, number>();
     for (const d of diagnostics) { const p = normalizePath(d.file); broken.set(p, (broken.get(p) ?? 0) + 1); }
     openTabs = openTabs.filter((p) => files[p] !== undefined);
     if (!openTabs.includes(active)) openTabs.push(active);
-    shell.setTabs(openTabs.map((p) => ({ id: p, label: p.split("/").pop() ?? p, title: p, problems: broken.get(p), closable: openTabs.length > 1 })), active);
-    fileList.replaceChildren(...paths.map((path) => el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: path, onClick: () => openFile(path) },
-      el("span", { className: "tsd-ts" }, "TS"),
-      el("span", { className: broken.has(path) ? "tsd-name tsd-problem" : "tsd-name" }, path),
-      el("span", { className: "tsd-row-actions" },
-        path !== ENTRY_FILE ? shell.iconButton({ icon: "edit", title: "Rename…", run: () => { void renameFile(path); } }).element : undefined,
-        path !== ENTRY_FILE ? shell.iconButton({ icon: "trash", title: "Remove…", run: () => { void removeFile(path); } }).element : undefined,
-        broken.has(path) ? el("span", { className: "tsd-count" }, String(broken.get(path))) : undefined,
-      ),
-    )));
+    const labels = tabLabels(openTabs);
+    shell.setTabs(openTabs.map((p) => ({ id: p, label: labels.get(p)?.label ?? p, about: labels.get(p)?.folder, title: p, problems: broken.get(p), closable: openTabs.length > 1 })), active);
+    // A folder that is no longer there is forgotten, so one made later under its name starts open.
+    const folders = new Set(paths.flatMap((p) => { const parts = p.split("/").slice(0, -1); return parts.map((_, i) => parts.slice(0, i + 1).join("/")); }));
+    if ([...collapsed].some((f) => !folders.has(f))) setCollapsed(new Set([...collapsed].filter((f) => folders.has(f))));
+    const rows: HTMLElement[] = [];
+    const indent = (depth: number) => `${20 + depth * 12}px`;
+    const walk = (nodes: TreeNode[], depth: number) => {
+      for (const node of nodes) {
+        if (node.kind === "folder") {
+          const open = !collapsed.has(node.path);
+          const under = filesUnder(paths, node.path);
+          const problems = under.reduce((n, p) => n + (broken.get(p) ?? 0), 0);
+          const toggle = () => { const next = new Set(collapsed); if (open) next.add(node.path); else next.delete(node.path); setCollapsed(next); renderFiles(); };
+          const items = () => [
+            { label: "New File…", run: () => { void newFile(node.path); } },
+            { label: "New Folder…", run: () => { void newFolder(node.path); } },
+            null,
+            { label: "Rename…", run: () => { void renameFolder(node.path); } },
+            { label: "Remove…", run: () => { void removeFolder(node.path); } },
+          ];
+          const row = el("li", { className: "tsd-row tsd-folder", title: node.path, role: "button", ariaExpanded: String(open), onClick: toggle },
+            shell.icon(open ? "chevron-down" : "chevron-right"),
+            el("span", { className: problems ? "tsd-name tsd-problem" : "tsd-name" }, node.name),
+            el("span", { className: "tsd-row-actions" },
+              shell.iconButton({ icon: "new-file", title: `New file in ${node.path}…`, run: () => { void newFile(node.path); } }).element,
+              shell.iconButton({ icon: "edit", title: "Rename or move…", run: () => { void renameFolder(node.path); } }).element,
+              shell.iconButton({ icon: "trash", title: "Remove…", run: () => { void removeFolder(node.path); } }).element,
+              problems ? el("span", { className: "tsd-count" }, String(problems)) : undefined,
+            ),
+          );
+          row.style.paddingLeft = `${6 + depth * 12}px`;
+          row.addEventListener("contextmenu", (e) => { e.preventDefault(); shell.menu(row, items(), { x: e.clientX, y: e.clientY }); });
+          draggable(row, node.path);
+          acceptDrops(row, node.path);
+          rows.push(row);
+          if (open) walk(node.children, depth + 1);
+          continue;
+        }
+        const path = node.path;
+        const fixed = path === ENTRY_FILE;
+        const row = el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: path, onClick: () => openFile(path) },
+          el("span", { className: "tsd-ts" }, "TS"),
+          el("span", { className: broken.has(path) ? "tsd-name tsd-problem" : "tsd-name" }, node.name),
+          el("span", { className: "tsd-row-actions" },
+            !fixed ? shell.iconButton({ icon: "edit", title: "Rename or move…", run: () => { void renameFile(path); } }).element : undefined,
+            !fixed ? shell.iconButton({ icon: "trash", title: "Remove…", run: () => { void removeFile(path); } }).element : undefined,
+            broken.has(path) ? el("span", { className: "tsd-count" }, String(broken.get(path))) : undefined,
+          ),
+        );
+        row.style.paddingLeft = indent(depth);
+        if (!fixed) {
+          row.addEventListener("contextmenu", (e) => { e.preventDefault(); shell.menu(row, [
+            { label: "Rename…", run: () => { void renameFile(path); } },
+            { label: "Remove…", run: () => { void removeFile(path); } },
+          ], { x: e.clientX, y: e.clientY }); });
+          draggable(row, path);
+        }
+        // Onto a file is into the folder it is in.
+        acceptDrops(row, folderOf(path));
+        rows.push(row);
+      }
+    };
+    walk(buildTree(paths), 0);
+    fileList.replaceChildren(...rows);
   };
 
   const typeOf = (v: { kind: "number" | "boolean" | "unit" | "text"; bits?: number; unsigned?: boolean }) => (v.kind === "number" ? (v.bits ? `u${v.bits}` : v.unsigned ? "u32" : "number") : v.kind === "unit" ? "Unit" : v.kind === "text" ? "string" : "boolean");
@@ -470,22 +619,143 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
 
   const renderProblems = () => {
-    problemsView.badge(diagnostics.length);
-    if (diagnostics.length === 0) { problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? "No problems have been detected in the script." : "Checking…")); return; }
-    problemsView.body.replaceChildren(el("ul", { className: "tsd-list" }, ...diagnostics.map((d) =>
-      el("li", { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
-        shell.icon("error"),
-        el("span", { className: "msg" }, d.message.split("\n")[0]),
-        el("span", { className: "src" }, d.source === "typescript" ? "types" : d.source === "script" ? "script" : "compiler"),
-        el("span", { className: "where" }, `${d.file} [Ln ${d.line}, Col ${d.column}]`),
-      ))));
+    // A failing test and an only left in are warnings: said here, and no obstacle to a build unless the map's settings make one of them.
+    const warnings = warningsOf(tests);
+    problemsView.badge(diagnostics.length + warnings.length);
+    if (diagnostics.length + warnings.length === 0) { problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? "No problems have been detected in the script." : "Checking…")); return; }
+    problemsView.body.replaceChildren(el("ul", { className: "tsd-list" },
+      ...diagnostics.map((d) =>
+        el("li", { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
+          shell.icon("error"),
+          el("span", { className: "msg" }, d.message.split("\n")[0]),
+          el("span", { className: "src" }, d.source === "typescript" ? "types" : d.source === "script" ? "script" : "compiler"),
+          el("span", { className: "where" }, `${d.file} [Ln ${d.line}, Col ${d.column}]`),
+        )),
+      ...warnings.map((w) =>
+        el("li", { className: "tsd-warning", title: w.message, onClick: () => goTo(w.file, w.line) },
+          shell.icon("warning"),
+          el("span", { className: "msg" }, w.message),
+          el("span", { className: "src" }, "tests"),
+          el("span", { className: "where" }, `${w.file} [Ln ${w.line}]`),
+        )),
+    ));
+  };
+
+  /* ── Tests ── */
+
+  const STATE_ICON: Record<TestStateName, IconName> = { none: "circle-outline", passed: "pass", failed: "error", skipped: "circle-slash", running: "loading" };
+  const stateIcon = (state: TestStateName) => { const i = shell.icon(STATE_ICON[state]); i.classList.add(`tsd-test-${state}`); if (state === "running") i.classList.add("tsd-spin"); return i; };
+
+  /** The Testing view: folder, file, describe, test, each with its mark; a row runs what is under it. */
+  const renderTesting = () => {
+    const counts = countTests(tests);
+    testingView.badge(counts.failed || null, "error");
+    const said = summary(counts);
+    testsItem.set(ready && said ? { icon: testsRunning ? "loading" : said.failed ? "error" : "beaker", busy: testsRunning, text: said.text, kind: said.failed ? "error" : undefined, title: `${counts.total} test${counts.total === 1 ? "" : "s"}${testsSlow ? "; running them all takes a while, so only the open file's run after a change" : ""}. Click for the Testing view`, onClick: () => testingView.show() } : null);
+    if (tests.list.length === 0) {
+      testingList.replaceChildren(el("li", { className: "tsd-empty" }, "The script has no tests yet. A test is a test(name, (sim) => { … }) imported from \"trigscript\", in any file or in one named *.test.ts: it runs here, in the simulator, after every change that compiles."));
+      return;
+    }
+    const rows: HTMLElement[] = [];
+    const failing = (node: TestNode): boolean => (node.kind === "test" ? stateOf(tests, node.info) === "failed" : node.children.some(failing));
+    const walk = (nodes: TestNode[], depth: number) => {
+      for (const node of nodes) {
+        if (onlyFailing && !failing(node)) continue;
+        const ids = idsUnder(node);
+        const state: TestStateName = testsRunning ? "running" : node.kind === "test" || node.kind === "suite" ? stateOf(tests, node.info) : stateOfCounts(countTests(tests, (t) => ids.some((id) => t.id === id || t.id.startsWith(`${id} > `))));
+        const name = node.kind === "folder" || node.kind === "file" ? node.name : node.info.name;
+        const result = node.kind === "test" ? tests.results.get(node.info.id) : undefined;
+        const open = () => {
+          if (node.kind === "folder") return;
+          if (node.kind === "file") { openFile(node.path); return; }
+          if (node.kind === "test") { chosenTest = node.info.id; shell.showPanel("tests"); renderResults(); renderTesting(); }
+          goTo(node.info.file, node.info.line);
+        };
+        const row = el("li", { className: node.kind === "test" && node.info.id === chosenTest ? "tsd-row tsd-active" : "tsd-row", title: result?.message ?? name, onClick: open },
+          stateIcon(state),
+          el("span", { className: state === "failed" ? "tsd-name tsd-problem" : "tsd-name" }, name),
+          result && result.status !== "skipped" ? el("span", { className: "tsd-about" }, `${result.ms} ms`) : undefined,
+          el("span", { className: "tsd-row-actions" },
+            shell.iconButton({ icon: "play", title: node.kind === "test" ? "Run this test" : "Run these tests", run: () => { void runTests(node.kind === "file" ? { files: [node.path] } : { ids }); } }).element,
+          ),
+        );
+        row.style.paddingLeft = `${10 + depth * 12}px`;
+        rows.push(row);
+        walk(node.children, depth + 1);
+      }
+    };
+    walk(testTree(tests.list), 0);
+    if (rows.length === 0) rows.push(el("li", { className: "tsd-empty" }, "No test fails."));
+    testingList.replaceChildren(...rows);
+  };
+
+  /** Test Results: the chosen test's message, what it printed, and what happened by frame, each a link to its line. */
+  const renderResults = () => {
+    const failed = tests.list.filter((t) => t.kind === "test" && tests.results.get(t.id)?.status === "failed");
+    resultsView.badge(failed.length);
+    const info: TestInfo | undefined = tests.list.find((t) => t.id === chosenTest) ?? failed[0] ?? tests.list.find((t) => t.kind === "test" && tests.results.has(t.id));
+    const r = info ? tests.results.get(info.id) : undefined;
+    if (!info || !r) { resultsView.body.replaceChildren(el("div", { className: "tsd-empty" }, tests.list.length ? "No test has run yet: they run after a change that compiles, or from the Testing view." : "The script has no tests.")); return; }
+    const list = el("ul", { className: "tsd-list" });
+    const at = r.at ?? { file: info.file, line: info.line };
+    list.append(el("li", { title: "Go to the test", onClick: () => goTo(info.file, info.line) },
+      stateIcon(r.status === "failed" ? "failed" : r.status === "passed" ? "passed" : "skipped"),
+      el("span", { className: "msg" }, testName(info)),
+      el("span", { className: "src" }, r.status === "skipped" ? "skipped" : `${r.frames} frame${r.frames === 1 ? "" : "s"} · ${r.ms} ms`),
+      el("span", { className: "where" }, where({ file: info.file, line: info.line }))));
+    if (r.status === "failed") {
+      list.append(el("li", { className: "tsd-fault", title: "Go to where it failed", onClick: () => goTo(at.file, at.line, at.column ?? 1) },
+        el("span", { className: "frame" }, "failed"), el("span", { className: "msg" }, r.message ?? "failed"), el("span", { className: "where" }, where({ file: at.file, line: at.line }))));
+      if (r.expected !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "expected"), el("span", { className: "msg" }, r.expected)));
+      if (r.actual !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "got"), el("span", { className: "msg" }, r.actual)));
+    }
+    for (const line of r.printed) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "printed"), el("span", { className: "msg" }, line)));
+    const several = new Set(r.events.map((e) => e.player)).size > 1;
+    for (const e of r.events.slice(0, SIMULATE_ROWS)) {
+      list.append(el("li", { onClick: () => { if (e.file && e.line) goTo(e.file, e.line); } },
+        el("span", { className: "frame" }, `frame ${e.frame + 1}`), el("span", { className: "msg note" }, `${several ? `P${e.player + 1} · ` : ""}${e.text}`), el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "")));
+    }
+    if (r.events.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, `and ${r.events.length - SIMULATE_ROWS} more`)));
+    resultsView.body.replaceChildren(list);
+  };
+
+  /** Run tests now, from what is in the editor: all of them, a file's, or those with these ids. */
+  const runTests = async (filter: Pick<TestRunOptions, "files" | "ids"> = {}) => {
+    if (!editor || testsRunning) return;
+    testsRunning = true;
+    renderTesting();
+    try {
+      const a = await compileNow({ world: svc.world(), ...filter });
+      if (!a || cancelled) return;
+      if (!a.compiled.ok) { setStatus("error", `Tests not run: ${a.compiled.diagnostics.length} problem${a.compiled.diagnostics.length === 1 ? "" : "s"} in the script.`, NOTICE_MS); shell.showPanel("problems"); return; }
+      const ran = a.compiled.tests?.results.filter((t) => t.status !== "skipped") ?? [];
+      const failed = ran.filter((t) => t.status === "failed");
+      if (ran.length === 0) { setStatus("info", tests.list.length ? "No test ran." : "The script has no tests."); return; }
+      if (failed.length) { chosenTest = failed[0].id; shell.showPanel("tests"); }
+      setStatus(failed.length ? "error" : "ok", failed.length ? `${failed.length} of ${ran.length} test${ran.length === 1 ? "" : "s"} failed: ${testName(failed[0])} — ${failed[0].message ?? "failed"}` : `${ran.length} test${ran.length === 1 ? "" : "s"} passed.`, NOTICE_MS);
+    } finally {
+      testsRunning = false;
+      render();
+    }
+  };
+  const runFailedTests = () => {
+    const ids = tests.list.filter((t) => t.kind === "test" && tests.results.get(t.id)?.status === "failed").map((t) => t.id);
+    if (ids.length === 0) { setStatus("info", "No test has failed."); return Promise.resolve(); }
+    return runTests({ ids });
+  };
+  /** The test the cursor is in: the last test or describe of the file that starts at or before its line. */
+  const runTestAtCursor = () => {
+    const at = editor?.cursor();
+    const here = at ? tests.list.filter((t) => t.file === normalizePath(at.file) && t.line <= at.line).sort((a, b) => b.line - a.line)[0] : undefined;
+    if (!here) { setStatus("info", "There is no test at the cursor."); return Promise.resolve(); }
+    return runTests({ ids: [here.id] });
   };
 
   const renderSimulation = () => {
     if (!simulation) { simulateView.body.replaceChildren(el("div", { className: "tsd-empty" }, `Simulate (${MOD}+F5) runs the script's first ${SIMULATE_FRAMES / 24} seconds in a built-in interpreter and lists what happened. A change to the script clears the list.`)); return; }
     const { sim, programs: ps, result: r } = simulation;
     const list = el("ul", { className: "tsd-list" });
-    list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) as P${sim.player + 1}. Unit conditions (bring, command, …) count as false and reads of what the simulation does not hold (units, kills, scores) give 0; wait takes no time.`)));
+    list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) for ${sim.game.players.slots.map((p) => `P${p + 1}`).join(", ")}, from the map's placed units. Units are made, given, moved, killed and counted, but nothing walks or fights; scores and the countdown read 0; wait takes no time.`)));
     // What a program did that is always a mistake, first: the game says nothing of these (a read past an array's end is 0
     // there, a store past it nothing), so this is where they are seen. One row a line, however often a loop came past it.
     const faults = new Map<string, { first: NonNullable<typeof ps>["faults"][number]; times: number }>();
@@ -503,14 +773,17 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (faults.size > SIMULATE_FAULTS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, `and ${faults.size - SIMULATE_FAULTS} more lines with a fault`)));
     // Hand triggers' events (trigger interpreter) and the programs' (program interpreter), in time order.
     const rows: { cycle: number; order: number; line: () => HTMLElement }[] = [];
+    // With several players in the game, each line says whose it is.
+    const several = sim.game.players.slots.length > 1;
+    const whose = (player: number) => (several ? `P${player + 1} · ` : "");
     sim.events.forEach((e, i) => {
       const at = r.sources[e.trigger];
       rows.push({ cycle: e.cycle, order: i, line: () => el("li", { title: `Trigger #${e.trigger + 1}`, onClick: () => { if (at) goTo(at.file, at.line); } },
-        el("span", { className: "frame" }, `frame ${e.cycle + 1}`), el("span", { className: "msg" }, describeEvent(e)), el("span", { className: "where" }, where(at))) });
+        el("span", { className: "frame" }, `frame ${e.cycle + 1}`), el("span", { className: "msg" }, `${whose(e.player)}${describeEvent(e)}`), el("span", { className: "where" }, where(at))) });
     });
     ps?.events.forEach((e, i) => {
       rows.push({ cycle: e.cycle, order: sim.events.length + i, line: () => el("li", { title: `Program ${e.program + 1}`, onClick: () => goTo(e.at.file, e.at.line, e.at.column) },
-        el("span", { className: "frame" }, `frame ${e.cycle + 1}`), el("span", { className: "msg" }, describeEvent(e)), el("span", { className: "where" }, where({ file: e.at.file, line: e.at.line }))) });
+        el("span", { className: "frame" }, `frame ${e.cycle + 1}`), el("span", { className: "msg" }, `${whose(e.player)}${describeEvent(e)}`), el("span", { className: "where" }, where({ file: e.at.file, line: e.at.line }))) });
     });
     rows.sort((a, b) => a.cycle - b.cycle || a.order - b.order);
     if (rows.length === 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "—"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} frames.`)));
@@ -520,8 +793,10 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     for (const v of r.variables) {
       if (shownVars.has(v.name)) continue;
       shownVars.add(v.name);
-      const value = ps?.value(v.name);
-      const shown = value === undefined ? "?" : typeof value === "boolean" ? (value ? "true" : "false") : String(value);
+      const say = (value: number | boolean | undefined) => (value === undefined ? "?" : typeof value === "boolean" ? (value ? "true" : "false") : String(value));
+      // A per-player program's variable is one for each player it ran for, unless it is shared.
+      const runs = ps?.runs.filter((x) => x.index === v.program) ?? [];
+      const shown = runs.length > 1 && !v.shared ? runs.map((x) => `P${x.player + 1} ${say(x.value(v.name))}`).join(" · ") : say(ps?.value(v.name, v.program));
       list.append(el("li", { title: "The variable's value when the run ended", onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
         el("span", { className: "frame" }, "after"), el("span", { className: "msg" }, `${v.name} = ${shown}`), el("span", { className: "where" }, typeOf(v))));
     }
@@ -617,19 +892,29 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     renderFiles();
     renderPrograms();
     renderProblems();
+    renderTesting();
+    renderResults();
     renderSimulation();
     showStale();
     showRenames();
   };
 
-  const applyResult = (r: CompileResult) => {
+  const applyResult = (r: CompileResult, asked?: TestRunOptions) => {
     diagnostics = r.diagnostics;
     result = r;
     if (r.ok) outline = { programs: r.programs, variables: r.variables };
     simulation = null;
-    if (editor && monaco) { setCompilerMarkers(monaco, files, diagnostics); editor.decorate(r.buildTime); refreshLineHints(); }
+    // A script with problems keeps what its tests last said; one that compiled says what they say now.
+    if (r.ok) tests = mergeReport(tests, r.tests);
+    // All of them took long: from now on only the open file's run by themselves, and the rest wait for Run All.
+    if (r.ok && r.tests && asked && !asked.files && !asked.ids) testsSlow = r.tests.ms > TESTS_SLOW_MS;
+    if (chosenTest && !tests.results.has(chosenTest)) chosenTest = null;
+    if (editor && monaco) { setCompilerMarkers(monaco, files, diagnostics, warningsOf(tests)); editor.setTests(marksOf(tests), notesOf(tests)); editor.decorate(r.buildTime); refreshLineHints(); }
     render();
   };
+
+  /** What a compile is asked to run of the tests: every one, or, once that proved slow, the open file's. */
+  const automaticTests = (): TestRunOptions => ({ world: svc.world(), ...(testsSlow ? { files: [editor?.active() ?? ENTRY_FILE] } : {}) });
 
   /** The locations the script can name, by key, for Ctrl+click and the hover. */
   const mapRefs = () => {
@@ -653,8 +938,9 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     timer = setTimeout(() => {
       timer = null;
       if (cancelled || !generated) return;
-      svc.prepare(files, generated).then(
-        (a) => { if (!cancelled) applyResult(a.compiled); },
+      const asked = automaticTests();
+      svc.prepare(files, generated, asked).then(
+        (a) => { if (!cancelled) applyResult(a.compiled, asked); },
         (err: Error) => { if (!cancelled && !(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`); },
       );
     }, CHECK_DELAY_MS);
@@ -665,13 +951,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    * A keystroke during the compile supersedes it with the newer text's check; the newer
    * text is what the user wants built, so it is compiled again — a few times at most.
    */
-  const compileNow = async (): Promise<ScriptArtifact | null> => {
+  const compileNow = async (asked: TestRunOptions = automaticTests()): Promise<ScriptArtifact | null> => {
     if (timer !== null) { clearTimeout(timer); timer = null; }
     for (let attempt = 0; attempt < 3; attempt++) {
       if (cancelled || !generated) return null;
       try {
-        const a = await svc.prepare(files, generated);
-        applyResult(a.compiled);
+        const a = await svc.prepare(files, generated, asked);
+        applyResult(a.compiled, asked);
         return a;
       } catch (err) {
         if (err instanceof CompileSuperseded) continue;
@@ -737,7 +1023,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
 
   /**
-   * Test: the script applied, then the map exactly as Save would write it — the editor runs
+   * Play: the script applied, then the map exactly as Save would write it — the editor runs
    * the build steps, so the programs are in it — handed to Test Map (`api.document.test`):
    * on the desktop into the game's folder with the game started, in a browser into the
    * test folder picked once. Nothing is saved beside the map; the map's own file is what
@@ -782,6 +1068,9 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       shell.dismiss("build");
       buildState = { kind: "busy", text: `Building for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}…` };
       log(`Building the programs for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}`);
+      // A failing test does not stop a build unless the map's settings say so: said, so the log of a build is the whole story.
+      const failing = countTests(tests).failed;
+      if (failing) log(`${failing === 1 ? "A test fails" : `${failing} tests fail`}: see the Testing view.`, false);
     } else if (e.kind === "log") {
       streamed++;
       log(e.line, false);
@@ -834,7 +1123,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    * What a simulated program finds on the map: the placed units, in the order the map has them, with
    * the hit points their type and their own percentage give, and the map's locations as boxes.
    */
-  const simulatedMap = (): Pick<ProgramSimulationOptions, "units" | "locations"> => {
+  const simulatedMap = (): Pick<ProgramSimulationOptions, "units" | "locations" | "players" | "forces" | "unitStats" | "properties"> => {
     const scn = api.document.scenario();
     if (!scn) return {};
     const types = new Map<number, { hp: number; shields: number }>();
@@ -857,7 +1146,21 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     });
     const locations: Record<number, SimBounds> = {};
     scn.locations.forEach((l, i) => { if (l.right > l.left || l.bottom > l.top) locations[i + 1] = { left: l.left, top: l.top, right: l.right, bottom: l.bottom }; });
-    return { units, locations };
+    // Who is in the game: the map's human and computer players, each in the force the map puts them in.
+    const players = scn.playerTypes.slice(0, 8).flatMap((type, slot) => (type === OWNER_HUMAN || type === OWNER_COMPUTER ? [slot] : []));
+    const forces = Object.fromEntries(scn.forces.playerForce.slice(0, 8).map((force, slot) => [slot, force]));
+    // A Create Unit with Properties slot is 1-based in the action.
+    const properties: ProgramSimulationOptions["properties"] = (slot) => {
+      const c = scn.cuwp?.[slot - 1];
+      if (!c) return undefined;
+      const state = (bit: number) => ((c.validProperties & bit) !== 0 ? (c.stateFlags & bit) !== 0 : undefined);
+      return {
+        hpPercent: c.validFields & 2 ? c.hitPointsPercent : undefined, shieldPercent: c.validFields & 4 ? c.shieldsPercent : undefined,
+        energyPercent: c.validFields & 8 ? c.energyPercent : undefined, resources: c.validFields & 16 ? c.resources : undefined,
+        cloaked: state(1), burrowed: state(2), hallucinated: state(8), invincible: state(16),
+      };
+    };
+    return { units, locations, ...(players.length ? { players, forces } : {}), unitStats: (id) => typeOf(id), properties };
   };
 
   /** Run the compiled triggers through the trigger-cycle interpreter and show what happened. */
@@ -867,9 +1170,12 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (!r.ok) { setStatus("error", `Not simulated: ${r.diagnostics.length} problem${r.diagnostics.length === 1 ? "" : "s"} in the script.`, NOTICE_MS); shell.showPanel("problems"); return; }
     try {
       // The programs run from the IR; the trigger() records through the trigger interpreter, sharing one world.
-      const player = r.programs[0]?.owner;
-      const sim = new Simulation(r.triggers, { strings: r.strings, player });
-      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, stackDepth: svc.settings().stackDepth, ...simulatedMap() }) : null;
+      // One world for both: the map's units, locations and players.
+      const { unitStats, ...map } = simulatedMap();
+      const owner = r.programs[0]?.owner;
+      const player = owner !== undefined && owner < 12 && (!map.players || map.players.includes(owner)) ? owner : map.players?.[0] ?? owner;
+      const sim = new Simulation(r.triggers, { strings: r.strings, player, unitStats, ...map });
+      const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, stackDepth: svc.settings().stackDepth, unitStats }) : null;
       for (let i = 0; i < SIMULATE_FRAMES; i++) { sim.step(); programs?.step(); }
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
@@ -877,7 +1183,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const quiet = r.input ? " Keys, clicks, the mouse and chat are not simulated: they read as nothing." : "";
       const faults = programs?.faults.length ?? 0;
       const wrong = faults ? ` ${faults} fault${faults === 1 ? "" : "s"}: an array read or written past its end, or out of memory — first in the list.` : "";
-      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames as P${sim.player + 1}: ${count} action${count === 1 ? "" : "s"} ran.${wrong}${quiet}`);
+      const who = sim.game.players.slots.map((p) => `P${p + 1}`).join(", ");
+      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames for ${who}: ${count} action${count === 1 ? "" : "s"} ran.${wrong}${quiet}`);
       shell.showPanel("simulate");
     } catch (err) {
       setStatus("error", `Simulation stopped: ${(err as Error).message}`);
@@ -939,35 +1246,110 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   /* ── Files ── */
 
-  const askName = async (message: string, value: string): Promise<string | null> => {
+  /** A file's name asked for until it can be one. Inside `folder` the answer is a name in it (`boss.ts`, or `big/boss.ts` for a folder under it). */
+  const askName = async (message: string, value: string, folder = ""): Promise<string | null> => {
     for (;;) {
       const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: "helpers.ts" });
       if (answer === null) return null;
       let name = normalizePath(answer.trim());
+      if (name && folder) name = `${folder}/${name}`;
       if (name && !/\.ts$/i.test(name)) name += ".ts";
-      if (!FILE_NAME.test(name)) { value = answer; message = "A file name is letters, digits, _ - and ., folders with /, ending in .ts."; continue; }
+      if (!FILE_NAME.test(name) || name.split("/").some((p) => p === "." || p === "..")) { value = answer; message = "A file name is letters, digits, _ - and ., folders with /, ending in .ts."; continue; }
       if (files[name] !== undefined) { value = answer; message = `There is already a ${name}.`; continue; }
       return name;
     }
   };
 
-  const newFile = async () => {
+  const newFile = async (folder = "") => {
     if (!editor) return;
-    const name = await askName("Name of the new file:", "helpers.ts");
+    // In a folder called tests, what is wanted is a test of the file that is open.
+    const open = editor.active();
+    const proposed = /(^|\/)tests?$/i.test(folder) ? `${(open.split("/").pop() ?? "main.ts").replace(/(\.test)?\.ts$/i, "")}.test.ts` : "helpers.ts";
+    const name = await askName(folder ? `Name of the new file in ${folder}/:` : "Name of the new file (folder/name.ts puts it in a folder):", proposed, folder);
     if (!name) return;
-    editor.add(name, FILE_TEMPLATE);
+    if (folder && collapsed.has(folder)) { const next = new Set(collapsed); next.delete(folder); setCollapsed(next); }
+    editor.add(name, isTestFile(name) ? TEST_TEMPLATE : FILE_TEMPLATE);
     openFile(name);
+  };
+
+  /** An archive has no empty folder, so a folder is there while a file is in it: the folder's name, then its first file's. */
+  const newFolder = async (parent = "") => {
+    if (!editor) return;
+    let message = parent ? `Name of the new folder in ${parent}/:` : "Name of the new folder:";
+    let value = "tests";
+    for (;;) {
+      const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: "tests" });
+      if (answer === null) return;
+      const name = normalizePath(answer.trim()).replace(/\/+$/, "");
+      if (!validFolder(name)) { value = answer; message = "A folder name is letters, digits, _ - and ., folders inside it with /."; continue; }
+      await newFile(parent ? `${parent}/${name}` : name);
+      return;
+    }
+  };
+
+  /**
+   * Files go where `moves` says and every import that named one of them, and the moved
+   * files' own, are rewritten to match. One change to the user, whatever it touched: the
+   * notification's Undo moves everything back, imports with it.
+   */
+  const moveFiles = (moves: Moves, undo = false) => {
+    if (!editor || moves.size === 0) return;
+    const refused = refuseMoves(Object.keys(files), moves);
+    if (refused) { setStatus("error", refused); return; }
+    const moved = applyMoves(files, moves);
+    // Before the models change: a model's change is written into `files` by its path.
+    files = moved.files;
+    for (const [from, to] of moves) editor.rename(from, to);
+    for (const path of moved.edited) editor.set(path, moved.files[path]);
+    openTabs = openTabs.map((p) => moves.get(p) ?? p);
+    svc.writeFiles(files);
+    renderFiles();
+    check();
+    const [[from, to]] = [...moves];
+    const what = moves.size === 1 ? `${from} is now ${to}` : `${moves.size} files moved`;
+    const text = `${what}${moved.imports ? `; ${moved.imports} import${moved.imports === 1 ? "" : "s"} rewritten` : ""}.`;
+    log(text);
+    if (undo) { shell.dismiss("move"); return; }
+    const back = new Map([...moves].map(([a, b]) => [b, a]));
+    shell.notify({ key: "move", kind: "info", text, timeout: NOTICE_MS * 2, actions: [{ label: "Undo", run: () => moveFiles(back, true) }] });
+  };
+
+  /** A file or a folder to where it was dragged, or renamed to. */
+  const moveTo = (from: string, to: string) => {
+    if (!editor || from === to) return;
+    moveFiles(movesOf(Object.keys(files), from, to));
   };
 
   const renameFile = async (path: string) => {
     if (!editor || path === ENTRY_FILE) return;
-    const name = await askName(`Rename ${path} to:`, path);
+    const name = await askName(`Rename ${path} to (a folder before the name moves it):`, path);
     if (!name) return;
-    editor.rename(path, name);
-    openTabs = openTabs.map((p) => (p === path ? name : p));
+    moveTo(path, name);
+  };
+
+  const renameFolder = async (folder: string) => {
+    if (!editor) return;
+    let message = `Rename the folder ${folder} to (its files go with it, and the imports follow):`;
+    let value = folder;
+    for (;;) {
+      const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: folder });
+      if (answer === null) return;
+      const name = normalizePath(answer.trim()).replace(/\/+$/, "");
+      if (!validFolder(name)) { value = answer; message = "A folder name is letters, digits, _ - and ., folders inside it with /."; continue; }
+      if (name === folder) return;
+      const moves = movesOf(Object.keys(files), folder, name);
+      const refused = refuseMoves(Object.keys(files), moves);
+      if (refused) { value = answer; message = refused; continue; }
+      if (collapsed.has(folder)) { const next = new Set(collapsed); next.delete(folder); next.add(name); setCollapsed(next); }
+      moveFiles(moves);
+      return;
+    }
+  };
+
+  const removeFiles = (paths: string[]) => {
+    if (!editor) return;
     const next = { ...files };
-    next[name] = next[path];
-    delete next[path];
+    for (const path of paths) { editor.remove(path); delete next[path]; }
     files = next;
     svc.writeFiles(files);
     renderFiles();
@@ -977,13 +1359,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const removeFile = async (path: string) => {
     if (!editor || path === ENTRY_FILE) return;
     if (!(await api.ui.confirm(`Remove ${path} from the script? Its text is not kept anywhere else.`, { title: "TrigScript", confirmLabel: "Remove", danger: true }))) return;
-    editor.remove(path);
-    const next = { ...files };
-    delete next[path];
-    files = next;
-    svc.writeFiles(files);
-    renderFiles();
-    check();
+    removeFiles([path]);
+  };
+
+  const removeFolder = async (folder: string) => {
+    if (!editor) return;
+    const under = filesUnder(Object.keys(files), folder);
+    if (under.includes(ENTRY_FILE)) return;
+    if (!(await api.ui.confirm(`Remove the folder ${folder} and the ${under.length === 1 ? "file" : `${under.length} files`} in it? Their text is not kept anywhere else.`, { title: "TrigScript", confirmLabel: "Remove", danger: true }))) return;
+    removeFiles(under);
   };
 
   /** The map's names changed under the open editor: refresh the declarations, and notice what was renamed. */
@@ -1015,12 +1399,17 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const commands: Command[] = [
     // The editor's own Ctrl+S does not reach a map under a dialog, and a browser would offer to save the page.
     { id: "save", label: "Save the Map", key: { code: "KeyS", mod: true }, run: () => { void api.document.save(); } },
-    { id: "test", label: "Test the Map", key: { code: "F5" }, run: () => { void test(); } },
+    { id: "test", label: "Play the Map", key: { code: "F5" }, run: () => { void test(); } },
+    { id: "runTests", label: "Run All Tests", run: () => { void runTests(); } },
+    { id: "runTestAtCursor", label: "Run Test at Cursor", context: true, run: () => { void runTestAtCursor(); } },
+    { id: "runFailedTests", label: "Run Failed Tests", run: () => { void runFailedTests(); } },
+    { id: "testing", label: "Show Testing", run: () => testingView.show() },
     { id: "simulate", label: "Simulate", key: { code: "F5", mod: true }, run: () => { void simulateNow(); } },
     { id: "apply", label: "Apply the Script to the Map", key: { code: "KeyB", mod: true, shift: true }, run: () => { void build(); } },
     { id: "pick", label: "Pick a Location or Unit from the Map", context: true, run: () => { void pickFromMap(); } },
     { id: "import", label: "Import the Map's Triggers", run: () => { void importHand(); } },
     { id: "newFile", label: "New File…", run: () => { void newFile(); } },
+    { id: "newFolder", label: "New Folder…", run: () => { void newFolder(); } },
     { id: "mode", label: mode === "dialog" ? "Open Beside the Map" : "Open in a Window", run: () => switchMode() },
     { id: "problems", label: "Show Problems", key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
     { id: "output", label: "Show Output", key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },
@@ -1085,7 +1474,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
           files = { ...files, [path]: text };
           svc.writeFiles(files);
           check();
-        });
+        }, (id) => { void runTests({ ids: [id] }); });
         const code = editor.editor;
         for (const c of commands) {
           code.addAction({

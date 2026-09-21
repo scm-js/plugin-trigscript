@@ -179,7 +179,11 @@ describe("the heap's size is a setting of the map's script", () => {
     expect(readSettings(none)).toEqual(DEFAULT_SETTINGS);
     const set = withSettings(none, { heapCells: 65536 });
     expect([...set.keys()]).toEqual([SETTINGS_MEMBER]);
-    expect(readSettings(set)).toEqual({ heapCells: 65536, stackDepth: STACK_DEPTH });
+    expect(readSettings(set)).toEqual({ heapCells: 65536, stackDepth: STACK_DEPTH, testsGuardBuild: false });
+    // Whether a failing test refuses the build is kept the same way: written when it is on, gone when it is off.
+    const guarded = withSettings(none, { testsGuardBuild: true });
+    expect(readSettings(guarded).testsGuardBuild).toBe(true);
+    expect(withSettings(guarded, { testsGuardBuild: false }).size).toBe(0);
     expect(readSettings(withSettings(none, { heapCells: 5 })).heapCells).toBe(HEAP_CELLS_MIN);
     expect(readSettings(withSettings(none, { heapCells: 1e12 })).heapCells).toBe(HEAP_CELLS_MAX);
     expect(withSettings(set, { heapCells: HEAP_CELLS }).size).toBe(0);

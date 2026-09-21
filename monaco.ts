@@ -317,28 +317,57 @@ export function setMapRefs(monaco: MonacoApi, refs: () => MapRefs | null) {
   });
 }
 
-/** The compiler's own diagnostics, drawn under the TypeScript ones, per file. */
-export function setCompilerMarkers(monaco: MonacoApi, files: ScriptFiles, diagnostics: ScriptDiagnostic[]) {
+/** A line worth a warning that is no fault of the script: a test that fails, a `test.only` left in. */
+export interface ScriptWarning { file: string; line: number; message: string }
+
+/** The compiler's own diagnostics, drawn under the TypeScript ones, per file; `warnings` in the colour of a warning. */
+export function setCompilerMarkers(monaco: MonacoApi, files: ScriptFiles, diagnostics: ScriptDiagnostic[], warnings: ScriptWarning[] = []) {
   for (const path of Object.keys(files)) {
     const model = monaco.editor.getModel(fileUri(monaco, path));
     if (!model) continue;
     monaco.editor.setModelMarkers(
       model,
       "trigscript",
-      diagnostics.filter((d) => d.source !== "typescript" && normalizePath(d.file) === normalizePath(path)).map((d) => ({
-        severity: monaco.MarkerSeverity.Error,
-        message: d.message,
-        startLineNumber: d.line,
-        startColumn: d.column,
-        endLineNumber: d.endLine,
-        endColumn: d.endColumn,
-      })),
+      [
+        ...diagnostics.filter((d) => d.source !== "typescript" && normalizePath(d.file) === normalizePath(path)).map((d) => ({
+          severity: monaco.MarkerSeverity.Error,
+          message: d.message,
+          startLineNumber: d.line,
+          startColumn: d.column,
+          endLineNumber: d.endLine,
+          endColumn: d.endColumn,
+        })),
+        ...warnings.filter((w) => normalizePath(w.file) === normalizePath(path) && w.line >= 1 && w.line <= model.getLineCount()).map((w) => ({
+          severity: monaco.MarkerSeverity.Warning,
+          message: w.message,
+          startLineNumber: w.line,
+          startColumn: model.getLineFirstNonWhitespaceColumn(w.line) || 1,
+          endLineNumber: w.line,
+          endColumn: model.getLineMaxColumn(w.line),
+        })),
+      ],
     );
   }
 }
 
+/** A mark in the margin beside a `test(` or a `describe(`: what became of it, and what is said at the end of a line that failed. */
+export interface TestMark {
+  file: string;
+  line: number;
+  state: "none" | "passed" | "failed" | "skipped" | "running";
+  /** What the margin's mark says on hover. */
+  title: string;
+  /** What a click on the mark runs. */
+  id: string;
+}
+export interface TestNote { file: string; line: number; text: string; hover?: string }
+
+export const TEST_MARK_CLASS = "trigscript-test";
+
 export interface ScriptEditor {
   editor: Monaco.editor.IStandaloneCodeEditor;
+  /** The marks in the margin and the failures said at the end of their lines; `onMark` hears a click on a mark. */
+  setTests(marks: TestMark[], notes: TestNote[]): void;
   /** The file the editor shows. */
   active(): string;
   show(path: string): void;
@@ -375,12 +404,16 @@ export function releaseScriptEditor(monaco: MonacoApi): void {
   defaults.setCompilerOptions(defaults.getCompilerOptions());
 }
 
-export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: ScriptFiles, active: string, onChange: (path: string, text: string) => void): ScriptEditor {
+export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: ScriptFiles, active: string, onChange: (path: string, text: string) => void, onMark?: (id: string) => void): ScriptEditor {
   disposeModels(monaco);
   const models = new Map<string, Monaco.editor.ITextModel>();
   const subs = new Map<string, Monaco.IDisposable>();
   /** Per file, the ids of the build-time decorations, for the next `deltaDecorations`. */
   const decorations = new Map<string, string[]>();
+  /** Per file, the ids of the tests' decorations. */
+  const testDecorations = new Map<string, string[]>();
+  /** The marks as last set, to find the one a click in the margin is on. */
+  let testMarks: TestMark[] = [];
   /** Per file, the view state (cursor, scroll) to restore when it is shown again. */
   const views = new Map<string, Monaco.editor.ICodeEditorViewState | null>();
   const make = (path: string, text: string) => {
@@ -400,6 +433,8 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     fontSize: 12.5,
     lineHeight: 18,
     minimap: { enabled: false },
+    // Where a test's mark goes; it stays narrow for a script without any.
+    glyphMargin: true,
     scrollBeyondLastLine: false,
     renderLineHighlight: "line",
     tabSize: 2,
@@ -409,6 +444,13 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     padding: { top: 8, bottom: 8 },
     quickSuggestions: { other: true, strings: true, comments: false },
     suggest: { showWords: false },
+  });
+  // A click on a test's mark runs it.
+  editor.onMouseDown((e) => {
+    if (e.target.type !== monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) return;
+    const line = e.target.position?.lineNumber;
+    const mark = testMarks.find((m) => normalizePath(m.file) === current && m.line === line);
+    if (mark) onMark?.(mark.id);
   });
   const show = (path: string) => {
     const p = normalizePath(path);
@@ -442,6 +484,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
       models.delete(p);
       views.delete(p);
       decorations.delete(p);
+      testDecorations.delete(p);
       model.dispose();
     },
     rename(from, to) {
@@ -457,6 +500,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
       models.delete(a);
       views.delete(a);
       decorations.delete(a);
+      testDecorations.delete(a);
       if (wasCurrent) editor.setModel(null);
       model.dispose();
       const next = make(b, text);
@@ -474,6 +518,23 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     },
     cursor() {
       return { file: current, line: editor.getPosition()?.lineNumber ?? 1 };
+    },
+    setTests(marks, notes) {
+      testMarks = marks;
+      for (const [p, model] of models) {
+        const lines = model.getLineCount();
+        const next: Monaco.editor.IModelDeltaDecoration[] = [
+          ...marks.filter((m) => normalizePath(m.file) === p && m.line >= 1 && m.line <= lines).map((m) => ({
+            range: new monaco.Range(m.line, 1, m.line, 1),
+            options: { glyphMarginClassName: `${TEST_MARK_CLASS} ${TEST_MARK_CLASS}-${m.state}`, glyphMarginHoverMessage: { value: m.title }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+          })),
+          ...notes.filter((n) => normalizePath(n.file) === p && n.line >= 1 && n.line <= lines).map((n) => ({
+            range: new monaco.Range(n.line, model.getLineMaxColumn(n.line), n.line, model.getLineMaxColumn(n.line)),
+            options: { after: { content: `  ${n.text}`, inlineClassName: `${TEST_MARK_CLASS}-note` }, ...(n.hover ? { hoverMessage: { value: n.hover } } : {}), showIfCollapsed: true, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+          })),
+        ];
+        testDecorations.set(p, model.deltaDecorations(testDecorations.get(p) ?? [], next));
+      }
     },
     decorate(ranges) {
       for (const [p, model] of models) {

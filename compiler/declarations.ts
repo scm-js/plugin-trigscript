@@ -180,6 +180,8 @@ ${kw}interface ProgramOptions {
    * their own copy (a variable declared with shared() is one cell they all share).
    */
   owner?: Player | readonly Player[];
+  /** What the program is called: in the Explorer's list, and by a test — sim.program("waves"). */
+  name?: string;
 }
 `;
 }
@@ -520,12 +522,127 @@ interface ArrayConstructor {
 }
 `;
 
+/**
+ * The tests' names: in the module only, never globals — a script may well have a `test` or an `expect` of its own.
+ * They are Vitest's, so there is nothing to learn but `sim`.
+ */
+const TESTING = `
+// ── Tests: they run in the editor's simulator, never in the game, and cost the map nothing ──
+
+/** A unit of the simulated game, as a test sees it. */
+export interface SimUnit {
+  readonly type: UnitType; readonly owner: Player; readonly x: number; readonly y: number;
+  readonly hp: number; readonly maxHp: number; readonly shields: number; readonly maxShields: number; readonly energy: number;
+  readonly kills: number; readonly resources: number; readonly invincible: boolean; readonly burrowed: boolean; readonly cloaked: boolean; readonly hallucinated: boolean;
+  /** Still on the map. */
+  readonly alive: boolean;
+}
+
+/**
+ * The world a test is handed, new for every test: the map's placed units and locations, the script's
+ * programs at frame 0 and its trigger()s beside them, random() the same every run. Units are made, given,
+ * moved, killed and counted; nothing walks, fights or is built, and nothing dies but by the script or the test.
+ */
+export interface Sim {
+  /** Units for a player at a location's centre, as createUnit() makes them. They are given back. */
+  place(player: Player, type: UnitType, at: Location, count?: number): SimUnit[];
+  /** A unit dies: what a fight is in a test. \`by\`: the player whose kill it is. */
+  kill(unit: SimUnit, by?: Player): this;
+  /** A unit goes without dying. */
+  remove(unit: SimUnit): this;
+  give(unit: SimUnit, to: Player): this;
+  /** A unit to a location's centre, or to a point in pixels. */
+  move(unit: SimUnit, to: Location | { x: number; y: number }): this;
+
+  /** Run the game for so many frames (24 a second at Fastest). */
+  frames(n?: number): this;
+  seconds(n: number): this;
+  /** Run until \`done()\` is true. The test fails when \`most\` frames pass first (2400 unless said), so no test hangs. */
+  until(done: () => unknown, most?: number): this;
+  /** The frames run so far. */
+  readonly frame: number;
+  /** random() from this number on. Before anything that draws one. */
+  seed(n: number): this;
+
+  /** A key goes down for the next frame: what keyPressed() finds. */
+  press(key: Key, player?: Player): this;
+  click(button?: "left" | "right" | "middle", player?: Player): this;
+  /** A line of chat, for the next frame: what chatted() finds. */
+  type(line: string, player?: Player): this;
+  moveMouse(x: number, y: number, player?: Player): this;
+
+  count(player: Player, type: UnitType, at?: Location): number;
+  /** The units on the map, in the order of the game's unit table. */
+  units(filter?: { owner?: Player; type?: UnitType; at?: Location }): SimUnit[];
+  resources(player: Player): { ore: number; gas: number };
+  deaths(player: Player, type: UnitType): number;
+  kills(player: Player, type: UnitType): number;
+  switch(n: Switch): boolean;
+  /** Where a location is now: a program may have moved it. */
+  location(n: Location): { left: number; top: number; right: number; bottom: number } | undefined;
+
+  /**
+   * A program's variables, by their names in the source: numbers, booleans, texts, arrays, a record as an
+   * object, a unit (null for none). The program by the name its options give it — program(() => { … },
+   * { name: "waves" }) — or by its place in the script, from 0. Of a per-player program, \`player\`'s.
+   */
+  program(name?: string | number, player?: Player): Readonly<Record<string, any>>;
+
+  /** What was shown, in order: to anybody, or what one player saw. */
+  printed(player?: Player): string[];
+  /** Everything that happened, by frame. */
+  readonly events: readonly { frame: number; text: string; player: number; file?: string; line?: number }[];
+  /** What a program did that is always a mistake: an index past an array's end, the stack's depth, the heap full. One the test did not ask for (expect(sim).toHaveFaulted) fails it. */
+  readonly faults: readonly { message: string; cycle: number }[];
+}
+
+export interface Expectation<T> {
+  toBe(expected: T): void;
+  toEqual(expected: unknown): void;
+  toBeTruthy(): void;
+  toBeFalsy(): void;
+  toBeNull(): void;
+  toBeDefined(): void;
+  toBeUndefined(): void;
+  toBeGreaterThan(n: number): void;
+  toBeGreaterThanOrEqual(n: number): void;
+  toBeLessThan(n: number): void;
+  toBeLessThanOrEqual(n: number): void;
+  toContain(item: unknown): void;
+  toHaveLength(n: number): void;
+  toMatch(pattern: RegExp | string): void;
+  toThrow(message?: RegExp | string): void;
+  /** expect(sim): a text was shown — all of it, a part of it, or a pattern. \`to\`: to that player. */
+  toHavePrinted(text: RegExp | string, options?: { to?: Player }): void;
+  /** expect(sim): the simulator said a program did what is always a mistake. Asking is what lets the test go on past it. */
+  toHaveFaulted(message?: RegExp | string): void;
+}
+export function expect<T>(actual: T): Expectation<T> & { readonly not: Expectation<T> };
+
+export interface TestOptions {
+  /** Without the map's player settings the world has one player: this one. */
+  as?: Player;
+}
+type TestBody<A extends readonly unknown[] = []> = (sim: Sim, ...args: A) => void;
+interface TestEach<F> { <T>(cases: readonly T[]): (name: string, fn: F extends "suite" ? (...args: T extends readonly unknown[] ? T : [T]) => void : TestBody<T extends readonly unknown[] ? T : [T]>) => void }
+interface TestCall { (name: string, fn: TestBody): void; (name: string, options: TestOptions, fn: TestBody): void; each: TestEach<"test"> }
+interface SuiteCall { (name: string, body: () => void): void; each: TestEach<"suite"> }
+/** A test: ordinary TypeScript, run in the simulator after every compile that goes through. Not async: nothing in sim waits. */
+export const test: TestCall & { only: TestCall; skip: TestCall };
+export const it: typeof test;
+/** Tests under one name. */
+export const describe: SuiteCall & { only: SuiteCall; skip: SuiteCall };
+/** Before each test of this describe (or of the file) and of those inside it. */
+export function beforeEach(fn: (sim: Sim) => void): void;
+export function afterEach(fn: (sim: Sim) => void): void;
+`;
+
 /** The whole declaration file for a set of names. */
 export function generateDeclarations(names: ScriptNames = defaultScriptNames(), options: DeclarationOptions = {}): string {
   const compact = options.compact === true;
   const globals = body("declare ", "", names, compact);
   if (compact) return `${HEADER}${globals}\n${ARRAYS}`;
-  const module = body("export ", "export ", names, false).split("\n").map((l) => (l ? `  ${l}` : l)).join("\n");
+  const module = `${body("export ", "export ", names, false)}\n${TESTING}`.split("\n").map((l) => (l ? `  ${l}` : l)).join("\n");
   return `${HEADER}${globals}\n${ARRAYS}\n// ── The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; ──\ndeclare module "${MODULE_NAME}" {\n${module}\n}\n`;
 }
 
