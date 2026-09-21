@@ -16,24 +16,33 @@
  * the programs, so an action a program takes is seen by a hand trigger and the other way
  * round.
  *
- * Units are a list the caller supplies (`units`, the map's placed ones in the editor), in the
- * order of the game's unit table, with the map's locations as boxes (`locations`). A loop
- * over units, a pick and every field and verb work on that list; a unit that is killed or
- * removed is gone from the next line on. What the simulation does not model is the game
- * itself: nothing moves, nothing fights, `createUnit` makes no unit. The game's tables
- * (`stats()`) hold what the program wrote and otherwise what `table` answers, else 0.
+ * Units are the world's (`world.ts`): the ones the caller supplies (`units`, the map's placed
+ * ones in the editor), in the order of the game's unit table, with the map's locations as
+ * boxes (`locations`), and the ones `createUnit` makes from then on. A loop over units, a
+ * pick and every field and verb work on that table; a unit that is killed or removed is gone
+ * from the next line on, and its place is the next unit's. What the simulation does not
+ * model is the game itself: nothing walks, nothing fights. The game's tables (`stats()`)
+ * hold what the program wrote and otherwise what `table` answers, else 0.
+ *
+ * With the map's player settings (`players`, `forces`) a program runs once a frame for each
+ * of its owners who is in the game, each with its own variables (a `shared` one is
+ * everybody's), as the lowering runs it. Without them there is the one player.
  *
  * What the players do is fed in by the caller: `press`, `click`, `type` and `moveMouse` say what
  * the next frame finds. A key, a click and a typed line last that one frame, as they do in the
  * game; the mouse stays where it was put.
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
-import { emptyAction, PlayerGroup, ResourceType } from "../vendor/triggers";
+import { emptyAction, ResourceType } from "../vendor/triggers";
 import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, heapCells, isTextExpr, stackDepth } from "./ir";
 import type { TextExpr, ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
+import { TABLE_FIELDS } from "./tables";
+import type { SimBounds, SimUnit, SimUnitInit, World } from "./world";
+
+export type { SimBounds, SimUnit, SimUnitInit, SimUnitProperties } from "./world";
 
 export const FRAMES_PER_SECOND = 24;
 /** What Elapsed Time and the countdown count: a game second is sixteen frames (the slice 2 probe: 21 after 336 frames), not the twenty-four of a second at Fastest. */
@@ -45,42 +54,16 @@ export interface ProgramEvent {
   cycle: number;
   /** Index of the program in the list. */
   program: number;
+  /** The player the program was running as. */
+  player: number;
   at: At;
   action: ActionRecord;
   text?: string;
 }
 
-/** A unit of the simulated game. Hit points, shields and energy in whole points. */
-export interface SimUnit {
-  type: number; owner: number; x: number; y: number;
-  hp: number; maxHp: number; shields: number; maxShields: number; energy: number;
-  kills: number; orderId: number; cooldown: number; resources: number;
-  stim: number; ensnare: number; plague: number; lockdown: number; maelstrom: number; irradiate: number; stasis: number;
-  hallucinated: boolean; cloaked: boolean; burrowed: boolean; invincible: boolean; underAttack: boolean;
-  /** Still on the map. */
-  alive: boolean;
-}
-export type SimUnitInit = Partial<Omit<SimUnit, "alive">> & { type: number; owner: number };
-export interface SimBounds { left: number; top: number; right: number; bottom: number }
-
-const newUnit = (u: SimUnitInit): SimUnit => {
-  const hp = u.hp ?? u.maxHp ?? 1;
-  const shields = u.shields ?? u.maxShields ?? 0;
-  return {
-    x: 0, y: 0, energy: 0, kills: 0, orderId: 3, cooldown: 0, resources: 0,
-    stim: 0, ensnare: 0, plague: 0, lockdown: 0, maelstrom: 0, irradiate: 0, stasis: 0,
-    hallucinated: false, cloaked: false, burrowed: false, invincible: false, underAttack: false,
-    ...u, hp, maxHp: u.maxHp ?? hp, shields, maxShields: u.maxShields ?? shields, alive: true,
-  };
-};
-
 /** The most a field of a unit holds: a byte for the timers, the cooldown and the kills, 255 points of energy, a word of resources. */
 const UNIT_FIELD_MAX: Partial<Record<UnitNumField, number>> = { hp: 0xff_ffff, shields: 0xff_ffff, energy: 255, kills: 255, cooldown: 255, resources: 0xffff, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
-/** The production buildings a trigger's "Factories" class counts. */
-const FACTORIES: ReadonlySet<number> = new Set([106, 111, 113, 114, 131, 132, 133, 154, 155, 160, 167]);
-const inClass = (type: number, cls: number): boolean => (cls === 230 ? type < 106 : cls === 231 ? type >= 106 && type <= 202 : FACTORIES.has(type));
-
-export interface ProgramSimulationOptions extends Pick<SimulationOptions, "player" | "condition" | "random" | "strings"> {
+export interface ProgramSimulationOptions extends Pick<SimulationOptions, "player" | "condition" | "random" | "strings" | "players" | "forces" | "properties"> {
   /** The trigger interpreter holding the world; one is made when absent. */
   world?: Simulation;
   /** A runaway guard: statements one program may run in one frame; default 100 000. */
@@ -91,9 +74,11 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
    * deaths and resources from its world, the simulated player a human, 0 for the rest.
    */
   read?: (read: ReadSource, sim: ProgramSimulation) => number | undefined;
+  /** The hit points, shields and energy a type is made with, where `table` has no answer (it is asked `unit.maxHp` and `unit.maxShields` first). */
+  unitStats?: SimulationOptions["unitStats"];
   /** A player's name in a printed text; default "Player 1" … */
   playerName?: (player: number) => string;
-  /** The units on the map, in the order of the game's unit table. */
+  /** The units on the map, in the order of the game's unit table. With a `world` of the caller's they are added to it. */
   units?: SimUnitInit[];
   /** The map's locations as boxes, by their 1-based number. A location the simulation does not know holds every unit. */
   locations?: Record<number, SimBounds>;
@@ -179,12 +164,32 @@ function compareTexts(a: string, b: string): number {
 /** An array's cells, and the room its block has when it is one that grows. */
 interface Held { decl: ArrayDecl; cells: Value[]; room: number }
 
+/** What the runs of one program have in common: the `shared` variables and arrays, one for every player. */
+interface Common {
+  ids: Set<string>;
+  vars: Map<string, Value>;
+  unitVars: Map<string, SimUnit | null>;
+  textVars: Map<string, HeldText>;
+  arrays: Map<string, Held>;
+}
+const newCommon = (): Common => ({ ids: new Set(), vars: new Map(), unitVars: new Map(), textVars: new Map(), arrays: new Map() });
+
+/** A run's variables of one kind: its own, but for the ids that are `shared`, which are the program's. */
+class Cells<V> extends Map<string, V> {
+  private readonly ids: ReadonlySet<string>;
+  private readonly common: Map<string, V>;
+  constructor(ids: ReadonlySet<string>, common: Map<string, V>) { super(); this.ids = ids; this.common = common; }
+  override get(id: string): V | undefined { return this.ids.has(id) ? this.common.get(id) : super.get(id); }
+  override has(id: string): boolean { return this.ids.has(id) ? this.common.has(id) : super.has(id); }
+  override set(id: string, value: V): this { if (this.ids.has(id)) this.common.set(id, value); else super.set(id, value); return this; }
+}
+
 class ProgramRun {
-  readonly vars = new Map<string, Value>();
+  readonly vars: Map<string, Value>;
   /** The variables that hold a unit, or none. */
-  readonly unitVars = new Map<string, SimUnit | null>();
+  readonly unitVars: Map<string, SimUnit | null>;
   /** The variables that hold a text. */
-  readonly textVars = new Map<string, HeldText>();
+  readonly textVars: Map<string, HeldText>;
   readonly bits = new Map<string, 8 | 16>();
   /** The `u32` variables. */
   readonly unsigned = new Set<string>();
@@ -205,13 +210,26 @@ class ProgramRun {
   readonly sim: ProgramSimulation;
   readonly index: number;
   readonly program: Program;
+  /** The player this run is: who Current Player is while it runs. */
+  readonly player: number;
+  private readonly common: Common;
 
-  constructor(sim: ProgramSimulation, index: number, program: Program) {
+  constructor(sim: ProgramSimulation, index: number, program: Program, player: number, common: Common = newCommon()) {
     this.sim = sim;
     this.index = index;
     this.program = program;
+    this.player = player;
+    this.common = common;
+    this.vars = new Cells(common.ids, common.vars);
+    this.unitVars = new Cells(common.ids, common.unitVars);
+    this.textVars = new Cells(common.ids, common.textVars);
     (this.arrays as unknown as { run: ProgramRun }).run = this;
-    for (const decl of program.arrays ?? []) this.arrays.set(decl.id, { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array<Value>(decl.length).fill(decl.kind === "number" ? 0 : false) });
+    for (const decl of program.arrays ?? []) {
+      // A shared array is the same cells for every player's run; any other is this run's own.
+      const held = (decl.shared ? common.arrays.get(decl.id) : undefined) ?? { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array<Value>(decl.length).fill(decl.kind === "number" ? 0 : false) };
+      if (decl.shared) common.arrays.set(decl.id, held);
+      this.arrays.set(decl.id, held);
+    }
     this.body = this.run();
   }
 
@@ -347,6 +365,8 @@ class ProgramRun {
   }
 
   private declare(decl: VarDecl): void {
+    // One cell for every player: what any of them puts in it, all of them read.
+    if (decl.shared && this.program.perPlayer) this.common.ids.add(decl.id);
     if (decl.kind === "unit") { this.unitVars.set(decl.id, null); return; }
     // A text declared again keeps what it held until the new one is put in it, which is when its block goes back.
     if (decl.kind === "text") { if (!this.textVars.has(decl.id)) this.textVars.set(decl.id, { s: "", room: 0 }); return; }
@@ -363,8 +383,8 @@ class ProgramRun {
       case "unitNull": return null;
       case "unitVar": return this.unitVars.get(e.id) ?? null;
       case "pick": return this.sim.pick(e.by, e.filter, e.near, e.mouse, e.within);
-      // A kept unit is its place in the list, from 1: there is no slot to be reused here, so the three numbers are one.
-      case "unitAt": { const ptr = (yield* this.num(e.ptr)) >>> 0; yield* this.num(e.epd); yield* this.num(e.uid); return ptr >= 1 ? this.sim.units[ptr - 1] ?? null : null; }
+      // A kept unit is its place in the table, from 1, and the place's uniqueness byte: a unit made since in that place is another.
+      case "unitAt": { const ptr = (yield* this.num(e.ptr)) >>> 0; yield* this.num(e.epd); const uid = (yield* this.num(e.uid)) >>> 0; return ptr >= 1 ? this.sim.game.at(ptr - 1, uid) : null; }
       case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
     }
   }
@@ -381,8 +401,8 @@ class ProgramRun {
     const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
     if (!u) return;
     switch (verb.do) {
-      case "kill": case "remove": u.alive = false; this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
-      case "give": u.owner = verb.to === PlayerGroup.CurrentPlayer ? this.sim.player : verb.to; break;
+      case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill"); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
+      case "give": { const to = this.sim.slotOf(verb.to); if (to < 12) u.owner = to; break; }
       case "order": this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
       case "locate": this.sim.centre(verb.location, u.x, u.y); break;
       case "damage": case "heal": {
@@ -390,7 +410,7 @@ class ProgramRun {
         const step = verb.percent ? Math.floor((u.maxHp * 256 * amount) / 100) : amount * 256;
         const raw = verb.do === "damage" ? Math.max(0, u.hp * 256 - step) : Math.min(u.maxHp * 256, u.hp * 256 + step);
         u.hp = Math.ceil(raw / 256);
-        if (u.hp === 0) { u.alive = false; this.sim.unitEvent(this, ActionType.KillUnit, u, at); }
+        if (u.hp === 0) { this.sim.game.gone(u, true); this.sim.unitEvent(this, ActionType.KillUnit, u, at); }
         break;
       }
     }
@@ -434,7 +454,7 @@ class ProgramRun {
       }
       case "read": return this.sim.read(e.read) | 0;
       case "unitField": { const u = yield* this.living(e.unit); return u ? u[e.field] | 0 : 0; }
-      case "unitPart": { const u = yield* this.unit(e.unit); return u ? this.sim.units.indexOf(u) + 1 : 0; }
+      case "unitPart": { const u = yield* this.unit(e.unit); return u ? (e.part === "uid" ? u.uid : u.slot + 1) : 0; }
       case "tableRead": return this.sim.tableRead(e.cell) | 0;
       case "input": return this.sim.input(e.input) | 0;
       case "randomInt": {
@@ -825,7 +845,7 @@ class ProgramRun {
         const value = yield* this.amount(s.value as NumExpr);
         if (!u) return "next";
         (u as unknown as Record<string, number>)[field] = Math.min(value, UNIT_FIELD_MAX[field as UnitNumField] ?? 0xffff_ffff);
-        if (field === "hp" && u.hp === 0) { u.alive = false; this.sim.unitEvent(this, ActionType.KillUnit, u, s.at); }
+        if (field === "hp" && u.hp === 0) { this.sim.game.gone(u, true); this.sim.unitEvent(this, ActionType.KillUnit, u, s.at); }
         return "next";
       }
       case "unitDo": yield* this.unitDo(s.unit, s.verb, s.at); return "next";
@@ -978,22 +998,45 @@ class ProgramRun {
   /** The unit a variable holds, by its source name; null for none or a unit that is gone. */
   unitValue(name: string): SimUnit | null {
     let found: SimUnit | null = null;
-    for (const [id, u] of this.unitVars) if (id === name || id.startsWith(`${name}#`)) found = u;
+    for (const [id, u] of [...this.unitVars, ...this.common.unitVars]) if (id === name || id.startsWith(`${name}#`)) found = u;
     return found?.alive ? found : null;
   }
 
   /** A user variable's value by its source name (the last declared with that name). */
   value(name: string): Value | undefined {
     let found: Value | undefined;
-    for (const [id, v] of this.vars) if (id === name || id.startsWith(`${name}#`)) found = v;
+    for (const [id, v] of [...this.vars, ...this.common.vars]) if (id === name || id.startsWith(`${name}#`)) found = v;
     return found;
   }
 
   /** A text variable's characters by its source name (the last declared with that name). */
   textValue(name: string): string | undefined {
     let found: string | undefined;
-    for (const [id, v] of this.textVars) if (id === name || id.startsWith(`${name}#`)) found = v.s;
+    for (const [id, v] of [...this.textVars, ...this.common.textVars]) if (id === name || id.startsWith(`${name}#`)) found = v.s;
     return found;
+  }
+
+  /**
+   * What the source calls `name`, whatever it is: a number, a boolean, a text, an array's cells, a unit (null for none or
+   * one that is gone), a record as an object of its fields, an array of records as a list of them. Undefined for no such name.
+   */
+  lookup(name: string): unknown {
+    const value = this.value(name);
+    if (value !== undefined) return value;
+    const text = this.textValue(name);
+    if (text !== undefined) return text;
+    const list = this.list(name);
+    if (list !== undefined) return [...list];
+    for (const id of [...this.unitVars.keys(), ...this.common.unitVars.keys()]) if (id === name || id.startsWith(`${name}#`)) return this.unitValue(name);
+    // A record is a variable a field (`pos.x`), a list of records an array a field (`rows.a`).
+    const field = (id: string) => (id.startsWith(`${name}.`) ? id.slice(name.length + 1).split("#")[0] : null);
+    const record: Record<string, unknown> = {};
+    for (const [id, v] of [...this.vars, ...this.common.vars]) { const f = field(id); if (f && !f.includes(" (")) record[f] = v; }
+    for (const [id, v] of [...this.textVars, ...this.common.textVars]) { const f = field(id); if (f) record[f] = v.s; }
+    if (Object.keys(record).length) return record;
+    const rows: Record<string, unknown>[] = [];
+    for (const [id, a] of this.arrays) { const f = field(id); if (f) a.cells.forEach((cell, i) => { (rows[i] ??= {})[f] = cell; }); }
+    return rows.length ? rows : undefined;
   }
 
   /** An array's cells by its name in the source. */
@@ -1040,13 +1083,11 @@ export class ProgramSimulation {
   private readonly conditionOf?: SimulationOptions["condition"];
   private readonly readOf?: ProgramSimulationOptions["read"];
   private readonly nameOf: (player: number) => string;
-  /** The units of the game, in the order of its unit table; a dead one stays in the list, gone. */
-  readonly units: SimUnit[];
-  readonly locations = new Map<number, SimBounds>();
+  /** The units, the locations and who the players are: the trigger interpreter's, so both see one game. */
+  readonly game: World;
   /** What the programs wrote into the game's tables, as the cell stores it; a name as its text. */
   readonly tables = new Map<string, number | string>();
   private readonly tableOf?: ProgramSimulationOptions["table"];
-  private readonly classOf: (type: number, cls: number) => boolean;
   /** Ore and gas by player slot, as the programs' own setResources actions leave them. */
   private readonly resources = new Map<number, [ore: number, gas: number]>();
   /** The typed-line patterns of all the programs, in the order the game tries them: the first that matches a line is the one that line is. */
@@ -1060,7 +1101,16 @@ export class ProgramSimulation {
   cycle = 0;
 
   constructor(programs: Program[], options: ProgramSimulationOptions) {
-    this.world = options.world ?? new Simulation([], { player: options.player ?? programs[0]?.owner ?? 0, condition: options.condition, random: options.random, strings: options.strings });
+    this.world = options.world ?? new Simulation([], {
+      player: options.player ?? (options.players ? undefined : programs[0]?.owner ?? 0), condition: options.condition, random: options.random, strings: options.strings,
+      players: options.players, forces: options.forces, units: options.units, locations: options.locations, unitClass: options.unitClass, properties: options.properties,
+    });
+    this.game = this.world.game;
+    // A world of the caller's gets the units and locations handed here, as it would have had them handed to itself.
+    if (options.world) {
+      for (const [n, b] of Object.entries(options.locations ?? {})) this.game.locations.set(Number(n), { ...b });
+      for (const u of options.units ?? []) this.game.make(u);
+    }
     this.maxSteps = options.maxStepsPerCycle ?? 100_000;
     this.heap.cells = this.heap.stack = heapCells(options.heapCells);
     this.stackDepth = stackDepth(options.stackDepth);
@@ -1068,17 +1118,40 @@ export class ProgramSimulation {
     this.conditionOf = options.condition;
     this.readOf = options.read;
     this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
-    this.units = (options.units ?? []).map(newUnit);
-    for (const [n, b] of Object.entries(options.locations ?? {})) this.locations.set(Number(n), { ...b });
     this.tableOf = options.table;
-    this.classOf = options.unitClass ?? inClass;
+    // A unit is made with what its type has now: what a program wrote into the game's tables, else what the caller says.
+    const cellOf = (name: string, type: number): TableCell => { const f = TABLE_FIELDS.unit.find((x) => x.name === name)!; return { name: `unit.${name}`, base: f.base, stride: f.stride, index: type, width: f.width, ...(f.scale ? { scale: f.scale } : {}) }; };
+    const given = options.unitStats ?? this.game.stats;
+    this.game.stats = (type) => {
+      const g = given(type) ?? {};
+      return { ...g, hp: this.tableRead(cellOf("maxHp", type)) || g.hp, shields: this.tableRead(cellOf("maxShields", type)) || g.shields };
+    };
     this.unitByName = options.unitByName ?? (() => undefined);
     for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c) => c.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
     this.current = { events: new Set(), lines: new Map() };
-    this.runs = programs.map((p, i) => new ProgramRun(this, i, p));
+    // A program runs once a frame for each of its owners who is in the game, each run with its own variables; one that
+    // is not per player runs as the first of them. Without the map's player settings there is the one player and one run.
+    this.runs = programs.flatMap((p, i) => {
+      const common = newCommon();
+      const slots = this.ownersOf(p);
+      return (p.perPlayer ? slots : slots.slice(0, 1)).map((slot) => new ProgramRun(this, i, p, slot, common));
+    });
   }
 
+  /** The simulated player: the only one without the map's player settings, else the one a key, a click and a log default to. */
   get player(): number { return this.world.player; }
+  /** The units there have been, in the order they were made; one that is gone stays, `alive` false. */
+  get units(): SimUnit[] { return this.game.units; }
+  get locations(): Map<number, SimBounds> { return this.game.locations; }
+
+  /** The slots a program runs for: its owners who are in the game. */
+  private ownersOf(p: Program): number[] {
+    const players = this.game.players;
+    if (players.loose) return [this.world.player];
+    const out: number[] = [];
+    for (const o of p.owners?.length ? p.owners : [p.owner]) for (const slot of players.of(o, this.world.player)) if (players.slots.includes(slot) && !out.includes(slot)) out.push(slot);
+    return out.sort((a, b) => a - b);
+  }
 
   /** Deaths, switches, always and never against the world; anything else the caller's, else false. */
   condition(c: ConditionRecord): boolean {
@@ -1091,17 +1164,23 @@ export class ProgramSimulation {
         return c.comparison === Comparison.AtLeast ? v >= n : c.comparison === Comparison.AtMost ? v <= n : c.comparison === Comparison.Exactly ? v === n : false;
       }
       case ConditionType.Switch: return c.comparison === SwitchState.Set ? this.world.switches[c.resource] === 1 : this.world.switches[c.resource] === 0;
-      default: return this.conditionOf?.(c, this.world) ?? false;
+      default: return this.conditionOf?.(c, this.world) ?? this.game.holds(c, this.world.current) ?? false;
     }
   }
 
-  /** The simulation runs one player and knows no forces: the current player is that one, and so is any group, as in the world's death table. */
-  private slotOf(player: number): number {
-    return player < 12 ? player : player <= PlayerGroup.Force4 || player === PlayerGroup.CurrentPlayer ? this.player : player;
+  /** The players a player number means, to the run that is running. */
+  slotsOf(player: number): number[] { return this.game.players.of(player, this.world.current); }
+  /** The one player a player number means where one is wanted (a mouse, a name, a table's row): the first of a group. */
+  slotOf(player: number): number { return this.slotsOf(player)[0] ?? player; }
+
+  /** A player's ore and gas; a group's are its players' together. */
+  resourcesOf(player: number): [ore: number, gas: number] {
+    let ore = 0, gas = 0;
+    for (const p of this.slotsOf(player)) if (p < 12) { const s = this.stockOf(p); ore += s[0]; gas += s[1]; }
+    return [ore % U32, gas % U32];
   }
 
-  private stock(player: number): [number, number] {
-    const slot = this.slotOf(player);
+  private stockOf(slot: number): [number, number] {
     let r = this.resources.get(slot);
     if (!r) { r = [0, 0]; this.resources.set(slot, r); }
     return r;
@@ -1112,12 +1191,15 @@ export class ProgramSimulation {
     switch (c.type) {
       case ConditionType.Deaths: return this.world.death(c.player, c.unitId);
       case ConditionType.Accumulate: {
-        if (this.slotOf(c.player) >= 12) return undefined;
-        const [ore, gas] = this.stock(c.player);
-        return c.resource === ResourceType.Ore ? ore : c.resource === ResourceType.Gas ? gas : (ore + gas) % U32;
+        // A group's is its players' together.
+        const slots = this.slotsOf(c.player).filter((p) => p < 12);
+        if (slots.length === 0) return undefined;
+        let ore = 0, gas = 0;
+        for (const p of slots) { const s = this.stockOf(p); ore += s[0]; gas += s[1]; }
+        return (c.resource === ResourceType.Ore ? ore : c.resource === ResourceType.Gas ? gas : ore + gas) % U32;
       }
       case ConditionType.ElapsedTime: return Math.floor(this.cycle / FRAMES_PER_GAME_SECOND);
-      default: return undefined;
+      default: return this.game.quantity(c, this.world.current);
     }
   }
 
@@ -1126,7 +1208,8 @@ export class ProgramSimulation {
     const given = this.readOf?.(r, this);
     if (given !== undefined) return Math.max(0, Math.trunc(given)) % U32;
     if (r.source === "condition") return this.quantity(r.record) ?? 0;
-    if (r.source === "player" && r.fact === "slot") return this.slotOf(r.player) === this.player ? 2 : 0;
+    // Without the map's player settings the simulated player is a human and nobody else is there; with them, those in the game are (a computer is not told apart).
+    if (r.source === "player" && r.fact === "slot") return this.game.players.slots.includes(this.slotOf(r.player)) ? 2 : 0;
     return 0;
   }
 
@@ -1164,12 +1247,7 @@ export class ProgramSimulation {
 
   /** The living units a filter matches, in table order. */
   matching(f: UnitFilter): SimUnit[] {
-    const owner = f.owner === undefined ? undefined : this.slotOf(f.owner);
-    const box = f.at === undefined ? undefined : this.locations.get(f.at);
-    return this.units.filter((u) => u.alive
-      && (owner === undefined || u.owner === owner)
-      && (f.type === undefined || (f.type >= 230 ? this.classOf(u.type, f.type) : u.type === f.type))
-      && (!box || (u.x >= box.left && u.x <= box.right && u.y >= box.top && u.y <= box.bottom)));
+    return this.game.matching(f.owner === undefined ? undefined : this.slotsOf(f.owner), f.type, f.at);
   }
 
   /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
@@ -1189,14 +1267,7 @@ export class ProgramSimulation {
   }
 
   /** A location centred on a point, its size kept. */
-  centre(location: number, x: number, y: number): void {
-    const b = this.locations.get(location) ?? { left: 0, top: 0, right: 0, bottom: 0 };
-    const w = b.right - b.left;
-    const h = b.bottom - b.top;
-    const left = x - Math.floor(w / 2);
-    const top = y - Math.floor(h / 2);
-    this.locations.set(location, { left, top, right: left + w, bottom: top + h });
-  }
+  centre(location: number, x: number, y: number): void { this.game.centre(location, x, y); }
 
   private cellKey(c: TableCell): string {
     return `${c.name}:${c.player ? this.slotOf(c.index) : c.index}${c.key !== undefined ? `:${c.key}` : ""}`;
@@ -1219,8 +1290,8 @@ export class ProgramSimulation {
 
   /** What a program did to a unit, for the log: the game's nearest action, with the unit in words. */
   unitEvent(run: ProgramRun, type: number, u: SimUnit, at: At, extra: { location?: number; text?: string } = {}): void {
-    const what = `unit ${this.units.indexOf(u)} (type ${u.type}, P${u.owner + 1})`;
-    this.events.push({ cycle: this.cycle, program: run.index, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
+    const what = `unit ${u.slot} (type ${u.type}, P${u.owner + 1})`;
+    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
 
   partText(p: Exclude<TextPart, { kind: "number" | "value" }>): string {
@@ -1230,26 +1301,26 @@ export class ProgramSimulation {
 
   /** A printed text: an event like a Display Text action's, the text already filled in. */
   print(run: ProgramRun, text: string, to: number, at: At): void {
-    this.events.push({ cycle: this.cycle, program: run.index, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
+    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
   }
 
   /** An action a program takes: the world's own kinds are applied, the rest logged. */
   act(run: ProgramRun, a: ActionRecord, at: At, programText?: string): void {
-    if (a.type === ActionType.SetResources && this.slotOf(a.player) < 12) {
-      // Kept as well as logged, so a read of the resources sees what the program did to them.
-      const stock = this.stock(a.player);
+    if (a.type === ActionType.SetResources) {
+      // Kept as well as logged, so a read of the resources sees what the program did to them; for a group, each of its players.
       const n = a.target >>> 0;
       const set = (cur: number) => (a.modifier === SetModifier.SetTo ? n : a.modifier === SetModifier.Add ? (cur + n) % U32 : Math.max(0, cur - n));
-      if (a.unitId === ResourceType.Ore || a.unitId === ResourceType.OreAndGas) stock[0] = set(stock[0]);
-      if (a.unitId === ResourceType.Gas || a.unitId === ResourceType.OreAndGas) stock[1] = set(stock[1]);
+      for (const slot of this.slotsOf(a.player)) {
+        if (slot >= 12) continue;
+        const stock = this.stockOf(slot);
+        if (a.unitId === ResourceType.Ore || a.unitId === ResourceType.OreAndGas) stock[0] = set(stock[0]);
+        if (a.unitId === ResourceType.Gas || a.unitId === ResourceType.OreAndGas) stock[1] = set(stock[1]);
+      }
     }
     switch (a.type) {
-      case ActionType.SetDeaths: {
-        const cur = this.world.death(a.player, a.unitId);
-        const n = a.target >>> 0;
-        this.world.setDeath(a.player, a.unitId, a.modifier === SetModifier.SetTo ? n : a.modifier === SetModifier.Add ? (cur + n) >>> 0 : Math.max(0, cur - n));
+      case ActionType.SetDeaths:
+        this.world.changeDeath(a.player, a.unitId, a.modifier, a.target);
         return;
-      }
       case ActionType.SetSwitch: {
         const i = a.target;
         if (i < 0 || i >= SWITCH_COUNT) return;
@@ -1263,7 +1334,9 @@ export class ProgramSimulation {
       }
       case ActionType.Comment: case ActionType.PreserveTrigger: return;
       default: {
-        const ev: ProgramEvent = { cycle: this.cycle, program: run.index, at, action: a };
+        // What is done to units is done, and said like everything else.
+        this.game.act(a, run.player);
+        const ev: ProgramEvent = { cycle: this.cycle, program: run.index, player: run.player, at, action: a };
         const text = programText ?? this.world.text(a.text);
         if (text !== undefined) ev.text = text;
         this.events.push(ev);
@@ -1277,8 +1350,10 @@ export class ProgramSimulation {
     this.current = this.queued;
     this.queued = { events: new Set(), lines: new Map() };
     for (const run of this.runs) {
+      this.world.current = run.player;
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }
     }
+    this.world.current = this.world.player;
     this.cycle++;
   }
 
@@ -1290,15 +1365,20 @@ export class ProgramSimulation {
   /** Whether every program has ended. */
   finished(): boolean { return this.runs.every((r) => r.done); }
 
+  /** A program's run: the program by its place in the list or its name, and of a per-player program the player's (the first by default). */
+  runOf(program: number | string = 0, player?: number): ProgramRun | undefined {
+    return this.runs.find((r) => (typeof program === "number" ? r.index === program : r.program.name === program) && (player === undefined || r.player === player));
+  }
+
   /** The unit a variable holds by its source name, in a program (the first by default). */
-  unit(name: string, program = 0): SimUnit | null { return this.runs[program]?.unitValue(name) ?? null; }
+  unit(name: string, program: number | string = 0, player?: number): SimUnit | null { return this.runOf(program, player)?.unitValue(name) ?? null; }
 
   /** A variable's value by its source name, in a program (the first by default). */
-  value(name: string, program = 0): Value | undefined { return this.runs[program]?.value(name); }
+  value(name: string, program: number | string = 0, player?: number): Value | undefined { return this.runOf(program, player)?.value(name); }
   /** A text variable's characters by its source name, in a program (the first by default). */
-  text(name: string, program = 0): string | undefined { return this.runs[program]?.textValue(name); }
+  text(name: string, program: number | string = 0, player?: number): string | undefined { return this.runOf(program, player)?.textValue(name); }
   /** An array's cells, by its name in the source. */
-  list(name: string, program = 0): Value[] | undefined { return this.runs[program]?.list(name); }
+  list(name: string, program: number | string = 0, player?: number): Value[] | undefined { return this.runOf(program, player)?.list(name); }
 }
 
 /** Run a compile's programs for `cycles` frames. */

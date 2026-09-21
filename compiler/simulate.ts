@@ -6,35 +6,42 @@
  * It exists so the compiler can be *tested* (a program's triggers are run and the log
  * asserted, in `tests/script-structured.test.ts`) and so the Script editor can show what
  * a program does before the map is ever loaded in the game. It is not the game: Wait
- * takes no time, conditions about units (Bring, Command, …) are answered by a callback
- * (`false` by default), and only the one player runs.
+ * takes no time, and the units are those of `world.ts` — made, given, moved, killed and
+ * counted, never walking or fighting. A condition neither models is answered by a
+ * callback (`false` by default).
  *
- * Semantics modelled: the list is walked in order once per cycle; a trigger runs when the
- * player owns it (or it is for All Players) and every enabled condition holds; actions run
- * in order; a trigger without the Preserve flag or a Preserve Trigger action runs once.
- * Deaths add wraps at 2³², subtract stops at 0 — the game's behaviour.
+ * Semantics modelled: the list is walked in order once per cycle for each player in the
+ * game (the one simulated player, unless the map's player settings are given); a trigger
+ * runs when the player owns it (or it is for All Players, or for the player's force) and
+ * every enabled condition holds; actions run in order; a trigger without the Preserve flag
+ * or a Preserve Trigger action runs once for each player. Deaths add wraps at 2³², subtract
+ * stops at 0 — the game's behaviour; a group's deaths are its players' together, and a
+ * write to a group is a write to each of them.
  */
 import {
-  ActionFlag, ActionType, Comparison, ConditionFlag, ConditionType, PlayerGroup, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, TriggerFlag,
+  ActionFlag, ActionType, Comparison, ConditionFlag, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, TriggerFlag,
   type ActionRecord, type ConditionRecord, type TriggerRecord,
 } from "../vendor/triggers";
 import type { ScriptString } from "./runtime";
+import { World, type WorldOptions } from "./world";
 
 export interface SimulationEvent {
   /** 0-based cycle. */
   cycle: number;
   /** Index of the trigger in the list. */
   trigger: number;
+  /** The player it ran for. */
+  player: number;
   action: ActionRecord;
   /** The action's text, when it has one and the simulation can resolve it. */
   text?: string;
 }
 
-export interface SimulationOptions {
-  /** The player the triggers run as (0-based); default: the first player any trigger is owned by. */
+export interface SimulationOptions extends WorldOptions {
+  /** The player the triggers run as (0-based) when no `players` are given, and the one an input or a log is for; default: the first player any trigger is owned by. */
   player?: number;
-  /** Conditions the simulation does not model (Bring, Command, …). Default: false. */
-  condition?: (c: ConditionRecord, sim: Simulation) => boolean;
+  /** Asked before the simulation's own answer: a condition the caller wants to decide (undefined leaves it to the simulation), and the ones it does not model (scores, the countdown). Default: false. */
+  condition?: (c: ConditionRecord, sim: Simulation) => boolean | undefined;
   /** For Randomize Switch; default Math.random. */
   random?: () => number;
   /** Text of a string id — the compiler's local table, or a function over the map's. */
@@ -45,10 +52,16 @@ export interface SimulationOptions {
 
 export class Simulation {
   readonly triggers: TriggerRecord[];
+  /** The simulated player: the only one, without the map's player settings; with them, the one inputs and logs default to. */
   readonly player: number;
+  /** The player a trigger or a program is running as right now: who Current Player is. */
+  current: number;
+  /** The units, the locations and who the players are. */
+  readonly game: World;
   readonly events: SimulationEvent[] = [];
   readonly switches = new Uint8Array(SWITCH_COUNT);
   private readonly deaths = new Map<number, number>();
+  /** Trigger × player, for the triggers that ran without Preserve. */
   private readonly done = new Set<number>();
   private readonly options: SimulationOptions;
   cycle = 0;
@@ -56,20 +69,32 @@ export class Simulation {
   constructor(triggers: TriggerRecord[], options: SimulationOptions = {}) {
     this.triggers = triggers;
     this.options = options;
-    this.player = options.player ?? (triggers.map((t) => t.players.findIndex((v, i) => v && i < 12)).find((p) => p >= 0) ?? 0);
+    this.player = options.player ?? options.players?.[0] ?? (triggers.map((t) => t.players.findIndex((v, i) => v && i < 12)).find((p) => p >= 0) ?? 0);
+    this.current = this.player;
+    this.game = new World(options, this.player);
+    // A unit that is killed is a death of its type for its owner, in the table the script's own counters are in.
+    this.game.onDeath = (u) => this.deaths.set(u.type * 4096 + u.owner, ((this.deaths.get(u.type * 4096 + u.owner) ?? 0) + 1) >>> 0);
   }
 
+  /** A player's deaths of a unit; a group's are its players' together. */
   death(player: number, unit: number): number {
-    return this.deaths.get(unit * 4096 + this.resolvePlayer(player)) ?? 0;
+    let n = 0;
+    for (const p of this.game.players.of(player, this.current)) n += this.deaths.get(unit * 4096 + p) ?? 0;
+    return n >>> 0;
   }
 
+  /** Set for a player, or for each player of a group. */
   setDeath(player: number, unit: number, value: number) {
-    this.deaths.set(unit * 4096 + this.resolvePlayer(player), value >>> 0);
+    for (const p of this.game.players.of(player, this.current)) this.deaths.set(unit * 4096 + p, value >>> 0);
   }
 
-  /** `CurrentPlayer` is the running player; groups fall back to the running player too. */
-  private resolvePlayer(p: number): number {
-    return p < 12 ? p : p === PlayerGroup.CurrentPlayer ? this.player : p;
+  /** A Set Deaths action: set to, add or subtract, for each player the action names. */
+  changeDeath(player: number, unit: number, modifier: number, amount: number) {
+    const n = amount >>> 0;
+    for (const p of this.game.players.of(player, this.current)) {
+      const cur = this.deaths.get(unit * 4096 + p) ?? 0;
+      this.deaths.set(unit * 4096 + p, (modifier === SetModifier.SetTo ? n : modifier === SetModifier.Add ? cur + n : Math.max(0, cur - n)) >>> 0);
+    }
   }
 
   text(index: number): string | undefined {
@@ -84,21 +109,25 @@ export class Simulation {
   step() {
     let runs = 0;
     const limit = this.options.maxRunsPerCycle ?? 100_000;
-    for (let i = 0; i < this.triggers.length; i++) {
-      const t = this.triggers[i];
-      if (this.done.has(i) || t.flags & TriggerFlag.Disabled) continue;
-      // The simulator knows no forces: a trigger a force owns runs for the player it simulates.
-      if (!(t.players[this.player] || t.players[PlayerGroup.AllPlayers] || t.players[PlayerGroup.Force1] || t.players[PlayerGroup.Force2] || t.players[PlayerGroup.Force3] || t.players[PlayerGroup.Force4])) continue;
-      if (!t.conditions.every((c) => this.condition(c))) continue;
-      if (++runs > limit) throw new Error(`More than ${limit} trigger runs in one cycle.`);
-      let preserve = (t.flags & TriggerFlag.Preserve) !== 0;
-      for (const a of t.actions) {
-        if (a.flags & ActionFlag.Disabled) continue;
-        if (a.type === ActionType.PreserveTrigger) preserve = true;
-        else this.action(a, i);
+    // As the game does: each player in turn walks the whole list. Without player settings a force's trigger runs for the one player.
+    for (const player of this.game.players.slots) {
+      this.current = player;
+      for (let i = 0; i < this.triggers.length; i++) {
+        const t = this.triggers[i];
+        if (this.done.has(i * 12 + player) || t.flags & TriggerFlag.Disabled) continue;
+        if (!this.game.players.owns(t.players, player)) continue;
+        if (!t.conditions.every((c) => this.condition(c))) continue;
+        if (++runs > limit) throw new Error(`More than ${limit} trigger runs in one cycle.`);
+        let preserve = (t.flags & TriggerFlag.Preserve) !== 0;
+        for (const a of t.actions) {
+          if (a.flags & ActionFlag.Disabled) continue;
+          if (a.type === ActionType.PreserveTrigger) preserve = true;
+          else this.action(a, i);
+        }
+        if (!preserve) this.done.add(i * 12 + player);
       }
-      if (!preserve) this.done.add(i);
     }
+    this.current = this.player;
     this.cycle++;
   }
 
@@ -114,19 +143,15 @@ export class Simulation {
       case ConditionType.Never: return false;
       case ConditionType.Deaths: return compare(this.death(c.player, c.unitId), c.comparison, c.amount);
       case ConditionType.Switch: return c.comparison === SwitchState.Set ? this.switches[c.resource] === 1 : this.switches[c.resource] === 0;
-      default: return this.options.condition?.(c, this) ?? false;
+      default: return this.options.condition?.(c, this) ?? this.game.holds(c, this.current) ?? false;
     }
   }
 
   private action(a: ActionRecord, trigger: number) {
     switch (a.type) {
-      case ActionType.SetDeaths: {
-        const cur = this.death(a.player, a.unitId);
-        const n = a.target >>> 0;
-        const next = a.modifier === SetModifier.SetTo ? n : a.modifier === SetModifier.Add ? (cur + n) >>> 0 : Math.max(0, cur - n);
-        this.setDeath(a.player, a.unitId, next);
+      case ActionType.SetDeaths:
+        this.changeDeath(a.player, a.unitId, a.modifier, a.target);
         return;
-      }
       case ActionType.SetSwitch: {
         const i = a.target;
         if (i < 0 || i >= SWITCH_COUNT) return;
@@ -141,7 +166,9 @@ export class Simulation {
       case ActionType.Comment:
         return;
       default: {
-        const ev: SimulationEvent = { cycle: this.cycle, trigger, action: a };
+        // What is done to units is done, and said like everything else.
+        this.game.act(a, this.current);
+        const ev: SimulationEvent = { cycle: this.cycle, trigger, player: this.current, action: a };
         const text = this.text(a.text);
         if (text !== undefined) ev.text = text;
         this.events.push(ev);

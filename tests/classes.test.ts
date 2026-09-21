@@ -216,9 +216,8 @@ describe("the probe", () => {
   it("says in the simulator what it expects to say in the game", () => {
     const r = compileScript(ts, { "main.ts": readFileSync(resolve(import.meta.dirname, "..", "probes", "classes.ts"), "utf8") }, NAMES, { lib: LIB });
     expect(r.diagnostics.map((d) => `${d.line}: ${d.message}`)).toEqual([]);
-    // The simulator makes no units for createUnit: the three Marines of step J are there from the start.
-    const marines = [0, 1, 2].map((i) => ({ type: 0, owner: 0, x: 100 + i * 10, y: 100, hp: 40 }));
-    const sim = new ProgramSimulation(r.ir, { strings: r.strings, units: marines, locations: { 1: { left: 0, top: 0, right: 256, bottom: 256 } } }).run(24 * 46);
+    // The world makes the three Marines of step J as the game does, forty hit points each.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, table: (c) => (c.name === "unit.maxHp" ? 40 : undefined), locations: { 1: { left: 0, top: 0, right: 256, bottom: 256 } } }).run(24 * 46);
     const lines = sim.events.map((e) => e.text ?? "").filter((t) => /^[A-Z]: /.test(t));
     const checked: string[] = [];
     for (const line of lines) {

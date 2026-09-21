@@ -143,18 +143,21 @@ describe("the probe", () => {
   it("says in the simulator what it expects to say in the game", () => {
     const r = compileScript(ts, { "main.ts": readFileSync(resolve(import.meta.dirname, "..", "probes", "leftovers.ts"), "utf8") }, NAMES, { lib: LIB });
     expect(r.diagnostics.map((d) => `${d.line}: ${d.message}`)).toEqual([]);
-    // The simulator makes no units for createUnit: the three Marines of step G are there from the start, and step H's fourth never comes.
-    const marines = [0, 1, 2].map((i) => ({ type: 0, owner: 0, x: 100 + i * 10, y: 100, hp: 40 }));
-    const sim = new ProgramSimulation(r.ir, { strings: r.strings, units: marines, locations: { 1: { left: 0, top: 0, right: 256, bottom: 256 } } }).run(24 * 36);
+    // The world makes the Marines of steps G and H as the game does: forty hit points each, and step H's in the place the dead one left.
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings, table: (c) => (c.name === "unit.maxHp" ? 40 : undefined), locations: { 1: { left: 0, top: 0, right: 256, bottom: 256 } } }).run(24 * 36);
     const lines = sim.events.map((e) => e.text ?? "").filter((t) => /^[A-Z]: /.test(t));
     const checked: string[] = [];
     for (const line of lines) {
       const m = /^([A-Z]): (.*?)(?: - [^(]*)? \(expect ([^)]*)\)$/.exec(line);
-      if (!m || m[1] === "H") continue;
+      if (!m) continue;
       expect(`${m[1]}: ${m[2]}`).toBe(`${m[1]}: ${m[3]}`);
       checked.push(m[1]);
     }
-    expect(checked).toEqual(["A", "B", "C", "D", "E", "F", "G"]);
+    expect(checked).toEqual(["A", "B", "C", "D", "E", "F", "G", "H"]);
+    // Step H's Marine is in the dead one's place of the unit table, the place's uniqueness byte moved on: another key.
+    const dead = sim.units.find((u) => !u.alive)!;
+    const made = sim.units[sim.units.length - 1];
+    expect([made.alive, made.slot === dead.slot, made.uid]).toEqual([true, true, dead.uid + 1]);
     expect(sim.faults).toEqual([]);
     expect(sim.events.some((e) => e.text === "done")).toBe(true);
     // The functions that take and give texts are called, the one that calls itself among them.
