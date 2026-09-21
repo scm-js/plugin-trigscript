@@ -421,7 +421,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /** What Apply, Play and the builds of the programs reported, oldest first. */
   let output: string[] = [];
   /** The last build of the programs (Save, Test Map or Play ran it), for the status bar. */
-  let buildState: { kind: "busy" | "ok" | "error"; text: string } | null = null;
+  /** The last build of the programs. `of` is the files it was started from: an edit replaces `files`, so a build of other files is of an older script. */
+  let buildState: { kind: "busy" | "ok" | "error"; text: string; title?: string; of: ScriptFiles } | null = null;
   /** Lines the build under way has streamed; a build that streams none hands its log over at the end. */
   let streamed = 0;
 
@@ -869,7 +870,14 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     renamesItem.set(renamed ? { icon: "sync", kind: "warn", text: `${renamed} renamed`, title: "The map renamed things the script names", onClick: () => showRenames(true) } : null);
     messageItem.set(status ? { text: status.text, busy: status.kind === "busy" } : !ready && !failed ? { text: "Loading the editor…", busy: true } : null);
 
-    buildItem.set(buildState ? { text: buildState.text, busy: buildState.kind === "busy", icon: buildState.kind === "error" ? "error" : "package", kind: buildState.kind === "error" ? "error" : undefined, title: "The last build of the programs. Click for its log", onClick: () => shell.showPanel("output") } : null);
+    // A build that went well says so only of the script it was made from.
+    const editedSince = buildState?.kind === "ok" && buildState.of !== files;
+    buildItem.set(buildState ? {
+      text: editedSince ? `${buildState.text} · edited since` : buildState.text, busy: buildState.kind === "busy",
+      icon: buildState.kind === "error" ? "error" : "package", kind: buildState.kind === "error" ? "error" : editedSince ? "warn" : undefined,
+      title: `${editedSince ? "The script changed since this build: the programs in the saved map are the older ones until the next Save" : buildState.title ?? "The last build of the programs"}. Click for its log`,
+      onClick: () => shell.showPanel("output"),
+    } : null);
     // The library matters only to a script with programs: it is what builds them into the saved map.
     const needsLibrary = programs > 0;
     const libraryOk = !!library?.contribute && library.state() !== "failed";
@@ -1066,7 +1074,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (e.kind === "start") {
       streamed = 0;
       shell.dismiss("build");
-      buildState = { kind: "busy", text: `Building for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}…` };
+      buildState = { kind: "busy", text: `Building for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}…`, of: files };
       log(`Building the programs for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}`);
       // A failing test does not stop a build unless the map's settings say so: said, so the log of a build is the whole story.
       const failing = countTests(tests).failed;
@@ -1077,13 +1085,18 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     } else if (e.kind === "done") {
       if (!streamed && e.log) log(e.log, false);
       const kb = Math.round(e.chkBytes / 1024), seconds = (e.ms / 1000).toFixed(1);
-      buildState = { kind: "ok", text: `Built ${kb} KB · ${seconds} s` };
+      buildState = { kind: "ok", text: `Built ${kb} KB · ${seconds} s`, of: buildState?.of ?? files };
       log(`Built: ${kb} KB of scenario in ${seconds} s`);
     } else {
       if (!streamed && e.log) log(e.log, false);
-      buildState = { kind: "error", text: "Build failed" };
+      // Save goes on without the step: the file is the map and its script, with no programs in it.
+      const saved = e.purpose === "save";
+      buildState = {
+        kind: "error", text: saved ? "Saved without its programs" : "Build failed", of: buildState?.of ?? files,
+        ...(saved ? { title: "The map was saved with the script in it, but its programs were not built, so they do not run in the game. Fix the error and save again" } : {}),
+      };
       log(`Build failed: ${e.message}`);
-      shell.notify({ key: "build", kind: "error", text: `The programs were not built: ${e.message}`, actions: [{ label: "Show the log", run: () => shell.showPanel("output") }] });
+      shell.notify({ key: "build", kind: "error", text: saved ? `The map was saved without its programs, which were not built: ${e.message}` : `The programs were not built: ${e.message}`, actions: [{ label: "Show the log", run: () => shell.showPanel("output") }] });
       const at = positionIn(e.message);
       if (at) {
         // The lowering named a node of the IR: the error lands on its line like a compiler error.

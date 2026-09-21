@@ -210,10 +210,11 @@ function functions(kw: string): string {
 ${kw}function trigger(players: Player | readonly Player[], conditions: Conditions, actions: Actions, options?: TriggerOptions): Trigger;
 /**
  * Code that runs in the game, every frame, from where it left off. Inside the arrow,
- * variables hold numbers (32-bit, never below 0) and booleans (a const computed from them is
+ * variables hold whole numbers (32-bit and signed, wrapping at the ends; u8, u16 and u32 are
+ * the other widths), booleans, text, units and arrays (a const computed from them is
  * one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them); if / else,
- * while, do, for, switch, break, continue, ?: and functions (inlined per call, arguments
- * passed by value, return values allowed) all work; conditions go in an if or while and
+ * while, do, for, switch, break, continue, ?: and functions (arguments passed by value,
+ * return values allowed) all work; conditions go in an if or while and
  * actions stand as statements. The body runs until it sleeps or ends, all within one frame:
  * a loop runs to completion at once, so a loop that goes on for ever needs a sleep() inside
  * it — \`while (true) { …; sleep(frames(1)); }\` is a game loop. Arithmetic: + − × / %,
@@ -232,8 +233,7 @@ ${kw}function program(body: () => void, options?: ProgramOptions): void;
 /**
  * A function that runs in the game, for programs to call — from any file, imported like any
  * other: \`export const award = game((p: Player, n: number) => { setResources(p, "add", n, "ore"); })\`.
- * Its body follows program()'s rules; it is inlined at every call, arguments pass by value and
- * it may return a number or a boolean. Calling it when the script is built is an error.
+ * Its body follows program()'s rules; arguments pass by value and it may return a value. Calling it when the script is built is an error.
  */
 ${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
 /** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */

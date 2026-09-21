@@ -11,13 +11,15 @@
  *
  * A script that never finishes (an endless loop outside `program()`) would hang the
  * worker, so a request that is not answered in `COMPILE_TIMEOUT_MS` terminates it and
- * rejects; the next request starts a fresh worker. If the worker cannot start, or cannot
- * import the module (a browser that keeps a window's blob URLs from its workers), the
- * compiler runs on the main thread instead, with TypeScript loaded once through a
- * `<script>` tag — slower, never silent, and without the timeout's protection.
+ * rejects; the next request starts a fresh worker. A worker that cannot import the blob
+ * module (a browser that keeps a window's blob URLs from its workers), or finds no compiler
+ * in it (the plugin fetched as its one built bundle), is replaced by one that imports the
+ * release's `dist/compiler.js`. If that fails too, or no worker can be
+ * made at all, the request rejects with `CompilerUnavailable` and a later request tries
+ * again: the script is never run on the main thread, where nothing could stop an endless
+ * loop in it.
  */
-import type * as TS from "typescript";
-import { compileScript, type CompileResult, type ScriptFiles } from "./compiler/compiler";
+import type { CompileResult, ScriptFiles } from "./compiler/compiler";
 import { ENTRY_URL } from "./compiler/entry";
 import type { ScriptNames } from "./compiler/names";
 import type { TestRunOptions } from "./compiler/testing";
@@ -46,7 +48,7 @@ export const compilerUrl = (dist: string = DEFAULT_DIST) =>
  * chunk of the editor's bundle, which imports the editor's own chunks and cannot load
  * outside a page — so the worker fetches this release's compiler bundle instead.
  */
-export const workerModuleUrl = (dist: string = DEFAULT_DIST) => (ENTRY_URL.startsWith("blob:") ? ENTRY_URL : compilerUrl(dist));
+export const workerModuleUrl = (dist: string = DEFAULT_DIST) => (ENTRY_URL.startsWith("blob:") && !blobRefused ? ENTRY_URL : compilerUrl(dist));
 
 export const COMPILE_TIMEOUT_MS = 15_000;
 
@@ -71,7 +73,7 @@ interface CompileResponse {
   fatal?: boolean;
 }
 
-const WORKER_SOURCE = `
+export const WORKER_SOURCE = `
 importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
@@ -81,6 +83,8 @@ self.onmessage = async (e) => {
     if (!loading) loading = import(moduleUrl);
     let mod;
     try { mod = await loading; } catch (err) { loading = null; postMessage({ id, error: String((err && err.message) || err), fatal: true }); return; }
+    // The plugin fetched as one bundle is a blob too, but one that exports the plugin and not the compiler.
+    if (typeof mod.compileScript !== "function") { loading = null; postMessage({ id, error: "the module has no compiler in it", fatal: true }); return; }
     if (lib === null) {
       const r = await fetch(libUrl);
       if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
@@ -93,8 +97,21 @@ self.onmessage = async (e) => {
 };
 `;
 
+/** No worker could compile: not made, its scripts not loaded, or the compiler not imported by either address. */
+export class CompilerUnavailable extends Error {
+  constructor(reason: string) {
+    super(`The compiler could not start (${reason}). It is tried again on the next check.`);
+    this.name = "CompilerUnavailable";
+  }
+}
+
+/** How long a failed start is remembered, so that typing does not start a worker per keystroke. */
+export const UNAVAILABLE_RETRY_MS = 5_000;
+
 let worker: Worker | null = null;
-let workerBroken = false;
+/** A worker could not import the blob module: workers import the release's bundle from here on. */
+let blobRefused = false;
+let unavailable: { reason: string; at: number } | null = null;
 let seq = 0;
 const pending = new Map<number, { resolve: (r: CompileResult) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
@@ -151,11 +168,23 @@ function rejectAll(reason: string) {
   }
 }
 
+/** Rejected with, inside this module only: the worker is gone, and the request is sent again by the other address. */
+const RETRY = "retry by the bundle";
+
 function breakWorker(reason: string) {
-  workerBroken = true;
   worker?.terminate();
   worker = null;
-  rejectAll(reason);
+  if (ENTRY_URL.startsWith("blob:") && !blobRefused) {
+    blobRefused = true;
+    rejectAll(RETRY);
+    return;
+  }
+  unavailable = { reason, at: Date.now() };
+  for (const [id, p] of pending) {
+    pending.delete(id);
+    clearTimeout(p.timer);
+    p.reject(new CompilerUnavailable(reason));
+  }
 }
 
 /** The script ran too long: drop this worker (the next request starts another) and say so. */
@@ -169,19 +198,24 @@ function timeOut(id: number) {
   p.reject(new Error(`The script did not finish in ${COMPILE_TIMEOUT_MS / 1000} seconds. Is there an endless loop outside program()?`));
 }
 
-function getWorker(): Worker | null {
-  if (workerBroken || typeof Worker === "undefined") return null;
+/** The worker, started if there is none. Throws `CompilerUnavailable` when one cannot be made, or could not a moment ago. */
+function getWorker(): Worker {
+  if (unavailable) {
+    if (Date.now() - unavailable.at < UNAVAILABLE_RETRY_MS) throw new CompilerUnavailable(unavailable.reason);
+    unavailable = null;
+  }
   busy();
   if (worker) return worker;
   try {
+    if (typeof Worker === "undefined") throw new Error("this browser has no workers");
     worker = new Worker(URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" })));
-  } catch {
-    workerBroken = true;
-    return null;
+  } catch (err) {
+    unavailable = { reason: (err as Error).message, at: Date.now() };
+    throw new CompilerUnavailable(unavailable.reason);
   }
   worker.onmessage = (e: MessageEvent<CompileResponse>) => {
     const data = e.data;
-    if (data.fatal) { breakWorker("worker unavailable"); return; }
+    if (data.fatal) { breakWorker(`${data.error ?? "the compiler module did not load"}`); return; }
     const p = pending.get(data.id);
     if (!p) return;
     pending.delete(data.id);
@@ -190,39 +224,8 @@ function getWorker(): Worker | null {
     else p.reject(new Error(data.error ?? "Compile failed."));
     settle();
   };
-  worker.onerror = () => breakWorker("worker unavailable");
+  worker.onerror = (e) => breakWorker(e.message || "the worker's scripts did not load");
   return worker;
-}
-
-let tsHere: Promise<typeof TS> | null = null;
-let libHere: Promise<string> | null = null;
-
-/** TypeScript on the main thread, loaded once from the CDN as a plain script (it defines `ts`). */
-export function loadTypeScript(): Promise<typeof TS> {
-  const g = globalThis as { ts?: typeof TS };
-  if (g.ts) return Promise.resolve(g.ts);
-  tsHere ??= new Promise<typeof TS>((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = TS_URL;
-    script.async = true;
-    script.onload = () => (g.ts ? resolve(g.ts) : reject(new Error("TypeScript loaded but defined no `ts`.")));
-    script.onerror = () => { tsHere = null; script.remove(); reject(new Error(`Could not load TypeScript from ${TS_URL}.`)); };
-    document.head.append(script);
-  });
-  return tsHere;
-}
-
-function loadLib(url: string): Promise<string> {
-  libHere ??= fetch(url).then((r) => {
-    if (!r.ok) throw new Error(`Could not load the standard library from ${url} (${r.status}).`);
-    return r.text();
-  }).catch((err: Error) => { libHere = null; throw err; });
-  return libHere;
-}
-
-async function compileHere(input: CompileInput, lib: string): Promise<CompileResult> {
-  const [ts, text] = await Promise.all([loadTypeScript(), loadLib(lib)]);
-  return compileScript(ts, input.files, input.names, { lib: text, tests: input.tests });
 }
 
 export class CompileSuperseded extends Error {
@@ -234,9 +237,8 @@ export class CompileSuperseded extends Error {
 
 /** Compile in the background. Rejects with `CompileSuperseded` when a newer request arrived first. */
 export function compileInBackground(input: CompileInput, dist: string = DEFAULT_DIST): Promise<CompileResult> {
-  const lib = libUrl(dist);
-  const w = getWorker();
-  if (!w) return compileHere(input, lib);
+  let w: Worker;
+  try { w = getWorker(); } catch (err) { return Promise.reject(err as Error); }
   const id = ++seq;
   // Anything still in flight is stale now.
   for (const [old, p] of pending) {
@@ -246,10 +248,10 @@ export function compileInBackground(input: CompileInput, dist: string = DEFAULT_
   }
   return new Promise<CompileResult>((resolve, reject) => {
     pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
-    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: lib, files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}) };
+    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}) };
     w.postMessage(req);
   }).catch((err: Error) => {
-    if (err.message === "worker unavailable") return compileHere(input, lib);
+    if (err.message === RETRY) return compileInBackground(input, dist);
     throw err;
   });
 }

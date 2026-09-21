@@ -7,8 +7,9 @@
  *
  * What the language means, in the game's terms:
  *
- * - A `let` holding a number is a counter (unsigned 32-bit, `-=` stops at 0); a `let`
- *   holding a boolean is a flag; a `let` holding an object literal is a record, each
+ * - A `let` holding a number is a variable of 32 bits: signed and wrapping at its ends as
+ *   `x | 0` does, a `u32` unsigned and wrapping, a `u8` / `u16` stopping at its ends
+ *   (`numbers.ts` writes which into every operation); a `let` holding a boolean is a flag; a `let` holding an object literal is a record, each
  *   field a variable of its own. A `const` is computed when the script is built when it
  *   can be, and is a variable like a `let` (one the checker keeps from being reassigned)
  *   when its value needs the program's variables.

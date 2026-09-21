@@ -24,4 +24,8 @@ jobs:
     # commit over SSH with that write deploy key, which the ruleset names as a bypass
     # actor; only the push step ever reads it.
     uses: scm-js/.github/.github/workflows/plugin-ci.yml@main
+    # The compile worker of a copy built into the editor imports this release's
+    # `dist/compiler.js`, so it is checked at a tag and committed on main like the bundle.
+    with:
+      artifacts: dist/compiler.js
     secrets: inherit

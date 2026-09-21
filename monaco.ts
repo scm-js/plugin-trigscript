@@ -18,7 +18,7 @@
 import type * as Monaco from "monaco-editor";
 import { DECLARATIONS_FILE } from "./compiler/declarations";
 import type { LineHint, ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
-import { normalizePath } from "./compiler/compiler";
+import { describeVariable, normalizePath } from "./compiler/compiler";
 import { findReferences } from "./refs";
 
 export const MONACO_VERSION = "0.56.0";
@@ -169,8 +169,8 @@ let hoverVariables: () => VariableInfo[] = () => [];
 let hoverRegistered = false;
 
 /**
- * Hovering a program's variable says where it lives — "a death counter, P2 · Cantina
- * (Unused)" — under TypeScript's own `let n: number`. The identifier is resolved to its
+ * Hovering a program's variable says what it holds — "a number (−2 147 483 648 …" —
+ * under TypeScript's own `let n: number` (`describeVariable`). The identifier is resolved to its
  * declaration by Monaco's TypeScript worker, and the declaration matched against the
  * last compile's variables. Registered once per Monaco; `variables` is the open dialog's.
  */
@@ -192,10 +192,9 @@ export function setHoverVariables(monaco: MonacoApi, variables: () => VariableIn
         const path = pathOfUri(m.uri);
         const v = hoverVariables().find((x) => x.at && normalizePath(x.at.file) === path && x.at.line === at.lineNumber && x.at.column === at.column);
         if (!v) continue;
-        const what = v.kind === "unit" ? "a unit of the game, or none — checked before every use: once the unit is gone it reads 0 and takes no write" : v.kind === "boolean" ? "a boolean" : v.bits ? `a u${v.bits} number (0 … ${2 ** v.bits - 1}, stopping at either end)` : "a number (0 … 4 294 967 295, never below 0)";
         return {
           range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-          contents: [{ value: `**${v.name}** is a variable of the program: ${what}${v.shared ? ", one value shared by every player the program runs for" : ""}. It lives in the game while the map is played.` }],
+          contents: [{ value: `**${v.name}** is a variable of the program: ${describeVariable(v)}${v.shared ? ", one value shared by every player the program runs for" : ""}. It lives in the game while the map is played.` }],
         };
       }
       return null;

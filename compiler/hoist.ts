@@ -1,7 +1,7 @@
 /**
  * What inside `program(() => { … })` runs when the script is built, and what runs in
- * the game. The body is real TypeScript, but its `let` variables are death counters
- * and its `if`s are trigger conditions, so it cannot simply run. Instead:
+ * the game. The body is real TypeScript, but its `let` variables live in the game's
+ * memory and its `if`s are trigger conditions, so it cannot simply run. Instead:
  *
  * - A *game binding* is a `let` / `var` of the body, a parameter, a function declared in
  *   it, or a `const` whose value needs one of those. Everything else an expression can

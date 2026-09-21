@@ -1,6 +1,6 @@
 {
   "name": "scmjs-plugin-trigscript",
-  "version": "3.10.1",
+  "version": "3.10.2",
   "private": true,
   "description": "TrigScript — TypeScript that builds into triggers; a plugin for the scmJS StarCraft map editor.",
   "author": "Jeany",
