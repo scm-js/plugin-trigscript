@@ -5284,7 +5284,7 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
 }
 
 // version.ts
-var VERSION = "3.10.3";
+var VERSION = "3.10.4";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";

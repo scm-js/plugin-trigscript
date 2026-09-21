@@ -6,6 +6,10 @@
  * committed like `dist/compiler.js`, so a plugin takes the tarball of one of this
  * repository's tags as a devDependency and imports `scmjs-plugin-trigscript/testing`.
  *
+ * It carries the compiler as well (`compileScript`, with the names and the standard library
+ * it is handed), so that a repository which shows a model TrigScript can test that what it
+ * shows still compiles.
+ *
  * The plugin itself never loads it. Not to be confused with `testing.ts`, which is the
  * script language's own `test()`.
  */
@@ -21,3 +25,7 @@ export {
   type ActionRecord, type ConditionRecord, type TriggerRecord,
 } from "../vendor/triggers";
 export { UNIT_NAMES } from "../vendor/units";
+export { compileScript, type CompileOptions, type CompileResult } from "./compiler";
+export { defaultScriptNames, scriptNames, type NameSources, type ScriptNames } from "./names";
+// Node only: reads TypeScript's own library files from the `typescript` package beside the caller.
+export { defaultLib } from "../bundle/lib.mjs";

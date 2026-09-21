@@ -39,6 +39,17 @@ Actions:
 }`;
 
 describe("the testing bundle", () => {
+  it("compiles a script: triggers recorded, a program counted", async () => {
+    const built = await import("../dist/testing.js" as string) as typeof source;
+    const ts = (await import("typescript")).default;
+    const script = `trigger(P1, [always()], [displayText("hello")]);\nprogram(() => { let n = 0; while (true) { n += 1; sleep(seconds(1)); } }, { owner: P1 });`;
+    const r = built.compileScript(ts, { "main.ts": script }, built.defaultScriptNames(), { lib: built.defaultLib() });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.programs).toHaveLength(1);
+    expect(built.compileScript(ts, { "main.ts": "trigger(P1, [], [wait(1)]); nothing();" }, built.defaultScriptNames(), { lib: built.defaultLib() }).ok).toBe(false);
+  });
+
   it("exports what the entry module does", async () => {
     const built = await import("../dist/testing.js" as string) as Record<string, unknown>;
     expect(Object.keys(built).sort()).toEqual(Object.keys(source).sort());

@@ -565,8 +565,8 @@ var Simulation = class {
     this.current = this.player;
     this.cycle++;
   }
-  run(cycles) {
-    for (let i = 0; i < cycles; i++) this.step();
+  run(cycles2) {
+    for (let i = 0; i < cycles2; i++) this.step();
     return this;
   }
   condition(c2) {
@@ -633,8 +633,8 @@ function compare2(value, comparison, amount) {
       return false;
   }
 }
-function simulate(triggers, cycles, options = {}) {
-  return new Simulation(triggers, options).run(cycles);
+function simulate(triggers, cycles2, options = {}) {
+  return new Simulation(triggers, options).run(cycles2);
 }
 
 // vendor/triggerDefs.ts
@@ -1249,9 +1249,9 @@ var Parser = class {
     return a2;
   }
   /** StarEdit sets "unit type used" on anything with a unit argument (the fixture maps' Command conditions carry 0x10). */
-  unitFlags(r, type, isAction) {
-    const def = isAction ? actionDef(type, this.briefing) : conditionDef(type);
-    if (def?.args.some((arg) => arg.kind === "unit")) r.flags |= isAction ? ActionFlag.UnitTypeUsed : ConditionFlag.UnitTypeUsed;
+  unitFlags(r, type, isAction2) {
+    const def = isAction2 ? actionDef(type, this.briefing) : conditionDef(type);
+    if (def?.args.some((arg) => arg.kind === "unit")) r.flags |= isAction2 ? ActionFlag.UnitTypeUsed : ConditionFlag.UnitTypeUsed;
   }
   fill(record, def, args, nameTok) {
     if (args.length !== def.args.length) {
@@ -1554,6 +1554,14987 @@ var UNIT_NAMES = [
   "Terran Vespene Gas Tank Type 1",
   "Terran Vespene Gas Tank Type 2"
 ];
+
+// compiler/api.ts
+function keyOf(table2, value) {
+  for (const [k, v] of Object.entries(table2)) if (v === value) return k;
+  return void 0;
+}
+var RESERVED = new Set("break case catch class const continue debugger default delete do else enum export extends false finally for function if import in instanceof new null return super switch this throw true try typeof var void while with implements interface let package private protected public static yield".split(" "));
+function camel(key) {
+  const id = key[0].toLowerCase() + key.slice(1);
+  return RESERVED.has(id) ? `${id}Is` : id;
+}
+function conditionIdent(type) {
+  const key = keyOf(ConditionType, type);
+  return key === void 0 ? void 0 : camel(key);
+}
+function actionIdent(type) {
+  const key = keyOf(ActionType, type);
+  return key === void 0 ? void 0 : camel(key);
+}
+var CONDITION_IDENTS = new Map(
+  CONDITION_DEFS.filter((d) => d.type !== ConditionType.Briefing).map((d) => [conditionIdent(d.type), d])
+);
+var ACTION_IDENTS = new Map(ACTION_DEFS.map((d) => [actionIdent(d.type), d]));
+var CHOICE_TYPES = {
+  comparison: "Comparison",
+  switchState: "SwitchState",
+  switchAction: "SwitchAction",
+  modifier: "Modifier",
+  unitState: "UnitState",
+  order: "OrderKind",
+  alliance: "Alliance",
+  resource: "ResourceKind",
+  score: "ScoreKind"
+};
+var CANONICAL = {
+  comparison: [[Comparison.AtLeast, ">="], [Comparison.AtMost, "<="], [Comparison.Exactly, "=="]],
+  switchState: [[SwitchState.Set, "set"], [SwitchState.Cleared, "cleared"]],
+  switchAction: [[SwitchAction.Set, "set"], [SwitchAction.Clear, "clear"], [SwitchAction.Toggle, "toggle"], [SwitchAction.Randomize, "randomize"]],
+  modifier: [[SetModifier.SetTo, "set"], [SetModifier.Add, "add"], [SetModifier.Subtract, "subtract"]],
+  unitState: [[UnitState.Enable, "enable"], [UnitState.Disable, "disable"], [UnitState.Toggle, "toggle"]],
+  order: [[Order.Move, "move"], [Order.Patrol, "patrol"], [Order.Attack, "attack"]],
+  alliance: [[AllianceStatus.Enemy, "enemy"], [AllianceStatus.Ally, "ally"], [AllianceStatus.AlliedVictory, "alliedVictory"]],
+  resource: [[ResourceType.Ore, "ore"], [ResourceType.Gas, "gas"], [ResourceType.OreAndGas, "oreAndGas"]],
+  score: [
+    [ScoreType.Total, "total"],
+    [ScoreType.Units, "units"],
+    [ScoreType.Buildings, "buildings"],
+    [ScoreType.UnitsAndBuildings, "unitsAndBuildings"],
+    [ScoreType.Kills, "kills"],
+    [ScoreType.Razings, "razings"],
+    [ScoreType.KillsAndRazings, "killsAndRazings"],
+    [ScoreType.Custom, "custom"]
+  ]
+};
+function choiceOf(kind, text) {
+  const key = text.trim().toLowerCase();
+  const hit = CANONICAL[kind]?.find(([, w]) => w.toLowerCase() === key);
+  if (hit) return hit[0];
+  const list = CHOICES[kind];
+  if (!list) return void 0;
+  for (const c2 of list) {
+    if (c2.label.toLowerCase() === key) return c2.value;
+    if (c2.aliases?.some((al) => al.toLowerCase() === key)) return c2.value;
+  }
+  return void 0;
+}
+function choiceWords(kind) {
+  return (CANONICAL[kind] ?? []).map(([, w]) => w);
+}
+function argType(kind) {
+  switch (kind) {
+    case "player":
+      return "Player";
+    case "unit":
+      return "UnitType";
+    case "location":
+      return "Location";
+    case "switch":
+      return "Switch";
+    case "text":
+    case "wav":
+      return "string";
+    case "aiScript":
+      return "AiScript | string";
+    case "count":
+      return "Count";
+    case "textFlags":
+      return "boolean";
+    case "number":
+    case "amount":
+    case "duration":
+    case "percent":
+    case "cuwp":
+    case "slot":
+      return "number";
+    default:
+      return `${CHOICE_TYPES[kind] ?? "number"} | number`;
+  }
+}
+function paramName(label) {
+  const words = label.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  const id = words.map((w, i) => i === 0 ? w[0].toLowerCase() + w.slice(1) : w[0].toUpperCase() + w.slice(1)).join("");
+  if (/^\d/.test(id) || id === "") return `_${id}`;
+  return RESERVED.has(id) ? `${id}_` : id;
+}
+function scriptParams(def) {
+  const used = /* @__PURE__ */ new Set();
+  const name = (label) => {
+    let p = paramName(label);
+    while (used.has(p)) p = `${p}_`;
+    used.add(p);
+    return p;
+  };
+  const main = def.args.filter((a2) => a2.kind !== "textFlags").map((arg) => ({ arg, name: name(arg.label), optional: false }));
+  const flag2 = def.args.find((a2) => a2.kind === "textFlags");
+  return flag2 ? [...main, { arg: flag2, name: "always", optional: true }] : main;
+}
+var IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+function propertyKey(key) {
+  return IDENTIFIER.test(key) ? key : JSON.stringify(key);
+}
+var TRIGGER_OPTION_NAMES = [
+  [TriggerFlag.Preserve, "preserve"],
+  [TriggerFlag.Disabled, "disabled"],
+  [TriggerFlag.IgnoreGameEnd, "ignoreGameEnd"],
+  [TriggerFlag.IgnoreDisplay, "ignoreDisplay"],
+  [TriggerFlag.ConditionsMet, "conditionsMet"],
+  [TriggerFlag.Paused, "paused"],
+  [TriggerFlag.WaitSkipDisabled, "waitSkipDisabled"]
+];
+var MODULE_NAME = "trigscript";
+
+// compiler/ir.ts
+var IR_VERSION = 14;
+var HEAP_CELLS = 16384;
+var HEAP_CELLS_MIN = 1024;
+var HEAP_CELLS_MAX = 1 << 20;
+function heapCells(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(HEAP_CELLS_MAX, Math.max(HEAP_CELLS_MIN, Math.floor(value))) : HEAP_CELLS;
+}
+var HEAP_SMALLEST = 4;
+var STACK_DEPTH = 1024;
+var STACK_DEPTH_MIN = 16;
+var STACK_DEPTH_MAX = 65536;
+var STACK_CELLS_MAX = 1 << 20;
+function stackDepth(value) {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(STACK_DEPTH_MAX, Math.max(STACK_DEPTH_MIN, Math.floor(value))) : STACK_DEPTH;
+}
+var UNIT_WRITABLE = /* @__PURE__ */ new Set(["hp", "shields", "energy", "kills", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis", "invincible"]);
+var UNIT_NUM_FIELDS = ["hp", "maxHp", "shields", "maxShields", "energy", "owner", "type", "x", "y", "kills", "orderId", "cooldown", "resources", "stim", "ensnare", "plague", "lockdown", "maelstrom", "irradiate", "stasis"];
+var UNIT_FLAGS = ["hallucinated", "cloaked", "burrowed", "invincible", "underAttack"];
+var I32_MAX = 2147483647;
+var I32_MIN = -2147483648;
+var U32_MAX = 4294967295;
+var TEXT_BYTES = 1023;
+var TEXT_FIELD_BYTES = 255;
+var TEXT_KINDS = /* @__PURE__ */ new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
+var isTextExpr = (e) => TEXT_KINDS.has(e.kind);
+var innerText = (t, f) => f.text ? f.text(t) : mapText(t, f);
+function mapTextParts(parts, f) {
+  return parts.map((p) => p.kind === "number" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p);
+}
+function mapText(t, f) {
+  switch (t.kind) {
+    case "textOf":
+    case "textAt":
+      return { ...t, index: f.num(t.index) };
+    case "template":
+      return { ...t, parts: mapTextParts(t.parts, f) };
+    case "textTernary":
+      return { ...t, cond: f.bool(t.cond), whenTrue: innerText(t.whenTrue, f), whenFalse: innerText(t.whenFalse, f) };
+    case "textSlice":
+      return { ...t, of: innerText(t.of, f), ...t.start ? { start: f.num(t.start) } : {}, ...t.end ? { end: f.num(t.end) } : {} };
+    case "textPad":
+      return { ...t, of: innerText(t.of, f), width: f.num(t.width), with: innerText(t.with, f) };
+    case "textRepeat":
+      return { ...t, of: innerText(t.of, f), count: f.num(t.count) };
+    case "textCall":
+      return { ...t, call: f.call(t.call) };
+    default:
+      return t;
+  }
+}
+function mapTextOperands(e, f) {
+  switch (e.kind) {
+    case "textLength":
+      return { ...e, of: innerText(e.of, f) };
+    case "textIndexOf":
+      return { ...e, of: innerText(e.of, f), find: innerText(e.find, f), ...e.from ? { from: f.num(e.from) } : {} };
+    case "textCode":
+      return { ...e, of: innerText(e.of, f), index: f.num(e.index) };
+    case "textCompare":
+      return { ...e, left: innerText(e.left, f), right: innerText(e.right, f) };
+    case "textTest":
+      return { ...e, of: innerText(e.of, f), find: innerText(e.find, f) };
+    default:
+      return void 0;
+  }
+}
+function textHasId(e, kinds) {
+  switch (e.kind) {
+    case "text":
+    case "textOf":
+      return true;
+    case "textVar":
+      return kinds(e.id) === "id";
+    case "textTernary":
+      return textHasId(e.whenTrue, kinds) && textHasId(e.whenFalse, kinds);
+    default:
+      return false;
+  }
+}
+function bodiesOf(program) {
+  return [program.body, ...(program.functions ?? []).map((f) => f.body)];
+}
+function programDeclarations(program) {
+  const out = declarations(program.body);
+  for (const f of program.functions ?? []) {
+    out.push(...f.params);
+    if (f.result) out.push(f.result.decl);
+    out.push(...declarations(f.body));
+  }
+  return out;
+}
+function eachCall(root, visit) {
+  if (Array.isArray(root)) {
+    for (const x of root) eachCall(x, visit);
+    return;
+  }
+  if (!root || typeof root !== "object") return;
+  const o = root;
+  if ((o.kind === "call" || o.kind === "textCall") && o.call && typeof o.call === "object") visit(o.call);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
+}
+var isUnitExpr = (e) => e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || e.kind === "call" && e.call.result?.kind === "unit";
+var isNumExpr = (e) => {
+  switch (e.kind) {
+    case "textLength":
+    case "textIndexOf":
+    case "textCode":
+      return true;
+    case "const":
+      return typeof e.value === "number";
+    case "var":
+      return false;
+    // ambiguous by shape; callers know the variable's kind
+    case "element":
+    case "pop":
+      return false;
+    // ambiguous by shape, as a variable is
+    case "length":
+    case "unitPart":
+      return true;
+    case "unary":
+    case "cast":
+    case "binary":
+    case "intrinsic":
+    case "read":
+    case "randomInt":
+    case "unitField":
+    case "tableRead":
+    case "input":
+      return true;
+    case "ternary":
+      return isNumExpr(e.whenTrue);
+    case "call":
+      return e.call.result?.kind === "number";
+    default:
+      return false;
+  }
+};
+function declarations(body2) {
+  const out = [];
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        out.push(s.decl);
+        init(s.init);
+        break;
+      case "assign":
+        expr(s.value);
+        break;
+      case "declareArray":
+        s.init?.forEach(init);
+        if (s.fill) init(s.fill);
+        break;
+      case "store":
+        expr(s.index);
+        init(s.value);
+        break;
+      case "push":
+        init(s.value);
+        break;
+      case "setLength":
+        expr(s.value);
+        break;
+      case "assignBool":
+        init(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "assignText":
+        text(s.value);
+        break;
+      case "storeText":
+        expr(s.index);
+        text(s.value);
+        break;
+      case "releaseText":
+        expr(s.index);
+        break;
+      case "textLoop":
+        text(s.of);
+        out.push(s.decl);
+        s.body.forEach(stmt);
+        break;
+      case "unitLoop":
+        out.push(s.decl);
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        init(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        init(s.value);
+        break;
+      case "if":
+        init(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) init(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        init(s.cond);
+        break;
+      case "for":
+        if (s.cond) init(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) init(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        if (s.text) text(s.text);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "print":
+        parts(s.parts);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    if (c2.result) out.push(c2.result.decl);
+    for (const p of c2.params) {
+      if (!c2.fn) out.push(p.decl);
+      init(p.init);
+    }
+    c2.body.forEach(stmt);
+  };
+  const init = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e);
+  const parts = (ps) => {
+    for (const p of ps) {
+      if (p.kind === "number") expr(p.expr);
+      else if (p.kind === "value") text(p.text);
+    }
+  };
+  const text = (t) => {
+    switch (t.kind) {
+      case "textOf":
+      case "textAt":
+        expr(t.index);
+        break;
+      case "template":
+        parts(t.parts);
+        break;
+      case "textTernary":
+        bool(t.cond);
+        text(t.whenTrue);
+        text(t.whenFalse);
+        break;
+      case "textSlice":
+        text(t.of);
+        if (t.start) expr(t.start);
+        if (t.end) expr(t.end);
+        break;
+      case "textPad":
+        text(t.of);
+        expr(t.width);
+        text(t.with);
+        break;
+      case "textRepeat":
+        text(t.of);
+        expr(t.count);
+        break;
+      case "textCall":
+        call(t.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "unitAt") {
+      expr(u.ptr);
+      expr(u.epd);
+      expr(u.uid);
+    }
+  };
+  const expr = (e) => {
+    switch (e.kind) {
+      case "unitField":
+      case "unitPart":
+        unit(e.unit);
+        break;
+      case "element":
+        expr(e.index);
+        break;
+      case "unary":
+      case "cast":
+        expr(e.expr);
+        break;
+      case "binary":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        bool(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "textLength":
+        text(e.of);
+        break;
+      case "textIndexOf":
+        text(e.of);
+        text(e.find);
+        if (e.from) expr(e.from);
+        break;
+      case "textCode":
+        text(e.of);
+        expr(e.index);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const bool = (b) => {
+    switch (b.kind) {
+      case "unitAlive":
+      case "unitFlag":
+        unit(b.unit);
+        break;
+      case "unitSame":
+        unit(b.left);
+        unit(b.right);
+        break;
+      case "element":
+        expr(b.index);
+        break;
+      case "test":
+        expr(b.expr);
+        break;
+      case "compare":
+        expr(b.left);
+        expr(b.right);
+        break;
+      case "and":
+      case "or":
+        b.items.forEach(bool);
+        break;
+      case "not":
+        bool(b.expr);
+        break;
+      case "edge":
+        bool(b.cond);
+        break;
+      case "ternary":
+        bool(b.cond);
+        bool(b.whenTrue);
+        bool(b.whenFalse);
+        break;
+      case "textCompare":
+        text(b.left);
+        text(b.right);
+        break;
+      case "textTest":
+        text(b.of);
+        text(b.find);
+        break;
+      case "call":
+        call(b.call);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+  return out;
+}
+
+// compiler/tables.ts
+var TABLE_SIZE = { unit: 228, weapon: 130, upgrade: 61, tech: 44, player: 12 };
+var UNIT_FLAGS2 = 6701184;
+var flag = (name, bit, doc) => ({ name, doc, base: UNIT_FLAGS2, stride: 4, width: "bit", bit, boolean: true });
+var TABLE_FIELDS = {
+  unit: [
+    { name: "maxHp", doc: "Hit points of units made after the write.", base: 6693712, stride: 4, width: 4, scale: 256 },
+    { name: "maxShields", doc: "Shield points of units made after the write.", base: 6688256, stride: 2, width: 2 },
+    { name: "armor", doc: "Armour, before upgrades.", base: 6684360, stride: 1, width: 1 },
+    { name: "minerals", doc: "What the unit costs in minerals.", base: 6699144, stride: 2, width: 2 },
+    { name: "gas", doc: "What the unit costs in gas.", base: 6683904, stride: 2, width: 2 },
+    { name: "buildTime", doc: "Seconds to build, on the game's clock; a fraction is fine when the number is known when you build (1.5).", base: 6685736, stride: 2, width: 2, scale: 15 },
+    { name: "supplyUsed", doc: "Supply the unit takes; a Zergling is 0.5.", base: 6700264, stride: 1, width: 1, scale: 2 },
+    { name: "supplyProvided", doc: "Supply the unit provides, for the ones made after the write.", base: 6702792, stride: 1, width: 1, scale: 2 },
+    { name: "sight", doc: "Sight range in tiles, up to 11.", base: 6697528, stride: 1, width: 1 },
+    { name: "groundWeapon", doc: "The weapon used against ground units (weapons.*); units already on the map switch too.", base: 6698680, stride: 1, width: 1, type: "Weapon" },
+    { name: "airWeapon", doc: "The weapon used against air units (weapons.*); weapons.None for none.", base: 6690528, stride: 1, width: 1, type: "Weapon" },
+    { name: "size", doc: "What concussive and explosive damage scale by: 0 independent, 1 small, 2 medium, 3 large.", base: 6693248, stride: 1, width: 1 },
+    { name: "speed", doc: "Top speed in pixels a frame (a Marine walks at 4, a Vulture at 6.67), for units made after the write: the type's flingy is switched to table control and given this speed, with acceleration and stopping distance to match. A fraction is fine when the number is known when you build.", base: 7118584, stride: 4, width: 4, scale: 256, writeOnly: true, special: "speed" },
+    { name: "name", doc: "The name shown for the type: text known when you build.", base: 6685280, stride: 2, width: 2, writeOnly: true, special: "name", type: "string" },
+    flag("detector", 15, "Sees cloaked and burrowed units in its sight range."),
+    flag("permanentCloak", 22, "Always cloaked, for units made after the write."),
+    flag("cloakable", 9, "Has the ability to cloak (the flag alone gives no button)."),
+    flag("burrowable", 20, "Has the ability to burrow (the flag alone gives no button)."),
+    flag("regenerates", 7, "Hit points climb back over time, as a Zerg unit's do; units already on the map follow at once."),
+    flag("invincible", 29, "Cannot be hurt, for units made after the write."),
+    flag("hero", 6, "A hero unit."),
+    flag("organic", 16, "A Medic can heal it; units already on the map follow."),
+    flag("mechanical", 30, "An SCV can repair it; units already on the map follow."),
+    flag("robotic", 14, "Immune to the spells robotic units are immune to.")
+  ],
+  weapon: [
+    { name: "damage", doc: "Damage of one hit, before upgrades.", base: 6647472, stride: 2, width: 2 },
+    { name: "bonus", doc: "Extra damage per upgrade level.", base: 6649464, stride: 2, width: 2 },
+    { name: "cooldown", doc: "Frames between attacks.", base: 6647736, stride: 1, width: 1 },
+    { name: "factor", doc: "Hits per attack.", base: 6644960, stride: 1, width: 1 },
+    { name: "range", doc: "Range in pixels, 32 a tile.", base: 6648944, stride: 4, width: 4 },
+    { name: "minRange", doc: "The least range in pixels: nothing closer can be shot.", base: 6646296, stride: 4, width: 4 }
+  ],
+  upgrade: [
+    { name: "minerals", doc: "The first level's mineral cost.", base: 6641472, stride: 2, width: 2 },
+    { name: "gas", doc: "The first level's gas cost.", base: 6641728, stride: 2, width: 2 },
+    { name: "time", doc: "Seconds the first level takes, on the game's clock.", base: 6642560, stride: 2, width: 2, scale: 15 },
+    { name: "maxLevel", doc: "How many times it can be researched. Read only: the game took no write.", base: 6641408, stride: 1, width: 1, readonly: true }
+  ],
+  tech: [
+    { name: "minerals", doc: "Mineral cost of the research.", base: 6644296, stride: 2, width: 2 },
+    { name: "gas", doc: "Gas cost of the research.", base: 6644208, stride: 2, width: 2 },
+    { name: "time", doc: "Seconds the research takes, on the game's clock.", base: 6644696, stride: 2, width: 2, scale: 15 },
+    { name: "energy", doc: "Energy a cast takes.", base: 6644608, stride: 2, width: 2 }
+  ],
+  player: [
+    { name: "color", doc: `The colour the player's units and minimap dots are drawn in: one of colors.*, or "teal". Takes effect at once.`, base: 5774710, stride: 1, width: 1, writeOnly: true, special: "color", type: "PlayerColor | ColorName" },
+    { name: "upgrades", doc: "The player's level of each upgrade: stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3.", base: 5821104, stride: 46, width: 1, keyed: { kind: "upgrade", type: "Upgrade" } },
+    { name: "researched", doc: "Whether the player has each technology: stats(P1).researched[techs.Lockdown] = true.", base: 5820228, stride: 24, width: 1, boolean: true, keyed: { kind: "tech", type: "Tech" } }
+  ]
+};
+var PLAYER_COLORS = { red: 111, blue: 165, teal: 159, purple: 164, orange: 179, brown: 19, white: 255, yellow: 135, green: 117 };
+var MINIMAP_COLOR_OFFSET = 5774806 - 5774710;
+var TABLE_BRAND = { unit: "unit", weapon: "weapon", upgrade: "upgrade", tech: "tech", player: "player" };
+var tableOfBrand = (brand) => Object.keys(TABLE_BRAND).find((k) => TABLE_BRAND[k] === brand);
+var cellMax = (width) => width === "bit" ? 1 : width === 4 ? 4294967295 : 2 ** (width * 8) - 1;
+
+// compiler/input.ts
+var MOUSE_BUTTONS = ["left", "right", "middle"];
+var NAMED_KEYS = {
+  Space: "SPACE",
+  Enter: "ENTER",
+  Escape: "ESC",
+  Tab: "TAB",
+  Shift: "SHIFT",
+  Ctrl: "LCTRL",
+  Alt: "LALT",
+  Left: "LEFT",
+  Up: "UP",
+  Right: "RIGHT",
+  Down: "DOWN",
+  Backspace: "BACK",
+  Delete: "DELETE",
+  Insert: "INSERT",
+  Home: "HOME",
+  End: "END",
+  PageUp: "PGUP",
+  PageDown: "PGDN"
+};
+var LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+var DIGITS = "0123456789".split("");
+var DEAF_KEYS = { F6: "StarCraft: Remastered keeps F6 to itself and reports no press of it (played and seen); F7 and F8 work" };
+var KEY_NAMES = [
+  ...LETTERS,
+  ...DIGITS,
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`).filter((k) => !(k in DEAF_KEYS)),
+  ...Object.keys(NAMED_KEYS),
+  ...DIGITS.map((d) => `Numpad${d}`)
+];
+var KEY_BY_LOWER = new Map(KEY_NAMES.map((k) => [k.toLowerCase(), k]));
+function keyName(v) {
+  return KEY_BY_LOWER.get(v.trim().toLowerCase()) ?? null;
+}
+var MAX_CHAT_CAPTURES = 3;
+var MAX_CHAT_BYTES = 78;
+var MAX_CHAT_NUMBER = 1048575;
+var IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var bytes = (s) => new TextEncoder().encode(s).length;
+function parseChatPattern(pattern) {
+  if (pattern === "") throw new Error('chatted: the pattern is what the player types, such as "-give {n}".');
+  if (/[\r\n\0]/.test(pattern)) throw new Error("chatted: a typed line is one line.");
+  const segments = [];
+  const captures = [];
+  let text = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "}") throw new Error("chatted: a } without its {. A capture is {name}, {name:unit} or {name:word|word}.");
+    if (ch !== "{") {
+      text += ch;
+      continue;
+    }
+    const end = pattern.indexOf("}", i);
+    if (end < 0) throw new Error("chatted: a { without its }. A capture is {name}, {name:unit} or {name:word|word}.");
+    const inside = pattern.slice(i + 1, end);
+    i = end;
+    const colon = inside.indexOf(":");
+    const name = colon < 0 ? inside : inside.slice(0, colon);
+    const kind = colon < 0 ? "" : inside.slice(colon + 1);
+    if (!IDENT.test(name) || name.startsWith("__")) throw new Error(`chatted: {${inside}} needs a name to be read by: {n}, {unit:unit}, {kind:ore|gas}.`);
+    if (captures.some((c2) => c2.name === name)) throw new Error(`chatted: two captures are called ${name}.`);
+    if (text === "") throw new Error(segments.length === 0 ? 'chatted: a pattern starts with its own word, so that ordinary talk is not taken for it: "-give {n}".' : `chatted: {${name}} follows another capture with nothing between them; put a space or a word there.`);
+    segments.push(text);
+    text = "";
+    if (kind === "") captures.push({ name, kind: "number" });
+    else if (kind === "unit") captures.push({ name, kind: "unit" });
+    else {
+      const words = kind.split("|");
+      if (kind === "number" || kind === "word") throw new Error(`chatted: {${name}} alone is a number; {${name}:unit} a unit type; {${name}:ore|gas} one of the words listed.`);
+      if (words.some((w) => w === "" || /\s/.test(w))) throw new Error(`chatted: {${inside}}: each word of the list is one word, without spaces.`);
+      if (new Set(words.map((w) => w.toLowerCase())).size !== words.length) throw new Error(`chatted: {${inside}} lists a word twice.`);
+      captures.push({ name, kind: "word", words });
+    }
+    segments.push(captures.length - 1);
+  }
+  if (text !== "") segments.push(text);
+  if (captures.length > MAX_CHAT_CAPTURES) throw new Error(`chatted: a pattern reads at most ${MAX_CHAT_CAPTURES} values.`);
+  const unit = captures.findIndex((c2) => c2.kind === "unit");
+  if (unit >= 0 && (unit !== captures.length - 1 || typeof segments[segments.length - 1] === "string")) throw new Error("chatted: a unit's name has spaces in it, so {\u2026:unit} reads the rest of the line and comes last.");
+  const written = segments.filter((s) => typeof s === "string").join("");
+  if (bytes(written) > MAX_CHAT_BYTES) throw new Error(`chatted: the game lets a player type ${MAX_CHAT_BYTES} bytes; the pattern's own text is longer.`);
+  return { pattern, segments, captures };
+}
+function matchChat(p, line, unitByName) {
+  let pos = 0;
+  const out = [];
+  for (let s = 0; s < p.segments.length; s++) {
+    const seg = p.segments[s];
+    if (typeof seg === "string") {
+      if (!line.startsWith(seg, pos)) return null;
+      pos += seg.length;
+      continue;
+    }
+    const c2 = p.captures[seg];
+    if (c2.kind === "number") {
+      const m = /^\d+/.exec(line.slice(pos));
+      if (!m) return null;
+      pos += m[0].length;
+      out.push(Math.min(Number(m[0]), MAX_CHAT_NUMBER));
+    } else if (c2.kind === "unit") {
+      const id = unitByName(line.slice(pos).toLowerCase());
+      if (id === void 0) return null;
+      pos = line.length;
+      out.push(id);
+    } else {
+      const m = /^\S+/.exec(line.slice(pos));
+      const at = m ? c2.words.findIndex((w) => w.toLowerCase() === m[0].toLowerCase()) : -1;
+      if (!m || at < 0) return null;
+      pos += m[0].length;
+      out.push(at);
+    }
+  }
+  return pos === line.length ? out : null;
+}
+var MOUSE_SLOTS = 8;
+var LAST_SLOT = 62;
+function inputsOf(programs) {
+  const sources = [];
+  let mouse = false;
+  let at = null;
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "pick" && u.mouse !== void 0) {
+      mouse = true;
+      at ??= u.at;
+    } else if (u.kind === "unitAt") {
+      expr(u.ptr);
+      expr(u.epd);
+      expr(u.uid);
+    }
+  };
+  const any = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e);
+  const looks = { num: (e) => {
+    expr(e);
+    return e;
+  }, bool: (e) => {
+    expr(e);
+    return e;
+  }, call: (c2) => {
+    call(c2);
+    return c2;
+  } };
+  const text = (t) => {
+    mapText(t, looks);
+  };
+  const expr = (e) => {
+    if (mapTextOperands(e, looks)) return;
+    switch (e.kind) {
+      case "input":
+        sources.push(e.input);
+        at ??= e.at;
+        if (e.input.source === "mouse") mouse = true;
+        break;
+      case "unitField":
+      case "unitPart":
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        break;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        break;
+      case "unary":
+      case "cast":
+        expr(e.expr);
+        break;
+      case "element":
+        expr(e.index);
+        break;
+      case "binary":
+      case "compare":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        expr(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "and":
+      case "or":
+        e.items.forEach(expr);
+        break;
+      case "not":
+      case "test":
+        expr(e.expr);
+        break;
+      case "edge":
+        expr(e.cond);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) any(p.init);
+    c2.body.forEach(stmt);
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) any(s.init);
+        break;
+      case "assign":
+      case "assignBool":
+        expr(s.value);
+        break;
+      case "declareArray":
+        s.init?.forEach(expr);
+        if (s.fill) expr(s.fill);
+        break;
+      case "store":
+        expr(s.index);
+        expr(s.value);
+        break;
+      case "push":
+      case "setLength":
+        expr(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "assignText":
+        text(s.value);
+        break;
+      case "storeText":
+        expr(s.index);
+        text(s.value);
+        break;
+      case "releaseText":
+        expr(s.index);
+        break;
+      case "textLoop":
+        text(s.of);
+        s.body.forEach(stmt);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        expr(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        any(s.value);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "if":
+        expr(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) expr(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        expr(s.cond);
+        break;
+      case "for":
+        if (s.cond) expr(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) any(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        if (s.text) text(s.text);
+        break;
+      case "print":
+        mapTextParts(s.parts, looks);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  for (const p of programs) for (const body2 of bodiesOf(p)) body2.forEach(stmt);
+  return { sources, mouse, at };
+}
+function inputPlan(programs, locations, units) {
+  const { sources, mouse } = inputsOf(programs);
+  if (sources.length === 0 && !mouse) return null;
+  const keys = [];
+  const buttons = [];
+  const chats = [];
+  for (const s of sources) {
+    if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
+    else if (s.source === "click" && !buttons.includes(s.button)) buttons.push(s.button);
+    else if (s.source === "chat" && !chats.some((c2) => c2.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
+  }
+  const used = new Set(locations.entries.map((e) => e.value - 1));
+  const free = (slot) => slot >= 0 && slot <= LAST_SLOT && !used.has(slot);
+  let qcLocation = -1;
+  for (let slot = LAST_SLOT; slot >= 0; slot--) if (free(slot)) {
+    qcLocation = slot;
+    break;
+  }
+  if (qcLocation < 0) throw new Error("Reading keys, clicks or chat needs one free location among the map's first 63 for the plugin that carries them between the players' computers; this map uses them all.");
+  let mouseBase = null;
+  if (mouse) {
+    for (let slot = LAST_SLOT - MOUSE_SLOTS + 1; slot >= 0 && mouseBase === null; slot--) {
+      let ok = true;
+      for (let i = 0; i < MOUSE_SLOTS; i++) if (!free(slot + i) || slot + i === qcLocation) ok = false;
+      if (ok) mouseBase = slot + 1;
+    }
+    if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
+  }
+  const plan = { keys, buttons, chats, qcLocation, mouseBase };
+  if (chats.some((c2) => c2.captures.some((x) => x.kind === "unit"))) {
+    const seen = /* @__PURE__ */ new Set();
+    plan.unitNames = [];
+    for (const e of units.entries) {
+      if (e.value >= 228) continue;
+      for (const k of e.keys) {
+        const lower = k.toLowerCase();
+        if (!seen.has(lower)) {
+          seen.add(lower);
+          plan.unitNames.push([lower, e.value]);
+        }
+      }
+    }
+  }
+  return plan;
+}
+
+// compiler/simulateIr.ts
+var FRAMES_PER_SECOND = 24;
+var FRAMES_PER_GAME_SECOND = 16;
+var U32 = 4294967296;
+var UNIT_FIELD_MAX = { hp: 16777215, shields: 16777215, energy: 255, kills: 255, cooldown: 255, resources: 65535, stim: 255, ensnare: 255, plague: 255, lockdown: 255, maelstrom: 255, irradiate: 255, stasis: 255 };
+var Halt = class extends Error {
+};
+var Stopped = class extends Error {
+};
+var UTF8 = new TextEncoder();
+var bytesOf = (s) => UTF8.encode(s).length;
+function textRoom(bytes2) {
+  let room = HEAP_SMALLEST;
+  while (room < Math.floor(bytes2 / 4) + 2) room *= 2;
+  return room;
+}
+function cutTo(s, bytes2) {
+  let out = "";
+  let used = 0;
+  for (const ch of s) {
+    const n = bytesOf(ch);
+    if (used + n > bytes2) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
+function compareTexts(a2, b) {
+  const x = [...a2], y = [...b];
+  for (let i = 0; i < x.length && i < y.length; i++) {
+    const d = x[i].codePointAt(0) - y[i].codePointAt(0);
+    if (d) return d;
+  }
+  return x.length - y.length;
+}
+var newCommon = () => ({ ids: /* @__PURE__ */ new Set(), vars: /* @__PURE__ */ new Map(), unitVars: /* @__PURE__ */ new Map(), textVars: /* @__PURE__ */ new Map(), arrays: /* @__PURE__ */ new Map() });
+var Cells = class extends Map {
+  ids;
+  common;
+  constructor(ids, common) {
+    super();
+    this.ids = ids;
+    this.common = common;
+  }
+  get(id) {
+    return this.ids.has(id) ? this.common.get(id) : super.get(id);
+  }
+  has(id) {
+    return this.ids.has(id) ? this.common.has(id) : super.has(id);
+  }
+  set(id, value) {
+    if (this.ids.has(id)) this.common.set(id, value);
+    else super.set(id, value);
+    return this;
+  }
+};
+var ProgramRun = class {
+  vars;
+  /** The variables that hold a unit, or none. */
+  unitVars;
+  /** The variables that hold a text. */
+  textVars;
+  bits = /* @__PURE__ */ new Map();
+  /** The `u32` variables. */
+  unsigned = /* @__PURE__ */ new Set();
+  latches = /* @__PURE__ */ new Map();
+  /** The program's arrays: their cells, as a variable's value is kept. */
+  arrays = new class extends Map {
+    run;
+    /** An array that grows inside another is found through the outer one's cells, every time it is asked for. */
+    get(id) {
+      const a2 = super.get(id);
+      return a2?.decl.through ? this.run.inner(a2.decl, (k) => super.get(k)) : a2;
+    }
+  }();
+  body;
+  done = false;
+  steps = 0;
+  /** How many calls deep the program is in functions that call themselves: frames on the stack. Nothing is on it between frames. */
+  depth = 0;
+  /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
+  apart = [];
+  sim;
+  index;
+  program;
+  /** The player this run is: who Current Player is while it runs. */
+  player;
+  common;
+  constructor(sim, index, program, player, common = newCommon()) {
+    this.sim = sim;
+    this.index = index;
+    this.program = program;
+    this.player = player;
+    this.common = common;
+    this.vars = new Cells(common.ids, common.vars);
+    this.unitVars = new Cells(common.ids, common.unitVars);
+    this.textVars = new Cells(common.ids, common.textVars);
+    this.arrays.run = this;
+    for (const decl of program.arrays ?? []) {
+      const held = (decl.shared ? common.arrays.get(decl.id) : void 0) ?? { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array(decl.length).fill(decl.kind === "number" ? 0 : false) };
+      if (decl.shared) common.arrays.set(decl.id, held);
+      this.arrays.set(decl.id, held);
+    }
+    this.body = this.run();
+  }
+  *run() {
+    const flow = yield* this.block(this.program.body, {});
+    void flow;
+    return "next";
+  }
+  /** One frame: resume the body until it gives the frame back or ends. */
+  tick() {
+    if (this.done || !this.body) return;
+    this.steps = 0;
+    try {
+      if (this.drive()) {
+        this.done = true;
+        this.body = null;
+      }
+    } catch (err) {
+      this.apart.length = 0;
+      if (!(err instanceof Stopped)) throw err;
+      this.done = true;
+      this.body = null;
+      this.depth = 0;
+    }
+  }
+  /** The run until it gives the frame back (false) or ends (true): the body, and above it each body that was handed over to be run apart. */
+  drive() {
+    let send;
+    for (; ; ) {
+      const top = this.apart[this.apart.length - 1] ?? this.body;
+      const r = top.next(send);
+      send = void 0;
+      if (r.done) {
+        if (!this.apart.length) return true;
+        this.apart.pop();
+        send = r.value;
+      } else if (r.value === void 0) return false;
+      else this.apart.push(r.value.run);
+    }
+  }
+  step() {
+    if (++this.steps > this.sim.maxSteps) throw new Halt(`A program ran more than ${this.sim.maxSteps} statements in one frame: is there a loop with no sleep() in it?`);
+  }
+  /* ── storage ── */
+  read(id, at) {
+    const v = this.vars.get(id);
+    if (v === void 0) throw new Error(`The variable ${id} was read before it was declared${at ? ` (line ${at.line})` : ""}.`);
+    return v;
+  }
+  /** A number is kept as its type reads the 32 bits: a `u32` 0 and up, a `u8` / `u16` stopped at its top, anything else signed. */
+  store(id, value) {
+    if (typeof value === "number") {
+      const bits = this.bits.get(id);
+      this.vars.set(id, bits ? Math.min(value >>> 0, 2 ** bits - 1) : this.unsigned.has(id) ? value >>> 0 : value | 0);
+    } else {
+      this.vars.set(id, value);
+    }
+  }
+  /** A value as a cell of its type keeps it: a `u32` from 0 up, a `u8` / `u16` stopped at its top, anything else signed. */
+  kept(value, type) {
+    if (typeof value !== "number") return value;
+    return type.bits ? Math.min(value >>> 0, 2 ** type.bits - 1) : type.unsigned ? value >>> 0 : value | 0;
+  }
+  /**
+   * The cell an index names, or undefined past either end — where the game reads 0 and drops a store without a word.
+   * Here it is said (`faults`): an index off the end is a mistake in every script that has one.
+   */
+  *cell(array, index, at, what) {
+    const a2 = this.arrays.get(array);
+    if (!a2) throw new Error(`The array ${array} is not one of the program's (line ${at.line}).`);
+    const i = yield* this.num(index);
+    if (a2.decl.slice) {
+      const of = this.arrays.get(a2.decl.slice.of);
+      if (!of) throw new Error(`The array ${a2.decl.slice.of} is not one of the program's (line ${at.line}).`);
+      const j = (Number(this.read(a2.decl.slice.offset)) | 0) + i;
+      if (i >= 0 && i < a2.decl.length && j >= 0 && j < (of.decl.dynamic ? of.cells.length : of.decl.length)) return { decl: a2.decl, cells: of.cells, i: j };
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the row (its length is ${a2.decl.length}): ${what}.` });
+      return void 0;
+    }
+    const length = a2.decl.dynamic ? a2.cells.length : a2.decl.length;
+    if (i >= 0 && i < length) return { ...a2, i };
+    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
+    return void 0;
+  }
+  /**
+   * Room for `cells` in a growing array, as the game finds it (`python/trigscript.py`): a block twice the size from the
+   * heap, the old one given back. False, and said once, when the heap has none left.
+   */
+  grow(a2, cells, at) {
+    if (cells <= a2.room) return true;
+    let room = Math.max(a2.room, HEAP_SMALLEST);
+    while (room < cells) room *= 2;
+    if (!this.sim.heap.take(room)) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: ${a2.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
+      return false;
+    }
+    if (a2.room) this.sim.heap.give(a2.room);
+    a2.room = room;
+    return true;
+  }
+  /**
+   * The array a handle in another's cells leads to (`ArrayDecl.through`). The cell holds a number that stands for the
+   * block — nothing yet is 0, and the first use makes one, as the game's first push does. A number whose block was given
+   * back (the row was popped, and this is a copy of its handle kept somewhere) leads nowhere: in the game that is some
+   * other array's cells by now, and here it is said.
+   */
+  inner(decl, plain, release = false) {
+    const nothing = () => ({ decl, cells: [], room: 0 });
+    const ptrs = plain(decl.through.ptr);
+    const i = Number(this.read(decl.through.index)) | 0;
+    if (!ptrs || i < 0 || i >= ptrs.cells.length) return nothing();
+    const ptr = Number(ptrs.cells[i]);
+    if (release) {
+      const held2 = this.sim.inner.get(ptr);
+      if (held2?.room) this.sim.heap.give(held2.room);
+      this.sim.inner.delete(ptr);
+      ptrs.cells[i] = 0;
+      return nothing();
+    }
+    if (!ptr) {
+      const made = { decl, cells: [], room: 0 };
+      ptrs.cells[i] = ++this.sim.lastInner;
+      this.sim.inner.set(this.sim.lastInner, made);
+      return made;
+    }
+    const held = this.sim.inner.get(ptr);
+    if (!held) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: decl.at, message: `${decl.name} was given back \u2014 the row that held it was popped, cut off or declared again \u2014 and this is a copy of its handle: in the game it reads whatever has the block now.` });
+      return nothing();
+    }
+    held.decl = decl;
+    return held;
+  }
+  declare(decl) {
+    if (decl.shared && this.program.perPlayer) this.common.ids.add(decl.id);
+    if (decl.kind === "unit") {
+      this.unitVars.set(decl.id, null);
+      return;
+    }
+    if (decl.kind === "text") {
+      if (!this.textVars.has(decl.id)) this.textVars.set(decl.id, { s: "", room: 0 });
+      return;
+    }
+    if (decl.bits) this.bits.set(decl.id, decl.bits);
+    if (decl.unsigned) this.unsigned.add(decl.id);
+    this.vars.set(decl.id, decl.kind === "number" ? 0 : false);
+  }
+  /* ── units ── */
+  /** The unit an expression names; null for none. A unit that has died is still the value — what reads it finds it gone. */
+  *unit(e) {
+    switch (e.kind) {
+      case "unitNull":
+        return null;
+      case "unitVar":
+        return this.unitVars.get(e.id) ?? null;
+      case "pick":
+        return this.sim.pick(e.by, e.filter, e.near, e.mouse, e.within);
+      // A kept unit is its place in the table, from 1, and the place's uniqueness byte: a unit made since in that place is another.
+      case "unitAt": {
+        const ptr = (yield* this.num(e.ptr)) >>> 0;
+        yield* this.num(e.epd);
+        const uid = (yield* this.num(e.uid)) >>> 0;
+        return ptr >= 1 ? this.sim.game.at(ptr - 1, uid) : null;
+      }
+      case "call": {
+        yield* this.call(e.call);
+        return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null;
+      }
+    }
+  }
+  /** The unit, when there is one and it is still on the map. */
+  *living(e) {
+    const u = yield* this.unit(e);
+    return u?.alive ? u : null;
+  }
+  *unitDo(e, verb, at) {
+    const u = yield* this.living(e);
+    const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
+    if (!u) return;
+    switch (verb.do) {
+      case "kill":
+      case "remove":
+        this.sim.game.gone(u, verb.do === "kill");
+        this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at);
+        break;
+      case "give": {
+        const to = this.sim.slotOf(verb.to);
+        if (to < 12) u.owner = to;
+        break;
+      }
+      case "order":
+        this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order });
+        break;
+      case "locate":
+        this.sim.centre(verb.location, u.x, u.y);
+        break;
+      case "damage":
+      case "heal": {
+        const step = verb.percent ? Math.floor(u.maxHp * 256 * amount / 100) : amount * 256;
+        const raw = verb.do === "damage" ? Math.max(0, u.hp * 256 - step) : Math.min(u.maxHp * 256, u.hp * 256 + step);
+        u.hp = Math.ceil(raw / 256);
+        if (u.hp === 0) {
+          this.sim.game.gone(u, true);
+          this.sim.unitEvent(this, ActionType.KillUnit, u, at);
+        }
+        break;
+      }
+    }
+  }
+  /* ── expressions ── */
+  /**
+   * A number, the way the game computes it (`python/trigscript.py`): 32 bits, given here as the
+   * signed reading of them (`| 0`). + − × and the bitwise operators are the same bits whichever
+   * way they are read; what reads them one way or the other — ÷, %, a shift right, min and max, a
+   * comparison — says which in the IR. A divisor of 0 gives 0, as `(a / 0) | 0` does.
+   */
+  *num(e) {
+    switch (e.kind) {
+      case "const":
+        return e.value | 0;
+      case "var":
+        return Number(this.read(e.id)) | 0;
+      case "element": {
+        const c2 = yield* this.cell(e.array, e.index, e.at, "it reads 0");
+        return c2 ? Number(c2.cells[c2.i]) | 0 : 0;
+      }
+      case "length":
+        return this.arrays.get(e.array)?.cells.length ?? 0;
+      case "pop":
+        return Number(this.arrays.get(e.array)?.cells.pop() ?? 0) | 0;
+      case "unary":
+        return -(yield* this.num(e.expr)) | 0;
+      case "cast":
+        return yield* this.num(e.expr);
+      case "binary": {
+        const a2 = yield* this.num(e.left);
+        const b = yield* this.num(e.right);
+        switch (e.op) {
+          case "+":
+            return a2 + b | 0;
+          case "-":
+            return a2 - b | 0;
+          case "*":
+            return Math.imul(a2, b);
+          case "/":
+            return b === 0 ? 0 : e.unsigned ? Math.floor((a2 >>> 0) / (b >>> 0)) | 0 : a2 / b | 0;
+          case "%":
+            return b === 0 ? 0 : e.unsigned ? (a2 >>> 0) % (b >>> 0) | 0 : a2 % b | 0;
+          case "&":
+            return a2 & b;
+          case "|":
+            return a2 | b;
+          case "^":
+            return a2 ^ b;
+          // A shift by 32 or more (or by a number below zero) leaves nothing but the sign, where JavaScript would shift by the remainder.
+          case "<<":
+            return b >>> 0 >= 32 ? 0 : a2 << b;
+          case ">>":
+            return b >>> 0 >= 32 ? a2 < 0 ? -1 : 0 : a2 >> b;
+          case ">>>":
+            return b >>> 0 >= 32 ? 0 : a2 >>> b | 0;
+        }
+        return 0;
+      }
+      case "read":
+        return this.sim.read(e.read) | 0;
+      case "unitField": {
+        const u = yield* this.living(e.unit);
+        return u ? u[e.field] | 0 : 0;
+      }
+      case "unitPart": {
+        const u = yield* this.unit(e.unit);
+        return u ? e.part === "uid" ? u.uid : u.slot + 1 : 0;
+      }
+      case "tableRead":
+        return this.sim.tableRead(e.cell) | 0;
+      case "input":
+        return this.sim.input(e.input) | 0;
+      case "randomInt": {
+        const n = (yield* this.num(e.bound)) >>> 0;
+        return n === 0 ? 0 : Math.min(n - 1, Math.floor(this.sim.random() * n)) | 0;
+      }
+      case "ternary":
+        return (yield* this.bool(e.cond)) ? yield* this.num(e.whenTrue) : yield* this.num(e.whenFalse);
+      case "intrinsic": {
+        const args = [];
+        for (const a2 of e.args) args.push(yield* this.num(a2));
+        if (e.name === "abs") return Math.abs(args[0]) | 0;
+        const seen = e.unsigned ? args.map((a2) => a2 >>> 0) : args;
+        return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
+      }
+      case "call":
+        return Number(yield* this.call(e.call)) | 0;
+      case "textLength": {
+        const t = yield* this.text(e.of);
+        this.used(t);
+        return [...t.s].length;
+      }
+      case "textIndexOf": {
+        const t = yield* this.text(e.of);
+        const find = yield* this.text(e.find);
+        const from = e.from ? Math.max(0, yield* this.num(e.from)) : 0;
+        this.used(t, find);
+        const chars = [...t.s];
+        const at = t.s.indexOf(find.s, chars.slice(0, from).join("").length);
+        return at < 0 || from > chars.length ? find.s === "" && from <= chars.length ? from : -1 : [...t.s.slice(0, at)].length;
+      }
+      case "textCode": {
+        const t = yield* this.text(e.of);
+        const i = yield* this.num(e.index);
+        this.used(t);
+        return [...t.s][i]?.codePointAt(0) ?? -1;
+      }
+    }
+  }
+  /* ── texts ── */
+  /**
+   * A text that was just made, as the game keeps it (`python/trigscript.py`): past `TEXT_BYTES` it is cut, and its
+   * bytes go into a block of the heap. When the heap has none, the text is empty — and both are said.
+   */
+  made(s, at, cameTo = bytesOf(s)) {
+    if (bytesOf(s) > TEXT_BYTES) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text came to ${cameTo.toLocaleString("en-US")} bytes, and a text that is made holds ${TEXT_BYTES.toLocaleString("en-US")}: it is cut off there, as it is in the game.` });
+      s = cutTo(s, TEXT_BYTES);
+    }
+    const room = textRoom(bytesOf(s));
+    if (!this.sim.heap.take(room)) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: no room for this text (the heap the programs' arrays and texts share is ${this.sim.heap.cells} cells; the script's settings set it). It is empty instead, as it is in the game.` });
+      return { s: "", room: 0, taken: true };
+    }
+    return { s, room, taken: true };
+  }
+  /** Values that have been used: a block that was the value's own goes back to the heap. */
+  used(...values) {
+    for (const v of values) if (v.taken && v.room) this.sim.heap.give(v.room);
+  }
+  /** A value as something to keep: its own block as it is, a copy of a variable's. */
+  owned(v, at) {
+    if (v.taken || !v.room) return { s: v.s, room: v.room };
+    const copy = this.made(v.s, at);
+    return { s: copy.s, room: copy.room };
+  }
+  *parts(parts, used) {
+    let out = "";
+    for (const p of parts) {
+      if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      else if (p.kind === "value") {
+        const v = yield* this.text(p.text);
+        used.push(v);
+        out += v.s;
+      } else out += this.sim.partText(p);
+    }
+    return out;
+  }
+  *text(e) {
+    switch (e.kind) {
+      case "text":
+        return { s: e.text, room: 0, taken: true };
+      case "textVar": {
+        const v = this.textVars.get(e.id);
+        if (!v) throw new Error(`The variable ${e.id} was read before it was declared.`);
+        return { ...v, taken: false };
+      }
+      case "textAt": {
+        const c2 = yield* this.cell(e.addr, e.index, e.at, "it reads as no text");
+        const held = c2 ? this.cellTexts.get(c2.cells[c2.i]) : void 0;
+        return { s: held?.s ?? "", room: held?.room ?? 0, taken: false };
+      }
+      case "textOf": {
+        const a2 = this.arrays.get(e.array);
+        const i = yield* this.num(e.index);
+        const found = a2?.decl.texts?.[i];
+        if (found === void 0) this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: e.at, message: `${a2?.decl.name ?? e.array}[${i}] is past the end of the list (its length is ${a2?.decl.texts?.length ?? 0}): it reads an empty text.` });
+        return { s: found ?? "", room: 0, taken: true };
+      }
+      case "template": {
+        const used = [];
+        const s = yield* this.parts(e.parts, used);
+        const out = this.made(s, e.at);
+        this.used(...used);
+        return out;
+      }
+      case "textTernary": {
+        const v = (yield* this.bool(e.cond)) ? yield* this.text(e.whenTrue) : yield* this.text(e.whenFalse);
+        return { ...this.owned(v, e.at), taken: true };
+      }
+      case "textSlice": {
+        const of = yield* this.text(e.of);
+        const chars = [...of.s];
+        const start = e.start ? Math.min(chars.length, Math.max(0, yield* this.num(e.start))) : 0;
+        const end = e.end ? Math.min(chars.length, Math.max(0, yield* this.num(e.end))) : chars.length;
+        const out = this.made(chars.slice(start, Math.max(start, end)).join(""), e.at);
+        this.used(of);
+        return out;
+      }
+      case "textPad": {
+        const of = yield* this.text(e.of);
+        const width = yield* this.num(e.width);
+        const fill = yield* this.text(e.with);
+        const chars = [...of.s], pad = [...fill.s];
+        let padding = "";
+        if (pad.length) for (let i = 0; chars.length + i < width; i++) padding += pad[i % pad.length];
+        const out = this.made(e.side === "start" ? padding + of.s : of.s + padding, e.at);
+        this.used(of, fill);
+        return out;
+      }
+      case "textRepeat": {
+        const of = yield* this.text(e.of);
+        const n = yield* this.num(e.count);
+        const out = this.made(n >= 1 ? of.s.repeat(Math.min(n, Math.ceil((TEXT_BYTES + 1) / Math.max(1, bytesOf(of.s))))) : "", e.at, Math.max(0, n) * bytesOf(of.s));
+        this.used(of);
+        return out;
+      }
+      case "textCall": {
+        yield* this.call(e.call);
+        const held = e.call.result ? this.textVars.get(e.call.result.decl.id) : void 0;
+        if (!held) return { s: "", room: 0, taken: true };
+        const out = { ...held, taken: true };
+        held.room = 0;
+        return out;
+      }
+    }
+  }
+  /** A text into a variable: worked out first, then what the variable held goes back. */
+  /** The texts kept in cells of arrays, by the number the cells hold for one: what moves a row moves numbers, and the text goes with them. */
+  cellTexts = /* @__PURE__ */ new Map();
+  lastCellText = 0;
+  releaseCellText(key) {
+    const old = key ? this.cellTexts.get(key) : void 0;
+    if (!old) return;
+    if (old.room) this.sim.heap.give(old.room);
+    this.cellTexts.delete(key);
+  }
+  *putText(id, e, at) {
+    const v = this.owned(yield* this.text(e), at);
+    const old = this.textVars.get(id);
+    if (old?.room) this.sim.heap.give(old.room);
+    this.textVars.set(id, v);
+  }
+  /** A made text where the game shows at most `TEXT_FIELD_BYTES` of one: an action's field, a unit type's name. */
+  shown(v, at, where) {
+    if (!v.room || bytesOf(v.s) <= TEXT_FIELD_BYTES) return v.s;
+    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text is ${bytesOf(v.s)} bytes, and ${where} shows ${TEXT_FIELD_BYTES} of a text that was made: it is cut off there, as it is in the game.` });
+    return cutTo(v.s, TEXT_FIELD_BYTES);
+  }
+  /** A number as the game takes one: the 32 bits from 0 up. What goes to a unit, a table, an action or the map is never below zero by then (the compiler saw to it). */
+  *amount(e) {
+    return (yield* this.num(e)) >>> 0;
+  }
+  *bool(e) {
+    switch (e.kind) {
+      case "const":
+        return e.value;
+      case "cond":
+        return this.sim.condition(e.record);
+      case "var":
+        return Boolean(this.read(e.id));
+      case "element": {
+        const c2 = yield* this.cell(e.array, e.index, e.at, "it reads false");
+        return c2 ? Boolean(c2.cells[c2.i]) : false;
+      }
+      case "pop":
+        return Boolean(this.arrays.get(e.array)?.cells.pop() ?? false);
+      case "test":
+        return (yield* this.num(e.expr)) !== 0;
+      case "compare": {
+        let a2 = yield* this.num(e.left);
+        let b = yield* this.num(e.right);
+        if (e.unsigned === true || e.unsigned === "left") a2 = a2 >>> 0;
+        if (e.unsigned === true || e.unsigned === "right") b = b >>> 0;
+        switch (e.op) {
+          case "<":
+            return a2 < b;
+          case "<=":
+            return a2 <= b;
+          case ">":
+            return a2 > b;
+          case ">=":
+            return a2 >= b;
+          case "==":
+            return a2 === b;
+          case "!=":
+            return a2 !== b;
+        }
+        return false;
+      }
+      case "and": {
+        for (const i of e.items) if (!(yield* this.bool(i))) return false;
+        return true;
+      }
+      case "or": {
+        for (const i of e.items) if (yield* this.bool(i)) return true;
+        return false;
+      }
+      case "not":
+        return !(yield* this.bool(e.expr));
+      case "random":
+        return this.sim.random() < 0.5;
+      case "unitAlive":
+        return (yield* this.living(e.unit)) !== null;
+      case "unitSame": {
+        const a2 = yield* this.unit(e.left);
+        const b = yield* this.unit(e.right);
+        return a2 !== null && a2 === b;
+      }
+      case "unitFlag": {
+        const u = yield* this.living(e.unit);
+        return u ? u[e.flag] : false;
+      }
+      case "edge": {
+        const held = yield* this.bool(e.cond);
+        const was = this.latches.get(e) ?? false;
+        if (held) {
+          if (was) return false;
+          this.latches.set(e, true);
+          return true;
+        }
+        if (e.edge === "rose") this.latches.set(e, false);
+        return false;
+      }
+      case "ternary":
+        return (yield* this.bool(e.cond)) ? yield* this.bool(e.whenTrue) : yield* this.bool(e.whenFalse);
+      case "call":
+        return Boolean(yield* this.call(e.call));
+      case "textCompare": {
+        const a2 = yield* this.text(e.left);
+        const b = yield* this.text(e.right);
+        this.used(a2, b);
+        const d = compareTexts(a2.s, b.s);
+        return e.op === "==" ? d === 0 : e.op === "!=" ? d !== 0 : e.op === "<" ? d < 0 : e.op === "<=" ? d <= 0 : e.op === ">" ? d > 0 : d >= 0;
+      }
+      case "textTest": {
+        const of = yield* this.text(e.of);
+        const find = yield* this.text(e.find);
+        this.used(of, find);
+        return e.test === "startsWith" ? of.s.startsWith(find.s) : e.test === "endsWith" ? of.s.endsWith(find.s) : of.s.includes(find.s);
+      }
+    }
+  }
+  *init(e, kind) {
+    return kind === "number" ? yield* this.num(e) : yield* this.bool(e);
+  }
+  /** A declaration's, a parameter's or a return's value into its variable, whatever it holds. */
+  *put(decl, e, at) {
+    if (decl.kind === "text" || isTextExpr(e)) {
+      yield* this.putText(decl.id, e, at ?? decl.at ?? { file: "", line: 0, column: 0 });
+      return;
+    }
+    if (decl.kind === "unit") this.unitVars.set(decl.id, yield* this.unit(e));
+    else this.store(decl.id, yield* this.init(e, decl.kind));
+  }
+  *call(c2) {
+    if (c2.result) this.declare(c2.result.decl);
+    const fn = c2.fn ? this.program.functions?.find((f) => f.id === c2.fn) : void 0;
+    if (c2.fn && !fn) throw new Error(`The function ${c2.fn} is not one of the program's (line ${c2.at.line}).`);
+    let kept;
+    if (fn) {
+      const values = [];
+      for (const p of c2.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init) : p.decl.kind === "text" ? this.owned(yield* this.text(p.init), c2.at) : yield* this.init(p.init, p.decl.kind));
+      if (c2.saves) kept = this.keep(c2);
+      c2.params.forEach((p, i) => {
+        this.declare(p.decl);
+        if (p.decl.kind === "unit") this.unitVars.set(p.decl.id, values[i]);
+        else if (p.decl.kind === "text") {
+          const old = this.textVars.get(p.decl.id);
+          if (old?.room) this.sim.heap.give(old.room);
+          this.textVars.set(p.decl.id, values[i]);
+        } else this.store(p.decl.id, values[i]);
+      });
+    } else {
+      for (const p of c2.params) {
+        this.declare(p.decl);
+        yield* this.put(p.decl, p.init);
+      }
+    }
+    const ctx = { fn: { result: c2.result?.decl } };
+    const flow = kept && fn ? yield { run: this.block(fn.body, ctx) } : yield* this.block(fn ? fn.body : c2.body, ctx);
+    if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c2.at.line}).`);
+    if (kept) this.bringBack(kept);
+    return c2.result && c2.result.kind !== "unit" && c2.result.kind !== "text" ? this.read(c2.result.decl.id) : 0;
+  }
+  /**
+   * A call that may come back into the function it is in: what that function holds goes on the stack, as the game
+   * keeps it (`python/trigscript.py`) — its variables, and the handle of each array declared in it, which is "no block"
+   * for the length of the call. Past the depth the map allows the program stops, and says where.
+   */
+  keep(c2) {
+    const saves = c2.saves;
+    if (this.depth >= this.sim.stackDepth) {
+      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: c2.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
+      throw new Stopped();
+    }
+    this.depth++;
+    const frame = { vars: [], units: [], texts: [], arrays: [] };
+    for (const id of saves.vars) {
+      if (this.textVars.has(id)) {
+        frame.texts.push([id, this.textVars.get(id)]);
+        this.textVars.set(id, { s: "", room: 0 });
+      } else if (this.unitVars.has(id)) frame.units.push([id, this.unitVars.get(id) ?? null]);
+      else if (this.vars.has(id)) frame.vars.push([id, this.vars.get(id)]);
+    }
+    for (const id of saves.arrays) {
+      const a2 = this.arrays.get(id);
+      if (!a2) continue;
+      frame.arrays.push({ a: a2, cells: a2.cells, room: a2.room });
+      a2.cells = [];
+      a2.room = 0;
+    }
+    return frame;
+  }
+  bringBack(frame) {
+    for (const [id, v] of frame.vars) this.vars.set(id, v);
+    for (const [id, u] of frame.units) this.unitVars.set(id, u);
+    for (const [id, t] of frame.texts) {
+      const left = this.textVars.get(id);
+      if (left?.room) this.sim.heap.give(left.room);
+      this.textVars.set(id, t);
+    }
+    for (const k of frame.arrays) {
+      if (k.a.room) this.sim.heap.give(k.a.room);
+      k.a.cells = k.cells;
+      k.a.room = k.room;
+    }
+    this.depth--;
+  }
+  /* ── statements ── */
+  *block(body2, ctx) {
+    for (const s of body2) {
+      const flow = yield* this.stmt(s, ctx);
+      if (flow !== "next") return flow;
+    }
+    return "next";
+  }
+  *stmt(s, ctx) {
+    this.step();
+    switch (s.kind) {
+      case "declare": {
+        this.declare(s.decl);
+        if (!s.failed) yield* this.put(s.decl, s.init);
+        return "next";
+      }
+      case "assignUnit":
+        this.unitVars.set(s.target, yield* this.unit(s.value));
+        return "next";
+      case "assignText":
+        yield* this.putText(s.target, s.value, s.at);
+        return "next";
+      case "storeText": {
+        const v = this.owned(yield* this.text(s.value), s.at);
+        const i = yield* this.num(s.index);
+        const cells = [s.addr, s.block, s.chars].map((id) => this.arrays.get(id));
+        if (cells.some((a2) => !a2 || i < 0 || i >= a2.cells.length)) {
+          this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${cells[0]?.decl.name ?? s.addr}[${i}] is past the end of the array (its length is ${cells[0]?.cells.length ?? 0}): nothing is stored.` });
+          if (v.room) this.sim.heap.give(v.room);
+          return "next";
+        }
+        const [addr, block, chars] = cells;
+        this.releaseCellText(block.cells[i]);
+        const key = ++this.lastCellText;
+        this.cellTexts.set(key, v);
+        addr.cells[i] = key;
+        block.cells[i] = v.room ? key : 0;
+        chars.cells[i] = [...v.s].length;
+        return "next";
+      }
+      case "releaseText": {
+        const c2 = yield* this.cell(s.block, s.index, s.at, "nothing is given back");
+        if (c2) {
+          this.releaseCellText(c2.cells[c2.i]);
+          c2.cells[c2.i] = 0;
+        }
+        return "next";
+      }
+      case "textLoop": {
+        this.declare(s.decl);
+        const over = this.owned(yield* this.text(s.of), s.at);
+        let flow = "next";
+        for (const ch of over.s) {
+          const old = this.textVars.get(s.decl.id);
+          const turn = this.made(ch, s.at);
+          if (old?.room) this.sim.heap.give(old.room);
+          this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
+          flow = yield* this.block(s.body, ctx);
+          if (flow === "break" || flow === "return") break;
+        }
+        if (over.room) this.sim.heap.give(over.room);
+        return flow === "return" ? flow : "next";
+      }
+      case "unitLoop": {
+        this.declare(s.decl);
+        for (const u of this.sim.matching(s.filter)) {
+          if (!u.alive) continue;
+          this.unitVars.set(s.decl.id, u);
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") break;
+          if (flow === "return") return flow;
+        }
+        return "next";
+      }
+      case "unitWrite": {
+        const u = yield* this.living(s.unit);
+        const field = s.field;
+        if (field === "invincible") {
+          const on = yield* this.bool(s.value);
+          if (u) u.invincible = on;
+          return "next";
+        }
+        const value = yield* this.amount(s.value);
+        if (!u) return "next";
+        u[field] = Math.min(value, UNIT_FIELD_MAX[field] ?? 4294967295);
+        if (field === "hp" && u.hp === 0) {
+          this.sim.game.gone(u, true);
+          this.sim.unitEvent(this, ActionType.KillUnit, u, s.at);
+        }
+        return "next";
+      }
+      case "unitDo":
+        yield* this.unitDo(s.unit, s.verb, s.at);
+        return "next";
+      case "tableWrite": {
+        if (isTextExpr(s.value)) {
+          const v = yield* this.text(s.value);
+          this.sim.tableWrite(s.cell, 0, false, this.shown(v, s.at, "a unit type's name"));
+          this.used(v);
+          return "next";
+        }
+        const value = s.boolean ? (yield* this.bool(s.value)) ? 1 : 0 : yield* this.amount(s.value);
+        this.sim.tableWrite(s.cell, value, s.scaled === true);
+        return "next";
+      }
+      case "assign":
+        this.store(s.target, yield* this.num(s.value));
+        return "next";
+      case "declareArray": {
+        const a2 = this.arrays.get(s.array);
+        if (!a2) throw new Error(`The array ${s.array} is not one of the program's (line ${s.at.line}).`);
+        const value = function* (run, e) {
+          return a2.decl.kind === "number" ? yield* run.num(e) : yield* run.bool(e);
+        };
+        if (a2.decl.through) {
+          this.inner(a2.decl, (k) => Map.prototype.get.call(this.arrays, k), true);
+          const fresh = [];
+          for (const e of s.init ?? []) fresh.push(this.kept(yield* value(this, e), a2.decl));
+          if (fresh.length) {
+            const made = this.arrays.get(s.array);
+            if (this.grow(made, fresh.length, s.at)) made.cells.push(...fresh);
+          }
+          return "next";
+        }
+        if (a2.decl.dynamic) {
+          if (a2.room) {
+            this.sim.heap.give(a2.room);
+            a2.room = 0;
+          }
+          a2.cells.length = 0;
+          const fresh = [];
+          if (s.fill) {
+            const v = this.kept(yield* value(this, s.fill), a2.decl);
+            for (let i = 0; i < a2.decl.length; i++) fresh.push(v);
+          } else for (const e of s.init ?? []) fresh.push(this.kept(yield* value(this, e), a2.decl));
+          if (fresh.length === 0 || this.grow(a2, fresh.length, s.at)) a2.cells.push(...fresh);
+          return "next";
+        }
+        if (s.fill) {
+          const v = this.kept(yield* value(this, s.fill), a2.decl);
+          a2.cells.fill(v);
+        } else for (let i = 0; i < a2.decl.length; i++) a2.cells[i] = this.kept(s.init?.[i] ? yield* value(this, s.init[i]) : a2.decl.kind === "number" ? 0 : false, a2.decl);
+        return "next";
+      }
+      case "push": {
+        const a2 = this.arrays.get(s.array);
+        if (!a2) throw new Error(`The array ${s.array} is not one of the program's (line ${s.at.line}).`);
+        const v = a2.decl.kind === "boolean" ? yield* this.bool(s.value) : yield* this.num(s.value);
+        if (this.grow(a2, a2.cells.length + 1, s.at)) a2.cells.push(this.kept(v, a2.decl));
+        return "next";
+      }
+      case "pop":
+        this.arrays.get(s.array)?.cells.pop();
+        return "next";
+      case "setLength": {
+        const a2 = this.arrays.get(s.array);
+        const n = yield* this.amount(s.value);
+        if (a2 && n < a2.cells.length) a2.cells.length = n;
+        return "next";
+      }
+      case "store": {
+        const a2 = this.arrays.get(s.array);
+        const v = a2?.decl.kind === "boolean" ? yield* this.bool(s.value) : yield* this.num(s.value);
+        if (a2?.decl.dynamic) {
+          const i = yield* this.num(s.index);
+          if (i === a2.cells.length) {
+            if (this.grow(a2, i + 1, s.at)) a2.cells.push(this.kept(v, a2.decl));
+            return "next";
+          }
+          if (i >= 0 && i < a2.cells.length) a2.cells[i] = this.kept(v, a2.decl);
+          else this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${a2.cells.length}): nothing is stored.` });
+          return "next";
+        }
+        const c2 = yield* this.cell(s.array, s.index, s.at, "nothing is stored");
+        if (c2) c2.cells[c2.i] = this.kept(v, c2.decl);
+        return "next";
+      }
+      case "assignBool":
+        this.store(s.target, yield* this.bool(s.value));
+        return "next";
+      case "if": {
+        if (yield* this.bool(s.cond)) return yield* this.block(s.then, ctx);
+        return s.else ? yield* this.block(s.else, ctx) : "next";
+      }
+      case "while": {
+        for (; ; ) {
+          if (s.cond && !(yield* this.bool(s.cond))) return "next";
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+        }
+      }
+      case "do": {
+        for (; ; ) {
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+          if (!(yield* this.bool(s.cond))) return "next";
+        }
+      }
+      case "for": {
+        for (; ; ) {
+          if (s.cond && !(yield* this.bool(s.cond))) return "next";
+          const flow = yield* this.block(s.body, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+          const up = yield* this.block(s.update, ctx);
+          if (up === "return") return up;
+        }
+      }
+      case "unrolled": {
+        for (const iteration of s.iterations) {
+          const flow = yield* this.block(iteration, ctx);
+          if (flow === "break") return "next";
+          if (flow === "return") return flow;
+        }
+        return "next";
+      }
+      case "switch": {
+        const v = yield* this.num(s.value);
+        let from = s.cases.findIndex((c2) => c2.value !== null && (c2.value | 0) === v);
+        if (from < 0) from = s.cases.findIndex((c2) => c2.value === null);
+        if (from < 0) return "next";
+        for (let i = from; i < s.cases.length; i++) {
+          const flow = yield* this.block(s.cases[i].body, ctx);
+          if (flow === "break") return "next";
+          if (flow !== "next") return flow;
+        }
+        return "next";
+      }
+      case "break":
+        return "break";
+      case "continue":
+        return "continue";
+      case "return": {
+        if (s.value && ctx.fn?.result) yield* this.put(ctx.fn.result, s.value, s.at);
+        return "return";
+      }
+      case "sleep": {
+        const n = s.cycles ?? Math.max(1, Math.round((s.ms ?? 0) / 1e3 * FRAMES_PER_SECOND));
+        for (let i = 0; i < n; i++) yield;
+        return "next";
+      }
+      case "action": {
+        const record = { ...s.record };
+        for (const v of s.variables ?? []) record[v.field] = yield* this.amount(v.expr);
+        if (s.text) {
+          const v = yield* this.text(s.text);
+          this.sim.act(this, record, s.at, this.shown(v, s.at, "this action"));
+          this.used(v);
+          return "next";
+        }
+        this.sim.act(this, record, s.at);
+        return "next";
+      }
+      case "print": {
+        const used = [];
+        const text = yield* this.parts(s.parts, used);
+        this.used(...used);
+        this.sim.print(this, text, s.to, s.at);
+        return "next";
+      }
+      case "centerLocation": {
+        const x = yield* this.amount(s.x);
+        const y = yield* this.amount(s.y);
+        this.sim.centre(s.location, x, y);
+        return "next";
+      }
+      case "call": {
+        yield* this.call(s.call);
+        return "next";
+      }
+      case "block":
+        return yield* this.block(s.body, ctx);
+      case "remark":
+        return "next";
+    }
+  }
+  /** The unit a variable holds, by its source name; null for none or a unit that is gone. */
+  unitValue(name) {
+    let found = null;
+    for (const [id, u] of [...this.unitVars, ...this.common.unitVars]) if (id === name || id.startsWith(`${name}#`)) found = u;
+    return found?.alive ? found : null;
+  }
+  /** A user variable's value by its source name (the last declared with that name). */
+  value(name) {
+    let found;
+    for (const [id, v] of [...this.vars, ...this.common.vars]) if (id === name || id.startsWith(`${name}#`)) found = v;
+    return found;
+  }
+  /** A text variable's characters by its source name (the last declared with that name). */
+  textValue(name) {
+    let found;
+    for (const [id, v] of [...this.textVars, ...this.common.textVars]) if (id === name || id.startsWith(`${name}#`)) found = v.s;
+    return found;
+  }
+  /**
+   * What the source calls `name`, whatever it is: a number, a boolean, a text, an array's cells, a unit (null for none or
+   * one that is gone), a record as an object of its fields, an array of records as a list of them. Undefined for no such name.
+   */
+  lookup(name) {
+    const value = this.value(name);
+    if (value !== void 0) return value;
+    const text = this.textValue(name);
+    if (text !== void 0) return text;
+    const list = this.list(name);
+    if (list !== void 0) return [...list];
+    for (const id of [...this.unitVars.keys(), ...this.common.unitVars.keys()]) if (id === name || id.startsWith(`${name}#`)) return this.unitValue(name);
+    const field = (id) => id.startsWith(`${name}.`) ? id.slice(name.length + 1).split("#")[0] : null;
+    const record = {};
+    for (const [id, v] of [...this.vars, ...this.common.vars]) {
+      const f = field(id);
+      if (f && !f.includes(" (")) record[f] = v;
+    }
+    for (const [id, v] of [...this.textVars, ...this.common.textVars]) {
+      const f = field(id);
+      if (f) record[f] = v.s;
+    }
+    if (Object.keys(record).length) return record;
+    const rows = [];
+    for (const [id, a2] of this.arrays) {
+      const f = field(id);
+      if (f) a2.cells.forEach((cell, i) => {
+        (rows[i] ??= {})[f] = cell;
+      });
+    }
+    return rows.length ? rows : void 0;
+  }
+  /** An array's cells by its name in the source. */
+  list(name) {
+    let found;
+    for (const [id, a2] of this.arrays) if (id === name || id.startsWith(`${name}#`)) found = a2.cells;
+    return found;
+  }
+};
+var ProgramSimulation = class {
+  world;
+  runs;
+  events = [];
+  /** What the game would let pass without a word and is a mistake all the same: an index past the end of an array. */
+  /** What a program did that is always a mistake — an index past an array's end, a push the heap had no room for — and the frame it happened in. */
+  faults = [];
+  /**
+   * The heap the programs' growing arrays share, counted as the game counts it: blocks are powers of two, a block given
+   * back waits in its size's list for the next array that wants that size, and new ground is taken from the bottom up
+   * up to its end. Only the counting is here: the cells are the arrays' own.
+   */
+  /** The arrays that grow inside others, by the number their handle's cell holds. */
+  inner = /* @__PURE__ */ new Map();
+  lastInner = 0;
+  heap = {
+    cells: HEAP_CELLS,
+    top: 1,
+    stack: HEAP_CELLS,
+    free: /* @__PURE__ */ new Map(),
+    take(room) {
+      const waiting = this.free.get(room) ?? 0;
+      if (waiting > 0) {
+        this.free.set(room, waiting - 1);
+        return true;
+      }
+      if (this.top + room > this.stack) return false;
+      this.top += room;
+      return true;
+    },
+    give(room) {
+      this.free.set(room, (this.free.get(room) ?? 0) + 1);
+    }
+  };
+  /** How deep the stack of a function that calls itself goes; it is an array of its own in the built map, so the heap has no part in it. */
+  stackDepth = STACK_DEPTH;
+  maxSteps;
+  random;
+  conditionOf;
+  readOf;
+  nameOf;
+  /** The units, the locations and who the players are: the trigger interpreter's, so both see one game. */
+  game;
+  /** What the programs wrote into the game's tables, as the cell stores it; a name as its text. */
+  tables = /* @__PURE__ */ new Map();
+  tableOf;
+  /** Ore and gas by player slot, as the programs' own setResources actions leave them. */
+  resources = /* @__PURE__ */ new Map();
+  /** The typed-line patterns of all the programs, in the order the game tries them: the first that matches a line is the one that line is. */
+  chats = [];
+  unitByName;
+  /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
+  queued = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
+  current = this.queued;
+  /** Where each player's mouse is, in map pixels. */
+  mice = /* @__PURE__ */ new Map();
+  cycle = 0;
+  constructor(programs, options) {
+    this.world = options.world ?? new Simulation([], {
+      player: options.player ?? (options.players ? void 0 : programs[0]?.owner ?? 0),
+      condition: options.condition,
+      random: options.random,
+      strings: options.strings,
+      players: options.players,
+      forces: options.forces,
+      units: options.units,
+      locations: options.locations,
+      unitClass: options.unitClass,
+      properties: options.properties
+    });
+    this.game = this.world.game;
+    if (options.world) {
+      for (const [n, b] of Object.entries(options.locations ?? {})) this.game.locations.set(Number(n), { ...b });
+      for (const u of options.units ?? []) this.game.make(u);
+    }
+    this.maxSteps = options.maxStepsPerCycle ?? 1e5;
+    this.heap.cells = this.heap.stack = heapCells(options.heapCells);
+    this.stackDepth = stackDepth(options.stackDepth);
+    this.random = options.random ?? Math.random;
+    this.conditionOf = options.condition;
+    this.readOf = options.read;
+    this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
+    this.tableOf = options.table;
+    const cellOf = (name, type) => {
+      const f = TABLE_FIELDS.unit.find((x) => x.name === name);
+      return { name: `unit.${name}`, base: f.base, stride: f.stride, index: type, width: f.width, ...f.scale ? { scale: f.scale } : {} };
+    };
+    const given = options.unitStats ?? this.game.stats;
+    this.game.stats = (type) => {
+      const g = given(type) ?? {};
+      return { ...g, hp: this.tableRead(cellOf("maxHp", type)) || g.hp, shields: this.tableRead(cellOf("maxShields", type)) || g.shields };
+    };
+    this.unitByName = options.unitByName ?? (() => void 0);
+    for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c2) => c2.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
+    this.current = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
+    this.runs = programs.flatMap((p, i) => {
+      const common = newCommon();
+      const slots = this.ownersOf(p);
+      return (p.perPlayer ? slots : slots.slice(0, 1)).map((slot) => new ProgramRun(this, i, p, slot, common));
+    });
+  }
+  /** The simulated player: the only one without the map's player settings, else the one a key, a click and a log default to. */
+  get player() {
+    return this.world.player;
+  }
+  /** The units there have been, in the order they were made; one that is gone stays, `alive` false. */
+  get units() {
+    return this.game.units;
+  }
+  get locations() {
+    return this.game.locations;
+  }
+  /** The slots a program runs for: its owners who are in the game. */
+  ownersOf(p) {
+    const players = this.game.players;
+    if (players.loose) return [this.world.player];
+    const out = [];
+    for (const o of p.owners?.length ? p.owners : [p.owner]) for (const slot of players.of(o, this.world.player)) if (players.slots.includes(slot) && !out.includes(slot)) out.push(slot);
+    return out.sort((a2, b) => a2 - b);
+  }
+  /** Deaths, switches, always and never against the world; anything else the caller's, else false. */
+  condition(c2) {
+    switch (c2.type) {
+      case ConditionType.Always:
+        return true;
+      case ConditionType.Never:
+        return false;
+      case ConditionType.Deaths: {
+        const v = this.world.death(c2.player, c2.unitId);
+        const n = c2.amount >>> 0;
+        return c2.comparison === Comparison.AtLeast ? v >= n : c2.comparison === Comparison.AtMost ? v <= n : c2.comparison === Comparison.Exactly ? v === n : false;
+      }
+      case ConditionType.Switch:
+        return c2.comparison === SwitchState.Set ? this.world.switches[c2.resource] === 1 : this.world.switches[c2.resource] === 0;
+      default:
+        return this.conditionOf?.(c2, this.world) ?? this.game.holds(c2, this.world.current) ?? false;
+    }
+  }
+  /** The players a player number means, to the run that is running. */
+  slotsOf(player) {
+    return this.game.players.of(player, this.world.current);
+  }
+  /** The one player a player number means where one is wanted (a mouse, a name, a table's row): the first of a group. */
+  slotOf(player) {
+    return this.slotsOf(player)[0] ?? player;
+  }
+  /** A player's ore and gas; a group's are its players' together. */
+  resourcesOf(player) {
+    let ore = 0, gas = 0;
+    for (const p of this.slotsOf(player)) if (p < 12) {
+      const s = this.stockOf(p);
+      ore += s[0];
+      gas += s[1];
+    }
+    return [ore % U32, gas % U32];
+  }
+  stockOf(slot) {
+    let r = this.resources.get(slot);
+    if (!r) {
+      r = [0, 0];
+      this.resources.set(slot, r);
+    }
+    return r;
+  }
+  /** The quantity a comparing condition tests, where the simulation holds it. */
+  quantity(c2) {
+    switch (c2.type) {
+      case ConditionType.Deaths:
+        return this.world.death(c2.player, c2.unitId);
+      case ConditionType.Accumulate: {
+        const slots = this.slotsOf(c2.player).filter((p) => p < 12);
+        if (slots.length === 0) return void 0;
+        let ore = 0, gas = 0;
+        for (const p of slots) {
+          const s = this.stockOf(p);
+          ore += s[0];
+          gas += s[1];
+        }
+        return (c2.resource === ResourceType.Ore ? ore : c2.resource === ResourceType.Gas ? gas : ore + gas) % U32;
+      }
+      case ConditionType.ElapsedTime:
+        return Math.floor(this.cycle / FRAMES_PER_GAME_SECOND);
+      default:
+        return this.game.quantity(c2, this.world.current);
+    }
+  }
+  /** What a read finds: the caller's answer, else the simulation's own, else 0. */
+  read(r) {
+    const given = this.readOf?.(r, this);
+    if (given !== void 0) return Math.max(0, Math.trunc(given)) % U32;
+    if (r.source === "condition") return this.quantity(r.record) ?? 0;
+    if (r.source === "player" && r.fact === "slot") return this.game.players.slots.includes(this.slotOf(r.player)) ? 2 : 0;
+    return 0;
+  }
+  /* ── what the players do ── */
+  /** A key goes down: the next frame finds it. `player` is a slot (default: the simulated player). */
+  press(key, player = this.player) {
+    this.queued.events.add(`key:${player}:${keyName(key) ?? key}`);
+    return this;
+  }
+  click(button = "left", player = this.player) {
+    this.queued.events.add(`click:${player}:${button}`);
+    return this;
+  }
+  moveMouse(x, y, player = this.player) {
+    this.mice.set(player, { x, y });
+    return this;
+  }
+  /** A player sends a line of chat: the next frame finds it, as the first of the programs' patterns it matches — or not at all. */
+  type(line, player = this.player) {
+    for (const c2 of this.chats) {
+      const values = matchChat(c2, line, this.unitByName);
+      if (values) {
+        this.queued.lines.set(player, { pattern: c2.pattern, values });
+        break;
+      }
+    }
+    return this;
+  }
+  /** What a program's `input` finds this frame. */
+  input(i) {
+    const p = this.slotOf(i.player);
+    switch (i.source) {
+      case "key":
+        return this.current.events.has(`key:${p}:${i.key}`) ? 1 : 0;
+      case "click":
+        return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
+      case "mouse":
+        return this.mice.get(p)?.[i.axis] ?? 0;
+      case "chat": {
+        const line = this.current.lines.get(p);
+        if (!line || line.pattern !== i.pattern) return 0;
+        return i.capture === null ? 1 : line.values[i.capture] ?? 0;
+      }
+    }
+  }
+  /* ── units and tables ── */
+  /** The living units a filter matches, in table order. */
+  matching(f) {
+    return this.game.matching(f.owner === void 0 ? void 0 : this.slotsOf(f.owner), f.type, f.at);
+  }
+  /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
+  pick(by, f, near, mouse, within) {
+    const all = this.matching(f);
+    if (all.length === 0) return null;
+    if (by === "first") return all[0];
+    if (by === "random") return all[Math.min(all.length - 1, Math.floor(this.random() * all.length))];
+    const box = near === void 0 ? void 0 : this.locations.get(near);
+    const pointer = mouse === void 0 ? void 0 : this.mice.get(this.slotOf(mouse)) ?? { x: 0, y: 0 };
+    const cx = pointer ? pointer.x : box ? Math.floor((box.left + box.right) / 2) : 0;
+    const cy = pointer ? pointer.y : box ? Math.floor((box.top + box.bottom) / 2) : 0;
+    let best = null;
+    let least = within === void 0 ? Infinity : within + 1;
+    for (const u of all) {
+      const d = Math.abs(u.x - cx) + Math.abs(u.y - cy);
+      if (d < least) {
+        least = d;
+        best = u;
+      }
+    }
+    return best;
+  }
+  /** A location centred on a point, its size kept. */
+  centre(location, x, y) {
+    this.game.centre(location, x, y);
+  }
+  cellKey(c2) {
+    return `${c2.name}:${c2.player ? this.slotOf(c2.index) : c2.index}${c2.key !== void 0 ? `:${c2.key}` : ""}`;
+  }
+  /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
+  tableRead(c2) {
+    const stored = this.tables.get(this.cellKey(c2));
+    if (typeof stored === "number") return Math.floor(stored / (c2.scale ?? 1));
+    const given = this.tableOf?.(c2);
+    return given === void 0 ? 0 : Math.max(0, Math.trunc(given));
+  }
+  /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
+  tableWrite(c2, value, scaled, text) {
+    if (text !== void 0) {
+      this.tables.set(this.cellKey(c2), text);
+      return;
+    }
+    const raw = scaled ? value : value * (c2.scale ?? 1);
+    this.tables.set(this.cellKey(c2), Math.min(raw, cellMax(c2.width)));
+  }
+  /** What a program did to a unit, for the log: the game's nearest action, with the unit in words. */
+  unitEvent(run, type, u, at, extra = {}) {
+    const what = `unit ${u.slot} (type ${u.type}, P${u.owner + 1})`;
+    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...extra.location ? { location: extra.location } : {} }, text: extra.text ? `${extra.text}: ${what}` : what });
+  }
+  partText(p) {
+    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
+  }
+  /** A printed text: an event like a Display Text action's, the text already filled in. */
+  print(run, text, to, at) {
+    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
+  }
+  /** An action a program takes: the world's own kinds are applied, the rest logged. */
+  act(run, a2, at, programText) {
+    if (a2.type === ActionType.SetResources) {
+      const n = a2.target >>> 0;
+      const set = (cur) => a2.modifier === SetModifier.SetTo ? n : a2.modifier === SetModifier.Add ? (cur + n) % U32 : Math.max(0, cur - n);
+      for (const slot of this.slotsOf(a2.player)) {
+        if (slot >= 12) continue;
+        const stock = this.stockOf(slot);
+        if (a2.unitId === ResourceType.Ore || a2.unitId === ResourceType.OreAndGas) stock[0] = set(stock[0]);
+        if (a2.unitId === ResourceType.Gas || a2.unitId === ResourceType.OreAndGas) stock[1] = set(stock[1]);
+      }
+    }
+    switch (a2.type) {
+      case ActionType.SetDeaths:
+        this.world.changeDeath(a2.player, a2.unitId, a2.modifier, a2.target);
+        return;
+      case ActionType.SetSwitch: {
+        const i = a2.target;
+        if (i < 0 || i >= SWITCH_COUNT) return;
+        switch (a2.modifier) {
+          case SwitchAction.Set:
+            this.world.switches[i] = 1;
+            break;
+          case SwitchAction.Clear:
+            this.world.switches[i] = 0;
+            break;
+          case SwitchAction.Toggle:
+            this.world.switches[i] ^= 1;
+            break;
+          case SwitchAction.Randomize:
+            this.world.switches[i] = this.random() < 0.5 ? 0 : 1;
+            break;
+        }
+        return;
+      }
+      case ActionType.Comment:
+      case ActionType.PreserveTrigger:
+        return;
+      default: {
+        this.game.act(a2, run.player);
+        const ev = { cycle: this.cycle, program: run.index, player: run.player, at, action: a2 };
+        const text = programText ?? this.world.text(a2.text);
+        if (text !== void 0) ev.text = text;
+        this.events.push(ev);
+      }
+    }
+  }
+  /** One frame: every program in order, from where it left off. */
+  step() {
+    this.current = this.queued;
+    this.queued = { events: /* @__PURE__ */ new Set(), lines: /* @__PURE__ */ new Map() };
+    for (const run of this.runs) {
+      this.world.current = run.player;
+      try {
+        run.tick();
+      } catch (err) {
+        if (err instanceof Halt) throw new Error(err.message);
+        throw err;
+      }
+    }
+    this.world.current = this.world.player;
+    this.cycle++;
+  }
+  run(cycles2) {
+    for (let i = 0; i < cycles2; i++) this.step();
+    return this;
+  }
+  /** Whether every program has ended. */
+  finished() {
+    return this.runs.every((r) => r.done);
+  }
+  /** A program's run: the program by its place in the list or its name, and of a per-player program the player's (the first by default). */
+  runOf(program = 0, player) {
+    return this.runs.find((r) => (typeof program === "number" ? r.index === program : r.program.name === program) && (player === void 0 || r.player === player));
+  }
+  /** The unit a variable holds by its source name, in a program (the first by default). */
+  unit(name, program = 0, player) {
+    return this.runOf(program, player)?.unitValue(name) ?? null;
+  }
+  /** A variable's value by its source name, in a program (the first by default). */
+  value(name, program = 0, player) {
+    return this.runOf(program, player)?.value(name);
+  }
+  /** A text variable's characters by its source name, in a program (the first by default). */
+  text(name, program = 0, player) {
+    return this.runOf(program, player)?.textValue(name);
+  }
+  /** An array's cells, by its name in the source. */
+  list(name, program = 0, player) {
+    return this.runOf(program, player)?.list(name);
+  }
+};
+
+// compiler/testing.ts
+var ExpectError = class extends Error {
+  expected;
+  actual;
+  constructor(message, expected, actual) {
+    super(message);
+    this.name = "ExpectError";
+    this.expected = expected;
+    this.actual = actual;
+  }
+};
+var DEFAULT_SEED = 24301;
+var UNTIL_FRAMES = 2400;
+var isTestFile = (path) => /\.test\.ts$/i.test(path);
+var TestRegistry = class _TestRegistry {
+  root = { kind: "suite", name: "", at: { file: "", line: 0 }, mode: "run", parent: null, children: [], before: [], after: [] };
+  current = this.root;
+  /** Set for the length of a run of tests: a `test()` reached then would register into nothing that runs. */
+  running = false;
+  where = () => ({ file: "", line: 0 });
+  get empty() {
+    return this.root.children.length === 0;
+  }
+  guard(what) {
+    if (this.running) throw new Error(`${what} inside a test: a test is declared when the script runs, not while another is running.`);
+  }
+  addTest(mode, name, a2, b, args = []) {
+    this.guard("test()");
+    if (typeof name !== "string" || !name) throw new Error("test(name, (sim) => { \u2026 }): the name is a text.");
+    const fn = typeof a2 === "function" ? a2 : b;
+    const options = typeof a2 === "function" ? void 0 : a2;
+    if (typeof fn !== "function") throw new Error(`test("${name}"): the second argument is the test's function, (sim) => { \u2026 }.`);
+    if (fn.constructor?.name === "AsyncFunction") throw new Error(`test("${name}"): a test is not async. Nothing in sim waits: sim.frames(n) and sim.until(\u2026) have run by the time they return.`);
+    const as = options && typeof options === "object" && typeof options.as === "number" ? options.as : void 0;
+    this.current.children.push({ kind: "test", name, at: this.where(), mode, parent: this.current, fn, args, ...as !== void 0 ? { as } : {} });
+  }
+  addSuite(mode, name, body2) {
+    this.guard("describe()");
+    if (typeof name !== "string" || !name) throw new Error("describe(name, () => { \u2026 }): the name is a text.");
+    if (typeof body2 !== "function") throw new Error(`describe("${name}"): the second argument is a function that declares the tests.`);
+    const suite = { kind: "suite", name, at: this.where(), mode, parent: this.current, children: [], before: [], after: [] };
+    this.current.children.push(suite);
+    const outer = this.current;
+    this.current = suite;
+    try {
+      body2();
+    } finally {
+      this.current = outer;
+    }
+  }
+  /** `%s`, `%d`, `%i`, `%j` and `%o` take the row's values in turn, `$name` a field of a row that is an object; a name with neither gets the row's number. */
+  static title(name, row, index) {
+    let i = 0;
+    let used = false;
+    let out = name.replace(/%([sdijo%])/g, (_m, c2) => {
+      if (c2 === "%") return "%";
+      used = true;
+      const v = row[i++];
+      return c2 === "j" || c2 === "o" ? JSON.stringify(v) : String(v);
+    });
+    const first = row[0];
+    if (first && typeof first === "object") out = out.replace(/\$([A-Za-z_][\w]*)/g, (m, k) => {
+      if (!(k in first)) return m;
+      used = true;
+      return String(first[k]);
+    });
+    return used ? out : `${out} (${index + 1})`;
+  }
+  /** The functions a script imports. */
+  library() {
+    const each = (mode, suite) => (rows) => (name, fn) => {
+      if (!Array.isArray(rows)) throw new Error("each([\u2026]): the cases are a list.");
+      rows.forEach((row, i) => {
+        const args = Array.isArray(row) ? row : [row];
+        const title = _TestRegistry.title(String(name), args, i);
+        if (suite) this.addSuite(mode, title, () => fn(...args));
+        else this.addTest(mode, title, fn, void 0, args);
+      });
+    };
+    const test = Object.assign((name, a2, b) => this.addTest("run", name, a2, b), {
+      only: Object.assign((name, a2, b) => this.addTest("only", name, a2, b), { each: each("only", false) }),
+      skip: Object.assign((name, a2, b) => this.addTest("skip", name, a2, b), { each: each("skip", false) }),
+      each: each("run", false)
+    });
+    const describe3 = Object.assign((name, body2) => this.addSuite("run", name, body2), {
+      only: Object.assign((name, body2) => this.addSuite("only", name, body2), { each: each("only", true) }),
+      skip: Object.assign((name, body2) => this.addSuite("skip", name, body2), { each: each("skip", true) }),
+      each: each("run", true)
+    });
+    const hook = (list, what) => (fn) => {
+      this.guard(`${what}()`);
+      if (typeof fn !== "function") throw new Error(`${what}((sim) => { \u2026 }) takes a function.`);
+      this.current[list].push(fn);
+    };
+    return { test, it: test, describe: describe3, beforeEach: hook("before", "beforeEach"), afterEach: hook("after", "afterEach"), expect };
+  }
+};
+var TESTING_NAMES = ["test", "it", "describe", "beforeEach", "afterEach", "expect"];
+var show = (v) => {
+  if (typeof v === "string") return JSON.stringify(v);
+  if (typeof v === "function") return "a function";
+  if (v instanceof RegExp) return String(v);
+  if (v instanceof TestSim) return "sim";
+  try {
+    return JSON.stringify(v, (_, x) => typeof x === "bigint" ? String(x) : x === void 0 ? "undefined" : x) ?? String(v);
+  } catch {
+    return String(v);
+  }
+};
+var brief = (v) => {
+  const s = show(v);
+  return s.length > 60 ? `${s.slice(0, 57)}\u2026` : s;
+};
+function same(a2, b) {
+  if (Object.is(a2, b)) return true;
+  if (typeof a2 !== "object" || typeof b !== "object" || a2 === null || b === null) return false;
+  if (Array.isArray(a2) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a2).filter((k) => a2[k] !== void 0);
+  const kb = Object.keys(b).filter((k) => b[k] !== void 0);
+  return ka.length === kb.length && ka.every((k) => same(a2[k], b[k]));
+}
+function expect(actual) {
+  const make = (not) => {
+    const check = (holds, what, expected) => {
+      if (holds !== not) return;
+      const got = actual instanceof TestSim ? "" : `, got ${brief(actual)}`;
+      throw new ExpectError(`expected ${not ? "not " : ""}${what}${got}`, expected === void 0 ? void 0 : show(expected), actual instanceof TestSim ? void 0 : show(actual));
+    };
+    const number = (name) => {
+      if (typeof actual !== "number") throw new ExpectError(`${name}: ${brief(actual)} is not a number`);
+      return actual;
+    };
+    const sim = (name) => {
+      if (!(actual instanceof TestSim)) throw new ExpectError(`${name} is asked of the world: expect(sim).${name}(\u2026)`);
+      return actual;
+    };
+    return {
+      toBe: (e) => check(Object.is(actual, e), brief(e), e),
+      toEqual: (e) => check(same(actual, e), brief(e), e),
+      toBeTruthy: () => check(!!actual, "something true"),
+      toBeFalsy: () => check(!actual, "something false"),
+      toBeNull: () => check(actual === null, "null"),
+      toBeDefined: () => check(actual !== void 0, "a value"),
+      toBeUndefined: () => check(actual === void 0, "undefined"),
+      toBeGreaterThan: (n) => check(number("toBeGreaterThan") > n, `more than ${n}`, n),
+      toBeGreaterThanOrEqual: (n) => check(number("toBeGreaterThanOrEqual") >= n, `${n} or more`, n),
+      toBeLessThan: (n) => check(number("toBeLessThan") < n, `less than ${n}`, n),
+      toBeLessThanOrEqual: (n) => check(number("toBeLessThanOrEqual") <= n, `${n} or less`, n),
+      toContain: (e) => check(typeof actual === "string" ? actual.includes(String(e)) : Array.isArray(actual) && actual.some((x) => same(x, e)), `something that contains ${brief(e)}`, e),
+      toHaveLength: (n) => check(actual?.length === n, `a length of ${n}`, n),
+      toMatch: (e) => check(typeof actual === "string" && (typeof e === "string" ? actual.includes(e) : e.test(actual)), `a text that matches ${brief(e)}`, e),
+      toThrow: (e) => {
+        if (typeof actual !== "function") throw new ExpectError("toThrow is asked of a function: expect(() => \u2026).toThrow()");
+        let thrown;
+        let threw = false;
+        try {
+          actual();
+        } catch (err) {
+          threw = true;
+          thrown = err;
+        }
+        const message = thrown instanceof Error ? thrown.message : String(thrown);
+        check(threw && (e === void 0 || (typeof e === "string" ? message.includes(e) : e.test(message))), e === void 0 ? "the function to throw" : `the function to throw ${brief(e)}`);
+      },
+      /** A text shown to a player: all of it, or a pattern it matches. `to`: only what that player was shown. */
+      toHavePrinted: (e, options) => {
+        const lines = sim("toHavePrinted").printed(options?.to);
+        if (lines.some((l) => typeof e === "string" ? l === e || l.includes(e) : e.test(l)) !== not) return;
+        throw new ExpectError(`expected ${not ? "nothing" : "something"} printed that matches ${brief(e)}; printed: ${lines.length ? lines.map((l) => JSON.stringify(l)).join(", ") : "nothing"}`, show(e), show(lines));
+      },
+      /** The simulator said a program did what is always a mistake; asking for it is what lets a test go on past it. */
+      toHaveFaulted: (e) => {
+        const s = sim("toHaveFaulted");
+        s.faultsExpected = true;
+        const messages = s.faults.map((f) => f.message);
+        if (messages.some((m) => e === void 0 ? true : typeof e === "string" ? m.includes(e) : e.test(m)) !== not) return;
+        throw new ExpectError(`expected ${not ? "no" : "a"} fault${e === void 0 ? "" : ` that matches ${brief(e)}`}; faults: ${messages.length ? messages.join(" | ") : "none"}`, e === void 0 ? void 0 : show(e), show(messages));
+      }
+    };
+  };
+  return { ...make(false), not: make(true) };
+}
+var mulberry = (seed) => () => {
+  let t = seed += 1831565813;
+  t = Math.imul(t ^ t >>> 15, t | 1);
+  t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+  return ((t ^ t >>> 14) >>> 0) / 4294967296;
+};
+var TestSim = class {
+  /** Set by `expect(sim).toHaveFaulted`: the faults are the test's business, and do not fail it by themselves. */
+  faultsExpected = false;
+  rng = mulberry(DEFAULT_SEED);
+  world;
+  programs;
+  constructor(triggers, ir, strings, options, as) {
+    const random = () => this.rng();
+    const stats = options.unitStats ?? {};
+    this.world = new Simulation(triggers, {
+      strings,
+      random,
+      units: options.units,
+      locations: options.locations,
+      players: options.players,
+      forces: options.forces,
+      unitStats: (type) => stats[type],
+      properties: (slot) => options.properties?.[slot - 1] ?? void 0,
+      ...as !== void 0 ? { player: as } : options.players ? {} : { player: ir[0]?.owner !== void 0 && ir[0].owner < 12 ? ir[0].owner : void 0 }
+    });
+    const names = options.unitNames ?? {};
+    this.programs = new ProgramSimulation(ir, { world: this.world, strings, random, heapCells: options.heapCells, stackDepth: options.stackDepth, unitStats: (type) => stats[type], unitByName: (lower) => names[lower] });
+  }
+  /** How many frames have run. */
+  get frame() {
+    return this.programs.cycle;
+  }
+  /** `random()` from this number on: the same run every time. Before anything that draws one. */
+  seed(n) {
+    this.rng = mulberry(n >>> 0);
+    return this;
+  }
+  /* ── time ── */
+  frames(n = 1) {
+    for (let i = 0; i < n; i++) {
+      this.world.step();
+      this.programs.step();
+    }
+    return this;
+  }
+  seconds(n) {
+    return this.frames(Math.round(n * FRAMES_PER_SECOND));
+  }
+  /** Frames until `done()` is true: asked before the first and after each. The test fails when `most` frames pass. */
+  until(done, most = UNTIL_FRAMES) {
+    for (let i = 0; ; i++) {
+      if (done()) return this;
+      if (i >= most) throw new ExpectError(`until: still not true after ${most} frames`);
+      this.frames(1);
+    }
+  }
+  /* ── what the test does to the world ── */
+  /** Units of a type for a player at a location's centre; they are given back. */
+  place(player, type, at, n = 1) {
+    const { x, y } = this.world.game.centreOf(at);
+    const made = [];
+    for (let i = 0; i < n; i++) {
+      const u = this.world.game.create(type, player, x, y);
+      if (u) made.push(u);
+    }
+    return made;
+  }
+  /** What a fight is in a test. `by`: the player the kill is counted for. */
+  kill(unit, by) {
+    this.world.game.gone(unit, true, by);
+    return this;
+  }
+  remove(unit) {
+    this.world.game.gone(unit, false);
+    return this;
+  }
+  give(unit, to) {
+    if (unit.alive) unit.owner = to;
+    return this;
+  }
+  /** A unit to a location's centre, or to a point. */
+  move(unit, to) {
+    const p = typeof to === "number" ? this.world.game.centreOf(to) : to;
+    if (unit.alive) {
+      unit.x = p.x;
+      unit.y = p.y;
+    }
+    return this;
+  }
+  /* ── what the players do ── */
+  press(key, player) {
+    this.programs.press(key, player);
+    return this;
+  }
+  click(button = "left", player) {
+    this.programs.click(button, player);
+    return this;
+  }
+  type(line, player) {
+    this.programs.type(line, player);
+    return this;
+  }
+  moveMouse(x, y, player) {
+    this.programs.moveMouse(x, y, player);
+    return this;
+  }
+  /* ── the world read back ── */
+  owners(player) {
+    return this.world.game.players.of(player, this.world.player);
+  }
+  count(player, type, at) {
+    return this.world.game.matching(this.owners(player), type, at).length;
+  }
+  /** The units on the map, in the order of the game's unit table. */
+  units(filter = {}) {
+    return this.world.game.matching(filter.owner === void 0 ? void 0 : this.owners(filter.owner), filter.type, filter.at);
+  }
+  resources(player) {
+    const [ore, gas] = this.programs.resourcesOf(player);
+    return { ore, gas };
+  }
+  deaths(player, type) {
+    return this.world.death(player, type);
+  }
+  kills(player, type) {
+    return this.world.game.kills(this.owners(player), type);
+  }
+  switch(n) {
+    return this.world.switches[n] === 1;
+  }
+  /** Where a location is now. */
+  location(n) {
+    const b = this.world.game.locations.get(n);
+    return b ? { ...b } : void 0;
+  }
+  /**
+   * A program's variables by the names in the source: numbers, booleans, texts, arrays, a
+   * record as an object, a unit (null for none). The program by its name (its `name`
+   * option) or its place in the script; of a per-player program, `player`'s. A name the
+   * program does not have is undefined.
+   */
+  program(name = 0, player) {
+    const run = this.programs.runOf(name, player);
+    if (!run) {
+      const known = [...new Set(this.programs.runs.map((r) => r.program.name).filter(Boolean))];
+      throw new Error(typeof name === "number" ? `There is no program ${name}: the script has ${new Set(this.programs.runs.map((r) => r.index)).size}.` : `There is no program named "${name}"${player !== void 0 ? ` that runs for P${player + 1}` : ""}. ${known.length ? `Named: ${known.join(", ")}.` : 'A program is named by its option: program(() => { \u2026 }, { name: "waves" }).'}`);
+    }
+    return new Proxy({}, { get: (_, key) => typeof key === "string" ? run.lookup(key) : void 0, has: (_, key) => typeof key === "string" && run.lookup(key) !== void 0 });
+  }
+  /** What was shown, in order: to everybody, or what one player saw. */
+  printed(player) {
+    const shown = (to, runner) => player === void 0 || this.world.game.players.of(to, runner).includes(player);
+    const lines = [];
+    this.world.events.forEach((e, i) => {
+      if (e.action.type === ActionType.DisplayText && e.text !== void 0 && shown(e.action.player || 13, e.player)) lines.push({ frame: e.cycle, order: i, text: e.text });
+    });
+    this.programs.events.forEach((e, i) => {
+      if (e.action.type === ActionType.DisplayText && e.text !== void 0 && shown(e.action.player || 13, e.player)) lines.push({ frame: e.cycle, order: this.world.events.length + i, text: e.text });
+    });
+    return lines.sort((a2, b) => a2.frame - b.frame || a2.order - b.order).map((l) => l.text);
+  }
+  /** Everything that happened, by frame. `sourceOf` says where a trigger came from. */
+  log(sourceOf = () => null) {
+    const out = [];
+    const say = (action2, text) => {
+      const name = actionDef(action2.type)?.name ?? `Action ${action2.type}`;
+      return text !== void 0 ? `${name} \u2014 ${text}` : name;
+    };
+    this.world.events.forEach((e, i) => {
+      const at = sourceOf(e.trigger);
+      out.push({ frame: e.cycle, order: i, player: e.player, text: say(e.action, e.text), ...at ? { file: at.file, line: at.line } : {} });
+    });
+    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: say(e.action, e.text), file: e.at.file, line: e.at.line }));
+    return out.sort((a2, b) => a2.frame - b.frame || a2.order - b.order).map(({ order: _order, ...e }) => e);
+  }
+  get events() {
+    return this.log();
+  }
+  get faults() {
+    return this.programs.faults;
+  }
+};
+var idOf = (node) => {
+  const names = [];
+  for (let n = node; n && n.parent; n = n.parent) names.unshift(n.name);
+  return `${node.at.file}::${names.join(" > ")}`;
+};
+function listTests(registry) {
+  const list = [];
+  const cases = /* @__PURE__ */ new Map();
+  const seen = /* @__PURE__ */ new Map();
+  const walk = (suite, path) => {
+    for (const node of suite.children) {
+      let id = idOf(node);
+      const n = (seen.get(id) ?? 0) + 1;
+      seen.set(id, n);
+      if (n > 1) id = `${id} #${n}`;
+      list.push({ id, kind: node.kind, name: node.name, path, file: node.at.file, line: node.at.line, mode: node.mode });
+      if (node.kind === "suite") walk(node, [...path, node.name]);
+      else cases.set(id, node);
+    }
+  };
+  walk(registry.root, []);
+  return { list, cases };
+}
+function runTests(registry, ctx, options) {
+  const started = Date.now();
+  const { list, cases } = listTests(registry);
+  const only = list.filter((t) => t.mode === "only").map((t) => ({ file: t.file, line: t.line }));
+  const narrowed = new Set(only.map((o) => o.file));
+  const results = [];
+  registry.running = true;
+  try {
+    for (const info of list) {
+      const test = cases.get(info.id);
+      if (!test) continue;
+      if (options.files && !options.files.includes(info.file)) continue;
+      if (options.ids && !options.ids.some((id) => info.id === id || info.id.startsWith(`${id} > `))) continue;
+      const chain = [];
+      for (let s = test.parent; s; s = s.parent) chain.unshift(s);
+      const skipped = test.mode === "skip" || chain.some((s) => s.mode === "skip") || narrowed.has(info.file) && test.mode !== "only" && !chain.some((s) => s.mode === "only");
+      if (skipped) {
+        results.push({ id: info.id, status: "skipped", printed: [], events: [], frames: 0, ms: 0 });
+        continue;
+      }
+      results.push(runOne(info.id, test, chain, ctx, options.world ?? {}));
+    }
+  } finally {
+    registry.running = false;
+  }
+  return { list, results, only, ms: Date.now() - started };
+}
+function runOne(id, test, chain, ctx, world) {
+  const began = Date.now();
+  let sim = null;
+  const done = (extra) => ({
+    id,
+    status: "passed",
+    printed: sim?.printed() ?? [],
+    events: (sim?.log((t) => ctx.sources[t] ?? null) ?? []).slice(0, 500),
+    frames: sim?.frame ?? 0,
+    ms: Date.now() - began,
+    ...extra
+  });
+  try {
+    sim = new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);
+    for (const s of chain) for (const h of s.before) h(sim);
+    const returned = test.fn(sim, ...test.args);
+    if (returned && typeof returned.then === "function") throw new Error("A test is not async: what it returned is a promise. Nothing in sim waits.");
+    for (const s of [...chain].reverse()) for (const h of s.after) h(sim);
+    const fault = sim.faultsExpected ? void 0 : sim.faults[0];
+    if (fault) return done({ status: "failed", message: `${fault.message} (frame ${fault.cycle + 1})`, at: { file: fault.at.file, line: fault.at.line, column: fault.at.column } });
+    return done({});
+  } catch (err) {
+    const at = ctx.locate(err) ?? test.at;
+    const message = err instanceof Error ? err.message : String(err);
+    return done({ status: "failed", message, at, ...err instanceof ExpectError ? { expected: err.expected, actual: err.actual } : {} });
+  }
+}
+
+// compiler/record.ts
+var CONDITION_FIELDS = ["type", "location", "player", "amount", "unitId", "comparison", "resource"];
+var ACTION_FIELDS = ["type", "location", "text", "wav", "time", "player", "target", "unitId", "modifier"];
+
+// compiler/lower.ts
+var PLAYER_SLOTS = 12;
+var U32_MAX2 = 4294967295;
+var LowerError = class extends Error {
+};
+var ACTIONS_WITH_MODIFIER = /* @__PURE__ */ new Set([ActionType.SetDeaths, ActionType.SetResources, ActionType.SetScore, ActionType.SetCountdownTimer]);
+function negateCondition(c2) {
+  if (c2.type === ConditionType.Always) return [{ ...c2, type: ConditionType.Never }];
+  if (c2.type === ConditionType.Never) return [{ ...c2, type: ConditionType.Always }];
+  if (c2.type === ConditionType.Switch) {
+    if (c2.comparison === SwitchState.Set) return [{ ...c2, comparison: SwitchState.Cleared }];
+    if (c2.comparison === SwitchState.Cleared) return [{ ...c2, comparison: SwitchState.Set }];
+    return null;
+  }
+  const def = conditionDef(c2.type);
+  if (!def?.args.some((a2) => a2.kind === "comparison" && a2.field === "comparison") || !def.args.some((a2) => a2.kind === "amount" && a2.field === "amount")) return null;
+  const n = c2.amount >>> 0;
+  switch (c2.comparison) {
+    case Comparison.AtLeast:
+      return n === 0 ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtMost, amount: n - 1 }];
+    case Comparison.AtMost:
+      return n === U32_MAX2 ? [{ ...c2, type: ConditionType.Never }] : [{ ...c2, comparison: Comparison.AtLeast, amount: n + 1 }];
+    case Comparison.Exactly: {
+      const out = [];
+      if (n > 0) out.push({ ...c2, comparison: Comparison.AtMost, amount: n - 1 });
+      if (n < U32_MAX2) out.push({ ...c2, comparison: Comparison.AtLeast, amount: n + 1 });
+      return out;
+    }
+    default:
+      return null;
+  }
+}
+function hyperTriggers(owner, comment) {
+  return [0, 1, 2].map(() => {
+    const t = emptyTrigger();
+    t.players[owner] = 1;
+    t.flags = TriggerFlag.Preserve;
+    t.conditions.push({ ...emptyCondition(), type: ConditionType.Always });
+    if (comment) t.actions.push({ ...emptyAction(), type: ActionType.Comment, text: comment("Hyper trigger") });
+    while (t.actions.length < MAX_ACTIONS - 1) t.actions.push({ ...emptyAction(), type: ActionType.Wait, time: 0 });
+    t.actions.push({ ...emptyAction(), type: ActionType.PreserveTrigger });
+    return t;
+  });
+}
+
+// vendor/gameNames.ts
+var WEAPON_NAMES = [
+  "Gauss Rifle",
+  "Gauss Rifle (Jim Raynor)",
+  "C-10 Canister Rifle",
+  "C-10 Canister Rifle (Sarah Kerrigan)",
+  "Fragmentation Grenade",
+  "Fragmentation Grenade (Jim Raynor)",
+  "Spider Mines",
+  "Twin Autocannons",
+  "Hellfire Missile Pack",
+  "Twin Autocannons (Alan Schezar)",
+  "Hellfire Missile Pack (Alan Schezar)",
+  "Arclite Cannon",
+  "Arclite Cannon (Edmund Duke)",
+  "Fusion Cutter",
+  "Fusion Cutter (Harvest)",
+  "Gemini Missiles",
+  "Burst Lasers",
+  "Gemini Missiles (Tom Kazansky)",
+  "Burst Lasers (Tom Kazansky)",
+  "ATS Laser Battery",
+  "ATA Laser Battery",
+  "ATS Laser Battery (Hero)",
+  "ATA Laser Battery (Hero)",
+  "ATS Laser Battery (Hyperion)",
+  "ATA Laser Battery (Hyperion)",
+  "Flame Thrower",
+  "Flame Thrower (Gui Montag)",
+  "Arclite Shock Cannon",
+  "Arclite Shock Cannon (Edmund Duke)",
+  "Longbolt Missile",
+  "Yamato Gun",
+  "Nuclear Strike",
+  "Lockdown",
+  "EMP Shockwave",
+  "Irradiate",
+  "Claws",
+  "Claws (Devouring One)",
+  "Claws (Infested Kerrigan)",
+  "Needle Spines",
+  "Needle Spines (Hunter Killer)",
+  "Kaiser Blades",
+  "Kaiser Blades (Torrasque)",
+  "Toxic Spores (Broodling)",
+  "Spines",
+  "Spines (Harvest)",
+  "Acid Spray (Unused)",
+  "Acid Spore",
+  "Acid Spore (Kukulza)",
+  "Glave Wurm",
+  "Glave Wurm (Kukulza)",
+  "Venom (Unused)",
+  "Venom (Unused, Hero)",
+  "Seeker Spores",
+  "Subterranean Tentacle",
+  "Suicide (Infested Terran)",
+  "Suicide (Scourge)",
+  "Parasite",
+  "Spawn Broodlings",
+  "Ensnare",
+  "Dark Swarm",
+  "Plague",
+  "Consume",
+  "Particle Beam",
+  "Particle Beam (Harvest)",
+  "Psi Blades",
+  "Psi Blades (Fenix)",
+  "Phase Disruptor",
+  "Phase Disruptor (Fenix)",
+  "Psi Assault (Unused)",
+  "Psi Assault (Tassadar/Aldaris)",
+  "Psionic Shockwave",
+  "Psionic Shockwave (Tassadar/Zeratul Archon)",
+  "Unknown 72",
+  "Dual Photon Blasters",
+  "Anti-Matter Missiles",
+  "Dual Photon Blasters (Mojo)",
+  "Anti-Matter Missiles (Mojo)",
+  "Phase Disruptor Cannon",
+  "Phase Disruptor Cannon (Danimoth)",
+  "Pulse Cannon",
+  "STS Photon Cannon",
+  "STA Photon Cannon",
+  "Scarab",
+  "Stasis Field",
+  "Psionic Storm",
+  "Warp Blades (Zeratul)",
+  "Warp Blades (Dark Templar Hero)",
+  "Missiles (Unused)",
+  "Laser Battery 1 (Unused)",
+  "Tormentor Missiles (Unused)",
+  "Bombs (Unused)",
+  "Raider Gun (Unused)",
+  "Laser Battery 2 (Unused)",
+  "Laser Battery 3 (Unused)",
+  "Dual Photon Blasters (Unused)",
+  "Flechette Grenade (Unused)",
+  "Twin Autocannons (Floor Trap)",
+  "Hellfire Missile Pack (Wall Trap)",
+  "Flame Thrower (Wall Trap)",
+  "Hellfire Missile Pack (Floor Trap)",
+  "Neutron Flare",
+  "Disruption Web",
+  "Restoration",
+  "Halo Rockets",
+  "Corrosive Acid",
+  "Mind Control",
+  "Feedback",
+  "Optical Flare",
+  "Maelstrom",
+  "Subterranean Spines",
+  "Gauss Rifle 0 (Unused)",
+  "Warp Blades",
+  "C-10 Canister Rifle (Samir Duran)",
+  "C-10 Canister Rifle (Infested Duran)",
+  "Dual Photon Blasters (Artanis)",
+  "Anti-Matter Missiles (Artanis)",
+  "C-10 Canister Rifle (Alexei Stukov)",
+  "Gauss Rifle 1 (Unused)",
+  "Unknown 118",
+  "Unknown 119",
+  "Unknown 120",
+  "Unknown 121",
+  "Unknown 122",
+  "Unknown 123",
+  "Unknown 124",
+  "Unknown 125",
+  "Unknown 126",
+  "Unknown 127",
+  "Unknown 128",
+  "Unknown 129"
+];
+var UPGRADE_NAMES = [
+  "Terran Infantry Armor",
+  "Terran Vehicle Plating",
+  "Terran Ship Plating",
+  "Zerg Carapace",
+  "Zerg Flyer Carapace",
+  "Protoss Ground Armor",
+  "Protoss Air Armor",
+  "Terran Infantry Weapons",
+  "Terran Vehicle Weapons",
+  "Terran Ship Weapons",
+  "Zerg Melee Attacks",
+  "Zerg Missile Attacks",
+  "Zerg Flyer Attacks",
+  "Protoss Ground Weapons",
+  "Protoss Air Weapons",
+  "Protoss Plasma Shields",
+  "U-238 Shells",
+  "Ion Thrusters",
+  "Burst Lasers (Unused)",
+  "Titan Reactor",
+  "Ocular Implants",
+  "Moebius Reactor",
+  "Apollo Reactor",
+  "Colossus Reactor",
+  "Ventral Sacs",
+  "Antennae",
+  "Pneumatized Carapace",
+  "Metabolic Boost",
+  "Adrenal Glands",
+  "Muscular Augments",
+  "Grooved Spines",
+  "Gamete Meiosis",
+  "Metasynaptic Node",
+  "Singularity Charge",
+  "Leg Enhancements",
+  "Scarab Damage",
+  "Reaver Capacity",
+  "Gravitic Drive",
+  "Sensor Array",
+  "Gravitic Boosters",
+  "Khaydarin Amulet",
+  "Apial Sensors",
+  "Gravitic Thrusters",
+  "Carrier Capacity",
+  "Khaydarin Core",
+  "Unused (45)",
+  "Unused (46)",
+  "Argus Jewel",
+  "Unused (48)",
+  "Argus Talisman",
+  "Unused (50)",
+  "Caduceus Reactor",
+  "Chitinous Plating",
+  "Anabolic Synthesis",
+  "Charon Boosters",
+  "Unused (55)",
+  "Unused (56)",
+  "Unused (57)",
+  "Unused (58)",
+  "Unused (59)",
+  "Unused (60)"
+];
+var TECH_NAMES = [
+  "Stim Packs",
+  "Lockdown",
+  "EMP Shockwave",
+  "Spider Mines",
+  "Scanner Sweep",
+  "Tank Siege Mode",
+  "Defensive Matrix",
+  "Irradiate",
+  "Yamato Gun",
+  "Cloaking Field",
+  "Personnel Cloaking",
+  "Burrowing",
+  "Infestation",
+  "Spawn Broodlings",
+  "Dark Swarm",
+  "Plague",
+  "Consume",
+  "Ensnare",
+  "Parasite",
+  "Psionic Storm",
+  "Hallucination",
+  "Recall",
+  "Stasis Field",
+  "Archon Warp",
+  "Restoration",
+  "Disruption Web",
+  "Unused (26)",
+  "Mind Control",
+  "Dark Archon Meld",
+  "Feedback",
+  "Optical Flare",
+  "Maelstrom",
+  "Lurker Aspect",
+  "Unused (33)",
+  "Healing",
+  "Unused (35)",
+  "Unused (36)",
+  "Unused (37)",
+  "Unused (38)",
+  "Unused (39)",
+  "Unused (40)",
+  "Unused (41)",
+  "Unused (42)",
+  "Unused (43)"
+];
+
+// compiler/names.ts
+var ANYWHERE_INDEX = 63;
+var allTables = (n) => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs];
+function identifier(name) {
+  const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  let id = words.map((w) => w[0].toUpperCase() + w.slice(1)).join("");
+  if (id === "") id = "_";
+  if (/^\d/.test(id)) id = `_${id}`;
+  return id;
+}
+function keysFor(...names) {
+  const out = [];
+  for (const n of names) {
+    if (!n) continue;
+    for (const k of [identifier(n), n]) if (!out.includes(k)) out.push(k);
+  }
+  return out;
+}
+function table(object, type, doc, entries) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const e of entries) {
+    const keys = [];
+    e.keys.forEach((k, i) => {
+      if (!seen.has(k)) {
+        seen.add(k);
+        keys.push(k);
+        return;
+      }
+      if (i !== 0) return;
+      let n = 2;
+      while (seen.has(`${k}_${n}`)) n++;
+      seen.add(`${k}_${n}`);
+      keys.push(`${k}_${n}`);
+    });
+    out.push({ value: e.value, keys });
+  }
+  return { object, type, doc, entries: out };
+}
+var PLAYER_KEYS = {
+  [PlayerGroup.None]: "None",
+  [PlayerGroup.CurrentPlayer]: "Current",
+  [PlayerGroup.Foes]: "Foes",
+  [PlayerGroup.Allies]: "Allies",
+  [PlayerGroup.NeutralPlayers]: "Neutral",
+  [PlayerGroup.AllPlayers]: "All",
+  [PlayerGroup.NonAlliedVictoryPlayers]: "NonAlliedVictory"
+};
+function playerEntries(forceNames = []) {
+  return PLAYER_GROUP_CHOICES.map((c2) => {
+    const keys = c2.value < 12 ? [`P${c2.value + 1}`, c2.label] : keysFor(PLAYER_KEYS[c2.value] ?? c2.label, c2.label);
+    const force = c2.value - PlayerGroup.Force1;
+    if (force >= 0 && force < 4) keys.push(...keysFor(forceNames[force]).filter((k) => !keys.includes(k)));
+    return { value: c2.value, keys };
+  });
+}
+function unitEntries(customName = () => null) {
+  const out = UNIT_NAMES.map((name, id) => ({ value: id, keys: keysFor(name, customName(id) || null) }));
+  for (const c2 of UNIT_CLASS_CHOICES) out.push({ value: c2.value, keys: keysFor(c2.label, ...c2.aliases ?? []) });
+  return out;
+}
+function aiScriptEntries() {
+  return AI_SCRIPT_CHOICES.map((s) => ({ value: aiScriptCode(s.id), keys: keysFor(s.name, s.id) }));
+}
+var defaultSwitchName = (index) => `Switch ${index + 1}`;
+function scriptNames(src = {}) {
+  const withMap = !!(src.forceNames || src.locations || src.switchNames || src.unitCustomName);
+  const locations = [{ value: 0, keys: ["NoLocation", "No Location"] }];
+  const listed = (src.locations ?? []).slice().sort((a2, b) => a2.index - b.index);
+  if (!listed.some((l) => l.index === ANYWHERE_INDEX)) listed.push({ index: ANYWHERE_INDEX, name: "Anywhere" });
+  for (const { index, name } of listed) {
+    locations.push({ value: index + 1, keys: index === ANYWHERE_INDEX ? ["Anywhere", ...keysFor(name).filter((k) => k !== "Anywhere")] : keysFor(name) });
+  }
+  const switches = Array.from({ length: SWITCH_COUNT }, (_, i) => {
+    const keys = [`Switch${i + 1}`, `Switch ${i + 1}`];
+    const name = src.switchNames?.[i];
+    if (name && name.trim() && name.trim() !== defaultSwitchName(i)) {
+      for (const k of keysFor(name.trim())) if (!keys.includes(k)) keys.push(k);
+    }
+    return { value: i, keys };
+  });
+  return {
+    players: table("players", "Player", withMap ? "Players, player groups and the map's forces." : "Players and player groups.", playerEntries(src.forceNames ?? [])),
+    units: table("units", "UnitType", withMap ? "Unit types, by StarEdit name and by the map's custom names." : "Unit types, by StarEdit name.", unitEntries(src.unitCustomName ?? (() => null))),
+    locations: table("locations", "Location", "The map's locations.", locations),
+    switches: table("switches", "Switch", withMap ? "The 256 switches, by number and by the map's names." : "The 256 switches.", switches),
+    aiScripts: table("aiScripts", "AiScript", "AI scripts, by StarEdit name or four-character code.", aiScriptEntries()),
+    weapons: table("weapons", "Weapon", "Weapons, for stats() and a unit type's groundWeapon / airWeapon.", [...WEAPON_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })), { value: WEAPON_NAMES.length, keys: ["None"] }]),
+    upgrades: table("upgrades", "Upgrade", "Upgrades, for stats().", UPGRADE_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
+    techs: table("techs", "Tech", "Technologies, for stats().", TECH_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })))
+  };
+}
+function defaultScriptNames() {
+  return scriptNames();
+}
+
+// compiler/runtime.ts
+var DEATHS_TABLE_ADDRESS = 5808996;
+var isDuration = (v) => typeof v === "object" && v !== null && v.__trigscript === "duration";
+var isRead = (v) => typeof v === "object" && v !== null && v.__trigscript === "read";
+var isPrint = (v) => typeof v === "object" && v !== null && v.__trigscript === "print";
+var isUnitQuery = (v) => typeof v === "object" && v !== null && v.__trigscript === "units";
+var isUnitPick = (v) => typeof v === "object" && v !== null && v.__trigscript === "pick";
+var isTable = (v) => typeof v === "object" && v !== null && v.__trigscript === "table";
+var isInput = (v) => typeof v === "object" && v !== null && v.__trigscript === "input";
+var isMouse = (v) => typeof v === "object" && v !== null && v.__trigscript === "mouse";
+var isChat = (v) => typeof v === "object" && v !== null && v.__trigscript === "chat";
+var isGameValue = (v) => isRead(v) || isTable(v) || isUnitPick(v) || isInput(v) || isMouse(v) || isChat(v);
+function playerColor(v) {
+  if (typeof v === "string") {
+    const n = PLAYER_COLORS[v.trim().toLowerCase()];
+    if (n === void 0) throw new ScriptError(`Unknown colour ${JSON.stringify(v)}: one of ${Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(", ")}.`);
+    return n;
+  }
+  if (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 255) return v;
+  throw new ScriptError('A player colour is one of colors.*, a word such as "teal", or a palette entry from 0 to 255.');
+}
+var isReader = (v) => typeof v === "function" && v.__trigscript === "reader";
+var MARK_OPEN = "\uE000";
+var MARK_CLOSE = "\uE001";
+var MARK = /\uE000([nc])(\d+)\uE001/g;
+var hasTextMark = (text) => text.includes(MARK_OPEN);
+var textMark = (letter, player) => `${MARK_OPEN}${letter}${player}${MARK_CLOSE}`;
+function textParts(text) {
+  const out = [];
+  let from = 0;
+  for (const m of text.matchAll(MARK)) {
+    if (m.index > from) out.push({ kind: "text", text: text.slice(from, m.index) });
+    out.push({ kind: m[1] === "n" ? "name" : "color", player: Number(m[2]) });
+    from = m.index + m[0].length;
+  }
+  if (from < text.length) out.push({ kind: "text", text: text.slice(from) });
+  return out;
+}
+var READ_ARITY = new Map(
+  [...CONDITION_IDENTS].filter(([, def]) => def.args.some((a2) => a2.kind === "comparison") && def.args.some((a2) => a2.kind === "amount")).map(([ident, def]) => [ident, def.args.length - 2])
+);
+var READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kills", "countdown", "elapsed", "race", "slot", "isHuman", "hasLeft", "supply"];
+var UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "underMouse", "stats"];
+var INPUT_CALL_NAMES = ["keyPressed", "clicked", "mouse", "chatted", "centerLocation"];
+var ScriptError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ScriptError";
+  }
+};
+var Collector = class {
+  entries = [];
+  strings = [];
+  /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
+  hyper = false;
+  /**
+   * The script's own statements are running — as opposed to a program's build-time parts, which the
+   * compiler asks for afterwards. What a player does has no meaning there, and `if (keyPressed(…))`
+   * would quietly be true (it is an object), so those functions refuse while this is set.
+   */
+  running = false;
+  localString(s) {
+    const at = this.strings.findIndex((x) => "text" in x && "text" in s ? x.text === s.text : "index" in x && "index" in s && x.index === s.index);
+    if (at >= 0) return at + 1;
+    this.strings.push(s);
+    return this.strings.length;
+  }
+};
+var isCondition = (v) => typeof v === "object" && v !== null && v.__trigscript === "condition";
+var isAction = (v) => typeof v === "object" && v !== null && v.__trigscript === "action";
+var isTrigger = (v) => typeof v === "object" && v !== null && v.__trigscript === "trigger";
+var isProgramDescriptor = (v) => typeof v === "object" && v !== null && v.__trigscript === "program";
+var isGameFunction = (v) => typeof v === "function" && v.__trigscript === "gamefn";
+var isBuilder = (v) => typeof v === "function" && v.__trigscript === "builder";
+var condition = (record) => ({ __trigscript: "condition", record });
+var action = (record) => ({ __trigscript: "action", record });
+function describe(v) {
+  if (typeof v === "string") return JSON.stringify(v.length > 40 ? `${v.slice(0, 39)}\u2026` : v);
+  if (typeof v === "number" || typeof v === "boolean" || v === null || v === void 0) return String(v);
+  if (isCondition(v)) return "a condition";
+  if (isAction(v)) return "an action";
+  if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isTable(v)) return `a value the game holds (${v.ident})`;
+  if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
+  if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isInput(v) || isMouse(v) || isChat(v)) return `what a player does in the game (${isInput(v) ? v.ident : isMouse(v) ? "mouse()" : "chatted()"})`;
+  if (isPrint(v)) return "a print()";
+  if (Array.isArray(v)) return "an array";
+  if (typeof v === "function") return "a function";
+  return "an object";
+}
+function integer(v, what) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v) >>> 0;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (isRead(v)) throw new ScriptError(`${what}: ${v.ident}() is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it; a trigger's condition or action takes numbers known when the script is built.`);
+  if (isTable(v)) throw new ScriptError(`${what}: ${v.ident} is a value the game holds, read while the game runs. Inside program() assign it to a variable or compare it.`);
+  throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+}
+function flatten(v, out = []) {
+  if (Array.isArray(v)) for (const x of v) flatten(x, out);
+  else if (v !== void 0 && v !== null && v !== false) out.push(v);
+  return out;
+}
+function createRuntime(names, collector, options = {}) {
+  const rt = {};
+  const comment = options.comments === false ? void 0 : (text) => collector.localString({ text });
+  for (const t of allTables(names)) {
+    const table2 = {};
+    for (const e of t.entries) for (const k of e.keys) table2[k] = e.value;
+    rt[t.object] = Object.freeze(table2);
+  }
+  for (let i = 0; i < PLAYER_SLOTS; i++) rt[`P${i + 1}`] = i;
+  rt.CurrentPlayer = PlayerGroup.CurrentPlayer;
+  rt.AllPlayers = PlayerGroup.AllPlayers;
+  const argValue2 = (kind, v, what) => {
+    switch (kind) {
+      case "text":
+      case "wav":
+        if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
+        if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
+        throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
+      case "count":
+        if (typeof v === "string") {
+          if (v.trim().toLowerCase() === "all") return 0;
+          throw new ScriptError(`${what}: expected a count or "All", got ${describe(v)}.`);
+        }
+        return integer(v, what);
+      case "aiScript":
+        if (typeof v === "string") {
+          const code = aiScriptByName(v);
+          if (code === void 0) throw new ScriptError(`${what}: unknown AI script ${describe(v)}.`);
+          return code;
+        }
+        return integer(v, what);
+      case "textFlags":
+        return v === void 0 || v === true ? ActionFlag.AlwaysDisplay : v === false ? 0 : integer(v, what) & ActionFlag.AlwaysDisplay;
+      default:
+        if (typeof v === "string") {
+          if (!CANONICAL[kind]) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+          const n = choiceOf(kind, v);
+          if (n === void 0) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
+          return n;
+        }
+        return integer(v, what);
+    }
+  };
+  const fromDef = (ident, def, kind) => Object.assign((...args) => {
+    const params = scriptParams(def);
+    const required = params.filter((p) => !p.optional).length;
+    if (kind === "condition" && READ_ARITY.get(ident) === args.length) return readOf(ident, def, args);
+    if (args.length < required || args.length > params.length) {
+      throw new ScriptError(`${ident} takes ${required === params.length ? required : `${required} to ${params.length}`} argument${params.length === 1 ? "" : "s"}, got ${args.length}.`);
+    }
+    const record = kind === "condition" ? { ...emptyCondition(), type: def.type } : { ...emptyAction(), type: def.type };
+    params.forEach((p, i) => {
+      const v = argValue2(p.arg.kind, args[i], `${ident}: ${p.name}`);
+      if (p.arg.kind === "textFlags") record.flags = record.flags & ~ActionFlag.AlwaysDisplay | v;
+      else record[p.arg.field] = v;
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= kind === "condition" ? ConditionFlag.UnitTypeUsed : ActionFlag.UnitTypeUsed;
+    return kind === "condition" ? condition(record) : action(record);
+  }, { __trigscript: "builder", kind, def, ident });
+  const read = (ident, source, equals) => {
+    const fail = () => {
+      throw new ScriptError(`${ident}() is a value the game holds, read while the game runs: it has no value when the script is built. Inside program(), assign it to a let or use it in the program's own arithmetic and comparisons.`);
+    };
+    return { __trigscript: "read", read: source, ident, ...equals !== void 0 ? { equals } : {}, valueOf: fail, toString: fail };
+  };
+  const readOf = (ident, def, args) => {
+    const record = { ...emptyCondition(), type: def.type, comparison: Comparison.AtLeast };
+    const params = scriptParams(def).filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount");
+    params.forEach((p, i) => {
+      record[p.arg.field] = argValue2(p.arg.kind, args[i], `${ident}: ${p.name}`);
+    });
+    if (def.args.some((a2) => a2.kind === "unit")) record.flags |= ConditionFlag.UnitTypeUsed;
+    return read(ident, { source: "condition", record });
+  };
+  for (const [ident, def] of CONDITION_IDENTS) rt[ident] = fromDef(ident, def, "condition");
+  for (const [ident, def] of ACTION_IDENTS) rt[ident] = fromDef(ident, def, "action");
+  rt.preserve = rt.preserveTrigger;
+  const raw = (kind) => (...args) => {
+    const fields = kind === "condition" ? CONDITION_FIELDS : ACTION_FIELDS;
+    const record = kind === "condition" ? emptyCondition() : emptyAction();
+    args.forEach((a2, i) => {
+      if (i < fields.length) record[fields[i]] = integer(a2, `${kind}(): ${fields[i]}`);
+    });
+    if (kind === "action") {
+      for (const f of ["text", "wav"]) if (record[f]) record[f] = collector.localString({ index: record[f] });
+    }
+    return kind === "condition" ? condition(record) : action(record);
+  };
+  rt.condition = raw("condition");
+  rt.action = raw("action");
+  const epd = (address, what) => {
+    const n = integer(address, what);
+    if (n % 4 !== 0) throw new ScriptError(`${what}: expected a 4-byte-aligned memory address.`);
+    return (n - DEATHS_TABLE_ADDRESS) / 4 >>> 0;
+  };
+  rt.memory = (address, comparison, value) => condition({ ...emptyCondition(), type: ConditionType.Deaths, player: epd(address, "memory: address"), unitId: 0, comparison: argValue2("comparison", comparison, "memory: comparison"), amount: integer(value, "memory: value") });
+  rt.setMemory = (address, modifier, value) => action({ ...emptyAction(), type: ActionType.SetDeaths, player: epd(address, "setMemory: address"), unitId: 0, modifier: argValue2("modifier", modifier, "setMemory: modifier"), target: integer(value, "setMemory: value") });
+  rt.disabled = (item) => {
+    if (isCondition(item)) return condition({ ...item.record, flags: item.record.flags | ConditionFlag.Disabled });
+    if (isAction(item)) return action({ ...item.record, flags: item.record.flags | ActionFlag.Disabled });
+    throw new ScriptError(`disabled() takes a condition or an action, got ${describe(item)}.`);
+  };
+  rt.not = (item) => {
+    if (!isCondition(item)) throw new ScriptError(`not() takes a condition, got ${describe(item)}.`);
+    const flipped = negateCondition(item.record);
+    if (!flipped || flipped.length !== 1) throw new ScriptError("The game has no single condition for the opposite of this one; inside program(), if (!\u2026) can test it.");
+    return condition(flipped[0]);
+  };
+  const playersOf = (v, what) => {
+    if (v === void 0 || v === null) throw new ScriptError(`${what}: expected a player or a list of players.`);
+    return flatten(v).map((p) => {
+      const n = integer(p, what);
+      if (n >= PLAYER_GROUP_COUNT) throw new ScriptError(`${what}: player group ${n} is out of range (0\u2013${PLAYER_GROUP_COUNT - 1}).`);
+      return n;
+    });
+  };
+  const items = (v, test, what, wrong, wrongName) => flatten(v).map((x) => {
+    if (test(x)) return x;
+    if (isRead(x)) throw new ScriptError(`${what}: ${x.ident}() without a comparison reads the value, which only a program can do. In a trigger, give the comparison and the amount: ${x.ident}(\u2026, ">=", 1).`);
+    if (isPrint(x)) throw new ScriptError(`${what}: print() is a statement of a program; a trigger shows text with displayText().`);
+    if (wrong(x)) throw new ScriptError(`${what}: ${describe(x)} belongs in the ${wrongName} list.`);
+    throw new ScriptError(`${what}: expected ${what.endsWith("conditions") ? "conditions such as bring(...)" : "actions such as displayText(...)"}, got ${describe(x)}.`);
+  });
+  rt.trigger = (players, conditions, actions, options2, at) => {
+    const t = emptyTrigger();
+    for (const p of playersOf(players, "trigger: players")) t.players[p] = 1;
+    t.conditions = items(conditions, isCondition, "trigger: conditions", isAction, "actions").map((c2) => ({ ...c2.record }));
+    t.actions = items(actions, isAction, "trigger: actions", isCondition, "conditions").map((a2) => ({ ...a2.record }));
+    for (const a2 of t.actions) {
+      const s = a2.text > 0 ? collector.strings[a2.text - 1] : void 0;
+      if (s && "text" in s && hasTextMark(s.text)) throw new ScriptError("name() and color() are filled in by a program while the game runs; a trigger's text is fixed when the script is built. Show this text from inside program().");
+    }
+    if (t.conditions.length > MAX_CONDITIONS) throw new ScriptError(`A trigger holds at most ${MAX_CONDITIONS} conditions (got ${t.conditions.length}).`);
+    if (t.actions.length > MAX_ACTIONS) throw new ScriptError(`A trigger holds at most ${MAX_ACTIONS} actions (got ${t.actions.length}).`);
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`trigger: options is an object such as { preserve: true }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "flags") {
+          t.flags |= integer(value, "trigger: flags");
+          continue;
+        }
+        const hit = TRIGGER_OPTION_NAMES.find(([, name]) => name === key);
+        if (!hit) throw new ScriptError(`trigger: unknown option "${key}".`);
+        if (value) t.flags |= hit[0];
+      }
+    }
+    collector.entries.push({ kind: "trigger", record: t, at: isAt(at) ? at : null });
+    return { __trigscript: "trigger", record: t };
+  };
+  rt.hyperTriggers = (owner = 0) => {
+    const p = integer(owner, "hyperTriggers: owner");
+    if (p >= PLAYER_SLOTS) throw new ScriptError(`hyperTriggers: the owner is a single player, P1 \u2026 P${PLAYER_SLOTS}.`);
+    for (const record of hyperTriggers(p, comment)) collector.entries.push({ kind: "trigger", record, at: null });
+    collector.hyper = true;
+  };
+  const number = (v, what) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new ScriptError(`${what}: expected a number of at least 0, got ${describe(v)}.`);
+    return v;
+  };
+  rt.seconds = (n) => ({ __trigscript: "duration", ms: number(n, "seconds") * 1e3 });
+  rt.minutes = (n) => ({ __trigscript: "duration", ms: number(n, "minutes") * 6e4 });
+  rt.frames = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "frames"))) });
+  rt.cycles = (n) => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
+  rt.sleep = () => {
+    throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement \u2014 sleep(seconds(2)).");
+  };
+  rt.rose = () => {
+    throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if.");
+  };
+  rt.once = () => {
+    throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if.");
+  };
+  rt.shared = () => {
+    throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program().");
+  };
+  const signed = (v, what) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) throw new ScriptError(`${what}: expected a number, got ${describe(v)}.`);
+    return v;
+  };
+  rt.u32 = (v) => signed(v, "u32: value") >>> 0;
+  rt.i32 = (v) => signed(v, "i32: value") | 0;
+  rt.clamp = (v, lo, hi) => Math.min(Math.max(signed(v, "clamp: value"), signed(lo, "clamp: low")), signed(hi, "clamp: high"));
+  const reader = (fn) => Object.assign(fn, { __trigscript: "reader" });
+  const onePlayer = (v, what, slots = PLAYER_SLOTS) => {
+    const n = integer(v, what);
+    if (n !== PlayerGroup.CurrentPlayer && n >= slots) throw new ScriptError(`${what}: expected one player, P1 \u2026 P${slots} or CurrentPlayer.`);
+    return n;
+  };
+  const conditionRead = (ident, type, fields) => read(ident, { source: "condition", record: { ...emptyCondition(), type, comparison: Comparison.AtLeast, ...fields } });
+  const resourceRead = (ident, player, kind) => conditionRead(ident, ConditionType.Accumulate, { player: argValue2("player", player, `${ident}: player`), resource: argValue2("resource", kind, `${ident}: resource`) });
+  rt.minerals = reader((player) => resourceRead("minerals", player, "ore"));
+  rt.gas = reader((player) => resourceRead("gas", player, "gas"));
+  rt.resources = reader((player, kind) => resourceRead("resources", player, kind));
+  rt.countUnits = reader((player, unit, location) => {
+    const fields = { player: argValue2("player", player, "countUnits: player"), unitId: argValue2("unit", unit, "countUnits: unit"), flags: ConditionFlag.UnitTypeUsed };
+    return location === void 0 ? conditionRead("countUnits", ConditionType.Command, fields) : conditionRead("countUnits", ConditionType.Bring, { ...fields, location: argValue2("location", location, "countUnits: location") });
+  });
+  rt.kills = reader((player, unit) => conditionRead("kills", ConditionType.Kill, { player: argValue2("player", player, "kills: player"), unitId: argValue2("unit", unit, "kills: unit"), flags: ConditionFlag.UnitTypeUsed }));
+  rt.countdown = reader(() => conditionRead("countdown", ConditionType.CountdownTimer, {}));
+  rt.elapsed = reader(() => conditionRead("elapsed", ConditionType.ElapsedTime, {}));
+  rt.races = Object.freeze({ Zerg: 0, Terran: 1, Protoss: 2 });
+  rt.slots = Object.freeze({ Empty: 0, Computer: 1, Human: 2, Rescuable: 3, Neutral: 7 });
+  rt.race = reader((player) => read("race", { source: "player", fact: "race", player: onePlayer(player, "race: player", 12) }));
+  rt.slot = reader((player) => read("slot", { source: "player", fact: "slot", player: onePlayer(player, "slot: player", 12) }));
+  rt.isHuman = reader((player) => read("isHuman", { source: "player", fact: "slot", player: onePlayer(player, "isHuman: player", 12) }, 2));
+  rt.hasLeft = reader((player) => read("hasLeft", { source: "player", fact: "left", player: onePlayer(player, "hasLeft: player") }, 1));
+  rt.supply = reader((player, of = "used", race) => {
+    if (of !== "used" && of !== "max" && of !== "provided") throw new ScriptError(`supply: expected "used", "max" or "provided", got ${describe(of)}.`);
+    let r = null;
+    if (race !== void 0 && race !== null) {
+      const n = typeof race === "string" ? ["zerg", "terran", "protoss"].indexOf(race.trim().toLowerCase()) : integer(race, "supply: race");
+      if (n !== 0 && n !== 1 && n !== 2) throw new ScriptError(`supply: the race is races.Zerg, races.Terran or races.Protoss, got ${describe(race)}.`);
+      r = n;
+    }
+    return read("supply", { source: "supply", of, race: r, player: onePlayer(player, "supply: player", 12) });
+  });
+  const onlyInProgram = (ident, how) => {
+    throw new ScriptError(`${ident}() is about the units in the game, which exist while it runs: ${how}, inside program().`);
+  };
+  const filterOf = (ident, v, given) => {
+    const out = { ...given };
+    if (v !== void 0 && v !== null) {
+      if (typeof v !== "object" || Array.isArray(v) || isGameValue(v)) throw new ScriptError(`${ident}: the filter is an object such as { type: units.TerranMarine, owner: P1, at: locations.Base }, got ${describe(v)}.`);
+      for (const [key, value] of Object.entries(v)) {
+        if (value === void 0 || value === null) continue;
+        if (key !== "type" && key !== "owner" && key !== "at") throw new ScriptError(`${ident}: unknown filter "${key}"; a filter has type, owner and at.`);
+        if (out[key] !== void 0) throw new ScriptError(`${ident}: ${key} is already given by the call's own argument.`);
+        out[key] = integer(value, `${ident}: ${key}`);
+      }
+    }
+    if (out.owner !== void 0) out.owner = onePlayer(out.owner, `${ident}: owner`, 12);
+    if (out.type !== void 0) {
+      if (out.type === 229) delete out.type;
+      else if (out.type > 232) throw new ScriptError(`${ident}: type is one of units.*.`);
+    }
+    if (out.at !== void 0 && (out.at === 0 || out.at === 64)) delete out.at;
+    if (out.at !== void 0 && out.at > 255) throw new ScriptError(`${ident}: at is one of locations.*.`);
+    return out;
+  };
+  const query = (ident, filter) => ({
+    __trigscript: "units",
+    filter,
+    ident,
+    [Symbol.iterator]: () => onlyInProgram(ident, `write for (const u of ${ident}(\u2026)) { \u2026 }`)
+  });
+  const pick = (ident, by, filter, near) => {
+    const fail = () => onlyInProgram(ident, `write const u = ${ident}(\u2026); if (u) { \u2026 }`);
+    return { __trigscript: "pick", by, filter, ident, ...near !== void 0 ? { near } : {}, valueOf: fail, toString: fail };
+  };
+  rt.unitsAt = (location, filter) => query("unitsAt", filterOf("unitsAt", filter, { at: argValue2("location", location, "unitsAt: location") }));
+  rt.unitsOf = (player, filter) => query("unitsOf", filterOf("unitsOf", filter, { owner: integer(player, "unitsOf: player") }));
+  rt.allUnits = (filter) => query("allUnits", filterOf("allUnits", filter, {}));
+  rt.first = (filter) => pick("first", "first", filterOf("first", filter, {}));
+  rt.randomUnit = (filter) => pick("randomUnit", "random", filterOf("randomUnit", filter, {}));
+  rt.nearest = (unit, location, filter) => {
+    const near = argValue2("location", location, "nearest: location");
+    if (near === 0 || near > 255) throw new ScriptError("nearest: the location to be near is one of locations.*.");
+    return pick("nearest", "nearest", filterOf("nearest", filter, { type: argValue2("unit", unit, "nearest: unit") }), near);
+  };
+  rt.underMouse = (player, filter) => {
+    let within = 48;
+    let rest = filter;
+    if (filter !== void 0 && filter !== null && typeof filter === "object" && !Array.isArray(filter) && "within" in filter) {
+      const { within: w, ...others } = filter;
+      rest = others;
+      if (w !== void 0 && w !== null) {
+        if (typeof w !== "number" || !Number.isInteger(w) || w < 1 || w > 4096) throw new ScriptError(`underMouse: within is a distance in pixels, 1 to 4096 (32 is a tile), got ${describe(w)}.`);
+        within = w;
+      }
+    }
+    const who = onePlayer(player, "underMouse: player", 8);
+    return { ...pick("underMouse", "nearest", filterOf("underMouse", rest, {})), mouse: who, within };
+  };
+  const inputValue = (ident, input, boolean) => {
+    const fail = () => {
+      throw new ScriptError(`${ident} is what a player does while the game runs: it has no value when the script is built. Inside program(), test it in an if or assign it to a let.`);
+    };
+    return { __trigscript: "input", input, boolean, ident, valueOf: fail, toString: fail };
+  };
+  const human = (v, what) => {
+    if (collector.running) throw new ScriptError(`${what.split(":")[0]}() asks what a player does while the game runs: use it inside program().`);
+    return onePlayer(v, what, 8);
+  };
+  rt.keyPressed = (player, key) => {
+    const name = typeof key === "string" ? keyName(key) : null;
+    const deaf = typeof key === "string" ? DEAF_KEYS[key.trim().toUpperCase()] : void 0;
+    if (deaf) throw new ScriptError(`keyPressed: ${deaf}.`);
+    if (!name) throw new ScriptError(`keyPressed: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} \u2026 "F1" \u2026 "Space", "Enter", "Escape", "Left" \u2026; got ${describe(key)}.`);
+    return inputValue(`keyPressed(\u2026, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, "keyPressed: player") }, true);
+  };
+  rt.clicked = (player, button = "left") => {
+    const b = typeof button === "string" ? button.trim().toLowerCase() : "";
+    if (!MOUSE_BUTTONS.includes(b)) throw new ScriptError(`clicked: the button is "left", "right" or "middle", got ${describe(button)}.`);
+    return inputValue(`clicked(\u2026, ${JSON.stringify(b)})`, { source: "click", button: b, player: human(player, "clicked: player") }, true);
+  };
+  rt.mouse = (player) => {
+    const who = human(player, "mouse: player");
+    return Object.freeze({ __trigscript: "mouse", x: inputValue("mouse(\u2026).x", { source: "mouse", axis: "x", player: who }, false), y: inputValue("mouse(\u2026).y", { source: "mouse", axis: "y", player: who }, false) });
+  };
+  rt.chatted = (player, pattern) => {
+    if (typeof pattern !== "string") throw new ScriptError(`chatted: the pattern is text such as "-give {n}", got ${describe(pattern)}.`);
+    let parsed;
+    try {
+      parsed = parseChatPattern(pattern);
+    } catch (err) {
+      throw new ScriptError(err instanceof Error ? err.message : String(err));
+    }
+    const who = human(player, "chatted: player");
+    const values = {};
+    parsed.captures.forEach((c2, i) => {
+      values[c2.name] = inputValue(`chatted(\u2026).${c2.name}`, { source: "chat", pattern, capture: i, player: who }, false);
+    });
+    return Object.freeze({ __trigscript: "chat", pattern: parsed, matched: inputValue("chatted(\u2026)", { source: "chat", pattern, capture: null, player: who }, true), values: Object.freeze(values) });
+  };
+  rt.centerLocation = () => {
+    throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement \u2014 centerLocation(locations.Cursor, x, y).");
+  };
+  const tableValue = (kind, field, index, ident, key) => {
+    const cell = {
+      name: `${kind}.${field.name}`,
+      base: field.base,
+      stride: field.stride,
+      index,
+      width: field.width,
+      ...key !== void 0 ? { key } : {},
+      ...field.bit !== void 0 ? { bit: field.bit } : {},
+      ...field.scale ? { scale: field.scale } : {},
+      ...kind === "player" ? { player: true } : {},
+      ...field.special ? { special: field.special } : {}
+    };
+    const fail = () => {
+      throw new ScriptError(`${ident} is a value the game holds: it has no value when the script is built. Inside program(), assign to it, assign it to a let, or use it in the program's own arithmetic and comparisons.`);
+    };
+    return { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail };
+  };
+  rt.stats = (of, brand) => {
+    const kind = typeof brand === "string" ? tableOfBrand(brand) : void 0;
+    if (!kind) throw new ScriptError("stats() takes a unit type, a weapon, an upgrade, a technology or a player, written where the compiler can see which: stats(units.TerranMarine), stats(P3) \u2014 inside program().");
+    const index = kind === "player" ? onePlayer(of, "stats: player", 12) : integer(of, `stats: ${kind}`);
+    if (index !== PlayerGroup.CurrentPlayer && index >= TABLE_SIZE[kind]) throw new ScriptError(`stats: ${kind} ${index} is past the table (0\u2013${TABLE_SIZE[kind] - 1}).`);
+    const who = `stats(${entryName(kind, index)})`;
+    const out = {};
+    for (const field of TABLE_FIELDS[kind]) {
+      if (!field.keyed) {
+        out[field.name] = tableValue(kind, field, index, `${who}.${field.name}`);
+        continue;
+      }
+      const { kind: keyKind } = field.keyed;
+      out[field.name] = Object.freeze(Array.from({ length: TABLE_SIZE[keyKind] }, (_, k) => tableValue(kind, field, index, `${who}.${field.name}[${entryName(keyKind, k)}]`, k)));
+    }
+    return Object.freeze(out);
+  };
+  const tableNames = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
+  const entryName = (kind, value) => {
+    const t = tableNames[kind];
+    const e = t.entries.find((x) => x.value === value);
+    return e ? `${t.object}.${e.keys[0]}` : String(value);
+  };
+  rt.colors = Object.freeze({ ...PLAYER_COLORS });
+  rt.name = (player) => textMark("n", onePlayer(player, "name: player", 12));
+  rt.color = (player) => textMark("c", onePlayer(player, "color: player", 12));
+  rt.print = (text, options2) => {
+    if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
+    let to = PlayerGroup.CurrentPlayer;
+    let position = "chat";
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`print: options is an object such as { to: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        if (key === "to") {
+          to = integer(value, "print: to");
+          const groups = [PlayerGroup.CurrentPlayer, PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+          if (to >= PLAYER_SLOTS && !groups.includes(to)) throw new ScriptError(`print: to is a player (P1 \u2026 P${PLAYER_SLOTS}), CurrentPlayer, AllPlayers or a force.`);
+        } else if (key === "position") {
+          if (value !== "chat" && value !== "center") throw new ScriptError(`print: position is "chat" or "center", got ${describe(value)}.`);
+          position = value;
+        } else throw new ScriptError(`print: unknown option "${key}".`);
+      }
+    }
+    return { __trigscript: "print", text, to, position };
+  };
+  rt.program = (body2, options2, at) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "program() takes an arrow function written directly in the call: program(() => { \u2026 })." : `program() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const out = { owners: [0], perPlayer: false };
+    if (options2 !== void 0 && options2 !== null) {
+      if (typeof options2 !== "object") throw new ScriptError(`program: options is an object such as { owner: P2 }, got ${describe(options2)}.`);
+      for (const [key, value] of Object.entries(options2)) {
+        switch (key) {
+          case "owner": {
+            const owners = playersOf(value, "program: owner");
+            if (owners.length === 0) throw new ScriptError("program: owner is a player, All Players, a force, or a list of players.");
+            const groups = [PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+            for (const o of owners) if (o >= PLAYER_SLOTS && !groups.includes(o)) throw new ScriptError(`program: the owner is a player (P1 \u2026 P${PLAYER_SLOTS}), AllPlayers, a force (players.Force1), or a list of players \u2014 the program runs once for each of them, with CurrentPlayer as that player.`);
+            out.owners = [...new Set(owners)];
+            out.perPlayer = out.owners.length > 1 || out.owners[0] >= PLAYER_SLOTS;
+            break;
+          }
+          case "name":
+            if (typeof value !== "string" || !value) throw new ScriptError(`program: name is a text, got ${describe(value)}.`);
+            out.name = value;
+            break;
+          case "comments":
+          case "variableUnits":
+            throw new ScriptError(`program: "${key}" was for programs built as death-counter triggers. Since TrigScript 3 a program is built by eudplib and has no triggers or death counters of its own; remove the option.`);
+          default:
+            throw new ScriptError(`program: unknown option "${key}".`);
+        }
+      }
+    }
+    collector.entries.push({ kind: "program", descriptor: body2, options: out, at: isAt(at) ? at : null });
+  };
+  rt.random = () => {
+    throw new ScriptError("random() is a coin toss and random(n) a number from 0 to n \u2212 1, both made by the game: use them inside program().");
+  };
+  rt.game = (body2) => {
+    if (!isProgramDescriptor(body2)) {
+      throw new ScriptError(typeof body2 === "function" ? "game() takes an arrow function written directly in the call: game((p: Player, n: number) => { \u2026 })." : `game() takes an arrow function, got ${describe(body2)}.`);
+    }
+    const fn = () => {
+      throw new ScriptError("A game() function runs in the game: call it inside program() or another game() function, not when the script is built.");
+    };
+    return Object.assign(fn, { __trigscript: "gamefn", descriptor: body2 });
+  };
+  return rt;
+}
+var isAt = (v) => Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && typeof v[1] === "number";
+
+// compiler/declarations.ts
+var DECLARATIONS_FILE = "trigscript.d.ts";
+var HEADER = `// \u2500\u2500 TrigScript \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Generated for the open map; rebuilt whenever the map's names change. Do not edit.
+//
+// A script is ordinary TypeScript that runs when you build: every trigger() it calls
+// becomes one trigger of the map, in order. Code inside program(() => { \u2026 }) runs in
+// the game instead (StarCraft: Remastered), built into the map when it is saved.
+`;
+function types(kw) {
+  return `
+${kw}type Brand<K extends string> = { readonly __kind?: K };
+/** A player or player group (P1 \u2026 P12, CurrentPlayer, AllPlayers, players.*, or a raw group number). */
+${kw}type Player<N extends number = number> = N & Brand<"player">;
+/** A unit type (units.*, or a raw units.dat id): what a condition or an action names. A unit on the map is a Unit. */
+${kw}type UnitType<N extends number = number> = N & Brand<"unit">;
+/** A weapon (weapons.*, or a raw weapons.dat id), for stats(). */
+${kw}type Weapon<N extends number = number> = N & Brand<"weapon">;
+/** An upgrade (upgrades.*, or a raw upgrades.dat id), for stats(). */
+${kw}type Upgrade<N extends number = number> = N & Brand<"upgrade">;
+/** A technology (techs.*, or a raw techdata.dat id), for stats(). */
+${kw}type Tech<N extends number = number> = N & Brand<"tech">;
+/** A player colour (colors.*), for stats(player).color. */
+${kw}type PlayerColor<N extends number = number> = N & Brand<"color">;
+${kw}type ColorName = __COLOR_NAMES__;
+/** A location (locations.*, or a raw 1-based location number; 0 = none). */
+${kw}type Location<N extends number = number> = N & Brand<"location">;
+/** A switch (switches.*, or a raw 0-based switch number). */
+${kw}type Switch<N extends number = number> = N & Brand<"switch">;
+/** An AI script (aiScripts.*; a four-character code or StarEdit name as a string also works). */
+${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
+/** A race (races.*), as race() returns it. */
+${kw}type Race<N extends number = number> = N & Brand<"race">;
+/** What holds a player's slot (slots.*), as slot() returns it. */
+${kw}type Slot<N extends number = number> = N & Brand<"slot">;
+/** A unit count: a number, or "All". */
+${kw}type Count = number | "All";
+/** A number of a program that stays within 0 \u2026 255: stored below zero it is 0, above 255 it is 255. A plain \`number\` is signed and wraps. */
+${kw}type u8 = number & Brand<"u8">;
+/** A number of a program that stays within 0 \u2026 65 535: stored below zero it is 0, above 65 535 it is 65 535. */
+${kw}type u16 = number & Brand<"u16">;
+/**
+ * A number of a program read as 0 \u2026 4 294 967 295, wrapping as \`x >>> 0\` does: for bit masks, hashes and a count past
+ * 2 147 483 647. A plain \`number\` is signed. The two do not mix in arithmetic without saying which is meant \u2014 u32(x), i32(x) \u2014
+ * but compare exactly: a number below zero is smaller than any u32.
+ */
+${kw}type u32 = number & Brand<"u32">;
+/** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
+${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
+
+/** A condition, as returned by bring(...), deaths(...), \u2026: give it to trigger(), or test it in an if inside program(). */
+${kw}interface Condition { readonly __condition: true; }
+/** An action, as returned by displayText(...), setDeaths(...), \u2026: give it to trigger(), or call it as a statement inside program(). */
+${kw}interface Action { readonly __action: true; }
+/** A trigger, as returned by trigger(). */
+${kw}interface Trigger { readonly __trigger: true; }
+/** A length of time, from seconds(), minutes() or frames(): what sleep() takes. */
+${kw}interface Duration { readonly __duration: true; }
+/** Conditions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
+${kw}type Conditions = readonly (Condition | Conditions | false | null | undefined)[];
+/** Actions, nested arrays allowed (they are flattened); false / null / undefined entries are skipped. */
+${kw}type Actions = readonly (Action | Actions | false | null | undefined)[];
+
+${kw}interface TriggerOptions {
+${TRIGGER_OPTION_NAMES.map(([, name]) => `  ${name}?: boolean;`).join("\n")}
+  /** Raw execution flags, ORed in. */
+  flags?: number;
+}
+
+/**
+ * A unit on the map, inside program() only: one of the game's units as it is right now. Get one from a
+ * loop \u2014 \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.hp = u.maxHp / 2;\` \u2014 or a pick,
+ * which may find none: \`const t = nearest(units.TerranMarine, locations.Beacon); if (t) t.order("move", locations.Exit);\`
+ * A variable may keep a unit across a sleep(). The game reuses a dead unit's place for a new one, so
+ * every use checks that the unit is still the one that was kept: once it is gone, its numbers read 0,
+ * its booleans false, and writing to it or telling it something does nothing. \`if (u)\` asks whether it is still there.
+ */
+${kw}interface Unit {
+  readonly __unit: true;
+  /** Hit points, in whole points as the game shows them. Writing 0 kills the unit. */
+  hp: number;
+  /** The type's hit points. */
+  readonly maxHp: number;
+  /** Shield points. */
+  shields: number;
+  /** The type's shield points. */
+  readonly maxShields: number;
+  /** Energy, 0 \u2026 255. */
+  energy: number;
+  /** Who owns the unit; give() changes it. */
+  readonly owner: Player;
+  /** What the unit is: \`if (u.type == units.TerranMarine)\`. */
+  readonly type: UnitType;
+  /** Where the unit is, in pixels (32 a tile). Read only: the game ends when a position is written. */
+  readonly x: number;
+  readonly y: number;
+  /** How many units it has killed, 0 \u2026 255. */
+  kills: number;
+  /** The orders.dat id of what the unit is doing (3 is standing guard, 6 moving, 10 attacking). */
+  readonly orderId: number;
+  /** Frames until the unit can attack or cast again, 0 \u2026 255; writing it holds the unit's fire that long. */
+  cooldown: number;
+  /** What a mineral field or a geyser still holds. */
+  resources: number;
+  /** Frames left of each effect, 0 \u2026 255: write one to start, lengthen or end it. Stim, ensnare and the rest tick down about every eighth frame. */
+  stim: number;
+  ensnare: number;
+  plague: number;
+  lockdown: number;
+  maelstrom: number;
+  irradiate: number;
+  stasis: number;
+  /** Whether the unit cannot be hurt. */
+  invincible: boolean;
+  readonly hallucinated: boolean;
+  readonly cloaked: boolean;
+  readonly burrowed: boolean;
+  /** True for about a second after something hit the unit. */
+  readonly underAttack: boolean;
+  /** Send the unit somewhere, as the Order action does, this unit alone. */
+  order(order: "move" | "patrol" | "attack", target: Location): void;
+  /** Hand the unit to another player. */
+  give(player: Player): void;
+  kill(): void;
+  /** Take the unit off the map without a death. */
+  remove(): void;
+  /** Take hit points away \u2014 so many, or a percentage of the type's maximum; at 0 the unit dies. Shields are left alone. */
+  damage(amount: number | { percent: number }): void;
+  /** Give hit points back, up to the type's maximum. */
+  heal(amount: number | { percent: number }): void;
+  /** Centre a location on the unit, its size kept: then createUnit(), moveUnit() and the rest can happen where the unit is. */
+  locate(location: Location): void;
+}
+/** Which units a loop or a pick looks at; a part left out matches all. units.Men, units.Buildings and units.Factories work as a type. */
+${kw}interface UnitFilter {
+  type?: UnitType;
+  owner?: Player;
+  /** Inside this location. */
+  at?: Location;
+}
+/** A key keyPressed() knows. F6 is not among them: the game reports no press of it. */
+${kw}type Key = __KEY_NAMES__;
+/** What a chatted() pattern's captures are read as: {n} a number, {unit:unit} a unit type, {kind:ore|gas} the place of the word in its list. */
+${kw}type ChatCapture<C extends string> = C extends \`\${infer N}:unit\` ? { readonly [K in N]: UnitType } : C extends \`\${infer N}:\${string}\` ? { readonly [K in N]: number } : { readonly [K in C]: number };
+${kw}type ChatValues<P extends string> = P extends \`\${string}{\${infer C}}\${infer Rest}\` ? ChatCapture<C> & ChatValues<Rest> : {};
+__STATS_TYPES__
+${kw}interface ProgramOptions {
+  /**
+   * Who the program runs for (default P1). One player: one thread, as that player. AllPlayers, a
+   * force (players.Force1) or a list of players: the program runs once for each of them at the
+   * same time, CurrentPlayer is that player, and every variable is per player \u2014 each player has
+   * their own copy (a variable declared with shared() is one cell they all share).
+   */
+  owner?: Player | readonly Player[];
+  /** What the program is called: in the Explorer's list, and by a test \u2014 sim.program("waves"). */
+  name?: string;
+}
+`;
+}
+var COLOR_NAMES = Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(" | ");
+var COLOR_TABLE = Object.entries(PLAYER_COLORS).map(([w, n]) => `readonly ${w}: PlayerColor<${n}>`).join("; ");
+function choiceTypes(kw) {
+  const out = [];
+  for (const [kind, name] of Object.entries(CHOICE_TYPES)) {
+    out.push(`${kw}type ${name} = ${choiceWords(kind).map((w) => JSON.stringify(w)).join(" | ")};`);
+  }
+  return out.join("\n");
+}
+function functions(kw) {
+  return `
+/**
+ * Define one trigger. The script's triggers become a contiguous, generated block of the
+ * map's trigger list in the order they are defined; hand-made triggers around it are left alone.
+ * @param players The player or players the trigger runs for.
+ * @param conditions Up to 16 conditions; a trigger with none never fires.
+ * @param actions Up to 64 actions.
+ * @param options Execution flags: { preserve: true } is the same as a preserveTrigger() action.
+ */
+${kw}function trigger(players: Player | readonly Player[], conditions: Conditions, actions: Actions, options?: TriggerOptions): Trigger;
+/**
+ * Code that runs in the game, every frame, from where it left off. Inside the arrow,
+ * variables hold whole numbers (32-bit and signed, wrapping at the ends; u8, u16 and u32 are
+ * the other widths), booleans, text, units and arrays (a const computed from them is
+ * one too, and cannot be reassigned; \`let p = { lives: 3 }\` is a record of them); if / else,
+ * while, do, for, switch, break, continue, ?: and functions (arguments passed by value,
+ * return values allowed) all work; conditions go in an if or while and
+ * actions stand as statements. The body runs until it sleeps or ends, all within one frame:
+ * a loop runs to completion at once, so a loop that goes on for ever needs a sleep() inside
+ * it \u2014 \`while (true) { \u2026; sleep(frames(1)); }\` is a game loop. Arithmetic: + \u2212 \xD7 / %,
+ * Math.min / max / abs, clamp(). Everything the body reads from outside (constants, helpers,
+ * conditions, actions) is computed when you build \u2014 the editor underlines those parts \u2014 so
+ * it cannot depend on the variables, except the amount of setResources / setDeaths /
+ * setScore / setCountdownTimer, the unit count of createUnit / killUnitAt / removeUnitAt /
+ * giveUnits and an action's unit type, which can be variables, and the text of displayText() /
+ * print(), which can hold numbers of the program. The game's own values are reads:
+ * minerals(P1), deaths(P1, unit), \u2026 and what the players do: keyPressed(), clicked(), mouse(), chatted().
+ *
+ * A map with a program in it needs StarCraft: Remastered: the programs are built into the
+ * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
+ */
+${kw}function program(body: () => void, options?: ProgramOptions): void;
+/**
+ * A function that runs in the game, for programs to call \u2014 from any file, imported like any
+ * other: \`export const award = game((p: Player, n: number) => { setResources(p, "add", n, "ore"); })\`.
+ * Its body follows program()'s rules; arguments pass by value and it may return a value. Calling it when the script is built is an error.
+ */
+${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
+/** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
+${kw}function hyperTriggers(owner?: Player): void;
+/** A coin toss, inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
+${kw}function random(): boolean;
+/** A whole number from 0 to n \u2212 1, picked by the game; inside program() only: \`let lane = random(3)\`. n may be a variable; 0 gives 0. */
+${kw}function random(n: number): number;
+/** A length of time in seconds, for sleep(): twenty-four frames a second at Fastest. */
+${kw}function seconds(n: number): Duration;
+/** A length of time in minutes, for sleep(). */
+${kw}function minutes(n: number): Duration;
+/** A length of time in frames of the game, for sleep(): sleep(frames(1)) ends this frame's turn and goes on in the next. */
+${kw}function frames(n: number): Duration;
+/** @deprecated The same as frames(): a program's clock is the frame. */
+${kw}function cycles(n: number): Duration;
+/**
+ * Pause the program, inside program() only: the statements after it run that much later, and nothing
+ * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); sleep(seconds(15)); }\`
+ * is a wave every fifteen seconds. Unlike wait(), it stalls no other trigger.
+ */
+${kw}function sleep(duration: Duration): void;
+/** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(\u2026)))\`. */
+${kw}function rose(condition: Condition | boolean): boolean;
+/** True the first time its condition holds, never again. Inside program(), in an if. */
+${kw}function once(condition: Condition | boolean): boolean;
+/** In a program that runs for several players, a variable they all share instead of one per player: \`let total = shared(0)\`. */
+${kw}function shared(initial: number): number;
+${kw}function shared(initial: boolean): boolean;
+${kw}function shared(initial: number[]): number[];
+${kw}function shared(initial: boolean[]): boolean[];
+/** The value kept within low \u2026 high: Math.min(Math.max(value, low), high). Works on variables inside program() and on numbers outside. */
+${kw}function clamp(value: number, low: number, high: number): number;
+/** The same 32 bits read as a u32: u32(-1) is 4 294 967 295. Costs nothing in a program; \`x >>> 0\` says the same. */
+${kw}function u32(value: number): u32;
+/** The same 32 bits read as a signed number: i32(4294967295) is -1. Costs nothing in a program; \`x | 0\` of a u32 says the same. */
+${kw}function i32(value: number): number;
+/**
+ * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
+ * number goes \u2014 \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,
+ * \`setResources(P2, "set", minerals(P1), "ore")\`. Every condition that compares a quantity is
+ * also a read when called without its comparison and amount: \`deaths(P1, units.TerranMarine)\`,
+ * \`bring(P1, units.AnyUnit, locations.Base)\`, \`score(P1, "kills")\`, \`countdownTimer()\`.
+ * What to read \u2014 the player, the unit, the location \u2014 is known when you build.
+ */
+/** A player's minerals. */
+${kw}function minerals(player: Player): number;
+/** A player's gas. */
+${kw}function gas(player: Player): number;
+/** A player's minerals, gas, or both added up: what accumulate() compares. */
+${kw}function resources(player: Player, resource: ResourceKind | number): number;
+/** How many units of a type a player has \u2014 at a location (what bring() compares) or anywhere (what command() compares). */
+${kw}function countUnits(player: Player, unit: UnitType, location?: Location): number;
+/** How many units of a type a player has killed: what kill() compares. */
+${kw}function kills(player: Player, unit: UnitType): number;
+/** The countdown timer, in game seconds: what countdownTimer() compares. A game second is sixteen frames, so at Fastest the timer runs about one and a half times as fast as sleep(seconds()). */
+${kw}function countdown(): number;
+/** Game seconds since the start: what elapsedTime() compares. A game second is sixteen frames: after sleep(seconds(14)) at Fastest it reads about 21. */
+${kw}function elapsed(): number;
+/** The race a player is playing, as one of races.*: \`if (race(CurrentPlayer) == races.Zerg)\`. */
+${kw}function race(player: Player): Race;
+/** What holds a player's slot, as one of slots.*: \`if (slot(P3) == slots.Computer)\` \u2014 a melee computer and a Use Map Settings one alike. */
+${kw}function slot(player: Player): Slot;
+/** Whether a person plays this slot. */
+${kw}function isHuman(player: Player): boolean;
+/** Whether the player has left the game (P1 \u2026 P8). A computer never does. */
+${kw}function hasLeft(player: Player): boolean;
+/**
+ * A player's supply as the top bar shows it: "used", "max" (the cap, 200 unless the map changed it)
+ * or "provided" (by depots, overlords, pylons). Of the race the player plays unless one is given.
+ */
+${kw}function supply(player: Player, of?: "used" | "max" | "provided", race?: Race): number;
+/** The races, as race() returns them and supply() takes them. */
+${kw}const races: { readonly Zerg: Race<0>; readonly Terran: Race<1>; readonly Protoss: Race<2> };
+/** What a slot can hold, as slot() returns it. */
+${kw}const slots: { readonly Empty: Slot<0>; readonly Computer: Slot<1>; readonly Human: Slot<2>; readonly Rescuable: Slot<3>; readonly Neutral: Slot<7> };
+/**
+ * Units on the map, inside program() only. Each of these looks through the game's 1700 unit slots when the
+ * line runs \u2014 once or a few times a second is nothing, every frame for every player adds up (the editor
+ * notes it at the end of the line). What to look for is known when you build. A loop over units runs
+ * within the frame: no sleep() inside it.
+ */
+/**
+ * What unitsAt(), unitsOf() and allUnits() give: the units of the game the filter matches, as they are when the line
+ * runs. They come in no order, so there is no place and no sort; filter() keeps them in an array of the program.
+ */
+${kw}interface UnitSet extends Iterable<Unit> {
+  /** \`unitsOf(P1).forEach((u) => u.heal(10));\` */
+  forEach(fn: (unit: Unit) => void): void;
+  some(fn: (unit: Unit) => boolean): boolean;
+  every(fn: (unit: Unit) => boolean): boolean;
+  /** One that matches, or null. */
+  find(fn: (unit: Unit) => boolean): Unit | null;
+  /** The ones that match, kept in an array: \`const weak = unitsOf(P1).filter((u) => u.hp < 20);\` */
+  filter(fn: (unit: Unit) => boolean): Unit[];
+  /** A number from each, in an array. */
+  map(fn: (unit: Unit) => number): number[];
+  map(fn: (unit: Unit) => boolean): boolean[];
+  /** \`const hp = unitsOf(P1).reduce((sum, u) => sum + u.hp, 0);\` */
+  reduce(fn: (so: number, unit: Unit) => number, start: number): number;
+  reduce(fn: (so: boolean, unit: Unit) => boolean, start: boolean): boolean;
+}
+/** The units inside a location: \`for (const u of unitsAt(locations.Pen, { owner: P2 })) u.kill();\` */
+${kw}function unitsAt(location: Location, filter?: Omit<UnitFilter, "at">): UnitSet;
+/** A player's units: \`for (const u of unitsOf(CurrentPlayer, { type: units.TerranMarine })) u.heal(10);\` */
+${kw}function unitsOf(player: Player, filter?: Omit<UnitFilter, "owner">): UnitSet;
+/** Every unit on the map the filter matches. */
+${kw}function allUnits(filter?: UnitFilter): UnitSet;
+/** The first unit the filter matches, or null. */
+${kw}function first(filter?: UnitFilter): Unit | null;
+/** The unit of a type nearest to the centre of a location, or null; units.AnyUnit for any type. */
+${kw}function nearest(unit: UnitType, location: Location, filter?: Omit<UnitFilter, "type">): Unit | null;
+/** One of the units the filter matches, picked by the game, or null. */
+${kw}function randomUnit(filter?: UnitFilter): Unit | null;
+/**
+ * The game's own tables, inside program() only: what a unit type costs, what a weapon does, a player's
+ * upgrades. Read a field as a number, assign to it, += it: \`stats(units.TerranMarine).minerals = 25;\`
+ * \`stats(weapons.GaussRifle).damage += 2;\` \`stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3;\`
+ * A write lasts for the game. Only fields seen working in StarCraft: Remastered are here.
+ */
+${kw}function stats(unit: UnitType): UnitTypeStats;
+${kw}function stats(weapon: Weapon): WeaponStats;
+${kw}function stats(upgrade: Upgrade): UpgradeStats;
+${kw}function stats(tech: Tech): TechStats;
+${kw}function stats(player: Player): PlayerStats;
+/** The player colours stats(player).color takes. */
+${kw}const colors: { __COLOR_TABLE__ };
+/**
+ * A player's name, for a text a program shows: displayText(\`\${name(CurrentPlayer)} wins\`). The game
+ * fills it in when the text is shown, so it works inside program() only.
+ */
+${kw}function name(player: Player): string;
+/** The colour code of a player's colour, for a text a program shows: \`\${color(P2)}\${name(P2)}\`. Inside program() only. */
+${kw}function color(player: Player): string;
+/**
+ * Show text, inside program() only. Like displayText(), whose text may hold the program's numbers too \u2014
+ * displayText(\`\${gold} gold left\`) \u2014 but for someone else, or in the middle of the screen where the
+ * game's own messages ("Not enough minerals") appear: print(\`Wave \${wave}\`, { to: AllPlayers, position: "center" }).
+ */
+${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
+/**
+ * What the players do, inside program() only. A key, a click and a typed line are true on the one
+ * frame they arrive, so look for them in a loop that runs every frame:
+ * \`while (true) { if (keyPressed(CurrentPlayer, "F2")) \u2026; sleep(frames(1)); }\`. They reach every
+ * player's computer in step, a few frames after they happen. The player is one of P1 \u2026 P8 or
+ * CurrentPlayer \u2014 in a program with \`{ owner: AllPlayers }\`, each player's own keys.
+ * The map gives up a little for it: one free location among the first 63 (nine when the mouse is read),
+ * the Valkyrie unit type, and Player 12 to hold the units that carry the input.
+ */
+/** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
+${kw}function keyPressed(player: Player, key: Key): boolean;
+/** True on the frame a player's press of a mouse button arrives ("left" when none is named). */
+${kw}function clicked(player: Player, button?: "left" | "right" | "middle"): boolean;
+/** Where a player's mouse is on the map, in pixels (32 to a tile): \`const at = mouse(CurrentPlayer);\` keeps the place as it is now. */
+${kw}function mouse(player: Player): { readonly x: number; readonly y: number };
+/** The unit nearest a player's mouse and no farther from it than \`within\` pixels (48 when not given), or null. */
+${kw}function underMouse(player: Player, filter?: UnitFilter & { within?: number }): Unit | null;
+/**
+ * What a player typed, on the frame the line arrives: null, or the values the pattern names.
+ * \`const m = chatted(CurrentPlayer, "-give {n}"); if (m) setResources(CurrentPlayer, "add", m.n, "ore");\`
+ * The pattern's own text is matched exactly and the whole line has to fit it. {n} reads a whole number
+ * (up to 1 048 575), {unit:unit} a unit type by its name \u2014 the rest of the line, so it comes last \u2014
+ * and {kind:ore|gas} one of the listed words, giving its place in the list (0, 1, \u2026); names and words
+ * match whatever the capitals. Up to three values. A game played alone has no chat: test these in a
+ * multiplayer game, which one person can host.
+ */
+${kw}function chatted<const P extends string>(player: Player, pattern: P): ChatValues<P> | null;
+/** Centre a location on a point of the map, in pixels, its size kept; inside program() only. With mouse(): \`centerLocation(locations.Cursor, at.x, at.y)\`, then createUnit() there. */
+${kw}function centerLocation(location: Location, x: number, y: number): void;
+/** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
+${kw}function disabled<T extends Condition | Action>(item: T): T;
+/**
+ * The opposite of a condition, for a trigger's conditions list: a comparison flips ("at least 3" becomes
+ * "at most 2"), a switch test flips, always becomes never. Throws for "exactly n" and for conditions the
+ * game cannot negate in one condition; inside program(), if (!\u2026) handles every condition.
+ */
+${kw}function not(condition: Condition): Condition;
+/** A condition by raw type number and record fields, for types the editor does not know. */
+${kw}function condition(${CONDITION_FIELDS.map((f) => `${f}?: number`).join(", ")}): Condition;
+/** An action by raw type number and record fields, for types the editor does not know. */
+${kw}function action(${ACTION_FIELDS.map((f) => `${f}?: number`).join(", ")}): Action;
+/** EUD: compare the 32-bit value at a memory address (1.16.1 layout; Remastered emulates it). deaths at player EPD(address). */
+${kw}function memory(address: number, comparison: Comparison | number, value: number): Condition;
+/** EUD: set / add to / subtract from the 32-bit value at a memory address (1.16.1 layout; Remastered emulates it). */
+${kw}function setMemory(address: number, modifier: Modifier | number, value: number): Action;
+/** Preserve Trigger: the trigger runs again next cycle instead of once. */
+${kw}function preserve(): Action;
+`;
+}
+function signature(kw, ident, def, returns) {
+  const all = scriptParams(def);
+  const params = all.map((p) => `${p.name}${p.optional ? "?" : ""}: ${argType(p.arg.kind)}`);
+  const doc = def.args.length ? `${def.name} \u2014 ${def.args.map((a2) => a2.label).join(", ")}` : def.name;
+  const out = `/** ${doc} */
+${kw}function ${ident}(${params.join(", ")}): ${returns};`;
+  if (returns !== "Condition" || !READ_ARITY.has(ident)) return out;
+  const read = all.filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount").map((p) => `${p.name}: ${argType(p.arg.kind)}`);
+  return `${out}
+/** ${def.name}, as a number: what the condition compares, read inside program(). */
+${kw}function ${ident}(${read.join(", ")}): number;`;
+}
+function tableDecl(kw, t, keep = () => true, note) {
+  const lines = [`/** ${t.doc} */`, `${kw}const ${t.object}: {`];
+  if (note) lines.push(`  // ${note}`);
+  for (const e of t.entries) e.keys.forEach((k, i) => {
+    if (keep(k, i)) lines.push(`  readonly ${propertyKey(k)}: ${t.type}<${e.value}>;`);
+  });
+  lines.push("};");
+  return lines.join("\n");
+}
+var identifierKey = (k) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k);
+var STATS_INTERFACES = {
+  unit: ["UnitTypeStats", "units.dat, for one unit type. Most fields reach the units made after the write; the ones already on the map keep what they were made with."],
+  weapon: ["WeaponStats", "weapons.dat, for one weapon: every unit using it follows at once."],
+  upgrade: ["UpgradeStats", "upgrades.dat, for one upgrade."],
+  tech: ["TechStats", "techdata.dat, for one technology."],
+  player: ["PlayerStats", "The player tables, for one player."]
+};
+function statsTypes(kw) {
+  return Object.keys(TABLE_FIELDS).map((kind) => {
+    const [name, doc] = STATS_INTERFACES[kind];
+    const lines = [`/** ${doc} */`, `${kw}interface ${name} {`];
+    for (const f of TABLE_FIELDS[kind]) {
+      const type = f.type ?? (f.boolean ? "boolean" : "number");
+      lines.push(`  /** ${f.doc}${f.writeOnly ? " Set only." : ""} */`);
+      lines.push(f.keyed ? `  readonly ${f.name}: { [${f.keyed.kind}: number]: ${type} };` : `  ${f.readonly ? "readonly " : ""}${f.name}: ${type};`);
+    }
+    lines.push("}");
+    return lines.join("\n");
+  }).join("\n");
+}
+function playerAliases(kw, names) {
+  const lines = [];
+  for (const e of names.players.entries) {
+    if (e.value < PLAYER_SLOTS) lines.push(`/** ${e.keys[1]} */
+${kw}const ${e.keys[0]}: Player<${e.value}>;`);
+  }
+  lines.push(`/** The player the trigger is running for. */
+${kw}const CurrentPlayer: Player<13>;`);
+  lines.push(`/** Every player. */
+${kw}const AllPlayers: Player<17>;`);
+  return lines.join("\n");
+}
+function tables(kw, names, compact) {
+  if (!compact) {
+    return allTables(names).map((t) => tableDecl(kw, t)).join("\n");
+  }
+  const isDefaultSwitch = (k) => /^Switch ?(\d+)$/.test(k);
+  return [
+    tableDecl(kw, names.players),
+    tableDecl(kw, names.units, (k) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k), `Every unit is also indexable by its StarEdit name: ${names.units.object}["Terran Marine"].`),
+    tableDecl(kw, names.locations),
+    tableDecl(kw, names.switches, (k) => {
+      const m = /^Switch(\d+)$/.exec(k);
+      return m ? Number(m[1]) <= 16 : !isDefaultSwitch(k);
+    }, "Switch1 \u2026 Switch256 exist; the first sixteen are listed. A switch given a name in the map is listed by that name."),
+    `/** AI scripts, by StarEdit name ("Terran Custom Level") or four-character code. */
+${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`,
+    ...[names.weapons, names.upgrades, names.techs].map((t) => tableDecl(kw, t, identifierKey))
+  ].join("\n");
+}
+function body(kw, typeKw, names, compact) {
+  return [
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", statsTypes(typeKw)),
+    choiceTypes(typeKw),
+    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
+    "// \u2500\u2500 Conditions \u2500\u2500",
+    ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
+    "",
+    "// \u2500\u2500 Actions \u2500\u2500",
+    ...[...ACTION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Action")),
+    "",
+    "// \u2500\u2500 The map \u2500\u2500",
+    playerAliases(kw, names),
+    tables(kw, names, compact)
+  ].join("\n");
+}
+var ARRAYS = `
+interface ArrayConstructor {
+  new <T = number>(arrayLength: number): T[];
+  <T = number>(arrayLength: number): T[];
+}
+`;
+var TESTING = `
+// \u2500\u2500 Tests: they run in the editor's simulator, never in the game, and cost the map nothing \u2500\u2500
+
+/** A unit of the simulated game, as a test sees it. */
+export interface SimUnit {
+  readonly type: UnitType; readonly owner: Player; readonly x: number; readonly y: number;
+  readonly hp: number; readonly maxHp: number; readonly shields: number; readonly maxShields: number; readonly energy: number;
+  readonly kills: number; readonly resources: number; readonly invincible: boolean; readonly burrowed: boolean; readonly cloaked: boolean; readonly hallucinated: boolean;
+  /** Still on the map. */
+  readonly alive: boolean;
+}
+
+/**
+ * The world a test is handed, new for every test: the map's placed units and locations, the script's
+ * programs at frame 0 and its trigger()s beside them, random() the same every run. Units are made, given,
+ * moved, killed and counted; nothing walks, fights or is built, and nothing dies but by the script or the test.
+ */
+export interface Sim {
+  /** Units for a player at a location's centre, as createUnit() makes them. They are given back. */
+  place(player: Player, type: UnitType, at: Location, count?: number): SimUnit[];
+  /** A unit dies: what a fight is in a test. \`by\`: the player whose kill it is. */
+  kill(unit: SimUnit, by?: Player): this;
+  /** A unit goes without dying. */
+  remove(unit: SimUnit): this;
+  give(unit: SimUnit, to: Player): this;
+  /** A unit to a location's centre, or to a point in pixels. */
+  move(unit: SimUnit, to: Location | { x: number; y: number }): this;
+
+  /** Run the game for so many frames (24 a second at Fastest). */
+  frames(n?: number): this;
+  seconds(n: number): this;
+  /** Run until \`done()\` is true. The test fails when \`most\` frames pass first (2400 unless said), so no test hangs. */
+  until(done: () => unknown, most?: number): this;
+  /** The frames run so far. */
+  readonly frame: number;
+  /** random() from this number on. Before anything that draws one. */
+  seed(n: number): this;
+
+  /** A key goes down for the next frame: what keyPressed() finds. */
+  press(key: Key, player?: Player): this;
+  click(button?: "left" | "right" | "middle", player?: Player): this;
+  /** A line of chat, for the next frame: what chatted() finds. */
+  type(line: string, player?: Player): this;
+  moveMouse(x: number, y: number, player?: Player): this;
+
+  count(player: Player, type: UnitType, at?: Location): number;
+  /** The units on the map, in the order of the game's unit table. */
+  units(filter?: { owner?: Player; type?: UnitType; at?: Location }): SimUnit[];
+  resources(player: Player): { ore: number; gas: number };
+  deaths(player: Player, type: UnitType): number;
+  kills(player: Player, type: UnitType): number;
+  switch(n: Switch): boolean;
+  /** Where a location is now: a program may have moved it. */
+  location(n: Location): { left: number; top: number; right: number; bottom: number } | undefined;
+
+  /**
+   * A program's variables, by their names in the source: numbers, booleans, texts, arrays, a record as an
+   * object, a unit (null for none). The program by the name its options give it \u2014 program(() => { \u2026 },
+   * { name: "waves" }) \u2014 or by its place in the script, from 0. Of a per-player program, \`player\`'s.
+   */
+  program(name?: string | number, player?: Player): Readonly<Record<string, any>>;
+
+  /** What was shown, in order: to anybody, or what one player saw. */
+  printed(player?: Player): string[];
+  /** Everything that happened, by frame. */
+  readonly events: readonly { frame: number; text: string; player: number; file?: string; line?: number }[];
+  /** What a program did that is always a mistake: an index past an array's end, the stack's depth, the heap full. One the test did not ask for (expect(sim).toHaveFaulted) fails it. */
+  readonly faults: readonly { message: string; cycle: number }[];
+}
+
+export interface Expectation<T> {
+  toBe(expected: T): void;
+  toEqual(expected: unknown): void;
+  toBeTruthy(): void;
+  toBeFalsy(): void;
+  toBeNull(): void;
+  toBeDefined(): void;
+  toBeUndefined(): void;
+  toBeGreaterThan(n: number): void;
+  toBeGreaterThanOrEqual(n: number): void;
+  toBeLessThan(n: number): void;
+  toBeLessThanOrEqual(n: number): void;
+  toContain(item: unknown): void;
+  toHaveLength(n: number): void;
+  toMatch(pattern: RegExp | string): void;
+  toThrow(message?: RegExp | string): void;
+  /** expect(sim): a text was shown \u2014 all of it, a part of it, or a pattern. \`to\`: to that player. */
+  toHavePrinted(text: RegExp | string, options?: { to?: Player }): void;
+  /** expect(sim): the simulator said a program did what is always a mistake. Asking is what lets the test go on past it. */
+  toHaveFaulted(message?: RegExp | string): void;
+}
+export function expect<T>(actual: T): Expectation<T> & { readonly not: Expectation<T> };
+
+export interface TestOptions {
+  /** Without the map's player settings the world has one player: this one. */
+  as?: Player;
+}
+type TestBody<A extends readonly unknown[] = []> = (sim: Sim, ...args: A) => void;
+interface TestEach<F> { <T>(cases: readonly T[]): (name: string, fn: F extends "suite" ? (...args: T extends readonly unknown[] ? T : [T]) => void : TestBody<T extends readonly unknown[] ? T : [T]>) => void }
+interface TestCall { (name: string, fn: TestBody): void; (name: string, options: TestOptions, fn: TestBody): void; each: TestEach<"test"> }
+interface SuiteCall { (name: string, body: () => void): void; each: TestEach<"suite"> }
+/** A test: ordinary TypeScript, run in the simulator after every compile that goes through. Not async: nothing in sim waits. */
+export const test: TestCall & { only: TestCall; skip: TestCall };
+export const it: typeof test;
+/** Tests under one name. */
+export const describe: SuiteCall & { only: SuiteCall; skip: SuiteCall };
+/** Before each test of this describe (or of the file) and of those inside it. */
+export function beforeEach(fn: (sim: Sim) => void): void;
+export function afterEach(fn: (sim: Sim) => void): void;
+`;
+function generateDeclarations(names = defaultScriptNames(), options = {}) {
+  const compact = options.compact === true;
+  const globals = body("declare ", "", names, compact);
+  if (compact) return `${HEADER}${globals}
+${ARRAYS}`;
+  const module = `${body("export ", "export ", names, false)}
+${TESTING}`.split("\n").map((l) => l ? `  ${l}` : l).join("\n");
+  return `${HEADER}${globals}
+${ARRAYS}
+// \u2500\u2500 The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; \u2500\u2500
+declare module "${MODULE_NAME}" {
+${module}
+}
+`;
+}
+
+// compiler/hoist.ts
+function isGameCall(checker, call) {
+  return !!checker.getPropertyOfType(checker.getTypeAtLocation(call.expression), "__game");
+}
+function declarationOf(ts, checker, id) {
+  let sym = ts.isShorthandPropertyAssignment(id.parent) && id.parent.name === id ? checker.getShorthandAssignmentValueSymbol(id.parent) : checker.getSymbolAtLocation(id);
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+  return sym?.valueDeclaration ?? sym?.declarations?.[0];
+}
+function libraryName(ts, checker, id) {
+  let sym = checker.getSymbolAtLocation(id);
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+  const decl = sym?.valueDeclaration ?? sym?.declarations?.[0];
+  if (!decl || decl.getSourceFile().fileName !== DECLARATIONS_FILE) return null;
+  return sym.name;
+}
+function libraryCallName(ts, checker, call) {
+  const callee = call.expression;
+  const id = ts.isIdentifier(callee) ? callee : ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name) ? callee.name : null;
+  return id ? libraryName(ts, checker, id) : null;
+}
+function owningDeclaration(ts, decl) {
+  let d = decl;
+  while (ts.isBindingElement(d) || ts.isArrayBindingPattern(d) || ts.isObjectBindingPattern(d)) d = d.parent;
+  return d;
+}
+var FORBIDDEN_INSIDE = /* @__PURE__ */ new Set(["trigger", "program", "hyperTriggers", "game"]);
+var GAME_CALLS = /* @__PURE__ */ new Set(["random", "sleep", "rose", "once", "shared"]);
+var READ_CALLS = /* @__PURE__ */ new Set([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
+var isReadCall = (lib, args) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
+var CALLBACK_METHODS = /* @__PURE__ */ new Set(["forEach", "some", "every", "find", "findIndex", "findLast", "findLastIndex", "reduce", "map", "filter", "sort"]);
+function isCallbackArgument(ts, node) {
+  if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return false;
+  let at = node;
+  while (ts.isParenthesizedExpression(at.parent)) at = at.parent;
+  const call = at.parent;
+  return ts.isCallExpression(call) && call.arguments.includes(at) && ts.isPropertyAccessExpression(call.expression) && CALLBACK_METHODS.has(call.expression.name.text);
+}
+function planProgram(ts, checker, arrow, options = {}) {
+  const forced = /* @__PURE__ */ new Set();
+  for (; ; ) {
+    const before = forced.size;
+    const plan = planOnce(ts, checker, arrow, options, forced);
+    if (forced.size === before) return plan;
+  }
+}
+function planOnce(ts, checker, arrow, options, forced) {
+  const plan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : void 0, hoisted: [], index: /* @__PURE__ */ new Map(), game: /* @__PURE__ */ new Set(), consts: /* @__PURE__ */ new Map(), constList: [], tree: [], errors: [], grows: /* @__PURE__ */ new Set() };
+  const error = (node, message) => plan.errors.push({ node, message });
+  const what = options.parameters ? "game()" : "program()";
+  if (!ts.isBlock(arrow.body)) {
+    if (!options.parameters) {
+      error(arrow.body, "program() takes an arrow with a block body: program(() => { \u2026 }).");
+      plan.body = ts.factory.createBlock([]);
+      return plan;
+    }
+    plan.expression = arrow.body;
+    plan.body = ts.factory.createBlock([]);
+  }
+  if (arrow.parameters.length && !options.parameters) error(arrow.parameters[0], "The program's arrow takes no parameters.");
+  if (arrow.asteriskToken || arrow.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) error(arrow, `A ${what} body cannot be async or a generator.`);
+  const declare = (node) => plan.game.add(node);
+  for (const p of arrow.parameters) {
+    if (!options.parameters) break;
+    if (!ts.isIdentifier(p.name)) error(p, "Destructured parameters are not supported in a game function.");
+    else if (p.dotDotDotToken) error(p, "Rest parameters are not supported in a game function.");
+    else declare(p);
+  }
+  const isFunctionValue = (n) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isClassExpression(n);
+  const collect = (node) => {
+    if (isFunctionValue(node)) return;
+    if (ts.isClassDeclaration(node)) {
+      declare(node);
+      for (const m of node.members) if (ts.isConstructorDeclaration(m) || ts.isMethodDeclaration(m) || ts.isAccessor(m)) for (const p of m.parameters) declare(p);
+    }
+    if (ts.isVariableDeclarationList(node) && !(node.flags & ts.NodeFlags.Const)) for (const d of node.declarations) declare(d);
+    if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && ts.isVariableDeclarationList(node.initializer)) for (const d of node.initializer.declarations) declare(d);
+    if (ts.isFunctionDeclaration(node)) {
+      declare(node);
+      for (const p of node.parameters) declare(p);
+    }
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      let init = node.initializer;
+      while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
+      if (ts.isNewExpression(init) && ts.isIdentifier(init.expression) && (init.expression.text === "Map" || init.expression.text === "Set")) declare(node);
+      else if (ts.isObjectLiteralExpression(init) && checker.getIndexInfosOfType(checker.getTypeAtLocation(node.name)).length > 0) declare(node);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(arrow.body);
+  const ARRAY_WRITERS = /* @__PURE__ */ new Set(["push", "pop", "fill"]);
+  const written = (node) => {
+    if (isFunctionValue(node)) return;
+    let target;
+    const left = ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? node.left : void 0;
+    if (left && (ts.isArrayLiteralExpression(left) || ts.isObjectLiteralExpression(left))) {
+      const places = (e) => {
+        if (ts.isArrayLiteralExpression(e)) e.elements.forEach(places);
+        else if (ts.isObjectLiteralExpression(e)) e.properties.forEach((p) => {
+          if (ts.isPropertyAssignment(p)) places(p.initializer);
+        });
+        else if (ts.isElementAccessExpression(e) || ts.isPropertyAccessExpression(e)) store(e);
+      };
+      places(left);
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) target = node.left;
+    else if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) target = node.operand;
+    else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ARRAY_WRITERS.has(node.expression.name.text)) target = node.expression;
+    while (target && (ts.isParenthesizedExpression(target) || ts.isNonNullExpression(target))) target = target.expression;
+    store(target);
+    ts.forEachChild(node, written);
+  };
+  const store = (target) => {
+    let root = target && (ts.isElementAccessExpression(target) || ts.isPropertyAccessExpression(target)) ? target.expression : void 0;
+    const direct = !!root && ts.isIdentifier(root);
+    while (root && (ts.isElementAccessExpression(root) || ts.isPropertyAccessExpression(root) || ts.isParenthesizedExpression(root) || ts.isNonNullExpression(root))) root = root.expression;
+    if (target && root && ts.isIdentifier(root) && (ts.isElementAccessExpression(target) || ts.isPropertyAccessExpression(target))) {
+      const decl = declarationOf(ts, checker, root);
+      if (decl && ts.isVariableDeclaration(decl) && decl.initializer && inside(decl)) {
+        const type = checker.getTypeAtLocation(decl.name);
+        if (checker.isArrayType(type) || checker.isTupleType(type)) {
+          if (plan.consts.has(decl)) forced.add(decl);
+          declare(decl);
+          if (!direct) return;
+          const name = root.text;
+          const member = ts.isPropertyAccessExpression(target) ? target.name.text : void 0;
+          const atLength = ts.isElementAccessExpression(target) && ts.isPropertyAccessExpression(target.argumentExpression) && target.argumentExpression.name.text === "length" && ts.isIdentifier(target.argumentExpression.expression) && target.argumentExpression.expression.text === name;
+          if (member === "push" || member === "pop" || member === "length" || atLength) plan.grows.add(decl);
+        }
+      }
+    }
+  };
+  const inside = (decl) => {
+    for (let n = decl; n; n = n.parent) if (n === arrow.body) return true;
+    return false;
+  };
+  written(arrow.body);
+  for (const decl of forced) declare(decl);
+  const gameCall = /* @__PURE__ */ new Map();
+  const isGame = (call) => {
+    let hit = gameCall.get(call);
+    if (hit === void 0) {
+      hit = isGameCall(checker, call);
+      gameCall.set(call, hit);
+    }
+    return hit;
+  };
+  const doesSomething = (fn) => {
+    let at = fn;
+    while (ts.isParenthesizedExpression(at.parent)) at = at.parent;
+    const call = at.parent;
+    if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "forEach") return false;
+    let found = false;
+    const look = (n) => {
+      if (found) return;
+      if (ts.isCallExpression(n) && libraryCallName(ts, checker, n)) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(n, look);
+    };
+    look(fn.body);
+    return found;
+  };
+  const memo = /* @__PURE__ */ new Map();
+  const isGameDecl = (decl) => plan.game.has(owningDeclaration(ts, decl));
+  const hoistable = (e) => {
+    const hit = memo.get(e);
+    if (hit !== void 0) return hit;
+    let ok = true;
+    const scan = (n) => {
+      if (!ok) return;
+      if (ts.isIdentifier(n)) {
+        identifier2(n, n.parent);
+        return;
+      }
+      ts.forEachChild(n, scan);
+    };
+    const identifier2 = (n, p) => {
+      const property = ts.isPropertyAccessExpression(p) && p.name === n;
+      if (ts.isPropertyAssignment(p) && p.name === n || ts.isMethodDeclaration(p) && p.name === n || ts.isQualifiedName(p)) return;
+      const lib = libraryName(ts, checker, n);
+      if (lib && GAME_CALLS.has(lib)) {
+        ok = false;
+        return;
+      }
+      if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p.parent) && p.parent.expression === p && property) {
+        ok = false;
+        return;
+      }
+      if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p) && p.expression === n) {
+        ok = false;
+        return;
+      }
+      if (property) return;
+      const decl = declarationOf(ts, checker, n);
+      if (decl && isGameDecl(decl)) {
+        ok = false;
+        return;
+      }
+    };
+    const check = (n) => {
+      if (!ok) return;
+      if (isCallbackArgument(ts, n) && doesSomething(n)) {
+        ok = false;
+        return;
+      }
+      if (isFunctionValue(n)) {
+        scan(n);
+        return;
+      }
+      if (ts.isIdentifier(n)) {
+        identifier2(n, n.parent);
+        return;
+      }
+      if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword || ts.isAwaitExpression(n) || ts.isYieldExpression(n)) {
+        ok = false;
+        return;
+      }
+      if (ts.isCallExpression(n) && isGame(n)) {
+        ok = false;
+        return;
+      }
+      if (ts.isCallExpression(n) && isReadCall(libraryCallName(ts, checker, n), n.arguments.length)) {
+        ok = false;
+        return;
+      }
+      if (ts.isBinaryExpression(n)) {
+        const k = n.operatorToken.kind;
+        if (k === ts.SyntaxKind.AmpersandAmpersandToken || k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.CommaToken || k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment) {
+          ok = false;
+          return;
+        }
+      }
+      if (ts.isPrefixUnaryExpression(n) && (n.operator === ts.SyntaxKind.ExclamationToken || n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) {
+        ok = false;
+        return;
+      }
+      if (ts.isPostfixUnaryExpression(n)) {
+        ok = false;
+        return;
+      }
+      ts.forEachChild(n, check);
+    };
+    check(e);
+    memo.set(e, ok);
+    return ok;
+  };
+  const hoist = (e, items) => {
+    const index = plan.hoisted.length;
+    plan.hoisted.push(e);
+    plan.index.set(e, index);
+    items.push({ kind: "hoist", index, expr: e });
+  };
+  const value = (e, items) => {
+    if (!e) return;
+    if (ts.isSpreadElement(e)) {
+      value(e.expression, items);
+      return;
+    }
+    if (hoistable(e)) {
+      hoist(e, items);
+      return;
+    }
+    descend(e, items);
+  };
+  const descend = (e, items) => {
+    if (isFunctionValue(e)) {
+      error(e, "A function written inside program() cannot use the program's variables; declare it with function so it is inlined, or move it outside.");
+      return;
+    }
+    if (ts.isIdentifier(e)) return;
+    if (ts.isPropertyAccessExpression(e)) {
+      value(e.expression, items);
+      return;
+    }
+    if (ts.isElementAccessExpression(e)) {
+      value(e.expression, items);
+      value(e.argumentExpression, items);
+      return;
+    }
+    if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
+      const lib = ts.isCallExpression(e) ? libraryCallName(ts, checker, e) : null;
+      if (lib && FORBIDDEN_INSIDE.has(lib)) error(e, `${lib}() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements.`);
+      if (!lib || !GAME_CALLS.has(lib)) value(ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) ? e.expression.expression : e.expression, items);
+      for (const a2 of e.arguments ?? []) {
+        let fn = a2;
+        while (ts.isParenthesizedExpression(fn)) fn = fn.expression;
+        if (isCallbackArgument(ts, fn)) callback(fn, items);
+        else value(a2, items);
+      }
+      return;
+    }
+    if (ts.isBinaryExpression(e)) {
+      value(e.left, items);
+      value(e.right, items);
+      return;
+    }
+    if (ts.isPrefixUnaryExpression(e) || ts.isPostfixUnaryExpression(e)) {
+      value(e.operand, items);
+      return;
+    }
+    if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e) || ts.isTypeAssertionExpression(e) || ts.isSpreadElement(e) || ts.isAwaitExpression(e) || ts.isTypeOfExpression(e) || ts.isVoidExpression(e) || ts.isDeleteExpression(e)) {
+      value(e.expression, items);
+      return;
+    }
+    if (ts.isConditionalExpression(e)) {
+      value(e.condition, items);
+      value(e.whenTrue, items);
+      value(e.whenFalse, items);
+      return;
+    }
+    if (ts.isTemplateExpression(e)) {
+      for (const s of e.templateSpans) value(s.expression, items);
+      return;
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      for (const el of e.elements) value(el, items);
+      return;
+    }
+    if (ts.isObjectLiteralExpression(e)) {
+      for (const p of e.properties) {
+        if (ts.isPropertyAssignment(p)) value(p.initializer, items);
+        else if (ts.isShorthandPropertyAssignment(p)) value(p.name, items);
+        else if (ts.isSpreadAssignment(p)) value(p.expression, items);
+      }
+      return;
+    }
+    ts.forEachChild(e, (c2) => {
+      if (ts.isExpression(c2)) value(c2, items);
+    });
+  };
+  const callback = (fn, items) => {
+    for (const p of fn.parameters) declare(p);
+    collect(fn.body);
+    written(fn.body);
+    memo.clear();
+    if (ts.isBlock(fn.body)) {
+      items.push({ kind: "block", items: block(fn.body.statements) });
+      return;
+    }
+    const inner = [];
+    value(fn.body, inner);
+    items.push({ kind: "block", items: inner });
+  };
+  const statement = (s, items, deferred) => {
+    if (ts.isVariableStatement(s)) {
+      declarations2(s.declarationList, items);
+      return;
+    }
+    if (ts.isExpressionStatement(s)) {
+      value(s.expression, items);
+      return;
+    }
+    if (ts.isBlock(s)) {
+      items.push({ kind: "block", items: block(s.statements) });
+      return;
+    }
+    if (ts.isIfStatement(s)) {
+      value(s.expression, items);
+      items.push({ kind: "block", items: block([s.thenStatement]) });
+      if (s.elseStatement) items.push({ kind: "block", items: block([s.elseStatement]) });
+      return;
+    }
+    if (ts.isWhileStatement(s)) {
+      value(s.expression, items);
+      items.push({ kind: "block", items: block([s.statement]) });
+      return;
+    }
+    if (ts.isDoStatement(s)) {
+      items.push({ kind: "block", items: block([s.statement]) });
+      value(s.expression, items);
+      return;
+    }
+    if (ts.isForStatement(s)) {
+      const inner = [];
+      if (s.initializer) {
+        if (ts.isVariableDeclarationList(s.initializer)) declarations2(s.initializer, inner);
+        else value(s.initializer, inner);
+      }
+      value(s.condition, inner);
+      inner.push({ kind: "block", items: block([s.statement]) });
+      value(s.incrementor, inner);
+      items.push({ kind: "block", items: inner });
+      return;
+    }
+    if (ts.isFunctionDeclaration(s)) {
+      if (s.body) deferred.push({ kind: "block", items: block(s.body.statements) });
+      return;
+    }
+    if (ts.isClassDeclaration(s)) {
+      deferred.push({ kind: "block", items: classItems(s) });
+      return;
+    }
+    if (ts.isReturnStatement(s)) {
+      value(s.expression, items);
+      return;
+    }
+    if (ts.isSwitchStatement(s)) {
+      value(s.expression, items);
+      for (const c2 of s.caseBlock.clauses) {
+        if (ts.isCaseClause(c2)) value(c2.expression, items);
+        items.push({ kind: "block", items: block(c2.statements) });
+      }
+      return;
+    }
+    if (ts.isForOfStatement(s) || ts.isForInStatement(s)) {
+      value(s.expression, items);
+      items.push({ kind: "block", items: block([s.statement]) });
+      return;
+    }
+    if (ts.isLabeledStatement(s)) {
+      statement(s.statement, items, deferred);
+      return;
+    }
+    if (ts.isThrowStatement(s)) {
+      value(s.expression, items);
+      return;
+    }
+  };
+  const classItems = (c2) => {
+    const items = [];
+    for (const m of c2.members) {
+      if (ts.isPropertyDeclaration(m)) value(m.initializer, items);
+      else if ((ts.isConstructorDeclaration(m) || ts.isMethodDeclaration(m) || ts.isAccessor(m)) && m.body) items.push({ kind: "block", items: block(m.body.statements) });
+    }
+    return items;
+  };
+  const declarations2 = (list, items) => {
+    const isConst = (list.flags & ts.NodeFlags.Const) !== 0;
+    for (const d of list.declarations) {
+      if (isConst && plan.game.has(d)) {
+        value(d.initializer, items);
+        continue;
+      }
+      if (isConst) {
+        if (!d.initializer) {
+          error(d, "A constant needs a value.");
+          continue;
+        }
+        if (hoistable(d.initializer)) {
+          plan.consts.set(d, plan.constList.length);
+          plan.constList.push(d);
+          items.push({ kind: "const", decl: d });
+          continue;
+        }
+        if (isFunctionValue(d.initializer)) {
+          error(d, `${ts.isIdentifier(d.name) ? d.name.text : "This constant"} is a function that uses the program's variables; declare it with function so it is inlined at each call.`);
+          continue;
+        }
+        plan.game.add(d);
+        memo.clear();
+        descend(d.initializer, items);
+        continue;
+      }
+      value(d.initializer, items);
+    }
+  };
+  const block = (statements2) => {
+    const items = [];
+    const deferred = [];
+    for (const s of statements2) statement(s, items, deferred);
+    items.push(...deferred);
+    return items;
+  };
+  if (plan.expression) {
+    const items = [];
+    value(plan.expression, items);
+    plan.tree = items;
+    return plan;
+  }
+  plan.tree = block(plan.body.statements);
+  return plan;
+}
+function hoistedFunction(ts, checker, plan, context) {
+  const f = ts.factory;
+  const h = f.createIdentifier("__h");
+  const c2 = f.createIdentifier("__c");
+  const m = f.createIdentifier("__m");
+  const arrow = (params, body3) => f.createArrowFunction(void 0, void 0, params.map((p) => f.createParameterDeclaration(void 0, void 0, p)), void 0, f.createToken(ts.SyntaxKind.EqualsGreaterThanToken), body3);
+  const constant = (id) => {
+    const decl = declarationOf(ts, checker, id);
+    if (!decl) return void 0;
+    const owner = owningDeclaration(ts, decl);
+    const i2 = ts.isVariableDeclaration(owner) ? plan.consts.get(owner) : void 0;
+    if (i2 === void 0) return void 0;
+    const call = f.createCallExpression(f.createElementAccessExpression(c2, f.createNumericLiteral(i2)), void 0, []);
+    return ts.isBindingElement(decl) && ts.isIdentifier(decl.name) ? f.createPropertyAccessExpression(call, decl.name.text) : call;
+  };
+  const rewrite = (node) => {
+    if (ts.isTypeNode(node)) return node;
+    if (ts.isIdentifier(node) && !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) && !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)) return constant(node) ?? node;
+    if (ts.isShorthandPropertyAssignment(node)) {
+      const value = constant(node.name);
+      return value ? f.createPropertyAssignment(node.name, value) : node;
+    }
+    return ts.visitEachChild(node, rewrite, context);
+  };
+  const expr = (e2) => f.createParenthesizedExpression(ts.visitNode(e2, rewrite));
+  const thunk = (e2) => arrow([], expr(e2));
+  const names = (pattern, into = []) => {
+    if (ts.isIdentifier(pattern)) into.push(pattern.text);
+    else for (const el of pattern.elements) if (ts.isBindingElement(el)) names(el.name, into);
+    return into;
+  };
+  const patternOf = (pattern) => {
+    if (ts.isIdentifier(pattern)) return pattern;
+    const element = (el) => ts.isBindingElement(el) ? f.updateBindingElement(el, el.dotDotDotToken, el.propertyName && ts.isComputedPropertyName(el.propertyName) ? ts.visitNode(el.propertyName, rewrite) : el.propertyName, patternOf(el.name), el.initializer ? ts.visitNode(el.initializer, rewrite) : void 0) : el;
+    return ts.isObjectBindingPattern(pattern) ? f.updateObjectBindingPattern(pattern, pattern.elements.map((el) => element(el))) : f.updateArrayBindingPattern(pattern, pattern.elements.map(element));
+  };
+  const patternThunk = (decl) => arrow([], f.createBlock([
+    f.createVariableStatement(void 0, f.createVariableDeclarationList([f.createVariableDeclaration(patternOf(decl.name), void 0, void 0, expr(decl.initializer))], ts.NodeFlags.Const)),
+    f.createReturnStatement(f.createObjectLiteralExpression(names(decl.name).map((n) => f.createShorthandPropertyAssignment(n))))
+  ], true));
+  const emit = (items) => items.map((item) => {
+    switch (item.kind) {
+      case "const": {
+        const i2 = plan.consts.get(item.decl);
+        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(c2, f.createNumericLiteral(i2)), f.createCallExpression(m, void 0, [f.createNumericLiteral(i2), ts.isIdentifier(item.decl.name) ? thunk(item.decl.initializer) : patternThunk(item.decl)])));
+      }
+      case "hoist":
+        return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), thunk(item.expr)));
+      case "block":
+        return f.createBlock(emit(item.items), true);
+    }
+  });
+  const d = f.createIdentifier("d");
+  const v = f.createIdentifier("v");
+  const e = f.createIdentifier("e");
+  const g = f.createIdentifier("g");
+  const i = f.createIdentifier("i");
+  const mark = f.createPropertyAccessExpression(e, "__trigscriptConst");
+  const rethrow = f.createCatchClause(f.createVariableDeclaration(e), f.createBlock([
+    f.createIfStatement(
+      f.createLogicalAnd(f.createBinaryExpression(e, ts.SyntaxKind.InstanceOfKeyword, f.createIdentifier("Object")), f.createStrictEquality(mark, f.createIdentifier("undefined"))),
+      f.createExpressionStatement(f.createAssignment(mark, i))
+    ),
+    f.createThrowStatement(e)
+  ]));
+  const getter = arrow([], f.createBlock([
+    f.createIfStatement(d, f.createReturnStatement(v)),
+    f.createTryStatement(f.createBlock([f.createExpressionStatement(f.createAssignment(v, f.createCallExpression(g, void 0, [])))]), rethrow, void 0),
+    f.createExpressionStatement(f.createAssignment(d, f.createTrue())),
+    f.createReturnStatement(v)
+  ], true));
+  const memo = arrow(["i", "g"], f.createBlock([
+    f.createVariableStatement(void 0, f.createVariableDeclarationList([f.createVariableDeclaration(d, void 0, void 0, f.createFalse()), f.createVariableDeclaration(v)], ts.NodeFlags.Let)),
+    f.createReturnStatement(getter)
+  ], true));
+  const body2 = f.createBlock([
+    f.createVariableStatement(void 0, f.createVariableDeclarationList([
+      f.createVariableDeclaration(h, void 0, void 0, f.createArrayLiteralExpression([])),
+      f.createVariableDeclaration(c2, void 0, void 0, f.createArrayLiteralExpression([])),
+      f.createVariableDeclaration(m, void 0, void 0, memo)
+    ], ts.NodeFlags.Const)),
+    ...emit(plan.tree),
+    f.createReturnStatement(f.createObjectLiteralExpression([f.createPropertyAssignment("h", h), f.createPropertyAssignment("c", c2)]))
+  ], true);
+  return arrow([], body2);
+}
+function transformer(ts, checker, ctx) {
+  return (context) => (sf) => {
+    const f = ts.factory;
+    const at = (node) => f.createArrayLiteralExpression([f.createNumericLiteral(ctx.fileIndex(sf)), f.createNumericLiteral(sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1)]);
+    const pad = (args, upTo) => {
+      const out = [...args];
+      while (out.length < upTo) out.push(f.createIdentifier("undefined"));
+      return out;
+    };
+    const visit = (node) => {
+      if (ts.isCallExpression(node)) {
+        const lib = libraryCallName(ts, checker, node);
+        if (lib === "trigger" && node.arguments.length >= 3 && node.arguments.length <= 4) {
+          const args = pad(node.arguments.map((a2) => ts.visitNode(a2, visit)), 4);
+          return f.updateCallExpression(node, node.expression, node.typeArguments, [...args, at(node)]);
+        }
+        if (lib === "program" && node.arguments.length >= 1 && node.arguments.length <= 2 || lib === "game" && node.arguments.length === 1) {
+          const arrow = node.arguments[0];
+          const plan = ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow) ? ctx.planFor(arrow) : void 0;
+          if (plan) {
+            const descriptor = f.createObjectLiteralExpression([
+              f.createPropertyAssignment("__trigscript", f.createStringLiteral("program")),
+              f.createPropertyAssignment("at", at(node)),
+              f.createPropertyAssignment("pos", f.createNumericLiteral(arrow.getStart(sf))),
+              f.createPropertyAssignment("hoisted", hoistedFunction(ts, checker, plan, context))
+            ], true);
+            const rest = lib === "program" ? pad(node.arguments.slice(1).map((a2) => ts.visitNode(a2, visit)), 1) : [];
+            return f.updateCallExpression(node, node.expression, node.typeArguments, [descriptor, ...rest, at(node)]);
+          }
+        }
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    return ts.visitNode(sf, visit);
+  };
+}
+
+// compiler/link.ts
+function resolvePath(from, spec) {
+  const base = from.split("/").slice(0, -1);
+  for (const part of spec.split("/")) {
+    if (part === "." || part === "") continue;
+    if (part === "..") base.pop();
+    else base.push(part);
+  }
+  return base.join("/");
+}
+function resolveModule(files, from, spec) {
+  if (!spec.startsWith("./") && !spec.startsWith("../")) return null;
+  const path = resolvePath(from, spec);
+  for (const candidate of [path, `${path}.ts`, path.replace(/\.js$/, ".ts"), `${path}/index.ts`]) if (files.has(candidate)) return candidate;
+  return null;
+}
+var SOURCE_URL_PREFIX = "trigscript://";
+function runModules(files, entry, library, moduleName, options = {}) {
+  const names = new Set(files.keys());
+  const cache = /* @__PURE__ */ new Map();
+  const globals = Object.keys(library).filter((k) => !options.imported?.includes(k));
+  const load = (file) => {
+    const hit = cache.get(file);
+    if (hit) return hit.exports;
+    const linked = files.get(file);
+    const module = { exports: {} };
+    cache.set(file, module);
+    const require2 = (spec) => {
+      if (spec === moduleName) return library;
+      const target = resolveModule(names, file, spec);
+      if (!target) {
+        throw new Error(spec.startsWith(".") ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.` : `Cannot import "${spec}": a script imports its own files (./name) and "${moduleName}" only.`);
+      }
+      return load(target);
+    };
+    const body2 = `${linked.js}
+//# sourceURL=${SOURCE_URL_PREFIX}${file}`;
+    const fn = new Function("exports", "require", "module", "__filename", ...globals, body2);
+    fn(module.exports, require2, module, file, ...globals.map((g) => library[g]));
+    return module.exports;
+  };
+  try {
+    load(entry);
+    for (const file of options.then ?? []) load(file);
+    return null;
+  } catch (err) {
+    return locate(err, files);
+  }
+}
+function locate(err, files) {
+  const message = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack ?? "" : "";
+  for (const m of stack.matchAll(/trigscript:\/\/([^\s:)]+):(\d+):(\d+)/g)) {
+    const file = m[1];
+    const linked = files.get(file);
+    if (!linked) continue;
+    const line = Number(m[2]) - 2;
+    const column = Number(m[3]);
+    const original = linked.map ? mapPosition(linked.map, line, column) : null;
+    return original ? { message, file, line: original.line, column: original.column } : { message, file, line: Math.max(1, line), column };
+  }
+  return { message };
+}
+var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function decodeVlq(s, at) {
+  let result = 0;
+  let shift = 0;
+  for (; ; ) {
+    const digit = B64.indexOf(s[at.i++]);
+    if (digit < 0) throw new Error("bad VLQ");
+    result += (digit & 31) << shift;
+    shift += 5;
+    if ((digit & 32) === 0) break;
+  }
+  const negative = result & 1;
+  result >>= 1;
+  return negative ? -result : result;
+}
+function mapPosition(mapJson, line, column) {
+  let mappings;
+  try {
+    mappings = JSON.parse(mapJson).mappings;
+  } catch {
+    return null;
+  }
+  const lines = mappings.split(";");
+  if (line < 1 || line > lines.length) return null;
+  let origLine = 0;
+  let origCol = 0;
+  let best = null;
+  try {
+    for (let l = 0; l < line; l++) {
+      let genCol = 0;
+      for (const seg of lines[l].split(",")) {
+        if (!seg) continue;
+        const at = { i: 0 };
+        genCol += decodeVlq(seg, at);
+        if (at.i >= seg.length) continue;
+        decodeVlq(seg, at);
+        origLine += decodeVlq(seg, at);
+        origCol += decodeVlq(seg, at);
+        if (l === line - 1 && genCol + 1 <= column) best = { line: origLine + 1, column: origCol + 1 };
+        if (l === line - 1 && best === null) best = { line: origLine + 1, column: origCol + 1 };
+      }
+    }
+  } catch {
+    return null;
+  }
+  return best;
+}
+
+// compiler/eud.ts
+function checkProgram(program) {
+  const errors = [];
+  const functions2 = new Map((program.functions ?? []).map((f) => [f.id, f]));
+  const decls = new Map(programDeclarations(program).map((d) => [d.id, d]));
+  const hints = [];
+  for (const body2 of bodiesOf(program)) {
+    WINDOWS = new Map((program.arrays ?? []).flatMap((a2) => a2.slice ? [[a2.id, a2.slice.of]] : []));
+    checkSleeps(body2, errors, functions2);
+    checkDivisions(body2, errors);
+    checkWidths(body2, errors, decls);
+    checkUnitLoops(body2, errors);
+    checkTextLoops(body2, errors);
+    remarks(body2, hints);
+  }
+  scans(program, hints);
+  return { errors, hints };
+}
+function expressions(body2, visit, pick) {
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "pick") pick?.(u);
+    else if (u.kind === "unitAt") {
+      expr(u.ptr);
+      expr(u.epd);
+      expr(u.uid);
+    }
+  };
+  const any = (e) => isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : expr(e);
+  const looks = { num: (e) => {
+    expr(e);
+    return e;
+  }, bool: (e) => {
+    expr(e);
+    return e;
+  }, call: (c2) => {
+    call(c2);
+    return c2;
+  } };
+  const text = (t) => {
+    mapText(t, looks);
+  };
+  const expr = (e) => {
+    visit(e);
+    if (mapTextOperands(e, looks)) return;
+    switch (e.kind) {
+      case "unitField":
+      case "unitPart":
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        break;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        break;
+      case "unary":
+      case "cast":
+        expr(e.expr);
+        break;
+      case "element":
+        expr(e.index);
+        break;
+      case "binary":
+      case "compare":
+        expr(e.left);
+        expr(e.right);
+        break;
+      case "ternary":
+        expr(e.cond);
+        expr(e.whenTrue);
+        expr(e.whenFalse);
+        break;
+      case "intrinsic":
+        e.args.forEach(expr);
+        break;
+      case "randomInt":
+        expr(e.bound);
+        break;
+      case "and":
+      case "or":
+        e.items.forEach(expr);
+        break;
+      case "not":
+        expr(e.expr);
+        break;
+      case "test":
+        expr(e.expr);
+        break;
+      case "edge":
+        expr(e.cond);
+        break;
+      case "call":
+        call(e.call);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) any(p.init);
+    c2.body.forEach(stmt);
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) any(s.init);
+        break;
+      case "assign":
+      case "assignBool":
+        expr(s.value);
+        break;
+      case "declareArray":
+        s.init?.forEach(expr);
+        if (s.fill) expr(s.fill);
+        break;
+      case "store":
+        expr(s.index);
+        expr(s.value);
+        break;
+      case "push":
+        expr(s.value);
+        break;
+      case "setLength":
+        expr(s.value);
+        break;
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "assignText":
+        text(s.value);
+        break;
+      case "storeText":
+        expr(s.index);
+        text(s.value);
+        break;
+      case "releaseText":
+        expr(s.index);
+        break;
+      case "textLoop":
+        text(s.of);
+        s.body.forEach(stmt);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        expr(s.value);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount);
+        break;
+      case "tableWrite":
+        any(s.value);
+        break;
+      case "if":
+        expr(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) expr(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        expr(s.cond);
+        break;
+      case "for":
+        if (s.cond) expr(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        expr(s.value);
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value) any(s.value);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) expr(v.expr);
+        if (s.text) text(s.text);
+        break;
+      case "centerLocation":
+        expr(s.x);
+        expr(s.y);
+        break;
+      case "print":
+        mapTextParts(s.parts, looks);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function statements(body2, visit) {
+  const stmt = (s) => {
+    visit(s);
+    switch (s.kind) {
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+      case "unitLoop":
+      case "textLoop":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function checkUnitLoops(body2, out) {
+  statements(body2, (s) => {
+    if (s.kind !== "unitLoop") return;
+    statements(s.body, (inner) => {
+      if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. To do something to one unit at a time, find it again after each sleep: while (true) { const u = first(\u2026); if (!u) break; u.kill(); sleep(seconds(1)); }" });
+    });
+  });
+}
+function checkTextLoops(body2, out) {
+  statements(body2, (s) => {
+    if (s.kind !== "textLoop") return;
+    statements(s.body, (inner) => {
+      if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a for\u2026of over a text: the loop walks the text once, within the frame. A loop over its places can sleep between turns: for (let i = 0; i < s.length; i++) { const ch = s[i]; \u2026 sleep(frames(2)); }" });
+    });
+  });
+}
+function scans(program, out) {
+  const SLOTS = "the game's 1700 unit slots";
+  const each = program.perPlayer ? ", once for each player the program runs for" : "";
+  const seen = /* @__PURE__ */ new Set();
+  const hint = (at, label, note) => {
+    const key = `${at.file}:${at.line}:${label}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ file: at.file, line: at.line, label, note });
+  };
+  for (const body2 of bodiesOf(program)) statements(body2, (s) => {
+    if (s.kind === "for" && s.sorts) hint(s.at, "sorts in the frame", `${s.sorts} is sorted where it stands, within the frame: each item is taken in hand and the ones that go after it moved up. Nearly in order already, that is a pass over the list; in no order it is the length squared \u2014 a few dozen items are nothing, a few hundred every frame will be felt.`);
+  });
+  const everywhere = (body2, visit) => {
+    statements(body2, visit);
+    expressions(body2, (e) => {
+      if (e.kind === "call") statements(e.call.body, visit);
+    });
+  };
+  for (const body2 of bodiesOf(program)) everywhere(body2, (s) => {
+    if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`);
+  });
+  for (const body2 of bodiesOf(program)) expressions(body2, () => {
+  }, (u) => hint(u.at, u.by === "random" ? "scans units \xD72" : "scans units", u.by === "random" ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.` : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));
+}
+function checkDivisions(body2, out) {
+  expressions(body2, (e) => {
+    if (e.kind !== "binary" || e.op !== "/" && e.op !== "%" || e.right.kind !== "const") return;
+    const d = e.right.value;
+    if (!Number.isInteger(d) || d === 0) out.push({ at: e.at, message: `Divide by a whole number other than 0, not ${d}.` });
+  });
+}
+function checkWidths(body2, out, decls) {
+  const fits = (id, value, at) => {
+    const d = decls.get(id);
+    if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
+    const max = 2 ** d.bits - 1;
+    if (value.value > max || value.value < 0) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 \u2026 ${max}, not ${value.value}.` });
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) fits(s.decl.id, s.init, s.at);
+        break;
+      case "assign":
+        fits(s.target, s.value, s.at);
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+      case "unitLoop":
+      case "textLoop":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at);
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function remarks(body2, out) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "remark":
+        if (s.short) out.push({ file: s.at.file, line: s.at.line, label: s.short, note: s.text });
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "do":
+      case "unitLoop":
+      case "textLoop":
+        s.body.forEach(stmt);
+        break;
+      case "for":
+        s.body.forEach(stmt);
+        s.update.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+function assigned(body2, functions2, into = /* @__PURE__ */ new Set()) {
+  const followed = /* @__PURE__ */ new Set();
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "action":
+      case "unitWrite":
+      case "unitDo":
+      case "tableWrite":
+      case "centerLocation":
+        into.add(THE_GAME);
+        break;
+      case "declare":
+        into.add(s.decl.id);
+        break;
+      case "assign":
+      case "assignBool":
+      case "assignUnit":
+      case "assignText":
+        into.add(s.target);
+        break;
+      case "textLoop":
+        into.add(s.decl.id);
+        s.body.forEach(stmt);
+        break;
+      case "store":
+      case "declareArray":
+      case "push":
+      case "pop":
+      case "setLength":
+        into.add(whole(s.array));
+        break;
+      case "storeText":
+        into.add(whole(s.addr));
+        break;
+      case "releaseText":
+        into.add(whole(s.block));
+        break;
+      case "unitLoop":
+        into.add(s.decl.id);
+        s.body.forEach(stmt);
+        break;
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+      case "for":
+        s.body.forEach(stmt);
+        if (s.kind === "for") s.update.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const call = (c2) => {
+    for (const p of c2.params) into.add(p.decl.id);
+    if (c2.result) into.add(c2.result.decl.id);
+    c2.body.forEach(stmt);
+    const f = c2.fn ? functions2.get(c2.fn) : void 0;
+    if (f && !followed.has(f.id)) {
+      followed.add(f.id);
+      f.body.forEach(stmt);
+      pops(f.body);
+    }
+  };
+  const pops = (stmts) => expressions(stmts, (e) => {
+    if (e.kind === "pop") into.add(whole(e.array));
+  });
+  body2.forEach(stmt);
+  pops(body2);
+  return into;
+}
+var THE_GAME = "(the game)";
+var WINDOWS = /* @__PURE__ */ new Map();
+var whole = (array) => WINDOWS.get(array) ?? array;
+function reads(e, into = /* @__PURE__ */ new Set()) {
+  const texts = { num: (x) => {
+    reads(x, into);
+    return x;
+  }, bool: (x) => {
+    reads(x, into);
+    return x;
+  }, call: (c2) => {
+    reads({ kind: "call", call: c2 }, into);
+    return c2;
+  }, text: (t) => {
+    if (t.kind === "textVar") into.add(t.id);
+    if (t.kind === "textAt") into.add(whole(t.addr));
+    return mapText(t, texts);
+  } };
+  if (mapTextOperands(e, texts)) return into;
+  switch (e.kind) {
+    case "var":
+      into.add(e.id);
+      break;
+    case "element":
+      into.add(whole(e.array));
+      reads(e.index, into);
+      break;
+    case "length":
+    case "pop":
+      into.add(whole(e.array));
+      break;
+    case "read":
+    case "cond":
+    case "tableRead":
+      into.add(THE_GAME);
+      break;
+    // What the players did is as it was when the frame began: nothing a loop does within the frame changes it.
+    case "input":
+      break;
+    case "unitField":
+    case "unitAlive":
+    case "unitFlag":
+      into.add(THE_GAME);
+      if (e.unit.kind === "unitVar") into.add(e.unit.id);
+      break;
+    case "unitSame":
+      for (const u of [e.left, e.right]) if (u.kind === "unitVar") into.add(u.id);
+      break;
+    case "randomInt":
+      reads(e.bound, into);
+      break;
+    case "unary":
+    case "cast":
+      reads(e.expr, into);
+      break;
+    case "binary":
+    case "compare":
+      reads(e.left, into);
+      reads(e.right, into);
+      break;
+    case "ternary":
+      reads(e.cond, into);
+      reads(e.whenTrue, into);
+      reads(e.whenFalse, into);
+      break;
+    case "intrinsic":
+      e.args.forEach((a2) => reads(a2, into));
+      break;
+    case "and":
+    case "or":
+      e.items.forEach((i) => reads(i, into));
+      break;
+    case "not":
+      reads(e.expr, into);
+      break;
+    case "test":
+      reads(e.expr, into);
+      break;
+    case "edge":
+      reads(e.cond, into);
+      break;
+    // A call reads what it is handed and what its body reads: `while (xs.some((x) => x > 0))` reads xs.
+    case "call":
+      for (const p of e.call.params) {
+        if (isTextExpr(p.init)) texts.text(p.init);
+        else if (p.init.kind !== "unitVar" && p.init.kind !== "unitNull") reads(p.init, into);
+      }
+      expressions(e.call.body, (inner) => {
+        if (inner.kind !== "call") reads(inner, into);
+      });
+      break;
+    default:
+      break;
+  }
+  return into;
+}
+function sleepsOnEveryPath(body2) {
+  for (const s of body2) {
+    switch (s.kind) {
+      case "sleep":
+        return true;
+      case "break":
+      case "return":
+        return true;
+      // Leaves the loop: no freeze on this path.
+      case "continue":
+        return false;
+      case "if":
+        if (s.else && sleepsOnEveryPath(s.then) && sleepsOnEveryPath(s.else)) return true;
+        break;
+      case "block":
+        if (sleepsOnEveryPath(s.body)) return true;
+        break;
+      case "unrolled":
+        if (s.iterations.some(sleepsOnEveryPath)) return true;
+        break;
+      case "switch": {
+        const hasDefault = s.cases.some((c2) => c2.value === null);
+        if (hasDefault && s.cases.every((c2) => sleepsOnEveryPath(c2.body))) return true;
+        break;
+      }
+      case "while":
+      case "do":
+      case "for":
+        if (sleepsOnEveryPath(s.body)) return true;
+        break;
+      case "call":
+        if (sleepsOnEveryPath(s.call.body)) return true;
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+function checkSleeps(body2, out, functions2) {
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "while":
+      case "for":
+      case "do": {
+        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body, functions2).has(id)) : false;
+        if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond ? "This loop's condition never changes inside it, and no path around it sleeps. A program runs until it sleeps or ends, all within one frame of the game, so this loop would never give the frame back and the game would freeze. Add sleep(frames(1)) inside it, or change what it tests." : "A loop without an end needs a sleep() on every path around it. A program runs until it sleeps or ends, all within one frame of the game, so this loop would freeze the game. Add sleep(frames(1)) at the end of its body." });
+        s.body.forEach(stmt);
+        if (s.kind === "for") s.update.forEach(stmt);
+        break;
+      }
+      case "if":
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "call":
+        s.call.body.forEach(stmt);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  body2.forEach(stmt);
+}
+
+// compiler/numbers.ts
+var FLAGS = new Set(UNIT_FLAGS);
+function typeNumbers(program) {
+  const errors = [];
+  const never = /* @__PURE__ */ new Set();
+  const stores = [];
+  let settled = false;
+  const decls = new Map(programDeclarations(program).map((d) => [d.id, d]));
+  const functions2 = new Map((program.functions ?? []).map((f) => [f.id, f]));
+  const arrays = new Map(program.arrays.map((a2) => [a2.id, a2]));
+  for (const a2 of program.arrays) if (a2.values && !a2.unsigned && a2.values.every((v) => v >= 0)) never.add(a2.id);
+  const mixed = (at, what) => errors.push({ at, message: `${what} mixes a number, which is signed, with a u32. Say which is meant: u32(x) reads a number's 32 bits from 0 up, i32(x) a u32's as a signed number.` });
+  const unify = (a2, b, at, what) => {
+    if (a2 === "flex") return b;
+    if (b === "flex" || a2 === b) return a2;
+    mixed(at, what);
+    return "i32";
+  };
+  const nonNegative = (e) => {
+    switch (e.kind) {
+      case "const":
+        return e.value >= 0 && e.value <= I32_MAX;
+      case "var":
+        return !!decls.get(e.id)?.bits || never.has(e.id);
+      case "element":
+      case "pop":
+        return !!arrays.get(e.array)?.bits || never.has(e.array);
+      case "length":
+      case "textLength":
+        return true;
+      case "read":
+      case "unitField":
+      case "tableRead":
+      case "input":
+      case "randomInt":
+        return true;
+      case "ternary":
+        return nonNegative(e.whenTrue) && nonNegative(e.whenFalse);
+      case "intrinsic":
+        return e.unsigned ? false : e.name === "min" ? e.args.every(nonNegative) : e.name === "max" ? e.args.some(nonNegative) : false;
+      case "binary":
+        if (e.unsigned) return false;
+        switch (e.op) {
+          case "&":
+            return nonNegative(e.left) || nonNegative(e.right);
+          case "|":
+          case "^":
+          case "/":
+            return nonNegative(e.left) && nonNegative(e.right);
+          case "%":
+          case ">>":
+            return nonNegative(e.left);
+          case ">>>":
+            return e.right.kind === "const" && e.right.value >= 1 && e.right.value <= 31;
+          default:
+            return false;
+        }
+      case "call":
+        return !!e.call.result?.decl.bits;
+      default:
+        return false;
+    }
+  };
+  const num2 = (e) => {
+    switch (e.kind) {
+      case "const":
+        return [e, e.value < 0 ? "i32" : e.value > I32_MAX ? "u32" : "flex"];
+      case "var":
+        return [e, decls.get(e.id)?.unsigned ? "u32" : "i32"];
+      case "element":
+        e.index = num2(e.index)[0];
+        return [e, arrays.get(e.array)?.unsigned ? "u32" : "i32"];
+      case "pop":
+        return [e, arrays.get(e.array)?.unsigned ? "u32" : "i32"];
+      // The length of an array that does not grow is a constant. Only on the pass that is for good: by then the front end has met every push.
+      case "length": {
+        const a2 = arrays.get(e.array);
+        return settled && a2 && !a2.dynamic ? [{ kind: "const", value: a2.length }, "flex"] : [e, "i32"];
+      }
+      case "cast": {
+        const inner = num2(e.expr)[0];
+        if (settled) return [inner, e.to];
+        e.expr = inner;
+        return [e, e.to];
+      }
+      case "unary": {
+        const [inner, t] = num2(e.expr);
+        e.expr = inner;
+        return [e, t === "u32" ? "u32" : "i32"];
+      }
+      case "binary": {
+        const [left, lt] = num2(e.left);
+        const [right, rt] = num2(e.right);
+        e.left = left;
+        e.right = right;
+        if (e.op === "<<" || e.op === ">>" || e.op === ">>>") {
+          if (e.op === ">>>" && right.kind === "const" && right.value === 0) return [settled ? left : e, "u32"];
+          if (e.op === ">>" && lt === "u32") e.op = ">>>";
+          return [e, lt === "flex" ? "i32" : lt];
+        }
+        const t = unify(lt, rt, e.at, `This ${e.op === "+" ? "sum" : e.op === "-" ? "difference" : e.op === "*" ? "product" : e.op === "/" || e.op === "%" ? "division" : "operation"}`);
+        if ((e.op === "/" || e.op === "%") && t === "u32") e.unsigned = true;
+        return [e, t === "flex" ? "i32" : t];
+      }
+      case "randomInt":
+        e.bound = floor(e.bound, e.at);
+        return [e, "i32"];
+      case "unitField":
+        unit(e.unit);
+        return [e, "i32"];
+      // A part of a unit is bits to keep, never a number to reckon with: read from 0 up, so nothing clamps or biases it.
+      case "unitPart":
+        unit(e.unit);
+        return [e, "u32"];
+      case "ternary": {
+        e.cond = bool(e.cond);
+        const [a2, at] = num2(e.whenTrue);
+        const [b, bt] = num2(e.whenFalse);
+        e.whenTrue = a2;
+        e.whenFalse = b;
+        return [e, unify(at, bt, e.at, "This ? :")];
+      }
+      case "intrinsic": {
+        const typed = e.args.map(num2);
+        e.args = typed.map(([a2]) => a2);
+        if (e.name === "abs") {
+          if (typed[0][1] === "u32") return [e.args[0], "u32"];
+          return [e, "i32"];
+        }
+        const t = typed.map(([, x]) => x).reduce((a2, b) => unify(a2, b, e.at, `Math.${e.name}()`));
+        if (t === "u32") e.unsigned = true;
+        return [e, t === "flex" ? "i32" : t];
+      }
+      case "call":
+        call(e.call);
+        return [e, e.call.result?.decl.unsigned ? "u32" : "i32"];
+      case "textLength":
+      case "textIndexOf":
+      case "textCode":
+        return [Object.assign(e, mapTextOperands(e, texts)), "i32"];
+      default:
+        return [e, "i32"];
+    }
+  };
+  const floor = (e, at, keepConstant = false) => {
+    const [value, t] = num2(e);
+    if (!settled || t === "u32" || nonNegative(value)) return value;
+    if (value.kind === "const") return keepConstant ? value : { kind: "const", value: 0 };
+    return { kind: "intrinsic", name: "max", args: [value, { kind: "const", value: 0 }], at, label: "label" in value ? value.label : "" };
+  };
+  const bool = (e) => {
+    switch (e.kind) {
+      case "test":
+        e.expr = num2(e.expr)[0];
+        return e;
+      case "element":
+        e.index = num2(e.index)[0];
+        return e;
+      case "compare": {
+        const [left, lt] = num2(e.left);
+        const [right, rt] = num2(e.right);
+        e.left = left;
+        e.right = right;
+        const leftU = lt === "u32" || lt === "flex" && rt === "u32";
+        const rightU = rt === "u32" || rt === "flex" && lt === "u32";
+        if (leftU && rightU) e.unsigned = true;
+        else if (leftU) e.unsigned = nonNegative(right) ? true : "left";
+        else if (rightU) e.unsigned = nonNegative(left) ? true : "right";
+        else if (nonNegative(left) && nonNegative(right)) e.unsigned = true;
+        return e;
+      }
+      case "and":
+      case "or":
+        e.items = e.items.map(bool);
+        return e;
+      case "not":
+        e.expr = bool(e.expr);
+        return e;
+      case "edge":
+        e.cond = bool(e.cond);
+        return e;
+      case "ternary":
+        e.cond = bool(e.cond);
+        e.whenTrue = bool(e.whenTrue);
+        e.whenFalse = bool(e.whenFalse);
+        return e;
+      case "unitAlive":
+      case "unitFlag":
+        unit(e.unit);
+        return e;
+      case "unitSame":
+        unit(e.left);
+        unit(e.right);
+        return e;
+      case "textCompare":
+      case "textTest":
+        return Object.assign(e, mapTextOperands(e, texts));
+      case "call":
+        call(e.call);
+        return e;
+      default:
+        return e;
+    }
+  };
+  const shown = (parts) => {
+    for (const p of parts) {
+      if (p.kind === "value") text(p.text);
+      if (p.kind !== "number") continue;
+      const [value, t] = num2(p.expr);
+      p.expr = value;
+      if (t === "u32") p.unsigned = true;
+    }
+  };
+  const text = (t) => {
+    if (t.kind === "template") {
+      shown(t.parts);
+      return t;
+    }
+    return Object.assign(t, mapText(t, texts));
+  };
+  const texts = { num: (e) => num2(e)[0], bool: (e) => bool(e), call: (c2) => {
+    call(c2);
+    return c2;
+  }, text };
+  const unit = (u) => {
+    if (u.kind === "call") call(u.call);
+    else if (u.kind === "unitAt") {
+      u.ptr = num2(u.ptr)[0];
+      u.epd = num2(u.epd)[0];
+      u.uid = num2(u.uid)[0];
+    }
+  };
+  const stored = (decl, value, at) => {
+    if (decl?.bits) return floor(value, at, true);
+    const [out, t] = num2(value);
+    if (decl && out.kind === "const" && value.kind === "const") {
+      if (!decl.unsigned && t === "u32") errors.push({ at, message: `${decl.name} is a number, which holds \u22122 147 483 648 \u2026 2 147 483 647, not ${out.value}. Declare it a u32 (let ${decl.name}: u32 = \u2026), or write i32(${out.value}) for the signed number with those bits.` });
+      if (decl.unsigned && out.value < 0) errors.push({ at, message: `${decl.name} is a u32, which holds 0 \u2026 4 294 967 295, not ${out.value}. Write u32(${out.value}) for the u32 with those bits.` });
+    }
+    if (!settled && decl && !decl.unsigned) stores.push([decl.id, out]);
+    return out;
+  };
+  const valueFor = (decl, value, at) => {
+    if (isTextExpr(value)) return text(value);
+    if (decl.kind === "number") return stored(decl, value, at);
+    if (decl.kind === "boolean") return bool(value);
+    unit(value);
+    return value;
+  };
+  let result;
+  const call = (c2) => {
+    for (const p of c2.params) p.init = valueFor(p.decl, p.init, c2.at);
+    const returned = c2.fn ? functions2.get(c2.fn)?.result?.decl : void 0;
+    if (!settled && returned && c2.result?.kind === "number" && !c2.result.decl.unsigned) stores.push([c2.result.decl.id, { kind: "var", id: returned.id }]);
+    const saved = result;
+    result = c2.result?.decl;
+    c2.body.forEach(stmt);
+    result = saved;
+  };
+  const stmt = (s) => {
+    switch (s.kind) {
+      case "declare":
+        if (!s.failed) s.init = valueFor(s.decl, s.init, s.at);
+        break;
+      case "assign":
+        s.value = stored(decls.get(s.target), s.value, s.at);
+        break;
+      case "assignBool":
+        s.value = bool(s.value);
+        break;
+      case "declareArray": {
+        const a2 = arrays.get(s.array);
+        const cell = (v) => a2?.kind === "boolean" ? bool(v) : stored(a2, v, s.at);
+        if (s.init) s.init = s.init.map(cell);
+        if (s.fill) s.fill = cell(s.fill);
+        break;
+      }
+      case "push": {
+        const a2 = arrays.get(s.array);
+        s.value = a2?.kind === "boolean" ? bool(s.value) : stored(a2, s.value, s.at);
+        break;
+      }
+      case "setLength":
+        s.value = floor(s.value, s.at);
+        break;
+      case "store": {
+        const a2 = arrays.get(s.array);
+        s.index = num2(s.index)[0];
+        s.value = a2?.kind === "boolean" ? bool(s.value) : stored(a2, s.value, s.at);
+        break;
+      }
+      case "assignUnit":
+        unit(s.value);
+        break;
+      case "assignText":
+        s.value = text(s.value);
+        break;
+      case "storeText":
+        s.index = num2(s.index)[0];
+        s.value = text(s.value);
+        break;
+      case "releaseText":
+        s.index = num2(s.index)[0];
+        break;
+      case "textLoop":
+        s.of = text(s.of);
+        s.body.forEach(stmt);
+        break;
+      case "unitLoop":
+        s.body.forEach(stmt);
+        break;
+      case "unitWrite":
+        unit(s.unit);
+        s.value = FLAGS.has(s.field) ? bool(s.value) : floor(s.value, s.at);
+        break;
+      case "unitDo":
+        unit(s.unit);
+        if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = floor(s.verb.amount, s.at);
+        break;
+      case "tableWrite":
+        s.value = isTextExpr(s.value) ? text(s.value) : s.boolean ? bool(s.value) : floor(s.value, s.at);
+        break;
+      case "if":
+        s.cond = bool(s.cond);
+        s.then.forEach(stmt);
+        s.else?.forEach(stmt);
+        break;
+      case "while":
+        if (s.cond) s.cond = bool(s.cond);
+        s.body.forEach(stmt);
+        break;
+      case "do":
+        s.body.forEach(stmt);
+        s.cond = bool(s.cond);
+        break;
+      case "for":
+        if (s.cond) s.cond = bool(s.cond);
+        s.update.forEach(stmt);
+        s.body.forEach(stmt);
+        break;
+      case "unrolled":
+        s.iterations.forEach((i) => i.forEach(stmt));
+        break;
+      case "switch":
+        s.value = num2(s.value)[0];
+        s.cases.forEach((c2) => c2.body.forEach(stmt));
+        break;
+      case "return":
+        if (s.value && result) s.value = valueFor(result, s.value, s.at);
+        break;
+      case "action":
+        for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at);
+        if (s.text) s.text = text(s.text);
+        break;
+      case "centerLocation":
+        s.x = floor(s.x, s.at);
+        s.y = floor(s.y, s.at);
+        break;
+      case "print":
+        shown(s.parts);
+        break;
+      case "call":
+        call(s.call);
+        break;
+      case "block":
+        s.body.forEach(stmt);
+        break;
+      default:
+        break;
+    }
+  };
+  const everything = () => {
+    program.body.forEach(stmt);
+    for (const f of program.functions ?? []) {
+      result = f.result?.decl;
+      f.body.forEach(stmt);
+      result = void 0;
+    }
+  };
+  everything();
+  for (const [id] of stores) never.add(id);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [id, value] of stores) if (never.has(id) && !nonNegative(value)) {
+      never.delete(id);
+      changed = true;
+    }
+  }
+  settled = true;
+  errors.length = 0;
+  everything();
+  return errors;
+}
+
+// compiler/recursion.ts
+var framed = (kind) => kind === void 0 || kind === "text" ? "number" : kind;
+var FLAGS2 = new Set(UNIT_FLAGS);
+function mentions(root, kind) {
+  if (Array.isArray(root)) return root.some((x) => mentions(x, kind));
+  if (!root || typeof root !== "object") return false;
+  const o = root;
+  if (o.kind === kind) return true;
+  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions(v, kind));
+}
+function cycles(functions2) {
+  const ids = new Set(functions2.map((f) => f.id));
+  const edges = /* @__PURE__ */ new Map();
+  for (const f of functions2) {
+    const to = /* @__PURE__ */ new Set();
+    eachCall(f.body, (c2) => {
+      if (c2.fn && ids.has(c2.fn)) to.add(c2.fn);
+    });
+    edges.set(f.id, to);
+  }
+  const index = /* @__PURE__ */ new Map();
+  const low = /* @__PURE__ */ new Map();
+  const stack = [];
+  const on = /* @__PURE__ */ new Set();
+  const component = /* @__PURE__ */ new Map();
+  let next = 0;
+  let components = 0;
+  for (const root of ids) {
+    if (index.has(root)) continue;
+    const work = [];
+    const enter = (id) => {
+      index.set(id, next);
+      low.set(id, next);
+      next++;
+      stack.push(id);
+      on.add(id);
+      work.push({ id, out: [...edges.get(id)], i: 0 });
+    };
+    enter(root);
+    while (work.length) {
+      const w = work[work.length - 1];
+      if (w.i < w.out.length) {
+        const to = w.out[w.i++];
+        if (!index.has(to)) enter(to);
+        else if (on.has(to)) low.set(w.id, Math.min(low.get(w.id), index.get(to)));
+        continue;
+      }
+      work.pop();
+      const parent = work[work.length - 1];
+      if (parent) low.set(parent.id, Math.min(low.get(parent.id), low.get(w.id)));
+      if (low.get(w.id) !== index.get(w.id)) continue;
+      const members = [];
+      for (; ; ) {
+        const id = stack.pop();
+        on.delete(id);
+        members.push(id);
+        if (id === w.id) break;
+      }
+      if (members.length > 1 || edges.get(w.id).has(w.id)) {
+        for (const id of members) component.set(id, components);
+        components++;
+      }
+    }
+  }
+  return component;
+}
+function markRecursion(program) {
+  const functions2 = program.functions ?? [];
+  const component = cycles(functions2);
+  for (const f of functions2) {
+    if (!component.has(f.id)) continue;
+    f.recursive = true;
+    const remark = f.body[0];
+    if (remark?.kind !== "remark") continue;
+    remark.short = `${remark.short ?? "called"}, calls itself`;
+    remark.text = `${remark.text} It calls itself: around each such call its variables are kept on a stack, as deep as the script's Settings allow (${STACK_DEPTH.toLocaleString("en-US")} calls unless the map says otherwise).`;
+  }
+}
+function settleRecursion(program) {
+  const functions2 = program.functions ?? [];
+  const component = cycles(functions2);
+  if (!component.size) return [];
+  const errors = [];
+  const arrays = new Map(program.arrays.map((a2) => [a2.id, a2]));
+  let nextId = 0;
+  for (const f of functions2) {
+    const mine = component.get(f.id);
+    if (mine === void 0) continue;
+    f.recursive = true;
+    const own = new Set([...f.params, ...f.result ? [f.result.decl] : [], ...declarations(f.body)].map((d) => d.id));
+    const comesBack = (c2) => c2.fn ? component.get(c2.fn) === mine : risky([c2.params.map((p) => p.init), c2.body]);
+    const risky = (root) => {
+      let found = false;
+      eachCall(root, (c2) => {
+        if (c2.fn && component.get(c2.fn) === mine) found = true;
+      });
+      return found;
+    };
+    const temp = (name, kind, at) => {
+      const decl = { id: `(${name})#r${nextId++}`, name: `(${name})`, kind, shared: false, temp: true, at };
+      own.add(decl.id);
+      return decl;
+    };
+    const ref = (decl) => decl.kind === "unit" ? { kind: "unitVar", id: decl.id } : { kind: "var", id: decl.id };
+    const steady = (e) => e.kind === "const" || e.kind === "unitNull" || (e.kind === "var" || e.kind === "unitVar") && own.has(e.id);
+    const operands = (items, pre, w) => {
+      let last = -1;
+      items.forEach((x, i) => {
+        if (risky(x.e)) last = i;
+      });
+      return items.map((x, i) => {
+        const e = rewrite(x.e, x.kind, pre, w);
+        if (i >= last || steady(e)) return e;
+        const decl = temp("kept", x.kind, w.at);
+        pre.push({ kind: "declare", decl, init: e, at: w.at, label: w.label });
+        return ref(decl);
+      });
+    };
+    const settleCall = (c2, pre, w) => {
+      const plain = c2.params.filter((p) => !isTextExpr(p.init));
+      const inits = operands(plain.map((p) => ({ e: p.init, kind: framed(p.decl.kind) })), pre, w);
+      plain.forEach((p, i) => {
+        p.init = inits[i];
+      });
+      for (const p of c2.params) if (isTextExpr(p.init)) p.init = rewriteText(p.init, pre, w);
+      if (!c2.fn) c2.body = body2(c2.body, c2.result ? framed(c2.result.kind) : void 0);
+    };
+    const choice = (kind, cond, whenTrue, whenFalse, pre, w) => {
+      const decl = temp("chosen", kind, w.at);
+      const arm = (e) => {
+        const inner = [];
+        const value = rewrite(e, kind, inner, w);
+        inner.push(kind === "number" ? { kind: "assign", target: decl.id, value, at: w.at, label: w.label } : { kind: "assignBool", target: decl.id, value, at: w.at, label: w.label });
+        return inner;
+      };
+      const c2 = rewrite(cond, "boolean", pre, w);
+      pre.push({ kind: "declare", decl, init: kind === "number" ? { kind: "const", value: 0 } : { kind: "const", value: false }, at: w.at, label: w.label });
+      pre.push({ kind: "if", cond: c2, then: arm(whenTrue), else: arm(whenFalse), at: w.at, label: w.label });
+      return ref(decl);
+    };
+    const chain = (e, pre, w) => {
+      const k = e.items.findIndex((item, i) => i >= 1 && risky(item));
+      if (k < 0) return { ...e, items: operands(e.items.map((x) => ({ e: x, kind: "boolean" })), pre, w) };
+      const head = e.items.slice(0, k).map((x) => rewrite(x, "boolean", pre, w));
+      const decl = temp("so far", "boolean", w.at);
+      pre.push({ kind: "declare", decl, init: head.length === 1 ? head[0] : { kind: e.kind, items: head }, at: w.at, label: w.label });
+      const undecided = e.kind === "and" ? { kind: "var", id: decl.id } : { kind: "not", expr: { kind: "var", id: decl.id } };
+      for (const item of e.items.slice(k)) {
+        const inner = [];
+        const value = rewrite(item, "boolean", inner, w);
+        inner.push({ kind: "assignBool", target: decl.id, value, at: w.at, label: w.label });
+        pre.push({ kind: "if", cond: undecided, then: inner, at: w.at, label: w.label });
+      }
+      return { kind: "var", id: decl.id };
+    };
+    const rewriteText = (t, pre, w) => {
+      if (!risky(t)) return t;
+      if (t.kind === "textCall") {
+        const c2 = t.call;
+        if (!comesBack(c2)) {
+          settleCall(c2, pre, w);
+          return t;
+        }
+        settleCall(c2, pre, { at: c2.at, label: c2.label });
+        pre.push({ kind: "call", call: c2, at: c2.at, label: c2.label });
+        return c2.result ? { kind: "textVar", id: c2.result.decl.id } : { kind: "text", text: "" };
+      }
+      const inside = { num: (x) => rewrite(x, "number", pre, w), bool: (x) => rewrite(x, "boolean", pre, w), call: (c2) => c2, text: (x) => rewriteText(x, pre, w) };
+      return mapText(t, inside);
+    };
+    const rewrite = (e, kind, pre, w) => {
+      if (!risky(e)) return e;
+      if (e.kind !== "call") {
+        const ofTexts = mapTextOperands(e, { num: (x) => rewrite(x, "number", pre, w), bool: (x) => rewrite(x, "boolean", pre, w), call: (c2) => c2, text: (x) => rewriteText(x, pre, w) });
+        if (ofTexts) return ofTexts;
+      }
+      const one = (x, k) => rewrite(x, k, pre, w);
+      switch (e.kind) {
+        case "call": {
+          const c2 = e.call;
+          if (!comesBack(c2)) {
+            settleCall(c2, pre, w);
+            return e;
+          }
+          settleCall(c2, pre, { at: c2.at, label: c2.label });
+          pre.push({ kind: "call", call: c2, at: c2.at, label: c2.label });
+          return c2.result ? ref(c2.result.decl) : kind === "number" ? { kind: "const", value: 0 } : kind === "boolean" ? { kind: "const", value: false } : { kind: "unitNull" };
+        }
+        case "ternary":
+          if (risky(e.whenTrue) || risky(e.whenFalse)) return choice(kind === "boolean" ? "boolean" : "number", e.cond, e.whenTrue, e.whenFalse, pre, w);
+          return { ...e, cond: one(e.cond, "boolean") };
+        case "and":
+        case "or":
+          return chain(e, pre, w);
+        case "not":
+          return { ...e, expr: one(e.expr, "boolean") };
+        case "test":
+          return { ...e, expr: one(e.expr, "number") };
+        case "edge":
+          return { ...e, cond: one(e.cond, "boolean") };
+        case "unary":
+        case "cast":
+          return { ...e, expr: one(e.expr, "number") };
+        case "element":
+          return { ...e, index: one(e.index, "number") };
+        case "randomInt":
+          return { ...e, bound: one(e.bound, "number") };
+        case "unitField":
+        case "unitPart":
+          return { ...e, unit: one(e.unit, "unit") };
+        case "unitAlive":
+        case "unitFlag":
+          return { ...e, unit: one(e.unit, "unit") };
+        case "binary":
+        case "compare": {
+          const [left, right] = operands([{ e: e.left, kind: "number" }, { e: e.right, kind: "number" }], pre, w);
+          return { ...e, left, right };
+        }
+        case "unitSame": {
+          const [left, right] = operands([{ e: e.left, kind: "unit" }, { e: e.right, kind: "unit" }], pre, w);
+          return { ...e, left, right };
+        }
+        case "intrinsic":
+          return { ...e, args: operands(e.args.map((a2) => ({ e: a2, kind: "number" })), pre, w) };
+        case "unitAt": {
+          const [ptr, epd, uid] = operands([e.ptr, e.epd, e.uid].map((x) => ({ e: x, kind: "number" })), pre, w);
+          return { ...e, ptr, epd, uid };
+        }
+        default:
+          return e;
+      }
+    };
+    const leaveUnless = (cond, w) => {
+      const pre = [];
+      const c2 = rewrite(cond, "boolean", pre, w);
+      pre.push({ kind: "if", cond: { kind: "not", expr: c2 }, then: [{ kind: "break", at: w.at, label: w.label }], at: w.at, label: w.label });
+      return pre;
+    };
+    const body2 = (statements2, returns) => {
+      const out = [];
+      for (const s of statements2) {
+        if (!risky(s)) {
+          out.push(s);
+          continue;
+        }
+        const w = { at: s.at, label: "label" in s ? s.label : "" };
+        const pre = [];
+        const value = (e, k) => rewrite(e, k, pre, w);
+        const arrayKind = (id) => arrays.get(id)?.kind ?? "number";
+        switch (s.kind) {
+          case "declare":
+            s.init = isTextExpr(s.init) ? rewriteText(s.init, pre, w) : value(s.init, framed(s.decl.kind));
+            break;
+          case "assignText":
+            s.value = rewriteText(s.value, pre, w);
+            break;
+          case "storeText":
+            s.value = rewriteText(s.value, pre, w);
+            s.index = value(s.index, "number");
+            break;
+          case "releaseText":
+            s.index = value(s.index, "number");
+            break;
+          case "assign":
+            s.value = value(s.value, "number");
+            break;
+          case "assignBool":
+            s.value = value(s.value, "boolean");
+            break;
+          case "assignUnit":
+            s.value = value(s.value, "unit");
+            break;
+          case "declareArray":
+            if (s.init) s.init = operands(s.init.map((e) => ({ e, kind: arrayKind(s.array) })), pre, w);
+            if (s.fill) s.fill = value(s.fill, arrayKind(s.array));
+            break;
+          case "store": {
+            const [v, i] = operands([{ e: s.value, kind: arrayKind(s.array) }, { e: s.index, kind: "number" }], pre, w);
+            s.value = v;
+            s.index = i;
+            break;
+          }
+          case "push":
+            s.value = value(s.value, arrayKind(s.array));
+            break;
+          case "setLength":
+            s.value = value(s.value, "number");
+            break;
+          case "unitWrite": {
+            const [u, v] = operands([{ e: s.unit, kind: "unit" }, { e: s.value, kind: FLAGS2.has(s.field) ? "boolean" : "number" }], pre, w);
+            s.unit = u;
+            s.value = v;
+            break;
+          }
+          case "unitDo": {
+            const items = [{ e: s.unit, kind: "unit" }];
+            if (s.verb.do === "damage" || s.verb.do === "heal") items.push({ e: s.verb.amount, kind: "number" });
+            const done = operands(items, pre, w);
+            s.unit = done[0];
+            if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = done[1];
+            break;
+          }
+          case "tableWrite":
+            s.value = isTextExpr(s.value) ? rewriteText(s.value, pre, w) : value(s.value, s.boolean ? "boolean" : "number");
+            break;
+          case "return":
+            if (s.value) s.value = isTextExpr(s.value) ? rewriteText(s.value, pre, w) : value(s.value, returns ?? "number");
+            break;
+          case "action": {
+            const done = operands((s.variables ?? []).map((v) => ({ e: v.expr, kind: "number" })), pre, w);
+            s.variables?.forEach((v, i) => {
+              v.expr = done[i];
+            });
+            if (s.text) s.text = rewriteText(s.text, pre, w);
+            break;
+          }
+          case "centerLocation":
+            [s.x, s.y] = operands([{ e: s.x, kind: "number" }, { e: s.y, kind: "number" }], pre, w);
+            break;
+          case "print": {
+            const numbers = s.parts.filter((p) => p.kind === "number");
+            const done = operands(numbers.map((p) => ({ e: p.expr, kind: "number" })), pre, w);
+            numbers.forEach((p, i) => {
+              p.expr = done[i];
+            });
+            for (const p of s.parts) if (p.kind === "value") p.text = rewriteText(p.text, pre, w);
+            break;
+          }
+          case "switch":
+            s.value = value(s.value, "number");
+            for (const c2 of s.cases) c2.body = body2(c2.body, returns);
+            break;
+          case "if":
+            s.cond = value(s.cond, "boolean");
+            s.then = body2(s.then, returns);
+            if (s.else) s.else = body2(s.else, returns);
+            break;
+          case "while":
+            s.body = body2(s.body, returns);
+            if (s.cond && risky(s.cond)) {
+              s.body = [...leaveUnless(s.cond, w), ...s.body];
+              delete s.cond;
+            }
+            break;
+          case "for":
+            s.body = body2(s.body, returns);
+            s.update = body2(s.update, returns);
+            if (s.cond && risky(s.cond)) {
+              s.body = [...leaveUnless(s.cond, w), ...s.body];
+              delete s.cond;
+            }
+            break;
+          case "do": {
+            const inner = body2(s.body, returns);
+            if (!risky(s.cond)) {
+              s.body = inner;
+              break;
+            }
+            const first = temp("first turn", "boolean", s.at);
+            const check = { at: s.at, label: s.condLabel };
+            out.push({ kind: "declare", decl: first, init: { kind: "const", value: true }, at: s.at, label: s.label });
+            out.push({ kind: "while", at: s.at, label: s.label, body: [
+              { kind: "if", cond: { kind: "not", expr: { kind: "var", id: first.id } }, then: leaveUnless(s.cond, check), at: s.at, label: s.condLabel },
+              { kind: "assignBool", target: first.id, value: { kind: "const", value: false }, at: s.at, label: s.label },
+              ...inner
+            ] });
+            continue;
+          }
+          case "unrolled":
+            s.iterations = s.iterations.map((i) => body2(i, returns));
+            break;
+          case "block":
+            s.body = body2(s.body, returns);
+            break;
+          case "textLoop":
+            errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over a text holds such a call: the loop's place in the text is not something a call can keep. Walk it by place \u2014 for (let i = 0; i < s.length; i++) \u2014 which a call keeps as it keeps any number.` });
+            s.body = body2(s.body, returns);
+            break;
+          case "unitLoop":
+            errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over units holds such a call: the loop's place among the game's units is not something a call can keep. Collect what the loop finds into an array first, and make the calls from a loop over that array.` });
+            s.body = body2(s.body, returns);
+            break;
+          case "call":
+            settleCall(s.call, pre, w);
+            break;
+          default:
+            break;
+        }
+        out.push(...pre, s);
+      }
+      return out;
+    };
+    f.body = body2(f.body, f.result ? framed(f.result.kind) : void 0);
+    const never = (statements2) => {
+      for (const s of statements2) {
+        if (s.kind === "call" && s.call.fn === f.id) return true;
+        if (s.kind === "if" && s.else && never(s.then) && never(s.else)) return true;
+        if (s.kind === "block" && never(s.body)) return true;
+        if (s.kind !== "remark" && mentions(s, "return")) return false;
+      }
+      return false;
+    };
+    if (never(f.body)) errors.push({ at: f.at, message: `${f.name} calls itself on every path through it, so no call of it ever returns: the stack would run out the first time it is called. Give it a way out \u2014 an if that returns before the call.` });
+    const local = [];
+    const seen = /* @__PURE__ */ new Set();
+    const find = (root) => {
+      if (Array.isArray(root)) {
+        root.forEach(find);
+        return;
+      }
+      if (!root || typeof root !== "object") return;
+      const o = root;
+      if (o.kind === "declareArray" && typeof o.array === "string" && !seen.has(o.array)) {
+        seen.add(o.array);
+        const a2 = arrays.get(o.array);
+        if (a2 && !a2.values && !a2.slice && !a2.through) {
+          a2.dynamic = true;
+          local.push(a2.id);
+        }
+      }
+      for (const v of Object.values(o)) if (v && typeof v === "object") find(v);
+    };
+    find(f.body);
+    const all = [...f.params, ...declarations(f.body)];
+    eachCall(f.body, (c2) => {
+      if (!c2.fn || component.get(c2.fn) !== mine) return;
+      const result = c2.result?.decl.id;
+      c2.saves = { vars: all.filter((d) => d.id !== result).map((d) => d.id), arrays: local, within: f.name };
+    });
+  }
+  return errors;
+}
+
+// compiler/scope.ts
+var THIS = { kind: -1 };
+var UNIT_PARTS = ["ptr", "epd", "uid"];
+var HANDLE_PARTS = ["block", "length", "room", "size"];
+var TEXT_PARTS = ["addr", "block", "chars"];
+var Scope = class {
+  map = /* @__PURE__ */ new Map();
+  parent;
+  constructor(parent) {
+    this.parent = parent;
+  }
+  bind(decl, b) {
+    this.map.set(decl, b);
+  }
+  lookup(decl) {
+    return this.map.get(decl) ?? this.parent?.lookup(decl);
+  }
+};
+
+// compiler/structured.ts
+function newBody(plan, sf, values, name) {
+  return { plan, sf, values, memo: /* @__PURE__ */ new Map(), constMemo: /* @__PURE__ */ new Map(), ...name ? { name } : {} };
+}
+var ValueError = class extends LowerError {
+  node;
+  constructor(node, message) {
+    super(message);
+    this.node = node;
+  }
+};
+var MAX_INLINE_DEPTH = 16;
+var LABEL_LENGTH = 48;
+var MAX_UNROLL = 256;
+var MADE_TEXT_ACTIONS = /* @__PURE__ */ new Set([ActionType.SetMissionObjectives, ActionType.Transmission, ActionType.LeaderboardControl, ActionType.LeaderboardControlAt, ActionType.LeaderboardResources, ActionType.LeaderboardKills, ActionType.LeaderboardPoints, ActionType.LeaderboardGoalControl, ActionType.LeaderboardGoalControlAt, ActionType.LeaderboardGoalResources, ActionType.LeaderboardGoalKills, ActionType.LeaderboardGoalPoints, ActionType.LeaderboardGreed]);
+var COUNT_ACTIONS = /* @__PURE__ */ new Set([ActionType.CreateUnit, ActionType.CreateUnitWithProperties, ActionType.KillUnitAt, ActionType.RemoveUnitAt, ActionType.GiveUnits]);
+function describe2(v) {
+  if (isCondition(v)) return "a condition";
+  if (isAction(v)) return "an action";
+  if (isTrigger(v)) return "a trigger";
+  if (isDuration(v)) return "a duration";
+  if (isRead(v)) return `a value the game holds (${v.ident}())`;
+  if (isTable(v)) return `a value the game holds (${v.ident})`;
+  if (isUnitQuery(v)) return `the units of the game (${v.ident}())`;
+  if (isUnitPick(v)) return `a unit of the game (${v.ident}())`;
+  if (isInput(v)) return `what a player does in the game (${v.ident})`;
+  if (isMouse(v)) return "where a player's mouse is (mouse())";
+  if (isChat(v)) return "what a player typed (chatted())";
+  if (isPrint(v)) return "a print()";
+  if (isGameFunction(v)) return "a game function";
+  if (Array.isArray(v)) return "an array";
+  if (typeof v === "string") return "text";
+  if (typeof v === "function") return "a function";
+  if (v === null || v === void 0) return String(v);
+  return typeof v === "object" ? "an object" : `${typeof v} ${String(v)}`;
+}
+var CURRENT_PLAYER = 13;
+function mergeText(parts) {
+  const out = [];
+  for (const p of parts) {
+    const last = out[out.length - 1];
+    if (p.kind === "text" && last?.kind === "text") out[out.length - 1] = { kind: "text", text: last.text + p.text };
+    else out.push(p);
+  }
+  return out;
+}
+var KEY_DOMAINS = {
+  player: { size: 12, what: "a player, P1 \u2026 P12" },
+  unit: { size: 228, what: "a unit type" },
+  location: { size: 256, what: "a location" },
+  switch: { size: 256, what: "a switch" },
+  weapon: { size: 130, what: "a weapon" },
+  upgrade: { size: 61, what: "an upgrade" },
+  tech: { size: 44, what: "a technology" }
+};
+var TEXT_FIELD = "(text)";
+var HASH_START = 8;
+var MAX_ARRAY = 4096;
+var TRUE = { kind: "const", value: true };
+var FALSE = { kind: "const", value: false };
+var num = (value) => ({ kind: "const", value });
+var varRef = (v) => ({ kind: "var", id: v.id });
+var boolRef = (v) => ({ kind: "var", id: v.id });
+var unitRef = (v) => ({ kind: "unitVar", id: v.id });
+var refOf = (v) => v.kind === "number" ? varRef(v) : v.kind === "unit" ? unitRef(v) : v.kind === "text" ? { kind: "textVar", id: v.id } : boolRef(v);
+var NO_UNIT = { kind: "unitNull" };
+var ORDERS = ["move", "patrol", "attack"];
+var LIST_MAKERS = /* @__PURE__ */ new Set(["map", "filter", "sort", "reverse"]);
+var SEARCHES = /* @__PURE__ */ new Set(["some", "every", "find", "findLast", "findIndex", "findLastIndex", "reduce"]);
+function mentions2(root, kind) {
+  if (Array.isArray(root)) return root.some((x) => mentions2(x, kind));
+  if (!root || typeof root !== "object") return false;
+  const o = root;
+  if (o.kind === kind) return true;
+  return Object.values(o).some((v) => !!v && typeof v === "object" && mentions2(v, kind));
+}
+var Structured = class _Structured {
+  c;
+  ts;
+  /** The body being walked: the program's, or the game function being inlined. */
+  body;
+  inlineDepth = 0;
+  scope = new Scope(null);
+  /** The program's outermost scope: what an inlined function of the body closes over. */
+  topScope = this.scope;
+  /** The statement list being filled. */
+  out = [];
+  nodes = /* @__PURE__ */ new WeakMap();
+  nextId = 0;
+  /** The functions that are called, and what is known of each function at each set of arrays passed to it. */
+  functions = [];
+  sites = /* @__PURE__ */ new Map();
+  /** Which function of the source a call, inlined or not, is of — and why one stays inlined, for the hint on its line. */
+  callees = /* @__PURE__ */ new WeakMap();
+  inlinedBecause = /* @__PURE__ */ new Map();
+  declared = /* @__PURE__ */ new Map();
+  /** How many inlined copies of each function's body are being walked right now: how a call finds that it is inside its own function. */
+  walkingBodies = /* @__PURE__ */ new Map();
+  identities = /* @__PURE__ */ new WeakMap();
+  lastIdentity = 0;
+  constructor(c2) {
+    this.c = c2;
+    this.ts = c2.ts;
+    this.body = c2.body;
+  }
+  run() {
+    const statements2 = this.body.plan.body.statements;
+    const at = this.at(this.body.plan.body);
+    const program = { version: IR_VERSION, ...this.body.name ? { name: this.body.name } : {}, owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, arrays: this.arrays, body: [], at };
+    this.nodes.set(program, this.body.plan.body);
+    this.out = program.body;
+    try {
+      this.block(statements2, {}, this.topScope);
+    } catch (err) {
+      if (!(err instanceof LowerError)) throw err;
+      this.c.error(statements2[statements2.length - 1] ?? this.body.plan.body, err.message);
+    }
+    this.settleFunctions(program);
+    return { program, nodeOf: (node) => this.nodes.get(node) };
+  }
+  lineOf(node) {
+    return this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf)).line + 1;
+  }
+  /** "L12: while (x < 3)" — the comment a generated trigger carries; "waves.ts L12: …" inside a game function from another file. */
+  label(node) {
+    let text = node.getText(this.body.sf).replace(/\s+/g, " ").trim();
+    const brace = text.indexOf("{");
+    if (brace > 0) text = text.slice(0, brace).trim();
+    if (text.length > LABEL_LENGTH) text = `${text.slice(0, LABEL_LENGTH - 1)}\u2026`;
+    const file = this.body.sf === this.c.body.sf ? "" : `${this.body.sf.fileName} `;
+    return `${file}L${this.lineOf(node)}: ${text}`;
+  }
+  line(node) {
+    return this.lineOf(node);
+  }
+  /** Where a node is, for the IR. */
+  at(node) {
+    return this.sourceOf(node);
+  }
+  /** Remember which source node an IR node came from, and hand the IR node back. */
+  mark(ir, node) {
+    this.nodes.set(ir, node);
+    return ir;
+  }
+  emit(s, node) {
+    this.out.push(this.mark(s, node));
+    return s;
+  }
+  /** A statement list filled by `fill`, handed back. */
+  collect(fill) {
+    const saved = this.out;
+    const list = [];
+    this.out = list;
+    try {
+      fill();
+    } finally {
+      this.out = saved;
+    }
+    return list;
+  }
+  /** Every array of the program, in the order they were met; tables (lists known at build time) once per list. */
+  arrays = [];
+  tables = /* @__PURE__ */ new Map();
+  /** A keyed object of the script as the list with gaps it is looked up in, and a Map or a Set of the script as the tables it became: once each. */
+  objects = /* @__PURE__ */ new Map();
+  collections = /* @__PURE__ */ new Map();
+  recordLists = /* @__PURE__ */ new Map();
+  newArray(name, kind, length, at, extra = {}) {
+    const a2 = { id: `${name}#${this.nextId++}`, name, kind, length, shared: extra.shared ?? false, ...extra.bits ? { bits: extra.bits } : {}, ...extra.unsigned ? { unsigned: true } : {}, ...extra.values ? { values: extra.values } : {}, at };
+    this.arrays.push(a2);
+    return a2;
+  }
+  newVar(name, kind, at, extra = {}) {
+    const v = { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...extra.bits ? { bits: extra.bits } : {}, ...extra.unsigned ? { unsigned: true } : {}, ...extra.temp ? { temp: true } : {}, ...kind === "text" ? { text: extra.text ?? "made" } : {}, at };
+    if (kind === "text") this.textKinds.set(v.id, v.text ?? "made");
+    return v;
+  }
+  /* ── Values and bindings ── */
+  /** Strip parentheses, `as`, `satisfies`, `!` — the wrappers that change nothing. */
+  unwrap(expr) {
+    const { ts } = this;
+    for (; ; ) {
+      if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr)) expr = expr.expression;
+      else return expr;
+    }
+  }
+  /** The declaration of an identifier when it is one of the body's own (a let, a parameter, a function). */
+  gameDeclaration(id) {
+    const { ts } = this;
+    let decl = declarationOf(ts, this.c.checker, id);
+    while (decl && (ts.isBindingElement(decl) || ts.isArrayBindingPattern(decl) || ts.isObjectBindingPattern(decl))) decl = decl.parent;
+    return decl && this.body.plan.game.has(decl) ? decl : void 0;
+  }
+  /** What an identifier, or a field of a record (`p.lives`, `p["lives"]`), is bound to. */
+  bindingOf(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (ts.isIdentifier(e)) {
+      const raw = declarationOf(ts, this.c.checker, e);
+      if (raw && ts.isBindingElement(raw)) {
+        const own = this.scope.lookup(raw);
+        if (own) return own;
+      }
+      const decl = this.gameDeclaration(e);
+      return decl ? this.scope.lookup(decl) : void 0;
+    }
+    if (e.kind === ts.SyntaxKind.ThisKeyword) return this.scope.lookup(THIS);
+    if (ts.isPropertyAccessExpression(e) && (ts.isIdentifier(e.name) || ts.isPrivateIdentifier(e.name))) {
+      const cls = this.classOf(e.expression);
+      if (cls) {
+        const field = this.memberOf(cls, (m) => ts.isPropertyDeclaration(m) && this.isStatic(m) && this.memberKey(m.name) === e.name.text);
+        return field ? this.statics.get(field) : void 0;
+      }
+      const obj = this.bindingOf(e.expression);
+      return obj?.kind === "record" ? obj.fields.get(e.name.text) : void 0;
+    }
+    if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression)) {
+      const obj = this.bindingOf(e.expression);
+      return obj?.kind === "record" ? obj.fields.get(e.argumentExpression.text) : void 0;
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const obj = this.bindingOf(e.expression) ?? this.recordTables(e);
+      if (obj?.kind === "texts") {
+        const at = this.evaluate(e.argumentExpression);
+        const index2 = at ? (() => {
+          const i = this.asInteger(at, e.argumentExpression);
+          return i === null ? null : num(i);
+        })() : this.num(e.argumentExpression);
+        return index2 ? this.textAtIndex(obj, index2) : void 0;
+      }
+      if (obj?.kind === "grid") return this.partOf(obj, e.argumentExpression, e);
+      if (obj?.kind === "lists") {
+        const h = this.evaluate(e.argumentExpression);
+        const i = h ? this.asInteger(h, e.argumentExpression) : null;
+        if (h && i === null) return void 0;
+        if (i !== null && (i < 0 || !obj.ptr.dynamic && i >= obj.ptr.length)) {
+          this.c.error(e.argumentExpression, `${obj.name} has ${obj.ptr.length} row${obj.ptr.length === 1 ? "" : "s"}, 0 \u2026 ${obj.ptr.length - 1}; there is no ${obj.name}[${i}].`);
+          return void 0;
+        }
+        const index2 = i !== null ? num(i) : this.num(e.argumentExpression);
+        return index2 ? { kind: "inner", lists: obj, index: index2 } : void 0;
+      }
+      if (obj?.kind !== "records") return void 0;
+      const index = this.rowIndex(obj, e.argumentExpression);
+      return index ? this.rowOf(obj, index) : void 0;
+    }
+    return void 0;
+  }
+  varOf(expr) {
+    const b = this.bindingOf(expr);
+    return b?.kind === "var" ? b.v : void 0;
+  }
+  /**
+   * The build-time value of an expression, when it has one: a hoisted expression's, a
+   * parameter's bound to one, or — so that `createUnit(p, units.Zergling, count, at)`
+   * works inside a function whose `p` and `count` were bound at the call — a call,
+   * member access, arithmetic or template over such values, evaluated now. Undefined
+   * when a variable of the program is involved, or a game function is called.
+   */
+  evaluate(expr, depth = 0) {
+    const { ts } = this;
+    let e = expr;
+    for (; ; ) {
+      const k = this.body.plan.index.get(e);
+      if (k !== void 0) return { value: this.hoistedValue(k, e) };
+      if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isTypeAssertionExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
+      else break;
+    }
+    if (depth > 32) return void 0;
+    const sub = (x) => this.evaluate(x, depth + 1);
+    if (ts.isIdentifier(e)) {
+      const b = this.bindingOf(e);
+      return b?.kind === "value" ? { value: b.value } : void 0;
+    }
+    if (e.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
+    if (e.kind === ts.SyntaxKind.FalseKeyword) return { value: false };
+    if (e.kind === ts.SyntaxKind.NullKeyword) return { value: null };
+    if (ts.isNumericLiteral(e)) return { value: Number(e.text) };
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return { value: e.text };
+    if (ts.isPropertyAccessExpression(e)) {
+      const obj = sub(e.expression);
+      if (!obj || obj.value === null || obj.value === void 0) return void 0;
+      return { value: obj.value[e.name.text] };
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const obj = sub(e.expression);
+      const key = sub(e.argumentExpression);
+      if (!obj || !key || obj.value === null || obj.value === void 0) return void 0;
+      return { value: obj.value[String(key.value)] };
+    }
+    if (ts.isCallExpression(e)) {
+      const callee = sub(e.expression);
+      if (!callee || typeof callee.value !== "function" || isGameFunction(callee.value)) return void 0;
+      const self = ts.isPropertyAccessExpression(e.expression) ? sub(e.expression.expression)?.value : void 0;
+      const args = [];
+      for (const a2 of e.arguments) {
+        if (ts.isSpreadElement(a2)) {
+          const v2 = sub(a2.expression);
+          if (!v2 || !Array.isArray(v2.value)) return void 0;
+          args.push(...v2.value);
+          continue;
+        }
+        const v = sub(a2);
+        if (!v || isGameValue(v.value)) return void 0;
+        args.push(v.value);
+      }
+      if (this.isLibraryCall(e, "stats") && e.arguments.length === 1) args.push(this.brandOf(e.arguments[0]));
+      try {
+        return { value: callee.value.apply(self, args) };
+      } catch (err) {
+        throw new LowerError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    if (ts.isTemplateExpression(e)) {
+      let out = e.head.text;
+      for (const span of e.templateSpans) {
+        const v = sub(span.expression);
+        if (!v || isGameValue(v.value)) return void 0;
+        out += String(v.value) + span.literal.text;
+      }
+      return { value: out };
+    }
+    if (ts.isArrayLiteralExpression(e)) {
+      const out = [];
+      for (const el of e.elements) {
+        if (ts.isSpreadElement(el)) {
+          const v2 = sub(el.expression);
+          if (!v2 || !Array.isArray(v2.value)) return void 0;
+          out.push(...v2.value);
+          continue;
+        }
+        if (ts.isOmittedExpression(el)) {
+          out.push(void 0);
+          continue;
+        }
+        const v = sub(el);
+        if (!v) return void 0;
+        out.push(v.value);
+      }
+      return { value: out };
+    }
+    if (ts.isPrefixUnaryExpression(e)) {
+      const v = sub(e.operand);
+      if (!v || isGameValue(v.value)) return void 0;
+      switch (e.operator) {
+        case ts.SyntaxKind.MinusToken:
+          return { value: -v.value };
+        case ts.SyntaxKind.PlusToken:
+          return { value: +v.value };
+        case ts.SyntaxKind.TildeToken:
+          return { value: ~v.value };
+        default:
+          return void 0;
+      }
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+      const b = this.bindingOf(e.left);
+      const cls = this.classOf(e.right);
+      return b?.kind === "record" && b.cls && cls ? { value: this.chainOf(b.cls).includes(cls) } : void 0;
+    }
+    if (ts.isBinaryExpression(e)) {
+      const l = sub(e.left);
+      const r = sub(e.right);
+      if (!l || !r || isGameValue(l.value) || isGameValue(r.value)) return void 0;
+      const a2 = l.value;
+      const b = r.value;
+      switch (e.operatorToken.kind) {
+        case ts.SyntaxKind.PlusToken:
+          return { value: a2 + b };
+        case ts.SyntaxKind.MinusToken:
+          return { value: a2 - b };
+        case ts.SyntaxKind.AsteriskToken:
+          return { value: a2 * b };
+        case ts.SyntaxKind.SlashToken:
+          return { value: a2 / b };
+        case ts.SyntaxKind.PercentToken:
+          return { value: a2 % b };
+        case ts.SyntaxKind.AsteriskAsteriskToken:
+          return { value: a2 ** b };
+        case ts.SyntaxKind.LessThanLessThanToken:
+          return { value: a2 << b };
+        case ts.SyntaxKind.GreaterThanGreaterThanToken:
+          return { value: a2 >> b };
+        case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+          return { value: a2 >>> b };
+        case ts.SyntaxKind.AmpersandToken:
+          return { value: a2 & b };
+        case ts.SyntaxKind.BarToken:
+          return { value: a2 | b };
+        case ts.SyntaxKind.CaretToken:
+          return { value: a2 ^ b };
+        default:
+          return void 0;
+      }
+    }
+    if (ts.isConditionalExpression(e)) {
+      const c2 = sub(e.condition);
+      if (!c2 || isGameValue(c2.value)) return void 0;
+      return c2.value ? sub(e.whenTrue) : sub(e.whenFalse);
+    }
+    return void 0;
+  }
+  /** A thunk's outcome, computed the first time and kept — an error is thrown again at every use. */
+  force(memo, k, thunk, at) {
+    let o = memo.get(k);
+    if (!o) {
+      try {
+        o = { ok: true, value: thunk() };
+      } catch (error) {
+        o = { ok: false, error };
+      }
+      memo.set(k, o);
+    }
+    if (o.ok) return o.value;
+    const err = o.error;
+    const message = err instanceof Error ? err.message : String(err);
+    const i = err?.__trigscriptConst;
+    const decl = i !== void 0 ? this.body.plan.constList[i] : void 0;
+    if (decl?.initializer) throw new ValueError(decl.initializer, `${message} \u2014 this constant is computed when the script is built, not in the game.`);
+    throw new ValueError(at, `${message} \u2014 this expression is computed when the script is built, not in the game.`);
+  }
+  /** A hoisted expression's value: its thunk, called the first time the walk reaches it. */
+  hoistedValue(k, at) {
+    return this.force(this.body.memo, k, this.body.values.h[k], at);
+  }
+  /** A build-time constant of the body, computed now if nothing needed it before. */
+  constValue(decl) {
+    const i = this.body.plan.consts.get(decl);
+    return this.force(this.body.constMemo, i, this.body.values.c[i], decl.initializer);
+  }
+  isLibraryCall(e, name) {
+    const { ts } = this;
+    return ts.isCallExpression(e) && libraryCallName(ts, this.c.checker, e) === name;
+  }
+  /** The variable an expression that could not be hoisted depends on — for the message. */
+  blamedVariable(expr) {
+    const { ts } = this;
+    let found = null;
+    const walk = (n) => {
+      if (found) return;
+      if (ts.isIdentifier(n) && this.gameDeclaration(n) && this.bindingOf(n)?.kind !== "value") {
+        found = n.text;
+        return;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(expr);
+    return found;
+  }
+  notConstant(expr, what) {
+    const v = this.blamedVariable(expr);
+    this.c.error(expr, v ? `${what} must be known when the script is built, but ${v} is a variable of the program. Compare or assign variables in the program's own statements instead.` : `${what} must be known when the script is built.`);
+  }
+  /* ── Statements ── */
+  block(statements2, ctx, scope = new Scope(this.scope)) {
+    const outer = this.scope;
+    this.scope = scope;
+    for (const s of statements2) {
+      try {
+        this.statement(s, ctx);
+      } catch (err) {
+        if (!(err instanceof LowerError)) throw err;
+        if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
+        else this.c.error(s, err.message);
+      }
+    }
+    this.scope = outer;
+  }
+  /** A statement's IR, as a list of its own (a block a backend scopes). */
+  sub(s, ctx) {
+    return this.collect(() => this.statement(s, ctx));
+  }
+  statement(s, ctx) {
+    const { ts } = this;
+    if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s) || ts.isFunctionDeclaration(s)) return;
+    if (ts.isClassDeclaration(s)) {
+      this.declareClass(s);
+      return;
+    }
+    if (ts.isVariableStatement(s)) {
+      this.declare(s.declarationList);
+      return;
+    }
+    if (ts.isBlock(s)) {
+      const body2 = this.collect(() => this.block(s.statements, ctx));
+      this.emit({ kind: "block", body: body2, at: this.at(s) }, s);
+      return;
+    }
+    if (ts.isExpressionStatement(s)) {
+      this.expressionStatement(s.expression);
+      return;
+    }
+    if (ts.isIfStatement(s)) {
+      this.ifStatement(s, ctx);
+      return;
+    }
+    if (ts.isWhileStatement(s)) {
+      this.whileStatement(s, ctx);
+      return;
+    }
+    if (ts.isDoStatement(s)) {
+      this.doStatement(s, ctx);
+      return;
+    }
+    if (ts.isForStatement(s)) {
+      this.forStatement(s, ctx);
+      return;
+    }
+    if (ts.isBreakStatement(s) || ts.isContinueStatement(s)) {
+      if (s.label) {
+        this.c.error(s, "Labelled break / continue is not supported.");
+        return;
+      }
+      if (ts.isBreakStatement(s) ? !ctx.canBreak : !ctx.canContinue) {
+        this.c.error(s, `${ts.isBreakStatement(s) ? "break" : "continue"} outside a loop.`);
+        return;
+      }
+      this.emit({ kind: ts.isBreakStatement(s) ? "break" : "continue", at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
+    if (ts.isReturnStatement(s)) {
+      this.returnStatement(s, ctx);
+      return;
+    }
+    if (ts.isSwitchStatement(s)) {
+      this.switchStatement(s, ctx);
+      return;
+    }
+    if (ts.isForOfStatement(s)) {
+      this.forOfStatement(s, ctx);
+      return;
+    }
+    if (ts.isForInStatement(s)) {
+      this.c.error(s, "for\u2026in is not supported in a program; for\u2026of over a list known when the script is built is unrolled.");
+      return;
+    }
+    if (ts.isThrowStatement(s) || ts.isTryStatement(s)) {
+      this.c.error(s, "The game has no exceptions.");
+      return;
+    }
+    this.c.error(s, "This statement is not supported in a program.");
+  }
+  returnStatement(s, ctx) {
+    if (!ctx.fn) {
+      this.c.error(s, "return outside a function.");
+      return;
+    }
+    const { fn } = ctx;
+    if (fn.instance || fn.kind === "void" && s.expression && this.classOfType(this.c.checker.getTypeAtLocation(s.expression))) {
+      if (fn.instance && s.expression) {
+        const given = this.unwrap(s.expression);
+        const made = this.ts.isNewExpression(given) && this.classOf(given.expression) ? this.instantiate(given, fn.instance.name) : this.ts.isCallExpression(given) ? this.instanceCall(given, fn.instance.name) : this.bindingOf(given);
+        if (made?.kind !== "record") {
+          if (made !== null) this.c.error(s.expression, "A function gives an instance it made (return new Wave(\u2026)), itself (return this), or one it was handed.");
+          return;
+        }
+        if (fn.instance.made && fn.instance.made !== made) {
+          this.c.error(s, "Every return of this function has to give the same instance: which one a call gives is settled when the script is built. Give the place of a row of an array instead, and let the caller take the row.");
+          return;
+        }
+        fn.instance.made = made;
+      }
+      this.emit({ kind: "return", at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
+    if (fn.kind === "void") {
+      if (s.expression) {
+        const h = this.evaluate(s.expression);
+        if (h && (isAction(h.value) || Array.isArray(h.value) && h.value.every(isAction))) this.hoistedStatement(this.unwrap(s.expression), h);
+        else {
+          this.c.error(s.expression, "This function returns nothing the game can hold: a function returns a number or a boolean.");
+          return;
+        }
+      }
+      this.emit({ kind: "return", at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
+    if (!s.expression) {
+      this.c.error(s, `The function returns a ${fn.kind}; return one here.`);
+      return;
+    }
+    if (fn.kind === "number") {
+      const value = this.num(s.expression);
+      if (!value) return;
+      this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    } else if (fn.kind === "unit") {
+      const value = this.unitExpr(s.expression);
+      if (value) this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    } else if (fn.kind === "text") {
+      const value = this.text(s.expression);
+      if (value) this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    } else {
+      const value = this.boolValue(s.expression);
+      this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
+    }
+  }
+  declare(list) {
+    const { ts } = this;
+    for (const d of list.declarations) {
+      if (this.body.plan.consts.has(d)) {
+        this.constValue(d);
+        continue;
+      }
+      if (!ts.isIdentifier(d.name)) {
+        if (!d.initializer) {
+          this.c.error(d, "A pattern is taken from something: const { x, y } = p.");
+          continue;
+        }
+        const from = this.patternSource(d.initializer, d);
+        if (from) this.bindPattern(d.name, d, from, this.scope);
+        continue;
+      }
+      if (!d.initializer) {
+        this.c.error(d, `Give ${d.name.text} an initial value: let ${d.name.text} = 0 or = false.`);
+        continue;
+      }
+      const init = this.unwrap(d.initializer);
+      if (ts.isObjectLiteralExpression(init) && !this.keyedForm(init, this.c.checker.getTypeAtLocation(d.name))) {
+        const record = this.declareRecord(d.name.text, init, this.c.checker.getTypeAtLocation(d.name), d);
+        if (record) this.scope.bind(d, record);
+        continue;
+      }
+      if (ts.isNewExpression(init) && this.classOf(init.expression)) {
+        const instance = this.instantiate(init, d.name.text);
+        if (instance) this.scope.bind(d, instance);
+        continue;
+      }
+      if (ts.isCallExpression(init)) {
+        const given = this.instanceCall(init, d.name.text);
+        if (given !== void 0) {
+          if (given) this.scope.bind(d, given);
+          continue;
+        }
+      }
+      if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init) || init.kind === ts.SyntaxKind.ThisKeyword) {
+        const same2 = this.bindingOf(init);
+        if (same2?.kind === "inner" || same2?.kind === "innerUnits") {
+          this.scope.bind(d, this.takenCopy(same2, d.name.text, d));
+          continue;
+        }
+        if (same2?.kind === "record" && !same2.truth) {
+          if (!(list.flags & ts.NodeFlags.Const) && this.assigns(this.body.plan.body, d)) {
+            this.c.error(d, `${d.name.text} is another name for a record, and a record is not assigned whole: declare it with const, or copy the fields it needs.`);
+            continue;
+          }
+          this.scope.bind(d, same2);
+          continue;
+        }
+      }
+      if (ts.isCallExpression(init) && (this.isLibraryCall(init, "mouse") || this.isLibraryCall(init, "chatted"))) {
+        const record = this.declareInput(d.name.text, init, d);
+        if (record) this.scope.bind(d, record);
+        continue;
+      }
+      if (ts.isCallExpression(init) && this.makesList(init)) {
+        const made = this.madeList(init, d.name.text, d);
+        if (made) this.scope.bind(d, made);
+        continue;
+      }
+      if (ts.isCallExpression(init) && this.copiesList(init)) {
+        const made = this.copiedList(init, d.name.text, d);
+        if (made) this.scope.bind(d, made);
+        continue;
+      }
+      const type = this.c.checker.getTypeAtLocation(d.name);
+      if (ts.isElementAccessExpression(init)) {
+        const part = this.bindingOf(init);
+        if (part?.kind === "row") {
+          this.scope.bind(d, { kind: "array", a: this.windowOf({ ...part, name: d.name.text }, d) });
+          continue;
+        }
+        if (part?.kind === "inner") {
+          this.scope.bind(d, { kind: "array", a: this.innerOf(part.lists, part.index, d, d.name.text) });
+          continue;
+        }
+        if (part?.kind === "grid") {
+          this.scope.bind(d, { ...part, name: d.name.text, offset: part.offset ? this.temp(part.offset, d, true) : null });
+          continue;
+        }
+      }
+      const gridShape = this.gridType(type);
+      if (gridShape && !this.bindingOf(init)) {
+        const grid = this.innerGrows(d) ? void 0 : this.declareGrid(d.name.text, d.initializer, gridShape, d);
+        const held = grid === void 0 ? this.declareLists(d.name.text, d.initializer, gridShape, d) : grid;
+        if (held) this.scope.bind(d, held);
+        continue;
+      }
+      if (ts.isElementAccessExpression(init)) {
+        const of = this.bindingOf(init.expression);
+        if (of?.kind === "records") {
+          const index = this.rowIndex(of, init.argumentExpression);
+          if (!index) continue;
+          if (!(list.flags & ts.NodeFlags.Const) && this.assigns(this.body.plan.body, d)) {
+            const place = this.newVar(`${d.name.text} (row of ${of.name})`, "number", this.sourceOf(d.name));
+            this.emit({ kind: "declare", decl: place, init: index, at: this.at(d), label: this.label(d) }, d);
+            const row = this.rowOf(of, varRef(place));
+            this.rowVars.set(row, { of, place });
+            this.scope.bind(d, row);
+            continue;
+          }
+          this.scope.bind(d, this.rowOf(of, this.temp(index, d, true)));
+          continue;
+        }
+      }
+      if ((this.c.checker.isArrayType(type) || this.c.checker.isTupleType(type)) && this.kindOf(this.c.checker.getIndexTypeOfType(type, ts.IndexKind.Number) ?? type) === "unit") {
+        const squad = this.declareUnits(d.name.text, init, d);
+        if (squad) this.scope.bind(d, squad);
+        continue;
+      }
+      const rowClass = this.rowClass(type, d);
+      if (rowClass === null) continue;
+      const why = [];
+      const recordsOf = rowClass ? this.shapeOf(this.instanceType(rowClass), why) : this.recordFields(type, why);
+      if (!recordsOf && why.length) {
+        this.c.error(d, `${d.name.text} cannot be an array of ${rowClass ? `${this.className(rowClass)}s` : "records"}: ${why[0]}. A row holds numbers, booleans, units, arrays of those, and records or instances of the same.`);
+        continue;
+      }
+      if (recordsOf) {
+        const records = this.declareRecords(d.name.text, init, recordsOf, d, rowClass);
+        if (records) this.scope.bind(d, records);
+        continue;
+      }
+      const keyedAs = this.keyedForm(init, type);
+      if (keyedAs && keyedAs !== "record" && this.anyNumberKeys(type)) {
+        const hash = this.declareHash(d.name.text, keyedAs, init, type, d);
+        if (hash) this.scope.bind(d, hash);
+        continue;
+      }
+      if (keyedAs) {
+        const keyed = this.declareKeyed(d.name.text, keyedAs, init, type, d);
+        if (keyed) this.scope.bind(d, keyed);
+        continue;
+      }
+      if ((this.c.checker.isArrayType(type) || this.c.checker.isTupleType(type)) && this.isTextType(this.c.checker.getIndexTypeOfType(type, ts.IndexKind.Number) ?? type)) {
+        const texts = this.declareTexts(d.name.text, d.initializer, d);
+        if (texts) this.scope.bind(d, texts);
+        continue;
+      }
+      if (this.c.checker.isArrayType(type) || this.c.checker.isTupleType(type)) {
+        const a2 = this.declareArray(d.name.text, d.initializer, type, d);
+        if (a2) this.scope.bind(d, { kind: "array", a: a2 });
+        continue;
+      }
+      if (this.isTextType(type)) {
+        if (ts.isCallExpression(init) && this.isLibraryCall(init, "shared")) {
+          this.c.error(init, "shared() holds a number or a boolean.");
+          continue;
+        }
+        const v2 = this.declareText(d.name.text, d.initializer, this.textKept(d.initializer, (left) => ts.isIdentifier(left) && declarationOf(ts, this.c.checker, left) === d), this.sourceOf(d.name), d);
+        this.scope.bind(d, { kind: "var", v: v2 });
+        continue;
+      }
+      const kind = this.kindOf(type);
+      if (!kind && ts.isCallExpression(init) && ts.isPropertyAccessExpression(init.expression) && (init.expression.name.text === "find" || init.expression.name.text === "findLast")) {
+        const over = this.overOf(init.expression.expression);
+        if (over) {
+          this.searchCall(init, over, init.expression.name.text, over.kind === "array" ? over.a.kind : "number");
+          continue;
+        }
+      }
+      if (!kind) {
+        this.c.error(d, `Variables hold numbers, booleans, texts, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`);
+        continue;
+      }
+      const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
+      if (shared && shared.arguments.length !== 1) {
+        this.c.error(init, "shared() takes the initial value: shared(0) or shared(false).");
+        continue;
+      }
+      if (shared && kind === "unit") {
+        this.c.error(init, "shared() holds a number or a boolean.");
+        continue;
+      }
+      const initializer = shared ? shared.arguments[0] : d.initializer;
+      const v = this.newVar(d.name.text, kind, this.sourceOf(d.name), { shared: !!shared, ...kind === "number" ? this.widthOf(type) : {} });
+      this.emitDeclare(v, initializer, d);
+      this.scope.bind(d, { kind: "var", v });
+    }
+  }
+  /** `declare` with its initial value; a number's that fails to compile still declares the variable (as before, the cell is taken). */
+  emitDeclare(v, initializer, at) {
+    if (v.kind === "number") {
+      const value = this.num(initializer);
+      this.emit({ kind: "declare", decl: v, init: value ?? num(0), ...value ? {} : { failed: true }, at: this.at(at), label: this.label(at) }, at);
+    } else if (v.kind === "unit") {
+      const value = this.unitExpr(initializer);
+      this.emit({ kind: "declare", decl: v, init: value ?? NO_UNIT, ...value ? {} : { failed: true }, at: this.at(at), label: this.label(at) }, at);
+    } else {
+      this.emit({ kind: "declare", decl: v, init: this.boolValue(initializer), at: this.at(at), label: this.label(at) }, at);
+    }
+  }
+  /** The three arrays of an array of units, in the order a unit's parts are kept. */
+  unitArrays(of) {
+    return [[of.ptr, "ptr"], [of.epd, "epd"], [of.uid, "uid"]];
+  }
+  /** A unit as something whose three parts can be taken without finding it three times: a variable as it is, anything else into a temporary. */
+  unitTemp(unit, at) {
+    if (unit.kind === "unitVar" || unit.kind === "unitNull") return unit;
+    const t = this.newVar("(unit)", "unit", this.at(at), { temp: true });
+    this.emit({ kind: "declare", decl: t, init: unit, at: this.at(at), label: this.label(at) }, at);
+    return unitRef(t);
+  }
+  /** `let squad: Unit[] = []`, `let pair = [first(a), first(b)]`: three arrays of numbers, a unit a cell of each. */
+  declareUnits(name, initializer, at) {
+    const { ts } = this;
+    const init = this.unwrap(initializer);
+    if (ts.isArrayLiteralExpression(init) && init.elements.length > 0 && init.elements.every((x) => ts.isSpreadElement(x))) {
+      const parts = [];
+      for (const x of init.elements) {
+        const from = this.listOf(x.expression);
+        const units2 = from?.kind === "hash" ? this.hashList(from, "keys", void 0, x) : from;
+        if (units2?.kind !== "units") {
+          this.c.error(x, "... here spreads an array of units.");
+          return null;
+        }
+        parts.push(units2);
+      }
+      const made = this.emptyLike(parts[0], name, at);
+      for (const from of parts) this.appendList(made, from, at);
+      return made;
+    }
+    if (!ts.isArrayLiteralExpression(init) || init.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) {
+      this.c.error(init, `${name} is written out unit by unit ([first(\u2026), nearest(\u2026)]), or starts empty and is pushed to.`);
+      return null;
+    }
+    const dynamic = this.body.plan.grows.has(at) || init.elements.length === 0;
+    if (init.elements.length < (dynamic ? 0 : 1) || init.elements.length > MAX_ARRAY) {
+      this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} units.` : `An array of a program has 1 to ${MAX_ARRAY} units; one that starts empty is one something pushes to.`);
+      return null;
+    }
+    const units = [];
+    for (const x of init.elements) {
+      const u = this.unitExpr(x);
+      if (!u) return null;
+      units.push(this.unitTemp(u, x));
+    }
+    const make = (part) => {
+      const a2 = this.newArray(`${name} (${part})`, "number", units.length, this.sourceOf(at), { unsigned: true });
+      if (dynamic) a2.dynamic = true;
+      return a2;
+    };
+    const squad = { kind: "units", name, ptr: make("ptr"), epd: make("epd"), uid: make("uid") };
+    for (const [a2, part] of this.unitArrays(squad)) this.emit({ kind: "declareArray", array: a2.id, init: units.map((unit) => ({ kind: "unitPart", unit, part, at: this.at(at) })), at: this.at(at), label: this.label(at) }, at);
+    return squad;
+  }
+  /** `squad[i]` as a unit: the three numbers at i. An index that is more than a constant or a variable is worked out once. */
+  unitAtIndex(of, index, at) {
+    const i = this.temp(index, at);
+    const cell = (a2) => ({ kind: "element", array: a2.id, index: i, at: this.at(at) });
+    return this.mark({ kind: "unitAt", ptr: cell(of.ptr), epd: cell(of.epd), uid: cell(of.uid), at: this.at(at) }, at);
+  }
+  /** `squad.push(u)`, `squad.pop()` standing on their own; the three arrays move together. */
+  unitsCall(e, of, method) {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (method === "push" && e.arguments.length > 0) {
+      for (const arg of e.arguments) {
+        const found = this.unitExpr(arg);
+        if (!found) return;
+        const unit = this.unitTemp(found, arg);
+        for (const [a2, part] of this.unitArrays(of)) {
+          a2.dynamic = true;
+          this.emit({ kind: "push", array: a2.id, value: { kind: "unitPart", unit, part, at }, at, label }, e);
+        }
+      }
+      return;
+    }
+    if (method === "pop" && e.arguments.length === 0) {
+      for (const [a2] of this.unitArrays(of)) {
+        a2.dynamic = true;
+        this.emit({ kind: "pop", array: a2.id, at, label }, e);
+      }
+      return;
+    }
+    this.c.error(e, `An array of units has push(unit), pop(), length, for\u2026of, and forEach, filter, some, every, find, findIndex, sort and reverse; ${method}() is not one of them.`);
+  }
+  /** A number of the program as something that can be read twice without being worked out twice: itself when it is a constant or a variable, else a temporary holding it. */
+  temp(value, at, keep = false) {
+    if (value.kind === "const" || value.kind === "var" && !keep) return value;
+    const t = this.newVar("(index)", "number", this.at(at), { temp: true });
+    this.emit({ kind: "declare", decl: t, init: value, at: this.at(at), label: this.label(at) }, at);
+    return varRef(t);
+  }
+  /** What a row of an array of records holds, when a type is such an array. Null — with `why` filled in when a field is what stops it — otherwise. */
+  recordFields(type, why) {
+    const { ts } = this;
+    const checker = this.c.checker;
+    if (!checker.isArrayType(type) && !checker.isTupleType(type)) return null;
+    const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+    if (!element || this.kindOf(element) || !(element.flags & ts.TypeFlags.Object) || checker.isArrayType(element) || checker.isTupleType(element)) return null;
+    return this.shapeOf(element, why);
+  }
+  /**
+   * The fields of a record type, or of a class's instances — its methods and accessors are no fields, and a static is
+   * the class's. A number, a boolean, a unit, an array of those (which a row keeps as one that grows), a record or an
+   * instance of the same.
+   */
+  shapeOf(element, why, depth = 0) {
+    const { ts } = this;
+    const checker = this.c.checker;
+    const fields = /* @__PURE__ */ new Map();
+    const no = (what) => {
+      why?.push(what);
+      return null;
+    };
+    if (depth > 4) return no("it holds itself, and a row has every one of its cells when the script is built");
+    for (const p of checker.getPropertiesOfType(element)) {
+      const d = p.valueDeclaration;
+      if (d && (ts.isMethodDeclaration(d) || ts.isAccessor(d))) continue;
+      const t = checker.getTypeOfSymbol(p);
+      const key = d && (ts.isPropertyDeclaration(d) || ts.isParameter(d)) ? this.memberKey(d.name) ?? p.name : p.name;
+      const kind = this.kindOf(t);
+      if (kind === "number" || kind === "boolean") {
+        fields.set(key, { kind, width: kind === "number" ? this.widthOf(t) : {} });
+        continue;
+      }
+      if (kind === "unit") {
+        fields.set(key, { kind: "unit" });
+        continue;
+      }
+      if (this.isTextType(t)) {
+        fields.set(key, { kind: "text" });
+        continue;
+      }
+      if (checker.isArrayType(t) || checker.isTupleType(t)) {
+        const el = checker.getIndexTypeOfType(t, ts.IndexKind.Number);
+        const of = el ? this.kindOf(el) : null;
+        if (of === "unit") fields.set(key, { kind: "squad" });
+        else if (of) fields.set(key, { kind: "list", of, width: of === "number" && el ? this.widthOf(el) : {} });
+        else return no(`${key} is an array of something other than numbers, booleans or units`);
+        continue;
+      }
+      if (!(t.flags & ts.TypeFlags.Object)) return no(`${key} is ${checker.typeToString(t)}`);
+      const inner = this.shapeOf(t, why, depth + 1);
+      if (!inner) return null;
+      const cls = this.classOfType(t);
+      fields.set(key, { kind: "record", shape: inner, ...cls ? { cls } : {} });
+    }
+    return fields.size ? fields : no("it has no fields");
+  }
+  /** A row's shape: what the binding says, or — of an array whose every field is a number or a boolean — read off its arrays. */
+  rowShape(of) {
+    return of.shape ?? new Map([...of.fields].map(([f, a2]) => [f, { kind: a2.kind, width: {} }]));
+  }
+  /** The plain arrays a shape is kept in, by the key of each. */
+  columnsOf(shape, prefix = "") {
+    const handle = (key) => HANDLE_PARTS.map((part) => ({ key: `${key} ${part}`, kind: "number", width: { unsigned: true } }));
+    return [...shape].flatMap(([name, f]) => {
+      const key = prefix + name;
+      switch (f.kind) {
+        case "unit":
+          return UNIT_PARTS.map((part) => ({ key: `${key} ${part}`, kind: "number", width: { unsigned: true } }));
+        case "list":
+          return handle(key);
+        case "text":
+          return TEXT_PARTS.map((part) => ({ key: `${key} ${part}`, kind: "number", width: { unsigned: true } }));
+        case "squad":
+          return UNIT_PARTS.flatMap((part) => handle(`${key} ${part}`));
+        case "record":
+          return this.columnsOf(f.shape, `${key} `);
+        default:
+          return [{ key, kind: f.kind, width: f.width }];
+      }
+    });
+  }
+  /** An array that grows inside a row, as the array of arrays that grow its four columns are. */
+  listsAt(of, key, f) {
+    const [ptr, len, room, k] = HANDLE_PARTS.map((part) => of.fields.get(`${key} ${part}`));
+    return { kind: "lists", name: `${of.name}[\u2026].${key.replace(/ /g, ".")}`, ptr, len, room, k, of: f.of, ...f.width };
+  }
+  /** Every array of arrays that grow a row's shape holds: what a row that goes has to give back. */
+  ownedLists(of, shape = of.shape, prefix = "") {
+    if (!shape) return [];
+    return [...shape].flatMap(([name, f]) => {
+      const key = prefix + name;
+      if (f.kind === "list") return [this.listsAt(of, key, f)];
+      if (f.kind === "squad") return UNIT_PARTS.map((part) => this.listsAt(of, `${key} ${part}`, { of: "number", width: { unsigned: true } }));
+      return f.kind === "record" ? this.ownedLists(of, f.shape, `${key} `) : [];
+    });
+  }
+  /** Every text a row's shape holds, as the three columns each is kept in. */
+  ownedTexts(of, shape = of.shape, prefix = "") {
+    if (!shape) return [];
+    return [...shape].flatMap(([name, f]) => {
+      const key = prefix + name;
+      if (f.kind === "text") return [this.textCells(of, key, num(0))];
+      return f.kind === "record" ? this.ownedTexts(of, f.shape, `${key} `) : [];
+    });
+  }
+  textCells(of, key, index) {
+    const [addr, block, chars] = TEXT_PARTS.map((part) => of.fields.get(`${key} ${part}`));
+    return { kind: "textAt", addr, block, chars, index };
+  }
+  /** Whether a row owns blocks of the heap — arrays that grow, texts — which it gives back when it goes, and which a copy of it has to have its own of. */
+  owns(of) {
+    return this.ownedLists(of).length + this.ownedTexts(of).length > 0;
+  }
+  /** The row at `index` gives back the blocks of the arrays and the texts it holds. */
+  releaseRow(of, index, node) {
+    if (!this.owns(of)) return;
+    const i = this.temp(index, node);
+    for (const l of this.ownedLists(of)) this.emit({ kind: "declareArray", array: this.innerOf(l, i, node).id, init: [], at: this.at(node), label: this.label(node) }, node);
+    for (const t of this.ownedTexts(of)) this.emit({ kind: "releaseText", block: t.block.id, index: i, at: this.at(node), label: this.label(node) }, node);
+  }
+  /** The rows from `from` on give their blocks back: they are about to go. */
+  releaseFrom(of, from, node) {
+    for (const l of this.ownedLists(of)) this.releaseRows(l, from, node);
+    const texts = this.ownedTexts(of);
+    if (!texts.length) return;
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(row of ${of.name})`, "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: i, init: from, at, label }, node);
+    this.emit({
+      kind: "for",
+      cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: texts[0].block.id, at }, at, label },
+      update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+      body: texts.map((t) => ({ kind: "releaseText", block: t.block.id, index: varRef(i), at, label })),
+      at,
+      label
+    }, node);
+  }
+  /** A text kept in cells, as the text it is. */
+  textAtCells(b, at) {
+    return this.mark({ kind: "textAt", addr: b.addr.id, block: b.block.id, chars: b.chars.id, index: b.index, at: this.at(at) }, at);
+  }
+  storeTextAt(b, value, node) {
+    this.emit({ kind: "storeText", addr: b.addr.id, block: b.block.id, chars: b.chars.id, index: b.index, value, at: this.at(node), label: this.label(node) }, node);
+  }
+  /**
+   * The class an array of instances holds. Every instance's class is known when the script is built and a row has the
+   * fields of one class, so an array declared of a class that others extend holds what is put into it — every `new`
+   * written into its first value, pushed to it or stored in it, which have to be of one class. Undefined when the
+   * elements are not instances; null, with a diagnostic, when they are of two classes.
+   */
+  rowClass(type, d) {
+    const { ts } = this;
+    if (!this.c.checker.isArrayType(type) && !this.c.checker.isTupleType(type)) return void 0;
+    const element = this.c.checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+    const declared = element && this.classOfType(element);
+    if (!declared) return void 0;
+    const made = /* @__PURE__ */ new Set();
+    const take = (x) => {
+      const n = this.unwrap(x);
+      const c2 = ts.isNewExpression(n) ? this.classOf(n.expression) : void 0;
+      if (c2) made.add(c2);
+    };
+    const mine = (x) => {
+      const e = this.unwrap(x);
+      if (ts.isIdentifier(e)) return declarationOf(ts, this.c.checker, e) === d;
+      return ts.isPropertyAccessExpression(e) && this.c.checker.getSymbolAtLocation(e.name)?.valueDeclaration === d;
+    };
+    const walk = (n) => {
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && mine(n.expression.expression)) n.arguments.forEach(take);
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isElementAccessExpression(n.left) && mine(n.left.expression)) take(n.right);
+      ts.forEachChild(n, walk);
+    };
+    walk(this.body.plan.arrow.body);
+    const init = d.initializer && this.unwrap(d.initializer);
+    if (init && ts.isArrayLiteralExpression(init)) init.elements.forEach(take);
+    if (made.size > 1) {
+      this.c.error(d, `${d.name.getText(this.body.sf)} would hold ${[...made].map((c2) => this.className(c2)).join(" and ")}: an array of instances holds one class, since a row has the fields of one. Keep an array for each.`);
+      return null;
+    }
+    return [...made][0] ?? declared;
+  }
+  /** The type of a class's instances. */
+  instanceType(cls) {
+    return this.c.checker.getDeclaredTypeOfSymbol(this.c.checker.getSymbolAtLocation(cls.name ?? cls));
+  }
+  /**
+   * A row of an array of instances from `new Wave(3, 40)`: a row of nothing, and the constructor run on it — the row is
+   * `this`, so what the class declares and what the constructor assigns go straight into its cells. When what `new` is
+   * handed may read the array itself (`waves.push(new Wave(waves.length))`, a call among the arguments), the row is not
+   * there yet in JavaScript while they are worked out: then the instance is made on its own and copied in. Null with a diagnostic.
+   */
+  newRow(of, made, shape, held) {
+    const { ts } = this;
+    const cls = this.classOf(made.expression);
+    if (!of.cls || cls !== of.cls) {
+      this.c.error(made, of.cls ? `${of.name} holds instances of ${this.className(of.cls)}, and a row has the fields of that class; this is ${cls ? `a ${this.className(cls)}` : "something else"}.` : `${of.name} holds records written out: { \u2026 }.`);
+      return null;
+    }
+    let reads2 = false;
+    const look = (n) => {
+      if (reads2) return;
+      if (ts.isCallExpression(n)) {
+        reads2 = true;
+        return;
+      }
+      if (held && (ts.isIdentifier(n) || ts.isPropertyAccessExpression(n) || n.kind === ts.SyntaxKind.ThisKeyword) && this.bindingOf(n) === held) {
+        reads2 = true;
+        return;
+      }
+      ts.forEachChild(n, look);
+    };
+    for (const arg of made.arguments ?? []) if (!this.evaluate(arg)) look(arg);
+    if (reads2) return this.copiedRow(of, made, shape, cls);
+    const out = { cells: new Map(this.columnsOf(shape).map(({ key, kind }) => [key, kind === "number" ? num(0) : FALSE])), fill: [] };
+    out.fill.push((records, index) => {
+      const self = this.rowOf(records, index);
+      this.onRow.set(self, { of: records, index, shape });
+      return this.construct(cls, made.arguments ?? [], self, made, `${of.name}[\u2026]`);
+    });
+    return out;
+  }
+  /** The variables that are a row of an array and may be given another: which array, and the variable that says which row. */
+  rowVars = /* @__PURE__ */ new WeakMap();
+  /** The rows a constructor is running on, by the instance each is: where a field's first value goes. */
+  onRow = /* @__PURE__ */ new WeakMap();
+  /** A field of a row given a value while its constructor runs: what the class declares it with, or the constructor's parameter that declares it. */
+  rowFieldGiven(self, key, src, at) {
+    const row = this.onRow.get(self);
+    const f = row.shape.get(key);
+    if (!f) {
+      this.c.error(at, `${row.of.name} has no ${key} in its rows.`);
+      return false;
+    }
+    const out = { cells: /* @__PURE__ */ new Map(), fill: [] };
+    if (!this.rowField(row.of.name, key, f, src, out, at)) return false;
+    if (f.kind !== "list" && f.kind !== "squad" && f.kind !== "text") for (const [column, value] of out.cells) this.emit({ kind: "store", array: row.of.fields.get(column).id, index: row.index, value, at: this.at(at), label: this.label(at) }, at);
+    return out.fill.every((fill) => fill(row.of, row.index));
+  }
+  /** The instance made in variables of its own, and its fields the row's values. */
+  copiedRow(of, made, shape, cls) {
+    const instance = this.instantiate(made, `(new ${this.className(cls)})`);
+    if (!instance) return null;
+    const out = { cells: /* @__PURE__ */ new Map(), fill: [] };
+    for (const [field, f] of shape) if (!this.rowField(of.name, field, f, instance.fields.has(field) ? { binding: instance.fields.get(field) } : void 0, out, made)) return null;
+    out.fill.push(() => {
+      this.releaseHeld(instance, made);
+      return true;
+    });
+    return out;
+  }
+  /** The arrays that grow of a record nothing reaches any more give their blocks back. */
+  releaseHeld(b, node) {
+    const free = (a2) => {
+      if (a2.dynamic && !a2.through && !a2.slice) this.emit({ kind: "declareArray", array: a2.id, init: [], at: this.at(node), label: this.label(node) }, node);
+    };
+    if (b.kind === "var" && b.v.kind === "text" && b.v.text === "made") this.emit({ kind: "assignText", target: b.v.id, value: { kind: "text", text: "" }, at: this.at(node), label: this.label(node) }, node);
+    else if (b.kind === "array") free(b.a);
+    else if (b.kind === "units") [b.ptr, b.epd, b.uid].forEach(free);
+    else if (b.kind === "record") for (const inner of b.fields.values()) this.releaseHeld(inner, node);
+  }
+  /**
+   * One field of a row from what it is given — a value the script has, an expression, or something of the program's —
+   * as the values of its columns; an array it holds is filled once the row is there (`fill`), since it is reached
+   * through the row. False with a diagnostic.
+   */
+  rowField(name, key, f, src, out, at) {
+    const { ts } = this;
+    const field = key.replace(/ /g, ".");
+    if (!src) {
+      this.c.error(at, `${name}: ${field} is missing.`);
+      return false;
+    }
+    const where = "expr" in src ? src.expr : at;
+    const zero = (k) => HANDLE_PARTS.forEach((part) => out.cells.set(`${k} ${part}`, num(0)));
+    switch (f.kind) {
+      case "number":
+      case "boolean": {
+        let v;
+        if ("value" in src) {
+          if (f.kind === "boolean") {
+            if (typeof src.value !== "boolean") {
+              this.c.error(where, `${name}: ${field} is true or false, got ${describe2(src.value)}.`);
+              return false;
+            }
+            v = { kind: "const", value: src.value };
+          } else {
+            const n = this.asInteger({ value: src.value }, where);
+            v = n === null ? null : num(n);
+          }
+        } else if ("expr" in src) v = f.kind === "number" ? this.num(src.expr) : this.boolValue(src.expr);
+        else v = src.binding.kind === "record" ? null : this.valueOf(src.binding, f.kind, where);
+        if (!v) return false;
+        out.cells.set(key, v);
+        return true;
+      }
+      case "unit": {
+        let u;
+        if ("value" in src) {
+          if (src.value !== null && src.value !== void 0) {
+            this.c.error(where, `${name}: ${field} is a unit of the game, got ${describe2(src.value)}.`);
+            return false;
+          }
+          u = NO_UNIT;
+        } else u = "expr" in src ? this.unitExpr(src.expr) : this.valueOf(src.binding, "unit", where);
+        if (!u) return false;
+        const unit = this.unitTemp(u, where);
+        for (const part of UNIT_PARTS) out.cells.set(`${key} ${part}`, { kind: "unitPart", unit, part, at: this.at(where) });
+        return true;
+      }
+      case "text": {
+        for (const part of TEXT_PARTS) out.cells.set(`${key} ${part}`, num(0));
+        out.fill.push((of, index) => {
+          let value;
+          if ("value" in src) {
+            if (typeof src.value !== "string") {
+              this.c.error(where, `${name}: ${field} is a text, got ${describe2(src.value)}.`);
+              return false;
+            }
+            value = this.literalText(src.value, where);
+          } else if ("expr" in src) value = this.text(src.expr);
+          else if (src.binding.kind === "value" && typeof src.binding.value === "string") value = this.literalText(src.binding.value, where);
+          else value = src.binding.kind === "var" && src.binding.v.kind === "text" ? { kind: "textVar", id: src.binding.v.id } : src.binding.kind === "textAt" ? this.textAtCells(src.binding, where) : null;
+          if (!value) {
+            if (!("expr" in src)) this.c.error(where, `${name}: ${field} is a text.`);
+            return false;
+          }
+          this.storeTextAt(this.textCells(of, key, index), value, where);
+          return true;
+        });
+        return true;
+      }
+      case "list": {
+        zero(key);
+        out.fill.push((of, index) => {
+          const into = () => this.innerOf(this.listsAt(of, key, f), index, where);
+          if ("value" in src) {
+            if (!Array.isArray(src.value)) {
+              this.c.error(where, `${name}: ${field} is an array, got ${describe2(src.value)}.`);
+              return false;
+            }
+            if (src.value.length === 0) return true;
+            const inner = into();
+            for (const v of src.value) {
+              const n = f.of === "boolean" ? typeof v === "boolean" ? v : null : this.asInteger({ value: v }, where);
+              if (n === null) {
+                if (f.of === "boolean") this.c.error(where, `Expected true or false, got ${describe2(v)}.`);
+                return false;
+              }
+              this.emit({ kind: "push", array: inner.id, value: typeof n === "boolean" ? { kind: "const", value: n } : num(n), at: this.at(where), label: this.label(where) }, where);
+            }
+            return true;
+          }
+          if ("expr" in src) {
+            const e = this.unwrap(src.expr);
+            return ts.isArrayLiteralExpression(e) && e.elements.length === 0 ? true : this.fillInner(into(), f.of, src.expr);
+          }
+          const b = src.binding.kind === "inner" ? { kind: "array", a: this.innerOf(src.binding.lists, src.binding.index, where) } : src.binding.kind === "row" ? { kind: "array", a: this.windowOf(src.binding, where) } : src.binding;
+          if (b.kind !== "array" || b.a.kind !== f.of) {
+            this.c.error(where, `${name}: ${field} is an array of ${f.of}s.`);
+            return false;
+          }
+          this.copyCells(into(), b.a, where);
+          return true;
+        });
+        return true;
+      }
+      case "squad": {
+        for (const part of UNIT_PARTS) zero(`${key} ${part}`);
+        out.fill.push((of, index) => {
+          const i = this.temp(index, where, true);
+          const inners = () => UNIT_PARTS.map((part) => [this.innerOf(this.listsAt(of, `${key} ${part}`, { of: "number", width: { unsigned: true } }), i, where), part]);
+          if ("value" in src) {
+            if (Array.isArray(src.value) && src.value.length === 0) return true;
+            this.c.error(where, `${name}: ${field} is an array of units, which starts empty or with units of the game.`);
+            return false;
+          }
+          const e = "expr" in src ? this.unwrap(src.expr) : void 0;
+          if (e && ts.isArrayLiteralExpression(e)) {
+            if (e.elements.length === 0) return true;
+            const into = inners();
+            for (const x of e.elements) {
+              const found = ts.isSpreadElement(x) || ts.isOmittedExpression(x) ? null : this.unitExpr(x);
+              if (!found) {
+                if (ts.isSpreadElement(x) || ts.isOmittedExpression(x)) this.c.error(x, `${field} is written out unit by unit.`);
+                return false;
+              }
+              const unit = this.unitTemp(found, x);
+              for (const [a2, part] of into) this.emit({ kind: "push", array: a2.id, value: { kind: "unitPart", unit, part, at: this.at(x) }, at: this.at(x), label: this.label(x) }, x);
+            }
+            return true;
+          }
+          const b = e ? this.listOf(e) : "binding" in src ? this.unitsOf(src.binding, where) : void 0;
+          if (b?.kind !== "units") {
+            this.c.error(where, `${name}: ${field} is an array of units.`);
+            return false;
+          }
+          const from = { ptr: b.ptr, epd: b.epd, uid: b.uid };
+          for (const [a2, part] of inners()) this.copyCells(a2, from[part], where);
+          return true;
+        });
+        return true;
+      }
+      case "record": {
+        let get;
+        if ("value" in src) {
+          const o = src.value;
+          if (!o || typeof o !== "object" || Array.isArray(o)) {
+            this.c.error(where, `${name}: ${field} is a record, got ${describe2(o)}.`);
+            return false;
+          }
+          get = (sub) => sub in o ? { value: o[sub] } : void 0;
+        } else {
+          let b = "binding" in src ? src.binding : void 0;
+          if ("expr" in src) {
+            const e = this.unwrap(src.expr);
+            if (ts.isObjectLiteralExpression(e)) {
+              const from = this.literalSource(e);
+              if (!from) return false;
+              get = from;
+              b = null;
+            } else b = ts.isNewExpression(e) && this.classOf(e.expression) ? this.instantiate(e, `(new ${field})`) : this.bindingOf(e);
+          }
+          if (b !== null) {
+            if (b?.kind !== "record") {
+              if (b !== null) this.c.error(where, `${name}: ${field} is a record: { \u2026 }${f.cls ? `, or new ${this.className(f.cls)}(\u2026)` : ""}.`);
+              return false;
+            }
+            if (f.cls && b.cls !== f.cls) {
+              this.c.error(where, `${name}: ${field} is a ${this.className(f.cls)} in every row, since a row has the fields of one class${b.cls ? `; this is a ${this.className(b.cls)}` : ""}.`);
+              return false;
+            }
+            const fields = b.fields;
+            get = (sub) => fields.has(sub) ? { binding: fields.get(sub) } : void 0;
+          }
+        }
+        for (const [sub, inner] of f.shape) if (!this.rowField(name, `${key} ${sub}`, inner, get(sub), out, where)) return false;
+        return true;
+      }
+    }
+  }
+  /** What `{ count: 4, ...w }` gives each field: the last to say what it is wins, as in JavaScript. Null with a diagnostic. */
+  literalSource(literal) {
+    const { ts } = this;
+    const whole2 = this.evaluate(literal)?.value;
+    if (whole2 && typeof whole2 === "object") return (field) => field in whole2 ? { value: whole2[field] } : void 0;
+    const spreads = /* @__PURE__ */ new Map();
+    for (const x of literal.properties) if (ts.isSpreadAssignment(x)) {
+      const from = this.spreadFields(x.expression);
+      if (!from) return null;
+      spreads.set(x, from);
+    }
+    return (field) => {
+      for (const x of [...literal.properties].reverse()) {
+        if ((ts.isPropertyAssignment(x) || ts.isShorthandPropertyAssignment(x)) && (ts.isIdentifier(x.name) || ts.isStringLiteralLike(x.name)) && x.name.text === field) return { expr: ts.isPropertyAssignment(x) ? x.initializer : x.name };
+        const b = ts.isSpreadAssignment(x) ? spreads.get(x)?.get(field) : void 0;
+        if (b) return b.kind === "value" ? { value: b.value } : { binding: b };
+      }
+      return void 0;
+    };
+  }
+  /** Every cell of `from` pushed to `into`: what a copy of an array is. */
+  copyCells(into, from, node) {
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(index of ${from.name})`, "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, node);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: from.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "push", array: into.id, value: { kind: "element", array: from.id, index: varRef(i), at }, at, label }], at, label }, node);
+  }
+  /** A binding as the array of units it is, a row's made one where it is used. */
+  unitsOf(b, node) {
+    if (b.kind !== "innerUnits") return b;
+    const i = this.temp(b.index, node, true);
+    return { kind: "units", name: b.name, ptr: this.innerOf(b.ptr, i, node, `${b.name} (ptr)`), epd: this.innerOf(b.epd, i, node, `${b.name} (epd)`), uid: this.innerOf(b.uid, i, node, `${b.name} (uid)`) };
+  }
+  /**
+   * `waves[i]` where `waves` is a list of records the script made when it was built — the wave table written above the
+   * program — and `i` a value of the program: a table a field, in the map once, which nothing writes.
+   */
+  recordTables(e) {
+    if (this.evaluate(e.argumentExpression)) return void 0;
+    const list = this.evaluate(e.expression)?.value;
+    if (!Array.isArray(list) || list.length === 0 || list.length > MAX_ARRAY || !list.every((x) => x && typeof x === "object" && !Array.isArray(x))) return void 0;
+    const known = this.recordLists.get(list);
+    if (known) return known;
+    const name = e.expression.getText(this.body.sf).replace(/\s+/g, " ");
+    const fields = /* @__PURE__ */ new Map();
+    for (const field of Object.keys(list[0])) {
+      const column = list.map((row) => row[field]);
+      const booleans = column.every((v) => typeof v === "boolean");
+      if (!booleans && !column.every((v) => typeof v === "number" && Number.isInteger(v))) continue;
+      const values = column.map((v) => booleans ? v ? 1 : 0 : v);
+      fields.set(field, this.newArray(`${name}.${field}`, booleans ? "boolean" : "number", values.length, this.at(e.expression), { shared: true, values, ...values.some((v) => v > I32_MAX) ? { unsigned: true } : {} }));
+    }
+    if (fields.size === 0) return void 0;
+    const records = { kind: "records", name, fields };
+    this.recordLists.set(list, records);
+    return records;
+  }
+  rowIndex(of, e) {
+    const h = this.evaluate(e);
+    if (!h) return this.num(e);
+    const i = this.asInteger(h, e);
+    if (i === null) return null;
+    const first = [...of.fields.values()][0];
+    if (!first.dynamic && (i < 0 || i >= first.length)) {
+      this.c.error(e, `${of.name} has ${first.length} record${first.length === 1 ? "" : "s"}, 0 \u2026 ${first.length - 1}; there is no ${of.name}[${i}].`);
+      return null;
+    }
+    return num(i);
+  }
+  rowOf(of, index) {
+    const place = (key) => ({ a: of.fields.get(key), index });
+    const build = (shape, prefix) => new Map([...shape].map(([name, f]) => {
+      const key = prefix + name;
+      switch (f.kind) {
+        case "unit":
+          return [name, { kind: "unitAt", ptr: place(`${key} ptr`), epd: place(`${key} epd`), uid: place(`${key} uid`) }];
+        case "list":
+          return [name, { kind: "inner", lists: this.listsAt(of, key, f), index }];
+        case "text":
+          return [name, this.textCells(of, key, index)];
+        case "squad": {
+          const [ptr, epd, uid] = UNIT_PARTS.map((part) => this.listsAt(of, `${key} ${part}`, { of: "number", width: { unsigned: true } }));
+          return [name, { kind: "innerUnits", name: `${of.name}[\u2026].${key.replace(/ /g, ".")}`, ptr, epd, uid, index }];
+        }
+        case "record":
+          return [name, { kind: "record", fields: build(f.shape, `${key} `), ...f.cls ? { cls: f.cls } : {} }];
+        default:
+          return [name, { kind: "cell", a: of.fields.get(key), index }];
+      }
+    }));
+    return { kind: "record", fields: build(this.rowShape(of), ""), ...of.cls ? { cls: of.cls } : {} };
+  }
+  /**
+   * `let waves = [{ count: 4, delay: 2 }, { count: 6, delay: 1 }]`, `let log: Hit[] = []`: an array a column, all of
+   * one length. The fields are the element type's; a record of the list gives each its value. Declared again, the rows
+   * it had give the blocks of their arrays back first.
+   */
+  declareRecords(name, initializer, shape, at, cls) {
+    const { ts } = this;
+    const init = this.unwrap(initializer);
+    const grows = this.body.plan.grows.has(at);
+    const rows = [];
+    const whole2 = this.evaluate(init);
+    const items = [];
+    if (whole2) {
+      if (!Array.isArray(whole2.value)) {
+        this.c.error(init, `Expected a list of records to start ${name} with, got ${describe2(whole2.value)}.`);
+        return null;
+      }
+      items.push(...whole2.value.map((value) => ({ value })));
+    } else if (ts.isArrayLiteralExpression(init)) items.push(...init.elements);
+    else {
+      this.c.error(init, `${name}'s records have to be written out ([{ \u2026 }, { \u2026 }]), or it starts empty and is pushed to.`);
+      return null;
+    }
+    for (const item of items) {
+      if ("value" in item) {
+        const row2 = { cells: /* @__PURE__ */ new Map(), fill: [] };
+        const o = item.value;
+        for (const [field, f] of shape) if (!this.rowField(name, field, f, o && typeof o === "object" && field in o ? { value: o[field] } : { value: void 0 }, row2, init)) return null;
+        rows.push(row2);
+        continue;
+      }
+      const literal = this.unwrap(item);
+      if (!ts.isNewExpression(literal) && !ts.isObjectLiteralExpression(literal)) {
+        this.c.error(item, `${name} is written out record by record: [{ \u2026 }, { \u2026 }].`);
+        return null;
+      }
+      const row = ts.isNewExpression(literal) ? this.newRow({ name, cls }, literal, shape) : this.rowValues(name, literal, shape);
+      if (!row) return null;
+      rows.push(row);
+    }
+    return this.recordsFrom(name, shape, rows, init, at, grows, cls);
+  }
+  /** The arrays of an array of records, a column each, declared with the rows it starts with. */
+  recordsFrom(name, shape, rows, init, at, grows, cls) {
+    const dynamic = grows || rows.length === 0;
+    if (rows.length < (dynamic ? 0 : 1) || rows.length > MAX_ARRAY) {
+      this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} records.` : `An array of a program has 1 to ${MAX_ARRAY} records (got ${rows.length}); one that starts empty is one something pushes to.`);
+      return null;
+    }
+    const fields = /* @__PURE__ */ new Map();
+    for (const { key, kind, width } of this.columnsOf(shape)) {
+      const a2 = this.newArray(`${name}.${key.replace(/ /g, ".")}`, kind, rows.length, this.sourceOf(at), width);
+      if (dynamic) a2.dynamic = true;
+      fields.set(key, a2);
+    }
+    const plain = [...shape.values()].every((f) => f.kind === "number" || f.kind === "boolean");
+    const records = { kind: "records", name, fields, ...cls ? { cls } : {}, ...plain ? {} : { shape } };
+    if (!plain && !shape.has(TEXT_FIELD)) this.emit({ kind: "remark", short: `rows of ${fields.size} cells`, text: `Each row of ${name} is ${fields.size} cells, one in each of ${fields.size} arrays that move together: a number or a boolean is one, a unit three, a text three (where it is, its block, its length), an array that grows four (its block, its length, its room, its size) and an array of units twelve. The row owns the blocks of its arrays and its made texts: they go back when the row does.`, at: this.at(at) }, at);
+    this.releaseFrom(records, num(0), at);
+    for (const [key, a2] of fields) this.emit({ kind: "declareArray", array: a2.id, init: rows.map((r) => r.cells.get(key)), at: this.at(at), label: this.label(at) }, at);
+    for (const [k, row] of rows.entries()) for (const fill of row.fill) if (!fill(records, num(k))) return null;
+    return records;
+  }
+  /** The values of `{ count: 4, delay: d }` by column, every field of the shape given and no other. */
+  rowValues(name, literal, shape) {
+    const from = this.literalSource(literal);
+    if (!from) return null;
+    const out = { cells: /* @__PURE__ */ new Map(), fill: [] };
+    for (const [field, f] of shape) {
+      const src = from(field);
+      if (!src) {
+        this.c.error(literal, `${name}: a record has ${[...shape.keys()].join(", ")}; ${field} is missing.`);
+        return null;
+      }
+      if (!this.rowField(name, field, f, src, out, literal)) return null;
+    }
+    return out;
+  }
+  /**
+   * `this.members = []`, `squads[i].seen = [a, b]`, `s.path = other`: an array a record's field leads to starts over
+   * with what it is given, copied — the field stays the array it is, so this is what assigning one comes to. One of a
+   * fixed length takes as many cells as it has.
+   */
+  assignList(e, field, op) {
+    const { ts } = this;
+    const at = this.at(e);
+    const label = this.label(e);
+    if (op !== ts.SyntaxKind.EqualsToken) {
+      this.c.error(e, "An array takes = only.");
+      return;
+    }
+    const given = this.unwrap(e.right);
+    const empty = ts.isArrayLiteralExpression(given) && given.elements.length === 0;
+    const b = field.kind === "inner" ? { kind: "array", a: this.innerOf(field.lists, field.index, e) } : this.unitsOf(field, e);
+    if (b.kind === "array") {
+      if (!b.a.dynamic && !b.a.through) {
+        this.c.error(e.left, `${b.a.name} has ${b.a.length} cells for good; assign them one by one, or declare it empty ([]) and push to it, and it is one that can start over.`);
+        return;
+      }
+      this.emit({ kind: "declareArray", array: b.a.id, init: [], at, label }, e);
+      if (!empty) this.fillInner(b.a, b.a.kind, e.right);
+      return;
+    }
+    if (b.kind !== "units") return;
+    if (!b.ptr.dynamic) {
+      this.c.error(e.left, `${b.name} has ${b.ptr.length} units for good; assign them one by one, or declare it empty ([]) and push to it.`);
+      return;
+    }
+    const from = empty ? void 0 : this.listOf(e.right);
+    if (!empty && from?.kind !== "units") {
+      this.c.error(e.right, `${b.name} starts over empty ([]), or as a copy of another array of units.`);
+      return;
+    }
+    for (const [a2, part] of this.unitArrays(b)) {
+      this.emit({ kind: "declareArray", array: a2.id, init: [], at, label }, e);
+      if (from?.kind === "units") this.copyCells(a2, from[part], e);
+    }
+  }
+  /** `waves[i] = { count: 1, delay: 2 }`: every field of the record at i. What the row held of arrays goes back first. */
+  storeRow(e, op) {
+    const { ts } = this;
+    const left = this.unwrap(e.left);
+    const of = ts.isElementAccessExpression(left) ? this.bindingOf(left.expression) : void 0;
+    const literal = this.unwrap(e.right);
+    if (of?.kind !== "records" || !ts.isElementAccessExpression(left)) {
+      this.c.error(e.left, "An array of records is assigned record by record: waves[i] = { \u2026 }.");
+      return;
+    }
+    if (op !== ts.SyntaxKind.EqualsToken || !(ts.isObjectLiteralExpression(literal) || ts.isNewExpression(literal))) {
+      this.c.error(e, `A record of ${of.name} is given whole, ${of.name}[i] = ${of.cls ? `new ${this.className(of.cls)}(\u2026)` : "{ \u2026 }"}, or field by field, ${of.name}[i].${[...this.rowShape(of).keys()][0]} = 1.`);
+      return;
+    }
+    const shape = this.rowShape(of);
+    const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape, of) : this.rowValues(of.name, literal, shape);
+    const index = this.rowIndex(of, left.argumentExpression);
+    if (!row || !index) return;
+    const i = this.temp(index, e, row.fill.length > 0 || this.owns(of));
+    this.releaseRow(of, i, e);
+    for (const [key, a2] of of.fields) this.emit({ kind: "store", array: a2.id, index: i, value: row.cells.get(key), at: this.at(e), label: this.label(e) }, e);
+    for (const fill of row.fill) if (!fill(of, i)) return;
+  }
+  /** `waves.push({ … })`, `waves.pop()`: every column moves together, and a row that goes gives the blocks of its arrays back. */
+  recordsCall(e, of, method) {
+    const { ts } = this;
+    const at = this.at(e);
+    const label = this.label(e);
+    if (method === "push") {
+      if (e.arguments.length === 0) {
+        this.c.error(e, "push() takes the record to add.");
+        return;
+      }
+      for (const arg of e.arguments) {
+        const literal = this.unwrap(arg);
+        if (!ts.isObjectLiteralExpression(literal) && !ts.isNewExpression(literal)) {
+          this.c.error(arg, of.cls ? `${of.name}.push(new ${this.className(of.cls)}(\u2026)) takes an instance made there: a row is the instance, so one kept in a variable would be copied, and changing it afterwards would not change the row.` : `${of.name}.push({ \u2026 }) takes a record written out.`);
+          return;
+        }
+        const shape = this.rowShape(of);
+        const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape, of) : this.rowValues(of.name, literal, shape);
+        if (!row) return;
+        const place = row.fill.length ? this.newVar(`(row of ${of.name})`, "number", at, { temp: true }) : void 0;
+        if (place) this.emit({ kind: "declare", decl: place, init: { kind: "length", array: [...of.fields.values()][0].id, at }, at, label }, e);
+        for (const [key, a2] of of.fields) {
+          a2.dynamic = true;
+          this.emit({ kind: "push", array: a2.id, value: row.cells.get(key), at, label }, e);
+        }
+        for (const fill of row.fill) if (!fill(of, varRef(place))) return;
+      }
+      return;
+    }
+    if (method === "pop" && e.arguments.length === 0) {
+      const first = [...of.fields.values()][0];
+      const pops = this.collect(() => {
+        if (of.shape) this.releaseRow(of, { kind: "binary", op: "-", left: { kind: "length", array: first.id, at }, right: num(1), at, label }, e);
+        for (const a2 of of.fields.values()) {
+          a2.dynamic = true;
+          this.emit({ kind: "pop", array: a2.id, at, label }, e);
+        }
+      });
+      if (this.owns(of)) this.emit({ kind: "if", cond: { kind: "compare", op: ">", left: { kind: "length", array: first.id, at }, right: num(0), at, label }, then: pops, at, label }, e);
+      else this.out.push(...pops);
+      return;
+    }
+    this.c.error(e, `An array of records has push({ \u2026 }), pop(), length, for\u2026of, and forEach, filter, some, every, findIndex, reduce, sort and reverse; ${method}() is not one of them. (pop() stands on its own: read ${of.name}[${of.name}.length - 1] first for what it takes off.)`);
+  }
+  /** The `__kind` a branded type of the library carries ("unit", "player", …), if it carries one. */
+  brandOfType(type) {
+    for (const t of type.isUnion() ? type.types : [type]) {
+      for (const part of t.isIntersection() ? t.types : [t]) {
+        const p = part.getProperty("__kind");
+        if (!p) continue;
+        const pt = this.c.checker.getTypeOfSymbol(p);
+        const name = (pt.isUnion() ? pt.types : [pt]).find((x) => x.isStringLiteral());
+        if (name) return name.value;
+      }
+    }
+    return void 0;
+  }
+  /** Whether a Map's or a Set's keys are any number — no id of the game, which has a cell for every one. */
+  anyNumberKeys(type) {
+    const keyType = this.c.checker.getTypeArguments(type)[0];
+    if (!keyType) return false;
+    const brand = this.brandOfType(keyType);
+    return !(brand && KEY_DOMAINS[brand]) && (this.kindOf(keyType) === "number" || this.kindOf(keyType) === "unit");
+  }
+  /** Whether a declaration is a table keyed by an id of the game: `new Map<K, V>(…)`, `new Set<K>(…)`, or an object literal typed `Record<K, V>`. */
+  keyedForm(init, type) {
+    const { ts } = this;
+    if (ts.isNewExpression(init) && ts.isIdentifier(init.expression) && (init.expression.text === "Map" || init.expression.text === "Set")) return init.expression.text === "Map" ? "map" : "set";
+    if (ts.isObjectLiteralExpression(init) && this.c.checker.getIndexInfosOfType(type).some((i) => this.brandOfType(i.keyType) !== void 0)) return "record";
+    return null;
+  }
+  /**
+   * `const price: Record<UnitType, number> = { [units.TerranMarine]: 50 }`, `new Map<Player, number>()`, `new Set<UnitType>()`:
+   * an array with a cell for every id of the key's kind — and, for a Map or a Set, one of booleans beside it that says
+   * which keys were set, and a count — so a key of the game (`u.type`, `u.owner`) is one read. Nothing new reaches a backend.
+   */
+  declareKeyed(name, as, init, type, at) {
+    const { ts } = this;
+    const checker = this.c.checker;
+    const args = as === "record" ? [] : checker.getTypeArguments(type);
+    const keyType = as === "record" ? checker.getIndexInfosOfType(type).find((i) => this.brandOfType(i.keyType))?.keyType : args[0];
+    const valueType = as === "record" ? checker.getIndexInfosOfType(type).find((i) => this.brandOfType(i.keyType))?.type : as === "map" ? args[1] : void 0;
+    const key = keyType ? this.brandOfType(keyType) : void 0;
+    const domain = key ? KEY_DOMAINS[key] : void 0;
+    if (!key || !domain) {
+      this.c.error(at, `${name}'s keys have to be numbers, or ids of the game \u2014 UnitType, Player, Location, Switch, Weapon, Upgrade or Tech: ${as === "set" ? "new Set<UnitType>()" : as === "map" ? "new Map<UnitType, number>()" : "Record<UnitType, number>"}. For numbers of your own, an array does it.`);
+      return null;
+    }
+    const kind = valueType ? this.kindOf(valueType) : null;
+    if (as !== "set" && kind !== "number" && kind !== "boolean") {
+      this.c.error(at, `${name} holds numbers or booleans.`);
+      return null;
+    }
+    const where = this.sourceOf(at);
+    const atIr = this.at(at);
+    const label = this.label(at);
+    const values = as === "set" ? void 0 : this.newArray(name, kind, domain.size, where, kind === "number" ? this.widthOf(valueType) : {});
+    const present = as === "record" ? void 0 : this.newArray(`${name} (has)`, "boolean", domain.size, where);
+    const size = as === "record" ? void 0 : this.newVar(`${name}.size`, "number", where);
+    const keyed = { kind: "keyed", as, name, domain: domain.size, key, ...values ? { values } : {}, ...present ? { present } : {}, ...size ? { size } : {} };
+    if (values) this.emit({ kind: "declareArray", array: values.id, fill: values.kind === "number" ? num(0) : FALSE, at: atIr, label }, at);
+    if (present) this.emit({ kind: "declareArray", array: present.id, fill: FALSE, at: atIr, label }, at);
+    if (size) this.emit({ kind: "declare", decl: size, init: num(0), at: atIr, label }, at);
+    const whole2 = this.evaluate(init)?.value;
+    const start = (entries) => {
+      const seen = /* @__PURE__ */ new Set();
+      for (const [k, v] of entries) {
+        const index = this.keyConstant(keyed, typeof k === "string" && /^\d+$/.test(k) ? Number(k) : k, init);
+        if (index === null) continue;
+        if (values) {
+          const value = values.kind === "boolean" ? typeof v === "boolean" ? { kind: "const", value: v } : null : (() => {
+            const n = this.asInteger({ value: v }, init);
+            return n === null ? null : num(n);
+          })();
+          if (!value) {
+            if (values.kind === "boolean") this.c.error(init, `Expected true or false, got ${describe2(v)}.`);
+            continue;
+          }
+          this.emit({ kind: "store", array: values.id, index: num(index), value, at: atIr, label }, at);
+        }
+        if (present) this.emit({ kind: "store", array: present.id, index: num(index), value: TRUE, at: atIr, label }, at);
+        seen.add(index);
+      }
+      if (size && seen.size) this.emit({ kind: "assign", target: size.id, value: num(seen.size), at: atIr, label }, at);
+    };
+    if (whole2 instanceof Map) {
+      start([...whole2.entries()]);
+      return keyed;
+    }
+    if (whole2 instanceof Set) {
+      start([...whole2.values()].map((k) => [k, true]));
+      return keyed;
+    }
+    if (whole2 && typeof whole2 === "object") {
+      start(Object.entries(whole2));
+      return keyed;
+    }
+    if (as === "record") {
+      for (const p of init.properties) {
+        if (!ts.isPropertyAssignment(p) || !ts.isComputedPropertyName(p.name)) {
+          this.c.error(p, `${name}'s keys are ids of the game, written [units.TerranMarine]: 50.`);
+          continue;
+        }
+        const index = this.keyIndex(keyed, p.name.expression);
+        const value = values.kind === "number" ? this.num(p.initializer) : this.boolValue(p.initializer);
+        if (index && value) this.emit({ kind: "store", array: values.id, index, value, at: this.at(p), label: this.label(p) }, p);
+      }
+      return keyed;
+    }
+    const first = init.arguments?.[0];
+    if (first) {
+      const h = this.evaluate(first);
+      let entries;
+      try {
+        if (!h || typeof h.value !== "object" || h.value === null || !(Symbol.iterator in h.value)) throw new Error("not a list");
+        entries = Array.from(h.value);
+      } catch {
+        this.c.error(first, `What ${name} starts with has to be known when the script is built: ${as === "map" ? "new Map([[units.TerranMarine, 50]])" : "new Set([units.TerranMarine])"}. Add the rest with ${as === "map" ? "set()" : "add()"}.`);
+        return keyed;
+      }
+      start(entries.map((entry) => as === "map" ? [entry?.[0], entry?.[1]] : [entry, true]));
+    }
+    return keyed;
+  }
+  /**
+   * A Map or a Set the script made when it was built (`const price = new Map([[units.TerranMarine, 50]])`), asked with a key of
+   * the program: the tables it is looked up in, which nothing writes. Undefined when the expression is not one.
+   */
+  collectionOf(e) {
+    const value = this.evaluate(e)?.value;
+    if (!(value instanceof Map) && !(value instanceof Set)) return void 0;
+    const known = this.collections.get(value);
+    if (known) return known;
+    const name = e.getText(this.body.sf).replace(/\s+/g, " ");
+    const entries = value instanceof Map ? [...value.entries()] : [...value.values()].map((k) => [k, true]);
+    if (entries.length === 0 || !entries.every(([k]) => typeof k === "number" && Number.isInteger(k) && k >= 0 && k < MAX_ARRAY)) {
+      this.c.error(e, `${name}'s keys have to be ids of the game (whole numbers from 0) for a program to look one up.`);
+      return void 0;
+    }
+    const length = Math.max(...entries.map(([k]) => k)) + 1;
+    const booleans = entries.every(([, v]) => typeof v === "boolean");
+    const cells = new Array(length).fill(0);
+    const has = new Array(length).fill(0);
+    for (const [k, v] of entries) {
+      const n = booleans ? v ? 1 : 0 : this.asInteger({ value: v }, e);
+      if (n === null) return void 0;
+      cells[k] = n;
+      has[k] = 1;
+    }
+    const at = this.at(e);
+    const as = value instanceof Map ? "map" : "set";
+    const keyed = {
+      kind: "keyed",
+      as,
+      name,
+      domain: length,
+      key: "unit",
+      ...as === "map" ? { values: this.newArray(name, booleans ? "boolean" : "number", length, at, { shared: true, values: cells, ...cells.some((v) => v > I32_MAX) ? { unsigned: true } : {} }) } : {},
+      present: this.newArray(`${name} (has)`, "boolean", length, at, { shared: true, values: has })
+    };
+    this.collections.set(value, keyed);
+    return keyed;
+  }
+  /** A key known when the script is built, as a cell's number; null, with a diagnostic, when it is not one of the kind's ids. */
+  keyConstant(b, value, at) {
+    const what = KEY_DOMAINS[b.key].what;
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+      this.c.error(at, `${b.name}'s keys are ${what}; got ${describe2(value)}.`);
+      return null;
+    }
+    if (b.key === "player" && value === PlayerGroup.CurrentPlayer) {
+      this.c.error(at, `CurrentPlayer is not a key of ${b.name}: it would be one cell for everybody. In a program of every player a plain variable is already one per player.`);
+      return null;
+    }
+    if (value < 0 || value >= b.domain) {
+      this.c.error(at, `${b.name}'s keys are ${what} (0 \u2026 ${b.domain - 1}); got ${value}.`);
+      return null;
+    }
+    return value;
+  }
+  /** A key as the index of its cell: a constant checked here, or a number of the program (`u.type`, `u.owner`), which the array's own ends bound. */
+  keyIndex(b, e) {
+    const h = this.evaluate(e);
+    if (h && !isGameValue(h.value)) {
+      const k = this.keyConstant(b, h.value, e);
+      return k === null ? null : num(k);
+    }
+    return this.num(e);
+  }
+  /**
+   * A method of a keyed table: `get`, `set`, `has`, `delete`, `clear` of a Map; `add`, `has`, `delete`, `clear` of a Set.
+   * What comes back is as `arrayCall`'s. A key that is more than a constant or a variable is worked out once, into a temporary.
+   */
+  keyedCall(e, b, method, as) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const wrong = (what) => {
+      this.c.error(e, what);
+      return null;
+    };
+    if (b.as === "record") return wrong(`${b.name} is read and written by its keys: ${b.name}[key].`);
+    if (b.present?.values && method !== "get" && method !== "has") return wrong(`${b.name} was made when the script was built and is only read in a program; make it inside the program to change it.`);
+    const cell = (a2, index) => ({ kind: "element", array: a2.id, index, at });
+    const key = () => {
+      if (e.arguments.length < 1) {
+        this.c.error(e, `${method}() takes a key.`);
+        return null;
+      }
+      const index = this.keyIndex(b, e.arguments[0]);
+      if (!index || index.kind === "const" || index.kind === "var" || as !== "statement") return index;
+      const t = this.newVar(`(key of ${b.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: t, init: index, at, label }, e);
+      return varRef(t);
+    };
+    const present = b.present;
+    const size = b.size;
+    const bump = (by) => ({ kind: "assign", target: size.id, value: { kind: "binary", op: by, left: varRef(size), right: num(1), at, label }, at, label });
+    switch (method) {
+      case "has": {
+        if (as !== "boolean") return wrong(`${b.name}.has(\u2026) is true or false.`);
+        const index = key();
+        return index ? this.mark(cell(present, index), e) : null;
+      }
+      case "get": {
+        if (b.as !== "map" || !b.values) return wrong("A Set has has(), add() and delete().");
+        if (as === "statement") return wrong(`${b.name}.get(\u2026) is a value: use it or store it.`);
+        if (as === "number" !== (b.values.kind === "number")) return wrong(`${b.name} holds ${b.values.kind}s.`);
+        const index = key();
+        return index ? this.mark(cell(b.values, index), e) : null;
+      }
+      case "set":
+      case "add": {
+        if (method === "set" !== (b.as === "map")) return wrong(b.as === "map" ? "A Map takes set(key, value)." : "A Set takes add(key).");
+        if (as !== "statement") return wrong(`${b.name}.${method}(\u2026) stands on its own.`);
+        if (e.arguments.length !== (b.as === "map" ? 2 : 1)) return wrong(b.as === "map" ? "set() takes a key and a value." : "add() takes a key.");
+        const index = key();
+        if (!index) return null;
+        const value = b.values ? b.values.kind === "number" ? this.num(e.arguments[1]) : this.boolValue(e.arguments[1]) : null;
+        if (b.values && !value) return null;
+        if (b.values) this.emit({ kind: "store", array: b.values.id, index, value, at, label }, e);
+        this.emit({ kind: "if", cond: { kind: "not", expr: cell(present, index) }, then: [bump("+"), { kind: "store", array: present.id, index, value: TRUE, at, label }], at, label }, e);
+        return true;
+      }
+      case "delete": {
+        if (as !== "statement") return wrong(`${b.name}.delete(\u2026) stands on its own; ask has() first for whether it was there.`);
+        const index = key();
+        if (!index) return null;
+        const then = [bump("-"), { kind: "store", array: present.id, index, value: FALSE, at, label }];
+        if (b.values) then.push({ kind: "store", array: b.values.id, index, value: b.values.kind === "number" ? num(0) : FALSE, at, label });
+        this.emit({ kind: "if", cond: cell(present, index), then, at, label }, e);
+        return true;
+      }
+      case "clear": {
+        if (as !== "statement" || e.arguments.length) return wrong(`${b.name}.clear() stands on its own and takes nothing.`);
+        if (b.values) this.emit({ kind: "declareArray", array: b.values.id, fill: b.values.kind === "number" ? num(0) : FALSE, at, label }, e);
+        this.emit({ kind: "declareArray", array: present.id, fill: FALSE, at, label }, e);
+        this.emit({ kind: "assign", target: size.id, value: num(0), at, label }, e);
+        return true;
+      }
+      default:
+        return wrong(`${b.as === "map" ? "A Map of a program has get, set, has, delete, clear and size" : "A Set of a program has add, has, delete, clear and size"}; ${method}() is not one of them.`);
+    }
+  }
+  /** An array something pushes to, pops from or sets the length of grows. One met through a parameter is found here; a list computed when the script was built cannot. */
+  grows(a2, at) {
+    if (a2.slice) {
+      this.c.error(at, `${a2.name} is a row of an array of arrays, which is one flat array: every row has its ${a2.length} cells, and whole rows are pushed to the outer array.`);
+      return false;
+    }
+    if (a2.values) {
+      this.c.error(at, `${a2.name} was computed when the script was built and is only read in a program; declare it with let inside the program to change it.`);
+      return false;
+    }
+    a2.dynamic = true;
+    return true;
+  }
+  /**
+   * A method of an array: `push`, `pop`, `fill`, `includes`, `indexOf`. `as` is where the call stands — a statement,
+   * a number or a boolean — and what comes back is the expression (true for a statement), or null with a diagnostic.
+   * `includes` and `indexOf` are a function of the compiler's own, inlined as any function is: a loop over the cells.
+   */
+  arrayCall(e, a2, method, as) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const one = (x) => a2.kind === "number" ? this.num(x) : this.boolValue(x);
+    const wrong = (what) => {
+      this.c.error(e, what);
+      return null;
+    };
+    switch (method) {
+      case "push": {
+        if (as !== "statement") return wrong(`${a2.name}.push(\u2026) stands on its own; the new length is ${a2.name}.length.`);
+        if (e.arguments.length === 0) return wrong("push() takes what to add.");
+        if (!this.grows(a2, e)) return null;
+        for (const x of e.arguments) {
+          const value = one(x);
+          if (!value) return null;
+          this.emit({ kind: "push", array: a2.id, value, at, label }, e);
+        }
+        return true;
+      }
+      case "pop": {
+        if (e.arguments.length) return wrong("pop() takes no argument.");
+        if (!this.grows(a2, e)) return null;
+        if (as === "statement") {
+          this.emit({ kind: "pop", array: a2.id, at, label }, e);
+          return true;
+        }
+        if (as === "number" !== (a2.kind === "number")) return wrong(`${a2.name} holds ${a2.kind}s.`);
+        return this.mark({ kind: "pop", array: a2.id, at }, e);
+      }
+      case "fill": {
+        if (as !== "statement" || e.arguments.length !== 1) return wrong(`${a2.name}.fill(value) stands on its own and takes one value.`);
+        if (a2.values) return wrong(`${a2.name} was computed when the script was built and is only read in a program.`);
+        const value = one(e.arguments[0]);
+        if (!value) return null;
+        const v = this.newVar(`(fill of ${a2.name})`, a2.kind, at, { temp: true, ...a2.bits ? { bits: a2.bits } : {}, ...a2.unsigned ? { unsigned: true } : {} });
+        const i = this.newVar(`(index of ${a2.name})`, "number", at, { temp: true });
+        this.emit({ kind: "declare", decl: v, init: value, at, label }, e);
+        this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+        this.emit({
+          kind: "for",
+          cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: a2.id, at }, at, label },
+          update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+          body: [{ kind: "store", array: a2.id, index: varRef(i), value: a2.kind === "number" ? varRef(v) : boolRef(v), at, label }],
+          at,
+          label
+        }, e);
+        return true;
+      }
+      case "includes":
+      case "indexOf": {
+        if (e.arguments.length !== 1) return wrong(`${method}() takes the value to look for.`);
+        if (as === "statement") return wrong(`${a2.name}.${method}(\u2026) is a value: use it in an if or store it.`);
+        if (method === "includes" !== (as === "boolean")) return wrong(method === "includes" ? `${a2.name}.includes(\u2026) is true or false.` : `${a2.name}.indexOf(\u2026) is a number: the place of the value, or -1.`);
+        const wanted = one(e.arguments[0]);
+        if (!wanted) return null;
+        const w = this.newVar(`(${method} of ${a2.name})`, a2.kind, at, { temp: true });
+        const i = this.newVar(`(index of ${a2.name})`, "number", at, { temp: true });
+        const result = this.newVar(`(${a2.name}.${method} result)`, method === "includes" ? "boolean" : "number", at, { temp: true });
+        const cell = { kind: "element", array: a2.id, index: varRef(i), at };
+        const same2 = a2.kind === "number" ? { kind: "compare", op: "==", left: cell, right: varRef(w), at, label } : { kind: "or", items: [{ kind: "and", items: [cell, boolRef(w)] }, { kind: "and", items: [{ kind: "not", expr: cell }, { kind: "not", expr: boolRef(w) }] }] };
+        const found = [{ kind: "return", value: method === "includes" ? TRUE : varRef(i), at, label }];
+        const call = {
+          name: `${a2.name}.${method}`,
+          at,
+          label,
+          params: [{ decl: w, init: wanted, label }],
+          result: { decl: result, kind: method === "includes" ? "boolean" : "number" },
+          body: [
+            { kind: "declare", decl: i, init: num(0), at, label },
+            { kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: a2.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "if", cond: same2, then: found, at, label }], at, label },
+            { kind: "return", value: method === "includes" ? FALSE : num(-1), at, label }
+          ]
+        };
+        return this.mark({ kind: "call", call }, e);
+      }
+      default:
+        return wrong(`An array of a program has push, pop, fill, includes, indexOf, length, for\u2026of, and the methods that take a function (forEach, map, filter, some, every, find, findIndex, reduce, sort) with reverse, and the copies (slice, concat, toSorted, toReversed); ${method}() is not one of them.`);
+    }
+  }
+  /* ── Arrays of arrays of a fixed shape ── */
+  /** `index * by + plus`, with what the script knows worked out. */
+  scaled(index, by, plus, node) {
+    const at = this.at(node);
+    const label = this.label(node);
+    if (index.kind === "const" && (!plus || plus.kind === "const")) return num(index.value * by + (plus ? plus.value : 0));
+    const times = by === 1 ? index : index.kind === "const" ? num(index.value * by) : { kind: "binary", op: "*", left: index, right: num(by), at, label };
+    if (!plus || plus.kind === "const" && plus.value === 0) return times;
+    return { kind: "binary", op: "+", left: plus, right: times, at, label };
+  }
+  /** `grid[i]`: a row of it — or, of a deeper one, the grid inside. A constant past a known end is an error, as it is for an array. */
+  partOf(grid, e, node) {
+    const h = this.evaluate(e);
+    let index;
+    if (h) {
+      const i = this.asInteger(h, e);
+      if (i === null) return void 0;
+      if (i < 0 || grid.dims[0] > 0 && i >= grid.dims[0]) {
+        this.c.error(e, `${grid.name} has ${grid.dims[0]} row${grid.dims[0] === 1 ? "" : "s"}, 0 \u2026 ${grid.dims[0] - 1}; there is no ${grid.name}[${i}].`);
+        return void 0;
+      }
+      index = num(i);
+    } else index = this.num(e);
+    return index ? this.partAt(grid, index, node) : void 0;
+  }
+  partAt(grid, index, node) {
+    const stride = grid.dims.slice(1).reduce((n, d) => n * d, 1);
+    const offset = this.scaled(index, stride, grid.offset, node);
+    const name = `${grid.name}[${index.kind === "const" ? index.value : "\u2026"}]`;
+    return grid.dims.length === 2 ? { kind: "row", name, a: grid.a, offset, length: grid.dims[1] } : { kind: "grid", name, a: grid.a, dims: grid.dims.slice(1), offset };
+  }
+  /**
+   * `row[x]` as a cell of the flat array. Past the row's end the index is -1 — which reads 0 and stores nothing, as past
+   * the end of any array — so a row never reaches into the next one. Null, with a diagnostic, for a constant that is.
+   */
+  rowCell(row, e, node) {
+    const at = this.at(node);
+    const label = this.label(node);
+    const h = this.evaluate(e);
+    if (h) {
+      const x2 = this.asInteger(h, e);
+      if (x2 === null) return null;
+      if (x2 < 0 || x2 >= row.length) {
+        this.c.error(e, `${row.name} has ${row.length} cell${row.length === 1 ? "" : "s"}, 0 \u2026 ${row.length - 1}; there is no ${row.name}[${x2}].`);
+        return null;
+      }
+      return { a: row.a, index: this.scaled(num(x2), 1, row.offset, node) };
+    }
+    const given = this.num(e);
+    if (!given) return null;
+    const x = this.temp(given, node);
+    const inside = { kind: "compare", op: "<", left: x, right: num(row.length), unsigned: true, at, label };
+    return { a: row.a, index: { kind: "ternary", cond: inside, whenTrue: this.scaled(x, 1, row.offset, node), whenFalse: num(-1), at, label } };
+  }
+  /** A row as an array in its own right — for a loop, a method, a function it is handed to: a window on the flat array, from where the row starts now. */
+  windowOf(row, node) {
+    const at = this.at(node);
+    const start = this.newVar(`(start of ${row.name})`, "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: start, init: row.offset, at, label: this.label(node) }, node);
+    const a2 = this.newArray(row.name, row.a.kind, row.length, this.sourceOf(node), { ...row.a.bits ? { bits: row.a.bits } : {}, ...row.a.unsigned ? { unsigned: true } : {} });
+    a2.slice = { of: row.a.id, offset: start.id };
+    return a2;
+  }
+  /** What the binding of an expression is once a row has to be an array: the row's window, anything else as it is. */
+  arrayOf(expr) {
+    const b = this.bindingOf(expr);
+    if (b?.kind === "inner") return { kind: "array", a: this.innerOf(b.lists, b.index, expr) };
+    if (b?.kind === "innerUnits") return this.unitsOf(b, expr);
+    return b?.kind === "row" ? { kind: "array", a: this.windowOf(b, expr) } : b;
+  }
+  /** How many rows a grid has: a constant, or — when the outer array grows — its cells by the cells of a row. */
+  rowsOf(grid, node) {
+    if (grid.dims[0] > 0) return num(grid.dims[0]);
+    const stride = grid.dims.slice(1).reduce((n, d) => n * d, 1);
+    const cells = { kind: "length", array: grid.a.id, at: this.at(node) };
+    return stride === 1 ? cells : { kind: "binary", op: "/", left: cells, right: num(stride), at: this.at(node), label: this.label(node) };
+  }
+  /** The kind a type's cells are and how deep its arrays go, when it is an array of arrays (of arrays…) of numbers or of booleans. */
+  gridType(type) {
+    const { ts } = this;
+    let depth = 0;
+    let t = type;
+    while (this.c.checker.isArrayType(t) || this.c.checker.isTupleType(t)) {
+      const inner = this.c.checker.getIndexTypeOfType(t, ts.IndexKind.Number);
+      if (!inner) return null;
+      t = inner;
+      depth++;
+    }
+    const kind = this.kindOf(t);
+    return depth >= 2 && (kind === "number" || kind === "boolean") ? { kind, depth, leaf: t } : null;
+  }
+  /** Whether something pushes to, pops from or sets the length of a *row* of a declaration (`buckets[i].push(v)`): then its rows grow, whatever lengths they start with. */
+  innerGrows(decl) {
+    const { ts } = this;
+    let found = false;
+    const rowOfDecl = (x) => {
+      const u = this.unwrap(x);
+      return ts.isElementAccessExpression(u) && ts.isIdentifier(this.unwrap(u.expression)) && declarationOf(ts, this.c.checker, this.unwrap(u.expression)) === decl;
+    };
+    const walk = (n) => {
+      if (found) return;
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && (n.expression.name.text === "push" || n.expression.name.text === "pop") && rowOfDecl(n.expression.expression)) found = true;
+      else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(n.left) && n.left.name.text === "length" && rowOfDecl(n.left.expression)) found = true;
+      else ts.forEachChild(n, walk);
+    };
+    walk(this.body.plan.arrow.body);
+    return found;
+  }
+  /** The length of every row literal something pushes to a declaration: what says how wide a grid that starts empty is. */
+  pushedWidths(decl) {
+    const { ts } = this;
+    const out = [];
+    const walk = (n) => {
+      if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "push" && ts.isIdentifier(n.expression.expression) && declarationOf(ts, this.c.checker, n.expression.expression) === decl) {
+        for (const x of n.arguments) {
+          const row = this.unwrap(x);
+          out.push(ts.isArrayLiteralExpression(row) && !row.elements.some((y) => ts.isSpreadElement(y)) ? row.elements.length : -1);
+        }
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(this.body.plan.arrow.body);
+    return out;
+  }
+  /**
+   * `let grid = [[0, 0, 0], [0, 0, 0]]`, `new Array(8).fill(0).map(() => new Array(8).fill(0))`, `let path: number[][] = []`
+   * that only whole rows of one width are pushed to: every row the same length, so the whole is one flat array read at
+   * `y * width + x`. Undefined when the shape is not of that kind (rows of different lengths, a row that grows) — that
+   * is an array of arrays that grow, which is another thing; null with a diagnostic.
+   */
+  declareGrid(name, initializer, shape, at) {
+    const { ts } = this;
+    const init = this.unwrap(initializer);
+    const cells = [];
+    const dims = [];
+    let ragged = false;
+    const size = (depth, n) => {
+      if (dims[depth] === void 0) dims[depth] = n;
+      else if (dims[depth] !== n) ragged = true;
+    };
+    const constant = (v, where) => {
+      if (shape.kind === "boolean") {
+        if (typeof v !== "boolean") {
+          this.c.error(where, `Expected true or false, got ${describe2(v)}.`);
+          return false;
+        }
+        cells.push({ kind: "const", value: v });
+        return true;
+      }
+      const n = this.asInteger({ value: v }, where);
+      if (n === null) return false;
+      cells.push(num(n));
+      return true;
+    };
+    const known = (v, depth, where) => {
+      if (depth === shape.depth) return constant(v, where);
+      if (!Array.isArray(v)) {
+        this.c.error(where, `Expected a list here, got ${describe2(v)}.`);
+        return false;
+      }
+      size(depth, v.length);
+      return v.every((x) => known(x, depth + 1, where));
+    };
+    const written = (e, depth) => {
+      const h = this.evaluate(e);
+      if (h) return known(h.value, depth, e);
+      if (depth === shape.depth) {
+        const v = shape.kind === "number" ? this.num(e) : this.boolValue(e);
+        if (!v) return false;
+        cells.push(v);
+        return true;
+      }
+      const list = this.unwrap(e);
+      if (!ts.isArrayLiteralExpression(list) || list.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) {
+        ragged = true;
+        return true;
+      }
+      size(depth, list.elements.length);
+      return list.elements.every((x) => written(x, depth + 1));
+    };
+    if (!written(init, 0)) return null;
+    const grows = this.body.plan.grows.has(at);
+    if (shape.depth === 2 && dims[0] === 0 && dims[1] === void 0) {
+      const widths = this.pushedWidths(at);
+      if (widths.length && widths.every((w) => w === widths[0] && w > 0)) dims[1] = widths[0];
+    } else if (grows && shape.depth === 2 && this.pushedWidths(at).some((w) => w !== dims[1])) ragged = true;
+    if (ragged || dims.length !== shape.depth || dims.slice(1).some((d) => !d) || !grows && !dims[0]) return void 0;
+    const total = dims.reduce((n, d) => n * d, 1);
+    if (total > MAX_ARRAY) {
+      this.c.error(init, `An array of a program starts with at most ${MAX_ARRAY} cells (this is ${dims.join(" \xD7 ")}, ${total}).`);
+      return null;
+    }
+    const a2 = this.newArray(name, shape.kind, total, this.sourceOf(at), shape.kind === "number" ? this.widthOf(shape.leaf) : {});
+    if (grows) a2.dynamic = true;
+    const same2 = cells.length > 4 && cells.every((v) => v.kind === "const" && v.value === cells[0].value);
+    this.emit({ kind: "remark", text: `One flat array, ${name}[y][x] read at y \xD7 ${dims.slice(1).reduce((n, d) => n * d, 1)} + x: every row has ${dims[1]} cells and none of them grows${grows ? "; whole rows are pushed and popped" : ""}. A row past its own end reads 0.`, short: `flat, ${grows ? "rows" : dims[0]} \xD7 ${dims.slice(1).join(" \xD7 ")}`, at: this.at(at) }, at);
+    this.emit({ kind: "declareArray", array: a2.id, ...same2 ? { fill: cells[0] } : { init: cells }, at: this.at(at), label: this.label(at) }, at);
+    return { kind: "grid", name, a: a2, dims: grows ? [0, ...dims.slice(1)] : dims, offset: null };
+  }
+  /** The cells of a row given to a grid — `grid.push([x, y])`, `grid[i] = [0, 0, 0]`: written out, and as many as a row has. */
+  rowCells(grid, e) {
+    const { ts } = this;
+    const width = grid.dims.slice(1).reduce((n, d) => n * d, 1);
+    const out = [];
+    const take = (x, depth) => {
+      if (depth === grid.dims.length) {
+        const v = grid.a.kind === "number" ? this.num(x) : this.boolValue(x);
+        if (!v) return false;
+        out.push(v);
+        return true;
+      }
+      const list = this.unwrap(x);
+      if (ts.isArrayLiteralExpression(list) && !list.elements.some((y) => ts.isSpreadElement(y) || ts.isOmittedExpression(y))) {
+        if (list.elements.length !== grid.dims[depth]) {
+          this.c.error(x, `A row of ${grid.name} has ${grid.dims[depth]} cell${grid.dims[depth] === 1 ? "" : "s"}; this one has ${list.elements.length}.`);
+          return false;
+        }
+        return list.elements.every((y) => take(y, depth + 1));
+      }
+      const b = this.arrayOf(x);
+      if (depth === grid.dims.length - 1 && b?.kind === "array" && !b.a.dynamic && b.a.length === grid.dims[depth] && b.a.kind === grid.a.kind) {
+        for (let k = 0; k < b.a.length; k++) out.push({ kind: "element", array: b.a.id, index: num(k), at: this.at(x) });
+        return true;
+      }
+      this.c.error(x, `A row of ${grid.name} is written out \u2014 [a, b] \u2014 or is an array of the same ${grid.dims[depth]} cells.`);
+      return false;
+    };
+    return take(e, 1) && out.length === width ? out : null;
+  }
+  /** `grid.push([x, y])`, `grid.pop()` on their own: whole rows, which is what keeps it a grid. */
+  gridCall(e, grid, method) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const width = grid.dims.slice(1).reduce((n, d) => n * d, 1);
+    if (grid.offset) {
+      this.c.error(e, `${grid.name} is a part of a larger array of arrays; rows are pushed to the whole.`);
+      return;
+    }
+    if (method === "push" && e.arguments.length > 0) {
+      if (!this.grows(grid.a, e)) return;
+      for (const arg of e.arguments) {
+        const cells = this.rowCells(grid, arg);
+        if (!cells) return;
+        const held = cells.map((v) => v.kind === "const" || v.kind === "var" ? v : null);
+        for (const [k, v] of cells.entries()) this.emit({ kind: "push", array: grid.a.id, value: held[k] ?? v, at, label }, e);
+      }
+      return;
+    }
+    if (method === "pop" && e.arguments.length === 0) {
+      if (!this.grows(grid.a, e)) return;
+      this.emit({ kind: "setLength", array: grid.a.id, value: { kind: "binary", op: "-", left: { kind: "length", array: grid.a.id, at }, right: num(width), at, label }, at, label }, e);
+      return;
+    }
+    this.c.error(e, `An array of arrays has push([\u2026]), pop(), length, for\u2026of, forEach, some, every, findIndex, reduce and map; ${method}() is not one of them.`);
+  }
+  /* ── Arrays that grow, inside an array ── */
+  /** The four arrays an array of arrays that grow is: a handle a row. */
+  handlesOf(l) {
+    return [l.ptr, l.len, l.room, l.k];
+  }
+  /**
+   * `buckets[i]` as the growing array it is: reached through cell i of the four. Where `i` stands now is taken into a
+   * variable of its own, so what is made here stays that row whatever happens to `i` after.
+   */
+  innerOf(l, index, node, name) {
+    const at = this.at(node);
+    const i = this.newVar(`(row of ${l.name})`, "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: i, init: index, at, label: this.label(node) }, node);
+    return this.innerAt(l, i, node, name);
+  }
+  innerAt(l, i, node, name) {
+    const a2 = this.newArray(name ?? `${l.name}[\u2026]`, l.of, 0, this.sourceOf(node), { ...l.bits ? { bits: l.bits } : {}, ...l.unsigned ? { unsigned: true } : {} });
+    a2.dynamic = true;
+    a2.through = { ptr: l.ptr.id, len: l.len.id, room: l.room.id, k: l.k.id, index: i.id };
+    return a2;
+  }
+  /** The rows from `from` on give their blocks back: what holds a handle owns the block, and these rows are about to go. */
+  releaseRows(l, from, node) {
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(row of ${l.name})`, "number", at, { temp: true });
+    const row = this.innerAt(l, i, node);
+    this.emit({ kind: "declare", decl: i, init: from, at, label }, node);
+    this.emit({
+      kind: "for",
+      cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: l.ptr.id, at }, at, label },
+      update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+      body: [{ kind: "declareArray", array: row.id, init: [], at, label }],
+      at,
+      label
+    }, node);
+  }
+  /** The cells a row is given — `[a, b]`, `[]`, or an array of the program, copied. Pushed into `into`. False with a diagnostic. */
+  fillInner(into, of, e) {
+    const { ts } = this;
+    const at = this.at(e);
+    const label = this.label(e);
+    const h = this.evaluate(e);
+    if (h) {
+      if (!Array.isArray(h.value)) {
+        this.c.error(e, `Expected a list here, got ${describe2(h.value)}.`);
+        return false;
+      }
+      for (const v of h.value) {
+        if (of === "boolean") {
+          if (typeof v !== "boolean") {
+            this.c.error(e, `Expected true or false, got ${describe2(v)}.`);
+            return false;
+          }
+          this.emit({ kind: "push", array: into.id, value: { kind: "const", value: v }, at, label }, e);
+        } else {
+          const n = this.asInteger({ value: v }, e);
+          if (n === null) return false;
+          this.emit({ kind: "push", array: into.id, value: num(n), at, label }, e);
+        }
+      }
+      return true;
+    }
+    const list = this.unwrap(e);
+    if (ts.isArrayLiteralExpression(list) && !list.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) {
+      for (const x of list.elements) {
+        const v = of === "number" ? this.num(x) : this.boolValue(x);
+        if (!v) return false;
+        this.emit({ kind: "push", array: into.id, value: v, at, label }, e);
+      }
+      return true;
+    }
+    const b = this.listOf(e);
+    if (b?.kind === "array" && b.a.kind === of) {
+      const i = this.newVar(`(index of ${b.a.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+      this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: b.a.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "push", array: into.id, value: { kind: "element", array: b.a.id, index: varRef(i), at }, at, label }], at, label }, e);
+      return true;
+    }
+    this.c.error(e, `A row is written out \u2014 [a, b], [] \u2014 or is an array of ${of}s, whose cells are copied.`);
+    return false;
+  }
+  /**
+   * `let buckets: number[][] = [[], [], []]`, `let rows = [[1, 2], [3]]`: an array of arrays that grow — four arrays, a
+   * handle a row, each row a block of the heap once something is pushed to it. Declared again, the rows it had give
+   * their blocks back first.
+   */
+  declareLists(name, initializer, shape, at) {
+    const { ts } = this;
+    if (shape.depth !== 2) {
+      this.c.error(at, `${name} is arrays three deep whose rows are not all one length; an array that grows inside one that grows inside another is not supported. Two deep is, and so is any depth of one shape.`);
+      return null;
+    }
+    const init = this.unwrap(initializer);
+    const h = this.evaluate(init);
+    const rows = [];
+    if (h) {
+      if (!Array.isArray(h.value) || !h.value.every((r) => Array.isArray(r))) {
+        this.c.error(init, `Expected a list of lists to start ${name} with, got ${describe2(h.value)}.`);
+        return null;
+      }
+      rows.push(...h.value);
+    } else if (ts.isArrayLiteralExpression(init) && !init.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) rows.push(...init.elements);
+    else {
+      this.c.error(init, `${name} is written out row by row ([[a, b], []]), or starts empty and is pushed to.`);
+      return null;
+    }
+    const dynamic = this.body.plan.grows.has(at) || rows.length === 0;
+    if (rows.length > MAX_ARRAY) {
+      this.c.error(init, `An array of a program starts with at most ${MAX_ARRAY} rows.`);
+      return null;
+    }
+    const make = (part) => {
+      const a2 = this.newArray(`${name} (${part})`, "number", rows.length, this.sourceOf(at), { unsigned: true });
+      if (dynamic) a2.dynamic = true;
+      return a2;
+    };
+    const lists = { kind: "lists", name, ptr: make("block"), len: make("length"), room: make("room"), k: make("size"), of: shape.kind, ...shape.kind === "number" ? this.widthOf(shape.leaf) : {} };
+    this.emit({ kind: "remark", text: `Rows that grow: each row of ${name} is a block of the heap of its own, found through the outer array \u2014 a few more triggers a read than one flat array, which is what it would be with every row one length and nothing pushed to a row.`, short: "rows that grow", at: this.at(at) }, at);
+    this.releaseRows(lists, num(0), at);
+    for (const a2 of this.handlesOf(lists)) this.emit({ kind: "declareArray", array: a2.id, ...rows.length > 4 ? { fill: num(0) } : { init: rows.map(() => num(0)) }, at: this.at(at), label: this.label(at) }, at);
+    for (const [r, row] of rows.entries()) {
+      if (Array.isArray(row) ? row.length === 0 : ts.isArrayLiteralExpression(this.unwrap(row)) && this.unwrap(row).elements.length === 0) continue;
+      const inner = this.innerOf(lists, num(r), at, `${name}[${r}]`);
+      if (Array.isArray(row)) {
+        for (const v of row) {
+          if (shape.kind === "boolean") {
+            if (typeof v !== "boolean") {
+              this.c.error(init, `Expected true or false, got ${describe2(v)}.`);
+              return null;
+            }
+            this.emit({ kind: "push", array: inner.id, value: { kind: "const", value: v }, at: this.at(at), label: this.label(at) }, at);
+          } else {
+            const n = this.asInteger({ value: v }, init);
+            if (n === null) return null;
+            this.emit({ kind: "push", array: inner.id, value: num(n), at: this.at(at), label: this.label(at) }, at);
+          }
+        }
+      } else if (!this.fillInner(inner, shape.kind, row)) return null;
+    }
+    return lists;
+  }
+  /** `buckets.push([1, 2])`, `buckets.push([])`, `buckets.pop()` on their own; the four arrays move together, and a row that goes gives its block back. */
+  listsCall(e, l, method) {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (method === "push" && e.arguments.length > 0) {
+      for (const a2 of this.handlesOf(l)) if (!this.grows(a2, e)) return;
+      for (const arg of e.arguments) {
+        const place = this.newVar(`(row of ${l.name})`, "number", at, { temp: true });
+        this.emit({ kind: "declare", decl: place, init: { kind: "length", array: l.ptr.id, at }, at, label }, e);
+        for (const a2 of this.handlesOf(l)) this.emit({ kind: "push", array: a2.id, value: num(0), at, label }, e);
+        if (!this.fillInner(this.innerAt(l, place, arg), l.of, arg)) return;
+      }
+      return;
+    }
+    if (method === "pop" && e.arguments.length === 0) {
+      for (const a2 of this.handlesOf(l)) if (!this.grows(a2, e)) return;
+      const last = { kind: "binary", op: "-", left: { kind: "length", array: l.ptr.id, at }, right: num(1), at, label };
+      const body2 = this.collect(() => {
+        this.emit({ kind: "declareArray", array: this.innerOf(l, last, e).id, init: [], at, label }, e);
+        for (const a2 of this.handlesOf(l)) this.emit({ kind: "pop", array: a2.id, at, label }, e);
+      });
+      this.emit({ kind: "if", cond: { kind: "compare", op: ">", left: { kind: "length", array: l.ptr.id, at }, right: num(0), at, label }, then: body2, at, label }, e);
+      return;
+    }
+    this.c.error(e, `An array of arrays that grow has push([\u2026]), pop() on its own, length, for\u2026of, forEach, some, every, findIndex, reduce and map; ${method}() is not one of them.`);
+  }
+  /* ── Destructuring and spread ── */
+  /**
+   * What a pattern takes its values from: a record, a list, a value the script has — or, for `[a, b] = [b, a + 1]`, the
+   * items of an array written out, each worked out into a temporary first, so that a swap is one. Null with a diagnostic.
+   */
+  patternSource(init, at) {
+    const { ts } = this;
+    const e = this.unwrap(init);
+    const h = this.evaluate(init);
+    if (h) return { kind: "value", value: h.value };
+    if (ts.isArrayLiteralExpression(e)) {
+      const items = [];
+      for (const x of e.elements) {
+        if (ts.isSpreadElement(x) || ts.isOmittedExpression(x)) {
+          this.c.error(x, "An array that is taken apart where it is written has its items written out: [a, b] = [b, a].");
+          return null;
+        }
+        const known = this.evaluate(x);
+        if (known) {
+          items.push({ kind: "value", value: known.value });
+          continue;
+        }
+        const held = this.bindingOf(x);
+        if (held && held.kind !== "var" && held.kind !== "cell") {
+          items.push(held);
+          continue;
+        }
+        if (this.isTextTyped(x)) {
+          const given = this.text(x);
+          if (!given) return null;
+          const copy = this.newVar("(taken)", "text", this.at(x), { temp: true, text: "made" });
+          this.emit({ kind: "declare", decl: copy, init: given, at: this.at(x), label: this.label(x) }, x);
+          items.push({ kind: "var", v: copy });
+          continue;
+        }
+        const kind = this.kindOf(this.c.checker.getTypeAtLocation(x));
+        if (!kind) {
+          this.c.error(x, `This is ${this.c.checker.typeToString(this.c.checker.getTypeAtLocation(x))}; a pattern takes numbers, booleans, texts, units and records.`);
+          return null;
+        }
+        const v = this.newVar("(taken)", kind, this.at(x), { temp: true, ...kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(x)) : {} });
+        this.emitDeclare(v, x, x);
+        items.push({ kind: "var", v });
+      }
+      return items;
+    }
+    if (ts.isObjectLiteralExpression(e)) return this.declareRecord("(taken)", e, this.c.checker.getTypeAtLocation(e), at);
+    if (ts.isCallExpression(e) && (this.isLibraryCall(e, "mouse") || this.isLibraryCall(e, "chatted"))) return this.declareInput("(taken)", e, at);
+    const b = this.listOf(init);
+    if (b) return b;
+    this.c.error(init, "Only a record, an array, or what mouse() and chatted() give can be taken apart in a program.");
+    return null;
+  }
+  /** The fields `...p` spreads: a record's, or those of an object the script has. Null with a diagnostic. */
+  spreadFields(expr) {
+    const b = this.bindingOf(expr);
+    if (b?.kind === "record") return b.fields;
+    const h = b ? void 0 : this.evaluate(expr);
+    if (h && typeof h.value === "object" && h.value !== null) return new Map(Object.entries(h.value).map(([k, value]) => [k, { kind: "value", value }]));
+    this.c.error(expr, "... inside { } spreads a record.");
+    return null;
+  }
+  /** A field of a record of the program from whatever a spread gave it: always a variable of its own, since a field can be assigned. */
+  fieldCopy(b, name, at) {
+    if (b.kind === "record") return { kind: "record", fields: new Map([...b.fields].map(([field, inner]) => [field, this.fieldCopy(inner, `${name}.${field}`, at)])) };
+    if (b.kind !== "value") return this.takenCopy(b, name, at);
+    const kind = typeof b.value === "boolean" ? "boolean" : "number";
+    const v = this.newVar(name, kind, this.sourceOf(at));
+    const n = kind === "number" ? this.asInteger({ value: b.value }, at) : null;
+    this.emit({ kind: "declare", decl: v, init: kind === "boolean" ? { kind: "const", value: b.value } : num(n ?? 0), at: this.at(at), label: this.label(at) }, at);
+    return { kind: "var", v };
+  }
+  /** A copy of what a binding holds, under a name of its own — what a name in a pattern is, since numbers are copied; a record or a list stays itself, as an object does. */
+  takenCopy(from, name, at) {
+    if (from.kind === "row") return { kind: "array", a: this.windowOf({ ...from, name }, at) };
+    if (from.kind === "inner") return { kind: "array", a: this.innerOf(from.lists, from.index, at, name) };
+    if (from.kind === "innerUnits") return this.unitsOf({ ...from, name }, at);
+    if (from.kind === "textAt") {
+      const v2 = this.newVar(name, "text", this.sourceOf(at), { text: "made" });
+      this.emit({ kind: "declare", decl: v2, init: this.textAtCells(from, at), at: this.at(at), label: this.label(at) }, at);
+      return { kind: "var", v: v2 };
+    }
+    if (from.kind === "unitAt") {
+      const v2 = this.newVar(name, "unit", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: v2, init: this.unitAtPlaces(from, at), at: this.at(at), label: this.label(at) }, at);
+      return { kind: "var", v: v2 };
+    }
+    if (from.kind !== "var" && from.kind !== "cell") return from;
+    const like = from.kind === "var" ? from.v : from.a;
+    const v = this.newVar(name, like.kind, this.sourceOf(at), { ...like.bits ? { bits: like.bits } : {}, ...like.unsigned ? { unsigned: true } : {} });
+    const init = from.kind === "cell" ? { kind: "element", array: from.a.id, index: from.index, at: this.at(at) } : refOf(from.v);
+    this.emit({ kind: "declare", decl: v, init, at: this.at(at), label: this.label(at) }, at);
+    return { kind: "var", v };
+  }
+  /** What a pattern's name is when what it is taken from has nothing there: its default, a value of the script or of the program. */
+  patternDefault(el, what) {
+    const { ts } = this;
+    const name = ts.isIdentifier(el.name) ? el.name.text : "(taken)";
+    if (!el.initializer) {
+      this.c.error(el, `${what}, and ${name} has no default: it would be undefined, which does not exist when the map is played.`);
+      return null;
+    }
+    const h = this.evaluate(el.initializer);
+    if (h) return { kind: "value", value: h.value };
+    const kind = this.kindOf(this.c.checker.getTypeAtLocation(el.initializer));
+    if (!kind) {
+      this.c.error(el.initializer, "A default is a number, a boolean or a unit.");
+      return null;
+    }
+    const v = this.newVar(name, kind, this.sourceOf(el.name), kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(el.initializer)) : {});
+    this.emitDeclare(v, el.initializer, el);
+    return { kind: "var", v };
+  }
+  /**
+   * `const { x, y: py, ...rest } = p`, `const [a, , b = 0, ...tail] = xs`, as deep as it is written: every name bound in
+   * `scope` to a copy of what it names (a record or a list inside stays itself). A default is for what is not there — a
+   * field the record has not got, a place past a fixed array's end — since nothing that is there is ever undefined.
+   */
+  bindPattern(pattern, key, from, scope) {
+    const { ts } = this;
+    if (ts.isIdentifier(pattern)) {
+      if (Array.isArray(from)) {
+        this.c.error(pattern, `${pattern.text} would be an array written out where it is used; give it a declaration of its own: let ${pattern.text} = [a, b].`);
+        return false;
+      }
+      scope.bind(key, this.takenCopy(from, pattern.text, pattern));
+      return true;
+    }
+    let ok = true;
+    if (ts.isObjectBindingPattern(pattern)) {
+      const fields = !Array.isArray(from) && from.kind === "record" ? from.fields : !Array.isArray(from) && from.kind === "value" && typeof from.value === "object" && from.value !== null ? new Map(Object.entries(from.value).map(([k, value]) => [k, { kind: "value", value }])) : null;
+      if (!fields) {
+        this.c.error(pattern, "{ \u2026 } takes the fields of a record.");
+        return false;
+      }
+      const taken = /* @__PURE__ */ new Set();
+      for (const el of pattern.elements) {
+        if (el.dotDotDotToken) {
+          const rest = /* @__PURE__ */ new Map();
+          for (const [field2, b2] of fields) if (!taken.has(field2)) rest.set(field2, this.takenCopy(b2, `${ts.isIdentifier(el.name) ? el.name.text : "rest"}.${field2}`, el));
+          scope.bind(el, { kind: "record", fields: rest });
+          continue;
+        }
+        const prop = el.propertyName ?? el.name;
+        const field = ts.isIdentifier(prop) || ts.isStringLiteralLike(prop) ? prop.text : ts.isComputedPropertyName(prop) ? String(this.evaluate(prop.expression)?.value ?? "") : "";
+        if (!field) {
+          this.c.error(el, "The name of a field in a pattern is written out, or known when the script is built.");
+          ok = false;
+          continue;
+        }
+        taken.add(field);
+        const b = fields.get(field);
+        const present = b && !(b.kind === "value" && b.value === void 0) ? b : this.patternDefault(el, `There is no ${field} here`);
+        if (!present || !this.bindPattern(el.name, el, present, scope)) ok = false;
+      }
+      return ok;
+    }
+    const at = (i) => {
+      if (Array.isArray(from)) return from[i];
+      if (from.kind === "value") return Array.isArray(from.value) && i < from.value.length ? { kind: "value", value: from.value[i] } : void 0;
+      if (from.kind === "array") return from.a.dynamic || i < from.a.length ? { kind: "cell", a: from.a, index: num(i) } : void 0;
+      if (from.kind === "records") return this.rowOf(from, num(i));
+      if (from.kind === "grid") return from.dims[0] === 0 || i < from.dims[0] ? this.partAt(from, num(i), pattern) : void 0;
+      if (from.kind === "lists") return from.ptr.dynamic || i < from.ptr.length ? { kind: "inner", lists: from, index: num(i) } : void 0;
+      return void 0;
+    };
+    if (!Array.isArray(from) && from.kind !== "value" && from.kind !== "array" && from.kind !== "records" && from.kind !== "units" && from.kind !== "grid" && from.kind !== "lists") {
+      this.c.error(pattern, "[ \u2026 ] takes the items of an array.");
+      return false;
+    }
+    pattern.elements.forEach((el, i) => {
+      if (ts.isOmittedExpression(el)) return;
+      if (el.dotDotDotToken) {
+        const rest = this.restOf(from, i, ts.isIdentifier(el.name) ? el.name.text : "rest", el);
+        if (!rest || !this.bindPattern(el.name, el, rest, scope)) ok = false;
+        return;
+      }
+      if (!Array.isArray(from) && from.kind === "units") {
+        const v = this.newVar(ts.isIdentifier(el.name) ? el.name.text : "(taken)", "unit", this.sourceOf(el.name));
+        this.emit({ kind: "declare", decl: v, init: this.unitAtIndex(from, num(i), el), at: this.at(el), label: this.label(el) }, el);
+        scope.bind(el, { kind: "var", v });
+        return;
+      }
+      const b = at(i);
+      const present = b && !(b.kind === "value" && b.value === void 0) ? b : this.patternDefault(el, `There is no item ${i} here`);
+      if (!present || !this.bindPattern(el.name, el, present, scope)) ok = false;
+    });
+    return ok;
+  }
+  /**
+   * The left of `[a, hp[i], { x }] = …`: what each target is to be given is copied out now, and `stores` collects what
+   * writes them — run by the caller after every copy is made, which is what makes `[a, b] = [b, a]` a swap.
+   */
+  assignPattern(left, from, stores) {
+    const { ts } = this;
+    const target = this.unwrap(left);
+    if (ts.isArrayLiteralExpression(target)) {
+      if (!Array.isArray(from) && from.kind !== "value" && from.kind !== "array" && from.kind !== "records") {
+        this.c.error(target, "[ \u2026 ] takes the items of an array.");
+        return false;
+      }
+      let ok = true;
+      target.elements.forEach((x, i) => {
+        if (ts.isOmittedExpression(x)) return;
+        if (ts.isSpreadElement(x)) {
+          this.c.error(x, "...rest makes an array, which is declared, not assigned: const [first, ...rest] = xs.");
+          ok = false;
+          return;
+        }
+        const item = Array.isArray(from) ? from[i] : from.kind === "value" ? Array.isArray(from.value) && i < from.value.length ? { kind: "value", value: from.value[i] } : void 0 : from.kind === "array" ? from.a.dynamic || i < from.a.length ? { kind: "cell", a: from.a, index: num(i) } : void 0 : from.kind === "records" ? this.rowOf(from, num(i)) : void 0;
+        if (!item) {
+          this.c.error(x, `There is no item ${i} to give it.`);
+          ok = false;
+          return;
+        }
+        if (!this.assignPattern(x, item, stores)) ok = false;
+      });
+      return ok;
+    }
+    if (ts.isObjectLiteralExpression(target)) {
+      const fields = !Array.isArray(from) && from.kind === "record" ? from.fields : !Array.isArray(from) && from.kind === "value" && typeof from.value === "object" && from.value !== null ? new Map(Object.entries(from.value).map(([k, value2]) => [k, { kind: "value", value: value2 }])) : null;
+      if (!fields) {
+        this.c.error(target, "{ \u2026 } takes the fields of a record.");
+        return false;
+      }
+      let ok = true;
+      for (const p of target.properties) {
+        const to2 = ts.isShorthandPropertyAssignment(p) ? p.name : ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name)) ? p.initializer : null;
+        const item = to2 && fields.get(p.name.text);
+        if (!to2 || !item) {
+          this.c.error(p, to2 ? `There is no ${p.name.text} to give it.` : "In a pattern that is assigned, a field is written out: ({ x, y: py } = p).");
+          ok = false;
+          continue;
+        }
+        if (!this.assignPattern(to2, item, stores)) ok = false;
+      }
+      return ok;
+    }
+    if (Array.isArray(from) || from.kind !== "var" && from.kind !== "cell" && from.kind !== "value") {
+      this.c.error(target, "A record or an array is assigned field by field, cell by cell: take it apart further.");
+      return false;
+    }
+    const to = this.bindingOf(target);
+    const el = !to && ts.isElementAccessExpression(target) ? this.elementOf(target) : void 0;
+    if (el === null) return false;
+    const kind = to?.kind === "var" ? to.v.kind : to?.kind === "cell" ? to.a.kind : el ? el.a.kind : void 0;
+    if (!kind) {
+      this.c.error(target, "A pattern assigns to the program's variables, cells and fields.");
+      return false;
+    }
+    if (kind === "text") {
+      const given = from.kind === "var" && from.v.kind === "text" ? refOf(from.v) : from.kind === "value" && typeof from.value === "string" ? this.literalText(from.value, target) : null;
+      if (!given || to?.kind !== "var") {
+        this.c.error(target, "Expected a text here.");
+        return false;
+      }
+      const held2 = from.kind === "var" && from.v.temp ? given : this.textTemp(given.kind === "textVar" ? this.mark({ kind: "template", parts: [{ kind: "value", text: given }], at: this.at(target), label: this.label(target) }, target) : given, target);
+      const at2 = this.at(target), label2 = this.label(target);
+      stores.push(() => this.emit({ kind: "assignText", target: to.v.id, value: held2, at: at2, label: label2 }, target));
+      return true;
+    }
+    const held = this.takenCopy(from, "(taken)", target);
+    const value = this.valueOf(held, kind, target);
+    if (!value) return false;
+    const at = this.at(target);
+    const label = this.label(target);
+    stores.push(() => {
+      if (to?.kind === "var") this.emit(kind === "number" ? { kind: "assign", target: to.v.id, value, at, label } : kind === "unit" ? { kind: "assignUnit", target: to.v.id, value, at, label } : { kind: "assignBool", target: to.v.id, value, at, label }, target);
+      else if (to?.kind === "cell") this.emit({ kind: "store", array: to.a.id, index: to.index, value, at, label }, target);
+      else if (el) this.emit({ kind: "store", array: el.a.id, index: el.index, value, at, label }, target);
+    });
+    return true;
+  }
+  /** `...tail`: what is left from place `start` on, in an array of its own. */
+  restOf(of, start, name, el) {
+    const at = this.at(el);
+    const label = this.label(el);
+    if (!Array.isArray(of) && of.kind === "value") return { kind: "value", value: Array.isArray(of.value) ? of.value.slice(start) : [] };
+    if (!Array.isArray(of) && of.kind === "array") {
+      const a2 = of.a;
+      const left = a2.length - start;
+      const tail = this.newArray(name, a2.kind, a2.dynamic || left < 1 ? 0 : left, this.sourceOf(el), { ...a2.bits ? { bits: a2.bits } : {}, ...a2.unsigned ? { unsigned: true } : {} });
+      if (!a2.dynamic && left >= 1) {
+        this.emit({ kind: "declareArray", array: tail.id, init: Array.from({ length: left }, (_, k) => ({ kind: "element", array: a2.id, index: num(start + k), at })), at, label }, el);
+        return { kind: "array", a: tail };
+      }
+      tail.dynamic = true;
+      this.emit({ kind: "declareArray", array: tail.id, init: [], at, label }, el);
+      const i = this.newVar(`(index of ${a2.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: i, init: num(start), at, label }, el);
+      this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: a2.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "push", array: tail.id, value: { kind: "element", array: a2.id, index: varRef(i), at }, at, label }], at, label }, el);
+      return { kind: "array", a: tail };
+    }
+    this.c.error(el, "...rest takes the tail of an array of numbers or booleans.");
+    return null;
+  }
+  /* ── Methods that take a function ── */
+  /** How deep the walk is inside a function given to such a method: nothing in there may sleep. */
+  inCallback = 0;
+  /** How deep the walk is inside the condition of a loop, which is worked out again every turn: an array cannot be made there. */
+  inLoopCondition = 0;
+  /** The array whose length is the list's. */
+  lengthArray(list) {
+    return list.kind === "array" ? list.a : list.kind === "units" ? list.ptr : [...list.fields.values()][0];
+  }
+  /** Every array of a list: one, an array a field, or a unit's three. */
+  arraysOf(list) {
+    return list.kind === "array" ? [list.a] : list.kind === "units" ? [list.ptr, list.epd, list.uid] : [...list.fields.values()];
+  }
+  /** A list, or what makes one: `xs`, `xs.filter(…)`, `xs.map(…).sort(…)`. Making one emits the statements that fill it, so ask once. */
+  listOf(expr) {
+    const { ts } = this;
+    const b = this.arrayOf(expr);
+    if (b) return b;
+    const e = this.unwrap(expr);
+    if (ts.isCallExpression(e) && this.makesList(e)) {
+      return this.madeList(e, void 0, e) ?? { kind: "array", a: this.newArray("(not made)", "number", 1, this.sourceOf(e)) };
+    }
+    if (ts.isCallExpression(e) && this.copiesList(e)) return this.copiedList(e, void 0, e) ?? { kind: "array", a: this.newArray("(not made)", "number", 1, this.sourceOf(e)) };
+    return void 0;
+  }
+  /** The methods that give a copy: a new array with what another holds, or a Map's keys or values as one. */
+  static COPIERS = /* @__PURE__ */ new Set(["slice", "concat", "toSorted", "toReversed", "keys", "values"]);
+  /** Whether a call gives a copy of a list of the program: `xs.slice(1)`, `xs.concat(ys)`, `xs.toSorted(f)`, `xs.toReversed()`, `m.keys()`, `m.values()`, `Array.from(…)` of any of those. */
+  copiesList(e) {
+    const { ts } = this;
+    if (this.body.plan.index.has(e) || !ts.isPropertyAccessExpression(e.expression)) return false;
+    const method = e.expression.name.text;
+    const receiver = this.unwrap(e.expression.expression);
+    if (method === "from" && ts.isIdentifier(receiver) && receiver.text === "Array" && e.arguments.length === 1) {
+      const b2 = this.peek(e.arguments[0]);
+      return !!b2;
+    }
+    if (!_Structured.COPIERS.has(method)) return false;
+    const b = this.peek(receiver);
+    if (method === "keys" || method === "values") return b === "hash";
+    return b === "array" || b === "units";
+  }
+  /** What kind of list an expression is, without making anything: for deciding what a call is before it is compiled. */
+  peek(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const b = this.bindingOf(e);
+    if (b && b.kind !== "value") return b.kind === "inner" || b.kind === "row" ? "array" : b.kind === "innerUnits" ? "units" : b.kind;
+    let h;
+    try {
+      h = this.evaluate(e);
+    } catch {
+      return void 0;
+    }
+    if (h) return this.isPlainList(h.value) ? "array" : void 0;
+    if (!ts.isCallExpression(e)) return void 0;
+    if (this.copiesList(e)) {
+      if (!ts.isPropertyAccessExpression(e.expression)) return "array";
+      const of = this.bindingOf(e.expression.expression);
+      if (of?.kind === "hash") return of.units && e.expression.name.text === "keys" ? "units" : "array";
+      return this.peek(e.expression.expression) === "units" ? "units" : "array";
+    }
+    if (this.makesList(e)) return "array";
+    return void 0;
+  }
+  isPlainList(v) {
+    return Array.isArray(v) && v.length > 0 && v.length <= MAX_ARRAY && (v.every((x) => typeof x === "number" && Number.isInteger(x)) || v.every((x) => typeof x === "boolean"));
+  }
+  /** A list the script has, as the array nothing writes that a program reads it through: once a list. */
+  scriptList(expr) {
+    const list = this.evaluate(expr)?.value;
+    if (!this.isPlainList(list)) return void 0;
+    let a2 = this.tables.get(list);
+    if (!a2) {
+      const booleans = typeof list[0] === "boolean";
+      const values = list.map((v) => typeof v === "boolean" ? v ? 1 : 0 : v);
+      a2 = this.newArray(expr.getText(this.body.sf).replace(/\s+/g, " "), booleans ? "boolean" : "number", values.length, this.at(expr), { shared: true, values, ...values.some((v) => v > I32_MAX) ? { unsigned: true } : {} });
+      this.tables.set(list, a2);
+    }
+    return { kind: "array", a: a2 };
+  }
+  /** The keys or the values of a Map or a Set over any number, as an array of their own: in the order they went in. */
+  hashList(h, what, name, where) {
+    if (h.units && !(what === "values" && h.values)) {
+      const made = this.emptyLike({ kind: "units", name: h.name, ...h.units }, name ?? `(${h.name}.keys)`, where);
+      this.hashLoop(h, where, (key) => {
+        for (const [a3, part] of this.unitArrays(made)) this.emit({ kind: "push", array: a3.id, value: { kind: "unitPart", unit: unitRef(key), part, at: this.at(where) }, at: this.at(where), label: this.label(where) }, where);
+      });
+      return made;
+    }
+    const from = what === "values" && h.values ? h.values : h.keys;
+    const a2 = this.newArray(name ?? `(${h.name}.${what})`, from.kind, 0, this.sourceOf(where), { ...from.bits ? { bits: from.bits } : {}, ...from.unsigned ? { unsigned: true } : {} });
+    a2.dynamic = true;
+    this.emit({ kind: "declareArray", array: a2.id, init: [], at: this.at(where), label: this.label(where) }, where);
+    this.hashLoop(h, where, (key, value) => {
+      const v = what === "values" && value ? value : key;
+      this.emit({ kind: "push", array: a2.id, value: v.kind === "number" ? varRef(v) : boolRef(v), at: this.at(where), label: this.label(where) }, where);
+    });
+    return { kind: "array", a: a2 };
+  }
+  /** A new list that grows, of the kind `like` is, with nothing in it. */
+  emptyLike(like, name, where) {
+    const grow = (n, of) => {
+      const a2 = this.newArray(n, of.kind, 0, this.sourceOf(where), { ...of.bits ? { bits: of.bits } : {}, ...of.unsigned ? { unsigned: true } : {} });
+      a2.dynamic = true;
+      this.emit({ kind: "declareArray", array: a2.id, init: [], at: this.at(where), label: this.label(where) }, where);
+      return a2;
+    };
+    return like.kind === "array" ? { kind: "array", a: grow(name, like.a) } : { kind: "units", name, ptr: grow(`${name} (ptr)`, like.ptr), epd: grow(`${name} (epd)`, like.epd), uid: grow(`${name} (uid)`, like.uid) };
+  }
+  /** The cells of `from` — all of them, or those from `start` up to `end` — pushed to `into`, every array of the list together. */
+  appendList(into, from, where, start, end) {
+    const at = this.at(where);
+    const label = this.label(where);
+    const pairs = into.kind === "array" && from.kind === "array" ? [[into.a, from.a]] : into.kind === "units" && from.kind === "units" ? [[into.ptr, from.ptr], [into.epd, from.epd], [into.uid, from.uid]] : [];
+    const i = this.newVar("(index)", "number", at, { temp: true });
+    const stop = end ?? { kind: "length", array: pairs[0][1].id, at };
+    this.emit({ kind: "declare", decl: i, init: start ?? num(0), at, label }, where);
+    this.emit({
+      kind: "for",
+      cond: { kind: "compare", op: "<", left: varRef(i), right: stop, at, label },
+      update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+      body: pairs.map(([to, of]) => ({ kind: "push", array: to.id, value: { kind: "element", array: of.id, index: varRef(i), at }, at, label })),
+      at,
+      label
+    }, where);
+  }
+  /** A place a `slice` is given, as JavaScript reads it: below zero it counts from the end, and it stays inside 0 … length. */
+  sliceEnd(given, length, where) {
+    const n = this.num(given);
+    if (!n) return null;
+    const at = this.at(where);
+    const label = this.label(where);
+    if (n.kind === "const" && n.value >= 0) return this.temp({ kind: "intrinsic", name: "min", args: [n, length], at, label }, where, true);
+    const v = this.temp(n, where, true);
+    const fromEnd = { kind: "intrinsic", name: "max", args: [{ kind: "binary", op: "+", left: length, right: v, at, label }, num(0)], at, label };
+    return this.temp({ kind: "ternary", cond: { kind: "compare", op: "<", left: v, right: num(0), at, label }, whenTrue: fromEnd, whenFalse: { kind: "intrinsic", name: "min", args: [v, length], at, label }, at, label }, where, true);
+  }
+  /** The copy such a call gives, under `name` or a temporary's. Null with a diagnostic. */
+  copiedList(e, name, where) {
+    const { ts } = this;
+    if (!ts.isPropertyAccessExpression(e.expression)) return null;
+    if (this.inLoopCondition > 0) {
+      this.c.error(e, "This makes an array, and a loop's condition is worked out again every turn: make it before the loop, or inside it.");
+      return null;
+    }
+    const method = e.expression.name.text;
+    const source = method === "from" ? e.arguments[0] : e.expression.expression;
+    const held = this.bindingOf(source);
+    if (held?.kind === "hash") return this.hashList(held, method === "values" ? "values" : "keys", name, where);
+    const inner = this.unwrap(source);
+    if (method === "from" && ts.isCallExpression(inner) && (this.copiesList(inner) || this.makesList(inner))) return this.copiesList(inner) ? this.copiedList(inner, name, where) : this.madeList(inner, name, where);
+    const from = this.listOf(source) ?? this.scriptList(source);
+    if (from?.kind !== "array" && from?.kind !== "units") {
+      this.c.error(source, `${method}() copies an array of numbers, of booleans or of units here; for rows, filter(() => true) gives each its own.`);
+      return null;
+    }
+    const given = name ?? `(${from.kind === "array" ? from.a.name : from.name}.${method})`;
+    const length = { kind: "length", array: (from.kind === "array" ? from.a : from.ptr).id, at: this.at(e) };
+    switch (method) {
+      case "slice": {
+        if (e.arguments.length > 2) {
+          this.c.error(e, "slice() takes where to start and where to stop.");
+          return null;
+        }
+        const start = e.arguments[0] ? this.sliceEnd(e.arguments[0], length, e) : num(0);
+        const end = e.arguments[1] ? this.sliceEnd(e.arguments[1], length, e) : void 0;
+        if (!start || end === null) return null;
+        const made = this.emptyLike(from, given, where);
+        this.appendList(made, from, e, start, end);
+        return made;
+      }
+      case "concat": {
+        const made = this.emptyLike(from, given, where);
+        this.appendList(made, from, e);
+        for (const arg of e.arguments) {
+          const more = this.listOf(arg) ?? this.scriptList(arg);
+          if (more?.kind === from.kind && (more.kind === "array" || more.kind === "units")) {
+            this.appendList(made, more, arg);
+            continue;
+          }
+          const written = this.unwrap(arg);
+          if (made.kind === "array" && ts.isArrayLiteralExpression(written) && !written.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) {
+            for (const x of written.elements) {
+              const v = made.a.kind === "number" ? this.num(x) : this.boolValue(x);
+              if (!v) return null;
+              this.emit({ kind: "push", array: made.a.id, value: v, at: this.at(x), label: this.label(x) }, x);
+            }
+            continue;
+          }
+          if (made.kind === "units") {
+            const found = this.unitExpr(arg);
+            if (!found) return null;
+            const unit = this.unitTemp(found, arg);
+            for (const [a2, part] of this.unitArrays(made)) this.emit({ kind: "push", array: a2.id, value: { kind: "unitPart", unit, part, at: this.at(arg) }, at: this.at(arg), label: this.label(arg) }, arg);
+            continue;
+          }
+          const value = made.a.kind === "number" ? this.num(arg) : this.boolValue(arg);
+          if (!value) return null;
+          this.emit({ kind: "push", array: made.a.id, value, at: this.at(arg), label: this.label(arg) }, arg);
+        }
+        return made;
+      }
+      case "from":
+      case "toReversed":
+      case "toSorted": {
+        const made = this.emptyLike(from, given, where);
+        this.appendList(made, from, e);
+        if (method === "toReversed" && !this.reverseList(e, made)) return null;
+        if (method === "toSorted" && !this.sortList(e, made)) return null;
+        return made;
+      }
+      default:
+        return null;
+    }
+  }
+  /** What a method that takes a function runs over: a list of the program, the units of the game, or a list the script has. */
+  overOf(expr) {
+    const b = this.listOf(expr);
+    if (b?.kind === "array" || b?.kind === "records" || b?.kind === "units" || b?.kind === "grid" || b?.kind === "lists") return b;
+    if (b) return void 0;
+    const h = this.evaluate(expr);
+    if (!h) return void 0;
+    if (isUnitQuery(h.value)) return { kind: "query", name: `${h.value.ident}(\u2026)`, filter: { ...h.value.filter } };
+    if (Array.isArray(h.value)) return { kind: "values", name: expr.getText(this.body.sf).replace(/\s+/g, " ").slice(0, 40), items: h.value };
+    return void 0;
+  }
+  overName(over) {
+    return over.kind === "array" ? over.a.name : over.name;
+  }
+  /** Whether a call is of a method that gives a list — `map`, `filter`, or `sort` / `reverse`, which give their own — on something such a method runs over. */
+  makesList(e) {
+    const { ts } = this;
+    if (!ts.isPropertyAccessExpression(e.expression) || !LIST_MAKERS.has(e.expression.name.text) || this.body.plan.index.has(e)) return false;
+    const receiver = this.unwrap(e.expression.expression);
+    if (this.bindingOf(receiver)) {
+      const b = this.bindingOf(receiver);
+      return b.kind === "array" || b.kind === "records" || b.kind === "units" || b.kind === "grid" || b.kind === "row" || b.kind === "lists" || b.kind === "inner";
+    }
+    if (ts.isCallExpression(receiver) && (this.makesList(receiver) || this.copiesList(receiver))) return true;
+    const h = this.evaluate(receiver);
+    return !!h && (isUnitQuery(h.value) || Array.isArray(h.value));
+  }
+  /** The function a method is given: written there, or the name of one declared in the body. */
+  functionOf(arg, method, e) {
+    const { ts } = this;
+    if (!arg) {
+      this.c.error(e, `${method}() takes a function: xs.${method}((x) => \u2026).`);
+      return null;
+    }
+    const fn = this.unwrap(arg);
+    if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+      if (fn.asteriskToken || fn.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+        this.c.error(fn, "Generators and async functions are not supported in a program.");
+        return null;
+      }
+      return { parameters: fn.parameters, body: fn.body, closure: this.scope };
+    }
+    if (ts.isIdentifier(fn)) {
+      const decl = this.gameDeclaration(fn);
+      if (decl && ts.isFunctionDeclaration(decl) && decl.body) return { parameters: decl.parameters, body: decl.body, closure: this.body === this.c.body ? this.topScope : null, name: decl.name?.text };
+    }
+    this.c.error(arg, `A function is not a value when the map is played: write it where it is used \u2014 xs.${method}((x) => \u2026) \u2014 or name one declared with function in the program.`);
+    return null;
+  }
+  /**
+   * The function given to a method, inlined with its parameters bound to what the method hands it — the item of the turn,
+   * its place, the list. A variable it uses from outside is the program's own cell, so nothing is captured and nothing
+   * is made when the map is played. `kind` is what it has to give back; "any" takes what it says it returns.
+   */
+  callback(arg, method, bound, kind, e) {
+    const { ts } = this;
+    const fn = this.functionOf(arg, method, e);
+    if (!fn) return void 0;
+    if (kind === "any") {
+      const signature2 = this.c.checker.getSignaturesOfType(this.c.checker.getTypeAtLocation(arg), ts.SignatureKind.Call)[0];
+      kind = (signature2 && this.kindOf(this.c.checker.getReturnTypeOfSignature(signature2))) ?? "void";
+    }
+    const at = this.at(arg);
+    const label = this.label(e);
+    const out = { name: fn.name ?? `${method}'s function`, at, label, params: [], body: [] };
+    if (kind !== "void") out.result = { decl: this.newVar(`(${method}'s function result)`, kind, at, { temp: true }), kind };
+    this.mark(out, arg);
+    const scope = new Scope(fn.closure);
+    let ok = true;
+    const patterns = [];
+    fn.parameters.forEach((p, i) => {
+      if (p.dotDotDotToken) {
+        this.c.error(p, "A function given to an array method is handed the item, its place and the array; there is no rest of them.");
+        ok = false;
+        return;
+      }
+      if (!ts.isIdentifier(p.name)) {
+        const from = bound[i];
+        if (!from) {
+          this.c.error(p, `${method}() hands its function ${bound.length} value${bound.length === 1 ? "" : "s"}; there is nothing here to take apart.`);
+          ok = false;
+          return;
+        }
+        const pattern = p.name;
+        patterns.push(() => {
+          this.bindPattern(pattern, p, from, scope);
+        });
+        return;
+      }
+      const b = bound[i];
+      if (!b) {
+        const h = p.initializer ? this.evaluate(p.initializer) : void 0;
+        if (h) {
+          scope.bind(p, { kind: "value", value: h.value });
+          return;
+        }
+        this.c.error(p, `${method}() hands its function ${bound.length} value${bound.length === 1 ? "" : "s"}; ${p.name.text} would be undefined.`);
+        ok = false;
+        return;
+      }
+      if (b.kind === "var" && this.assigns(fn.body, p)) {
+        const copy = this.newVar(p.name.text, b.v.kind, this.sourceOf(p.name), { ...b.v.bits ? { bits: b.v.bits } : {}, ...b.v.unsigned ? { unsigned: true } : {} });
+        out.params.push({ decl: copy, init: refOf(b.v), label });
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
+      if (b.kind === "value" && this.assigns(fn.body, p)) {
+        this.c.error(p, `${p.name.text} is a value the script has here, not a variable: keep it in a let of the function's own to change it.`);
+        ok = false;
+        return;
+      }
+      scope.bind(p, b);
+    });
+    if (!ok) return void 0;
+    this.inCallback++;
+    try {
+      out.body = this.walkFunction(fn.body, kind, this.body, scope, () => patterns.forEach((take) => take()));
+    } finally {
+      this.inCallback--;
+    }
+    return out;
+  }
+  /** The function's answer as a condition: what it returns, a number being true when it is not 0. */
+  predicate(arg, method, bound, e) {
+    const call = this.callback(arg, method, bound, "any", e);
+    if (!call) return null;
+    if (call.result?.kind === "boolean") return this.mark({ kind: "call", call }, e);
+    if (call.result?.kind === "number") return this.mark({ kind: "test", expr: this.mark({ kind: "call", call }, e), at: this.at(e), label: this.label(e) }, e);
+    this.c.error(arg ?? e, `${method}()'s function answers true or false.`);
+    return null;
+  }
+  /** `xs.find(…) ?? 0`: what was found, or the value to the right when nothing was. Undefined when the expression is not that. */
+  findOr(e, as) {
+    const { ts } = this;
+    const left = this.unwrap(e.left);
+    if (!ts.isCallExpression(left) || !ts.isPropertyAccessExpression(left.expression) || left.expression.name.text !== "find" && left.expression.name.text !== "findLast") return void 0;
+    const over = this.overOf(left.expression.expression);
+    return over ? this.searchCall(left, over, left.expression.name.text, as, e.right) : void 0;
+  }
+  /** A number where it is kept, read. */
+  placeRead(p, at) {
+    return "v" in p ? varRef(p.v) : { kind: "element", array: p.a.id, index: p.index, at: this.at(at) };
+  }
+  /** A unit kept as three numbers, as the unit it is. */
+  unitAtPlaces(b, at) {
+    return this.mark({ kind: "unitAt", ptr: this.placeRead(b.ptr, at), epd: this.placeRead(b.epd, at), uid: this.placeRead(b.uid, at), at: this.at(at) }, at);
+  }
+  /** `squads[i].leader = u`: the unit's three numbers, each stored where it is kept. */
+  storeUnitAt(b, value, e) {
+    const unit = this.unitTemp(value, e);
+    const at = this.at(e);
+    const label = this.label(e);
+    for (const part of UNIT_PARTS) {
+      const p = b[part];
+      const v = { kind: "unitPart", unit, part, at };
+      if ("v" in p) this.emit({ kind: "assign", target: p.v.id, value: v, at, label }, e);
+      else this.emit({ kind: "store", array: p.a.id, index: p.index, value: v, at, label }, e);
+    }
+  }
+  /** What a binding is as a value of `kind`, where a method stores or returns the item or its place. */
+  valueOf(b, kind, at) {
+    if (b.kind === "var" && b.v.kind === kind) return kind === "number" ? varRef(b.v) : kind === "unit" ? unitRef(b.v) : boolRef(b.v);
+    if (b.kind === "cell" && b.a.kind === kind) return { kind: "element", array: b.a.id, index: b.index, at: this.at(at) };
+    if (b.kind === "unitAt" && kind === "unit") return this.unitAtPlaces(b, at);
+    if (b.kind === "value") {
+      if (kind === "boolean" && typeof b.value === "boolean") return { kind: "const", value: b.value };
+      if (kind === "number") {
+        const n = this.asInteger({ value: b.value }, at);
+        return n === null ? null : num(n);
+      }
+    }
+    this.c.error(at, `Expected a ${kind} here.`);
+    return null;
+  }
+  /**
+   * The loop a method is: `turn` is called with the item and its place where the loop's body goes. A list of the
+   * program is a loop the game runs, the item what `for…of` would have; the units of the game are the loop over units,
+   * which come in no order and so have no place; a list the script has is unrolled, `turn` called once an item.
+   */
+  loopOver(over, e, turn, reverse = false) {
+    const { ts } = this;
+    const given = e.arguments[0] && this.unwrap(e.arguments[0]);
+    const first = given && (ts.isArrowFunction(given) || ts.isFunctionExpression(given)) ? given.parameters[0] : void 0;
+    this.loopOf(over, e, first && ts.isIdentifier(first.name) ? first.name.text : `(item of ${this.overName(over)})`, turn, reverse);
+  }
+  /** The loop itself, for whatever statement wants one: a method's call, or a `for…of` whose variable is a pattern. */
+  loopOf(over, e, itemName, turn, reverse = false) {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (over.kind === "values") {
+      const items = over.items.map((value, i2) => [value, i2]);
+      for (const [value, i2] of reverse ? items.reverse() : items) turn({ kind: "value", value }, { kind: "value", value: i2 });
+      return;
+    }
+    if (over.kind === "query") {
+      const v = this.newVar(itemName, "unit", at, { temp: true });
+      const body3 = this.collect(() => turn({ kind: "var", v }, void 0));
+      this.emit({ kind: "unitLoop", decl: v, filter: { ...over.filter }, body: body3, at, label }, e);
+      return;
+    }
+    if (over.kind === "lists") {
+      const y = this.newVar(`(row of ${over.name})`, "number", at, { temp: true });
+      const rows = this.temp({ kind: "length", array: over.ptr.id, at }, e, true);
+      const body3 = this.collect(() => turn({ kind: "array", a: this.innerOf(over, varRef(y), e) }, { kind: "var", v: y }));
+      const by = (op) => ({ kind: "assign", target: y.id, value: { kind: "binary", op, left: varRef(y), right: num(1), at, label }, at, label });
+      this.emit({ kind: "declare", decl: y, init: reverse ? { kind: "binary", op: "-", left: rows, right: num(1), at, label } : num(0), at, label }, e);
+      this.emit({ kind: "for", cond: reverse ? { kind: "compare", op: ">=", left: varRef(y), right: num(0), at, label } : { kind: "compare", op: "<", left: varRef(y), right: rows, at, label }, update: [by(reverse ? "-" : "+")], body: body3, at, label }, e);
+      return;
+    }
+    if (over.kind === "grid") {
+      const y = this.newVar(`(row of ${over.name})`, "number", at, { temp: true });
+      const rows = this.temp(this.rowsOf(over, e), e);
+      const body3 = this.collect(() => {
+        const part = this.partAt(over, varRef(y), e);
+        turn(part.kind === "row" ? { kind: "array", a: this.windowOf(part, e) } : part, { kind: "var", v: y });
+      });
+      const by = (op) => ({ kind: "assign", target: y.id, value: { kind: "binary", op, left: varRef(y), right: num(1), at, label }, at, label });
+      this.emit({ kind: "declare", decl: y, init: reverse ? { kind: "binary", op: "-", left: rows, right: num(1), at, label } : num(0), at, label }, e);
+      this.emit({ kind: "for", cond: reverse ? { kind: "compare", op: ">=", left: varRef(y), right: num(0), at, label } : { kind: "compare", op: "<", left: varRef(y), right: rows, at, label }, update: [by(reverse ? "-" : "+")], body: body3, at, label }, e);
+      return;
+    }
+    const i = this.newVar(`(index of ${this.overName(over)})`, "number", at, { temp: true });
+    const length = { kind: "length", array: this.lengthArray(over).id, at };
+    const body2 = this.collect(() => {
+      let item;
+      if (over.kind === "records") item = this.rowOf(over, varRef(i));
+      else {
+        const v = over.kind === "units" ? this.newVar(itemName, "unit", at, { temp: true }) : this.newVar(itemName, over.a.kind, at, { temp: true, ...over.a.bits ? { bits: over.a.bits } : {}, ...over.a.unsigned ? { unsigned: true } : {} });
+        this.emit({ kind: "declare", decl: v, init: over.kind === "units" ? this.unitAtIndex(over, varRef(i), e) : { kind: "element", array: over.a.id, index: varRef(i), at }, at, label }, e);
+        item = { kind: "var", v };
+      }
+      turn(item, { kind: "var", v: i });
+    });
+    const step = (by) => ({ kind: "assign", target: i.id, value: { kind: "binary", op: by, left: varRef(i), right: num(1), at, label }, at, label });
+    if (reverse) {
+      this.emit({ kind: "declare", decl: i, init: { kind: "binary", op: "-", left: length, right: num(1), at, label }, at, label }, e);
+      this.emit({ kind: "for", cond: { kind: "compare", op: ">=", left: varRef(i), right: num(0), at, label }, update: [step("-")], body: body2, at, label }, e);
+      return;
+    }
+    let end = length;
+    if (this.arraysOf(over).some((a2) => a2.dynamic)) {
+      const n = this.newVar(`(length of ${this.overName(over)})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: n, init: length, at, label }, e);
+      end = varRef(n);
+    }
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: end, at, label }, update: [step("+")], body: body2, at, label }, e);
+  }
+  /** What `turn` is handed, as the arguments of the function: the item, its place where there is one, the list where it is the program's. */
+  handed(over, item, index) {
+    return [item, ...index ? [index, ...over.kind === "values" || over.kind === "query" ? [] : [over]] : []];
+  }
+  /**
+   * A method that takes a function and gives a value — `some`, `every`, `findIndex`, `find`, `reduce` — as a function of
+   * the compiler's own, as `includes` is: the loop inside it, `return` leaving it. Everything is inside the call, so it
+   * is worked out again wherever the expression is, a loop's condition included. `otherwise` is what `find` gives when
+   * nothing is found (`xs.find(…) ?? 0`).
+   */
+  searchCall(e, over, method, as, otherwise) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const name = `${this.overName(over)}.${method}`;
+    const wrong = (what) => {
+      this.c.error(e, what);
+      return null;
+    };
+    const fn = e.arguments[0];
+    let ok = true;
+    const ret = (value) => {
+      if (!value) {
+        ok = false;
+        return [];
+      }
+      return [{ kind: "return", value, at, label }];
+    };
+    let kind;
+    let body2;
+    switch (method) {
+      case "some":
+      case "every": {
+        if (as !== "boolean") return wrong(`${name}(\u2026) is true or false.`);
+        kind = "boolean";
+        const some = method === "some";
+        body2 = this.collect(() => {
+          this.loopOver(over, e, (item, index) => {
+            const p = this.predicate(fn, method, this.handed(over, item, index), e);
+            if (!p) {
+              ok = false;
+              return;
+            }
+            this.emit({ kind: "if", cond: some ? p : { kind: "not", expr: p }, then: ret(some ? TRUE : FALSE), at, label }, e);
+          });
+          this.out.push(...ret(some ? FALSE : TRUE));
+        });
+        break;
+      }
+      case "findIndex":
+      case "findLastIndex": {
+        if (as !== "number") return wrong(`${name}(\u2026) is a number: the place of what was found, or -1.`);
+        if (over.kind === "query") return wrong("The units of the game come in no order, so none has a place; find() gives the unit.");
+        kind = "number";
+        body2 = this.collect(() => {
+          this.loopOver(over, e, (item, index) => {
+            const p = this.predicate(fn, method, this.handed(over, item, index), e);
+            if (!p) {
+              ok = false;
+              return;
+            }
+            this.emit({ kind: "if", cond: p, then: ret(this.valueOf(index, "number", e)), at, label }, e);
+          }, method === "findLastIndex");
+          this.out.push(...ret(num(-1)));
+        });
+        break;
+      }
+      case "find":
+      case "findLast": {
+        if (over.kind === "grid" || over.kind === "lists") return wrong(`${name}(\u2026) would be a row or undefined, and there is no undefined when the map is played: take its place with ${method === "find" ? "findIndex" : "findLastIndex"}(\u2026), which is -1 when nothing is found, and read ${over.name}[i].`);
+        if (over.kind === "records") return wrong(`${name}(\u2026) would be a record or undefined, and there is no undefined when the map is played: take its place with ${method === "find" ? "findIndex" : "findLastIndex"}(\u2026), which is -1 when nothing is found, and read ${this.overName(over)}[i].`);
+        if (over.kind === "query" && method === "findLast") return wrong("The units of the game come in no order: find() gives one that matches.");
+        const holds = over.kind === "units" || over.kind === "query" ? "unit" : over.kind === "array" ? over.a.kind : as;
+        if (as !== holds) return wrong(`${name}(\u2026) gives what ${this.overName(over)} holds: a ${holds}.`);
+        let none = holds === "unit" ? NO_UNIT : null;
+        if (holds !== "unit") {
+          if (!otherwise) return wrong(`${name}(\u2026) is undefined when nothing is found, and there is no undefined when the map is played: say what it is then \u2014 ${name}(\u2026) ?? 0 \u2014 or take the place with ${method === "find" ? "findIndex" : "findLastIndex"}(\u2026), which is -1.`);
+          none = holds === "number" ? this.num(otherwise) : this.boolValue(otherwise);
+          if (!none) return null;
+        }
+        kind = holds;
+        body2 = this.collect(() => {
+          this.loopOver(over, e, (item, index) => {
+            const p = this.predicate(fn, method, this.handed(over, item, index), e);
+            if (!p) {
+              ok = false;
+              return;
+            }
+            this.emit({ kind: "if", cond: p, then: ret(this.valueOf(item, holds, e)), at, label }, e);
+          }, method === "findLast");
+          this.out.push(...ret(none));
+        });
+        break;
+      }
+      case "reduce": {
+        if (as === "unit") return wrong(`${name}(\u2026) adds up to a number or a boolean.`);
+        if (e.arguments.length < 2) return wrong(`${name}() wants what it starts from \u2014 ${this.overName(over)}.reduce((sum, x) => sum + x, 0): without it JavaScript throws on an empty array.`);
+        kind = as;
+        const start = as === "number" ? this.num(e.arguments[1]) : this.boolValue(e.arguments[1]);
+        if (!start) return null;
+        const acc = this.newVar(`(${name} so far)`, as, at, { temp: true, ...as === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(e)) : {} });
+        body2 = this.collect(() => {
+          this.emit({ kind: "declare", decl: acc, init: start, at, label }, e);
+          this.loopOver(over, e, (item, index) => {
+            const call2 = this.callback(fn, method, [{ kind: "var", v: acc }, ...this.handed(over, item, index)], as, e);
+            if (!call2) {
+              ok = false;
+              return;
+            }
+            if (as === "number") this.emit({ kind: "assign", target: acc.id, value: this.mark({ kind: "call", call: call2 }, e), at, label }, e);
+            else this.emit({ kind: "assignBool", target: acc.id, value: this.mark({ kind: "call", call: call2 }, e), at, label }, e);
+          });
+          this.out.push(...ret(as === "number" ? varRef(acc) : boolRef(acc)));
+        });
+        break;
+      }
+      default:
+        return wrong(`${method}() is not a method of ${this.overName(over)} that gives a value.`);
+    }
+    if (!ok) return null;
+    const result = this.newVar(`(${name} result)`, kind, at, { temp: true, ...kind === "number" && over.kind === "array" && method !== "reduce" && !method.endsWith("Index") ? { ...over.a.bits ? { bits: over.a.bits } : {}, ...over.a.unsigned ? { unsigned: true } : {} } : {} });
+    const call = { name, at, label, params: [], result: { decl: result, kind }, body: body2 };
+    return this.mark({ kind: "call", call }, e);
+  }
+  /** `xs.forEach((x) => …)`: the loop, the function its body. */
+  forEachCall(e, over) {
+    if (e.arguments.length > 1) {
+      this.c.error(e.arguments[1], "forEach() takes the function alone; there is no this in a program.");
+      return;
+    }
+    this.loopOver(over, e, (item, index) => {
+      const call = this.callback(e.arguments[0], "forEach", this.handed(over, item, index), "void", e);
+      if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+    });
+  }
+  /**
+   * `xs.map(…)`, `xs.filter(…)`: a new list, named by the declaration it is for or a temporary's. `map` has the length of
+   * what it runs over — fixed when that is, else one that grows; `filter` always grows. `sort` and `reverse` give the list
+   * they were called on, changed in place, as they do in JavaScript. Null with a diagnostic.
+   */
+  madeList(e, name, where) {
+    const { ts } = this;
+    if (!ts.isPropertyAccessExpression(e.expression)) return null;
+    const method = e.expression.name.text;
+    const at = this.at(e);
+    const label = this.label(e);
+    const over = this.overOf(e.expression.expression);
+    if (!over) {
+      this.notConstant(e.expression.expression, `What ${method}() runs over`);
+      return null;
+    }
+    if (method === "sort" || method === "reverse") {
+      if (over.kind === "grid" || over.kind === "lists") return (method === "sort" ? this.sortList(e, over) : this.reverseList(e, over)) ? over : null;
+      if (over.kind === "values" || over.kind === "query") {
+        this.c.error(e, over.kind === "query" ? "The units of the game come in no order; keep them in an array first: unitsOf(\u2026).filter(() => true)." : `${over.name} is a list the script has; ${method}() changes a list in place, which takes an array of the program.`);
+        return null;
+      }
+      if (this.arraysOf(over).some((a2) => a2.values)) {
+        this.c.error(e, `${this.overName(over)} was computed when the script was built and is only read in a program.`);
+        return null;
+      }
+      return (method === "sort" ? this.sortList(e, over) : this.reverseList(e, over)) ? over : null;
+    }
+    if (this.inLoopCondition > 0) {
+      this.c.error(e, `${method}() makes an array, and a loop's condition is worked out again every turn: make it before the loop, or inside it.`);
+      return null;
+    }
+    if (e.arguments.length > 1) {
+      this.c.error(e.arguments[1], `${method}() takes the function alone; there is no this in a program.`);
+      return null;
+    }
+    const given = name ?? `(${this.overName(over)}.${method})`;
+    const source = this.sourceOf(where);
+    let ok = true;
+    if (method === "map") {
+      const signature2 = e.arguments[0] ? this.c.checker.getSignaturesOfType(this.c.checker.getTypeAtLocation(e.arguments[0]), ts.SignatureKind.Call)[0] : void 0;
+      const returns = signature2 ? this.c.checker.getReturnTypeOfSignature(signature2) : void 0;
+      const kind = returns ? this.kindOf(returns) : null;
+      if (kind !== "number" && kind !== "boolean") {
+        this.c.error(e, `map() makes an array of numbers or of booleans here${returns ? `; this one would hold ${this.c.checker.typeToString(returns)}` : ""}. For units or records, push to an array in a for\u2026of.`);
+        return null;
+      }
+      const fixed = over.kind === "values" ? over.items.length : over.kind === "grid" ? over.dims[0] || null : over.kind === "lists" ? over.ptr.dynamic ? null : over.ptr.length : over.kind === "query" || this.arraysOf(over).some((a3) => a3.dynamic) ? null : this.lengthArray(over).length;
+      if (fixed !== null && (fixed < 1 || fixed > MAX_ARRAY)) {
+        this.c.error(e, `An array of a program has 1 to ${MAX_ARRAY} cells (this would have ${fixed}).`);
+        return null;
+      }
+      const a2 = this.newArray(given, kind, fixed ?? 0, source, kind === "number" && returns ? this.widthOf(returns) : {});
+      if (fixed === null) a2.dynamic = true;
+      this.emit({ kind: "declareArray", array: a2.id, ...fixed === null ? { init: [] } : { fill: kind === "number" ? num(0) : FALSE }, at, label }, e);
+      this.loopOver(over, e, (item, index) => {
+        const call = this.callback(e.arguments[0], "map", this.handed(over, item, index), kind, e);
+        if (!call) {
+          ok = false;
+          return;
+        }
+        const value = this.mark({ kind: "call", call }, e);
+        if (fixed === null) this.emit({ kind: "push", array: a2.id, value, at, label }, e);
+        else this.emit({ kind: "store", array: a2.id, index: this.valueOf(index, "number", e), value, at, label }, e);
+      });
+      return ok ? { kind: "array", a: a2 } : null;
+    }
+    const grow = (n, from) => {
+      const a2 = this.newArray(n, from.kind, 0, source, { ...from.bits ? { bits: from.bits } : {}, ...from.unsigned ? { unsigned: true } : {} });
+      a2.dynamic = true;
+      this.emit({ kind: "declareArray", array: a2.id, init: [], at, label }, e);
+      return a2;
+    };
+    let made;
+    if (over.kind === "grid" || over.kind === "lists") return this.filterRows(e, over, given, where);
+    if (over.kind === "units" || over.kind === "query") made = { kind: "units", name: given, ptr: grow(`${given} (ptr)`, { kind: "number", unsigned: true }), epd: grow(`${given} (epd)`, { kind: "number", unsigned: true }), uid: grow(`${given} (uid)`, { kind: "number", unsigned: true }) };
+    else if (over.kind === "records") {
+      const columns = new Map([...over.fields].map(([field, a2]) => {
+        const c2 = this.newArray(`${given}.${field.replace(/ /g, ".")}`, a2.kind, 0, source, { ...a2.bits ? { bits: a2.bits } : {}, ...a2.unsigned ? { unsigned: true } : {} });
+        c2.dynamic = true;
+        return [field, c2];
+      }));
+      made = { kind: "records", name: given, fields: columns, ...over.cls ? { cls: over.cls } : {}, ...over.shape ? { shape: over.shape } : {} };
+      this.releaseFrom(made, num(0), e);
+      for (const c2 of columns.values()) this.emit({ kind: "declareArray", array: c2.id, init: [], at, label }, e);
+    } else if (over.kind === "array") made = { kind: "array", a: grow(given, over.a) };
+    else {
+      const kinds = new Set(over.items.map((v) => typeof v));
+      if (kinds.size !== 1 || !(kinds.has("number") || kinds.has("boolean"))) {
+        this.c.error(e, `filter() of a list the script has makes an array of numbers or of booleans; ${over.name} holds something else. A for\u2026of over it runs the same turns.`);
+        return null;
+      }
+      made = { kind: "array", a: grow(given, { kind: kinds.has("number") ? "number" : "boolean" }) };
+    }
+    this.loopOver(over, e, (item, index) => {
+      const p = this.predicate(e.arguments[0], "filter", this.handed(over, item, index), e);
+      if (!p) {
+        ok = false;
+        return;
+      }
+      const keep = this.collect(() => {
+        if (made.kind === "units") {
+          const unit = this.valueOf(item, "unit", e);
+          if (!unit) {
+            ok = false;
+            return;
+          }
+          for (const [a2, part] of this.unitArrays(made)) this.emit({ kind: "push", array: a2.id, value: { kind: "unitPart", unit, part, at }, at, label }, e);
+        } else if (made.kind === "records" && over.kind === "records" && index?.kind === "var") {
+          const owned = this.ownedLists(made);
+          const place = this.owns(made) ? this.newVar(`(row of ${made.name})`, "number", at, { temp: true }) : void 0;
+          if (place) this.emit({ kind: "declare", decl: place, init: { kind: "length", array: [...made.fields.values()][0].id, at }, at, label }, e);
+          for (const [field, a2] of made.fields) this.emit({ kind: "push", array: a2.id, value: { kind: "element", array: over.fields.get(field).id, index: varRef(index.v), at }, at, label }, e);
+          const theirs = this.ownedLists(over);
+          owned.forEach((l, k) => {
+            for (const a2 of this.handlesOf(l)) this.emit({ kind: "store", array: a2.id, index: varRef(place), value: num(0), at, label }, e);
+            this.copyCells(this.innerAt(l, place, e), this.innerOf(theirs[k], varRef(index.v), e), e);
+          });
+          const texts = this.ownedTexts(over);
+          this.ownedTexts(made).forEach((t, k) => {
+            for (const a2 of [t.addr, t.block, t.chars]) this.emit({ kind: "store", array: a2.id, index: varRef(place), value: num(0), at, label }, e);
+            this.storeTextAt({ ...t, index: varRef(place) }, this.textAtCells({ ...texts[k], index: varRef(index.v) }, e), e);
+          });
+        } else if (made.kind === "array") {
+          const value = this.valueOf(item, made.a.kind, e);
+          if (!value) {
+            ok = false;
+            return;
+          }
+          this.emit({ kind: "push", array: made.a.id, value, at, label }, e);
+        }
+      });
+      this.emit({ kind: "if", cond: p, then: keep, at, label }, e);
+    });
+    return ok ? made : null;
+  }
+  /** `grid.filter(…)`, `buckets.filter(…)`: the rows the function keeps, each a copy of its own — of a grid whole rows of one flat array, of rows that grow a block each. */
+  filterRows(e, over, given, where) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const source = this.sourceOf(where);
+    let ok = true;
+    if (over.kind === "grid") {
+      if (over.dims.length !== 2 || over.offset) {
+        this.c.error(e, `${over.name} is arrays more than two deep, or a part of one; filter() takes rows two deep.`);
+        return null;
+      }
+      const w = over.dims[1];
+      const flat = this.newArray(given, over.a.kind, 0, source, { ...over.a.bits ? { bits: over.a.bits } : {}, ...over.a.unsigned ? { unsigned: true } : {} });
+      flat.dynamic = true;
+      this.emit({ kind: "declareArray", array: flat.id, init: [], at, label }, e);
+      this.loopOver(over, e, (item, index) => {
+        const p = this.predicate(e.arguments[0], "filter", this.handed(over, item, index), e);
+        if (!p || index?.kind !== "var") {
+          ok = false;
+          return;
+        }
+        const keep = Array.from({ length: w }, (_, k) => ({ kind: "push", array: flat.id, value: { kind: "element", array: over.a.id, index: this.scaled(varRef(index.v), w, num(k), e), at }, at, label }));
+        this.emit({ kind: "if", cond: p, then: keep, at, label }, e);
+      });
+      return ok ? { kind: "grid", name: given, a: flat, dims: [0, w], offset: null } : null;
+    }
+    const make = (part) => {
+      const a2 = this.newArray(`${given} (${part})`, "number", 0, source, { unsigned: true });
+      a2.dynamic = true;
+      return a2;
+    };
+    const made = { kind: "lists", name: given, ptr: make("block"), len: make("length"), room: make("room"), k: make("size"), of: over.of, ...over.bits ? { bits: over.bits } : {}, ...over.unsigned ? { unsigned: true } : {} };
+    this.releaseRows(made, num(0), e);
+    for (const a2 of this.handlesOf(made)) this.emit({ kind: "declareArray", array: a2.id, init: [], at, label }, e);
+    this.loopOver(over, e, (item, index) => {
+      const p = this.predicate(e.arguments[0], "filter", this.handed(over, item, index), e);
+      if (!p || item.kind !== "array") {
+        ok = false;
+        return;
+      }
+      const keep = this.collect(() => {
+        const place = this.newVar(`(row of ${given})`, "number", at, { temp: true });
+        this.emit({ kind: "declare", decl: place, init: { kind: "length", array: made.ptr.id, at }, at, label }, e);
+        for (const a2 of this.handlesOf(made)) this.emit({ kind: "push", array: a2.id, value: num(0), at, label }, e);
+        this.copyCells(this.innerAt(made, place, e), item.a, e);
+      });
+      this.emit({ kind: "if", cond: p, then: keep, at, label }, e);
+    });
+    return ok ? made : null;
+  }
+  /** `a[i] = b[j]` over every array of a list, a row moved as one. */
+  moveRow(list, to, from, e) {
+    const at = this.at(e);
+    const label = this.label(e);
+    return this.arraysOf(list).map((a2) => ({ kind: "store", array: a2.id, index: to, value: { kind: "element", array: a2.id, index: from, at }, at, label }));
+  }
+  /** A row taken out into temporaries — what a sort holds in its hand, what a swap needs — with what puts it back at a place. */
+  heldRow(list, index, e) {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (list.kind === "units") {
+      const v = this.newVar(`(held of ${list.name})`, "unit", at, { temp: true });
+      this.emit({ kind: "declare", decl: v, init: this.unitAtIndex(list, index, e), at, label }, e);
+      return { binding: { kind: "var", v }, put: (to) => this.unitArrays(list).map(([a2, part]) => ({ kind: "store", array: a2.id, index: to, value: { kind: "unitPart", unit: unitRef(v), part, at }, at, label })) };
+    }
+    const hold = (a2) => {
+      const v = this.newVar(`(held of ${a2.name})`, a2.kind, at, { temp: true, ...a2.bits ? { bits: a2.bits } : {}, ...a2.unsigned ? { unsigned: true } : {} });
+      this.emit({ kind: "declare", decl: v, init: { kind: "element", array: a2.id, index, at }, at, label }, e);
+      return v;
+    };
+    if (list.kind === "records" && this.owns(list)) {
+      const columns = [...list.fields.values()];
+      const place = this.newVar(`(held of ${list.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: place, init: { kind: "length", array: columns[0].id, at }, at, label }, e);
+      for (const a2 of columns) {
+        a2.dynamic = true;
+        this.emit({ kind: "push", array: a2.id, value: { kind: "element", array: a2.id, index, at }, at, label }, e);
+      }
+      return { binding: this.rowOf(list, varRef(place)), put: (to) => [...columns.map((a2) => ({ kind: "store", array: a2.id, index: to, value: { kind: "element", array: a2.id, index: varRef(place), at }, at, label })), ...columns.map((a2) => ({ kind: "pop", array: a2.id, at, label }))] };
+    }
+    const back = (a2, v, to) => ({ kind: "store", array: a2.id, index: to, value: a2.kind === "number" ? varRef(v) : boolRef(v), at, label });
+    if (list.kind === "array") {
+      const v = hold(list.a);
+      return { binding: { kind: "var", v }, put: (to) => [back(list.a, v, to)] };
+    }
+    const held = [...list.fields].map(([field, a2]) => [field, a2, hold(a2)]);
+    const kept = new Map(held.map(([key, , v]) => [key, v]));
+    const build = (shape, prefix) => new Map([...shape].flatMap(([name, f]) => {
+      const key = prefix + name;
+      if (f.kind === "unit") return [[name, { kind: "unitAt", ptr: { v: kept.get(`${key} ptr`) }, epd: { v: kept.get(`${key} epd`) }, uid: { v: kept.get(`${key} uid`) } }]];
+      if (f.kind === "record") return [[name, { kind: "record", fields: build(f.shape, `${key} `), ...f.cls ? { cls: f.cls } : {} }]];
+      return f.kind === "list" || f.kind === "squad" || f.kind === "text" ? [] : [[name, { kind: "var", v: kept.get(key) }]];
+    }));
+    return { binding: { kind: "record", fields: build(this.rowShape(list), ""), ...list.cls ? { cls: list.cls } : {} }, put: (to) => held.map(([, a2, v]) => back(a2, v, to)) };
+  }
+  /**
+   * What a sort and a reverse need of a list, whatever its rows are: how many, the row at a place, one row moved onto
+   * another, and a row taken in hand with what puts it back. An array of arrays that grow is its four arrays of handles
+   * seen as an array of records with one field; a grid's rows are runs of its flat array, the hand a run past its end.
+   */
+  rowOps(list, e) {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (list.kind === "lists") {
+      const view = { kind: "records", name: list.name, fields: new Map(HANDLE_PARTS.map((part, k) => [`row ${part}`, this.handlesOf(list)[k]])), shape: /* @__PURE__ */ new Map([["row", { kind: "list", of: list.of, width: { ...list.bits ? { bits: list.bits } : {}, ...list.unsigned ? { unsigned: true } : {} } }]]) };
+      const inner = (b) => b.kind === "record" ? b.fields.get("row") : b;
+      return { length: { kind: "length", array: list.ptr.id, at }, row: (i) => inner(this.rowOf(view, i)), move: (to, from) => this.moveRow(view, to, from, e), hold: (i) => {
+        const held = this.heldRow(view, i, e);
+        return { binding: inner(held.binding), put: held.put };
+      } };
+    }
+    if (list.kind === "grid") {
+      if (list.dims.length !== 2 || list.offset) {
+        this.c.error(e, `${list.name} is arrays more than two deep, or a part of one; its rows are sorted and reversed two deep.`);
+        return null;
+      }
+      if (list.a.values) {
+        this.c.error(e, `${list.name} was computed when the script was built and is only read in a program.`);
+        return null;
+      }
+      const w = list.dims[1];
+      const cellAt = (row, k) => this.scaled(row, w, num(k), e);
+      const window = (offset) => ({ kind: "array", a: this.windowOf({ kind: "row", name: `${list.name}[\u2026]`, a: list.a, offset, length: w }, e) });
+      return {
+        length: this.rowsOf(list, e),
+        row: (i) => window(this.scaled(i, w, null, e)),
+        move: (to, from) => Array.from({ length: w }, (_, k) => ({ kind: "store", array: list.a.id, index: cellAt(to, k), value: { kind: "element", array: list.a.id, index: cellAt(from, k), at }, at, label })),
+        hold: (i) => {
+          list.a.dynamic = true;
+          const place = this.newVar(`(held of ${list.name})`, "number", at, { temp: true });
+          this.emit({ kind: "declare", decl: place, init: { kind: "length", array: list.a.id, at }, at, label }, e);
+          for (let k = 0; k < w; k++) this.emit({ kind: "push", array: list.a.id, value: { kind: "element", array: list.a.id, index: cellAt(i, k), at }, at, label }, e);
+          return { binding: window(varRef(place)), put: (to) => [...Array.from({ length: w }, (_, k) => ({ kind: "store", array: list.a.id, index: cellAt(to, k), value: { kind: "element", array: list.a.id, index: { kind: "binary", op: "+", left: varRef(place), right: num(k), at, label }, at }, at, label })), ...Array.from({ length: w }, () => ({ kind: "pop", array: list.a.id, at, label }))] };
+        }
+      };
+    }
+    return {
+      length: { kind: "length", array: this.lengthArray(list).id, at },
+      row: (i) => {
+        if (list.kind === "records") return this.rowOf(list, i);
+        const v = list.kind === "units" ? this.newVar("(before)", "unit", at, { temp: true }) : this.newVar("(before)", list.a.kind, at, { temp: true, ...list.a.bits ? { bits: list.a.bits } : {}, ...list.a.unsigned ? { unsigned: true } : {} });
+        this.emit({ kind: "declare", decl: v, init: list.kind === "units" ? this.unitAtIndex(list, i, e) : { kind: "element", array: list.a.id, index: i, at }, at, label }, e);
+        return { kind: "var", v };
+      },
+      move: (to, from) => this.moveRow(list, to, from, e),
+      hold: (i) => this.heldRow(list, i, e)
+    };
+  }
+  /** `xs.reverse()`: the two ends exchanged, inwards, within the frame. */
+  reverseList(e, list) {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (e.arguments.length) {
+      this.c.error(e, "reverse() takes no argument.");
+      return false;
+    }
+    const ops = this.rowOps(list, e);
+    if (!ops) return false;
+    const i = this.newVar(`(front of ${this.overName(list)})`, "number", at, { temp: true });
+    const j = this.newVar(`(back of ${this.overName(list)})`, "number", at, { temp: true });
+    const step = (v, by) => ({ kind: "assign", target: v.id, value: { kind: "binary", op: by, left: varRef(v), right: num(1), at, label }, at, label });
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+    this.emit({ kind: "declare", decl: j, init: { kind: "binary", op: "-", left: ops.length, right: num(1), at, label }, at, label }, e);
+    const body2 = this.collect(() => {
+      const held = ops.hold(varRef(i));
+      this.out.push(...ops.move(varRef(i), varRef(j)), ...held.put(varRef(j)), step(i, "+"), step(j, "-"));
+    });
+    this.emit({ kind: "while", cond: { kind: "compare", op: "<", left: varRef(i), right: varRef(j), at, label }, body: body2, at, label }, e);
+    return true;
+  }
+  /**
+   * `xs.sort((a, b) => a - b)`: an insertion sort within the frame — each item taken in hand and the larger ones before
+   * it moved up one. It keeps the order of equals, as JavaScript's sort does, and is quick on a list nearly in order;
+   * a list in no order costs its length squared, which is what the hint is about.
+   */
+  sortList(e, list) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const name = this.overName(list);
+    if (!e.arguments[0]) {
+      this.c.error(e, `sort() wants its function \u2014 ${name}.sort((a, b) => a - b): without one JavaScript sorts numbers as text, 10 before 9.`);
+      return false;
+    }
+    const ops = this.rowOps(list, e);
+    if (!ops) return false;
+    const i = this.newVar(`(index of ${name})`, "number", at, { temp: true });
+    const j = this.newVar(`(place in ${name})`, "number", at, { temp: true });
+    const next = { kind: "binary", op: "+", left: varRef(j), right: num(1), at, label };
+    let ok = true;
+    const body2 = this.collect(() => {
+      const held = ops.hold(varRef(i));
+      this.emit({ kind: "declare", decl: j, init: { kind: "binary", op: "-", left: varRef(i), right: num(1), at, label }, at, label }, e);
+      const inner = this.collect(() => {
+        const before = ops.row(varRef(j));
+        const call = this.callback(e.arguments[0], "sort", [before, held.binding], "any", e);
+        if (!call) {
+          ok = false;
+          return;
+        }
+        if (call.result?.kind !== "number") {
+          this.c.error(e.arguments[0], "sort()'s function gives a number \u2014 below 0 when a goes first, above when b does: (a, b) => a - b.");
+          ok = false;
+          return;
+        }
+        const after = { kind: "compare", op: ">", left: this.mark({ kind: "call", call }, e), right: num(0), at, label };
+        this.emit({ kind: "if", cond: { kind: "not", expr: after }, then: [{ kind: "break", at, label }], at, label }, e);
+        this.out.push(...ops.move(next, varRef(j)), { kind: "assign", target: j.id, value: { kind: "binary", op: "-", left: varRef(j), right: num(1), at, label }, at, label });
+      });
+      this.emit({ kind: "while", cond: { kind: "compare", op: ">=", left: varRef(j), right: num(0), at, label }, body: inner, at, label }, e);
+      this.out.push(...held.put(next));
+    });
+    if (!ok) return false;
+    this.emit({ kind: "declare", decl: i, init: num(1), at, label }, e);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: ops.length, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: body2, at, label, sorts: name }, e);
+    return true;
+  }
+  /** `hp[i] = v`, `hp[i] += v`: a store into a cell. An index that holds a call is evaluated once for the read and once for the store, as two reads of `i` would be. */
+  storeElement(e, el, op) {
+    const { ts } = this;
+    const { a: a2, index } = el;
+    if (a2.values) {
+      this.c.error(e.left, `${a2.name} was computed when the script was built and is only read in a program; declare it with let inside the program to write to it.`);
+      return;
+    }
+    const emit = (value) => this.emit({ kind: "store", array: a2.id, index, value, at: this.at(e), label: this.label(e) }, e);
+    if (a2.kind === "boolean") {
+      if (op !== ts.SyntaxKind.EqualsToken) {
+        this.c.error(e, "Booleans take = only.");
+        return;
+      }
+      emit(this.boolValue(e.right));
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (op === ts.SyntaxKind.EqualsToken) {
+      emit(rhs);
+      return;
+    }
+    const arith = compoundOp(ts, op);
+    if (!arith) {
+      this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= >>>= assign a number.");
+      return;
+    }
+    emit(this.mark({ kind: "binary", op: arith, left: { kind: "element", array: a2.id, index, at: this.at(e) }, right: rhs, at: this.at(e), label: this.label(e) }, e));
+  }
+  /**
+   * `let hp = [0, 0, 0]`, `let lives: u8[] = new Array(12).fill(3)`, `let seen = [a, b, false]`: an array of the
+   * program. Its length is known when the script is built — from the list when the whole initialiser is, from the
+   * literal's elements, or from `new Array(n).fill(v)` with a value of the program — and its cells are set here.
+   */
+  declareArray(name, initializer, type, at) {
+    const { ts } = this;
+    const element = this.c.checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+    let kind = element ? this.kindOf(element) : null;
+    if (element && !kind && element.flags & (ts.TypeFlags.Any | ts.TypeFlags.Never) && ts.isArrayLiteralExpression(this.unwrap(initializer)) && this.unwrap(initializer).elements.length === 0) {
+      this.c.error(at, `Say what ${name} holds: let ${name}: number[] = [] (or boolean[]).`);
+      return null;
+    }
+    if (element && !kind && element.flags & ts.TypeFlags.Any) {
+      const made = this.unwrap(initializer);
+      const filled = ts.isCallExpression(made) && ts.isPropertyAccessExpression(made.expression) && made.expression.name.text === "fill" && made.arguments.length === 1 ? made.arguments[0] : void 0;
+      if (filled) kind = this.kindOf(this.c.checker.getTypeAtLocation(filled));
+    }
+    if (element && !kind && this.isTextType(element)) {
+      this.c.error(at, `${name} is an array of texts, which a program cannot fill yet. A list of texts the script has can be looked up with a number of the program \u2014 const titles = ["Easy", "Hard"] outside the program, titles[level] inside it \u2014 and a text a program makes is kept in a variable or a record's field.`);
+      return null;
+    }
+    if (!element || kind !== "number" && kind !== "boolean") {
+      this.c.error(at, `An array of a program holds numbers or booleans; ${name} is ${this.c.checker.typeToString(type)}.`);
+      return null;
+    }
+    const shared = ts.isCallExpression(this.unwrap(initializer)) && this.isLibraryCall(this.unwrap(initializer), "shared") ? this.unwrap(initializer) : null;
+    if (shared && shared.arguments.length !== 1) {
+      this.c.error(initializer, "shared() takes the initial value: shared([0, 0, 0]).");
+      return null;
+    }
+    const init = this.unwrap(shared ? shared.arguments[0] : initializer);
+    const width = kind === "number" ? this.widthOf(element) : {};
+    const grows = this.body.plan.grows.has(at);
+    const make = (length) => {
+      const dynamic = grows || length === 0;
+      if (length < (dynamic ? 0 : 1) || length > MAX_ARRAY) {
+        this.c.error(init, dynamic ? `An array of a program starts with at most ${MAX_ARRAY} cells (got ${length}).` : `An array of a program has 1 to ${MAX_ARRAY} cells (got ${length}); one that starts empty is one something pushes to.`);
+        return null;
+      }
+      const a2 = this.newArray(name, kind, length, this.sourceOf(at), { shared: !!shared, ...width });
+      if (dynamic) a2.dynamic = true;
+      return a2;
+    };
+    const constant = (v, where) => {
+      if (kind === "boolean") {
+        if (typeof v === "boolean") return { kind: "const", value: v };
+        this.c.error(where, `Expected true or false, got ${describe2(v)}.`);
+        return null;
+      }
+      const n = this.asInteger({ value: v }, where);
+      return n === null ? null : num(n);
+    };
+    const h = this.evaluate(init);
+    if (h) {
+      if (!Array.isArray(h.value)) {
+        this.c.error(init, `Expected a list to start the array with, got ${describe2(h.value)}.`);
+        return null;
+      }
+      const values = [];
+      for (const v of h.value) {
+        const c2 = constant(v, init);
+        if (!c2) return null;
+        values.push(c2);
+      }
+      const a2 = make(values.length);
+      if (!a2) return null;
+      const same2 = values.length > 4 && values.every((v) => v.value === values[0].value);
+      this.emit({ kind: "declareArray", array: a2.id, ...same2 ? { fill: values[0] } : { init: values }, at: this.at(at), label: this.label(at) }, at);
+      return a2;
+    }
+    const one = (e) => kind === "number" ? this.num(e) : this.boolValue(e);
+    if (ts.isArrayLiteralExpression(init) && init.elements.some((x) => ts.isSpreadElement(x))) return this.spreadArray(name, init, kind, width, !!shared, at);
+    if (ts.isArrayLiteralExpression(init)) {
+      if (init.elements.some((x) => ts.isOmittedExpression(x))) {
+        this.c.error(init, "An array of a program is written out value by value: [a, b, 0].");
+        return null;
+      }
+      const values = [];
+      for (const x of init.elements) {
+        const v = one(x);
+        if (!v) return null;
+        values.push(v);
+      }
+      const a2 = make(values.length);
+      if (a2) this.emit({ kind: "declareArray", array: a2.id, init: values, at: this.at(at), label: this.label(at) }, at);
+      return a2;
+    }
+    if (ts.isCallExpression(init) && ts.isPropertyAccessExpression(init.expression) && init.expression.name.text === "fill" && init.arguments.length === 1) {
+      const made = this.unwrap(init.expression.expression);
+      if ((ts.isNewExpression(made) || ts.isCallExpression(made)) && made.arguments?.length === 1) {
+        const n = this.evaluate(made.arguments[0]);
+        if (n && typeof n.value === "number" && Number.isInteger(n.value)) {
+          const fill = one(init.arguments[0]);
+          const a2 = fill ? make(n.value) : null;
+          if (a2 && fill) this.emit({ kind: "declareArray", array: a2.id, fill, at: this.at(at), label: this.label(at) }, at);
+          return a2;
+        }
+      }
+    }
+    this.c.error(init, "An array's length has to be known when the script is built: write its values out ([a, b, 0]) or give it a size (new Array(12).fill(0)).");
+    return null;
+  }
+  /**
+   * `[...xs, v, ...ys]`: the cells copied one by one. Of fixed arrays it is a fixed array, every value read before any is
+   * stored; with one that grows among them it grows, filled by pushes and a loop an array.
+   */
+  spreadArray(name, init, kind, width, shared, where) {
+    const { ts } = this;
+    const at = this.at(where);
+    const label = this.label(where);
+    const parts = [];
+    for (const x of init.elements) {
+      if (ts.isOmittedExpression(x)) {
+        this.c.error(x, "An array of a program has no holes.");
+        return null;
+      }
+      if (!ts.isSpreadElement(x)) {
+        const value = kind === "number" ? this.num(x) : this.boolValue(x);
+        if (!value) return null;
+        parts.push({ value });
+        continue;
+      }
+      const h = this.evaluate(x.expression);
+      if (h) {
+        if (!Array.isArray(h.value)) {
+          this.c.error(x, `... spreads a list, got ${describe2(h.value)}.`);
+          return null;
+        }
+        for (const v of h.value) {
+          if (kind === "boolean") {
+            if (typeof v !== "boolean") {
+              this.c.error(x, `Expected true or false, got ${describe2(v)}.`);
+              return null;
+            }
+            parts.push({ value: { kind: "const", value: v } });
+          } else {
+            const n = this.asInteger({ value: v }, x);
+            if (n === null) return null;
+            parts.push({ value: num(n) });
+          }
+        }
+        continue;
+      }
+      const spread = this.listOf(x.expression);
+      const b = spread?.kind === "hash" ? this.hashList(spread, "keys", void 0, x) : spread;
+      if (b?.kind !== "array") {
+        this.c.error(x, "... inside [ ] spreads an array of numbers or of booleans.");
+        return null;
+      }
+      if (b.a.kind !== kind) {
+        this.c.error(x, `${b.a.name} holds ${b.a.kind}s, and ${name} ${kind}s.`);
+        return null;
+      }
+      parts.push({ a: b.a });
+    }
+    const grows = this.body.plan.grows.has(where) || parts.some((p) => "a" in p && p.a.dynamic);
+    const length = parts.reduce((n, p) => n + ("a" in p ? p.a.length : 1), 0);
+    if (length > MAX_ARRAY) {
+      this.c.error(init, `An array of a program starts with at most ${MAX_ARRAY} cells (got ${length}).`);
+      return null;
+    }
+    if (!grows && length < 1) {
+      this.c.error(init, `${name} would be empty, and nothing pushes to it.`);
+      return null;
+    }
+    const made = this.newArray(name, kind, grows ? 0 : length, this.sourceOf(where), { shared, ...width });
+    if (!grows) {
+      const values = parts.flatMap((p) => "a" in p ? Array.from({ length: p.a.length }, (_, k) => ({ kind: "element", array: p.a.id, index: num(k), at })) : [p.value]);
+      this.emit({ kind: "declareArray", array: made.id, init: values, at, label }, where);
+      return made;
+    }
+    made.dynamic = true;
+    const held = parts.map((p) => {
+      if ("a" in p || p.value.kind === "const") return p;
+      const t = this.newVar("(spread)", kind, at, { temp: true, ...width });
+      this.emit({ kind: "declare", decl: t, init: p.value, at, label }, where);
+      return { value: kind === "number" ? varRef(t) : boolRef(t) };
+    });
+    this.emit({ kind: "declareArray", array: made.id, init: [], at, label }, where);
+    for (const p of held) {
+      if (!("a" in p)) {
+        this.emit({ kind: "push", array: made.id, value: p.value, at, label }, where);
+        continue;
+      }
+      const i = this.newVar(`(index of ${p.a.name})`, "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: i, init: num(0), at, label }, where);
+      this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: p.a.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "push", array: made.id, value: { kind: "element", array: p.a.id, index: varRef(i), at }, at, label }], at, label }, where);
+    }
+    return made;
+  }
+  /**
+   * `hp[i]`: the array and the index — a game array by its binding, or a list known when the script was built
+   * (`const price = [50, 100, 150]`) indexed by a value of the program, which becomes an array nothing writes.
+   * Undefined when the expression is neither; null, with a diagnostic, when it is one and cannot compile.
+   */
+  elementOf(e) {
+    const row = this.bindingOf(e.expression);
+    if (row?.kind === "row") return this.rowCell(row, e.argumentExpression, e);
+    const b = row && row.kind !== "inner" ? row : this.listOf(e.expression);
+    if (b?.kind === "keyed") {
+      if (b.as !== "record" || !b.values) {
+        this.c.error(e, `${b.name} is read with ${b.as === "map" ? "get(key)" : "has(key)"}, as a ${b.as === "map" ? "Map" : "Set"} is.`);
+        return null;
+      }
+      const index2 = this.keyIndex(b, e.argumentExpression);
+      return index2 ? { a: b.values, index: index2 } : null;
+    }
+    let a2 = b?.kind === "array" ? b.a : void 0;
+    if (!a2) {
+      let list = this.evaluate(e.expression)?.value;
+      if (this.evaluate(e.argumentExpression)) return void 0;
+      if (list && typeof list === "object" && !Array.isArray(list) && !(list instanceof Map) && !(list instanceof Set)) {
+        const keys = Object.keys(list);
+        if (keys.length === 0 || !keys.every((k) => /^\d+$/.test(k))) return void 0;
+        let dense = this.objects.get(list);
+        if (!dense) {
+          const booleans = Object.values(list).every((v) => typeof v === "boolean");
+          dense = new Array(Math.max(...keys.map(Number)) + 1).fill(booleans ? false : 0);
+          for (const k of keys) dense[Number(k)] = list[k];
+          this.objects.set(list, dense);
+        }
+        list = this.objects.get(list) ?? list;
+      }
+      if (!Array.isArray(list)) return void 0;
+      a2 = this.tables.get(list);
+      if (!a2) {
+        const booleans = list.length > 0 && list.every((v) => typeof v === "boolean");
+        const values = [];
+        for (const v of list) {
+          const n = booleans ? v ? 1 : 0 : this.asInteger({ value: v }, e.expression);
+          if (n === null) return null;
+          values.push(n);
+        }
+        if (values.length < 1 || values.length > MAX_ARRAY) {
+          this.c.error(e.expression, `A list a program looks a value up in has 1 to ${MAX_ARRAY} entries (got ${values.length}).`);
+          return null;
+        }
+        const name = e.expression.getText(this.body.sf).replace(/\s+/g, " ");
+        a2 = this.newArray(name, booleans ? "boolean" : "number", values.length, this.at(e.expression), { shared: true, values, ...values.some((v) => v > I32_MAX) ? { unsigned: true } : {} });
+        this.tables.set(list, a2);
+      }
+    }
+    const h = this.evaluate(e.argumentExpression);
+    if (h) {
+      const i = this.asInteger(h, e.argumentExpression);
+      if (i === null) return null;
+      if (!a2.dynamic && (i < 0 || i >= a2.length)) {
+        this.c.error(e.argumentExpression, `${a2.name} has ${a2.length} cell${a2.length === 1 ? "" : "s"}, 0 \u2026 ${a2.length - 1}; there is no ${a2.name}[${i}].`);
+        return null;
+      }
+      return { a: a2, index: num(i) };
+    }
+    const index = this.num(e.argumentExpression);
+    return index ? { a: a2, index } : null;
+  }
+  /** `let p = { lives: 3, alive: true, pos: { x: 0, y: 0 } }`: a variable per field, the record a binding over them. */
+  declareRecord(name, literal, type, at) {
+    const { ts } = this;
+    const fields = /* @__PURE__ */ new Map();
+    let ok = true;
+    for (const p of literal.properties) {
+      let key;
+      let init;
+      if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteralLike(p.name))) {
+        key = p.name.text;
+        init = p.initializer;
+      } else if (ts.isShorthandPropertyAssignment(p)) {
+        key = p.name.text;
+        init = p.name;
+      } else if (ts.isSpreadAssignment(p)) {
+        const from = this.spreadFields(p.expression);
+        if (!from) {
+          ok = false;
+          continue;
+        }
+        for (const [field, b] of from) fields.set(field, this.fieldCopy(b, `${name}.${field}`, p));
+        continue;
+      } else {
+        this.c.error(p, "A record's fields are plain values: { lives: 3, alive: true }.");
+        ok = false;
+        continue;
+      }
+      const prop = type.getProperty(key);
+      const ft = prop ? this.c.checker.getTypeOfSymbol(prop) : this.c.checker.getTypeAtLocation(init);
+      const held = this.declareField(`${name}.${key}`, init, ft, prop, p, p.name, at);
+      if (held) fields.set(key, held);
+      else ok = false;
+    }
+    return ok ? { kind: "record", fields } : null;
+  }
+  /**
+   * One field of a record, or of an instance: a variable under the record's name, or what that name leads to — a record
+   * inside it, an instance, an array. `init` is absent for a field of a class that is declared without a value
+   * (`hp: number;`), which starts at 0, false, no unit or no text, as the constructor then finds it.
+   */
+  declareField(full, init, ft, prop, p, nameNode, at) {
+    const { ts } = this;
+    const inner = init && this.unwrap(init);
+    if (inner && ts.isObjectLiteralExpression(inner)) return this.declareRecord(full, inner, ft, p);
+    if (inner && ts.isNewExpression(inner) && this.classOf(inner.expression)) return this.instantiate(inner, full);
+    const keyedAs = inner ? this.keyedForm(inner, ft) : null;
+    if (inner && keyedAs && keyedAs !== "record") return this.anyNumberKeys(ft) ? this.declareHash(full, keyedAs, inner, ft, p) : this.declareKeyed(full, keyedAs, inner, ft, p);
+    if (this.c.checker.isArrayType(ft) || this.c.checker.isTupleType(ft)) {
+      if (!init) {
+        this.c.error(p, `${full} is an array: give it its first value where it is declared \u2014 ${full.split(".").pop()} = [] \u2014 so that there is an array for the constructor to fill.`);
+        return null;
+      }
+      const element = this.c.checker.getIndexTypeOfType(ft, ts.IndexKind.Number);
+      const gridShape = this.gridType(ft);
+      if (gridShape) return this.declareGrid(full, init, gridShape, p) ?? this.declareLists(full, init, gridShape, p) ?? null;
+      if (element && this.kindOf(element) === "unit") return this.declareUnits(full, init, p);
+      if (element && this.isTextType(element)) return this.declareTexts(full, init, p);
+      const a2 = this.declareArray(full, init, ft, p);
+      return a2 ? { kind: "array", a: a2 } : null;
+    }
+    if (this.isTextType(ft)) {
+      const keptAs = prop ? this.textKept(init, (left) => ts.isPropertyAccessExpression(left) && this.c.checker.getSymbolAtLocation(left.name) === prop) : "made";
+      if (init) return { kind: "var", v: this.declareText(full, init, keptAs, this.sourceOf(nameNode), at) };
+      const v2 = this.newVar(full, "text", this.sourceOf(nameNode), { text: keptAs });
+      this.emit({ kind: "declare", decl: v2, init: { kind: "text", text: "" }, at: this.at(at), label: this.label(at) }, at);
+      return { kind: "var", v: v2 };
+    }
+    const kind = this.kindOf(ft);
+    if (!kind) {
+      this.c.error(p, `A record's fields hold numbers, booleans, texts, units, arrays of them, records or instances; ${full} is ${this.c.checker.typeToString(ft)}${init ? "" : " and has no first value"}.`);
+      return null;
+    }
+    const v = this.newVar(full, kind, this.sourceOf(nameNode), kind === "number" ? this.widthOf(ft) : {});
+    if (init) this.emitDeclare(v, init, at);
+    else this.emit({ kind: "declare", decl: v, init: kind === "number" ? num(0) : kind === "unit" ? NO_UNIT : FALSE, at: this.at(at), label: this.label(at) }, at);
+    return { kind: "var", v };
+  }
+  /**
+   * `const at = mouse(p)`, `const m = chatted(p, "-give {n}")`: what the player did, taken when the
+   * line runs and kept — a record of numbers, and for a typed line the boolean `if (m)` asks.
+   */
+  declareInput(name, call, at) {
+    const h = this.evaluate(call);
+    if (!h) {
+      this.notConstant(call, "Which player, and what to look for,");
+      return null;
+    }
+    const fields = /* @__PURE__ */ new Map();
+    const keep = (field, value) => {
+      const v = this.newVar(`${name}.${field}`, "number", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: v, init: this.inputValue(value, call), at: this.at(at), label: this.label(at) }, at);
+      fields.set(field, { kind: "var", v });
+    };
+    if (isMouse(h.value)) {
+      keep("x", h.value.x);
+      keep("y", h.value.y);
+      return { kind: "record", fields };
+    }
+    if (isChat(h.value)) {
+      const truth = this.newVar(name, "boolean", this.sourceOf(at));
+      this.emit({ kind: "declare", decl: truth, init: this.inputBool(h.value.matched, call), at: this.at(at), label: this.label(at) }, at);
+      for (const [field, value] of Object.entries(h.value.values)) keep(field, value);
+      return { kind: "record", fields, truth };
+    }
+    this.c.error(call, `Expected mouse() or chatted(), got ${describe2(h.value)}.`);
+    return null;
+  }
+  /** What a player did, as a number of the program: a key or a click counts 1 or 0. */
+  inputValue(v, at) {
+    return this.mark({ kind: "input", input: { ...v.input }, at: this.at(at), label: this.label(at) }, at);
+  }
+  inputBool(v, at) {
+    return this.mark({ kind: "test", expr: this.inputValue(v, at), at: this.at(at), label: this.label(at) }, at);
+  }
+  /** Where a declaration's name is, for the editor's hover. */
+  sourceOf(node) {
+    const p = this.body.sf.getLineAndCharacterOfPosition(node.getStart(this.body.sf));
+    return { file: this.body.sf.fileName, line: p.line + 1, column: p.character + 1 };
+  }
+  /** What a `u8` / `u16` / `u32` annotation declares, read off the brand in the type; nothing for a plain number, which is signed. */
+  widthOf(type) {
+    for (const t of type.isIntersection() ? type.types : [type]) {
+      const p = t.getProperty("__kind");
+      if (!p) continue;
+      const pt = this.c.checker.getTypeOfSymbol(p);
+      const names = (pt.isUnion() ? pt.types : [pt]).filter((x) => x.isStringLiteral()).map((x) => x.value);
+      if (names.includes("u8")) return { bits: 8 };
+      if (names.includes("u16")) return { bits: 16 };
+      if (names.includes("u32")) return { unsigned: true };
+    }
+    return {};
+  }
+  kindOf(type) {
+    const { ts } = this;
+    const isNumber = (t) => (t.flags & ts.TypeFlags.NumberLike) !== 0 || t.isIntersection() && t.types.some(isNumber) || t.isUnion() && t.types.every(isNumber);
+    if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
+    if (isNumber(type)) return "number";
+    const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    if (bare.length > 0 && bare.every((t) => !!t.getProperty("__unit"))) return "unit";
+    return null;
+  }
+  isUnitTyped(e) {
+    return this.kindOf(this.c.checker.getTypeAtLocation(e)) === "unit";
+  }
+  /** The `__kind` brand of an expression's type (`"unit"`, `"player"`, …): what tells `stats(units.X)` from `stats(P3)`. */
+  brandOf(e) {
+    const type = this.c.checker.getTypeAtLocation(e);
+    for (const t of type.isIntersection() ? type.types : [type]) {
+      const p = t.getProperty("__kind");
+      if (!p) continue;
+      const pt = this.c.checker.getTypeOfSymbol(p);
+      const name = (pt.isUnion() ? pt.types : [pt]).find((x) => x.isStringLiteral());
+      if (name) return name.value;
+    }
+    return void 0;
+  }
+  /** An expression statement whose value was computed at build time: actions run, nothing else does anything. */
+  hoistedStatement(expr, h) {
+    const v = h.value;
+    if (v === void 0 || v === null) return;
+    if (isDuration(v)) {
+      this.c.error(expr, "A duration does nothing on its own; sleep(seconds(2)) pauses the program.");
+      return;
+    }
+    if (isAction(v)) {
+      this.emitAction(v.record, expr);
+      return;
+    }
+    if (isPrint(v)) {
+      this.emitPrint(textParts(v.text), v.to, v.position, expr);
+      return;
+    }
+    if (isRead(v)) {
+      this.c.error(expr, `${v.ident}() reads a value and does nothing on its own: assign it to a variable, or compare it in an if.`);
+      return;
+    }
+    if (isTable(v)) {
+      this.c.error(expr, `${v.ident} reads a value and does nothing on its own: assign to it, or compare it in an if.`);
+      return;
+    }
+    if (isUnitPick(v)) {
+      this.c.error(expr, `${v.ident}() finds a unit and does nothing on its own: const u = ${v.ident}(\u2026); if (u) u.kill();`);
+      return;
+    }
+    if (isUnitQuery(v)) {
+      this.c.error(expr, `${v.ident}() names units and does nothing on its own: for (const u of ${v.ident}(\u2026)) { \u2026 }`);
+      return;
+    }
+    if (isInput(v) || isMouse(v) || isChat(v)) {
+      this.c.error(expr, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const.");
+      return;
+    }
+    if (Array.isArray(v) && v.length > 0 && v.every(isAction)) {
+      for (const a2 of v) this.emitAction(a2.record, expr);
+      return;
+    }
+    if (Array.isArray(v) && v.length === 0) return;
+    if (isCondition(v)) {
+      this.c.error(expr, "This is a condition; test it in an if or a while.");
+      return;
+    }
+    this.c.error(expr, `This statement produces ${describe2(v)}, which does nothing in the game. A statement here is an action, an assignment or a call.`);
+  }
+  emitAction(a2, at) {
+    if (a2.type === ActionType.PreserveTrigger) return;
+    const s = a2.text > 0 ? this.c.strings[a2.text - 1] : void 0;
+    if (s && "text" in s && hasTextMark(s.text)) {
+      if (a2.type !== ActionType.DisplayText) {
+        this.c.error(at, "name() and color() are filled in while the game runs, which displayText() and print() can do; this action's text is fixed when the script is built.");
+        return;
+      }
+      this.emitPrint(textParts(s.text), CURRENT_PLAYER, "chat", at);
+      return;
+    }
+    this.emit({ kind: "action", record: { ...a2 }, at: this.at(at), label: this.label(at) }, at);
+  }
+  emitPrint(parts, to, position, at) {
+    if (!parts.length) return;
+    this.emit({ kind: "print", parts: mergeText(parts), to, position, at: this.at(at), label: this.label(at) }, at);
+  }
+  /* ── Texts ── */
+  /** Whether a type is a string's: `string`, a text written out, a union of those (`undefined` beside it is what `at()` adds, and is nothing here). */
+  isTextType(type) {
+    const { ts } = this;
+    const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    return bare.length > 0 && bare.every((t) => (t.flags & ts.TypeFlags.StringLike) !== 0);
+  }
+  isTextTyped(e) {
+    return this.isTextType(this.c.checker.getTypeAtLocation(e));
+  }
+  /** A text the script has, as the program's: one of the table, or — with name() or color() in it — one the game fills in. */
+  literalText(value, at) {
+    if (hasTextMark(value)) return this.mark({ kind: "template", parts: mergeText(textParts(value)), at: this.at(at), label: this.label(at) }, at);
+    if ([...value].some((ch) => ch.codePointAt(0) > 65535)) this.emit({ kind: "remark", short: "a character the game cannot draw", text: "This text holds a character past U+FFFF (an emoji, a rare ideograph). StarCraft draws a dark square in its place, and where JavaScript counts it as two characters a program counts it as one.", at: this.at(at) }, at);
+    return { kind: "text", text: value };
+  }
+  /** Parts as the text they are: one written out when nothing of the program is in them, the text itself when it is the only part. */
+  textFrom(parts, at) {
+    const merged = mergeText(parts);
+    if (merged.length === 0) return { kind: "text", text: "" };
+    if (merged.length === 1 && merged[0].kind === "text") return { kind: "text", text: merged[0].text };
+    if (merged.length === 1 && merged[0].kind === "value") return merged[0].text;
+    return this.mark({ kind: "template", parts: merged, at: this.at(at), label: this.label(at) }, at);
+  }
+  /** A text as the parts of a larger one. */
+  partsOf(t) {
+    return t.kind === "text" ? t.text ? [{ kind: "text", text: t.text }] : [] : t.kind === "template" ? t.parts : [{ kind: "value", text: t }];
+  }
+  /** How each text variable met so far is kept, for `textHasId`. */
+  textKinds = /* @__PURE__ */ new Map();
+  keptAs = (id) => this.textKinds.get(id);
+  /** A list of texts the script has, as the table a program looks one up in: once a list. */
+  textTable(list, at) {
+    let a2 = this.tables.get(list);
+    if (a2) return a2;
+    if (list.length < 1 || list.length > MAX_ARRAY) {
+      this.c.error(at, `A list a program looks a text up in has 1 to ${MAX_ARRAY} entries (got ${list.length}).`);
+      return null;
+    }
+    const texts = list;
+    if (texts.some((t) => hasTextMark(t))) {
+      this.c.error(at, "A text in this list has name() or color() in it, which the game fills in when it is shown: such a text is written where it is used, not looked up.");
+      return null;
+    }
+    a2 = this.newArray(at.getText(this.body.sf).replace(/\s+/g, " "), "number", texts.length, this.at(at), { shared: true, values: texts.map((_, i) => i) });
+    a2.texts = texts;
+    this.tables.set(list, a2);
+    return a2;
+  }
+  /** Whether a text will have an id whatever happens in the game: written out, picked between two that are, looked up in a list the script has, or a variable kept that way. */
+  hasId(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    let h;
+    try {
+      h = this.evaluate(e);
+    } catch {
+      return false;
+    }
+    if (h) return !isGameValue(h.value) && (typeof h.value === "number" || typeof h.value === "boolean" || typeof h.value === "string" && !hasTextMark(h.value));
+    if (ts.isConditionalExpression(e)) return this.hasId(e.whenTrue) && this.hasId(e.whenFalse);
+    if (ts.isElementAccessExpression(e)) {
+      let list;
+      try {
+        list = this.evaluate(e.expression);
+      } catch {
+        return false;
+      }
+      return !!list && Array.isArray(list.value) && list.value.length > 0 && list.value.every((v) => typeof v === "string" && !hasTextMark(v));
+    }
+    const b = this.bindingOf(e);
+    return b?.kind === "var" && b.v.kind === "text" && b.v.text === "id";
+  }
+  /**
+   * How a text variable is kept: as the id of a text of the built map's table when everything it is ever given has one —
+   * its first value and every `=` in the body — and as a text that is made otherwise (`+=` makes one). `isTarget` says
+   * whether the left of an assignment is this variable.
+   */
+  textKept(initializer, isTarget) {
+    const { ts } = this;
+    if (initializer && !this.hasId(initializer)) return "made";
+    let made = false;
+    const walk = (n) => {
+      if (made) return;
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && isTarget(this.unwrap(n.left))) {
+        if (n.operatorToken.kind !== ts.SyntaxKind.EqualsToken || !this.hasId(n.right)) made = true;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(this.body.plan.body);
+    return made ? "made" : "id";
+  }
+  /** A text variable with its first value. */
+  declareText(name, initializer, keptAs, where, at, extra = {}) {
+    const v = this.newVar(name, "text", where, { text: keptAs, ...extra });
+    const value = this.text(initializer);
+    const fits = !value || keptAs === "made" || textHasId(value, this.keptAs);
+    if (!fits) this.c.error(initializer, `${name} was taken for a variable that only ever holds texts written in the script, and this one is made while the map is played. Give it such a text where it is declared \u2014 let ${name} = String(\u2026) \u2014 and it is kept the other way.`);
+    this.emit({ kind: "declare", decl: v, init: value && fits ? value : { kind: "text", text: "" }, ...value && fits ? {} : { failed: true }, at: this.at(at), label: this.label(at) }, at);
+    if (!extra.temp) this.emit({ kind: "remark", short: keptAs === "id" ? "a text of the map" : "a text that is made", text: keptAs === "id" ? `${name} only ever holds texts written in the script, so it is kept as the text's number in the built map's string table: assigning it and comparing it cost what a number's do, and any action's text takes it.` : `${name} holds a text made while the map is played: its characters are in a block of the memory the programs' arrays and texts share, which ${name} owns \u2014 assigning it copies them, and what it held before goes back. At most ${TEXT_BYTES.toLocaleString("en-US")} bytes.`, at: this.at(at) }, at);
+    return v;
+  }
+  /** A number where a text's characters are counted from: inside 0 … the text's length, a place below zero counted from the end when `fromEnd`. */
+  placeIn(of, index, fromEnd, at) {
+    const length = this.mark({ kind: "textLength", of, at: this.at(at), label: this.label(at) }, at);
+    if (index.kind === "const") {
+      if (index.value >= 0) return index;
+      if (!fromEnd) return num(0);
+      return this.mark({ kind: "intrinsic", name: "max", args: [this.mark({ kind: "binary", op: "+", left: length, right: index, at: this.at(at), label: this.label(at) }, at), num(0)], at: this.at(at), label: this.label(at) }, at);
+    }
+    const i = this.temp(index, at);
+    const clamped = this.mark({ kind: "intrinsic", name: "max", args: [i, num(0)], at: this.at(at), label: this.label(at) }, at);
+    if (!fromEnd) return clamped;
+    const back = this.mark({ kind: "intrinsic", name: "max", args: [this.mark({ kind: "binary", op: "+", left: length, right: i, at: this.at(at), label: this.label(at) }, at), num(0)], at: this.at(at), label: this.label(at) }, at);
+    return this.mark({ kind: "ternary", cond: { kind: "compare", op: "<", left: i, right: num(0), at: this.at(at), label: this.label(at) }, whenTrue: back, whenFalse: clamped, at: this.at(at), label: this.label(at) }, at);
+  }
+  /** A text that is looked at more than once while one value is worked out: itself when that costs nothing, else a temporary holding it. */
+  textTemp(t, at) {
+    if (t.kind === "text" || t.kind === "textVar") return t;
+    if (this.inLoopCondition > 0) this.c.error(at, "This text is worked out through a value kept on the side, and a loop's condition is worked out again every turn: work it out in the loop's body (or before the loop) into a variable, and test that.");
+    const v = this.newVar("(text)", "text", this.at(at), { temp: true, text: "made" });
+    this.textKinds.set(v.id, "made");
+    this.emit({ kind: "declare", decl: v, init: t, at: this.at(at), label: this.label(at) }, at);
+    return { kind: "textVar", id: v.id };
+  }
+  /** The one character at a place, or nothing past either end: `s[i]`, `s.charAt(i)`, `s.at(i)`. */
+  characterAt(of, index, fromEnd, at) {
+    const given = this.num(index);
+    if (!given) return null;
+    const held = this.textTemp(of, at);
+    if (!fromEnd && given.kind === "const" && given.value < 0) return { kind: "text", text: "" };
+    const i = this.temp(given, at);
+    const slice = (start) => this.mark({ kind: "textSlice", of: held, start, end: this.mark({ kind: "binary", op: "+", left: start, right: num(1), at: this.at(at), label: this.label(at) }, at), at: this.at(at), label: this.label(at) }, at);
+    if (i.kind === "const") return slice(i);
+    if (fromEnd) return slice(this.temp(this.placeInSigned(held, i, at), at));
+    return this.mark({ kind: "textTernary", cond: { kind: "compare", op: "<", left: i, right: num(0), at: this.at(at), label: this.label(at) }, whenTrue: { kind: "text", text: "" }, whenFalse: slice(i), at: this.at(at), label: this.label(at) }, at);
+  }
+  /** `at(i)`'s place: counted from the end when below zero, and past the end (so: nothing) when that is still below zero. */
+  placeInSigned(of, i, at) {
+    const length = this.mark({ kind: "textLength", of, at: this.at(at), label: this.label(at) }, at);
+    const back = this.mark({ kind: "binary", op: "+", left: length, right: i, at: this.at(at), label: this.label(at) }, at);
+    const whenBelow = this.mark({ kind: "ternary", cond: { kind: "compare", op: "<", left: back, right: num(0), at: this.at(at), label: this.label(at) }, whenTrue: length, whenFalse: back, at: this.at(at), label: this.label(at) }, at);
+    return this.mark({ kind: "ternary", cond: { kind: "compare", op: "<", left: i, right: num(0), at: this.at(at), label: this.label(at) }, whenTrue: whenBelow, whenFalse: i, at: this.at(at), label: this.label(at) }, at);
+  }
+  static TEXT_METHODS = "slice, substring, at, charAt, indexOf, includes, startsWith, endsWith, padStart, padEnd, repeat, concat, codePointAt, toString and length";
+  /** A method of a text that gives a text. Null with a diagnostic. */
+  textCall(e, receiver, method) {
+    const args = e.arguments;
+    const wants = (min, max, how) => {
+      if (args.length >= min && args.length <= max && !args.some((a2) => this.ts.isSpreadElement(a2))) return true;
+      this.c.error(e, `${method}() takes ${how}.`);
+      return false;
+    };
+    switch (method) {
+      case "toString":
+      case "valueOf":
+        return wants(0, 0, "nothing") ? this.text(receiver) : null;
+      case "concat": {
+        const parts = [];
+        for (const x of [receiver, ...args]) {
+          const p = this.textOf(x);
+          if (!p) return null;
+          parts.push(...p);
+        }
+        return this.textFrom(parts, e);
+      }
+      case "charAt":
+      case "at": {
+        if (!wants(1, 1, "the character's place")) return null;
+        const of = this.text(receiver);
+        return of ? this.characterAt(of, args[0], method === "at", e) : null;
+      }
+      case "slice":
+      case "substring": {
+        if (!wants(0, 2, "where to start and, optionally, where to stop")) return null;
+        const given = this.text(receiver);
+        if (!given) return null;
+        if (args.length === 0) return given;
+        const of = this.textTemp(given, e);
+        const fromEnd = method === "slice";
+        const a2 = this.num(args[0]);
+        const b = args[1] ? this.num(args[1]) : void 0;
+        if (!a2 || b === null) return null;
+        let start = this.placeIn(of, a2, fromEnd, e);
+        let end = b ? this.placeIn(of, b, fromEnd, e) : void 0;
+        if (method === "substring" && end) {
+          const s = this.temp(start, e), t = this.temp(end, e);
+          start = this.mark({ kind: "intrinsic", name: "min", args: [s, t], at: this.at(e), label: this.label(e) }, e);
+          end = this.mark({ kind: "intrinsic", name: "max", args: [s, t], at: this.at(e), label: this.label(e) }, e);
+        }
+        return this.mark({ kind: "textSlice", of, start, ...end ? { end } : {}, at: this.at(e), label: this.label(e) }, e);
+      }
+      case "padStart":
+      case "padEnd": {
+        if (!wants(1, 2, "the length and, optionally, what to fill with")) return null;
+        const of = this.text(receiver);
+        const width = this.num(args[0]);
+        const fill = args[1] ? this.text(args[1]) : { kind: "text", text: " " };
+        if (!of || !width || !fill) return null;
+        return this.mark({ kind: "textPad", of, side: method === "padStart" ? "start" : "end", width, with: fill, at: this.at(e), label: this.label(e) }, e);
+      }
+      case "repeat": {
+        if (!wants(1, 1, "how many times")) return null;
+        const of = this.text(receiver);
+        const count = this.num(args[0]);
+        return of && count ? this.mark({ kind: "textRepeat", of, count, at: this.at(e), label: this.label(e) }, e) : null;
+      }
+      default:
+        this.c.error(e, `${method}() is not something a text of a program does; it has ${_Structured.TEXT_METHODS}. A text the script has (nothing of the program in it) takes any method JavaScript has.`);
+        return null;
+    }
+  }
+  /**
+   * A text of the program: one written out, a variable, a template or texts joined with `+`, `c ? a : b`, a method that
+   * gives a text, `String(n)`, a function's result, a text looked up in a list the script has. Null, with a diagnostic.
+   */
+  text(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h && !isGameValue(h.value)) {
+      const v = h.value;
+      if (typeof v === "string") return this.literalText(v, e);
+      if (typeof v === "number" || typeof v === "boolean") return { kind: "text", text: String(v) };
+      this.c.error(e, `Expected a text, got ${describe2(v)}.`);
+      return null;
+    }
+    const got = ts.isCallExpression(e) ? this.methodCall(e) : this.getterCall(e);
+    if (got !== void 0) {
+      if (got && got.result?.kind !== "text") {
+        const parts = this.textOf(e);
+        return parts ? this.textFrom(parts, e) : null;
+      }
+      return got ? this.mark({ kind: "textCall", call: got }, e) : null;
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
+      const of = this.bindingOf(e.expression.expression);
+      if (of?.kind === "texts" && e.expression.name.text === "join") return this.textsJoin(e, of);
+      if (of?.kind === "texts" && e.expression.name.text === "pop" && e.arguments.length === 0) {
+        const at = this.at(e);
+        const last = this.newVar("(popped)", "text", at, { temp: true, text: "made" });
+        const length = { kind: "length", array: [...of.rows.fields.values()][0].id, at };
+        const held = this.textAtCells(this.textAtIndex(of, { kind: "binary", op: "-", left: length, right: num(1), at, label: this.label(e) }), e);
+        this.emit({ kind: "declare", decl: last, init: this.mark({ kind: "textTernary", cond: { kind: "compare", op: ">", left: length, right: num(0), at, label: this.label(e) }, whenTrue: held, whenFalse: { kind: "text", text: "" }, at, label: this.label(e) }, e), at, label: this.label(e) }, e);
+        this.recordsCall(e, of.rows, "pop");
+        return { kind: "textVar", id: last.id };
+      }
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
+      if (b?.kind === "textAt") return this.textAtCells(b, e);
+      if (b?.kind === "var" && b.v.kind === "text") return { kind: "textVar", id: b.v.id };
+      if (b?.kind === "var") {
+        const parts = this.textOf(e);
+        return parts ? this.textFrom(parts, e) : null;
+      }
+    }
+    if (ts.isTemplateExpression(e) || ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const parts = this.textOf(e);
+      return parts ? this.textFrom(parts, e) : null;
+    }
+    if (ts.isConditionalExpression(e)) {
+      const cond = this.bool(e.condition);
+      const whenTrue = this.text(e.whenTrue);
+      const whenFalse = this.text(e.whenFalse);
+      return whenTrue && whenFalse ? this.mark({ kind: "textTernary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const list = this.evaluate(e.expression);
+      if (list && Array.isArray(list.value)) {
+        if (!list.value.every((v) => typeof v === "string")) {
+          this.c.error(e.expression, "A list a program looks a text up in holds texts only.");
+          return null;
+        }
+        const table2 = this.textTable(list.value, e.expression);
+        const index = table2 ? this.num(e.argumentExpression) : null;
+        return table2 && index ? this.mark({ kind: "textOf", array: table2.id, index, at: this.at(e) }, e) : null;
+      }
+      if (this.isTextTyped(e.expression)) {
+        const of = this.text(e.expression);
+        return of ? this.characterAt(of, e.argumentExpression, false, e) : null;
+      }
+    }
+    if (ts.isCallExpression(e)) {
+      if (ts.isIdentifier(e.expression) && e.expression.text === "String" && !this.gameDeclaration(e.expression)) {
+        if (e.arguments.length !== 1) {
+          this.c.error(e, "String() takes the value to write out.");
+          return null;
+        }
+        const parts = this.textOf(e.arguments[0]);
+        return parts ? this.textFrom(parts, e) : null;
+      }
+      if (ts.isPropertyAccessExpression(e.expression)) {
+        const receiver = e.expression.expression;
+        if (this.isTextTyped(receiver)) return this.textCall(e, receiver, e.expression.name.text);
+        if (e.expression.name.text === "toString" && e.arguments.length === 0) {
+          const parts = this.textOf(receiver);
+          return parts ? this.textFrom(parts, e) : null;
+        }
+      }
+      let call;
+      if (ts.isIdentifier(e.expression)) {
+        const decl = this.gameDeclaration(e.expression);
+        if (decl && ts.isFunctionDeclaration(decl)) call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+      }
+      if (!call) {
+        const callee = this.evaluate(e.expression)?.value;
+        if (isGameFunction(callee)) call = this.gameCall(e, callee);
+        else if (!ts.isIdentifier(e.expression) || !this.gameDeclaration(e.expression)) {
+          this.notConstant(e, "A call's arguments");
+          return null;
+        }
+      }
+      if (!call) return null;
+      if (call.result?.kind !== "text") {
+        this.c.error(e, "This function does not return a text.");
+        return null;
+      }
+      return this.mark({ kind: "textCall", call }, e);
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const left = this.unwrap(e.left);
+      if (ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "at" && left.arguments.length === 1 && this.isTextTyped(left.expression.expression)) {
+        const given = this.text(left.expression.expression);
+        const index = this.num(left.arguments[0]);
+        if (!given || !index) return null;
+        const of = this.textTemp(given, e);
+        const i = this.temp(index, e, true);
+        const place = this.temp(this.mark({ kind: "ternary", cond: { kind: "compare", op: "<", left: i, right: num(0), at: this.at(e), label: this.label(e) }, whenTrue: this.mark({ kind: "binary", op: "+", left: this.mark({ kind: "textLength", of, at: this.at(e), label: this.label(e) }, e), right: i, at: this.at(e), label: this.label(e) }, e), whenFalse: i, at: this.at(e), label: this.label(e) }, e), e, true);
+        const inside = { kind: "and", items: [{ kind: "compare", op: ">=", left: place, right: num(0), at: this.at(e), label: this.label(e) }, { kind: "compare", op: "<", left: place, right: this.mark({ kind: "textLength", of, at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }] };
+        const other = this.text(e.right);
+        if (!other) return null;
+        const one = this.mark({ kind: "textSlice", of, start: place, end: this.mark({ kind: "binary", op: "+", left: place, right: num(1), at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
+        return this.mark({ kind: "textTernary", cond: inside, whenTrue: one, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
+      }
+      const popped = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "pop" && left.arguments.length === 0 ? this.bindingOf(left.expression.expression) : void 0;
+      if (popped?.kind === "texts") {
+        const before = this.temp({ kind: "length", array: [...popped.rows.fields.values()][0].id, at: this.at(e) }, e, true);
+        const last = this.text(e.left);
+        const other = this.text(e.right);
+        if (!last || !other) return null;
+        return this.mark({ kind: "textTernary", cond: { kind: "compare", op: ">", left: before, right: num(0), at: this.at(e), label: this.label(e) }, whenTrue: last, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
+      }
+      return this.text(e.left);
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+      const given = this.text(e.left);
+      const other = this.text(e.right);
+      if (!given || !other) return null;
+      const of = this.textTemp(given, e);
+      return this.mark({ kind: "textTernary", cond: { kind: "textCompare", op: "!=", left: of, right: { kind: "text", text: "" }, at: this.at(e), label: this.label(e) }, whenTrue: of, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
+    }
+    this.c.error(e, "Expected a text: one written out, a text variable, a template, or a method of one.");
+    return null;
+  }
+  /** `s = value`, `s += more` for a text variable. */
+  assignText(e, target, op) {
+    const { ts } = this;
+    let value;
+    if (op === ts.SyntaxKind.EqualsToken) value = this.text(e.right);
+    else if (op === ts.SyntaxKind.PlusEqualsToken) {
+      const more = this.textOf(e.right);
+      value = more ? this.textFrom([{ kind: "value", text: { kind: "textVar", id: target.id } }, ...more], e) : null;
+    } else {
+      this.c.error(e, "A text takes = and += only.");
+      return;
+    }
+    if (!value) return;
+    if (target.text === "id" && !textHasId(value, this.keptAs)) {
+      this.c.error(e.right, `${target.name} was taken for a variable that only ever holds texts written in the script, and this one is made while the map is played. Declare it with a made text \u2014 let ${target.name} = String(\u2026) \u2014 and it is kept the other way.`);
+      return;
+    }
+    this.emit({ kind: "assignText", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
+  }
+  /** A method of a text that gives a number: `indexOf`, `codePointAt`. Undefined when the call is not one. */
+  textNumber(e) {
+    const { ts } = this;
+    if (!ts.isPropertyAccessExpression(e.expression) || !this.isTextTyped(e.expression.expression)) return void 0;
+    const method = e.expression.name.text;
+    if (method !== "indexOf" && method !== "codePointAt" && method !== "charCodeAt") return void 0;
+    const of = this.text(e.expression.expression);
+    if (!of) return null;
+    if (method === "indexOf") {
+      if (e.arguments.length < 1 || e.arguments.length > 2) {
+        this.c.error(e, "indexOf() takes the text to find and, optionally, where to start.");
+        return null;
+      }
+      const find = this.text(e.arguments[0]);
+      const from = e.arguments[1] ? this.num(e.arguments[1]) : void 0;
+      if (!find || from === null) return null;
+      return this.mark({ kind: "textIndexOf", of, find, ...from ? { from: this.mark({ kind: "intrinsic", name: "max", args: [from, num(0)], at: this.at(e), label: this.label(e) }, e) } : {}, at: this.at(e), label: this.label(e) }, e);
+    }
+    if (e.arguments.length !== 1) {
+      this.c.error(e, `${method}() takes the character's place.`);
+      return null;
+    }
+    const index = this.num(e.arguments[0]);
+    return index ? this.mark({ kind: "textCode", of, index, at: this.at(e), label: this.label(e) }, e) : null;
+  }
+  /** A condition over texts: two compared, `startsWith` / `endsWith` / `includes`, a text tested as one (it is not empty). Undefined when the expression is none of those. */
+  textCondition(e) {
+    const { ts } = this;
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && this.isTextTyped(e.expression.expression)) {
+      const test = e.expression.name.text;
+      if (test !== "startsWith" && test !== "endsWith" && test !== "includes") return void 0;
+      if (e.arguments.length !== 1) {
+        this.c.error(e, `${test}() takes the text to look for.`);
+        return FALSE;
+      }
+      const of = this.text(e.expression.expression);
+      const find = this.text(e.arguments[0]);
+      return of && find ? this.mark({ kind: "textTest", test, of, find, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
+    if (this.isTextTyped(e) && !ts.isBinaryExpression(e) || ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken && this.isTextTyped(e)) {
+      const of = this.text(e);
+      return of ? this.mark({ kind: "textCompare", op: "!=", left: of, right: { kind: "text", text: "" }, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
+    return void 0;
+  }
+  /**
+   * A text with the program's values in it, as parts: a template literal, texts joined with +,
+   * and in them numbers of the program (their digits), name(p), color(p) and anything known
+   * when the script is built. Null, with a diagnostic, when a piece is none of those.
+   */
+  textOf(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h && !isGameValue(h.value)) {
+      const v = h.value;
+      if (typeof v === "string") return textParts(v);
+      if (typeof v === "number" || typeof v === "boolean") return [{ kind: "text", text: String(v) }];
+      this.c.error(e, `Expected text or a number, got ${describe2(v)}.`);
+      return null;
+    }
+    if (ts.isTemplateExpression(e)) {
+      const out = e.head.text ? [{ kind: "text", text: e.head.text }] : [];
+      for (const span of e.templateSpans) {
+        const part = this.textOf(span.expression);
+        if (!part) return null;
+        out.push(...part);
+        if (span.literal.text) out.push({ kind: "text", text: span.literal.text });
+      }
+      return out;
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken && this.isText(e)) {
+      const l = this.textOf(e.left);
+      const r = this.textOf(e.right);
+      return l && r ? [...l, ...r] : null;
+    }
+    if (this.isTextTyped(e)) {
+      const t = this.text(e);
+      return t ? this.partsOf(t) : null;
+    }
+    if (this.kindOf(this.c.checker.getTypeAtLocation(e)) === "boolean") {
+      this.c.error(e, 'A boolean has no text of its own: write flag ? "yes" : "no" with both texts known when the script is built, or show a number.');
+      return null;
+    }
+    const value = this.num(e);
+    return value ? [{ kind: "number", expr: value }] : null;
+  }
+  isText(e) {
+    return this.isTextTyped(e);
+  }
+  /** `print(text, { to: P2, position: "center" })` with the program's values in the text. */
+  printStatement(e) {
+    if (e.arguments.length < 1 || e.arguments.length > 2) {
+      this.c.error(e, "print() takes the text and, optionally, { to, position }.");
+      return;
+    }
+    let to = CURRENT_PLAYER;
+    let position = "chat";
+    if (e.arguments[1]) {
+      const h = this.evaluate(e.arguments[1]);
+      if (!h) {
+        this.notConstant(e.arguments[1], "print()'s options");
+        return;
+      }
+      const probe = this.evaluate(e.expression).value("", h.value);
+      if (!isPrint(probe)) return;
+      to = probe.to;
+      position = probe.position;
+    }
+    const parts = this.textOf(e.arguments[0]);
+    if (parts) this.emitPrint(parts, to, position, e);
+  }
+  /** `centerLocation(locations.Cursor, at.x, at.y)`: the location known when the script is built, the point the program's. */
+  centerLocation(e) {
+    if (e.arguments.length !== 3) {
+      this.c.error(e, "centerLocation() takes the location and the point: centerLocation(locations.Cursor, x, y).");
+      return;
+    }
+    const h = this.evaluate(e.arguments[0]);
+    if (!h || isGameValue(h.value)) {
+      this.notConstant(e.arguments[0], "The location");
+      return;
+    }
+    const location = h.value;
+    if (typeof location !== "number" || !Number.isInteger(location) || location < 1 || location > 255 || location === 64) {
+      this.c.error(e.arguments[0], "centerLocation() takes one of locations.*, which is moved (not Anywhere).");
+      return;
+    }
+    const x = this.num(e.arguments[1]);
+    const y = this.num(e.arguments[2]);
+    if (x && y) this.emit({ kind: "centerLocation", location, x, y, at: this.at(e), label: this.label(e) }, e);
+  }
+  /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
+  sleepStatement(call) {
+    if (this.inCallback > 0) {
+      this.c.error(call, "sleep() inside a function given to an array method: the method is one loop within the frame. A for\u2026of over the same list can sleep between its turns.");
+      return;
+    }
+    if (call.arguments.length !== 1) {
+      this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(frames(5)).");
+      return;
+    }
+    const h = this.evaluate(call.arguments[0]);
+    if (!h) {
+      this.notConstant(call.arguments[0], "A duration");
+      return;
+    }
+    if (!isDuration(h.value)) {
+      this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or frames(), got ${describe2(h.value)}.`);
+      return;
+    }
+    const d = h.value;
+    this.emit({ kind: "sleep", ...d.cycles !== void 0 ? { cycles: d.cycles } : {}, ...d.ms !== void 0 ? { ms: d.ms } : {}, at: this.at(call), label: this.label(call) }, call);
+  }
+  expressionStatement(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      this.hoistedStatement(e, h);
+      return;
+    }
+    if (ts.isBinaryExpression(e)) {
+      const op = e.operatorToken.kind;
+      if (op === ts.SyntaxKind.CommaToken) {
+        this.expressionStatement(e.left);
+        this.expressionStatement(e.right);
+        return;
+      }
+      if (op === ts.SyntaxKind.EqualsToken && (ts.isArrayLiteralExpression(this.unwrap(e.left)) || ts.isObjectLiteralExpression(this.unwrap(e.left)))) {
+        const from = this.patternSource(e.right, e);
+        if (!from) return;
+        const stores = [];
+        if (this.assignPattern(this.unwrap(e.left), from, stores)) stores.forEach((store) => store());
+        return;
+      }
+      if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment) {
+        const member = this.unitMember(e.left);
+        if (member) {
+          this.unitAssign(e, member, op);
+          return;
+        }
+        const cell = this.evaluate(e.left)?.value;
+        if (isTable(cell)) {
+          this.tableAssign(e, cell, op);
+          return;
+        }
+        const left = this.unwrap(e.left);
+        if (ts.isPropertyAccessExpression(left) && left.name.text === "length") {
+          const b = this.arrayOf(left.expression);
+          if (b?.kind === "lists") {
+            if (op !== ts.SyntaxKind.EqualsToken) {
+              this.c.error(e, "An array's length takes = only: xs.length = 0 empties it.");
+              return;
+            }
+            for (const a2 of this.handlesOf(b)) if (!this.grows(a2, e.left)) return;
+            const given = this.num(e.right);
+            if (!given) return;
+            const n = this.temp(given, e, true);
+            this.releaseRows(b, n, e);
+            for (const a2 of this.handlesOf(b)) this.emit({ kind: "setLength", array: a2.id, value: n, at: this.at(e), label: this.label(e) }, e);
+            return;
+          }
+          if (b?.kind === "grid") {
+            if (op !== ts.SyntaxKind.EqualsToken) {
+              this.c.error(e, "An array's length takes = only: xs.length = 0 empties it.");
+              return;
+            }
+            if (b.offset) {
+              this.c.error(e, `${b.name} is a part of a larger array of arrays; its length is the whole's to set.`);
+              return;
+            }
+            if (!this.grows(b.a, e.left)) return;
+            const rows = this.num(e.right);
+            if (rows) this.emit({ kind: "setLength", array: b.a.id, value: this.scaled(rows, b.dims.slice(1).reduce((n, d) => n * d, 1), null, e), at: this.at(e), label: this.label(e) }, e);
+            return;
+          }
+          const sized = b?.kind === "texts" ? b.rows : b;
+          if (sized?.kind === "records" || sized?.kind === "units") {
+            const b2 = sized;
+            if (op !== ts.SyntaxKind.EqualsToken) {
+              this.c.error(e, "An array's length takes = only: xs.length = 0 empties it.");
+              return;
+            }
+            const value = this.num(e.right);
+            if (!value) return;
+            const n = this.temp(value, e, b2.kind === "records" && !!b2.shape);
+            if (b2.kind === "records") this.releaseFrom(b2, n, e);
+            for (const a2 of b2.kind === "units" ? [b2.ptr, b2.epd, b2.uid] : b2.fields.values()) {
+              a2.dynamic = true;
+              this.emit({ kind: "setLength", array: a2.id, value: n, at: this.at(e), label: this.label(e) }, e);
+            }
+            return;
+          }
+          if (b?.kind === "array") {
+            if (op !== ts.SyntaxKind.EqualsToken) {
+              this.c.error(e, "An array's length takes = only: xs.length = 0 empties it.");
+              return;
+            }
+            if (!this.grows(b.a, e.left)) return;
+            const value = this.num(e.right);
+            if (value) this.emit({ kind: "setLength", array: b.a.id, value, at: this.at(e), label: this.label(e) }, e);
+            return;
+          }
+        }
+        if (ts.isElementAccessExpression(left)) {
+          const row = this.bindingOf(left);
+          if (row?.kind === "inner") {
+            if (op !== ts.SyntaxKind.EqualsToken) {
+              this.c.error(e, "A row takes = only.");
+              return;
+            }
+            const inner = this.innerOf(row.lists, row.index, e);
+            this.emit({ kind: "declareArray", array: inner.id, init: [], at: this.at(e), label: this.label(e) }, e);
+            this.fillInner(inner, row.lists.of, e.right);
+            return;
+          }
+          if (row?.kind === "row") {
+            const grid = this.bindingOf(left.expression);
+            const cells = op === ts.SyntaxKind.EqualsToken && grid?.kind === "grid" ? this.rowCells(grid, e.right) : null;
+            if (op !== ts.SyntaxKind.EqualsToken) this.c.error(e, "A row takes = only.");
+            if (!cells) return;
+            const start = this.temp(row.offset, e);
+            const held = cells.map((v) => v.kind === "const" ? v : (() => {
+              const t = this.newVar("(cell)", row.a.kind, this.at(e), { temp: true });
+              this.emit({ kind: "declare", decl: t, init: v, at: this.at(e), label: this.label(e) }, e);
+              return row.a.kind === "number" ? varRef(t) : boolRef(t);
+            })());
+            held.forEach((v, k) => this.emit({ kind: "store", array: row.a.id, index: this.scaled(num(k), 1, start, e), value: v, at: this.at(e), label: this.label(e) }, e));
+            return;
+          }
+          const el = this.elementOf(left);
+          if (el === null) return;
+          if (el) {
+            this.storeElement(e, el, op);
+            return;
+          }
+        }
+        if (ts.isElementAccessExpression(left)) {
+          const squad = this.arrayOf(left.expression);
+          if (squad?.kind === "units") {
+            if (op !== ts.SyntaxKind.EqualsToken) {
+              this.c.error(e, "A unit takes = only.");
+              return;
+            }
+            const found = this.unitExpr(e.right);
+            const at = this.evaluate(left.argumentExpression);
+            const index = at ? (() => {
+              const i2 = this.asInteger(at, left.argumentExpression);
+              return i2 === null ? null : num(i2);
+            })() : this.num(left.argumentExpression);
+            if (!found || !index) return;
+            const unit = this.unitTemp(found, e.right);
+            const i = this.temp(index, e);
+            for (const [a2, part] of this.unitArrays(squad)) this.emit({ kind: "store", array: a2.id, index: i, value: { kind: "unitPart", unit, part, at: this.at(e) }, at: this.at(e), label: this.label(e) }, e);
+            return;
+          }
+        }
+        if (this.setterCall(e, op)) return;
+        const field = this.bindingOf(e.left);
+        if (field?.kind === "textAt") {
+          if (op !== ts.SyntaxKind.EqualsToken && op !== ts.SyntaxKind.PlusEqualsToken) {
+            this.c.error(e, "A text takes = and +=.");
+            return;
+          }
+          const given = op === ts.SyntaxKind.EqualsToken ? this.text(e.right) : (() => {
+            const more = this.textOf(e.right);
+            return more ? this.textFrom([{ kind: "value", text: this.textAtCells(field, e.left) }, ...more], e) : null;
+          })();
+          if (given) this.storeTextAt({ ...field, index: this.temp(field.index, e) }, given, e);
+          return;
+        }
+        if (field?.kind === "unitAt") {
+          if (op !== ts.SyntaxKind.EqualsToken) {
+            this.c.error(e, "A unit takes = only.");
+            return;
+          }
+          const value = this.unitExpr(e.right);
+          if (value) this.storeUnitAt(field, value, e);
+          return;
+        }
+        if (field && (field.kind === "inner" || field.kind === "innerUnits" || (field.kind === "array" || field.kind === "units") && ts.isPropertyAccessExpression(left))) {
+          this.assignList(e, field, op);
+          return;
+        }
+        if (field?.kind === "cell") {
+          this.storeElement(e, { a: field.a, index: field.index }, op);
+          return;
+        }
+        if (field?.kind === "records" || ts.isElementAccessExpression(left) && this.bindingOf(left.expression)?.kind === "records") {
+          this.storeRow(e, op);
+          return;
+        }
+        const target = this.varOf(e.left);
+        const rowVar = target ? void 0 : (() => {
+          const b = this.bindingOf(e.left);
+          return b ? this.rowVars.get(b) : void 0;
+        })();
+        if (rowVar) {
+          const given = this.unwrap(e.right);
+          const from = ts.isElementAccessExpression(given) && this.bindingOf(given.expression) === rowVar.of ? this.rowIndex(rowVar.of, given.argumentExpression) : (() => {
+            const other = this.bindingOf(given);
+            const r = other ? this.rowVars.get(other) : void 0;
+            return r?.of === rowVar.of ? varRef(r.place) : void 0;
+          })();
+          if (op !== ts.SyntaxKind.EqualsToken || from === void 0) {
+            this.c.error(e, `This is a row of ${rowVar.of.name}, and can be given another row of it: = ${rowVar.of.name}[i]. Which array a row is of, and which class an instance is, are settled when the script is built.`);
+            return;
+          }
+          if (from) this.emit({ kind: "assign", target: rowVar.place.id, value: from, at: this.at(e), label: this.label(e) }, e);
+          return;
+        }
+        if (!target) {
+          const b = this.bindingOf(e.left);
+          if (b?.kind === "array") {
+            this.c.error(e.left, `An array is assigned cell by cell: ${b.a.name}[i] = 3.`);
+            return;
+          }
+          if (b?.kind === "record") this.c.error(e.left, "A record is assigned field by field: p.lives = 3.");
+          else if ((ts.isPropertyAccessExpression(this.unwrap(e.left)) || ts.isElementAccessExpression(this.unwrap(e.left))) && this.evaluate(e.left)) this.c.error(e.left, "This object is computed when the script is built. Declare it with let inside the program to make it a record of variables.");
+          else this.c.error(e.left, "Only the program's let variables can be assigned.");
+          return;
+        }
+        if (target.kind === "unit") {
+          if (op !== ts.SyntaxKind.EqualsToken) {
+            this.c.error(e, "A unit takes = only.");
+            return;
+          }
+          const value = this.unitExpr(e.right);
+          if (value) this.emit({ kind: "assignUnit", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
+          return;
+        }
+        if (target.kind === "text") {
+          this.assignText(e, target, op);
+          return;
+        }
+        if (target.kind !== "number") {
+          if (op !== ts.SyntaxKind.EqualsToken) {
+            this.c.error(e, "Booleans take = only.");
+            return;
+          }
+          this.emit({ kind: "assignBool", target: target.id, value: this.boolValue(e.right), at: this.at(e), label: this.label(e) }, e);
+          return;
+        }
+        if (op === ts.SyntaxKind.EqualsToken) {
+          const value = this.num(e.right);
+          if (value) this.emit({ kind: "assign", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
+          return;
+        }
+        const arith = compoundOp(ts, op);
+        if (!arith) {
+          this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= >>>= assign a number.");
+          return;
+        }
+        const rhs = this.num(e.right);
+        if (!rhs) return;
+        this.emit({ kind: "assign", target: target.id, value: this.mark({ kind: "binary", op: arith, left: varRef(target), right: rhs, at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
+        return;
+      }
+      this.c.error(e, "Only assignments and calls can stand as statements.");
+      return;
+    }
+    if ((ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)) {
+      const op = e.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-";
+      const member = this.unitMember(e.operand);
+      const cell = member ? void 0 : this.evaluate(e.operand)?.value;
+      if (member || isTable(cell)) {
+        const now = this.num(e.operand);
+        if (!now) return;
+        const value2 = this.mark({ kind: "binary", op, left: now, right: num(1), at: this.at(e), label: this.label(e) }, e);
+        if (member) this.unitWrite(e, member, value2);
+        else this.tableWrite(e, cell, value2);
+        return;
+      }
+      const operand = this.unwrap(e.operand);
+      const fieldCell = this.bindingOf(operand);
+      const el = fieldCell?.kind === "cell" ? { a: fieldCell.a, index: fieldCell.index } : ts.isElementAccessExpression(operand) ? this.elementOf(operand) : void 0;
+      if (el === null) return;
+      if (el) {
+        if (el.a.kind !== "number") {
+          this.c.error(e, "++ / -- apply to numbers.");
+          return;
+        }
+        if (el.a.values) {
+          this.c.error(e, `${el.a.name} was computed when the script was built and is only read in a program; declare it with let inside the program to write to it.`);
+          return;
+        }
+        const now = { kind: "element", array: el.a.id, index: el.index, at: this.at(e) };
+        this.emit({ kind: "store", array: el.a.id, index: el.index, value: this.mark({ kind: "binary", op, left: now, right: num(1), at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
+        return;
+      }
+      const target = this.varOf(e.operand);
+      if (!target || target.kind !== "number") {
+        this.c.error(e, "++ / -- apply to number variables.");
+        return;
+      }
+      const value = this.mark({ kind: "binary", op: e.operator === ts.SyntaxKind.PlusPlusToken ? "+" : "-", left: varRef(target), right: num(1), at: this.at(e), label: this.label(e) }, e);
+      this.emit({ kind: "assign", target: target.id, value, at: this.at(e), label: this.label(e) }, e);
+      return;
+    }
+    if (ts.isCallExpression(e)) {
+      this.callStatement(e);
+      return;
+    }
+    this.c.error(e, "Only assignments and calls can stand as statements.");
+  }
+  /** A call standing as a statement: a function of the body, a game function, an action with a variable amount, or a game call. */
+  callStatement(e) {
+    const { ts } = this;
+    if (e.expression.kind === ts.SyntaxKind.SuperKeyword) {
+      this.superCall(e);
+      return;
+    }
+    const method = this.methodCall(e);
+    if (method !== void 0) {
+      if (method) this.emit({ kind: "call", call: method, at: method.at, label: method.label }, e);
+      return;
+    }
+    if (ts.isIdentifier(e.expression)) {
+      const decl = this.gameDeclaration(e.expression);
+      if (decl) {
+        if (ts.isFunctionDeclaration(decl)) {
+          const call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+          if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+          return;
+        }
+        this.c.error(e, `${e.expression.text} is not a function.`);
+        return;
+      }
+    }
+    if (ts.isPropertyAccessExpression(e.expression)) {
+      const method2 = e.expression.name.text;
+      if (method2 === "forEach" || SEARCHES.has(method2)) {
+        const over = this.overOf(e.expression.expression);
+        if (over && method2 === "forEach") {
+          this.forEachCall(e, over);
+          return;
+        }
+        if (over) {
+          this.c.error(e, `${this.overName(over)}.${method2}(\u2026) is a value: use it in an if or store it.`);
+          return;
+        }
+      }
+      if (LIST_MAKERS.has(method2) && this.makesList(e)) {
+        this.madeList(e, void 0, e);
+        return;
+      }
+      const list = this.arrayOf(e.expression.expression);
+      if (list?.kind === "grid") {
+        this.gridCall(e, list, method2);
+        return;
+      }
+      if (list?.kind === "lists") {
+        this.listsCall(e, list, method2);
+        return;
+      }
+      if (list?.kind === "array") {
+        this.arrayCall(e, list.a, e.expression.name.text, "statement");
+        return;
+      }
+      if (list?.kind === "records") {
+        this.recordsCall(e, list, e.expression.name.text);
+        return;
+      }
+      if (list?.kind === "units") {
+        this.unitsCall(e, list, e.expression.name.text);
+        return;
+      }
+      if (list?.kind === "texts") {
+        if (method2 === "forEach") {
+          this.textsLoop(list, e, (item, i) => {
+            const call = this.callback(e.arguments[0], "forEach", [item, { kind: "var", v: i }, list], "void", e);
+            if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+          });
+          return;
+        }
+        this.textsCall(e, list, method2);
+        return;
+      }
+      if (list?.kind === "hash") {
+        if (method2 === "forEach") {
+          this.hashForEach(e, list);
+          return;
+        }
+        this.hashMethod(e, list, method2, "statement");
+        return;
+      }
+      const made = list?.kind === "keyed" ? list : !list && e.arguments.length && !this.evaluate(e.arguments[0]) ? this.collectionOf(e.expression.expression) : void 0;
+      if (made) {
+        this.keyedCall(e, made, e.expression.name.text, "statement");
+        return;
+      }
+      const member = this.unitMember(e.expression);
+      if (member) {
+        this.unitCall(e, member);
+        return;
+      }
+    }
+    if (this.isLibraryCall(e, "random")) {
+      this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a variable.");
+      return;
+    }
+    if (this.isLibraryCall(e, "sleep")) {
+      this.sleepStatement(e);
+      return;
+    }
+    if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) {
+      this.c.error(e, "rose() / once() are conditions: test them in an if.");
+      return;
+    }
+    if (this.isLibraryCall(e, "shared")) {
+      this.c.error(e, "shared() goes on a declaration: let total = shared(0).");
+      return;
+    }
+    if (this.isLibraryCall(e, "print")) {
+      this.printStatement(e);
+      return;
+    }
+    if (this.isLibraryCall(e, "centerLocation")) {
+      this.centerLocation(e);
+      return;
+    }
+    if (this.isLibraryCall(e, "keyPressed") || this.isLibraryCall(e, "clicked") || this.isLibraryCall(e, "mouse") || this.isLibraryCall(e, "chatted")) {
+      this.c.error(e, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const.");
+      return;
+    }
+    const callee = this.evaluate(e.expression)?.value;
+    if (isGameFunction(callee)) {
+      const call = this.gameCall(e, callee);
+      if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+      return;
+    }
+    if (isReader(callee) || isBuilder(callee) && callee.kind === "condition" && READ_ARITY.get(callee.ident) === e.arguments.length) {
+      this.c.error(e, "This reads a value and does nothing on its own: assign it to a variable, or compare it in an if.");
+      return;
+    }
+    if (isBuilder(callee)) {
+      if (callee.kind === "action" && callee.def.type === ActionType.DisplayText && e.arguments[0] && !this.evaluate(e.arguments[0])) {
+        const parts = this.textOf(e.arguments[0]);
+        if (parts) this.emitPrint(parts, CURRENT_PLAYER, "chat", e);
+        return;
+      }
+      if (callee.kind === "action") {
+        this.actionWithVars(e, callee.ident, callee.def);
+        return;
+      }
+      this.c.error(e, "This is a condition; test it in an if or a while.");
+      return;
+    }
+    this.notConstant(e, "A call's arguments");
+  }
+  /* ── Control flow ── */
+  /** A condition known when the script is built (a hoisted boolean, number or text): true, false, or undefined when it must be tested in the game. */
+  knownCondition(expr) {
+    const h = this.evaluate(expr);
+    if (!h) return void 0;
+    const v = h.value;
+    if (typeof v === "boolean") return v;
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "string") return v !== "";
+    return void 0;
+  }
+  ifStatement(s, ctx) {
+    const known = this.knownCondition(s.expression);
+    if (known !== void 0) {
+      const live = known ? s.thenStatement : s.elseStatement;
+      if (live) this.statement(live, ctx);
+      return;
+    }
+    const cond = this.bool(s.expression);
+    if (cond.kind === "const" && !cond.value) {
+      if (s.elseStatement) this.statement(s.elseStatement, ctx);
+      return;
+    }
+    const then = this.sub(s.thenStatement, ctx);
+    const otherwise = s.elseStatement ? this.sub(s.elseStatement, ctx) : void 0;
+    this.emit({ kind: "if", cond, then, ...otherwise ? { else: otherwise } : {}, at: this.at(s), label: this.label(s) }, s);
+  }
+  /** A loop condition known false when the script is built: the loop is not compiled at all. */
+  neverRuns(condition2) {
+    if (!condition2) return false;
+    const h = this.evaluate(condition2);
+    return !!h && !h.value && !isCondition(h.value);
+  }
+  /** A loop's test: absent for `while (true)` and any condition known true when the script is built. */
+  loopCondition(condition2) {
+    if (!condition2) return void 0;
+    const known = this.knownCondition(condition2);
+    if (known === true) return void 0;
+    this.inLoopCondition++;
+    try {
+      return this.bool(condition2);
+    } finally {
+      this.inLoopCondition--;
+    }
+  }
+  whileStatement(s, ctx) {
+    if (this.neverRuns(s.expression)) return;
+    const cond = this.loopCondition(s.expression);
+    const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
+    this.emit({ kind: "while", ...cond ? { cond } : {}, body: body2, at: this.at(s), label: this.label(s) }, s);
+  }
+  doStatement(s, ctx) {
+    const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
+    this.inLoopCondition++;
+    let cond;
+    try {
+      cond = this.bool(s.expression);
+    } finally {
+      this.inLoopCondition--;
+    }
+    const condLabel = `L${this.line(s)}: while (${s.expression.getText(this.body.sf).replace(/\s+/g, " ")})`;
+    this.emit({ kind: "do", body: body2, cond, at: this.at(s), label: this.label(s), condLabel }, s);
+  }
+  /**
+   * `for (let i = 0; i < 3; i++)` with the start, the bound and the step known when the
+   * script is built, and `i` never assigned in the body: unrolled like a `for…of`, `i`
+   * bound to each value in turn — the loop runs in the cycle it is reached in, as the
+   * source reads, and `i` is no variable of the program. Null when the loop is not of that form.
+   */
+  unrollable(s) {
+    const { ts } = this;
+    if (!s.initializer || !ts.isVariableDeclarationList(s.initializer) || s.initializer.declarations.length !== 1 || !s.condition || !s.incrementor) return null;
+    const decl = s.initializer.declarations[0];
+    if (!ts.isIdentifier(decl.name) || !decl.initializer) return null;
+    const isVar = (e) => {
+      const u = this.unwrap(e);
+      return ts.isIdentifier(u) && declarationOf(ts, this.c.checker, u) === decl;
+    };
+    const integer2 = (e) => {
+      const h = this.evaluate(e);
+      return h && typeof h.value === "number" && Number.isInteger(h.value) ? h.value : null;
+    };
+    const start = integer2(decl.initializer);
+    if (start === null) return null;
+    const cond = this.unwrap(s.condition);
+    if (!ts.isBinaryExpression(cond)) return null;
+    let op = compareOp(ts, cond.operatorToken.kind);
+    if (!op) return null;
+    let bound;
+    if (isVar(cond.left)) bound = integer2(cond.right);
+    else if (isVar(cond.right)) {
+      bound = integer2(cond.left);
+      op = flipOp(op);
+    } else return null;
+    if (bound === null) return null;
+    const inc = this.unwrap(s.incrementor);
+    let step = null;
+    if ((ts.isPostfixUnaryExpression(inc) || ts.isPrefixUnaryExpression(inc)) && isVar(inc.operand)) step = inc.operator === ts.SyntaxKind.PlusPlusToken ? 1 : inc.operator === ts.SyntaxKind.MinusMinusToken ? -1 : null;
+    else if (ts.isBinaryExpression(inc) && isVar(inc.left) && (inc.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken || inc.operatorToken.kind === ts.SyntaxKind.MinusEqualsToken)) {
+      const k = integer2(inc.right);
+      if (k !== null) step = inc.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken ? k : -k;
+    }
+    if (step === null || step === 0) return null;
+    if (this.assigns(s.statement, decl)) return null;
+    const values = [];
+    for (let i = start; compareNumbers(i, op, bound); i += step) {
+      values.push(i);
+      if (values.length > MAX_UNROLL) throw new LowerError(`This for loop unrolls to more than ${MAX_UNROLL} iterations. Loop over a variable instead \u2014 let i = 0; while (i < ${bound}) { \u2026; i++ } is a loop in the game, not ${MAX_UNROLL} copies of its body \u2014 or make the bound smaller.`);
+    }
+    return { decl, values };
+  }
+  forStatement(s, ctx) {
+    const { ts } = this;
+    const unrolled = this.unrollable(s);
+    if (unrolled) {
+      this.emit({ kind: "remark", text: `Unrolled: ${unrolled.values.length} iteration${unrolled.values.length === 1 ? "" : "s"}, the loop variable a value known when the script is built.`, short: `unrolled \xD7${unrolled.values.length}`, at: this.at(s) }, s);
+      this.unrolledLoop(unrolled.decl, unrolled.values, s.statement, s, ctx);
+      return;
+    }
+    const outer = this.scope;
+    this.scope = new Scope(outer);
+    if (s.initializer) {
+      if (ts.isVariableDeclarationList(s.initializer)) this.declare(s.initializer);
+      else this.expressionStatement(s.initializer);
+    }
+    if (this.neverRuns(s.condition)) {
+      this.scope = outer;
+      return;
+    }
+    const cond = this.loopCondition(s.condition);
+    const body2 = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
+    const update = s.incrementor ? this.collect(() => this.expressionStatement(s.incrementor)) : [];
+    this.scope = outer;
+    this.emit({ kind: "for", ...cond ? { cond } : {}, update, body: body2, at: this.at(s), label: this.label(s) }, s);
+  }
+  /** The body compiled once per value, the declaration bound to that value; `break` leaves, `continue` goes on with the next. */
+  unrolledLoop(decl, values, body2, s, ctx) {
+    const iterations = [];
+    for (const item of values) {
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "value", value: item });
+      iterations.push(this.collect(() => this.block([body2], { fn: ctx.fn, canBreak: true, canContinue: true }, scope)));
+    }
+    this.emit({ kind: "unrolled", iterations, at: this.at(s), label: this.label(s) }, s);
+  }
+  /**
+   * `for (const w of waves)` over a list known when the script is built: unrolled, the body
+   * compiled once per element with `w` bound to that element's value.
+   */
+  /**
+   * `for (const k of seen)`, `for (const [k, v] of lost)`, `for (const k of lost.keys())`: every id there is, in order, the
+   * body for those that are present — k and v copies, as they are in TypeScript, so the body may set and delete as it goes.
+   * False when the loop is not over a Map or a Set.
+   */
+  keyedLoop(s, decl, ctx) {
+    const { ts } = this;
+    let source = this.unwrap(s.expression);
+    let part;
+    if (ts.isCallExpression(source) && ts.isPropertyAccessExpression(source.expression) && source.arguments.length === 0 && ["keys", "values", "entries"].includes(source.expression.name.text)) {
+      part = source.expression.name.text;
+      source = this.unwrap(source.expression.expression);
+    }
+    const bound = this.bindingOf(source);
+    if (bound?.kind === "hash") {
+      const h = bound;
+      const what = part ?? (h.as === "map" ? "entries" : "keys");
+      const keysOnly = h.as === "set" || what === "keys";
+      const scope2 = new Scope(this.scope);
+      const names = [];
+      if (ts.isIdentifier(decl.name)) {
+        if (what === "entries" && h.as === "map") {
+          this.c.error(decl.name, `A Map gives a key and a value a turn: for (const [key, value] of ${h.name}).`);
+          return true;
+        }
+        names.push({ node: decl, of: keysOnly ? "key" : "value" });
+      } else if (ts.isArrayBindingPattern(decl.name) && what === "entries") {
+        const [k, v] = decl.name.elements;
+        if (k && ts.isBindingElement(k) && ts.isIdentifier(k.name)) names.push({ node: k, of: "key" });
+        if (v && ts.isBindingElement(v) && ts.isIdentifier(v.name)) names.push({ node: v, of: h.as === "map" ? "value" : "key" });
+      } else {
+        this.c.error(decl.name, `for\u2026of over ${h.name} takes ${h.as === "map" ? "[key, value]" : "one variable"}.`);
+        return true;
+      }
+      this.hashLoop(h, s, (key, value) => {
+        for (const n of names) scope2.bind(n.node, { kind: "var", v: n.of === "key" || !value ? key : value });
+        this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope2);
+      });
+      return true;
+    }
+    const table2 = bound?.kind === "keyed" ? bound : void 0;
+    if (!table2) return false;
+    if (table2.as === "record" || !table2.present) {
+      this.c.error(s.expression, `${table2.name} is a Record: it has a value for every key, so there is nothing to go through. A Map or a Set knows which keys it has.`);
+      return true;
+    }
+    part ??= table2.as === "map" ? "entries" : "keys";
+    if (part !== "keys" && table2.as === "set" || part !== "keys" && !table2.values) part = "keys";
+    const at = this.at(s);
+    const label = this.label(s);
+    const i = this.newVar(`(key of ${table2.name})`, "number", at, { temp: true });
+    const scope = new Scope(this.scope);
+    const declared = [];
+    const bindKey = (node, name) => {
+      const k = this.newVar(name, "number", this.sourceOf(node));
+      declared.push({ kind: "declare", decl: k, init: varRef(i), at, label });
+      scope.bind(node, { kind: "var", v: k });
+    };
+    const bindValue = (node, name) => {
+      const a2 = table2.values;
+      const v = this.newVar(name, a2.kind, this.sourceOf(node), { ...a2.bits ? { bits: a2.bits } : {}, ...a2.unsigned ? { unsigned: true } : {} });
+      declared.push({ kind: "declare", decl: v, init: { kind: "element", array: a2.id, index: varRef(i), at }, at, label });
+      scope.bind(node, { kind: "var", v });
+    };
+    if (ts.isIdentifier(decl.name)) {
+      if (part === "entries") {
+        this.c.error(decl.name, `A Map gives a key and a value a turn: for (const [key, value] of ${table2.name}).`);
+        return true;
+      }
+      if (part === "keys") bindKey(decl, decl.name.text);
+      else bindValue(decl, decl.name.text);
+    } else if (ts.isArrayBindingPattern(decl.name) && part === "entries") {
+      const [k, v] = decl.name.elements;
+      if (k && ts.isBindingElement(k) && ts.isIdentifier(k.name)) bindKey(k, k.name.text);
+      if (v && ts.isBindingElement(v) && ts.isIdentifier(v.name)) bindValue(v, v.name.text);
+    } else {
+      this.c.error(decl.name, `for\u2026of over ${table2.name} takes ${table2.as === "map" ? "[key, value]" : "one variable"}.`);
+      return true;
+    }
+    const inner = this.collect(() => {
+      for (const d of declared) this.emit(d, s);
+      this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope);
+    });
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, s);
+    this.emit({ kind: "remark", text: `goes through ${table2.domain} keys`, short: `${table2.domain} keys`, at, label }, s);
+    this.emit({
+      kind: "for",
+      cond: { kind: "compare", op: "<", left: varRef(i), right: num(table2.domain), at, label },
+      update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+      body: [{ kind: "if", cond: { kind: "element", array: table2.present.id, index: varRef(i), at }, then: inner, at, label }],
+      at,
+      label
+    }, s);
+    return true;
+  }
+  forOfStatement(s, ctx) {
+    const { ts } = this;
+    if (s.awaitModifier) {
+      this.c.error(s, "for await is not supported in a program.");
+      return;
+    }
+    const decl = ts.isVariableDeclarationList(s.initializer) && s.initializer.declarations.length === 1 ? s.initializer.declarations[0] : void 0;
+    if (decl && this.keyedLoop(s, decl, ctx)) return;
+    if (!decl) {
+      this.c.error(s.initializer, "for\u2026of takes one variable: for (const w of waves) { \u2026 }.");
+      return;
+    }
+    if (!ts.isIdentifier(decl.name)) {
+      const pattern = decl.name;
+      const list = this.overOf(s.expression);
+      if (!list) {
+        this.notConstant(s.expression, "What a for\u2026of loop runs over");
+        return;
+      }
+      const scope = new Scope(this.scope);
+      this.loopOf(list, s, "(item)", (item) => {
+        const outer = this.scope;
+        this.scope = scope;
+        try {
+          if (this.bindPattern(pattern, decl, item, scope)) this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, new Scope(scope));
+        } finally {
+          this.scope = outer;
+        }
+      });
+      return;
+    }
+    if (this.isTextTyped(s.expression) && !this.evaluate(s.expression)) {
+      const of = this.text(s.expression);
+      if (!of) return;
+      const v = this.newVar(decl.name.text, "text", this.sourceOf(decl.name), { text: "made" });
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "var", v });
+      const body2 = this.collect(() => this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope));
+      this.emit({ kind: "textLoop", decl: v, of, body: body2, at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
+    const over = this.listOf(s.expression);
+    if (over?.kind === "texts") {
+      const scope = new Scope(this.scope);
+      this.textsLoop(over, s, (item) => {
+        scope.bind(decl, item);
+        this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope);
+      });
+      return;
+    }
+    if (over?.kind === "grid" || over?.kind === "lists") {
+      const scope = new Scope(this.scope);
+      this.loopOf(over, s, decl.name.text, (row) => {
+        scope.bind(decl, row);
+        this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope);
+      });
+      return;
+    }
+    if (over?.kind === "units") {
+      const i = this.newVar(`(index of ${over.name})`, "number", this.at(s), { temp: true });
+      const v = this.newVar(decl.name.text, "unit", this.sourceOf(decl.name));
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "var", v });
+      const at = this.at(s);
+      const label = this.label(s);
+      const body2 = this.collect(() => {
+        this.emit({ kind: "declare", decl: v, init: this.unitAtIndex(over, varRef(i), s), at, label }, s);
+        this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope);
+      });
+      this.emit({ kind: "declare", decl: i, init: num(0), at, label }, s);
+      this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: over.ptr.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: body2, at, label }, s);
+      return;
+    }
+    if (over?.kind === "records") {
+      const first = [...over.fields.values()][0];
+      const i = this.newVar(`(index of ${over.name})`, "number", this.at(s), { temp: true });
+      const scope = new Scope(this.scope);
+      scope.bind(decl, this.rowOf(over, varRef(i)));
+      const at = this.at(s);
+      const label = this.label(s);
+      const body2 = this.collect(() => this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope));
+      this.emit({ kind: "declare", decl: i, init: num(0), at, label }, s);
+      this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: first.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: body2, at, label }, s);
+      return;
+    }
+    if (over?.kind === "array") {
+      const a2 = over.a;
+      const i = this.newVar(`(index of ${a2.name})`, "number", this.at(s), { temp: true });
+      const v = this.newVar(decl.name.text, a2.kind, this.sourceOf(decl.name), { ...a2.bits ? { bits: a2.bits } : {}, ...a2.unsigned ? { unsigned: true } : {} });
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "var", v });
+      const at = this.at(s);
+      const label = this.label(s);
+      const cell = { kind: "element", array: a2.id, index: varRef(i), at };
+      const body2 = this.collect(() => {
+        this.emit({ kind: "declare", decl: v, init: cell, at, label }, s);
+        this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope);
+      });
+      this.emit({ kind: "declare", decl: i, init: num(0), at, label }, s);
+      this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: a2.id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: body2, at, label }, s);
+      return;
+    }
+    const h = this.evaluate(s.expression);
+    if (!h) {
+      this.notConstant(s.expression, "What a for\u2026of loop runs over");
+      return;
+    }
+    if (isUnitQuery(h.value)) {
+      const v = this.newVar(decl.name.text, "unit", this.sourceOf(decl.name));
+      const scope = new Scope(this.scope);
+      scope.bind(decl, { kind: "var", v });
+      const body2 = this.collect(() => this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope));
+      this.emit({ kind: "unitLoop", decl: v, filter: { ...h.value.filter }, body: body2, at: this.at(s), label: this.label(s) }, s);
+      return;
+    }
+    let items;
+    try {
+      const iterable = typeof h.value === "string" || typeof h.value === "object" && h.value !== null && Symbol.iterator in h.value;
+      if (!iterable) {
+        this.c.error(s.expression, `for\u2026of runs over a list, got ${describe2(h.value)}.`);
+        return;
+      }
+      items = Array.from(h.value);
+    } catch (err) {
+      this.c.error(s.expression, `for\u2026of: ${err.message}`);
+      return;
+    }
+    this.unrolledLoop(decl, items, s.statement, s, ctx);
+  }
+  /**
+   * `switch (x) { case 1: … break; case 2: … default: … }` over a number: the cases
+   * tested in order, then the bodies in source order — a body without `break` falls
+   * through to the next, as in TypeScript. Case values are known when the script is built.
+   */
+  switchStatement(s, ctx) {
+    const { ts } = this;
+    if (this.isTextTyped(s.expression) && !this.evaluate(s.expression)) {
+      this.textSwitch(s, ctx);
+      return;
+    }
+    const value = this.num(s.expression);
+    if (!value) return;
+    if (value.kind === "const") {
+      this.c.error(s.expression, "switch over a value known when the script is built: write the case that applies.");
+      return;
+    }
+    const clauses = s.caseBlock.clauses;
+    const values = clauses.map((c2) => {
+      if (ts.isDefaultClause(c2)) return null;
+      const h = this.evaluate(c2.expression);
+      if (!h) {
+        this.notConstant(c2.expression, "A case value");
+        return Number.NaN;
+      }
+      const n = this.asInteger(h, c2.expression);
+      return n === null ? Number.NaN : n;
+    });
+    const scope = new Scope(this.scope);
+    const cases = clauses.map((c2, i) => ({ value: values[i], body: this.collect(() => this.block(c2.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    this.emit({ kind: "switch", value, cases, at: this.at(s), label: this.label(s) }, s);
+  }
+  /** `switch (s)` over a text: which case it is — the first whose text it equals — is worked out as a number, and the switch is over that. */
+  textSwitch(s, ctx) {
+    const { ts } = this;
+    const given = this.text(s.expression);
+    if (!given) return;
+    const of = this.textTemp(given, s.expression);
+    const clauses = s.caseBlock.clauses;
+    const at = this.at(s), label = this.label(s);
+    let which = num(-1);
+    const values = clauses.map((c2, i) => ts.isDefaultClause(c2) ? null : i);
+    for (let i = clauses.length - 1; i >= 0; i--) {
+      const c2 = clauses[i];
+      if (ts.isDefaultClause(c2)) continue;
+      const h = this.evaluate(c2.expression);
+      if (!h || typeof h.value !== "string" || hasTextMark(h.value)) {
+        this.notConstant(c2.expression, "A case's text");
+        values[i] = Number.NaN;
+        continue;
+      }
+      which = { kind: "ternary", cond: { kind: "textCompare", op: "==", left: of, right: { kind: "text", text: h.value }, at, label }, whenTrue: num(i), whenFalse: which, at, label };
+    }
+    const scope = new Scope(this.scope);
+    const cases = clauses.map((c2, i) => ({ value: values[i], body: this.collect(() => this.block(c2.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    this.emit({ kind: "switch", value: which, cases, at, label }, s);
+  }
+  /* ── An array of texts ── */
+  /**
+   * `const names: string[] = []`, `let lines = ["a", `b${n}`]`: an array of texts a program fills. It is an array of
+   * records with one field, so a text is what it is in a row — three cells, the row owning its block — and what gives
+   * rows their blocks back gives these theirs.
+   */
+  declareTexts(name, initializer, at) {
+    const { ts } = this;
+    const init = this.unwrap(initializer);
+    const shape = /* @__PURE__ */ new Map([[TEXT_FIELD, { kind: "text" }]]);
+    const rows = [];
+    const whole2 = this.evaluate(init);
+    const items = [];
+    if (whole2) {
+      if (!Array.isArray(whole2.value)) {
+        this.c.error(init, `Expected a list of texts to start ${name} with, got ${describe2(whole2.value)}.`);
+        return null;
+      }
+      items.push(...whole2.value.map((value) => ({ value })));
+    } else if (ts.isArrayLiteralExpression(init) && !init.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) items.push(...init.elements.map((expr) => ({ expr })));
+    else {
+      this.c.error(init, `${name} is written out text by text (["a", \`b\${n}\`]), or starts empty and is pushed to.`);
+      return null;
+    }
+    for (const item of items) {
+      const row = { cells: /* @__PURE__ */ new Map(), fill: [] };
+      if (!this.rowField(name, TEXT_FIELD, { kind: "text" }, item, row, init)) return null;
+      rows.push(row);
+    }
+    const records = this.recordsFrom(name, shape, rows, init, at, this.body.plan.grows.has(at), void 0);
+    if (!records) return null;
+    this.emit({ kind: "remark", short: "an array of texts", text: `${name} holds texts a program makes: each is three cells \u2014 where it is, the block of the memory the programs share that it owns, its length \u2014 and its block goes back when the text is replaced, popped or cut off.`, at: this.at(at) }, at);
+    return { kind: "texts", name, rows: records };
+  }
+  /** `names[i]` as the text kept there. */
+  textAtIndex(of, index) {
+    return this.textCells(of.rows, TEXT_FIELD, index);
+  }
+  /** `names.push(t)`, `names.pop()` standing on their own. */
+  textsCall(e, of, method) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const columns = [...of.rows.fields.values()];
+    if (method === "push" && e.arguments.length > 0) {
+      for (const arg of e.arguments) {
+        const value = this.text(arg);
+        if (!value) return;
+        const held = this.newVar("(pushed)", "text", at, { temp: true, text: "made" });
+        this.emit({ kind: "declare", decl: held, init: value, at, label }, arg);
+        const place = this.newVar(`(row of ${of.name})`, "number", at, { temp: true });
+        this.emit({ kind: "declare", decl: place, init: { kind: "length", array: columns[0].id, at }, at, label }, arg);
+        for (const a2 of columns) {
+          a2.dynamic = true;
+          this.emit({ kind: "push", array: a2.id, value: num(0), at, label }, arg);
+        }
+        this.storeTextAt(this.textAtIndex(of, varRef(place)), { kind: "textVar", id: held.id }, arg);
+        this.emit({ kind: "assignText", target: held.id, value: { kind: "text", text: "" }, at, label }, arg);
+      }
+      return;
+    }
+    if (method === "pop" && e.arguments.length === 0) {
+      this.recordsCall(e, of.rows, "pop");
+      return;
+    }
+    this.c.error(e, `An array of texts has push(text), pop(), length, [i], for\u2026of, forEach, includes, indexOf and join; ${method}() is not one of them.`);
+  }
+  /** `names.includes(t)`, `names.indexOf(t)`: a function of the compiler's own, a loop over the texts that compares each. */
+  textsSearch(e, of, method) {
+    const at = this.at(e);
+    const label = this.label(e);
+    if (e.arguments.length !== 1) {
+      this.c.error(e, `${method}() takes the text to look for.`);
+      return null;
+    }
+    const wanted = this.text(e.arguments[0]);
+    if (!wanted) return null;
+    const w = this.newVar(`(${method} of ${of.name})`, "text", at, { temp: true, text: "made" });
+    const i = this.newVar(`(index of ${of.name})`, "number", at, { temp: true });
+    const result = this.newVar(`(${of.name}.${method} result)`, method === "includes" ? "boolean" : "number", at, { temp: true });
+    const same2 = { kind: "textCompare", op: "==", left: this.textAtCells(this.textAtIndex(of, varRef(i)), e), right: { kind: "textVar", id: w.id }, at, label };
+    const call = {
+      name: `${of.name}.${method}`,
+      at,
+      label,
+      params: [{ decl: w, init: wanted, label }],
+      result: { decl: result, kind: method === "includes" ? "boolean" : "number" },
+      body: [
+        { kind: "declare", decl: i, init: num(0), at, label },
+        { kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: [...of.rows.fields.values()][0].id, at }, at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "if", cond: same2, then: [{ kind: "return", value: method === "includes" ? TRUE : varRef(i), at, label }], at, label }], at, label },
+        { kind: "return", value: method === "includes" ? FALSE : num(-1), at, label }
+      ]
+    };
+    return this.mark({ kind: "call", call }, e);
+  }
+  /** `names.join(", ")`: the texts one after another with the separator between, made where the call stands. */
+  textsJoin(e, of) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const between = e.arguments[0] ? this.text(e.arguments[0]) : { kind: "text", text: "," };
+    if (!between) return null;
+    const sep = this.newVar("(separator)", "text", at, { temp: true, text: "made" });
+    const out = this.newVar(`(${of.name}.join)`, "text", at, { temp: true, text: "made" });
+    const i = this.newVar(`(index of ${of.name})`, "number", at, { temp: true });
+    const add = (t) => ({ kind: "assignText", target: out.id, value: { kind: "template", parts: [{ kind: "value", text: { kind: "textVar", id: out.id } }, { kind: "value", text: t }], at, label }, at, label });
+    this.emit({ kind: "declare", decl: sep, init: between, at, label }, e);
+    this.emit({ kind: "declare", decl: out, init: { kind: "text", text: "" }, at, label }, e);
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+    this.emit({
+      kind: "for",
+      cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: [...of.rows.fields.values()][0].id, at }, at, label },
+      update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
+      body: [{ kind: "if", cond: { kind: "compare", op: ">", left: varRef(i), right: num(0), at, label }, then: [add({ kind: "textVar", id: sep.id })], at, label }, add(this.textAtCells(this.textAtIndex(of, varRef(i)), e))],
+      at,
+      label
+    }, e);
+    return { kind: "textVar", id: out.id };
+  }
+  /** A loop over an array of texts: `turn` is called, where the body goes, with the text at each place and the place. As many as there are when the loop starts. */
+  textsLoop(of, node, turn) {
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(index of ${of.name})`, "number", at, { temp: true });
+    const n = this.newVar(`(length of ${of.name})`, "number", at, { temp: true });
+    const body2 = this.collect(() => turn(this.textAtIndex(of, varRef(i)), i));
+    this.emit({ kind: "declare", decl: n, init: { kind: "length", array: [...of.rows.fields.values()][0].id, at }, at, label }, node);
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, node);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: varRef(n), at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: body2, at, label }, node);
+  }
+  /* ── A Map and a Set over any number ── */
+  /** Where each such table was declared: where its functions say they are from. */
+  hashNodes = /* @__PURE__ */ new WeakMap();
+  /**
+   * `new Map<number, number>()`, `new Set<number>()`: keys that are any number, where a table keyed by ids of the game has
+   * a cell for every id there is. The entries are kept in the order they went in — three arrays that grow, a key, a
+   * value and whether it is still there — which is the order JavaScript goes through a Map in: a key set again stays
+   * where it was, one deleted and set again goes to the end, one added while a loop goes through is reached by it. A
+   * key is found through `slots`, open addressing over a power of two of cells, made again at twice the size when three
+   * quarters of it is taken. The work is in functions of the table's own (`hashFunction`), called where it is used.
+   */
+  declareHash(name, as, init, type, at) {
+    const { ts } = this;
+    const args = this.c.checker.getTypeArguments(type);
+    const valueType = as === "map" ? args[1] : void 0;
+    const kind = valueType ? this.kindOf(valueType) : null;
+    if (as === "map" && kind !== "number" && kind !== "boolean") {
+      this.c.error(at, `${name} holds numbers or booleans; for anything more, keep the place of a row of an array of records in it.`);
+      return null;
+    }
+    const where = this.sourceOf(at);
+    const atIr = this.at(at);
+    const label = this.label(at);
+    const grown = (n, k, width = {}) => {
+      const a2 = this.newArray(n, k, 0, where, width);
+      a2.dynamic = true;
+      return a2;
+    };
+    const slots = this.newArray(`${name} (slots)`, "number", HASH_START, where);
+    slots.dynamic = true;
+    const counter = (n) => this.newVar(n, "number", where);
+    const unitKeys = args[0] && this.kindOf(args[0]) === "unit";
+    const h = {
+      kind: "hash",
+      as,
+      name,
+      slots,
+      keys: grown(`${name} (keys)`, "number"),
+      ...as === "map" ? { values: grown(`${name} (values)`, kind, kind === "number" ? this.widthOf(valueType) : {}) } : {},
+      live: grown(`${name} (has)`, "boolean"),
+      size: counter(`${name}.size`),
+      mask: counter(`${name} (mask)`),
+      used: counter(`${name} (slots taken)`),
+      dead: counter(`${name} (deleted)`),
+      walking: counter(`${name} (loops)`),
+      fns: {},
+      ...unitKeys ? { units: { ptr: grown(`${name} (unit ptr)`, "number", { unsigned: true }), epd: grown(`${name} (unit epd)`, "number", { unsigned: true }), uid: grown(`${name} (unit uid)`, "number", { unsigned: true }) } } : {}
+    };
+    this.hashNodes.set(h, at);
+    this.emit({ kind: "remark", short: as === "map" ? "a Map over any number" : "a Set over any number", text: `${name}'s keys are any number, so a key is looked for: a few steps to find, set or delete one, where a table keyed by ids of the game (a UnitType, a Player) is one read. It keeps the order its keys went in, as JavaScript does, in arrays that grow out of the memory the programs' arrays share.`, at: atIr }, at);
+    this.emit({ kind: "declareArray", array: slots.id, fill: num(0), at: atIr, label }, at);
+    for (const a2 of this.hashColumns(h)) this.emit({ kind: "declareArray", array: a2.id, init: [], at: atIr, label }, at);
+    for (const [v, first] of [[h.size, 0], [h.mask, HASH_START - 1], [h.used, 0], [h.dead, 0], [h.walking, 0]]) this.emit({ kind: "declare", decl: v, init: num(first), at: atIr, label }, at);
+    const whole2 = this.evaluate(init)?.value;
+    const constant = (v) => h.values?.kind === "boolean" ? typeof v === "boolean" ? { kind: "const", value: v } : null : (() => {
+      const n = this.asInteger({ value: v }, init);
+      return n === null ? null : num(n);
+    })();
+    if (unitKeys && (whole2 instanceof Map || whole2 instanceof Set) && whole2.size > 0) {
+      this.c.error(init, `${name}'s keys are units of the game, which the script has none of: it starts empty.`);
+      return null;
+    }
+    if (whole2 instanceof Map || whole2 instanceof Set) {
+      for (const [k, v] of whole2 instanceof Map ? whole2.entries() : [...whole2.values()].map((x) => [x, true])) {
+        const key = this.asInteger({ value: k }, init);
+        const value = h.values ? constant(v) : void 0;
+        if (key === null || value === null) {
+          if (value === null) this.c.error(init, `${name} holds ${h.values.kind}s, got ${describe2(v)}.`);
+          return null;
+        }
+        this.hashPut(h, num(key), value, at);
+      }
+      return h;
+    }
+    const given = ts.isNewExpression(init) ? init.arguments?.[0] : void 0;
+    if (!given) return h;
+    const list = this.unwrap(given);
+    if (!ts.isArrayLiteralExpression(list)) {
+      this.c.error(given, `${name} starts empty, or with what is written out: ${as === "map" ? "new Map([[1, 10], [2, 20]])" : "new Set([1, 2, 3])"}.`);
+      return null;
+    }
+    for (const item of list.elements) {
+      const pair = this.unwrap(item);
+      if (as === "map" && (!ts.isArrayLiteralExpression(pair) || pair.elements.length !== 2)) {
+        this.c.error(item, "A Map starts with [key, value] pairs.");
+        return null;
+      }
+      const key = this.hashKey(h, as === "map" ? pair.elements[0] : item);
+      const value = h.values ? h.values.kind === "number" ? this.num(pair.elements[1]) : this.boolValue(pair.elements[1]) : void 0;
+      if (!key || value === null) return null;
+      this.hashPut(h, key, value, item);
+    }
+    return h;
+  }
+  /** The arrays an entry is kept in, which move together when the deleted ones go. */
+  hashColumns(h) {
+    return [h.keys, ...h.values ? [h.values] : [], h.live, ...h.units ? [h.units.ptr, h.units.epd, h.units.uid] : []];
+  }
+  /** A key as the number it is found by, and — of a table keyed by units — the unit's three numbers to keep beside it. */
+  hashKey(h, expr) {
+    if (!h.units) {
+      const key = this.num(expr);
+      return key ? { key } : null;
+    }
+    const found = this.unitExpr(expr);
+    if (!found) return null;
+    const unit = this.unitTemp(found, expr);
+    const at = this.at(expr);
+    const label = this.label(expr);
+    return { unit, key: { kind: "binary", op: "+", left: { kind: "unitPart", unit, part: "ptr", at }, right: { kind: "binary", op: "<<", left: { kind: "unitPart", unit, part: "uid", at }, right: num(16), at, label }, at, label } };
+  }
+  /** A call of one of a table's functions, as an expression. */
+  hashCall(h, which, args, node) {
+    const fn = this.hashFunction(h, which);
+    const at = this.at(node);
+    const label = this.label(node);
+    const call = { name: fn.name, fn: fn.id, at, label, params: fn.params.map((decl, k) => ({ decl, init: args[k], label })), body: [] };
+    if (fn.result) call.result = { decl: this.newVar(`(${fn.name} result)`, fn.result.kind === "boolean" ? "boolean" : "number", at, { temp: true }), kind: fn.result.kind };
+    return this.mark(call, node);
+  }
+  hashPut(h, k, value, node) {
+    const { key, unit } = "key" in k ? k : { key: k, unit: void 0 };
+    const at = this.at(node);
+    const parts = h.units ? UNIT_PARTS.map((part) => ({ kind: "unitPart", unit: unit ?? NO_UNIT, part, at })) : [];
+    const call = this.hashCall(h, "put", [key, ...value === void 0 ? [] : [value], ...parts], node);
+    this.emit({ kind: "call", call, at: call.at, label: call.label }, node);
+  }
+  /**
+   * One of a table's functions, made the first time something needs it: `find` (the place of a key's entry, −1 when it
+   * has none), `place` (an entry into the slots), `grow` (the slots made again: without the deleted entries when no loop
+   * is going through them, and twice the size when more than half would be taken), `put` and `drop`.
+   */
+  hashFunction(h, which) {
+    const made = h.fns[which];
+    if (made) return made;
+    const node = this.hashNodes.get(h);
+    const at = this.at(node);
+    const label = this.label(node);
+    const name = `${h.name}.${which === "put" ? h.as === "map" ? "set" : "add" : which === "drop" ? "delete" : `(${which})`}`;
+    const local = (n, kind = "number") => this.newVar(`(${n} of ${h.name})`, kind, at, { temp: true });
+    const fn = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
+    h.fns[which] = fn;
+    const bin = (op, left, right) => ({ kind: "binary", op, left, right, at, label });
+    const cmp = (op, left, right) => ({ kind: "compare", op, left, right, at, label });
+    const cell = (a2, index) => ({ kind: "element", array: a2.id, index, at });
+    const set = (v, value) => ({ kind: "assign", target: v.id, value, at, label });
+    const let_ = (v, init) => ({ kind: "declare", decl: v, init, at, label });
+    const store = (a2, index, value) => ({ kind: "store", array: a2.id, index, value, at, label });
+    const push = (a2, value) => ({ kind: "push", array: a2.id, value, at, label });
+    const when = (cond, then, otherwise) => ({ kind: "if", cond, then, ...otherwise ? { else: otherwise } : {}, at, label });
+    const give = (value) => ({ kind: "return", ...value ? { value } : {}, at, label });
+    const loop = (i, until, body2) => ({ kind: "for", cond: cmp("<", varRef(i), until), update: [set(i, bin("+", varRef(i), num(1)))], body: body2, at, label });
+    const run = (f, args) => this.hashCall(h, f, args, node);
+    const statement = (call) => ({ kind: "call", call, at, label });
+    const start = (key) => bin("&", bin("^", key, bin(">>>", key, num(16))), varRef(h.mask));
+    const next = (s) => set(s, bin("&", bin("+", varRef(s), num(1)), varRef(h.mask)));
+    const length = { kind: "length", array: h.keys.id, at };
+    switch (which) {
+      case "find": {
+        const key = local("key"), s = local("slot"), e = local("entry");
+        fn.params = [key];
+        fn.result = { decl: local("found"), kind: "number" };
+        fn.body = [
+          let_(s, start(varRef(key))),
+          let_(e, cell(h.slots, varRef(s))),
+          { kind: "while", cond: cmp("!=", varRef(e), num(0)), body: [
+            // An entry that was deleted still holds its slot, so that what was put in after it is still found.
+            when({ kind: "and", items: [cmp("==", cell(h.keys, bin("-", varRef(e), num(1))), varRef(key)), cell(h.live, bin("-", varRef(e), num(1)))] }, [give(bin("-", varRef(e), num(1)))]),
+            next(s),
+            set(e, cell(h.slots, varRef(s)))
+          ], at, label },
+          give(num(-1))
+        ];
+        break;
+      }
+      case "place": {
+        const i = local("entry"), s = local("slot");
+        fn.params = [i];
+        fn.body = [
+          let_(s, start(cell(h.keys, varRef(i)))),
+          { kind: "while", cond: cmp("!=", cell(h.slots, varRef(s)), num(0)), body: [next(s)], at, label },
+          store(h.slots, varRef(s), bin("+", varRef(i), num(1))),
+          set(h.used, bin("+", varRef(h.used), num(1)))
+        ];
+        break;
+      }
+      case "grow": {
+        const i = local("entry"), j = local("kept"), room = local("room"), n = local("slot"), again = local("entry");
+        const columns = this.hashColumns(h);
+        fn.body = [
+          // The deleted entries go, the rest closing up in their order — unless a loop is going through them, whose place would move.
+          when({ kind: "and", items: [cmp("==", varRef(h.walking), num(0)), cmp(">", varRef(h.dead), num(0))] }, [
+            let_(j, num(0)),
+            let_(i, num(0)),
+            loop(i, length, [when(cell(h.live, varRef(i)), [...columns.map((a2) => store(a2, varRef(j), cell(a2, varRef(i)))), set(j, bin("+", varRef(j), num(1)))])]),
+            ...columns.map((a2) => ({ kind: "setLength", array: a2.id, value: varRef(j), at, label })),
+            set(h.dead, num(0))
+          ]),
+          let_(room, bin("+", varRef(h.mask), num(1))),
+          { kind: "while", cond: cmp(">", bin("*", bin("+", length, num(1)), num(2)), varRef(room)), body: [set(room, bin("*", varRef(room), num(2)))], at, label },
+          set(h.mask, bin("-", varRef(room), num(1))),
+          { kind: "setLength", array: h.slots.id, value: varRef(room), at, label },
+          let_(n, num(0)),
+          loop(n, varRef(room), [store(h.slots, varRef(n), num(0))]),
+          set(h.used, num(0)),
+          let_(again, num(0)),
+          loop(again, length, [when(cell(h.live, varRef(again)), [statement(run("place", [varRef(again)]))])])
+        ];
+        break;
+      }
+      case "put": {
+        const key = local("key"), i = local("entry");
+        const value = h.values ? local("value", h.values.kind) : void 0;
+        if (value && h.values) {
+          if (h.values.bits) value.bits = h.values.bits;
+          if (h.values.unsigned) value.unsigned = true;
+        }
+        const unit = h.units ? [[h.units.ptr, local("unit ptr")], [h.units.epd, local("unit epd")], [h.units.uid, local("unit uid")]] : [];
+        for (const [, v] of unit) v.unsigned = true;
+        fn.params = [key, ...value ? [value] : [], ...unit.map(([, v]) => v)];
+        const held = value ? value.kind === "number" ? varRef(value) : boolRef(value) : void 0;
+        fn.body = [
+          let_(i, { kind: "call", call: run("find", [varRef(key)]) }),
+          // A key it has keeps its place, as it does in JavaScript: only the value changes.
+          when(cmp(">=", varRef(i), num(0)), [...held ? [store(h.values, varRef(i), held)] : [], give()]),
+          when(cmp(">", bin("*", bin("+", varRef(h.used), num(1)), num(4)), bin("*", bin("+", varRef(h.mask), num(1)), num(3))), [statement(run("grow", []))]),
+          push(h.keys, varRef(key)),
+          ...held ? [push(h.values, held)] : [],
+          push(h.live, TRUE),
+          ...unit.map(([a2, v]) => push(a2, varRef(v))),
+          statement(run("place", [bin("-", length, num(1))])),
+          set(h.size, bin("+", varRef(h.size), num(1)))
+        ];
+        break;
+      }
+      case "drop": {
+        const key = local("key"), i = local("entry");
+        fn.params = [key];
+        fn.result = { decl: local("deleted", "boolean"), kind: "boolean" };
+        fn.body = [
+          let_(i, { kind: "call", call: run("find", [varRef(key)]) }),
+          when(cmp("<", varRef(i), num(0)), [give(FALSE)]),
+          store(h.live, varRef(i), FALSE),
+          set(h.size, bin("-", varRef(h.size), num(1))),
+          set(h.dead, bin("+", varRef(h.dead), num(1))),
+          give(TRUE)
+        ];
+        break;
+      }
+    }
+    this.mark(fn, node);
+    this.functions.push(fn);
+    return fn;
+  }
+  /**
+   * A method of such a table: `get`, `set`, `has`, `delete`, `clear` of a Map; `add`, `has`, `delete`, `clear` of a
+   * Set. `as` is where the call stands, and what comes back is as `arrayCall`'s. `other` is the right of `get(k) ?? other`.
+   */
+  hashMethod(e, h, method, as, other) {
+    const at = this.at(e);
+    const label = this.label(e);
+    const wrong = (what) => {
+      this.c.error(e, what);
+      return null;
+    };
+    let asked = null;
+    const key = () => {
+      if (e.arguments.length < 1) {
+        this.c.error(e, `${method}() takes a key.`);
+        return null;
+      }
+      asked = this.hashKey(h, e.arguments[0]);
+      return asked?.key ?? null;
+    };
+    switch (method) {
+      case "has": {
+        if (as !== "boolean") return wrong(`${h.name}.has(\u2026) is true or false.`);
+        const k = key();
+        return k ? this.mark({ kind: "compare", op: ">=", left: { kind: "call", call: this.hashCall(h, "find", [k], e) }, right: num(0), at, label }, e) : null;
+      }
+      case "get": {
+        if (h.as !== "map" || !h.values) return wrong("A Set has has(), add() and delete().");
+        if (as === "statement") return wrong(`${h.name}.get(\u2026) is a value: use it or store it.`);
+        if (as === "number" !== (h.values.kind === "number")) return wrong(`${h.name} holds ${h.values.kind}s.`);
+        const k = key();
+        if (!k) return null;
+        const i = this.newVar(`(entry of ${h.name})`, "number", at, { temp: true });
+        const otherwise = other ? h.values.kind === "number" ? this.num(other) : this.boolValue(other) : h.values.kind === "number" ? num(0) : FALSE;
+        if (!otherwise) return null;
+        const call = {
+          name: `${h.name}.get`,
+          at,
+          label,
+          params: [],
+          result: { decl: this.newVar(`(${h.name}.get result)`, h.values.kind, at, { temp: true, ...h.values.bits ? { bits: h.values.bits } : {}, ...h.values.unsigned ? { unsigned: true } : {} }), kind: h.values.kind },
+          body: [
+            { kind: "declare", decl: i, init: { kind: "call", call: this.hashCall(h, "find", [k], e) }, at, label },
+            { kind: "if", cond: { kind: "compare", op: ">=", left: varRef(i), right: num(0), at, label }, then: [{ kind: "return", value: { kind: "element", array: h.values.id, index: varRef(i), at }, at, label }], at, label },
+            { kind: "return", value: otherwise, at, label }
+          ]
+        };
+        return this.mark({ kind: "call", call }, e);
+      }
+      case "set":
+      case "add": {
+        if (method === "set" !== (h.as === "map")) return wrong(h.as === "map" ? "A Map takes set(key, value)." : "A Set takes add(key).");
+        if (as !== "statement") return wrong(`${h.name}.${method}(\u2026) stands on its own.`);
+        if (e.arguments.length !== (h.as === "map" ? 2 : 1)) return wrong(h.as === "map" ? "set() takes a key and a value." : "add() takes a key.");
+        const k = key();
+        const value = h.values ? h.values.kind === "number" ? this.num(e.arguments[1]) : this.boolValue(e.arguments[1]) : void 0;
+        if (!k || !asked || value === null) return null;
+        this.hashPut(h, asked, value, e);
+        return true;
+      }
+      case "delete": {
+        const k = key();
+        if (!k) return null;
+        const call = this.hashCall(h, "drop", [k], e);
+        if (as === "statement") {
+          this.emit({ kind: "call", call, at, label }, e);
+          return true;
+        }
+        if (as !== "boolean") return wrong(`${h.name}.delete(\u2026) is true when the key was there.`);
+        return this.mark({ kind: "call", call }, e);
+      }
+      case "clear": {
+        if (as !== "statement" || e.arguments.length) return wrong(`${h.name}.clear() stands on its own and takes nothing.`);
+        const i = this.newVar(`(slot of ${h.name})`, "number", at, { temp: true });
+        for (const a2 of this.hashColumns(h)) this.emit({ kind: "setLength", array: a2.id, value: num(0), at, label }, e);
+        this.emit({ kind: "declare", decl: i, init: num(0), at, label }, e);
+        this.emit({ kind: "for", cond: { kind: "compare", op: "<=", left: varRef(i), right: varRef(h.mask), at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }], body: [{ kind: "store", array: h.slots.id, index: varRef(i), value: num(0), at, label }], at, label }, e);
+        for (const v of [h.size, h.used, h.dead]) this.emit({ kind: "assign", target: v.id, value: num(0), at, label }, e);
+        return true;
+      }
+      default:
+        return wrong(`${h.as === "map" ? "A Map of a program has get, set, has, delete, clear, size, forEach and for\u2026of (with keys(), values() and entries())" : "A Set of a program has add, has, delete, clear, size, forEach and for\u2026of"}; ${method}() is not one of them.`);
+    }
+  }
+  /** `m.forEach((value, key) => …)`, `s.forEach((key) => …)`: the loop, the function its body. */
+  hashForEach(e, h) {
+    if (e.arguments.length > 1) {
+      this.c.error(e.arguments[1], "forEach() takes the function alone; there is no this in a program.");
+      return;
+    }
+    this.hashLoop(h, e, (key, value) => {
+      const k = { kind: "var", v: key };
+      const call = this.callback(e.arguments[0], "forEach", [value ? { kind: "var", v: value } : k, k, h], "void", e);
+      if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+    });
+  }
+  /**
+   * A loop through such a table, in the order its keys went in: `turn` is called, where the loop's body goes, with the
+   * key and the value of each entry that is still there. What the body adds is reached, what it deletes is not, as in
+   * JavaScript; while the loop runs the deleted entries stay where they are (`walking`), so that its place holds.
+   */
+  hashLoop(h, node, turn) {
+    const at = this.at(node);
+    const label = this.label(node);
+    const i = this.newVar(`(entry of ${h.name})`, "number", at, { temp: true });
+    const step = (v, by) => ({ kind: "assign", target: v.id, value: { kind: "binary", op: by, left: varRef(v), right: num(1), at, label }, at, label });
+    const body2 = this.collect(() => {
+      const key = this.newVar(`(key of ${h.name})`, h.units ? "unit" : "number", at, { temp: true });
+      const cell = (a2) => ({ kind: "element", array: a2.id, index: varRef(i), at });
+      this.emit({ kind: "declare", decl: key, init: h.units ? { kind: "unitAt", ptr: cell(h.units.ptr), epd: cell(h.units.epd), uid: cell(h.units.uid), at } : cell(h.keys), at, label }, node);
+      let value;
+      if (h.values) {
+        value = this.newVar(`(value of ${h.name})`, h.values.kind, at, { temp: true, ...h.values.bits ? { bits: h.values.bits } : {}, ...h.values.unsigned ? { unsigned: true } : {} });
+        this.emit({ kind: "declare", decl: value, init: { kind: "element", array: h.values.id, index: varRef(i), at }, at, label }, node);
+      }
+      turn(key, value);
+    });
+    const leaving = (list) => list.flatMap((st) => {
+      switch (st.kind) {
+        case "return":
+          return [step(h.walking, "-"), st];
+        case "if":
+          return [{ ...st, then: leaving(st.then), ...st.else ? { else: leaving(st.else) } : {} }];
+        case "while":
+        case "do":
+        case "block":
+        case "unitLoop":
+        case "textLoop":
+          return [{ ...st, body: leaving(st.body) }];
+        case "for":
+          return [{ ...st, body: leaving(st.body), update: leaving(st.update) }];
+        case "unrolled":
+          return [{ ...st, iterations: st.iterations.map(leaving) }];
+        case "switch":
+          return [{ ...st, cases: st.cases.map((c2) => ({ ...c2, body: leaving(c2.body) })) }];
+        default:
+          return [st];
+      }
+    });
+    this.emit(step(h.walking, "+"), node);
+    this.emit({ kind: "declare", decl: i, init: num(0), at, label }, node);
+    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: h.keys.id, at }, at, label }, update: [step(i, "+")], body: [{ kind: "if", cond: { kind: "element", array: h.live.id, index: varRef(i), at }, then: leaving(body2), at, label }], at, label }, node);
+    this.emit(step(h.walking, "-"), node);
+  }
+  /* ── Classes ── */
+  /**
+   * A class declared in the body is the program's: an instance is a record — a variable a field — whose class is known
+   * when the script is built, and a method is a function that takes the instance first. So whether a method is called or
+   * inlined is `inline`'s rule and nothing of its own; an overridden method, `super` and `instanceof` are settled here,
+   * by the class the binding carries; and nothing of a class is left when the map is played.
+   */
+  statics = /* @__PURE__ */ new Map();
+  /** The body each class was declared in: where its methods are walked. */
+  classBodies = /* @__PURE__ */ new Map();
+  /** The constructors being walked, innermost last: whose `super(…)` a call of it is, the instance, and the name its fields are declared under. */
+  constructing = [];
+  /** The class an expression names, when it is one declared in the body. */
+  classOf(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isIdentifier(e)) return void 0;
+    const decl = declarationOf(ts, this.c.checker, e);
+    return decl && ts.isClassDeclaration(decl) && this.body.plan.game.has(decl) ? decl : void 0;
+  }
+  /** The class a type is an instance of, when it is one declared in the body. */
+  classOfType(type) {
+    const { ts } = this;
+    const decl = type.getSymbol()?.valueDeclaration;
+    return decl && ts.isClassDeclaration(decl) && this.body.plan.game.has(decl) ? decl : void 0;
+  }
+  /** What a class extends: a class of the body, null when it extends nothing, undefined — with a diagnostic — when it extends anything else. */
+  baseOf(cls) {
+    const { ts } = this;
+    const clause = cls.heritageClauses?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword)?.types[0];
+    if (!clause) return null;
+    const base = this.classOf(clause.expression);
+    if (!base) this.c.error(clause, `${this.className(cls)} extends ${clause.expression.getText(this.body.sf)}, which is not a class declared in this program: a class of a program extends another one of it.`);
+    return base;
+  }
+  /** A class and what it extends, itself first. */
+  chainOf(cls) {
+    const chain = [];
+    for (let c2 = cls; c2 && !chain.includes(c2); c2 = this.baseOf(c2)) chain.push(c2);
+    return chain;
+  }
+  className(cls) {
+    return cls.name?.text ?? "(class)";
+  }
+  isStatic(m) {
+    const { ts } = this;
+    return ts.canHaveModifiers(m) && !!ts.getModifiers(m)?.some((x) => x.kind === ts.SyntaxKind.StaticKeyword);
+  }
+  /** A member's name as the key its field is kept under: `hp`, `#hp`. */
+  memberKey(name) {
+    const { ts } = this;
+    return name && (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteralLike(name)) ? name.text : null;
+  }
+  /** The first member that `pick` takes, in the class or — the way a lookup goes — in what it extends. */
+  memberOf(cls, pick, from = 0) {
+    for (const c2 of this.chainOf(cls).slice(from)) {
+      const m = c2.members.find(pick);
+      if (m) return m;
+    }
+    return void 0;
+  }
+  /** The class whose body a node is written in. */
+  enclosingClass(node) {
+    const { ts } = this;
+    for (let n = node.parent; n; n = n.parent) if (ts.isClassDeclaration(n)) return n;
+    return void 0;
+  }
+  /** `class Squad { static count = 0; … }` where it stands: its static fields are variables of the program from here on. The rest waits for `new`. */
+  declareClass(cls) {
+    const { ts } = this;
+    this.classBodies.set(cls, this.body);
+    if (cls.typeParameters?.length) this.c.error(cls.typeParameters[0], "A class of a program takes no type parameters: what each field holds has to be known when the script is built.");
+    for (const m of cls.members) {
+      if (ts.isClassStaticBlockDeclaration(m)) {
+        this.c.error(m, "A static block is not supported in a program; give the static fields their values where they are declared.");
+        continue;
+      }
+      if (ts.isMethodDeclaration(m) && (m.asteriskToken || ts.getModifiers(m)?.some((x) => x.kind === ts.SyntaxKind.AsyncKeyword))) this.c.error(m, "Generators and async functions are not supported in a program.");
+      if (!ts.isPropertyDeclaration(m) || !this.isStatic(m)) continue;
+      const key = this.memberKey(m.name);
+      if (!key) {
+        this.c.error(m.name, "A field's name is written out.");
+        continue;
+      }
+      const held = this.declareField(`${this.className(cls)}.${key}`, m.initializer, this.c.checker.getTypeAtLocation(m.name), this.c.checker.getSymbolAtLocation(m.name), m, m.name, m);
+      if (held) this.statics.set(m, held);
+    }
+  }
+  /** `new Squad(P1, 12)`: the fields declared under `name`, their first values and the constructor run — what it extends first, as JavaScript runs them. */
+  instantiate(e, name) {
+    const cls = this.classOf(e.expression);
+    if (!cls) {
+      this.c.error(e.expression, "new makes an instance of a class declared in the program.");
+      return null;
+    }
+    if (this.constructing.length >= MAX_INLINE_DEPTH) {
+      this.c.error(e, `${this.className(cls)} makes another instance while it is being made, sixteen deep: an instance is a set of variables of its own, made when the script is built, so this would have no end.`);
+      return null;
+    }
+    const self = { kind: "record", fields: /* @__PURE__ */ new Map(), cls };
+    return this.construct(cls, e.arguments ?? [], self, e, name) ? self : null;
+  }
+  construct(cls, args, self, at, name) {
+    const { ts } = this;
+    const base = this.baseOf(cls);
+    if (base === void 0) return false;
+    if (ts.getModifiers(cls)?.some((m) => m.kind === ts.SyntaxKind.AbstractKeyword) && self.cls === cls) {
+      this.c.error(at, `${this.className(cls)} is abstract.`);
+      return false;
+    }
+    const target = this.classBodies.get(cls) ?? this.body;
+    const ctor = cls.members.find((m) => ts.isConstructorDeclaration(m) && !!m.body);
+    if (!ctor) {
+      if (base) {
+        if (!this.construct(base, args, self, at, name)) return false;
+      } else if (args.length) {
+        this.c.error(at, `${this.className(cls)} has no constructor, so new ${this.className(cls)}() takes nothing.`);
+        return false;
+      }
+      const scope = new Scope(target === this.c.body ? this.topScope : null);
+      scope.bind(THIS, self);
+      const saved = this.enterBody(target);
+      const outer = this.scope;
+      this.scope = scope;
+      try {
+        this.declareFields(cls, self, name);
+      } finally {
+        this.scope = outer;
+        this.leaveBody(saved);
+      }
+      return true;
+    }
+    this.constructing.push({ cls, self, name });
+    try {
+      const call = this.inline(at, ctor.parameters, ctor.body, target, `new ${this.className(cls)}`, ctor, {
+        self,
+        args,
+        nothing: true,
+        first: (scope) => {
+          for (const p of ctor.parameters) {
+            if (!ts.getModifiers(p)?.length || !ts.isIdentifier(p.name)) continue;
+            const from = scope.lookup(p);
+            if (from && this.onRow.has(self)) {
+              this.rowFieldGiven(self, p.name.text, from.kind === "value" ? { value: from.value } : { binding: from }, p);
+              continue;
+            }
+            const field = from && this.parameterField(from, `${name}.${p.name.text}`, p);
+            if (field) self.fields.set(p.name.text, field);
+          }
+          if (!base) this.declareFields(cls, self, name);
+        }
+      });
+      if (!call) return false;
+      this.emit({ kind: "call", call, at: call.at, label: call.label }, at);
+      if (base && !this.superCalled.delete(ctor)) this.c.error(ctor, `${this.className(cls)} extends ${this.className(base)}, so its constructor calls super(\u2026) before anything else.`);
+      return true;
+    } finally {
+      this.constructing.pop();
+    }
+  }
+  superCalled = /* @__PURE__ */ new Set();
+  /** `super(…)` inside a constructor: what the class extends is made on the same instance, and then the class's own fields get their values. */
+  superCall(e) {
+    const top = this.constructing[this.constructing.length - 1];
+    const cls = this.enclosingClass(e);
+    const base = cls && this.baseOf(cls);
+    if (!top || !cls || top.cls !== cls || !base) {
+      this.c.error(e, "super(\u2026) is the first thing the constructor of a class that extends another does.");
+      return;
+    }
+    const ctor = cls.members.find((m) => this.ts.isConstructorDeclaration(m) && !!m.body);
+    if (ctor) this.superCalled.add(ctor);
+    if (this.construct(base, e.arguments, top.self, e, top.name)) this.declareFields(cls, top.self, top.name);
+  }
+  /** A class's own fields, each with the value it is declared with — or 0, false, no unit, no text. `this` is bound where this runs. */
+  declareFields(cls, self, name) {
+    const { ts } = this;
+    for (const m of cls.members) {
+      if (!ts.isPropertyDeclaration(m) || this.isStatic(m)) continue;
+      const key = this.memberKey(m.name);
+      if (!key) {
+        this.c.error(m.name, "A field's name is written out.");
+        continue;
+      }
+      if (!m.initializer && self.fields.has(key)) continue;
+      if (this.onRow.has(self)) {
+        if (m.initializer) this.rowFieldGiven(self, key, { expr: m.initializer }, m);
+        continue;
+      }
+      const held = this.declareField(`${name}.${key}`, m.initializer, this.c.checker.getTypeAtLocation(m.name), this.c.checker.getSymbolAtLocation(m.name), m, m.name, m);
+      if (held) self.fields.set(key, held);
+    }
+  }
+  /** A field that a constructor's parameter declares (`public owner: Player`): a variable of its own that starts as the argument — an array, a record or an instance handed over is itself. */
+  parameterField(from, full, p) {
+    if (from.kind !== "value") return this.takenCopy(from, full, p);
+    const type = this.c.checker.getTypeAtLocation(p.name);
+    if (typeof from.value === "string" && this.isTextType(type)) {
+      const [, prop] = this.c.checker.getSymbolsOfParameterPropertyDeclaration(p, p.name.text);
+      const keptAs = hasTextMark(from.value) || !prop ? "made" : this.textKept(void 0, (left) => this.ts.isPropertyAccessExpression(left) && this.c.checker.getSymbolAtLocation(left.name) === prop);
+      const v = this.newVar(full, "text", this.sourceOf(p.name), { text: keptAs });
+      this.emit({ kind: "declare", decl: v, init: this.literalText(from.value, p), at: this.at(p), label: this.label(p) }, p);
+      return { kind: "var", v };
+    }
+    const kind = this.kindOf(type);
+    if (kind === "unit" && (from.value === null || from.value === void 0)) {
+      const v = this.newVar(full, "unit", this.sourceOf(p.name));
+      this.emit({ kind: "declare", decl: v, init: NO_UNIT, at: this.at(p), label: this.label(p) }, p);
+      return { kind: "var", v };
+    }
+    if (kind === "number" && typeof from.value === "number" || kind === "boolean" && typeof from.value === "boolean") return this.fieldCopy(from, full, p);
+    this.c.error(p, `${full} would hold ${describe2(from.value)}, which only the script has: a field holds a number, a boolean, a text, a unit, an array or a record.`);
+    return null;
+  }
+  /**
+   * A call of a method — `s.add(u)`, `super.hit(n)`, `Squad.make()` — as the call of a function it is, the instance
+   * bound to `this`. Undefined when the call is not of a method of a class of the program; null, with a diagnostic, when
+   * it is and cannot be made.
+   */
+  methodCall(e) {
+    const { ts } = this;
+    const callee = this.unwrap(e.expression);
+    if (!ts.isPropertyAccessExpression(callee)) return void 0;
+    const found = this.memberAt(callee, (m, name) => ts.isMethodDeclaration(m) && this.memberKey(m.name) === name);
+    if (!found) return found;
+    const method = found.member;
+    if (!method.body) {
+      this.c.error(e, `${found.name} has no body here: it is abstract, and what this instance is does not give it one.`);
+      return null;
+    }
+    return this.inline(e, method.parameters, method.body, this.classBodies.get(method.parent) ?? this.body, found.name, method, { ...found.self ? { self: found.self } : {}, ...found.before ? { before: found.before } : {} }) ?? null;
+  }
+  /** `s.size` where `size` is a getter: the call it is. Undefined when it is not one. */
+  getterCall(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isPropertyAccessExpression(e)) return void 0;
+    const found = this.memberAt(e, (m, name) => ts.isGetAccessorDeclaration(m) && this.memberKey(m.name) === name, true);
+    if (!found) return found;
+    const getter = found.member;
+    return this.inline(e, [], getter.body, this.classBodies.get(getter.parent) ?? this.body, found.name, getter, { self: found.self, args: [], ...found.before ? { before: found.before } : {} }) ?? null;
+  }
+  /** `s.hp = 5` where `hp` is a setter: the call it is, emitted. False when it is not one. */
+  setterCall(e, op) {
+    const { ts } = this;
+    const left = this.unwrap(e.left);
+    if (!ts.isPropertyAccessExpression(left)) return false;
+    const found = this.memberAt(left, (m, name) => ts.isSetAccessorDeclaration(m) && this.memberKey(m.name) === name, true);
+    if (found === void 0) return false;
+    if (!found) return true;
+    if (op !== ts.SyntaxKind.EqualsToken) {
+      this.c.error(e, `${found.name} is a setter, which takes = only: read it, work the value out, and assign that.`);
+      return true;
+    }
+    const setter = found.member;
+    const call = this.inline(e, setter.parameters, setter.body, this.classBodies.get(setter.parent) ?? this.body, found.name, setter, { self: found.self, args: [e.right], nothing: true, ...found.before ? { before: found.before } : {} });
+    if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+    return true;
+  }
+  /**
+   * A call that gives an instance — `make(3)`, `v.add(w)` where `add` returns `this`: the call made, as a statement, and
+   * the instance it settled on. Undefined when the call gives no instance of a class of the program; null with a diagnostic.
+   */
+  instanceCall(e, name, into) {
+    const { ts } = this;
+    if (!this.classOfType(this.c.checker.getTypeAtLocation(e))) return void 0;
+    const instance = { name };
+    let call;
+    const callee = this.unwrap(e.expression);
+    if (ts.isIdentifier(callee)) {
+      const decl = this.gameDeclaration(callee);
+      if (!decl || !ts.isFunctionDeclaration(decl)) {
+        this.c.error(e, "A function that gives an instance is one declared in the program.");
+        return null;
+      }
+      call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl, { instance });
+    } else if (ts.isPropertyAccessExpression(callee)) {
+      const found = this.memberAt(callee, (m, n) => ts.isMethodDeclaration(m) && this.memberKey(m.name) === n);
+      if (!found) return null;
+      const method = found.member;
+      call = this.inline(e, method.parameters, method.body, this.classBodies.get(method.parent) ?? this.body, found.name, method, { ...found.self ? { self: found.self } : {}, ...found.before ? { before: found.before } : {}, instance });
+    }
+    if (!call) return null;
+    if (into) into.push(this.mark({ kind: "call", call, at: call.at, label: call.label }, e));
+    else this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
+    if (!instance.made) {
+      this.c.error(e, "This call gave no instance: every way through the function has to return one.");
+      return null;
+    }
+    return instance.made;
+  }
+  /**
+   * The member of a class that `obj.name` reaches: through an instance (by the class it is, so an overridden method is
+   * the one found), through `super` (from what the enclosing class extends on), or — a static one — through the class's
+   * name. `quiet`: a name that is no such member is simply not one (a field, read as any field is).
+   */
+  memberAt(e, pick, quiet = false) {
+    const { ts } = this;
+    const name = e.name.text;
+    const obj = this.unwrap(e.expression);
+    if (obj.kind === ts.SyntaxKind.SuperKeyword) {
+      const cls = this.enclosingClass(e);
+      const self2 = this.scope.lookup(THIS);
+      if (!cls || !self2) {
+        this.c.error(e, "super is for a method of a class that extends another.");
+        return null;
+      }
+      const member2 = this.memberOf(cls, (m) => !this.isStatic(m) && pick(m, name), 1);
+      if (!member2) {
+        if (quiet) return void 0;
+        this.c.error(e, `What ${this.className(cls)} extends has no ${name}().`);
+        return null;
+      }
+      return { member: member2, self: self2, name: `${this.className(member2.parent)}.${name}` };
+    }
+    const named = this.classOf(obj);
+    if (named) {
+      const member2 = this.memberOf(named, (m) => this.isStatic(m) && pick(m, name));
+      if (!member2) {
+        if (quiet) return void 0;
+        this.c.error(e, `${this.className(named)} has no static ${name}().`);
+        return null;
+      }
+      return { member: member2, name: `${this.className(named)}.${name}` };
+    }
+    const before = [];
+    const self = ts.isCallExpression(obj) ? this.instanceCall(obj, "(made)", before) ?? void 0 : this.bindingOf(obj);
+    if (self?.kind !== "record" || !self.cls) return void 0;
+    const member = this.memberOf(self.cls, (m) => !this.isStatic(m) && pick(m, name));
+    if (!member) {
+      if (quiet || self.fields.has(name)) return void 0;
+      this.c.error(e, `${this.className(self.cls)} has no method ${name}().`);
+      return null;
+    }
+    return { member, self, name: `${this.className(self.cls)}.${name}`, ...before.length ? { before } : {} };
+  }
+  /* ── Functions ── */
+  /** A call of a `game()` function: inlined from its own body, wherever that file is. */
+  gameCall(call, fn) {
+    const target = this.c.resolve(fn);
+    if (!target) {
+      this.c.error(call, "This game function's body could not be found again.");
+      return void 0;
+    }
+    const arrow = target.plan.arrow;
+    return this.inline(call, arrow.parameters, target.plan.expression ?? arrow.body, target, target.name, arrow);
+  }
+  /**
+   * A function at a call. Inlined — parameters bound, the body walked, `return` leaving it — the first time a function
+   * is met, and every time when it has to be; from the second time on it is *called* when it can be (`callable`), the
+   * first call changed to match. The result — a number, a boolean or a unit the checker says the call has — comes back
+   * in a variable of the call's own that dies with the statement.
+   */
+  inline(call, parameters, body2, target, name, decl, as = {}) {
+    const { ts } = this;
+    const written = as.args ?? (ts.isCallExpression(call) ? call.arguments : []);
+    const given = [];
+    const spread = /* @__PURE__ */ new Map();
+    for (const arg of written) {
+      if (!ts.isSpreadElement(arg)) {
+        given.push(arg);
+        continue;
+      }
+      const known = this.evaluate(arg.expression);
+      const list = known ? void 0 : this.listOf(arg.expression);
+      const items = known ? Array.isArray(known.value) ? known.value.map((value) => ({ kind: "value", value })) : null : list?.kind === "array" && !list.a.dynamic ? Array.from({ length: list.a.length }, (_, k) => ({ kind: "cell", a: list.a, index: num(k) })) : list?.kind === "units" && !list.ptr.dynamic ? Array.from({ length: list.ptr.length }, (_, k) => ({ kind: "unitAt", ptr: { a: list.ptr, index: num(k) }, epd: { a: list.epd, index: num(k) }, uid: { a: list.uid, index: num(k) } })) : null;
+      if (!items) {
+        this.c.error(arg, "... in a call spreads a list the script has, or an array of a fixed length: how many arguments a call has is settled when the script is built. An array that grows is handed over as itself \u2014 f(xs).");
+        return void 0;
+      }
+      for (const item of items) {
+        spread.set(given.length, item);
+        given.push(arg);
+      }
+    }
+    const what = name ?? "The function";
+    if (!body2) {
+      this.c.error(call, "The function has no body.");
+      return void 0;
+    }
+    const deep = this.inlineDepth >= MAX_INLINE_DEPTH;
+    if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl) || ts.isMethodDeclaration(decl)) && (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))) {
+      this.c.error(decl, "Generators and async functions are not supported in a program.");
+      return void 0;
+    }
+    const kind = as.nothing ? "void" : this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? (this.isTextType(this.c.checker.getTypeAtLocation(call)) ? "text" : "void");
+    const line = this.line(call);
+    const out = { ...name ? { name } : {}, at: this.at(call), label: this.label(call), params: [], body: [] };
+    if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true, ...kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(call)) : {} }), kind };
+    this.mark(out, call);
+    this.callees.set(out, decl);
+    const closure = target === this.body && target === this.c.body ? this.topScope : null;
+    const scope = new Scope(closure);
+    if (as.self) scope.bind(THIS, as.self);
+    let ok = true;
+    let args = [];
+    let why = "";
+    const asCalled = (a2) => {
+      if (typeof a2 !== "string") {
+        args?.push(a2);
+        return;
+      }
+      if (args) why = a2;
+      args = null;
+    };
+    if (as.instance) asCalled("it returns an instance, and which one is settled at each call");
+    if (as.before?.length) asCalled("it is called on what another call gives, which runs first and inside it");
+    const patterns = [];
+    parameters.forEach((p, i) => {
+      if (p.dotDotDotToken) {
+        const element = this.c.checker.getIndexTypeOfType(this.c.checker.getTypeAtLocation(p.name), ts.IndexKind.Number);
+        const k = element ? this.kindOf(element) : null;
+        if (!ts.isIdentifier(p.name) || k !== "number" && k !== "boolean") {
+          this.c.error(p, "The rest of the arguments is an array of numbers or of booleans: ...ns: number[].");
+          ok = false;
+          return;
+        }
+        const values = [];
+        for (const [j, x] of given.slice(i).entries()) {
+          const item2 = spread.get(i + j);
+          const v = item2 ? this.valueOf(item2, k, x) : k === "number" ? this.num(x) : this.boolValue(x);
+          if (!v) {
+            ok = false;
+            return;
+          }
+          values.push(v);
+        }
+        const rest = this.newArray(p.name.text, k, values.length, this.sourceOfIn(target, p.name), k === "number" && element ? this.widthOf(element) : {});
+        if (values.length === 0) rest.dynamic = true;
+        this.emit({ kind: "declareArray", array: rest.id, init: values, at: this.at(call), label: this.label(call) }, call);
+        scope.bind(p, { kind: "array", a: rest });
+        asCalled(`${p.name.text} is the rest of a call's arguments, as many as that call has`);
+        return;
+      }
+      if (!ts.isIdentifier(p.name)) {
+        const arg2 = given[i] ?? p.initializer;
+        if (!arg2) {
+          this.c.error(call, `Missing argument ${p.name.getText(target.sf)}.`);
+          ok = false;
+          return;
+        }
+        const from = this.patternSource(arg2, arg2);
+        if (!from) {
+          ok = false;
+          return;
+        }
+        const pattern = p.name;
+        patterns.push(() => {
+          this.bindPattern(pattern, p, from, scope);
+        });
+        if (!Array.isArray(from) && (from.kind === "record" || from.kind === "array" || from.kind === "records" || from.kind === "units")) asCalled({ binding: from });
+        else asCalled(`${p.name.getText(target.sf)} is taken from something written at the call`);
+        return;
+      }
+      const arg = given[i];
+      const label = `L${line}: ${p.name.text} = ${arg ? arg.getText(this.body.sf) : "its default"}`;
+      const item = spread.get(i);
+      if (item && arg) {
+        if (item.kind === "value") {
+          scope.bind(p, item);
+          asCalled(this.constantArgument(item.value, label, p) ?? `${p.name.text} is ${describe2(item.value)}, which only the script has`);
+          return;
+        }
+        const k = this.kindOf(this.c.checker.getTypeAtLocation(p.name));
+        const init = k ? this.valueOf(item, k, arg) : null;
+        if (!k || !init) {
+          ok = false;
+          return;
+        }
+        const copy = this.newVar(p.name.text, k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(p.name)) : {});
+        out.params.push({ decl: copy, init, label });
+        scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init, label });
+        return;
+      }
+      if (!arg) {
+        if (!p.initializer) {
+          this.c.error(call, `Missing argument ${p.name.text}.`);
+          ok = false;
+          return;
+        }
+        const saved = this.enterBody(target);
+        const h2 = this.evaluate(p.initializer);
+        this.leaveBody(saved);
+        if (!h2) {
+          this.notConstant(p.initializer, "A default value");
+          ok = false;
+          return;
+        }
+        scope.bind(p, { kind: "value", value: h2.value });
+        asCalled(this.constantArgument(h2.value, label, p) ?? `${p.name.text} is ${describe2(h2.value)}, which only the script has`);
+        return;
+      }
+      const h = this.evaluate(arg);
+      if (this.isTextType(this.c.checker.getTypeAtLocation(p.name)) && !(h && !isGameValue(h.value) && !this.assigns(body2, p))) {
+        const given2 = this.bindingOf(arg);
+        if (given2?.kind === "var" && given2.v.kind === "text" && !this.assigns(body2, p)) {
+          scope.bind(p, given2);
+          asCalled({ init: { kind: "textVar", id: given2.v.id }, label });
+          return;
+        }
+        const value2 = this.text(arg);
+        if (!value2) {
+          ok = false;
+          return;
+        }
+        asCalled({ init: value2, label });
+        const copy = this.newVar(p.name.text, "text", this.sourceOfIn(target, p.name), { text: "made" });
+        out.params.push({ decl: copy, init: value2, label });
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
+      if (h && !isGameValue(h.value)) {
+        const constant = this.constantArgument(h.value, label, p);
+        const k = this.kindOf(this.c.checker.getTypeAtLocation(p.name));
+        if (constant && "init" in constant && k && this.assigns(body2, p)) {
+          const copy = this.newVar(p.name.text, k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(p.name)) : {});
+          out.params.push({ decl: copy, init: constant.init, label });
+          scope.bind(p, { kind: "var", v: copy });
+          asCalled(constant);
+          return;
+        }
+        scope.bind(p, { kind: "value", value: h.value });
+        asCalled(constant ?? `${p.name.text} is ${describe2(h.value)}, which only the script has`);
+        return;
+      }
+      const fresh = this.unwrap(arg);
+      if (ts.isNewExpression(fresh) && this.classOf(fresh.expression)) {
+        const instance = this.instantiate(fresh, p.name.text);
+        if (!instance) {
+          ok = false;
+          return;
+        }
+        scope.bind(p, instance);
+        asCalled({ binding: instance });
+        return;
+      }
+      if (ts.isCallExpression(fresh)) {
+        const given2 = this.instanceCall(fresh, p.name.text);
+        if (given2 === null) {
+          ok = false;
+          return;
+        }
+        if (given2) {
+          scope.bind(p, given2);
+          asCalled({ binding: given2 });
+          return;
+        }
+      }
+      const binding = this.listOf(arg);
+      if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed" || binding?.kind === "hash" || binding?.kind === "texts" || binding?.kind === "grid" || binding?.kind === "lists") {
+        scope.bind(p, binding);
+        asCalled({ binding });
+        return;
+      }
+      if (binding?.kind === "record") {
+        if (this.assigns(body2, p)) {
+          this.c.error(p, `${p.name.text} is a record; a record parameter can have its fields assigned, not be reassigned itself.`);
+          ok = false;
+          return;
+        }
+        scope.bind(p, binding);
+        asCalled({ binding });
+        return;
+      }
+      const variable = binding?.kind === "var" ? binding.v : void 0;
+      if (variable) {
+        const init = variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable);
+        asCalled({ init, label });
+        if (!this.assigns(body2, p)) {
+          scope.bind(p, { kind: "var", v: variable });
+          return;
+        }
+        const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), { ...variable.bits ? { bits: variable.bits } : {}, ...variable.unsigned ? { unsigned: true } : {} });
+        out.params.push({ decl: copy, init, label });
+        scope.bind(p, { kind: "var", v: copy });
+        return;
+      }
+      if (this.isUnitTyped(arg)) {
+        const unit = this.unitExpr(arg);
+        if (!unit) {
+          ok = false;
+          return;
+        }
+        const copy = this.newVar(p.name.text, "unit", this.sourceOfIn(target, p.name));
+        out.params.push({ decl: copy, init: unit, label });
+        scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init: unit, label });
+        return;
+      }
+      const value = ts.isIdentifier(this.unwrap(arg)) ? null : this.numQuietly(arg);
+      if (value) {
+        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name), this.widthOf(this.c.checker.getTypeAtLocation(p.name)));
+        out.params.push({ decl: copy, init: value, label });
+        scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init: value, label });
+        return;
+      }
+      this.notConstant(arg, "An argument");
+      ok = false;
+    });
+    if (as.self) asCalled({ binding: as.self });
+    if (!ok) return out;
+    if (given.length > parameters.length && !parameters.some((p) => p.dotDotDotToken)) {
+      this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`);
+      return out;
+    }
+    const at = this.sourceOfIn(target, decl.name ?? decl);
+    const site = args ? this.siteOf(decl, args) : void 0;
+    if (site && args) {
+      if (site.fn) return this.calls(out, site.fn, args);
+      if (site.making) return this.calls(out, site.making, args);
+      if ((site.first || (site.walking ?? 0) > 0) && !site.never && !site.busy) {
+        if (ts.isFunctionDeclaration(decl) && (closure === null || decl.parent !== this.c.body.plan.body)) site.never = "it is declared inside a block or another function, whose variables it may use";
+        else if (ts.isClassDeclaration(decl.parent) && (closure === null || decl.parent.parent !== this.c.body.plan.body)) site.never = "its class is declared inside a block or a function, whose variables it may use";
+        else {
+          site.busy = true;
+          let made;
+          try {
+            made = this.callable(parameters, body2, target, name ?? "function", decl, kind, args, closure, at, site);
+          } finally {
+            site.busy = false;
+            site.making = void 0;
+          }
+          if (typeof made === "string") site.never = made;
+          else {
+            site.fn = made;
+            if (site.first) this.calls(site.first.call, made, site.first.args);
+            site.first = void 0;
+            return this.calls(out, made, args);
+          }
+        }
+      }
+    }
+    const because = site?.never ?? (args ? "" : why);
+    if (because) this.inlinedBecause.set(decl, { why: because, name: name ?? "function", at });
+    if (deep) {
+      this.c.error(call, (this.walkingBodies.get(decl) ?? 0) > 0 ? `${what} calls itself, and here it cannot be a function that is called${because ? ` \u2014 ${because}` : ""}. A call that is not one is a copy of the function's body, and these copies would have no end.` : "Functions nest too deeply: a call that is inlined is a copy of the function's body, and these are sixteen inside one another.");
+      return void 0;
+    }
+    if (site) site.walking = (site.walking ?? 0) + 1;
+    this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 0) + 1);
+    try {
+      out.body = this.walkFunction(body2, kind, target, scope, () => {
+        patterns.forEach((take) => take());
+        as.first?.(scope);
+      }, as.instance);
+      if (as.before?.length) {
+        out.body = [...as.before, ...out.params.map((p) => ({ kind: "declare", decl: p.decl, init: p.init, at: out.at, label: p.label })), ...out.body];
+        out.params = [];
+      }
+    } finally {
+      if (site) site.walking = (site.walking ?? 1) - 1;
+      this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 1) - 1);
+    }
+    if (site?.fn && args) return this.calls(out, site.fn, args);
+    if (site && args && !site.first && !site.fn && !site.never) site.first = { call: out, args };
+    return out;
+  }
+  /** A function's body walked with its parameters bound in `scope`: the statements, `return` leaving them. */
+  walkFunction(body2, kind, target, scope, first, instance) {
+    const { ts } = this;
+    const saved = this.enterBody(target);
+    const outerScope = this.scope;
+    this.scope = scope;
+    this.inlineDepth++;
+    const fn = { kind, ...instance ? { instance } : {} };
+    try {
+      return this.collect(() => {
+        first?.();
+        if (ts.isBlock(body2)) this.block(body2.statements, { fn });
+        else {
+          try {
+            if (kind === "number") {
+              const value = this.num(body2);
+              if (value) this.emit({ kind: "return", value, at: this.at(body2), label: this.label(body2) }, body2);
+            } else if (kind === "unit") {
+              const value = this.unitExpr(body2);
+              if (value) this.emit({ kind: "return", value, at: this.at(body2), label: this.label(body2) }, body2);
+            } else if (kind === "boolean") this.emit({ kind: "return", value: this.boolValue(body2), at: this.at(body2), label: this.label(body2) }, body2);
+            else if (kind === "text") {
+              const value = this.text(body2);
+              if (value) this.emit({ kind: "return", value, at: this.at(body2), label: this.label(body2) }, body2);
+            } else this.expressionStatement(body2);
+          } catch (err) {
+            if (!(err instanceof LowerError)) throw err;
+            if (err instanceof ValueError) this.c.error(err.node, err.message, "script");
+            else this.c.error(body2, err.message);
+          }
+        }
+      });
+    } finally {
+      this.inlineDepth--;
+      this.scope = outerScope;
+      this.leaveBody(saved);
+    }
+  }
+  /** A value the script has, as what a parameter that is a variable is set to: a whole number or a boolean, else nothing. */
+  constantArgument(value, label, parameter) {
+    if (value === null || value === void 0) return this.kindOf(this.c.checker.getTypeAtLocation(parameter.name)) === "unit" ? { init: NO_UNIT, label } : null;
+    if (typeof value === "boolean") return { init: value ? TRUE : FALSE, label };
+    if (typeof value === "number" && Number.isInteger(value) && value >= I32_MIN && value <= U32_MAX) return { init: num(value), label };
+    if (typeof value === "string" && this.isTextType(this.c.checker.getTypeAtLocation(parameter.name))) return { init: this.literalText(value, parameter), label };
+    return null;
+  }
+  identity(o) {
+    let n = this.identities.get(o);
+    if (!n) {
+      n = ++this.lastIdentity;
+      this.identities.set(o, n);
+    }
+    return n;
+  }
+  /** What is known of a function at these arrays: a function that takes an array is one copy an array passed, as a template is. */
+  siteOf(decl, args) {
+    const part = (b) => {
+      switch (b.kind) {
+        case "array":
+          return `a${this.identity(b.a)}`;
+        case "records":
+          return `r${[...b.fields.values()].map((a2) => this.identity(a2)).join(".")}`;
+        case "units":
+          return `u${this.identity(b.ptr)}`;
+        case "keyed":
+          return `k${this.identity(b.values ?? b.present ?? b)}`;
+        case "hash":
+          return `h${this.identity(b.slots)}`;
+        case "texts":
+          return `t${this.identity(b.rows)}`;
+        // A record kept in a `let` is one object the scope hands back; a row of an array of records is made anew at every use, and so never met twice.
+        default:
+          return `o${this.identity(b)}`;
+      }
+    };
+    const key = `${this.identity(decl)}:${args.map((a2) => "binding" in a2 ? part(a2.binding) : "").join(",")}`;
+    let site = this.sites.get(key);
+    if (!site) {
+      site = {};
+      this.sites.set(key, site);
+    }
+    return site;
+  }
+  /** `out` as a call of `fn`: the function's parameters, each with this call's argument. */
+  calls(out, fn, args) {
+    out.fn = fn.id;
+    out.body = [];
+    out.params = [];
+    let k = 0;
+    for (const a2 of args) if ("init" in a2) out.params.push({ decl: fn.params[k++], init: a2.init, label: a2.label });
+    return out;
+  }
+  /**
+   * The function as one that is called: every parameter a variable of its own (an array parameter the array passed),
+   * the body walked once. Or, in words for the hint on its line, why it cannot be: it sleeps (the program wakes up
+   * inside it, which only the lowering's own jumps can do), it keeps an edge (a latch a call), or it does not compile
+   * that way — a parameter reaches a field only a value known when the script is built can fill. Nothing the attempt
+   * reported is kept: the same lines compile, or fail for good, where the function is inlined.
+   */
+  callable(parameters, body2, target, name, decl, kind, args, closure, at, site) {
+    const { ts } = this;
+    const scope = new Scope(closure);
+    const patterns = [];
+    const fn = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
+    for (let i = 0; i < parameters.length; i++) {
+      const p = parameters[i];
+      const a2 = args[i];
+      if ("binding" in a2) {
+        if (ts.isIdentifier(p.name)) scope.bind(p, a2.binding);
+        else {
+          const pattern = p.name;
+          const from = a2.binding;
+          patterns.push(() => {
+            this.bindPattern(pattern, p, from, scope);
+          });
+        }
+        continue;
+      }
+      const type = this.c.checker.getTypeAtLocation(p.name);
+      const k = this.kindOf(type) ?? (this.isTextType(type) ? "text" : null);
+      if (!k) return `${p.name.getText(target.sf)} is not a number, a boolean, a unit or a text`;
+      const v = this.newVar(p.name.getText(target.sf), k, this.sourceOfIn(target, p.name), k === "number" ? this.widthOf(type) : k === "text" ? { text: "made" } : {});
+      fn.params.push(v);
+      scope.bind(p, { kind: "var", v });
+    }
+    const self = args[parameters.length];
+    if (self && "binding" in self) scope.bind(THIS, self.binding);
+    if (kind !== "void") {
+      const type = this.c.checker.getReturnTypeOfSignature(this.c.checker.getSignatureFromDeclaration(decl));
+      fn.result = { decl: this.newVar(`(${name} result)`, kind, at, { temp: true, ...kind === "number" ? this.widthOf(type) : {} }), kind };
+    }
+    const { error } = this.c;
+    const caught = [];
+    this.c.error = (_node, message) => {
+      caught.push(message);
+    };
+    site.making = fn;
+    const depth = this.inlineDepth;
+    this.inlineDepth = 0;
+    try {
+      fn.body = this.walkFunction(body2, kind, target, scope, () => patterns.forEach((take) => take()));
+    } finally {
+      this.inlineDepth = depth;
+      this.c.error = error;
+    }
+    if (caught.length) return `with its parameters as variables of the game it does not compile \u2014 ${caught[0].replace(/\.$/, "")}`;
+    if (mentions2(fn.body, "sleep")) return "it sleeps, and the program wakes up inside it";
+    if (mentions2(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
+    this.mark(fn, decl);
+    this.functions.push(fn);
+    this.declared.set(fn, decl);
+    return fn;
+  }
+  /**
+   * Once the whole program is walked: which functions are called after all. A call the walk threw away (an attempt that
+   * failed, a first call changed to a called one) no longer counts, so a function left with one call is inlined there
+   * again — its parameters copies — and one with none is dropped. Then a word for the line of each function that is
+   * called, or inlined more than once, and the arrays nothing reaches any more are let go.
+   */
+  settleFunctions(program) {
+    const byId = new Map(this.functions.map((f) => [f.id, f]));
+    let live = [];
+    const reached = /* @__PURE__ */ new Set();
+    for (; ; ) {
+      live = [];
+      reached.clear();
+      const visit = (root) => eachCall(root, (c3) => {
+        live.push(c3);
+        const f = c3.fn ? byId.get(c3.fn) : void 0;
+        if (f && !reached.has(f.id)) {
+          reached.add(f.id);
+          visit(f.body);
+        }
+      });
+      visit(program.body);
+      const once = this.functions.find((f) => reached.has(f.id) && live.filter((c3) => c3.fn === f.id).length === 1);
+      if (!once) break;
+      const c2 = live.find((x) => x.fn === once.id);
+      delete c2.fn;
+      c2.body = once.body;
+      this.functions.splice(this.functions.indexOf(once), 1);
+      byId.delete(once.id);
+    }
+    const functions2 = this.functions.filter((f) => reached.has(f.id));
+    if (functions2.length) program.functions = functions2;
+    const tally = /* @__PURE__ */ new Map();
+    for (const c2 of live) {
+      const decl = this.callees.get(c2);
+      if (!decl) continue;
+      let t = tally.get(decl);
+      if (!t) {
+        t = { inlined: 0, called: 0, copies: [] };
+        tally.set(decl, t);
+      }
+      if (c2.fn) t.called++;
+      else t.inlined++;
+    }
+    for (const f of functions2) tally.get(this.declared.get(f))?.copies.push(f);
+    const times = (n) => `${n} place${n === 1 ? "" : "s"}`;
+    for (const [decl, t] of tally) {
+      if (t.copies.length) {
+        const copies = t.copies.length;
+        const f = t.copies[0];
+        const also = t.inlined ? ` Inlined at ${times(t.inlined)} more, where an argument is a value only the script has.` : "";
+        f.body.unshift({
+          kind: "remark",
+          at: f.at,
+          short: copies > 1 ? `called \xD7${t.called}, ${copies} copies` : `called \xD7${t.called}`,
+          text: copies > 1 ? `Called from ${times(t.called)}: ${copies} copies in the built map, one for each array it is passed.${also}` : `Called from ${times(t.called)}: one copy in the built map, its parameters variables each call sets.${also}`
+        });
+      } else if (t.inlined > 1) {
+        const b = this.inlinedBecause.get(decl);
+        if (b) program.body.unshift({ kind: "remark", at: b.at, short: `inlined \xD7${t.inlined}`, text: `Inlined at each of its ${t.inlined} calls, a copy of its body each: ${b.why}.` });
+      }
+    }
+    const used = /* @__PURE__ */ new Set();
+    const arrays = (root) => {
+      if (Array.isArray(root)) {
+        root.forEach(arrays);
+        return;
+      }
+      if (!root || typeof root !== "object") return;
+      const o = root;
+      if (typeof o.array === "string") used.add(o.array);
+      for (const v of Object.values(o)) if (v && typeof v === "object") arrays(v);
+    };
+    arrays(program.body);
+    arrays(functions2);
+    for (let i = this.arrays.length - 1; i >= 0; i--) if (!used.has(this.arrays[i].id)) this.arrays.splice(i, 1);
+  }
+  /** Walk another body (a game function's) until `leaveBody`: its plan, file and thunks. */
+  enterBody(target) {
+    const saved = this.body;
+    this.body = target;
+    return saved;
+  }
+  leaveBody(saved) {
+    this.body = saved;
+  }
+  sourceOfIn(target, node) {
+    const p = target.sf.getLineAndCharacterOfPosition(node.getStart(target.sf));
+    return { file: target.sf.fileName, line: p.line + 1, column: p.character + 1 };
+  }
+  /** Whether a body assigns to (or increments) a declaration anywhere. */
+  assigns(body2, decl) {
+    const { ts } = this;
+    let found = false;
+    const target = (e) => {
+      const u = this.unwrap(e);
+      if (ts.isArrayLiteralExpression(u)) return u.elements.some((x) => !ts.isOmittedExpression(x) && target(ts.isSpreadElement(x) ? x.expression : x));
+      if (ts.isObjectLiteralExpression(u)) return u.properties.some((p) => ts.isShorthandPropertyAssignment(p) ? target(p.name) : ts.isPropertyAssignment(p) ? target(p.initializer) : false);
+      return ts.isIdentifier(u) && declarationOf(ts, this.c.checker, u) === decl;
+    };
+    const walk = (n) => {
+      if (found) return;
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && target(n.left)) {
+        found = true;
+        return;
+      }
+      if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) && target(n.operand)) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(body2);
+    return found;
+  }
+  /* ── Numbers ── */
+  asInteger(h, at) {
+    const v = h.value;
+    if (typeof v === "boolean") return v ? 1 : 0;
+    if (typeof v !== "number" || !Number.isFinite(v)) {
+      this.c.error(at, `Expected a number, got ${describe2(v)}.`);
+      return null;
+    }
+    if (!Number.isInteger(v)) {
+      this.c.error(at, `Only whole numbers exist in the game (got ${v}).`);
+      return null;
+    }
+    if (v < I32_MIN || v > U32_MAX) {
+      this.c.error(at, `A number of the game has 32 bits: \u22122 147 483 648 to 2 147 483 647, or up to 4 294 967 295 as a u32 (got ${v}).`);
+      return null;
+    }
+    return v;
+  }
+  /** `num` without diagnostics, for a probe that may fail. */
+  numQuietly(expr) {
+    const { error } = this.c;
+    let failed = false;
+    this.c.error = () => {
+      failed = true;
+    };
+    try {
+      const out = this.num(expr);
+      return failed ? null : out;
+    } finally {
+      this.c.error = error;
+    }
+  }
+  /** A number expression: a constant, a variable, arithmetic, an intrinsic, a call — or null, with a diagnostic. */
+  num(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      if (isRead(h.value)) return this.readValue(h.value, e);
+      if (isTable(h.value)) return this.tableRead(h.value, e);
+      if (isUnitPick(h.value)) {
+        this.c.error(e, `${h.value.ident}() is a unit, not a number; read one of its fields: ${h.value.ident}(\u2026)?.hp \u2014 or keep it: const u = ${h.value.ident}(\u2026).`);
+        return null;
+      }
+      if (isInput(h.value)) return this.inputValue(h.value, e);
+      if (isMouse(h.value)) {
+        this.c.error(e, "mouse() is a place on the map: read its x or its y.");
+        return null;
+      }
+      if (isChat(h.value)) {
+        this.c.error(e, "chatted() is what a player typed: test it in an if, or read one of the values its pattern names.");
+        return null;
+      }
+      const n = this.asInteger(h, e);
+      return n === null ? null : num(n);
+    }
+    if (ts.isPropertyAccessExpression(e)) {
+      const member = this.unitMember(e);
+      if (member) return this.unitField(e, member);
+      const got = this.getterCall(e);
+      if (got !== void 0) return this.numberOf(got, e);
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const el = this.elementOf(e);
+      if (el === null) return null;
+      if (el) {
+        if (el.a.kind !== "number") {
+          this.c.error(e, `${el.a.name} holds booleans.`);
+          return null;
+        }
+        return this.mark({ kind: "element", array: el.a.id, index: el.index, at: this.at(e) }, e);
+      }
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const found = this.findOr(e, "number");
+      if (found !== void 0) return found;
+    }
+    if (ts.isPropertyAccessExpression(e) && e.name.text === "length" && this.isTextTyped(e.expression)) {
+      const of = this.text(e.expression);
+      return of ? this.mark({ kind: "textLength", of, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    if (ts.isPropertyAccessExpression(e) && e.name.text === "length") {
+      const part = this.bindingOf(e.expression);
+      if (part?.kind === "row") return num(part.length);
+      if (part?.kind === "grid") return this.mark(this.rowsOf(part, e), e);
+      if (part?.kind === "lists") return this.mark({ kind: "length", array: part.ptr.id, at: this.at(e) }, e);
+      const b = part && part.kind !== "inner" && part.kind !== "innerUnits" ? part : this.listOf(e.expression);
+      if (b?.kind === "array") return this.mark({ kind: "length", array: b.a.id, at: this.at(e) }, e);
+      if (b?.kind === "records") return this.mark({ kind: "length", array: [...b.fields.values()][0].id, at: this.at(e) }, e);
+      if (b?.kind === "texts") return this.mark({ kind: "length", array: [...b.rows.fields.values()][0].id, at: this.at(e) }, e);
+      if (b?.kind === "units") return this.mark({ kind: "length", array: b.ptr.id, at: this.at(e) }, e);
+    }
+    if (ts.isPropertyAccessExpression(e) && e.name.text === "size") {
+      const b = this.bindingOf(e.expression);
+      if (b?.kind === "keyed" && b.size) return varRef(b.size);
+      if (b?.kind === "hash") return varRef(b.size);
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
+      if (b?.kind === "array") {
+        this.c.error(e, `${b.a.name} is an array; read one of its cells: ${b.a.name}[i].`);
+        return null;
+      }
+      if (b?.kind === "records") {
+        this.c.error(e, `${b.name} is an array of records; read a field of one: ${b.name}[i].${[...b.fields.keys()][0] ?? "field"}.`);
+        return null;
+      }
+      if (b?.kind === "cell") {
+        if (b.a.kind !== "number") {
+          this.c.error(e, "This field is a boolean.");
+          return null;
+        }
+        return this.mark({ kind: "element", array: b.a.id, index: b.index, at: this.at(e) }, e);
+      }
+      if (b?.kind === "var") {
+        if (b.v.kind === "unit") {
+          this.c.error(e, `${b.v.name} is a unit; use one of its fields: ${b.v.name}.hp.`);
+          return null;
+        }
+        if (b.v.kind !== "number") {
+          this.c.error(e, `${b.v.name} is a boolean.`);
+          return null;
+        }
+        return varRef(b.v);
+      }
+      if (b?.kind === "record") {
+        this.c.error(e, "This is a record; use one of its fields.");
+        return null;
+      }
+      if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program.`);
+      else this.notConstant(e, "A value");
+      return null;
+    }
+    if (ts.isPrefixUnaryExpression(e)) {
+      const inner = this.num(e.operand);
+      if (!inner) return null;
+      if (e.operator === ts.SyntaxKind.PlusToken) return inner;
+      if (e.operator === ts.SyntaxKind.MinusToken) return this.mark({ kind: "unary", op: "-", expr: inner, at: this.at(e) }, e);
+      this.c.error(e, "Only + and - apply to variables.");
+      return null;
+    }
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const left = this.unwrap(e.left);
+      const list = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "pop" ? this.bindingOf(left.expression.expression) : void 0;
+      const getter = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "get" ? left.expression.expression : void 0;
+      const bound = getter ? this.bindingOf(getter) : void 0;
+      if (bound?.kind === "hash" && ts.isCallExpression(left)) return this.hashMethod(left, bound, "get", "number", e.right);
+      const table2 = bound?.kind === "keyed" ? bound : getter && !bound ? this.collectionOf(getter) : void 0;
+      if (table2?.kind === "keyed" && table2.present && ts.isCallExpression(left) && left.arguments.length === 1) {
+        const index = this.keyIndex(table2, left.arguments[0]);
+        const got = this.num(left);
+        const other = this.num(e.right);
+        if (!index || !got || !other) return null;
+        const at = this.at(e);
+        return this.mark({ kind: "ternary", cond: { kind: "element", array: table2.present.id, index, at }, whenTrue: got, whenFalse: other, at, label: this.label(e) }, e);
+      }
+      if (list?.kind === "array") {
+        const popped = this.num(left);
+        const other = this.num(e.right);
+        if (!popped || !other) return null;
+        const at = this.at(e);
+        return this.mark({ kind: "ternary", cond: { kind: "compare", op: ">", left: { kind: "length", array: list.a.id, at }, right: num(0), at, label: this.label(e) }, whenTrue: popped, whenFalse: other, at, label: this.label(e) }, e);
+      }
+    }
+    if (ts.isBinaryExpression(e)) {
+      const op = arithOp(ts, e.operatorToken.kind);
+      if (!op) {
+        this.c.error(e, "Expected a number: variables take + - * / % and the bitwise & | ^ << >> >>>.");
+        return null;
+      }
+      const l = this.num(e.left);
+      const r = this.num(e.right);
+      if (!l || !r) return null;
+      return this.mark({ kind: "binary", op, left: l, right: r, at: this.at(e), label: this.label(e) }, e);
+    }
+    if (ts.isConditionalExpression(e)) {
+      const cond = this.bool(e.condition);
+      const whenTrue = this.num(e.whenTrue);
+      const whenFalse = this.num(e.whenFalse);
+      if (!whenTrue || !whenFalse) return null;
+      return this.mark({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+    }
+    if (ts.isCallExpression(e)) return this.callValue(e);
+    this.c.error(e, "Expected a number: a value, a variable, or arithmetic over them.");
+    return null;
+  }
+  /** A read as a number of the program; one that is a boolean of its own (`isHuman`) counts 1 or 0. */
+  readValue(v, at) {
+    const read = this.mark({ kind: "read", read: v.read, at: this.at(at), label: this.label(at) }, at);
+    if (v.equals === void 0) return read;
+    const cond = this.mark({ kind: "compare", op: "==", left: read, right: num(v.equals), at: this.at(at), label: this.label(at) }, at);
+    return this.mark({ kind: "ternary", cond, whenTrue: num(1), whenFalse: num(0), at: this.at(at), label: this.label(at) }, at);
+  }
+  /** A read as a condition: `isHuman(p)` is its byte being 2, a number is tested `!= 0`. */
+  readBool(v, at) {
+    const read = this.mark({ kind: "read", read: v.read, at: this.at(at), label: this.label(at) }, at);
+    if (v.equals === void 0) return this.mark({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at);
+    return this.mark({ kind: "compare", op: "==", left: read, right: num(v.equals), at: this.at(at), label: this.label(at) }, at);
+  }
+  /**
+   * A call that reads the game — `minerals(P1)`, `deaths(P1, unit)` without its comparison — made
+   * now, with its arguments, which are known when the script is built; what it returns says where
+   * the value is. Undefined when the call is not one; null, with a diagnostic, when it failed.
+   */
+  readCall(e) {
+    const callee = this.evaluate(e.expression)?.value;
+    const reads2 = isReader(callee) || isBuilder(callee) && callee.kind === "condition" && READ_ARITY.get(callee.ident) === e.arguments.length;
+    if (!reads2) return void 0;
+    const args = [];
+    for (const a2 of e.arguments) {
+      const h = this.evaluate(a2);
+      if (!h || isRead(h.value)) {
+        this.notConstant(a2, "What to read");
+        return null;
+      }
+      args.push(h.value);
+    }
+    let out;
+    try {
+      out = callee(...args);
+    } catch (err) {
+      throw new ValueError(e, err instanceof Error ? err.message : String(err));
+    }
+    if (!isRead(out)) {
+      this.c.error(e, "Expected a read.");
+      return null;
+    }
+    return out;
+  }
+  /** What a method or a getter gave, as a number. */
+  numberOf(call, e) {
+    if (!call) return null;
+    if (call.result?.kind !== "number") {
+      this.c.error(e, `${call.name ?? "This"} does not give a number.`);
+      return null;
+    }
+    return this.mark({ kind: "call", call }, e);
+  }
+  /** A call as a number: a function of the body or a game function (its result), or an intrinsic over variables. */
+  callValue(e) {
+    const { ts } = this;
+    const ofText = this.textNumber(e);
+    if (ofText !== void 0) return ofText;
+    const method = this.methodCall(e);
+    if (method !== void 0) return this.numberOf(method, e);
+    if (ts.isIdentifier(e.expression) && (e.expression.text === "parseInt" || e.expression.text === "Number" || e.expression.text === "parseFloat") && !this.gameDeclaration(e.expression)) {
+      this.c.error(e, `${e.expression.text}() of a text of the program is not something the game can do yet: keep the number in a variable of its own, and make the text from it.`);
+      return null;
+    }
+    if (ts.isPropertyAccessExpression(e.expression) && SEARCHES.has(e.expression.name.text)) {
+      const over = this.overOf(e.expression.expression);
+      if (over) return this.searchCall(e, over, e.expression.name.text, "number");
+    }
+    if (ts.isPropertyAccessExpression(e.expression)) {
+      const list = this.arrayOf(e.expression.expression);
+      if (list?.kind === "array") {
+        const out = this.arrayCall(e, list.a, e.expression.name.text, "number");
+        return out && out !== true ? out : null;
+      }
+      if (list?.kind === "hash") {
+        const out = this.hashMethod(e, list, e.expression.name.text, "number");
+        return out && out !== true ? out : null;
+      }
+      if (list?.kind === "texts") {
+        if (e.expression.name.text === "indexOf") return this.textsSearch(e, list, "indexOf");
+        this.c.error(e, `${list.name}.${e.expression.name.text}(\u2026) is not a number: an array of texts has indexOf(text) and length for those.`);
+        return null;
+      }
+      const made = list?.kind === "keyed" ? list : !list && e.arguments.length && !this.evaluate(e.arguments[0]) ? this.collectionOf(e.expression.expression) : void 0;
+      if (made) {
+        const out = this.keyedCall(e, made, e.expression.name.text, "number");
+        return out && out !== true ? out : null;
+      }
+    }
+    if (ts.isIdentifier(e.expression)) {
+      const decl = this.gameDeclaration(e.expression);
+      if (decl && ts.isFunctionDeclaration(decl)) {
+        const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
+        if (kind !== "number") {
+          this.c.error(e, `${e.expression.text} does not return a number.`);
+          return null;
+        }
+        const call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+        return call?.result ? this.mark({ kind: "call", call }, e) : null;
+      }
+    }
+    const args = (n, what) => {
+      if (e.arguments.length !== n) {
+        this.c.error(e, `${what} takes ${n} argument${n === 1 ? "" : "s"}.`);
+        return null;
+      }
+      const out = [];
+      for (const a2 of e.arguments) {
+        const l = this.num(a2);
+        if (!l) return null;
+        out.push(l);
+      }
+      return out;
+    };
+    const intrinsic = (name, list) => this.mark({ kind: "intrinsic", name, args: list, at: this.at(e), label: this.label(e) }, e);
+    if (this.isLibraryCall(e, "random")) {
+      if (e.arguments.length !== 1) {
+        this.c.error(e, "random() is a coin toss, a boolean; random(n) is a number from 0 to n \u2212 1.");
+        return null;
+      }
+      const bound = this.num(e.arguments[0]);
+      return bound ? this.mark({ kind: "randomInt", bound, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    const read = this.readCall(e);
+    if (read !== void 0) return read ? this.readValue(read, e) : null;
+    for (const to of ["u32", "i32"]) {
+      if (!this.isLibraryCall(e, to)) continue;
+      const a2 = args(1, `${to}()`);
+      return a2 ? this.mark({ kind: "cast", to, expr: a2[0], at: this.at(e) }, e) : null;
+    }
+    if (this.isLibraryCall(e, "clamp")) {
+      const a2 = args(3, "clamp()");
+      if (!a2) return null;
+      return intrinsic("min", [intrinsic("max", [a2[0], a2[1]]), a2[2]]);
+    }
+    const callee = this.evaluate(e.expression)?.value;
+    if (isGameFunction(callee)) {
+      const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
+      if (kind !== "number") {
+        this.c.error(e, "This game function does not return a number.");
+        return null;
+      }
+      const call = this.gameCall(e, callee);
+      return call?.result ? this.mark({ kind: "call", call }, e) : null;
+    }
+    if (callee === Math.floor || callee === Math.trunc || callee === Math.round || callee === Math.ceil) {
+      const a2 = args(1, "Math rounding");
+      return a2 ? a2[0] : null;
+    }
+    if (callee === Math.abs) {
+      const a2 = args(1, "Math.abs()");
+      return a2 ? intrinsic("abs", [a2[0]]) : null;
+    }
+    if (callee === Math.min || callee === Math.max) {
+      if (e.arguments.length === 0) {
+        this.c.error(e, "Math.min / Math.max take at least one argument.");
+        return null;
+      }
+      let acc = null;
+      for (const a2 of e.arguments) {
+        const l = this.num(a2);
+        if (!l) return null;
+        acc = acc ? intrinsic(callee === Math.min ? "min" : "max", [acc, l]) : l;
+      }
+      return acc;
+    }
+    if (isBuilder(callee)) {
+      this.c.error(e, callee.kind === "condition" ? "This is a condition; test it in an if or a while." : "This is an action; it stands as a statement.");
+      return null;
+    }
+    if (typeof callee === "function") {
+      this.c.error(e, "This helper is computed when the script is built and cannot take a variable of the program. Write it as a game() function to run it in the game.");
+      return null;
+    }
+    this.notConstant(e, "A call's arguments");
+    return null;
+  }
+  /**
+   * An action with arguments from the program: `setResources(P1, "add", n, "ore")`,
+   * `createUnit(P2, m.unit, count, at)`. The record is built with each such place as 0;
+   * the backend does the action with the expressions' values in those fields.
+   */
+  actionWithVars(e, ident, def) {
+    const params = scriptParams(def);
+    const values = [];
+    const variables = [];
+    let text;
+    for (let i = 0; i < e.arguments.length; i++) {
+      const a2 = e.arguments[i];
+      const h = this.evaluate(a2);
+      if (h && !isGameValue(h.value)) {
+        values.push(h.value);
+        continue;
+      }
+      const p = params[i];
+      if (!p) {
+        this.c.error(a2, `${ident} takes ${params.length} argument${params.length === 1 ? "" : "s"}.`);
+        return;
+      }
+      if (p.arg.kind === "text") {
+        const given = this.text(a2);
+        if (!given) return;
+        if (!textHasId(given, this.keptAs) && !MADE_TEXT_ACTIONS.has(def.type)) {
+          this.c.error(a2, `${ident}'s text is one the game looks up by number, and this text is made while the map is played. The objectives, a leaderboard's label and a transmission's text take a made text; print() and displayText() show one in the chat area; here it has to be a text written in the script.`);
+          return;
+        }
+        text = given;
+        values.push("");
+        continue;
+      }
+      const eligible = (p.arg.kind === "amount" || p.arg.kind === "duration") && ACTIONS_WITH_MODIFIER.has(def.type) || p.arg.kind === "count" && COUNT_ACTIONS.has(def.type) || p.arg.kind === "unit";
+      if (!eligible) {
+        this.c.error(a2, `${ident}'s ${p.name} must be known when the script is built. An amount with a modifier (setResources, setDeaths, setScore, setCountdownTimer), a unit count (createUnit, killUnitAt, removeUnitAt, giveUnits) and a unit type can be a variable of the program.`);
+        return;
+      }
+      const expr = this.num(a2);
+      if (!expr) return;
+      variables.push({ index: i, expr });
+      values.push(0);
+    }
+    if (!variables.length && !text) {
+      this.notConstant(e, "A call's arguments");
+      return;
+    }
+    let record;
+    try {
+      const built = this.evaluate(e.expression).value(...values);
+      if (!isAction(built)) {
+        this.c.error(e, "Expected an action.");
+        return;
+      }
+      record = built.record;
+    } catch (err) {
+      throw new ValueError(e, err instanceof Error ? err.message : String(err));
+    }
+    const list = variables.map((v) => {
+      const p = params[v.index];
+      return { field: p.arg.field, bits: p.arg.kind === "count" ? 8 : p.arg.kind === "unit" ? 16 : 32, name: p.name, expr: v.expr };
+    });
+    this.emit({ kind: "action", record: { ...record }, ...list.length ? { variables: list } : {}, ...text ? { text } : {}, at: this.at(e), label: this.label(e) }, e);
+  }
+  /* ── Units on the map, and the game's tables ── */
+  /** `u.hp`, `target?.kills`: the unit and the member's name, when the object is a unit of the game. */
+  unitMember(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isPropertyAccessExpression(e) || !ts.isIdentifier(e.name) || !this.isUnitTyped(e.expression)) return null;
+    const unit = this.unitExpr(e.expression);
+    return unit ? { unit, name: e.name.text } : null;
+  }
+  /** A unit of the game, or none: a variable, `null`, a pick (`first(…)`), a function's result. Null, with a diagnostic, otherwise. */
+  unitExpr(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h) {
+      if (h.value === null || h.value === void 0) return NO_UNIT;
+      if (isUnitPick(h.value)) return this.pick(h.value, e);
+      this.c.error(e, `Expected a unit of the game, got ${describe2(h.value)}.`);
+      return null;
+    }
+    const got = ts.isCallExpression(e) ? this.methodCall(e) : this.getterCall(e);
+    if (got !== void 0) {
+      if (got && got.result?.kind !== "unit") {
+        this.c.error(e, `${got.name ?? "This"} does not give a unit.`);
+        return null;
+      }
+      return got ? this.mark({ kind: "call", call: got }, e) : null;
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const kept = this.bindingOf(e);
+      if (kept?.kind === "unitAt") return this.unitAtPlaces(kept, e);
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const of = this.arrayOf(e.expression);
+      if (of?.kind === "units") {
+        const h2 = this.evaluate(e.argumentExpression);
+        const index = h2 ? (() => {
+          const i = this.asInteger(h2, e.argumentExpression);
+          return i === null ? null : num(i);
+        })() : this.num(e.argumentExpression);
+        return index ? this.unitAtIndex(of, index, e) : null;
+      }
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "pop" && e.arguments.length === 0) {
+      const of = this.bindingOf(e.expression.expression);
+      if (of?.kind === "units") {
+        const parts = this.unitArrays(of).map(([a2]) => {
+          a2.dynamic = true;
+          return { kind: "pop", array: a2.id, at: this.at(e) };
+        });
+        return this.mark({ kind: "unitAt", ptr: parts[0], epd: parts[1], uid: parts[2], at: this.at(e) }, e);
+      }
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
+      if (b?.kind === "var" && b.v.kind === "unit") return unitRef(b.v);
+      this.c.error(e, "Expected a unit of the game: a variable holding one, first(\u2026), nearest(\u2026) or randomUnit(\u2026).");
+      return null;
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && (e.expression.name.text === "find" || e.expression.name.text === "findLast")) {
+      const over = this.overOf(e.expression.expression);
+      if (over) return this.searchCall(e, over, e.expression.name.text, "unit");
+    }
+    if (ts.isCallExpression(e)) {
+      let call;
+      const decl = ts.isIdentifier(e.expression) ? this.gameDeclaration(e.expression) : void 0;
+      if (decl && ts.isFunctionDeclaration(decl)) call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
+      else {
+        const callee = this.evaluate(e.expression)?.value;
+        if (isGameFunction(callee)) call = this.gameCall(e, callee);
+        else {
+          this.notConstant(e, "What picks the unit (the type, the owner, the location)");
+          return null;
+        }
+      }
+      if (!call?.result || call.result.kind !== "unit") {
+        if (call) this.c.error(e, "This function does not return a unit.");
+        return null;
+      }
+      return this.mark({ kind: "call", call }, e);
+    }
+    if (ts.isConditionalExpression(e)) {
+      this.c.error(e, "Choose the unit with an if: let u = a; if (\u2026) u = b;");
+      return null;
+    }
+    this.c.error(e, "Expected a unit of the game.");
+    return null;
+  }
+  pick(v, at) {
+    return this.mark({ kind: "pick", by: v.by, filter: { ...v.filter }, ...v.near !== void 0 ? { near: v.near } : {}, ...v.mouse !== void 0 ? { mouse: v.mouse, within: v.within ?? 48 } : {}, at: this.at(at), label: this.label(at) }, at);
+  }
+  /** `u.hp` as a number. */
+  unitField(e, m) {
+    if (UNIT_FLAGS.includes(m.name)) {
+      const flag2 = this.mark({ kind: "unitFlag", unit: m.unit, flag: m.name, at: this.at(e), label: this.label(e) }, e);
+      return this.mark({ kind: "ternary", cond: flag2, whenTrue: num(1), whenFalse: num(0), at: this.at(e), label: this.label(e) }, e);
+    }
+    if (!UNIT_NUM_FIELDS.includes(m.name)) {
+      this.c.error(e, `A unit has no ${m.name} to read.`);
+      return null;
+    }
+    return this.mark({ kind: "unitField", unit: m.unit, field: m.name, at: this.at(e), label: this.label(e) }, e);
+  }
+  unitWrite(e, m, value) {
+    if (!UNIT_WRITABLE.has(m.name)) {
+      const why = m.name === "x" || m.name === "y" ? "the game ends when a unit's position is written; move a unit with order(), or moveUnit()" : m.name === "owner" ? "give() changes the owner" : m.name === "cloaked" ? "the game showed nothing when the cloak flags were written" : "the game keeps it for itself";
+      this.c.error(e, `A unit's ${m.name} is read only: ${why}.`);
+      return;
+    }
+    this.emit({ kind: "unitWrite", unit: m.unit, field: m.name, value, at: this.at(e), label: this.label(e) }, e);
+  }
+  /** `u.hp = 40`, `u.energy += 50`, `u.invincible = true`. */
+  unitAssign(e, m, op) {
+    const { ts } = this;
+    if (UNIT_FLAGS.includes(m.name)) {
+      if (op !== ts.SyntaxKind.EqualsToken) {
+        this.c.error(e, "Booleans take = only.");
+        return;
+      }
+      this.unitWrite(e, m, this.boolValue(e.right));
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (op === ts.SyntaxKind.EqualsToken) {
+      this.unitWrite(e, m, rhs);
+      return;
+    }
+    const arith = compoundOp(ts, op);
+    const now = arith ? this.unitField(e.left, m) : null;
+    if (!arith) {
+      this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
+      return;
+    }
+    if (now) this.unitWrite(e, m, this.mark({ kind: "binary", op: arith, left: now, right: rhs, at: this.at(e), label: this.label(e) }, e));
+  }
+  /** `u.kill()`, `u.order("move", locations.Exit)`, `u.damage({ percent: 50 })`: what a unit is told to do. */
+  unitCall(e, m) {
+    const { ts } = this;
+    const known = (i, what) => {
+      const a2 = e.arguments[i];
+      if (!a2) {
+        this.c.error(e, `${m.name}() takes ${what}.`);
+        return void 0;
+      }
+      const h = this.evaluate(a2);
+      if (!h || isGameValue(h.value)) {
+        this.notConstant(a2, what[0].toUpperCase() + what.slice(1));
+        return void 0;
+      }
+      return h.value;
+    };
+    const emit = (verb) => {
+      this.emit({ kind: "unitDo", unit: m.unit, verb, at: this.at(e), label: this.label(e) }, e);
+    };
+    const location = (v) => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 255;
+    switch (m.name) {
+      case "kill":
+      case "remove":
+        if (e.arguments.length) {
+          this.c.error(e, `${m.name}() takes no arguments.`);
+          return;
+        }
+        emit({ do: m.name });
+        return;
+      case "give": {
+        const to = known(0, "the player who gets the unit");
+        if (to === void 0) return;
+        if (typeof to !== "number" || !Number.isInteger(to) || !(to >= 0 && to < 12 || to === CURRENT_PLAYER)) {
+          this.c.error(e.arguments[0], "give() takes one player: P1 \u2026 P12 or CurrentPlayer.");
+          return;
+        }
+        emit({ do: "give", to });
+        return;
+      }
+      case "order": {
+        const order = known(0, 'the order: "move", "patrol" or "attack"');
+        const target = order === void 0 ? void 0 : known(1, "the location to go to");
+        if (order === void 0 || target === void 0) return;
+        if (typeof order !== "string" || !ORDERS.includes(order)) {
+          this.c.error(e.arguments[0], `order() takes "move", "patrol" or "attack", got ${describe2(order)}.`);
+          return;
+        }
+        if (!location(target)) {
+          this.c.error(e.arguments[1], "order() takes one of locations.* to go to.");
+          return;
+        }
+        emit({ do: "order", order, target });
+        return;
+      }
+      case "locate": {
+        const at = known(0, "the location to centre on the unit");
+        if (at === void 0) return;
+        if (!location(at) || at === 64) {
+          this.c.error(e.arguments[0], "locate() takes one of locations.*, which is moved onto the unit (not Anywhere).");
+          return;
+        }
+        emit({ do: "locate", location: at });
+        return;
+      }
+      case "damage":
+      case "heal": {
+        const a2 = e.arguments[0];
+        if (!a2 || e.arguments.length > 1) {
+          this.c.error(e, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`);
+          return;
+        }
+        const literal = this.unwrap(a2);
+        let percent = false;
+        let of = a2;
+        if (ts.isObjectLiteralExpression(literal)) {
+          const p = literal.properties.length === 1 ? literal.properties[0] : void 0;
+          if (!p || !ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name) || p.name.text !== "percent") {
+            this.c.error(a2, `${m.name}() takes hit points, or { percent: 50 } of the type's maximum.`);
+            return;
+          }
+          percent = true;
+          of = p.initializer;
+        }
+        const amount = this.num(of);
+        if (amount) emit({ do: m.name, amount, percent });
+        return;
+      }
+      default:
+        this.c.error(e.expression, `A unit has no ${m.name}().`);
+    }
+  }
+  /** A cell of the game's tables as a number: `stats(units.TerranMarine).minerals`. */
+  tableRead(v, at) {
+    if (v.field.writeOnly) {
+      this.c.error(at, `${v.ident} can be set but not read: ${v.field.special === "speed" ? "a speed is four records of the game's tables" : v.field.special === "name" ? "a name is text" : "the game keeps two copies"}.`);
+      return null;
+    }
+    return this.mark({ kind: "tableRead", cell: { ...v.cell }, at: this.at(at), label: this.label(at) }, at);
+  }
+  tableWrite(e, v, value, scaled = false) {
+    if (v.field.readonly) {
+      this.c.error(e, `${v.ident} is read only: the game took no write.`);
+      return;
+    }
+    this.emit({ kind: "tableWrite", cell: { ...v.cell }, value, ...scaled ? { scaled: true } : {}, ...v.field.boolean && value.kind !== "text" ? { boolean: true } : {}, at: this.at(e), label: this.label(e) }, e);
+  }
+  /** `stats(units.TerranMarine).minerals = 25`, `stats(P3).color = "teal"`, `stats(weapons.GaussRifle).damage += 2`. */
+  tableAssign(e, v, op) {
+    const { ts } = this;
+    const { field } = v;
+    const plain = op === ts.SyntaxKind.EqualsToken;
+    const h = this.evaluate(e.right);
+    const known = h && !isGameValue(h.value) ? h.value : void 0;
+    if (field.special === "name" || field.special === "color") {
+      if (!plain) {
+        this.c.error(e, `${v.ident} takes = only.`);
+        return;
+      }
+      if (known === void 0 && field.special === "name") {
+        const made = this.text(e.right);
+        if (made) this.tableWrite(e, v, made);
+        return;
+      }
+      if (known === void 0) {
+        this.notConstant(e.right, "A colour");
+        return;
+      }
+      if (field.special === "color") {
+        try {
+          this.tableWrite(e, v, num(playerColor(known)));
+        } catch (err) {
+          this.c.error(e.right, err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
+      if (typeof known !== "string" || known === "" || hasTextMark(known)) {
+        this.c.error(e.right, "A unit type's name is text known when the script is built.");
+        return;
+      }
+      this.tableWrite(e, v, { kind: "text", text: known });
+      return;
+    }
+    if (field.boolean) {
+      if (!plain) {
+        this.c.error(e, "Booleans take = only.");
+        return;
+      }
+      this.tableWrite(e, v, this.boolValue(e.right));
+      return;
+    }
+    if (plain && typeof known === "number" && Number.isFinite(known)) {
+      const raw = Math.round(known * (field.scale ?? 1));
+      const max = cellMax(field.width);
+      if (known < 0 || raw > max) {
+        this.c.error(e.right, `${v.ident} holds 0 \u2026 ${max / (field.scale ?? 1)}, not ${known}.`);
+        return;
+      }
+      if (!field.scale && !Number.isInteger(known)) {
+        this.c.error(e.right, `${v.ident} is a whole number (got ${known}).`);
+        return;
+      }
+      this.tableWrite(e, v, num(raw), true);
+      return;
+    }
+    const rhs = this.num(e.right);
+    if (!rhs) return;
+    if (plain) {
+      this.tableWrite(e, v, rhs);
+      return;
+    }
+    const arith = compoundOp(ts, op);
+    if (!arith) {
+      this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= assign a number.");
+      return;
+    }
+    const now = this.tableRead(v, e.left);
+    if (now) this.tableWrite(e, v, this.mark({ kind: "binary", op: arith, left: now, right: rhs, at: this.at(e), label: this.label(e) }, e));
+  }
+  /* ── Booleans ── */
+  /** The value stored into a boolean: a constant, a coin toss, a condition tree. */
+  boolValue(expr) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const h = this.evaluate(expr);
+    if (h && typeof h.value === "boolean") return { kind: "const", value: h.value };
+    if (this.isLibraryCall(e, "random") && e.arguments.length === 0) return this.mark({ kind: "random", at: this.at(e) }, e);
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
+      const v = this.varOf(e.operand);
+      if (v && v.kind === "boolean") return { kind: "not", expr: boolRef(v) };
+    }
+    return this.bool(e);
+  }
+  /** `rose(c)`: true on the cycle `c` becomes true; `once(c)`: true the first time it holds. */
+  edge(call, kind) {
+    if (call.arguments.length !== 1) {
+      this.c.error(call, `${kind}() takes one condition.`);
+      return FALSE;
+    }
+    return this.mark({ kind: "edge", edge: kind, cond: this.bool(call.arguments[0]), at: this.at(call), label: this.label(call) }, call);
+  }
+  /** A hoisted value as a condition. */
+  hoistedBool(h, at) {
+    const v = h.value;
+    if (typeof v === "boolean") return v ? TRUE : FALSE;
+    if (typeof v === "number") return v !== 0 ? TRUE : FALSE;
+    if (typeof v === "string") return v !== "" ? TRUE : FALSE;
+    if (isCondition(v)) return this.mark({ kind: "cond", record: { ...v.record } }, at);
+    if (isRead(v)) return this.readBool(v, at);
+    if (isTable(v)) {
+      const read = this.tableRead(v, at);
+      return read ? this.mark({ kind: "test", expr: read, at: this.at(at), label: this.label(at) }, at) : FALSE;
+    }
+    if (isInput(v)) return this.inputBool(v, at);
+    if (isChat(v)) return this.inputBool(v.matched, at);
+    if (isMouse(v)) {
+      this.c.error(at, "mouse() is a place on the map, not a condition: compare its x or its y.");
+      return FALSE;
+    }
+    if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c2) => this.mark({ kind: "cond", record: { ...c2.record } }, at)) };
+    if (isAction(v)) {
+      this.c.error(at, "This is an action, not a condition.");
+      return FALSE;
+    }
+    this.c.error(at, `Expected a condition, got ${describe2(v)}.`);
+    return FALSE;
+  }
+  /** A condition as a `BoolExpr` tree. */
+  bool(expr) {
+    return this.boolInner(expr, 0);
+  }
+  boolInner(expr, depth) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (depth > 64) {
+      this.c.error(e, "The condition nests too deeply.");
+      return FALSE;
+    }
+    if (this.isUnitTyped(e)) {
+      const unit = this.unitExpr(e);
+      return unit ? this.mark({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
+    const h = this.evaluate(expr);
+    if (h) return this.hoistedBool(h, e);
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return { kind: "not", expr: this.boolInner(e.operand, depth + 1) };
+    if ((ts.isCallExpression(e) || ts.isPropertyAccessExpression(e)) && !this.isTextTyped(e)) {
+      const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
+      const got = ts.isCallExpression(e) ? this.methodCall(e) : this.getterCall(e);
+      if (got !== void 0) {
+        if (got && !kind) this.c.error(e, `${got.name ?? "This"} gives nothing to test; test a variable it sets instead.`);
+        return got?.result ? this.mark({ kind: "call", call: got }, e) : FALSE;
+      }
+    }
+    const ofTexts = this.textCondition(e);
+    if (ofTexts) return ofTexts;
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const left = this.unwrap(e.left);
+      const table2 = ts.isCallExpression(left) && ts.isPropertyAccessExpression(left.expression) && left.expression.name.text === "get" ? this.bindingOf(left.expression.expression) : void 0;
+      if (table2?.kind === "hash" && ts.isCallExpression(left)) {
+        const numeric = table2.values?.kind === "number";
+        const out = this.hashMethod(left, table2, "get", numeric ? "number" : "boolean", e.right);
+        if (!out || out === true) return FALSE;
+        return numeric ? this.mark({ kind: "test", expr: out, at: this.at(e), label: this.label(e) }, e) : out;
+      }
+    }
+    if (ts.isBinaryExpression(e)) {
+      const op = e.operatorToken.kind;
+      if (op === ts.SyntaxKind.AmpersandAmpersandToken) return this.mark({ kind: "and", items: [this.boolInner(e.left, depth + 1), this.boolInner(e.right, depth + 1)] }, e);
+      if (op === ts.SyntaxKind.BarBarToken) return this.mark({ kind: "or", items: [this.boolInner(e.left, depth + 1), this.boolInner(e.right, depth + 1)] }, e);
+      const cmp = compareOp(ts, op);
+      if (cmp) return this.comparison(e, cmp, depth);
+      this.c.error(e, "Expected a condition.");
+      return FALSE;
+    }
+    if (ts.isConditionalExpression(e)) {
+      const cond = this.bool(e.condition);
+      const whenTrue = this.boolValue(e.whenTrue);
+      const whenFalse = this.boolValue(e.whenFalse);
+      return this.mark({ kind: "ternary", cond, whenTrue, whenFalse, at: this.at(e), label: this.label(e) }, e);
+    }
+    if (ts.isPropertyAccessExpression(e)) {
+      const member = this.unitMember(e);
+      if (member) {
+        if (UNIT_FLAGS.includes(member.name)) return this.mark({ kind: "unitFlag", unit: member.unit, flag: member.name, at: this.at(e), label: this.label(e) }, e);
+        const field = this.unitField(e, member);
+        return field ? this.mark({ kind: "test", expr: field, at: this.at(e), label: this.label(e) }, e) : FALSE;
+      }
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const el = this.elementOf(e);
+      if (el === null) return FALSE;
+      if (el) {
+        const cell = { kind: "element", array: el.a.id, index: el.index, at: this.at(e) };
+        return el.a.kind === "boolean" ? this.mark(cell, e) : this.mark({ kind: "test", expr: cell, at: this.at(e), label: this.label(e) }, e);
+      }
+    }
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const b = this.bindingOf(e);
+      if (b?.kind === "var") return b.v.kind !== "number" ? boolRef(b.v) : this.mark({ kind: "test", expr: varRef(b.v), at: this.at(e), label: this.label(e) }, e);
+      if (b?.kind === "cell") {
+        const cell = { kind: "element", array: b.a.id, index: b.index, at: this.at(e) };
+        return b.a.kind === "boolean" ? this.mark(cell, e) : this.mark({ kind: "test", expr: cell, at: this.at(e), label: this.label(e) }, e);
+      }
+      if (b?.kind === "record" && b.truth) return boolRef(b.truth);
+      if (b?.kind === "record") {
+        this.c.error(e, "This is a record; test one of its fields.");
+        return FALSE;
+      }
+      if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
+      else this.notConstant(e, "A condition");
+      return FALSE;
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && SEARCHES.has(e.expression.name.text)) {
+      const over = this.overOf(e.expression.expression);
+      if (over) {
+        const numeric = this.kindOf(this.c.checker.getTypeAtLocation(e)) === "number";
+        const out = this.searchCall(e, over, e.expression.name.text, numeric ? "number" : "boolean");
+        if (!out) return FALSE;
+        return numeric ? this.mark({ kind: "test", expr: out, at: this.at(e), label: this.label(e) }, e) : out;
+      }
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
+      const list = this.arrayOf(e.expression.expression);
+      if (list?.kind === "array") {
+        const numeric = e.expression.name.text === "indexOf" || e.expression.name.text === "pop" && list.a.kind === "number";
+        const out = this.arrayCall(e, list.a, e.expression.name.text, numeric ? "number" : "boolean");
+        if (!out || out === true) return FALSE;
+        return numeric ? this.mark({ kind: "test", expr: out, at: this.at(e), label: this.label(e) }, e) : out;
+      }
+      if (list?.kind === "texts" && e.expression.name.text === "includes") return this.textsSearch(e, list, "includes") ?? FALSE;
+      if (list?.kind === "hash") {
+        const numeric = e.expression.name.text === "get" && list.values?.kind === "number";
+        const out = this.hashMethod(e, list, e.expression.name.text, numeric ? "number" : "boolean");
+        if (!out || out === true) return FALSE;
+        return numeric ? this.mark({ kind: "test", expr: out, at: this.at(e), label: this.label(e) }, e) : out;
+      }
+      const made = list?.kind === "keyed" ? list : !list && e.arguments.length && !this.evaluate(e.arguments[0]) ? this.collectionOf(e.expression.expression) : void 0;
+      if (made) {
+        const numeric = e.expression.name.text === "get" && made.values?.kind === "number";
+        const out = this.keyedCall(e, made, e.expression.name.text, numeric ? "number" : "boolean");
+        if (!out || out === true) return FALSE;
+        return numeric ? this.mark({ kind: "test", expr: out, at: this.at(e), label: this.label(e) }, e) : out;
+      }
+    }
+    if (ts.isCallExpression(e)) {
+      if (ts.isIdentifier(e.expression)) {
+        const decl = this.gameDeclaration(e.expression);
+        if (decl && ts.isFunctionDeclaration(decl)) return this.callBool(e, () => this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl));
+      }
+      if (this.isLibraryCall(e, "random")) {
+        if (e.arguments.length === 0) return this.mark({ kind: "random", at: this.at(e) }, e);
+        const n = this.callValue(e);
+        return n ? this.mark({ kind: "test", expr: n, at: this.at(e), label: this.label(e) }, e) : FALSE;
+      }
+      if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose");
+      if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
+      if (this.isLibraryCall(e, "sleep")) {
+        this.c.error(e, "sleep() is a statement, not a condition.");
+        return FALSE;
+      }
+      const read = this.readCall(e);
+      if (read !== void 0) return read ? this.readBool(read, e) : FALSE;
+      const callee = this.evaluate(e.expression)?.value;
+      if (isGameFunction(callee)) return this.callBool(e, () => this.gameCall(e, callee));
+      if (isBuilder(callee) && callee.kind === "condition") {
+        this.c.error(e, `A condition's amount is known when the script is built. To compare with a variable of the program, read the value and compare it yourself: ${callee.ident}(\u2026) >= x, without the comparison and the amount inside the call.`);
+        return FALSE;
+      }
+      if (isBuilder(callee)) {
+        this.c.error(e, "This is an action, not a condition.");
+        return FALSE;
+      }
+      this.notConstant(e, "A condition's arguments");
+      return FALSE;
+    }
+    this.c.error(e, "Expected a condition: a trigger condition, a comparison, a boolean variable, or a combination with && || !.");
+    return FALSE;
+  }
+  /** A call whose result is tested: a boolean result, or a number's `!= 0`. */
+  callBool(e, run) {
+    const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
+    if (!kind) {
+      this.c.error(e, "This function returns nothing to test; test a variable it sets instead.");
+      return FALSE;
+    }
+    const call = run();
+    return call?.result ? this.mark({ kind: "call", call }, e) : FALSE;
+  }
+  comparison(e, op, depth) {
+    if (this.isUnitTyped(e.left) || this.isUnitTyped(e.right)) {
+      if (op !== "==" && op !== "!=") {
+        this.c.error(e, "Units compare with == and != only.");
+        return FALSE;
+      }
+      const none = (x) => {
+        const h = this.evaluate(x);
+        return !!h && (h.value === null || h.value === void 0);
+      };
+      const side = none(e.left) ? e.right : none(e.right) ? e.left : null;
+      let same2;
+      if (side) {
+        const unit = this.unitExpr(side);
+        if (!unit) return FALSE;
+        same2 = { kind: "not", expr: this.mark({ kind: "unitAlive", unit, at: this.at(e), label: this.label(e) }, e) };
+      } else {
+        const left = this.unitExpr(e.left);
+        const right = this.unitExpr(e.right);
+        if (!left || !right) return FALSE;
+        same2 = this.mark({ kind: "unitSame", left, right, at: this.at(e), label: this.label(e) }, e);
+      }
+      return op === "==" ? same2 : same2.kind === "not" ? same2.expr : { kind: "not", expr: same2 };
+    }
+    if (this.isTextTyped(e.left) && this.isTextTyped(e.right)) {
+      const left = this.text(e.left);
+      const right = this.text(e.right);
+      return left && right ? this.mark({ kind: "textCompare", op, left, right, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
+    const found = (x) => {
+      const b = this.bindingOf(x);
+      return b?.kind === "record" && b.truth ? b.truth : void 0;
+    };
+    const isNull = (x) => {
+      const h = this.evaluate(x);
+      return !!h && (h.value === null || h.value === void 0);
+    };
+    const truth = isNull(e.right) ? found(e.left) : isNull(e.left) ? found(e.right) : void 0;
+    if (truth) {
+      if (op !== "==" && op !== "!=") {
+        this.c.error(e, "What chatted() found compares with null by == and != only.");
+        return FALSE;
+      }
+      return op === "!=" ? boolRef(truth) : { kind: "not", expr: boolRef(truth) };
+    }
+    const isBool = (x) => {
+      const h = this.evaluate(x);
+      if (h) return typeof h.value === "boolean" || isCondition(h.value) || isRead(h.value) && h.value.equals !== void 0 || isInput(h.value) && h.value.boolean || isChat(h.value);
+      const v = this.varOf(x);
+      if (v !== void 0) return v.kind !== "number";
+      return this.kindOf(this.c.checker.getTypeAtLocation(x)) === "boolean";
+    };
+    if (isBool(e.left) || isBool(e.right)) {
+      if (op !== "==" && op !== "!=") {
+        this.c.error(e, "Booleans compare with == and != only.");
+        return FALSE;
+      }
+      const l2 = this.boolInner(e.left, depth + 1);
+      const r2 = this.boolInner(e.right, depth + 1);
+      const same2 = { kind: "or", items: [{ kind: "and", items: [l2, r2] }, { kind: "and", items: [{ kind: "not", expr: l2 }, { kind: "not", expr: r2 }] }] };
+      return op === "==" ? same2 : { kind: "not", expr: same2 };
+    }
+    const l = this.num(e.left);
+    const r = this.num(e.right);
+    if (!l || !r) return FALSE;
+    return this.mark({ kind: "compare", op, left: l, right: r, at: this.at(e), label: `L${this.line(e)}: ${e.getText(this.body.sf).replace(/\s+/g, " ")}` }, e);
+  }
+};
+function compareOp(ts, kind) {
+  switch (kind) {
+    case ts.SyntaxKind.LessThanToken:
+      return "<";
+    case ts.SyntaxKind.LessThanEqualsToken:
+      return "<=";
+    case ts.SyntaxKind.GreaterThanToken:
+      return ">";
+    case ts.SyntaxKind.GreaterThanEqualsToken:
+      return ">=";
+    case ts.SyntaxKind.EqualsEqualsToken:
+    case ts.SyntaxKind.EqualsEqualsEqualsToken:
+      return "==";
+    case ts.SyntaxKind.ExclamationEqualsToken:
+    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+      return "!=";
+    default:
+      return null;
+  }
+}
+function flipOp(op) {
+  switch (op) {
+    case "<":
+      return ">";
+    case "<=":
+      return ">=";
+    case ">":
+      return "<";
+    case ">=":
+      return "<=";
+    default:
+      return op;
+  }
+}
+function arithOp(ts, kind) {
+  switch (kind) {
+    case ts.SyntaxKind.PlusToken:
+      return "+";
+    case ts.SyntaxKind.MinusToken:
+      return "-";
+    case ts.SyntaxKind.AsteriskToken:
+      return "*";
+    case ts.SyntaxKind.SlashToken:
+      return "/";
+    case ts.SyntaxKind.PercentToken:
+      return "%";
+    case ts.SyntaxKind.AmpersandToken:
+      return "&";
+    case ts.SyntaxKind.BarToken:
+      return "|";
+    case ts.SyntaxKind.CaretToken:
+      return "^";
+    case ts.SyntaxKind.LessThanLessThanToken:
+      return "<<";
+    // Numbers are unsigned, so the two right shifts are one.
+    case ts.SyntaxKind.GreaterThanGreaterThanToken:
+      return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+      return ">>>";
+    default:
+      return null;
+  }
+}
+function compoundOp(ts, kind) {
+  switch (kind) {
+    case ts.SyntaxKind.PlusEqualsToken:
+      return "+";
+    case ts.SyntaxKind.MinusEqualsToken:
+      return "-";
+    case ts.SyntaxKind.AsteriskEqualsToken:
+      return "*";
+    case ts.SyntaxKind.SlashEqualsToken:
+      return "/";
+    case ts.SyntaxKind.PercentEqualsToken:
+      return "%";
+    case ts.SyntaxKind.AmpersandEqualsToken:
+      return "&";
+    case ts.SyntaxKind.BarEqualsToken:
+      return "|";
+    case ts.SyntaxKind.CaretEqualsToken:
+      return "^";
+    case ts.SyntaxKind.LessThanLessThanEqualsToken:
+      return "<<";
+    case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken:
+      return ">>";
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
+      return ">>>";
+    default:
+      return null;
+  }
+}
+function compareNumbers(a2, op, b) {
+  switch (op) {
+    case "<":
+      return a2 < b;
+    case "<=":
+      return a2 <= b;
+    case ">":
+      return a2 > b;
+    case ">=":
+      return a2 >= b;
+    case "==":
+      return a2 === b;
+    case "!=":
+      return a2 !== b;
+  }
+}
+
+// compiler/compiler.ts
+var ENTRY_FILE = "main.ts";
+var LIB_FILE = "lib.d.ts";
+function renamedUnit(message) {
+  return /type 'Unit' is not assignable to (parameter of )?type 'UnitType/.test(message) || /type 'UnitType<\d+>' is not assignable to (parameter of )?type 'Unit'/.test(message) ? `${message}
+A unit type (units.*) is a UnitType; Unit is a unit on the map, inside program().` : message;
+}
+function normalizePath(path) {
+  return path.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
+}
+function compileScript(ts, files, names, options) {
+  const diagnostics = [];
+  const result = (extra = {}) => {
+    diagnostics.sort((a2, b) => a2.file.localeCompare(b.file) || a2.line - b.line || a2.column - b.column);
+    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, tests: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
+  };
+  const refs = [];
+  const scripts = /* @__PURE__ */ new Map();
+  for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
+  if (!scripts.has(ENTRY_FILE)) {
+    diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: `The script has no ${ENTRY_FILE}; that is the file a build starts from.`, source: "compiler" });
+    return result();
+  }
+  const fileNames = [...scripts.keys()];
+  const texts = new Map([...scripts, [DECLARATIONS_FILE, generateDeclarations(names)], [LIB_FILE, options.lib]]);
+  const compilerOptions = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.CommonJS,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    strict: true,
+    types: [],
+    sourceMap: true,
+    noLib: false
+  };
+  const outputs = /* @__PURE__ */ new Map();
+  const host = {
+    getSourceFile: (name) => {
+      const text = texts.get(name);
+      return text === void 0 ? void 0 : ts.createSourceFile(name, text, ts.ScriptTarget.ES2022, true);
+    },
+    getDefaultLibFileName: () => LIB_FILE,
+    writeFile: (name, text) => {
+      outputs.set(name, text);
+    },
+    getCurrentDirectory: () => "",
+    getCanonicalFileName: (f) => f,
+    useCaseSensitiveFileNames: () => true,
+    getNewLine: () => "\n",
+    fileExists: (f) => texts.has(f),
+    readFile: (f) => texts.get(f)
+  };
+  const program = ts.createProgram([...fileNames, DECLARATIONS_FILE], compilerOptions, host);
+  const checker = program.getTypeChecker();
+  const position = (sf, start, end) => {
+    const a2 = sf.getLineAndCharacterOfPosition(start);
+    const b = sf.getLineAndCharacterOfPosition(end);
+    return { line: a2.line + 1, column: a2.character + 1, endLine: b.line + 1, endColumn: b.character + 1 };
+  };
+  const nodeError = (node, message, source = "compiler") => {
+    const sf = node.getSourceFile();
+    const pos = position(sf, node.getStart(sf), node.getEnd());
+    if (planned.has(`${sf.fileName}:${pos.line}`) && source === "compiler") return;
+    diagnostics.push({ file: sf.fileName, ...pos, message, source });
+  };
+  const planned = /* @__PURE__ */ new Set();
+  const tables2 = new Set(allTables(names).map((t) => t.object));
+  for (const name of fileNames) {
+    const sf = program.getSourceFile(name);
+    const tableOf = (e) => {
+      const id = ts.isIdentifier(e) ? e : ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name) ? e.name : null;
+      const lib = id ? libraryName(ts, checker, id) : null;
+      return lib && tables2.has(lib) ? lib : null;
+    };
+    const visit = (node) => {
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.name)) {
+        const object = tableOf(node.expression);
+        if (object) refs.push({ file: name, ...position(sf, node.name.getStart(sf), node.name.getEnd()), object, key: node.name.text, quoted: false });
+      } else if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
+        const object = tableOf(node.expression);
+        if (object) refs.push({ file: name, ...position(sf, node.argumentExpression.getStart(sf), node.argumentExpression.getEnd()), object, key: node.argumentExpression.text, quoted: true });
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  for (const d of ts.getPreEmitDiagnostics(program)) {
+    if (d.category !== ts.DiagnosticCategory.Error) continue;
+    const sf = d.file;
+    const pos = sf && d.start !== void 0 ? position(sf, d.start, d.start + (d.length ?? 0)) : { line: 1, column: 1, endLine: 1, endColumn: 1 };
+    const file = sf ? sf.fileName : ENTRY_FILE;
+    const where2 = sf && !scripts.has(sf.fileName) ? `${sf.fileName}: ` : "";
+    diagnostics.push({ file: scripts.has(file) ? file : ENTRY_FILE, ...pos, message: where2 + renamedUnit(ts.flattenDiagnosticMessageText(d.messageText, "\n")), source: "typescript" });
+  }
+  if (diagnostics.length) return result();
+  const plans = /* @__PURE__ */ new Map();
+  const byPosition = /* @__PURE__ */ new Map();
+  const fileIndex = (sf) => fileNames.indexOf(sf.fileName);
+  const buildTime = [];
+  for (const name of fileNames) {
+    const sf = program.getSourceFile(name);
+    const visit = (node) => {
+      if (ts.isCallExpression(node)) {
+        const lib = libraryCallName(ts, checker, node);
+        const arrow = node.arguments[0];
+        if ((lib === "program" || lib === "game") && arrow && (ts.isArrowFunction(arrow) || ts.isFunctionExpression(arrow))) {
+          const plan = planProgram(ts, checker, arrow, { parameters: lib === "game" });
+          plans.set(arrow, plan);
+          const fnName = lib === "game" && ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name) ? node.parent.name.text : void 0;
+          byPosition.set(`${fileIndex(sf)}:${arrow.getStart(sf)}`, { plan, sf, ...fnName ? { name: fnName } : {} });
+          for (const e of plan.errors) nodeError(e.node, e.message);
+          for (const e of plan.hoisted) buildTime.push({ file: name, ...position(sf, e.getStart(sf), e.getEnd()) });
+          return;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    if (!isTestFile(name)) {
+      for (const st of sf.statements) {
+        const spec = (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier && ts.isStringLiteralLike(st.moduleSpecifier) ? st.moduleSpecifier : null;
+        const target = spec ? resolveModule(new Set(fileNames), name, spec.text) : null;
+        if (spec && target && isTestFile(target)) nodeError(spec, `${target} is a test file, and a test file is never part of the build: only another test file imports one. What both need belongs in a file of its own.`);
+      }
+    }
+    checkValuesAsBooleans(ts, checker, sf, plans, (node, message) => nodeError(node, message));
+  }
+  if (diagnostics.length) return result();
+  for (const d of diagnostics) planned.add(`${d.file}:${d.line}`);
+  const emitted = program.emit(void 0, void 0, void 0, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow) })] });
+  for (const d of emitted.diagnostics) {
+    if (d.category === ts.DiagnosticCategory.Error) diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
+  }
+  if (diagnostics.length > planned.size) return result();
+  const linked = /* @__PURE__ */ new Map();
+  for (const name of fileNames) {
+    const base = name.replace(/\.ts$/, "");
+    const js = outputs.get(`${base}.js`);
+    if (js === void 0) {
+      diagnostics.push({ file: name, line: 1, column: 1, endLine: 1, endColumn: 1, message: "The file produced no JavaScript.", source: "compiler" });
+      continue;
+    }
+    linked.set(name, { js, map: outputs.get(`${base}.js.map`) });
+  }
+  if (diagnostics.length > planned.size) return result();
+  const collector = new Collector();
+  const registry = new TestRegistry();
+  const where = (err) => {
+    const at = locate(err, linked);
+    return at.file ? { file: at.file, line: at.line ?? 1, ...at.column ? { column: at.column } : {} } : null;
+  };
+  registry.where = () => where(new Error()) ?? { file: ENTRY_FILE, line: 1 };
+  const runtime = { ...createRuntime(names, collector), ...registry.library() };
+  collector.running = true;
+  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort() });
+  collector.running = false;
+  if (failure) {
+    const line = failure.line ?? 1;
+    diagnostics.push({ file: failure.file ?? ENTRY_FILE, line, column: failure.column ?? 1, endLine: line, endColumn: (failure.column ?? 1) + 1, message: failure.message, source: "script" });
+    return result();
+  }
+  const sourceOf = (at) => at ? { file: fileNames[at[0]] ?? ENTRY_FILE, line: at[1] } : null;
+  const bodies = /* @__PURE__ */ new Map();
+  const bodyOf = (d) => {
+    let b = bodies.get(d);
+    if (b !== void 0) return b;
+    const found = byPosition.get(`${d.at[0]}:${d.pos}`);
+    if (!found) b = null;
+    else {
+      try {
+        b = newBody(found.plan, found.sf, d.hoisted(), found.name);
+      } catch {
+        b = null;
+      }
+    }
+    bodies.set(d, b);
+    return b;
+  };
+  const resolve = (fn) => bodyOf(fn.descriptor) ?? void 0;
+  const triggers = [];
+  const sources = [];
+  const programs = [];
+  const variables = [];
+  const hints = [];
+  const ir = [];
+  for (const entry of collector.entries) {
+    const from = sourceOf(entry.kind === "trigger" ? entry.at : entry.descriptor.at);
+    if (from && isTestFile(from.file)) {
+      diagnostics.push({ file: from.file, line: from.line, column: 1, endLine: from.line, endColumn: 2, message: `${entry.kind}() in a test file: a test file is never part of the build, so what it declares would not be in the map. Declare it in a file main.ts imports, and test it from here.`, source: "compiler" });
+      continue;
+    }
+    if (entry.kind === "trigger") {
+      triggers.push(entry.record);
+      sources.push(sourceOf(entry.at));
+      continue;
+    }
+    const file = fileNames[entry.descriptor.at[0]];
+    const at = sourceOf(entry.descriptor.at) ?? { file, line: 1 };
+    const body2 = bodyOf(entry.descriptor);
+    if (!body2) {
+      diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" });
+      continue;
+    }
+    const owners = entry.options.owners;
+    const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
+    const emitted2 = new Structured({ ts, checker, body: body2, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve }).run();
+    if (entry.options.name) emitted2.program.name = entry.options.name;
+    const mixes = typeNumbers(emitted2.program);
+    markRecursion(emitted2.program);
+    const index = programs.length;
+    ir.push(emitted2.program);
+    programs.push({ ...emitted2.program.name ? { name: emitted2.program.name } : {}, owner, owners, perPlayer: entry.options.perPlayer, source: at });
+    for (const d of programDeclarations(emitted2.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...d.bits ? { bits: d.bits } : {}, ...d.unsigned ? { unsigned: true } : {} });
+    const check = checkProgram(emitted2.program);
+    const recursion = settleRecursion(emitted2.program);
+    for (const d of [...mixes, ...check.errors, ...recursion]) {
+      if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
+      diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
+    }
+    hints.push(...check.hints);
+  }
+  let input = null;
+  try {
+    input = inputPlan(ir, names.locations, names.units);
+  } catch (err) {
+    const at = inputsOf(ir).at ?? ir[0]?.at;
+    if (at) diagnostics.push({ file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: err instanceof Error ? err.message : String(err), source: "compiler" });
+  }
+  let tests = null;
+  if (!registry.empty) {
+    tests = options.tests && diagnostics.length === 0 ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests) : { list: listTests(registry).list, results: [], only: [], ms: 0 };
+  }
+  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints, tests });
+}
+function checkValuesAsBooleans(ts, checker, sf, programs, error) {
+  const isLibraryType = (t, name) => {
+    if (t.isUnion() || t.isIntersection()) return t.types.some((x) => isLibraryType(x, name));
+    const decl = t.symbol?.declarations?.[0];
+    return t.symbol?.name === name && !!decl && decl.getSourceFile().fileName === DECLARATIONS_FILE;
+  };
+  const kindOf = (e) => {
+    const t = checker.getTypeAtLocation(e);
+    return isLibraryType(t, "Condition") ? "condition" : isLibraryType(t, "Action") ? "action" : null;
+  };
+  const short = (e) => {
+    const text = e.getText(sf).replace(/\s+/g, " ");
+    const paren = text.indexOf("(");
+    return paren > 0 ? `${text.slice(0, paren)}(\u2026)` : text.length > 32 ? `${text.slice(0, 31)}\u2026` : text;
+  };
+  const test = (e) => {
+    if (!e) return;
+    const kind = kindOf(e);
+    if (kind === "condition") error(e, `${short(e)} is a condition \u2014 a value the game tests, not a boolean. Put it in a trigger's conditions list (several conditions there must all hold), or test it in an if inside program().`);
+    else if (kind === "action") error(e, `${short(e)} is an action, not a boolean: nothing happens until a trigger runs it. Put it in a trigger's actions list, or write it as a statement inside program().`);
+  };
+  const visit = (node) => {
+    if (programs.has(node)) return;
+    if (ts.isIfStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) test(node.expression);
+    else if (ts.isForStatement(node)) test(node.condition);
+    else if (ts.isConditionalExpression(node)) test(node.condition);
+    else if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) test(node.operand);
+    else if (ts.isBinaryExpression(node) && (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken || node.operatorToken.kind === ts.SyntaxKind.BarBarToken)) {
+      test(node.left);
+      test(node.right);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+}
+
+// bundle/lib.mjs
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+var LIB_ENTRY = "lib.es2023.d.ts";
+function defaultLib() {
+  const require2 = createRequire(import.meta.url);
+  const dir = dirname(require2.resolve("typescript"));
+  const seen = /* @__PURE__ */ new Set();
+  const parts = [];
+  const walk = (name) => {
+    if (seen.has(name)) return;
+    seen.add(name);
+    const text = readFileSync(join(dir, name), "utf8");
+    for (const m of text.matchAll(/\/\/\/ <reference lib="([^"]+)" \/>/g)) walk(`lib.${m[1]}.d.ts`);
+    parts.push(`// \u2500\u2500 ${name} \u2500\u2500
+${text.replace(/\/\/\/ <reference[^\n]*\n/g, "")}`);
+  };
+  walk(LIB_ENTRY);
+  return parts.join("\n");
+}
 export {
   ActionFlag,
   ActionType,
@@ -1578,7 +16559,11 @@ export {
   UnitClass,
   UnitState,
   World,
+  compileScript,
+  defaultLib,
+  defaultScriptNames,
   formatTriggers,
   parseTriggers,
+  scriptNames,
   simulate
 };
