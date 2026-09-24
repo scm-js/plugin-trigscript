@@ -1,6 +1,6 @@
 # TrigScript
 
-A plugin for [scmJS](https://github.com/jeany55/scm-js), the browser-based StarCraft 1 /
+A plugin for [scmJS](https://github.com/scm-js/scm-js), the browser-based StarCraft 1 /
 Brood War map editor. It keeps TypeScript files inside the map and turns them into the
 map's triggers.
 
