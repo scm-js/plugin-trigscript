@@ -7,6 +7,7 @@
 import type { TestInfo, TestReport, TestResult } from "./compiler/testing";
 import type { ScriptWarning, TestMark, TestNote } from "./monaco";
 import { buildTree, type TreeNode } from "./tree";
+import { english, msg, type Translate } from "./i18n";
 
 export type TestStateName = TestMark["state"];
 
@@ -57,37 +58,37 @@ export function stateOf(state: TestState, info: TestInfo): TestStateName {
   return state.results.get(info.id)?.status ?? "none";
 }
 
-const STATE_WORDS: Record<TestStateName, string> = { none: "Not run yet", passed: "Passed", failed: "Failed", skipped: "Skipped", running: "Running…" };
+const STATE_WORDS: Record<TestStateName, string> = { none: msg("Not run yet"), passed: msg("Passed"), failed: msg("Failed"), skipped: msg("Skipped"), running: msg("Running…") };
 
-export function marksOf(state: TestState): TestMark[] {
+export function marksOf(state: TestState, t: Translate = english): TestMark[] {
   return state.list.map((info) => {
     const s = stateOf(state, info);
     const r = state.results.get(info.id);
-    return { file: info.file, line: info.line, state: s, id: info.id, title: `${STATE_WORDS[s]}${r?.status === "failed" && r.message ? `: ${r.message}` : ""} — click to run ${info.kind === "suite" ? "these tests" : "this test"}` };
+    return { file: info.file, line: info.line, state: s, id: info.id, title: `${t(STATE_WORDS[s])}${r?.status === "failed" && r.message ? `: ${r.message}` : ""} — ${info.kind === "suite" ? t("click to run these tests") : t("click to run this test")}` };
   });
 }
 
 /** A failure is said where it is: at the end of the failing `expect`'s line, the two values in full on hover. */
-export function notesOf(state: TestState): TestNote[] {
+export function notesOf(state: TestState, t: Translate = english): TestNote[] {
   const notes: TestNote[] = [];
   for (const info of state.list) {
     const r = state.results.get(info.id);
     if (r?.status !== "failed") continue;
     const at = r.at ?? { file: info.file, line: info.line };
-    const hover = r.expected !== undefined || r.actual !== undefined ? `**${info.name}**\n\nExpected: \`${r.expected ?? "—"}\`\n\nGot: \`${r.actual ?? "—"}\`` : `**${info.name}**\n\n${r.message ?? "failed"}`;
-    notes.push({ file: at.file, line: at.line, text: r.message ?? "failed", hover });
+    const hover = r.expected !== undefined || r.actual !== undefined ? `**${info.name}**\n\n${t("Expected:")} \`${r.expected ?? "—"}\`\n\n${t("Got:")} \`${r.actual ?? "—"}\`` : `**${info.name}**\n\n${r.message ?? t("failed")}`;
+    notes.push({ file: at.file, line: at.line, text: r.message ?? t("failed"), hover });
   }
   return notes;
 }
 
 /** A failing test is a warning at its line; so is a `test.only` left in. */
-export function warningsOf(state: TestState): ScriptWarning[] {
+export function warningsOf(state: TestState, t: Translate = english): ScriptWarning[] {
   const out: ScriptWarning[] = [];
   for (const info of state.list) {
     const r = state.results.get(info.id);
-    if (info.kind === "test" && r?.status === "failed") out.push({ file: info.file, line: info.line, message: `The test "${info.name}" fails: ${r.message ?? "failed"}` });
+    if (info.kind === "test" && r?.status === "failed") out.push({ file: info.file, line: info.line, message: t("The test \"{name}\" fails: {message}", { name: info.name, message: r.message ?? t("failed") }) });
   }
-  for (const o of state.only) out.push({ file: o.file, line: o.line, message: "An only is left in: the other tests of this file do not run." });
+  for (const o of state.only) out.push({ file: o.file, line: o.line, message: t("An only is left in: the other tests of this file do not run.") });
   return out;
 }
 
@@ -152,9 +153,9 @@ export function foldPlayers<T extends { frame: number; text: string; player: num
 }
 
 /** What the status bar says: `12 passed`, `1 failed`, and what is left over. */
-export function summary(c: TestCounts): { text: string; failed: boolean } | null {
+export function summary(c: TestCounts, t: Translate = english): { text: string; failed: boolean } | null {
   if (c.total === 0) return null;
-  if (c.failed) return { text: `${c.failed} failed${c.passed ? `, ${c.passed} passed` : ""}`, failed: true };
-  if (c.notRun === c.total) return { text: `${c.total} test${c.total === 1 ? "" : "s"}`, failed: false };
-  return { text: `${c.passed} passed${c.skipped ? `, ${c.skipped} skipped` : ""}${c.notRun ? `, ${c.notRun} not run` : ""}`, failed: false };
+  if (c.failed) return { text: c.passed ? t("{failed} failed, {passed} passed", { failed: c.failed, passed: c.passed }) : t("{failed} failed", { failed: c.failed }), failed: true };
+  if (c.notRun === c.total) return { text: t("{n, plural, one {# test} other {# tests}}", { n: c.total }), failed: false };
+  return { text: [t("{n} passed", { n: c.passed }), c.skipped ? t("{n} skipped", { n: c.skipped }) : "", c.notRun ? t("{n} not run", { n: c.notRun }) : ""].filter(Boolean).join(", "), failed: false };
 }

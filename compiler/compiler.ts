@@ -31,6 +31,7 @@ import { LowerError, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
 import { newBody, Structured, type Body } from "./structured";
+import { english, type Translate } from "../i18n";
 
 export type { ScriptString } from "./runtime";
 export { DEATHS_TABLE_ADDRESS } from "./runtime";
@@ -86,13 +87,13 @@ export interface VariableInfo {
 }
 
 /** What a program's variable holds, as the editor's hover says it: the kind, and for a number its range and what happens at the ends. */
-export function describeVariable(v: Pick<VariableInfo, "kind" | "bits" | "unsigned">): string {
-  if (v.kind === "unit") return "a unit of the game, or none — checked before every use: once the unit is gone it reads 0 and takes no write";
-  if (v.kind === "boolean") return "a boolean";
-  if (v.kind === "text") return "a text — `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes";
-  if (v.bits) return `a u${v.bits} number (0 … ${2 ** v.bits - 1}, stopping at either end)`;
-  if (v.unsigned) return "a u32 number (0 … 4 294 967 295, wrapping at either end as `x >>> 0` does)";
-  return "a number (−2 147 483 648 … 2 147 483 647, whole, wrapping at either end as `x | 0` does)";
+export function describeVariable(v: Pick<VariableInfo, "kind" | "bits" | "unsigned">, t: Translate = english): string {
+  if (v.kind === "unit") return t("a unit of the game, or none — checked before every use: once the unit is gone it reads 0 and takes no write");
+  if (v.kind === "boolean") return t("a boolean");
+  if (v.kind === "text") return t("a text — `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes");
+  if (v.bits) return t("a u{bits} number (0 … {max}, stopping at either end)", { bits: v.bits, max: 2 ** v.bits - 1 });
+  if (v.unsigned) return t("a u32 number (0 … 4 294 967 295, wrapping at either end as `x >>> 0` does)");
+  return t("a number (−2 147 483 648 … 2 147 483 647, whole, wrapping at either end as `x | 0` does)");
 }
 
 /** Something the compiler has to say about a line that is not a fault: a loop unrolled when the script was built. */

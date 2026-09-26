@@ -2446,12 +2446,12 @@ var ProgramRun = class {
       case "textPad": {
         const of = yield* this.text(e.of);
         const width = yield* this.num(e.width);
-        const fill = yield* this.text(e.with);
-        const chars = [...of.s], pad = [...fill.s];
+        const fill2 = yield* this.text(e.with);
+        const chars = [...of.s], pad = [...fill2.s];
         let padding = "";
         if (pad.length) for (let i = 0; chars.length + i < width; i++) padding += pad[i % pad.length];
         const out = this.made(e.side === "start" ? padding + of.s : of.s + padding, e.at);
-        this.used(of, fill);
+        this.used(of, fill2);
         return out;
       }
       case "textRepeat": {
@@ -4781,15 +4781,72 @@ function largestFrame(programs) {
 var MADE_TEXT_ACTIONS = /* @__PURE__ */ new Set([ActionType.SetMissionObjectives, ActionType.Transmission, ActionType.LeaderboardControl, ActionType.LeaderboardControlAt, ActionType.LeaderboardResources, ActionType.LeaderboardKills, ActionType.LeaderboardPoints, ActionType.LeaderboardGoalControl, ActionType.LeaderboardGoalControlAt, ActionType.LeaderboardGoalResources, ActionType.LeaderboardGoalKills, ActionType.LeaderboardGoalPoints, ActionType.LeaderboardGreed]);
 var COUNT_ACTIONS = /* @__PURE__ */ new Set([ActionType.CreateUnit, ActionType.CreateUnitWithProperties, ActionType.KillUnitAt, ActionType.RemoveUnitAt, ActionType.GiveUnits]);
 
+// i18n.ts
+var msg = (text) => text;
+function closing(s, at) {
+  let depth = 0;
+  for (let i = at; i < s.length; i++) {
+    if (s[i] === "{") depth++;
+    else if (s[i] === "}" && --depth === 0) return i;
+  }
+  return -1;
+}
+function branches(s) {
+  const out = /* @__PURE__ */ new Map();
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /\s/.test(s[i])) i++;
+    const open = s.indexOf("{", i);
+    if (open < 0) break;
+    const key = s.slice(i, open).trim();
+    const end = closing(s, open);
+    if (end < 0) break;
+    out.set(key, s.slice(open + 1, end));
+    i = end + 1;
+  }
+  return out;
+}
+function fill(inner, params) {
+  const m = /^\s*(\w+)\s*(?:,\s*(plural|select)\s*,([\s\S]*)|\|[^{}]*)?$/.exec(inner);
+  if (!m) return `{${inner}}`;
+  const value = params[m[1]];
+  if (!m[2]) return value === void 0 ? `{${inner}}` : String(value);
+  const choices = branches(m[3]);
+  if (m[2] === "plural") {
+    const n = Number(value);
+    const text = choices.get(`=${n}`) ?? (n === 1 ? choices.get("one") : void 0) ?? choices.get("other") ?? "";
+    return format(text.replace(/#/g, String(n)), params);
+  }
+  return format(choices.get(String(value)) ?? choices.get("other") ?? "", params);
+}
+function format(text, params) {
+  let out = "";
+  for (let i = 0; i < text.length; ) {
+    if (text[i] !== "{") {
+      out += text[i++];
+      continue;
+    }
+    const end = closing(text, i);
+    if (end < 0) {
+      out += text.slice(i);
+      break;
+    }
+    out += fill(text.slice(i + 1, end), params);
+    i = end + 1;
+  }
+  return out;
+}
+var english = (text, params) => params ? format(text, params) : text.includes("{") ? format(text, {}) : text;
+
 // compiler/compiler.ts
 var ENTRY_FILE = "main.ts";
-function describeVariable(v) {
-  if (v.kind === "unit") return "a unit of the game, or none \u2014 checked before every use: once the unit is gone it reads 0 and takes no write";
-  if (v.kind === "boolean") return "a boolean";
-  if (v.kind === "text") return "a text \u2014 `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes";
-  if (v.bits) return `a u${v.bits} number (0 \u2026 ${2 ** v.bits - 1}, stopping at either end)`;
-  if (v.unsigned) return "a u32 number (0 \u2026 4 294 967 295, wrapping at either end as `x >>> 0` does)";
-  return "a number (\u22122 147 483 648 \u2026 2 147 483 647, whole, wrapping at either end as `x | 0` does)";
+function describeVariable(v, t = english) {
+  if (v.kind === "unit") return t("a unit of the game, or none \u2014 checked before every use: once the unit is gone it reads 0 and takes no write");
+  if (v.kind === "boolean") return t("a boolean");
+  if (v.kind === "text") return t("a text \u2014 `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes");
+  if (v.bits) return t("a u{bits} number (0 \u2026 {max}, stopping at either end)", { bits: v.bits, max: 2 ** v.bits - 1 });
+  if (v.unsigned) return t("a u32 number (0 \u2026 4 294 967 295, wrapping at either end as `x >>> 0` does)");
+  return t("a number (\u22122 147 483 648 \u2026 2 147 483 647, whole, wrapping at either end as `x | 0` does)");
 }
 function normalizePath(path) {
   return path.replace(/\\/g, "/").replace(/^(\.\/)+/, "").replace(/\/+/g, "/");
@@ -4987,7 +5044,10 @@ function setDeclarations(monaco, content) {
 var fileUri = (monaco, path) => monaco.Uri.parse(`file:///${normalizePath(path)}`);
 var pathOfUri = (uri) => normalizePath(uri.path.replace(/^\/+/, ""));
 var BUILD_TIME_CLASS = "trigscript-build-time";
-var BUILD_TIME_NOTE = "Computed when the script is built, not in the game.";
+var tr = english;
+function setMonacoTranslator(t) {
+  tr = t;
+}
 var hoverVariables = () => [];
 var hoverRegistered = false;
 function setHoverVariables(monaco, variables) {
@@ -5010,7 +5070,7 @@ function setHoverVariables(monaco, variables) {
         if (!v) continue;
         return {
           range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-          contents: [{ value: `**${v.name}** is a variable of the program: ${describeVariable(v)}${v.shared ? ", one value shared by every player the program runs for" : ""}. It lives in the game while the map is played.` }]
+          contents: [{ value: v.shared ? tr("**{name}** is a variable of the program: {what}, one value shared by every player the program runs for. It lives in the game while the map is played.", { name: v.name, what: describeVariable(v, tr) }) : tr("**{name}** is a variable of the program: {what}. It lives in the game while the map is played.", { name: v.name, what: describeVariable(v, tr) }) }]
         };
       }
       return null;
@@ -5061,7 +5121,7 @@ function setMapRefs(monaco, refs) {
       const links = findReferences(model.getValue(), r.object).filter((x) => r.byKey.has(x.key)).map((x) => ({
         range: new monaco.Range(x.line, x.column, x.line, x.endColumn),
         url: monaco.Uri.from({ scheme: LINK_SCHEME, path: `/location/${r.byKey.get(x.key).index}` }),
-        tooltip: "Show on the map"
+        tooltip: tr("Show on the map")
       }));
       return { links };
     }
@@ -5090,7 +5150,7 @@ function setMapRefs(monaco, refs) {
       if (!ref2) return null;
       return {
         range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-        contents: [{ value: `**${ref2.name}** \u2014 location ${ref2.index + 1}: ${ref2.w} \xD7 ${ref2.h} tiles at ${ref2.x}, ${ref2.y}. Ctrl+click to show it on the map.` }]
+        contents: [{ value: tr("**{name}** \u2014 location {n}: {w} \xD7 {h} tiles at {x}, {y}. Ctrl+click to show it on the map.", { name: ref2.name, n: ref2.index + 1, w: ref2.w, h: ref2.h, x: ref2.x, y: ref2.y }) }]
       };
     }
   });
@@ -5271,7 +5331,7 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
         const next = ranges.filter((r) => normalizePath(r.file) === p).map((r) => ({
           range: new monaco.Range(r.line, r.column, r.endLine, r.endColumn),
           // Never grows with typing at its edges: the next check redraws it where the compiler says.
-          options: { inlineClassName: BUILD_TIME_CLASS, hoverMessage: { value: BUILD_TIME_NOTE }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges }
+          options: { inlineClassName: BUILD_TIME_CLASS, hoverMessage: { value: tr("Computed when the script is built, not in the game.") }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges }
         }));
         decorations.set(p, model.deltaDecorations(decorations.get(p) ?? [], next));
       }
@@ -5284,7 +5344,7 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
 }
 
 // version.ts
-var VERSION = "3.10.4";
+var VERSION = "3.11.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -5886,10 +5946,10 @@ function movesOf(paths, from, to) {
   else for (const p of filesUnder(paths, from)) out.set(p, `${to}${p.slice(from.length)}`);
   return out;
 }
-function refuseMoves(paths, moves) {
-  if (moves.has(ENTRY_FILE)) return `${ENTRY_FILE} is where the script starts: it stays where it is.`;
+function refuseMoves(paths, moves, t = english) {
+  if (moves.has(ENTRY_FILE)) return t("{file} is where the script starts: it stays where it is.", { file: ENTRY_FILE });
   const stay = new Set(paths.filter((p) => !moves.has(p)));
-  for (const to of moves.values()) if (stay.has(to)) return `There is already a ${to}.`;
+  for (const to of moves.values()) if (stay.has(to)) return t("There is already a {name}.", { name: to });
   return null;
 }
 function applyMoves(files, moves) {
@@ -5943,15 +6003,15 @@ function stateOf(state, info) {
   if (info.kind === "suite") return stateOfCounts(countTests(state, inside(info)));
   return state.results.get(info.id)?.status ?? "none";
 }
-var STATE_WORDS = { none: "Not run yet", passed: "Passed", failed: "Failed", skipped: "Skipped", running: "Running\u2026" };
-function marksOf(state) {
+var STATE_WORDS = { none: msg("Not run yet"), passed: msg("Passed"), failed: msg("Failed"), skipped: msg("Skipped"), running: msg("Running\u2026") };
+function marksOf(state, t = english) {
   return state.list.map((info) => {
     const s = stateOf(state, info);
     const r = state.results.get(info.id);
-    return { file: info.file, line: info.line, state: s, id: info.id, title: `${STATE_WORDS[s]}${r?.status === "failed" && r.message ? `: ${r.message}` : ""} \u2014 click to run ${info.kind === "suite" ? "these tests" : "this test"}` };
+    return { file: info.file, line: info.line, state: s, id: info.id, title: `${t(STATE_WORDS[s])}${r?.status === "failed" && r.message ? `: ${r.message}` : ""} \u2014 ${info.kind === "suite" ? t("click to run these tests") : t("click to run this test")}` };
   });
 }
-function notesOf(state) {
+function notesOf(state, t = english) {
   const notes = [];
   for (const info of state.list) {
     const r = state.results.get(info.id);
@@ -5959,22 +6019,22 @@ function notesOf(state) {
     const at = r.at ?? { file: info.file, line: info.line };
     const hover = r.expected !== void 0 || r.actual !== void 0 ? `**${info.name}**
 
-Expected: \`${r.expected ?? "\u2014"}\`
+${t("Expected:")} \`${r.expected ?? "\u2014"}\`
 
-Got: \`${r.actual ?? "\u2014"}\`` : `**${info.name}**
+${t("Got:")} \`${r.actual ?? "\u2014"}\`` : `**${info.name}**
 
-${r.message ?? "failed"}`;
-    notes.push({ file: at.file, line: at.line, text: r.message ?? "failed", hover });
+${r.message ?? t("failed")}`;
+    notes.push({ file: at.file, line: at.line, text: r.message ?? t("failed"), hover });
   }
   return notes;
 }
-function warningsOf(state) {
+function warningsOf(state, t = english) {
   const out = [];
   for (const info of state.list) {
     const r = state.results.get(info.id);
-    if (info.kind === "test" && r?.status === "failed") out.push({ file: info.file, line: info.line, message: `The test "${info.name}" fails: ${r.message ?? "failed"}` });
+    if (info.kind === "test" && r?.status === "failed") out.push({ file: info.file, line: info.line, message: t('The test "{name}" fails: {message}', { name: info.name, message: r.message ?? t("failed") }) });
   }
-  for (const o of state.only) out.push({ file: o.file, line: o.line, message: "An only is left in: the other tests of this file do not run." });
+  for (const o of state.only) out.push({ file: o.file, line: o.line, message: t("An only is left in: the other tests of this file do not run.") });
   return out;
 }
 function testTree(list) {
@@ -6018,11 +6078,11 @@ function foldPlayers(events) {
   }
   return out;
 }
-function summary(c2) {
+function summary(c2, t = english) {
   if (c2.total === 0) return null;
-  if (c2.failed) return { text: `${c2.failed} failed${c2.passed ? `, ${c2.passed} passed` : ""}`, failed: true };
-  if (c2.notRun === c2.total) return { text: `${c2.total} test${c2.total === 1 ? "" : "s"}`, failed: false };
-  return { text: `${c2.passed} passed${c2.skipped ? `, ${c2.skipped} skipped` : ""}${c2.notRun ? `, ${c2.notRun} not run` : ""}`, failed: false };
+  if (c2.failed) return { text: c2.passed ? t("{failed} failed, {passed} passed", { failed: c2.failed, passed: c2.passed }) : t("{failed} failed", { failed: c2.failed }), failed: true };
+  if (c2.notRun === c2.total) return { text: t("{n, plural, one {# test} other {# tests}}", { n: c2.total }), failed: false };
+  return { text: [t("{n} passed", { n: c2.passed }), c2.skipped ? t("{n} skipped", { n: c2.skipped }) : "", c2.notRun ? t("{n} not run", { n: c2.notRun }) : ""].filter(Boolean).join(", "), failed: false };
 }
 
 // compiler/generated/trigscriptPy.ts
@@ -9183,25 +9243,29 @@ var ScriptService = class {
   lastManifest;
   /** The last compile, for a save that comes right after an apply: the same files against the same names need no second compile. */
   lastArtifact = null;
+  /** The editor's language, for what a person reads in the editor's own trigger editors and notices; what the commands return stays English. */
+  t;
   constructor(api, open, compiler = compileInBackground) {
     this.api = api;
     this.compiler = compiler;
+    const t = api.i18n ? (text, params) => api.i18n.t(text, params) : english;
+    this.t = t;
     this.claim = api.triggers.claim({
-      label: "the TrigScript block",
-      badge: "script",
+      label: msg("the TrigScript block"),
+      badge: msg("script"),
       locate: (list) => {
         const manifest = readManifest(snapshotExtras(api));
         return manifest ? findBlock(list, manifest) : null;
       },
       describe: (index, list) => {
         const at = this.sourceOf(index, list);
-        return `This trigger is generated by the map's TrigScript${at ? ` (${at.file}, line ${at.line})` : ""}. Edit the source instead; applying the script (saving the map does it) replaces the whole block.`;
+        return at ? t("This trigger is generated by the map's TrigScript ({file}, line {line}). Edit the source instead; applying the script (saving the map does it) replaces the whole block.", { file: at.file, line: at.line }) : t("This trigger is generated by the map's TrigScript. Edit the source instead; applying the script (saving the map does it) replaces the whole block.");
       },
       open: (index, list) => {
         const at = this.sourceOf(index, list);
         open(at?.file, at?.line);
       },
-      openLabel: "Open TrigScript"
+      openLabel: msg("Open TrigScript")
     });
   }
   sourceOf(index, list) {
@@ -9261,12 +9325,12 @@ var ScriptService = class {
   async bringUpToDate() {
     const state = this.state();
     if (!state?.files || !state.unbuilt) return;
-    if (state.stale) throw new Error("The script's triggers were edited or removed outside the script, so it was not applied. Open Triggers \u25B8 TrigScript\u2026 and press Apply to choose what becomes of them.");
+    if (state.stale) throw new Error(this.t("The script's triggers were edited or removed outside the script, so it was not applied. Open Triggers \u25B8 TrigScript\u2026 and press Apply to choose what becomes of them."));
     const guard = this.settings().testsGuardBuild;
     if (guard) this.guardTests((await this.prepare(state.files, this.names(), { world: this.world() })).compiled);
     const out = await this.build(state.files);
     if (out.refused === "errors") throw new Error(firstFault(out.compiled.diagnostics));
-    if (out.refused) throw new Error("The map changed while the script was compiling; save again.");
+    if (out.refused) throw new Error(this.t("The map changed while the script was compiling; save again."));
   }
   /**
    * The world a simulation and every test start from, as plain data: the map's placed units (start locations apart) with
@@ -9684,6 +9748,7 @@ button.tsd-status-item:hover { background: var(--bg-4); color: var(--text); }
 `;
 function createShell(options) {
   const { el } = options;
+  const t = options.t ?? english;
   const layout = { ...options.layout };
   const icon = (name, spin = false) => el("span", { className: `tsd-i tsd-i-${name}${spin ? " tsd-spin" : ""}`, ariaHidden: "true" });
   const iconButton = (spec) => {
@@ -9712,10 +9777,10 @@ function createShell(options) {
   const actionsEl = el("div", { className: "tsd-actions" });
   const editorHost = el("div", { className: "tsd-editor" });
   const sectionsEl = el("div", { className: "tsd-sections" });
-  const sidebarTitle = el("div", { className: "tsd-sidebar-title" }, "Explorer");
+  const sidebarTitle = el("div", { className: "tsd-sidebar-title" }, t("Explorer"));
   const sidebarHolder = el("div", { className: "tsd-sidebar-body" }, sectionsEl);
   const sidebar = el("div", { className: "tsd-sidebar" }, sidebarTitle, sidebarHolder);
-  const activity = el("div", { className: "tsd-activity", role: "tablist", ariaLabel: "Views", hidden: true });
+  const activity = el("div", { className: "tsd-activity", role: "tablist", ariaLabel: t("Views"), hidden: true });
   const sidebarSash = el("div", { className: "tsd-sash tsd-sash-v" });
   const panelTabs = el("div", { className: "tsd-panel-tabs", role: "tablist" });
   const panelActions = el("div", { className: "tsd-panel-actions" });
@@ -9808,9 +9873,9 @@ function createShell(options) {
     activity.hidden = sideViews.size < 2;
     return view;
   };
-  addSide({ id: "explorer", title: "Explorer", icon: "files" }, sectionsEl);
+  addSide({ id: "explorer", title: t("Explorer"), icon: "files" }, sectionsEl);
   const views = /* @__PURE__ */ new Map();
-  const closePanel = iconButton({ icon: "close", title: "Hide the panel (Ctrl+J)", run: () => togglePanel() });
+  const closePanel = iconButton({ icon: "close", title: t("Hide the panel (Ctrl+J)"), run: () => togglePanel() });
   const showView = (id, announce = true) => {
     const wanted = views.has(id) ? id : [...views.keys()][0];
     if (!wanted) return;
@@ -9911,7 +9976,7 @@ function createShell(options) {
         { className: "tsd-notification-row" },
         icon(spec.kind === "warn" ? "warning" : spec.kind),
         el("span", { className: "tsd-text" }, spec.text),
-        iconButton({ icon: "close", title: "Dismiss", run: () => dismiss(spec.key) }).element
+        iconButton({ icon: "close", title: t("Dismiss"), run: () => dismiss(spec.key) }).element
       ),
       spec.actions?.length ? el("div", { className: "tsd-notification-actions" }, ...spec.actions.map((a2) => el("button", { type: "button", className: a2.primary ? "tsd-button tsd-primary" : "tsd-button", onClick: () => {
         if (!a2.keep) dismiss(spec.key);
@@ -9930,28 +9995,28 @@ function createShell(options) {
     icon: (name) => icon(name),
     iconButton,
     setTabs(tabs, active) {
-      tabsEl.replaceChildren(...tabs.map((t) => {
-        const on = t.id === active;
+      tabsEl.replaceChildren(...tabs.map((spec) => {
+        const on = spec.id === active;
         const tab = el(
           "div",
           {
             className: on ? "tsd-tab tsd-active" : "tsd-tab",
             role: "tab",
             ariaSelected: String(on),
-            title: t.title ?? t.label,
-            onClick: () => options.onTabSelect(t.id),
+            title: spec.title ?? spec.label,
+            onClick: () => options.onTabSelect(spec.id),
             // The middle button closes a tab, as it does everywhere else.
             onAuxClick: (e) => {
-              if (e.button === 1 && t.closable) {
+              if (e.button === 1 && spec.closable) {
                 e.preventDefault();
-                options.onTabClose(t.id);
+                options.onTabClose(spec.id);
               }
             }
           },
           el("span", { className: "tsd-ts" }, "TS"),
-          el("span", { className: t.problems ? "tsd-problem" : void 0 }, t.problems ? `${t.label} ${t.problems}` : t.label),
-          t.about ? el("span", { className: "tsd-about" }, t.about) : void 0,
-          t.closable ? iconButton({ icon: "close", title: "Close", run: () => options.onTabClose(t.id) }).element : el("span", { className: "tsd-pad" })
+          el("span", { className: spec.problems ? "tsd-problem" : void 0 }, spec.problems ? `${spec.label} ${spec.problems}` : spec.label),
+          spec.about ? el("span", { className: "tsd-about" }, spec.about) : void 0,
+          spec.closable ? iconButton({ icon: "close", title: t("Close"), run: () => options.onTabClose(spec.id) }).element : el("span", { className: "tsd-pad" })
         );
         if (on) queueMicrotask(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
         return tab;
@@ -10148,14 +10213,22 @@ var STYLE = `${SHELL_STYLE}
 .${TEST_MARK_CLASS}-note { color: var(--danger); font-style: italic; opacity: 0.9; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
-function ownerLabel(p) {
-  return p.owners.map((o) => o === PlayerGroup.AllPlayers ? "all players" : o >= PlayerGroup.Force1 && o <= PlayerGroup.Force4 ? `Force ${o - PlayerGroup.Force1 + 1}` : `P${o + 1}`).join(", ");
+function ownerLabel(p, t) {
+  return p.owners.map((o) => o === PlayerGroup.AllPlayers ? t("all players") : o >= PlayerGroup.Force1 && o <= PlayerGroup.Force4 ? t("Force {n}", { n: o - PlayerGroup.Force1 + 1 }) : `P${o + 1}`).join(", ");
 }
 function describeEvent(e) {
   const name = actionDef(e.action.type)?.name ?? `Action ${e.action.type}`;
   return e.text !== void 0 ? `${name} \u2014 ${e.text}` : name;
 }
 var current = null;
+function relabelScriptEditor(svc) {
+  if (!current?.isOpen()) return;
+  const at = current.cursor();
+  const dock = current.mode === "panel";
+  current.close();
+  current = null;
+  openScriptEditor(svc, { dock, file: at?.file, line: at?.line });
+}
 function openScriptEditor(svc, options = {}) {
   const api = svc.api;
   if (current?.isOpen()) {
@@ -10172,7 +10245,7 @@ function openScriptEditor(svc, options = {}) {
     if (options.dock === void 0) options = { ...options, dock: modeNow === "panel" };
   }
   if (!api.document.isOpen()) {
-    api.ui.toast({ kind: "info", title: "Open or create a map first." });
+    api.ui.toast({ kind: "info", title: api.i18n.t("Open or create a map first.") });
     return;
   }
   const mode = options.dock ? "panel" : "dialog";
@@ -10212,6 +10285,8 @@ function createWorkspace(svc, options, mode) {
   const api = svc.api;
   const el = api.ui.el;
   const w = api.ui.widgets;
+  const t = (text, params) => api.i18n.t(text, params);
+  setMonacoTranslator(t);
   const initial = svc.state();
   let files = initial?.files ?? { [ENTRY_FILE]: TEMPLATE };
   const fresh = !initial?.files;
@@ -10241,25 +10316,26 @@ function createWorkspace(svc, options, mode) {
       api.storage.set(layoutKey, layout);
     },
     onTabSelect: (id) => openFile(id),
-    onTabClose: (id) => closeTab(id)
+    onTabClose: (id) => closeTab(id),
+    t
   });
   const root = shell.root;
   root.prepend(el("style", void 0, STYLE));
   const hostEl = shell.editorHost;
-  const testAction = shell.action({ icon: "play", title: `Play (F5): apply the script, build the map as Save would and start it in the game through Test Map`, run: () => {
+  const testAction = shell.action({ icon: "play", title: t("Play (F5): apply the script, build the map as Save would and start it in the game through Test Map"), run: () => {
     void test();
   } });
-  const simulateAction = shell.action({ icon: "beaker", title: `Simulate (${MOD}+F5): run the script's triggers and programs for ${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} seconds of the game) in a built-in interpreter and list what happened`, run: () => {
+  const simulateAction = shell.action({ icon: "beaker", title: t("Simulate ({mod}+F5): run the script's triggers and programs for {frames} frames ({seconds} seconds of the game) in a built-in interpreter and list what happened", { mod: MOD, frames: SIMULATE_FRAMES, seconds: SIMULATE_FRAMES / 24 }), run: () => {
     void simulateNow();
   } });
-  const applyAction = shell.action({ icon: "check", title: `Apply (${MOD}+Shift+B): run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list`, run: () => {
+  const applyAction = shell.action({ icon: "check", title: t("Apply ({mod}+Shift+B): run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list", { mod: MOD }), run: () => {
     void build();
   } });
-  const pickAction = shell.action({ icon: "target", title: "Pick from map: click a location or a unit on the map to put its name at the cursor", run: () => {
+  const pickAction = shell.action({ icon: "target", title: t("Pick from map: click a location or a unit on the map to put its name at the cursor"), run: () => {
     void pickFromMap();
   } });
-  shell.action(mode === "dialog" ? { icon: "multiple-windows", title: "Beside the map: open the script as a panel, so the map stays in reach", run: () => switchMode() } : { icon: "screen-full", title: "In a window: open the script full-screen", run: () => switchMode() });
-  const moreAction = shell.action({ icon: "ellipsis", title: "More actions\u2026", run: () => shell.menu(moreAction.element, [
+  shell.action(mode === "dialog" ? { icon: "multiple-windows", title: t("Beside the map: open the script as a panel, so the map stays in reach"), run: () => switchMode() } : { icon: "screen-full", title: t("In a window: open the script full-screen"), run: () => switchMode() });
+  const moreAction = shell.action({ icon: "ellipsis", title: t("More actions\u2026"), run: () => shell.menu(moreAction.element, [
     menuItem("save"),
     null,
     ...["import", "newFile", "newFolder"].map(menuItem),
@@ -10270,39 +10346,39 @@ function createWorkspace(svc, options, mode) {
     null,
     menuItem("settings"),
     null,
-    { label: "Command Palette\u2026", keys: "F1", disabled: !ready, run: () => palette() }
+    { label: t("Command Palette\u2026"), keys: "F1", disabled: !ready, run: () => palette() }
   ]) });
   const fileList = el("ul", { className: "tsd-rows" });
-  shell.section({ title: "Script", actions: [
-    { icon: "new-file", title: 'New file\u2026: main.ts imports it with import { \u2026 } from "./name"', run: () => {
+  shell.section({ title: t("Script"), actions: [
+    { icon: "new-file", title: t('New file\u2026: main.ts imports it with import { \u2026 } from "./name"'), run: () => {
       void newFile();
     } },
-    { icon: "new-folder", title: "New folder\u2026: a folder is there while a file is in it, so its first file is asked for next", run: () => {
+    { icon: "new-folder", title: t("New folder\u2026: a folder is there while a file is in it, so its first file is asked for next"), run: () => {
       void newFolder();
     } }
   ] }).body.append(fileList);
   const programList = el("ul", { className: "tsd-rows" });
-  const programsSection = shell.section({ title: "Programs" });
+  const programsSection = shell.section({ title: t("Programs") });
   programsSection.body.append(programList);
   programsSection.setHidden(true);
-  const problemsView = shell.view({ id: "problems", title: "Problems" });
+  const problemsView = shell.view({ id: "problems", title: t("Problems") });
   const outputEl = el("pre", { className: "tsd-output" });
-  const outputView = shell.view({ id: "output", title: "Output", onShow: () => renderOutput(true), actions: [{ icon: "clear-all", title: "Clear the output", run: () => {
+  const outputView = shell.view({ id: "output", title: t("Output"), onShow: () => renderOutput(true), actions: [{ icon: "clear-all", title: t("Clear the output"), run: () => {
     output = [];
     renderOutput();
   } }] });
-  const simulateView = shell.view({ id: "simulate", title: "Simulate" });
-  const resultsView = shell.view({ id: "tests", title: "Test Results" });
-  const settingsView = shell.view({ id: "settings", title: "Settings", onShow: () => renderSettings() });
+  const simulateView = shell.view({ id: "simulate", title: t("Simulate") });
+  const resultsView = shell.view({ id: "tests", title: t("Test Results") });
+  const settingsView = shell.view({ id: "settings", title: t("Settings"), onShow: () => renderSettings() });
   const testingList = el("ul", { className: "tsd-rows" });
-  const testingView = shell.sidebarView({ id: "testing", title: "Testing", icon: "beaker", actions: [
-    { icon: "run-all", title: "Run all tests", run: () => {
+  const testingView = shell.sidebarView({ id: "testing", title: t("Testing"), icon: "beaker", actions: [
+    { icon: "run-all", title: t("Run all tests"), run: () => {
       void runTests2();
     } },
-    { icon: "run-errors", title: "Run the tests that failed", run: () => {
+    { icon: "run-errors", title: t("Run the tests that failed"), run: () => {
       void runFailedTests();
     } },
-    { icon: "filter", title: "Show only the tests that fail", run: () => {
+    { icon: "filter", title: t("Show only the tests that fail"), run: () => {
       onlyFailing = !onlyFailing;
       renderTesting();
     } }
@@ -10316,7 +10392,7 @@ function createWorkspace(svc, options, mode) {
     const row = (o) => {
       const now = settings[o.key];
       const input = el("input", { type: "number", min: String(o.min), max: String(o.max), step: String(o.step), value: String(now), disabled: !open });
-      const reset = el("button", { type: "button", disabled: !open || now === o.normal }, `Default (${count(o.normal)})`);
+      const reset = el("button", { type: "button", disabled: !open || now === o.normal }, t("Default ({n})", { n: count(o.normal) }));
       const commit = (value) => {
         const next = o.fit(typeof value === "number" && Number.isFinite(value) ? value : o.normal);
         if (next !== svc.settings()[o.key]) {
@@ -10341,27 +10417,27 @@ function createWorkspace(svc, options, mode) {
         svc.writeSettings({ ...svc.settings(), testsGuardBuild: box.checked });
         renderSettings();
       });
-      return el("label", { className: "row" }, box, el("span", {}, "A failing test refuses the build"));
+      return el("label", { className: "row" }, box, el("span", {}, t("A failing test refuses the build")));
     };
     const frame = result?.ok ? largestFrame(result.ir) : 0;
     const stack = (depth) => {
-      if (!frame) return "calls deep \u2014 no function of this script calls itself";
+      if (!frame) return t("calls deep \u2014 no function of this script calls itself");
       const cells = frame * depth;
-      return `calls deep \u2014 ${frame} cells a call here, ${size(cells)} while the map is played${cells > STACK_CELLS_MAX ? `: more than the ${size(STACK_CELLS_MAX)} a map may use, and it will not build` : ""}`;
+      return cells > STACK_CELLS_MAX ? t("calls deep \u2014 {frame} cells a call here, {size} while the map is played: more than the {max} a map may use, and it will not build", { frame, size: size(cells), max: size(STACK_CELLS_MAX) }) : t("calls deep \u2014 {frame} cells a call here, {size} while the map is played", { frame, size: size(cells) });
     };
     settingsView.body.replaceChildren(el(
       "div",
       { className: "tsd-settings" },
-      el("h4", {}, "Memory for arrays that grow"),
-      el("p", {}, "Arrays a program pushes to share one pool of cells; this is its size. A single array can reach between a quarter and a half of it. When the pool runs out, nothing more is pushed and the game says so once."),
-      row({ key: "heapCells", min: HEAP_CELLS_MIN, max: HEAP_CELLS_MAX, step: 1024, normal: HEAP_CELLS, fit: heapCells, said: (now) => `cells \u2014 ${size(now)} of the built map` }),
-      el("p", {}, `${count(HEAP_CELLS_MIN)} to ${count(HEAP_CELLS_MAX)} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.`),
-      el("h4", {}, "Recursion depth"),
-      el("p", {}, "How many calls deep a function that calls itself may go. Around each such call the function's variables are kept on a stack, which is only in the built map when some function calls itself. A call past the limit stops the program, and the game says where; Simulate stops at the same call."),
+      el("h4", {}, t("Memory for arrays that grow")),
+      el("p", {}, t("Arrays a program pushes to share one pool of cells; this is its size. A single array can reach between a quarter and a half of it. When the pool runs out, nothing more is pushed and the game says so once.")),
+      row({ key: "heapCells", min: HEAP_CELLS_MIN, max: HEAP_CELLS_MAX, step: 1024, normal: HEAP_CELLS, fit: heapCells, said: (now) => t("cells \u2014 {size} of the built map", { size: size(now) }) }),
+      el("p", {}, t("{min} to {max} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.", { min: count(HEAP_CELLS_MIN), max: count(HEAP_CELLS_MAX) })),
+      el("h4", {}, t("Recursion depth")),
+      el("p", {}, t("How many calls deep a function that calls itself may go. Around each such call the function's variables are kept on a stack, which is only in the built map when some function calls itself. A call past the limit stops the program, and the game says where; Simulate stops at the same call.")),
       row({ key: "stackDepth", min: STACK_DEPTH_MIN, max: STACK_DEPTH_MAX, step: 256, normal: STACK_DEPTH, fit: stackDepth, said: stack }),
-      el("p", {}, `${count(STACK_DEPTH_MIN)} to ${count(STACK_DEPTH_MAX)} calls. The limit costs nothing until it is reached, but each call deep keeps and brings back every variable of its function, so thousands of calls within one frame make the game stutter. Kept in the map, like the pool above.`),
-      el("h4", {}, "Tests"),
-      el("p", {}, "The script's test() blocks run in the simulator after every compile that goes through. A failing test is a warning. With this on it also refuses the build: Save, Test Map and an export then say which test fails and write the map without the script applied again."),
+      el("p", {}, t("{min} to {max} calls. The limit costs nothing until it is reached, but each call deep keeps and brings back every variable of its function, so thousands of calls within one frame make the game stutter. Kept in the map, like the pool above.", { min: count(STACK_DEPTH_MIN), max: count(STACK_DEPTH_MAX) })),
+      el("h4", {}, t("Tests")),
+      el("p", {}, t("The script's test() blocks run in the simulator after every compile that goes through. A failing test is a warning. With this on it also refuses the build: Save, Test Map and an export then say which test fails and write the map without the script applied again.")),
       guardRow()
     ));
   }
@@ -10386,7 +10462,7 @@ function createWorkspace(svc, options, mode) {
   let streamed = 0;
   const renderOutput = (toEnd = false) => {
     if (output.length === 0) {
-      outputView.body.replaceChildren(el("div", { className: "tsd-empty" }, "What Apply, Play and the builds of the programs report is kept here."));
+      outputView.body.replaceChildren(el("div", { className: "tsd-empty" }, t("What Apply, Play and the builds of the programs report is kept here.")));
       return;
     }
     const scroller = outputView.body.parentElement;
@@ -10430,7 +10506,7 @@ function createWorkspace(svc, options, mode) {
     editor.editor.setPosition({ lineNumber: line, column });
     editor.editor.focus();
   };
-  const where = (s) => s ? Object.keys(files).length > 1 ? `${s.file}:${s.line}` : `Ln ${s.line}` : "?";
+  const where = (s) => s ? Object.keys(files).length > 1 ? `${s.file}:${s.line}` : t("Ln {line}", { line: s.line }) : "?";
   const openFile = (path) => {
     if (!editor) return;
     const p = normalizePath(path);
@@ -10521,17 +10597,17 @@ function createWorkspace(svc, options, mode) {
             renderFiles();
           };
           const items = () => [
-            { label: "New File\u2026", run: () => {
+            { label: t("New File\u2026"), run: () => {
               void newFile(node.path);
             } },
-            { label: "New Folder\u2026", run: () => {
+            { label: t("New Folder\u2026"), run: () => {
               void newFolder(node.path);
             } },
             null,
-            { label: "Rename\u2026", run: () => {
+            { label: t("Rename\u2026"), run: () => {
               void renameFolder(node.path);
             } },
-            { label: "Remove\u2026", run: () => {
+            { label: t("Remove\u2026"), run: () => {
               void removeFolder(node.path);
             } }
           ];
@@ -10543,13 +10619,13 @@ function createWorkspace(svc, options, mode) {
             el(
               "span",
               { className: "tsd-row-actions" },
-              shell.iconButton({ icon: "new-file", title: `New file in ${node.path}\u2026`, run: () => {
+              shell.iconButton({ icon: "new-file", title: t("New file in {folder}\u2026", { folder: node.path }), run: () => {
                 void newFile(node.path);
               } }).element,
-              shell.iconButton({ icon: "edit", title: "Rename or move\u2026", run: () => {
+              shell.iconButton({ icon: "edit", title: t("Rename or move\u2026"), run: () => {
                 void renameFolder(node.path);
               } }).element,
-              shell.iconButton({ icon: "trash", title: "Remove\u2026", run: () => {
+              shell.iconButton({ icon: "trash", title: t("Remove\u2026"), run: () => {
                 void removeFolder(node.path);
               } }).element,
               problems ? el("span", { className: "tsd-count" }, String(problems)) : void 0
@@ -10576,10 +10652,10 @@ function createWorkspace(svc, options, mode) {
           el(
             "span",
             { className: "tsd-row-actions" },
-            !fixed ? shell.iconButton({ icon: "edit", title: "Rename or move\u2026", run: () => {
+            !fixed ? shell.iconButton({ icon: "edit", title: t("Rename or move\u2026"), run: () => {
               void renameFile(path);
             } }).element : void 0,
-            !fixed ? shell.iconButton({ icon: "trash", title: "Remove\u2026", run: () => {
+            !fixed ? shell.iconButton({ icon: "trash", title: t("Remove\u2026"), run: () => {
               void removeFile(path);
             } }).element : void 0,
             broken.has(path) ? el("span", { className: "tsd-count" }, String(broken.get(path))) : void 0
@@ -10590,10 +10666,10 @@ function createWorkspace(svc, options, mode) {
           row.addEventListener("contextmenu", (e) => {
             e.preventDefault();
             shell.menu(row, [
-              { label: "Rename\u2026", run: () => {
+              { label: t("Rename\u2026"), run: () => {
                 void renameFile(path);
               } },
-              { label: "Remove\u2026", run: () => {
+              { label: t("Remove\u2026"), run: () => {
                 void removeFile(path);
               } }
             ], { x: e.clientX, y: e.clientY });
@@ -10614,25 +10690,25 @@ function createWorkspace(svc, options, mode) {
     programList.replaceChildren(...programs.flatMap((p, i) => [
       el(
         "li",
-        { className: "tsd-row", title: `${p.name ?? `Program ${i + 1}`}, run as ${ownerLabel(p)}`, onClick: () => goTo(p.source.file, p.source.line) },
+        { className: "tsd-row", title: t("{name}, run as {owner}", { name: p.name ?? t("Program {n}", { n: i + 1 }), owner: ownerLabel(p, t) }), onClick: () => goTo(p.source.file, p.source.line) },
         shell.icon("symbol-method"),
-        el("span", { className: "tsd-name" }, p.name ?? `program ${i + 1}`),
-        el("span", { className: "tsd-about" }, `${ownerLabel(p)}${p.perPlayer ? " \xB7 per player" : ""}`)
+        el("span", { className: "tsd-name" }, p.name ?? t("program {n}", { n: i + 1 })),
+        el("span", { className: "tsd-about" }, `${ownerLabel(p, t)}${p.perPlayer ? ` \xB7 ${t("per player")}` : ""}`)
       ),
       ...(outline?.variables ?? []).filter((v) => v.program === i).map((v) => el(
         "li",
-        { className: "tsd-row tsd-child", title: `${v.name}: ${typeOf(v)}${v.shared ? ", one value shared by every player" : p.perPlayer ? ", one per player" : ""}`, onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
+        { className: "tsd-row tsd-child", title: `${v.name}: ${typeOf(v)}${v.shared ? t(", one value shared by every player") : p.perPlayer ? t(", one per player") : ""}`, onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
         shell.icon("symbol-variable"),
         el("span", { className: "tsd-name" }, v.name),
-        el("span", { className: "tsd-about" }, `${typeOf(v)}${v.shared ? " \xB7 shared" : ""}`)
+        el("span", { className: "tsd-about" }, `${typeOf(v)}${v.shared ? ` \xB7 ${t("shared")}` : ""}`)
       ))
     ]));
   };
   const renderProblems = () => {
-    const warnings = warningsOf(tests);
+    const warnings = warningsOf(tests, t);
     problemsView.badge(diagnostics.length + warnings.length);
     if (diagnostics.length + warnings.length === 0) {
-      problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? "No problems have been detected in the script." : "Checking\u2026"));
+      problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? t("No problems have been detected in the script.") : t("Checking\u2026")));
       return;
     }
     problemsView.body.replaceChildren(el(
@@ -10643,16 +10719,16 @@ function createWorkspace(svc, options, mode) {
         { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
         shell.icon("error"),
         el("span", { className: "msg" }, d.message.split("\n")[0]),
-        el("span", { className: "src" }, d.source === "typescript" ? "types" : d.source === "script" ? "script" : "compiler"),
-        el("span", { className: "where" }, `${d.file} [Ln ${d.line}, Col ${d.column}]`)
+        el("span", { className: "src" }, d.source === "typescript" ? t("types") : d.source === "script" ? t("script") : t("compiler")),
+        el("span", { className: "where" }, t("{file} [Ln {line}, Col {column}]", { file: d.file, line: d.line, column: d.column }))
       )),
       ...warnings.map((w2) => el(
         "li",
         { className: "tsd-warning", title: w2.message, onClick: () => goTo(w2.file, w2.line) },
         shell.icon("warning"),
         el("span", { className: "msg" }, w2.message),
-        el("span", { className: "src" }, "tests"),
-        el("span", { className: "where" }, `${w2.file} [Ln ${w2.line}]`)
+        el("span", { className: "src" }, t("tests")),
+        el("span", { className: "where" }, t("{file} [Ln {line}]", { file: w2.file, line: w2.line }))
       ))
     ));
   };
@@ -10666,10 +10742,10 @@ function createWorkspace(svc, options, mode) {
   const renderTesting = () => {
     const counts = countTests(tests);
     testingView.badge(counts.failed || null, "error");
-    const said = summary(counts);
-    testsItem.set(ready && said ? { icon: testsRunning ? "loading" : said.failed ? "error" : "beaker", busy: testsRunning, text: said.text, kind: said.failed ? "error" : void 0, title: `${counts.total} test${counts.total === 1 ? "" : "s"}${testsSlow ? "; running them all takes a while, so only the open file's run after a change" : ""}. Click for the Testing view`, onClick: () => testingView.show() } : null);
+    const said = summary(counts, t);
+    testsItem.set(ready && said ? { icon: testsRunning ? "loading" : said.failed ? "error" : "beaker", busy: testsRunning, text: said.text, kind: said.failed ? "error" : void 0, title: testsSlow ? t("{n, plural, one {# test} other {# tests}}; running them all takes a while, so only the open file's run after a change. Click for the Testing view", { n: counts.total }) : t("{n, plural, one {# test} other {# tests}}. Click for the Testing view", { n: counts.total }), onClick: () => testingView.show() } : null);
     if (tests.list.length === 0) {
-      testingList.replaceChildren(el("li", { className: "tsd-empty" }, 'The script has no tests yet. A test is a test(name, (sim) => { \u2026 }) imported from "trigscript", in any file or in one named *.test.ts: it runs here, in the simulator, after every change that compiles.'));
+      testingList.replaceChildren(el("li", { className: "tsd-empty" }, t('The script has no tests yet. A test is a test(name, (sim) => { \u2026 }) imported from "trigscript", in any file or in one named *.test.ts: it runs here, in the simulator, after every change that compiles.')));
       return;
     }
     const rows = [];
@@ -10678,7 +10754,7 @@ function createWorkspace(svc, options, mode) {
       for (const node of nodes) {
         if (onlyFailing && !failing(node)) continue;
         const ids = idsUnder(node);
-        const state = testsRunning ? "running" : node.kind === "test" || node.kind === "suite" ? stateOf(tests, node.info) : stateOfCounts(countTests(tests, (t) => ids.some((id) => t.id === id || t.id.startsWith(`${id} > `))));
+        const state = testsRunning ? "running" : node.kind === "test" || node.kind === "suite" ? stateOf(tests, node.info) : stateOfCounts(countTests(tests, (x) => ids.some((id) => x.id === id || x.id.startsWith(`${id} > `))));
         const name = node.kind === "folder" || node.kind === "file" ? node.name : node.info.name;
         const result2 = node.kind === "test" ? tests.results.get(node.info.id) : void 0;
         const open = () => {
@@ -10700,11 +10776,11 @@ function createWorkspace(svc, options, mode) {
           { className: node.kind === "test" && node.info.id === chosenTest ? "tsd-row tsd-active" : "tsd-row", title: result2?.message ?? name, onClick: open },
           stateIcon(state),
           el("span", { className: state === "failed" ? "tsd-name tsd-problem" : "tsd-name" }, name),
-          result2 && result2.status !== "skipped" ? el("span", { className: "tsd-about" }, `${result2.ms} ms`) : void 0,
+          result2 && result2.status !== "skipped" ? el("span", { className: "tsd-about" }, t("{ms} ms", { ms: result2.ms })) : void 0,
           el(
             "span",
             { className: "tsd-row-actions" },
-            shell.iconButton({ icon: "play", title: node.kind === "test" ? "Run this test" : "Run these tests", run: () => {
+            shell.iconButton({ icon: "play", title: node.kind === "test" ? t("Run this test") : t("Run these tests"), run: () => {
               void runTests2(node.kind === "file" ? { files: [node.path] } : { ids });
             } }).element
           )
@@ -10715,38 +10791,38 @@ function createWorkspace(svc, options, mode) {
       }
     };
     walk(testTree(tests.list), 0);
-    if (rows.length === 0) rows.push(el("li", { className: "tsd-empty" }, "No test fails."));
+    if (rows.length === 0) rows.push(el("li", { className: "tsd-empty" }, t("No test fails.")));
     testingList.replaceChildren(...rows);
   };
   const renderResults = () => {
-    const failed2 = tests.list.filter((t) => t.kind === "test" && tests.results.get(t.id)?.status === "failed");
+    const failed2 = tests.list.filter((x) => x.kind === "test" && tests.results.get(x.id)?.status === "failed");
     resultsView.badge(failed2.length);
-    const info = tests.list.find((t) => t.id === chosenTest) ?? failed2[0] ?? tests.list.find((t) => t.kind === "test" && tests.results.has(t.id));
+    const info = tests.list.find((x) => x.id === chosenTest) ?? failed2[0] ?? tests.list.find((x) => x.kind === "test" && tests.results.has(x.id));
     const r = info ? tests.results.get(info.id) : void 0;
     if (!info || !r) {
-      resultsView.body.replaceChildren(el("div", { className: "tsd-empty" }, tests.list.length ? "No test has run yet: they run after a change that compiles, or from the Testing view." : "The script has no tests."));
+      resultsView.body.replaceChildren(el("div", { className: "tsd-empty" }, tests.list.length ? t("No test has run yet: they run after a change that compiles, or from the Testing view.") : t("The script has no tests.")));
       return;
     }
     const list = el("ul", { className: "tsd-list" });
     const at = r.at ?? { file: info.file, line: info.line };
     list.append(el(
       "li",
-      { title: "Go to the test", onClick: () => goTo(info.file, info.line) },
+      { title: t("Go to the test"), onClick: () => goTo(info.file, info.line) },
       stateIcon(r.status === "failed" ? "failed" : r.status === "passed" ? "passed" : "skipped"),
       el("span", { className: "msg" }, testName(info)),
-      el("span", { className: "src" }, r.status === "skipped" ? "skipped" : `${r.frames} frame${r.frames === 1 ? "" : "s"} \xB7 ${r.ms} ms`),
+      el("span", { className: "src" }, r.status === "skipped" ? t("skipped") : t("{frames, plural, one {# frame} other {# frames}} \xB7 {ms} ms", { frames: r.frames, ms: r.ms })),
       el("span", { className: "where" }, where({ file: info.file, line: info.line }))
     ));
     if (r.status === "failed") {
       list.append(el(
         "li",
-        { className: "tsd-fault", title: "Go to where it failed", onClick: () => goTo(at.file, at.line, at.column ?? 1) },
-        el("span", { className: "frame" }, "failed"),
-        el("span", { className: "msg" }, r.message ?? "failed"),
+        { className: "tsd-fault", title: t("Go to where it failed"), onClick: () => goTo(at.file, at.line, at.column ?? 1) },
+        el("span", { className: "frame" }, t("failed")),
+        el("span", { className: "msg" }, r.message ?? t("failed")),
         el("span", { className: "where" }, where({ file: at.file, line: at.line }))
       ));
-      if (r.expected !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "expected"), el("span", { className: "msg" }, r.expected)));
-      if (r.actual !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "got"), el("span", { className: "msg" }, r.actual)));
+      if (r.expected !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("expected")), el("span", { className: "msg" }, r.expected)));
+      if (r.actual !== void 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("got")), el("span", { className: "msg" }, r.actual)));
     }
     const printed = [];
     for (const line of r.printed) {
@@ -10754,7 +10830,7 @@ function createWorkspace(svc, options, mode) {
       if (last?.line === line) last.times++;
       else printed.push({ line, times: 1 });
     }
-    for (const { line, times } of printed) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "printed"), el("span", { className: "msg" }, line), times > 1 ? el("span", { className: "src" }, `\xD7${times}`) : void 0));
+    for (const { line, times } of printed) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("printed")), el("span", { className: "msg" }, line), times > 1 ? el("span", { className: "src" }, `\xD7${times}`) : void 0));
     const several = new Set(r.events.map((e) => e.player)).size > 1;
     const events = foldPlayers(r.events);
     for (const e of events.slice(0, SIMULATE_ROWS)) {
@@ -10763,12 +10839,12 @@ function createWorkspace(svc, options, mode) {
         { onClick: () => {
           if (e.file && e.line) goTo(e.file, e.line);
         } },
-        el("span", { className: "frame" }, `frame ${e.frame + 1}`),
+        el("span", { className: "frame" }, t("frame {n}", { n: e.frame + 1 })),
         el("span", { className: "msg note" }, `${several ? `${playersLabel(e.players)} \xB7 ` : ""}${e.text}`),
         el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "")
       ));
     }
-    if (events.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${events.length - SIMULATE_ROWS} more`)));
+    if (events.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, t("and {n} more", { n: events.length - SIMULATE_ROWS }))));
     resultsView.body.replaceChildren(list);
   };
   const runTests2 = async (filter = {}) => {
@@ -10779,51 +10855,51 @@ function createWorkspace(svc, options, mode) {
       const a2 = await compileNow({ world: svc.world(), ...filter });
       if (!a2 || cancelled) return;
       if (!a2.compiled.ok) {
-        setStatus("error", `Tests not run: ${a2.compiled.diagnostics.length} problem${a2.compiled.diagnostics.length === 1 ? "" : "s"} in the script.`, NOTICE_MS);
+        setStatus("error", t("Tests not run: {n, plural, one {# problem} other {# problems}} in the script.", { n: a2.compiled.diagnostics.length }), NOTICE_MS);
         shell.showPanel("problems");
         return;
       }
-      const ran = a2.compiled.tests?.results.filter((t) => t.status !== "skipped") ?? [];
-      const failed2 = ran.filter((t) => t.status === "failed");
+      const ran = a2.compiled.tests?.results.filter((x) => x.status !== "skipped") ?? [];
+      const failed2 = ran.filter((x) => x.status === "failed");
       if (ran.length === 0) {
-        setStatus("info", tests.list.length ? "No test ran." : "The script has no tests.");
+        setStatus("info", tests.list.length ? t("No test ran.") : t("The script has no tests."));
         return;
       }
       if (failed2.length) {
         chosenTest = failed2[0].id;
         shell.showPanel("tests");
       }
-      setStatus(failed2.length ? "error" : "ok", failed2.length ? `${failed2.length} of ${ran.length} test${ran.length === 1 ? "" : "s"} failed: ${testName(failed2[0])} \u2014 ${failed2[0].message ?? "failed"}` : `${ran.length} test${ran.length === 1 ? "" : "s"} passed.`, NOTICE_MS);
+      setStatus(failed2.length ? "error" : "ok", failed2.length ? t("{failed} of {n, plural, one {# test} other {# tests}} failed: {name} \u2014 {message}", { failed: failed2.length, n: ran.length, name: testName(failed2[0]), message: failed2[0].message ?? t("failed") }) : t("{n, plural, one {# test} other {# tests}} passed.", { n: ran.length }), NOTICE_MS);
     } finally {
       testsRunning = false;
       render();
     }
   };
   const runFailedTests = () => {
-    const ids = tests.list.filter((t) => t.kind === "test" && tests.results.get(t.id)?.status === "failed").map((t) => t.id);
+    const ids = tests.list.filter((x) => x.kind === "test" && tests.results.get(x.id)?.status === "failed").map((x) => x.id);
     if (ids.length === 0) {
-      setStatus("info", "No test has failed.");
+      setStatus("info", t("No test has failed."));
       return Promise.resolve();
     }
     return runTests2({ ids });
   };
   const runTestAtCursor = () => {
     const at = editor?.cursor();
-    const here = at ? tests.list.filter((t) => t.file === normalizePath(at.file) && t.line <= at.line).sort((a2, b) => b.line - a2.line)[0] : void 0;
+    const here = at ? tests.list.filter((x) => x.file === normalizePath(at.file) && x.line <= at.line).sort((a2, b) => b.line - a2.line)[0] : void 0;
     if (!here) {
-      setStatus("info", "There is no test at the cursor.");
+      setStatus("info", t("There is no test at the cursor."));
       return Promise.resolve();
     }
     return runTests2({ ids: [here.id] });
   };
   const renderSimulation = () => {
     if (!simulation) {
-      simulateView.body.replaceChildren(el("div", { className: "tsd-empty" }, `Simulate (${MOD}+F5) runs the script's first ${SIMULATE_FRAMES / 24} seconds in a built-in interpreter and lists what happened. A change to the script clears the list.`));
+      simulateView.body.replaceChildren(el("div", { className: "tsd-empty" }, t("Simulate ({mod}+F5) runs the script's first {seconds} seconds in a built-in interpreter and lists what happened. A change to the script clears the list.", { mod: MOD, seconds: SIMULATE_FRAMES / 24 })));
       return;
     }
     const { sim, programs: ps, result: r } = simulation;
     const list = el("ul", { className: "tsd-list" });
-    list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, `${SIMULATE_FRAMES} frames (${SIMULATE_FRAMES / 24} s) for ${sim.game.players.slots.map((p) => `P${p + 1}`).join(", ")}, from the map's placed units. Units are made, given, moved, killed and counted, but nothing walks or fights; scores and the countdown read 0; wait takes no time.`)));
+    list.append(el("li", { className: "tsd-plain" }, el("span", { className: "msg note" }, t("{frames} frames ({seconds} s) for {players}, from the map's placed units. Units are made, given, moved, killed and counted, but nothing walks or fights; scores and the countdown read 0; wait takes no time.", { frames: SIMULATE_FRAMES, seconds: SIMULATE_FRAMES / 24, players: sim.game.players.slots.map((p) => `P${p + 1}`).join(", ") }))));
     const faults = /* @__PURE__ */ new Map();
     for (const f of ps?.faults ?? []) {
       const key = `${f.at.file}:${f.at.line}:${f.at.column}:${f.message.replace(/\d+/g, "#")}`;
@@ -10835,20 +10911,20 @@ function createWorkspace(svc, options, mode) {
       list.append(el(
         "li",
         { className: "tsd-fault", title: f.message, onClick: () => goTo(f.at.file, f.at.line, f.at.column) },
-        el("span", { className: "frame" }, `frame ${f.cycle + 1}`),
+        el("span", { className: "frame" }, t("frame {n}", { n: f.cycle + 1 })),
         shell.icon("error"),
-        el("span", { className: "msg" }, times > 1 ? `${f.message} (and ${times - 1} more time${times === 2 ? "" : "s"} at this line)` : f.message),
+        el("span", { className: "msg" }, times > 1 ? t("{message} (and {n, plural, one {# more time} other {# more times}} at this line)", { message: f.message, n: times - 1 }) : f.message),
         el("span", { className: "where" }, where({ file: f.at.file, line: f.at.line }))
       ));
     }
-    if (faults.size > SIMULATE_FAULTS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${faults.size - SIMULATE_FAULTS} more lines with a fault`)));
+    if (faults.size > SIMULATE_FAULTS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, t("and {n} more lines with a fault", { n: faults.size - SIMULATE_FAULTS }))));
     const several = sim.game.players.slots.length > 1;
     const flat = [
       ...sim.events.map((e, i) => {
         const at = r.sources[e.trigger];
-        return { frame: e.cycle, order: i, player: e.player, text: describeEvent(e), file: at?.file, line: at?.line, column: 1, title: `Trigger #${e.trigger + 1}` };
+        return { frame: e.cycle, order: i, player: e.player, text: describeEvent(e), file: at?.file, line: at?.line, column: 1, title: t("Trigger #{n}", { n: e.trigger + 1 }) };
       }),
-      ...(ps?.events ?? []).map((e, i) => ({ frame: e.cycle, order: sim.events.length + i, player: e.player, text: describeEvent(e), file: e.at.file, line: e.at.line, column: e.at.column, title: `Program ${e.program + 1}` }))
+      ...(ps?.events ?? []).map((e, i) => ({ frame: e.cycle, order: sim.events.length + i, player: e.player, text: describeEvent(e), file: e.at.file, line: e.at.line, column: e.at.column, title: t("Program {n}", { n: e.program + 1 }) }))
     ].sort((x, y) => x.frame - y.frame || x.order - y.order);
     const rows = foldPlayers(flat).map((e) => ({
       line: () => el(
@@ -10856,14 +10932,14 @@ function createWorkspace(svc, options, mode) {
         { title: e.title, onClick: () => {
           if (e.file && e.line) goTo(e.file, e.line, e.column);
         } },
-        el("span", { className: "frame" }, `frame ${e.frame + 1}`),
+        el("span", { className: "frame" }, t("frame {n}", { n: e.frame + 1 })),
         el("span", { className: "msg" }, `${several ? `${playersLabel(e.players)} \xB7 ` : ""}${e.text}`),
         el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "?")
       )
     }));
-    if (rows.length === 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2014"), el("span", { className: "msg" }, `No actions ran in ${SIMULATE_FRAMES} frames.`)));
+    if (rows.length === 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2014"), el("span", { className: "msg" }, t("No actions ran in {frames} frames.", { frames: SIMULATE_FRAMES }))));
     for (const row of rows.slice(0, SIMULATE_ROWS)) list.append(row.line());
-    if (rows.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, `and ${rows.length - SIMULATE_ROWS} more actions`)));
+    if (rows.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "\u2026"), el("span", { className: "msg" }, t("and {n} more actions", { n: rows.length - SIMULATE_ROWS }))));
     const shownVars = /* @__PURE__ */ new Set();
     for (const v of r.variables) {
       if (shownVars.has(v.name)) continue;
@@ -10873,8 +10949,8 @@ function createWorkspace(svc, options, mode) {
       const shown = runs.length > 1 && !v.shared ? runs.map((x) => `P${x.player + 1} ${say(x.value(v.name))}`).join(" \xB7 ") : say(ps?.value(v.name, v.program));
       list.append(el(
         "li",
-        { title: "The variable's value when the run ended", onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
-        el("span", { className: "frame" }, "after"),
+        { title: t("The variable's value when the run ended"), onClick: () => goTo(v.at.file, v.at.line, v.at.column) },
+        el("span", { className: "frame" }, t("after")),
         el("span", { className: "msg" }, `${v.name} = ${shown}`),
         el("span", { className: "where" }, typeOf(v))
       ));
@@ -10894,18 +10970,17 @@ function createWorkspace(svc, options, mode) {
     if (!again && signature2 === staleShown) return;
     staleShown = signature2;
     if (!e) {
-      shell.notify({ key: "stale", kind: "warn", text: "The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled." });
+      shell.notify({ key: "stale", kind: "warn", text: t("The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled.") });
       return;
     }
-    const n = (k, what) => `${k} ${what}${k === 1 ? "" : "s"}`;
-    const facts = `The script's triggers were edited outside the script: ${n(e.unchanged, "trigger")} ${e.unchanged === 1 ? "is" : "are"} still the script's, ${n(e.changed, "trigger")} ${e.changed === 1 ? "was" : "were"} changed.`;
-    const plan = appendInstead ? "The next Apply leaves them all as hand-made triggers and appends a fresh block." : `The next Apply replaces the ${e.unchanged} and keeps the ${n(e.changed, "edited one")} as hand-made triggers right after the new block.`;
+    const facts = t("The script's triggers were edited outside the script: {unchanged, plural, one {# trigger is} other {# triggers are}} still the script's, {changed, plural, one {# trigger was} other {# triggers were}} changed.", { unchanged: e.unchanged, changed: e.changed });
+    const plan = appendInstead ? t("The next Apply leaves them all as hand-made triggers and appends a fresh block.") : t("The next Apply replaces the {unchanged} and keeps the {changed, plural, one {# edited one} other {# edited ones}} as hand-made triggers right after the new block.", { unchanged: e.unchanged, changed: e.changed });
     shell.notify({ key: "stale", kind: "warn", text: `${facts} ${plan}`, actions: [
-      { label: appendInstead ? "Replace instead" : "Append instead", keep: true, run: () => {
+      { label: appendInstead ? t("Replace instead") : t("Append instead"), keep: true, run: () => {
         appendInstead = !appendInstead;
         render();
       } },
-      { label: "Apply", primary: true, run: () => {
+      { label: t("Apply"), primary: true, run: () => {
         void build();
       } }
     ] });
@@ -10922,19 +10997,19 @@ function createWorkspace(svc, options, mode) {
     const signature2 = all.join("\n");
     if (!again && signature2 === renamesShown) return;
     renamesShown = signature2;
-    shell.notify({ key: "renames", kind: "info", text: `The map renamed ${all.length === 1 ? "something the script names" : `${all.length} things the script names`}: ${all.join(", ")}.`, actions: [
-      { label: "Leave", run: () => {
+    shell.notify({ key: "renames", kind: "info", text: t("The map renamed {n, plural, one {something the script names} other {# things the script names}}: {list}.", { n: all.length, list: all.join(", ") }), actions: [
+      { label: t("Leave"), run: () => {
         renames = [];
         render();
       } },
-      { label: "Update references", primary: true, run: () => {
+      { label: t("Update references"), primary: true, run: () => {
         void applyRenames();
       } }
     ] });
   };
   const renderCursor = () => {
     const at = editor?.editor.getPosition();
-    cursorItem.set(at ? { text: `Ln ${at.lineNumber}, Col ${at.column}`, title: "Go to line\u2026", onClick: () => {
+    cursorItem.set(at ? { text: t("Ln {line}, Col {column}", { line: at.lineNumber, column: at.column }), title: t("Go to line\u2026"), onClick: () => {
       editor?.editor.focus();
       editor?.editor.trigger("trigscript", "editor.action.gotoLine", null);
     } } : null);
@@ -10949,24 +11024,23 @@ function createWorkspace(svc, options, mode) {
     const block2 = state?.block ?? null;
     const stale = state?.stale ?? false;
     const programs = outline ? outline.programs.length : state?.programs ?? 0;
-    problemsItem.set(ready ? { icon: errors ? "error" : "pass", text: String(errors), kind: errors ? "error" : void 0, title: errors ? `${errors} problem${errors === 1 ? "" : "s"}` : result ? "No problems" : "Checking\u2026", onClick: () => shell.togglePanel("problems") } : null);
-    const onSave = "saving or testing the map applies the script by itself";
-    blockItem.set(stale ? null : block2 && !state?.unbuilt ? { icon: "check", text: `${block2.count} trigger${block2.count === 1 ? "" : "s"} at #${block2.start + 1}`, title: `The script's triggers are in the map's trigger list, from #${block2.start + 1}. Click to apply the script again`, onClick: () => {
+    problemsItem.set(ready ? { icon: errors ? "error" : "pass", text: String(errors), kind: errors ? "error" : void 0, title: errors ? t("{n, plural, one {# problem} other {# problems}}", { n: errors }) : result ? t("No problems") : t("Checking\u2026"), onClick: () => shell.togglePanel("problems") } : null);
+    blockItem.set(stale ? null : block2 && !state?.unbuilt ? { icon: "check", text: t("{n, plural, one {# trigger} other {# triggers}} at #{start}", { n: block2.count, start: block2.start + 1 }), title: t("The script's triggers are in the map's trigger list, from #{start}. Click to apply the script again", { start: block2.start + 1 }), onClick: () => {
       void build();
-    } } : { icon: "circle-filled", text: block2 ? "Changes not applied" : "Not applied yet", title: `${block2 ? "The script changed since it was applied" : "The script's triggers are not in the map yet"}: ${onSave}. Click to apply it now (${MOD}+Shift+B)`, onClick: () => {
+    } } : { icon: "circle-filled", text: block2 ? t("Changes not applied") : t("Not applied yet"), title: block2 ? t("The script changed since it was applied: saving or testing the map applies the script by itself. Click to apply it now ({mod}+Shift+B)", { mod: MOD }) : t("The script's triggers are not in the map yet: saving or testing the map applies the script by itself. Click to apply it now ({mod}+Shift+B)", { mod: MOD }), onClick: () => {
       void build();
     } });
-    staleItem.set(stale ? { icon: "warning", kind: "warn", text: "Triggers edited outside the script", title: "What the next Apply does about it", onClick: () => showStale(true) } : null);
+    staleItem.set(stale ? { icon: "warning", kind: "warn", text: t("Triggers edited outside the script"), title: t("What the next Apply does about it"), onClick: () => showStale(true) } : null);
     const renamed = renamedNow().length;
-    renamesItem.set(renamed ? { icon: "sync", kind: "warn", text: `${renamed} renamed`, title: "The map renamed things the script names", onClick: () => showRenames(true) } : null);
-    messageItem.set(status ? { text: status.text, busy: status.kind === "busy" } : !ready && !failed ? { text: "Loading the editor\u2026", busy: true } : null);
+    renamesItem.set(renamed ? { icon: "sync", kind: "warn", text: t("{n} renamed", { n: renamed }), title: t("The map renamed things the script names"), onClick: () => showRenames(true) } : null);
+    messageItem.set(status ? { text: status.text, busy: status.kind === "busy" } : !ready && !failed ? { text: t("Loading the editor\u2026"), busy: true } : null);
     const editedSince = buildState?.kind === "ok" && buildState.of !== files;
     buildItem.set(buildState ? {
-      text: editedSince ? `${buildState.text} \xB7 edited since` : buildState.text,
+      text: editedSince ? `${buildState.text} \xB7 ${t("edited since")}` : buildState.text,
       busy: buildState.kind === "busy",
       icon: buildState.kind === "error" ? "error" : "package",
       kind: buildState.kind === "error" ? "error" : editedSince ? "warn" : void 0,
-      title: `${editedSince ? "The script changed since this build: the programs in the saved map are the older ones until the next Save" : buildState.title ?? "The last build of the programs"}. Click for its log`,
+      title: t("{what}. Click for its log", { what: editedSince ? t("The script changed since this build: the programs in the saved map are the older ones until the next Save") : buildState.title ?? t("The last build of the programs") }),
       onClick: () => shell.showPanel("output")
     } : null);
     const needsLibrary = programs > 0;
@@ -10974,10 +11048,10 @@ function createWorkspace(svc, options, mode) {
     libraryItem.set(!needsLibrary ? null : {
       kind: libraryOk ? void 0 : "warn",
       icon: libraryOk ? void 0 : "warning",
-      text: !library ? "eudplib plugin not running" : !library.contribute ? "eudplib plugin older than 0.4" : `eudplib ${library.versions.eudplib} \xB7 ${library.state() === "ready" ? "runtime ready" : library.state() === "installing" ? "runtime downloading\u2026" : library.state() === "failed" ? "runtime failed" : "runtime downloads on the first save"}`,
-      title: !library ? "The programs will not be built: install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026" : !library.contribute ? "Update the eudplib plugin to build the programs" : "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time"
+      text: !library ? t("eudplib plugin not running") : !library.contribute ? t("eudplib plugin older than 0.4") : `eudplib ${library.versions.eudplib} \xB7 ${library.state() === "ready" ? t("runtime ready") : library.state() === "installing" ? t("runtime downloading\u2026") : library.state() === "failed" ? t("runtime failed") : t("runtime downloads on the first save")}`,
+      title: !library ? t("The programs will not be built: install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026") : !library.contribute ? t("Update the eudplib plugin to build the programs") : t("The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time")
     });
-    programsItem.set(programs ? { text: `${programs === 1 ? "1 program" : `${programs} programs`} \xB7 Remastered`, title: "Programs are built into the saved map, which then needs StarCraft: Remastered. Click for the programs and their variables", onClick: () => {
+    programsItem.set(programs ? { text: t("{n, plural, one {# program} other {# programs}} \xB7 Remastered", { n: programs }), title: t("Programs are built into the saved map, which then needs StarCraft: Remastered. Click for the programs and their variables"), onClick: () => {
       shell.toggleSidebar(true);
       programsSection.expand();
     } } : null);
@@ -10999,8 +11073,8 @@ function createWorkspace(svc, options, mode) {
     if (r.ok && r.tests && asked && !asked.files && !asked.ids) testsSlow = r.tests.ms > TESTS_SLOW_MS;
     if (chosenTest && !tests.results.has(chosenTest)) chosenTest = null;
     if (editor && monaco) {
-      setCompilerMarkers(monaco, files, diagnostics, warningsOf(tests));
-      editor.setTests(marksOf(tests), notesOf(tests));
+      setCompilerMarkers(monaco, files, diagnostics, warningsOf(tests, t));
+      editor.setTests(marksOf(tests, t), notesOf(tests, t));
       editor.decorate(r.buildTime);
       refreshLineHints();
     }
@@ -11035,7 +11109,7 @@ function createWorkspace(svc, options, mode) {
           if (!cancelled) applyResult(a2.compiled, asked);
         },
         (err) => {
-          if (!cancelled && !(err instanceof CompileSuperseded)) setStatus("error", `Compiler: ${err.message}`);
+          if (!cancelled && !(err instanceof CompileSuperseded)) setStatus("error", t("Compiler: {message}", { message: err.message }));
         }
       );
     }, CHECK_DELAY_MS);
@@ -11053,7 +11127,7 @@ function createWorkspace(svc, options, mode) {
         return a2;
       } catch (err) {
         if (err instanceof CompileSuperseded) continue;
-        setStatus("error", `Compiler: ${err.message}`);
+        setStatus("error", t("Compiler: {message}", { message: err.message }));
         return null;
       }
     }
@@ -11062,42 +11136,42 @@ function createWorkspace(svc, options, mode) {
   const refusal = (why) => {
     switch (why) {
       case "closed":
-        return "Not applied: the map closed.";
+        return t("Not applied: the map closed.");
       case "switched":
-        return "Not applied: another map is in front now.";
+        return t("Not applied: another map is in front now.");
       case "changed":
-        return "Not applied: the map changed while the script was running. Apply again.";
+        return t("Not applied: the map changed while the script was running. Apply again.");
       default:
-        return "Not applied.";
+        return t("Not applied.");
     }
   };
   const build = async (takeOver = false) => {
     if (building || !ready) return false;
     building = true;
-    setStatus("busy", "Running the script\u2026");
+    setStatus("busy", t("Running the script\u2026"));
     try {
       for (let attempt = 0; ; attempt++) {
         const a2 = await compileNow();
         if (!a2 || cancelled) return false;
         if (!a2.compiled.ok || diagnostics.length) {
           const n = diagnostics.length || a2.compiled.diagnostics.length;
-          setStatus("error", `Not applied: ${n} problem${n === 1 ? "" : "s"} in the script.`, NOTICE_MS);
+          setStatus("error", t("Not applied: {n, plural, one {# problem} other {# problems}} in the script.", { n }), NOTICE_MS);
           shell.showPanel("problems");
           return false;
         }
         const wasStale = svc.state()?.stale ?? false;
-        setStatus("busy", "Writing the triggers\u2026");
+        setStatus("busy", t("Writing the triggers\u2026"));
         const out = svc.install(a2, { takeOver, replaceStale: wasStale && !appendInstead });
         if (out.block) {
           const b = out.block;
-          const tail = out.replaced ? ` (replaced the previous block's ${out.replaced.removed} unchanged trigger${out.replaced.removed === 1 ? "" : "s"}; ${out.replaced.kept} edited one${out.replaced.kept === 1 ? "" : "s"} kept after it)` : wasStale ? " (appended: the previous block had been edited outside the script)" : "";
           const n = a2.compiled.ir.length;
-          const built = n ? ` ${n === 1 ? "The program is" : `The ${n} programs are`} built into the map when it is saved or tested.` : "";
-          setStatus("ok", (b.count === 0 ? `Applied: the script defines no triggers${n ? "" : "; its block is empty"}.` : `Applied ${b.count} trigger${b.count === 1 ? "" : "s"} \u2192 #${b.start + 1}\u2013#${b.start + b.count}${tail}.`) + built);
+          const applied = b.count === 0 ? n ? t("Applied: the script defines no triggers.") : t("Applied: the script defines no triggers; its block is empty.") : out.replaced ? t("Applied {n, plural, one {# trigger} other {# triggers}} \u2192 #{first}\u2013#{last} (replaced the previous block's {removed, plural, one {# unchanged trigger} other {# unchanged triggers}}; {kept, plural, one {# edited one} other {# edited ones}} kept after it).", { n: b.count, first: b.start + 1, last: b.start + b.count, removed: out.replaced.removed, kept: out.replaced.kept }) : wasStale ? t("Applied {n, plural, one {# trigger} other {# triggers}} \u2192 #{first}\u2013#{last} (appended: the previous block had been edited outside the script).", { n: b.count, first: b.start + 1, last: b.start + b.count }) : t("Applied {n, plural, one {# trigger} other {# triggers}} \u2192 #{first}\u2013#{last}.", { n: b.count, first: b.start + 1, last: b.start + b.count });
+          const built = n ? ` ${t("{n, plural, one {The program is} other {The # programs are}} built into the map when it is saved or tested.", { n })}` : "";
+          setStatus("ok", applied + built);
           return true;
         }
         if (out.refused === "changed" && attempt < 2) {
-          setStatus("busy", "The map changed while the script ran; running it again\u2026");
+          setStatus("busy", t("The map changed while the script ran; running it again\u2026"));
           continue;
         }
         setStatus("error", refusal(out.refused));
@@ -11118,26 +11192,26 @@ function createWorkspace(svc, options, mode) {
     });
     try {
       if (!await build() || cancelled) return;
-      setStatus("busy", "Building the map\u2026");
+      setStatus("busy", t("Building the map\u2026"));
       const file = await api.document.export({ format: "scx" });
       if (!file) {
-        setStatus("error", "No map is open.");
+        setStatus("error", t("No map is open."));
         return;
       }
       if (failure) {
-        setStatus("error", `Not tested: ${failure}`);
+        setStatus("error", t("Not tested: {message}", { message: failure }));
         return;
       }
       if (result?.programs.length && !library?.contribute) {
-        setStatus("error", "Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins \u25B8 Manage Plugins\u2026.");
+        setStatus("error", t("Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins \u25B8 Manage Plugins\u2026."));
         return;
       }
       const bytes2 = new Uint8Array(await file.arrayBuffer());
       const outcome = await api.document.test(bytes2, file.name);
       const kb = Math.round(bytes2.length / 1024);
-      setStatus(outcome ? "ok" : "info", outcome?.launched ? `Started the game with ${outcome.path} (${kb} KB).` : outcome ? `Written to ${outcome.path} (${kb} KB)${outcome.message ? ` \u2014 ${outcome.message}` : ""}.` : "The map is built, but this browser has no test folder yet: pick one once under Tools \u25B8 Test Map\u2026, which builds the map the same way.");
+      setStatus(outcome ? "ok" : "info", outcome?.launched ? t("Started the game with {path} ({kb} KB).", { path: outcome.path, kb }) : outcome ? outcome.message ? t("Written to {path} ({kb} KB) \u2014 {message}.", { path: outcome.path, kb, message: outcome.message }) : t("Written to {path} ({kb} KB).", { path: outcome.path, kb }) : t("The map is built, but this browser has no test folder yet: pick one once under Tools \u25B8 Test Map\u2026, which builds the map the same way."));
     } catch (err) {
-      setStatus("error", `Not tested: ${err.message}`);
+      setStatus("error", t("Not tested: {message}", { message: err.message }));
     } finally {
       heard.dispose();
       testing = false;
@@ -11149,29 +11223,29 @@ function createWorkspace(svc, options, mode) {
     if (e.kind === "start") {
       streamed = 0;
       shell.dismiss("build");
-      buildState = { kind: "busy", text: `Building for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}\u2026`, of: files };
-      log(`Building the programs for ${e.purpose === "test" ? "Test Map" : e.purpose === "save" ? "Save" : "an export"}`);
+      buildState = { kind: "busy", text: e.purpose === "test" ? t("Building for Test Map\u2026") : e.purpose === "save" ? t("Building for Save\u2026") : t("Building for an export\u2026"), of: files };
+      log(e.purpose === "test" ? t("Building the programs for Test Map") : e.purpose === "save" ? t("Building the programs for Save") : t("Building the programs for an export"));
       const failing = countTests(tests).failed;
-      if (failing) log(`${failing === 1 ? "A test fails" : `${failing} tests fail`}: see the Testing view.`, false);
+      if (failing) log(t("{n, plural, one {A test fails} other {# tests fail}}: see the Testing view.", { n: failing }), false);
     } else if (e.kind === "log") {
       streamed++;
       log(e.line, false);
     } else if (e.kind === "done") {
       if (!streamed && e.log) log(e.log, false);
       const kb = Math.round(e.chkBytes / 1024), seconds = (e.ms / 1e3).toFixed(1);
-      buildState = { kind: "ok", text: `Built ${kb} KB \xB7 ${seconds} s`, of: buildState?.of ?? files };
-      log(`Built: ${kb} KB of scenario in ${seconds} s`);
+      buildState = { kind: "ok", text: t("Built {kb} KB \xB7 {seconds} s", { kb, seconds }), of: buildState?.of ?? files };
+      log(t("Built: {kb} KB of scenario in {seconds} s", { kb, seconds }));
     } else {
       if (!streamed && e.log) log(e.log, false);
       const saved = e.purpose === "save";
       buildState = {
         kind: "error",
-        text: saved ? "Saved without its programs" : "Build failed",
+        text: saved ? t("Saved without its programs") : t("Build failed"),
         of: buildState?.of ?? files,
-        ...saved ? { title: "The map was saved with the script in it, but its programs were not built, so they do not run in the game. Fix the error and save again" } : {}
+        ...saved ? { title: t("The map was saved with the script in it, but its programs were not built, so they do not run in the game. Fix the error and save again") } : {}
       };
-      log(`Build failed: ${e.message}`);
-      shell.notify({ key: "build", kind: "error", text: saved ? `The map was saved without its programs, which were not built: ${e.message}` : `The programs were not built: ${e.message}`, actions: [{ label: "Show the log", run: () => shell.showPanel("output") }] });
+      log(t("Build failed: {message}", { message: e.message }));
+      shell.notify({ key: "build", kind: "error", text: saved ? t("The map was saved without its programs, which were not built: {message}", { message: e.message }) : t("The programs were not built: {message}", { message: e.message }), actions: [{ label: t("Show the log"), run: () => shell.showPanel("output") }] });
       const at = positionIn(e.message);
       if (at) {
         diagnostics = [...diagnostics, { file: at.file, line: at.line, column: at.column, endLine: at.line, endColumn: at.column + 1, message: e.message, source: "compiler" }];
@@ -11185,7 +11259,7 @@ function createWorkspace(svc, options, mode) {
     if (!editor || !generated) return;
     const { before, after } = svc.handTriggers();
     if (before.length + after.length === 0) {
-      setStatus("info", "There are no hand-made triggers to import.");
+      setStatus("info", t("There are no hand-made triggers to import."));
       return;
     }
     const ctx = { names: generated.names, string: (i) => api.names.string(i) };
@@ -11201,34 +11275,34 @@ function createWorkspace(svc, options, mode) {
     files = { ...files, [ENTRY_FILE]: text };
     const ok = await build(true) !== false;
     const n = before.length + after.length;
-    if (ok) setStatus("ok", `Imported ${n} hand-made trigger${n === 1 ? "" : "s"}; every trigger is now generated by the script.`);
+    if (ok) setStatus("ok", t("Imported {n, plural, one {# hand-made trigger} other {# hand-made triggers}}; every trigger is now generated by the script.", { n }));
   };
   const simulatedMap = () => {
     const scn = api.document.scenario();
     if (!scn) return {};
     const types2 = /* @__PURE__ */ new Map();
     const typeOf2 = (id) => {
-      let t = types2.get(id);
-      if (!t) {
+      let ty = types2.get(id);
+      if (!ty) {
         const view = api.settings?.unitType(id);
-        t = { hp: view?.hitPoints ?? 1, shields: view?.shields ?? 0 };
-        types2.set(id, t);
+        ty = { hp: view?.hitPoints ?? 1, shields: view?.shields ?? 0 };
+        types2.set(id, ty);
       }
-      return t;
+      return ty;
     };
     const part = (max, percent, valid) => valid ? Math.max(1, Math.ceil(max * Math.min(100, percent) / 100)) : max;
     const units = scn.units.filter((u) => u.unitId !== START_LOCATION_UNIT2).map((u) => {
-      const t = typeOf2(u.unitId);
+      const ty = typeOf2(u.unitId);
       return {
         type: u.unitId,
         owner: u.owner,
         x: u.x,
         y: u.y,
         // validStates says which of a placed unit's own figures are set: 2 hit points, 4 shields, 64 the state flags.
-        maxHp: t.hp,
-        hp: part(t.hp, u.hitPointsPercent, (u.validStates & 2) !== 0),
-        maxShields: t.shields,
-        shields: t.shields ? part(t.shields, u.shieldPercent, (u.validStates & 4) !== 0) : 0,
+        maxHp: ty.hp,
+        hp: part(ty.hp, u.hitPointsPercent, (u.validStates & 2) !== 0),
+        maxShields: ty.shields,
+        shields: ty.shields ? part(ty.shields, u.shieldPercent, (u.validStates & 4) !== 0) : 0,
         resources: u.resourceAmount,
         ...(u.validStates & 64) !== 0 ? { cloaked: (u.stateFlags & 1) !== 0, burrowed: (u.stateFlags & 2) !== 0, hallucinated: (u.stateFlags & 8) !== 0, invincible: (u.stateFlags & 16) !== 0 } : {}
       };
@@ -11260,7 +11334,7 @@ function createWorkspace(svc, options, mode) {
     const r = (await compileNow())?.compiled;
     if (!r) return;
     if (!r.ok) {
-      setStatus("error", `Not simulated: ${r.diagnostics.length} problem${r.diagnostics.length === 1 ? "" : "s"} in the script.`, NOTICE_MS);
+      setStatus("error", t("Not simulated: {n, plural, one {# problem} other {# problems}} in the script.", { n: r.diagnostics.length }), NOTICE_MS);
       shell.showPanel("problems");
       return;
     }
@@ -11276,14 +11350,14 @@ function createWorkspace(svc, options, mode) {
       }
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
-      const quiet = r.input ? " Keys, clicks, the mouse and chat are not simulated: they read as nothing." : "";
+      const quiet = r.input ? ` ${t("Keys, clicks, the mouse and chat are not simulated: they read as nothing.")}` : "";
       const faults = programs?.faults.length ?? 0;
-      const wrong = faults ? ` ${faults} fault${faults === 1 ? "" : "s"}: an array read or written past its end, or out of memory \u2014 first in the list.` : "";
+      const wrong = faults ? ` ${t("{n, plural, one {# fault} other {# faults}}: an array read or written past its end, or out of memory \u2014 first in the list.", { n: faults })}` : "";
       const who = sim.game.players.slots.map((p) => `P${p + 1}`).join(", ");
-      setStatus("ok", `Simulated ${SIMULATE_FRAMES} frames for ${who}: ${count} action${count === 1 ? "" : "s"} ran.${wrong}${quiet}`);
+      setStatus("ok", `${t("Simulated {frames} frames for {who}: {n, plural, one {# action} other {# actions}} ran.", { frames: SIMULATE_FRAMES, who, n: count })}${wrong}${quiet}`);
       shell.showPanel("simulate");
     } catch (err) {
-      setStatus("error", `Simulation stopped: ${err.message}`);
+      setStatus("error", t("Simulation stopped: {message}", { message: err.message }));
     }
   };
   const switchMode = () => {
@@ -11300,18 +11374,18 @@ function createWorkspace(svc, options, mode) {
     picking = true;
     render();
     try {
-      const picked = await api.ui.pickObject({ prompt: "Click a location or a unit for the script" });
+      const picked = await api.ui.pickObject({ prompt: t("Click a location or a unit for the script") });
       if (cancelled || !picked || !editor) return;
       const scn = api.document.scenario();
       const table2 = picked.kind === "unit" ? generated.names.units : generated.names.locations;
       const value = picked.kind === "unit" ? scn?.units[picked.index]?.unitId : picked.index + 1;
       const entry = value === void 0 ? void 0 : entryFor(table2, value);
       if (!entry) {
-        setStatus("info", picked.kind === "unit" ? "That unit's type has no name in the script's tables." : "That location is not in the script's tables yet; try again after the map's names refresh.");
+        setStatus("info", picked.kind === "unit" ? t("That unit's type has no name in the script's tables.") : t("That location is not in the script's tables yet; try again after the map's names refresh."));
         return;
       }
       editor.insert(`${table2.object}.${entry.keys[0]}`);
-      setStatus("ok", `Inserted ${table2.object}.${entry.keys[0]}.`);
+      setStatus("ok", t("Inserted {name}.", { name: `${table2.object}.${entry.keys[0]}` }));
     } finally {
       picking = false;
       render();
@@ -11332,7 +11406,7 @@ function createWorkspace(svc, options, mode) {
     files = next;
     renames = [];
     svc.writeFiles(files);
-    setStatus("ok", `Updated ${count} reference${count === 1 ? "" : "s"}.`);
+    setStatus("ok", t("Updated {n, plural, one {# reference} other {# references}}.", { n: count }));
     check();
   };
   const askName = async (message, value, folder = "") => {
@@ -11344,12 +11418,12 @@ function createWorkspace(svc, options, mode) {
       if (name && !/\.ts$/i.test(name)) name += ".ts";
       if (!FILE_NAME.test(name) || name.split("/").some((p) => p === "." || p === "..")) {
         value = answer;
-        message = "A file name is letters, digits, _ - and ., folders with /, ending in .ts.";
+        message = t("A file name is letters, digits, _ - and ., folders with /, ending in .ts.");
         continue;
       }
       if (files[name] !== void 0) {
         value = answer;
-        message = `There is already a ${name}.`;
+        message = t("There is already a {name}.", { name });
         continue;
       }
       return name;
@@ -11359,7 +11433,7 @@ function createWorkspace(svc, options, mode) {
     if (!editor) return;
     const open = editor.active();
     const proposed = /(^|\/)tests?$/i.test(folder) ? `${(open.split("/").pop() ?? "main.ts").replace(/(\.test)?\.ts$/i, "")}.test.ts` : "helpers.ts";
-    const name = await askName(folder ? `Name of the new file in ${folder}/:` : "Name of the new file (folder/name.ts puts it in a folder):", proposed, folder);
+    const name = await askName(folder ? t("Name of the new file in {folder}/:", { folder }) : t("Name of the new file (folder/name.ts puts it in a folder):"), proposed, folder);
     if (!name) return;
     if (folder && collapsed.has(folder)) {
       const next = new Set(collapsed);
@@ -11371,7 +11445,7 @@ function createWorkspace(svc, options, mode) {
   };
   const newFolder = async (parent = "") => {
     if (!editor) return;
-    let message = parent ? `Name of the new folder in ${parent}/:` : "Name of the new folder:";
+    let message = parent ? t("Name of the new folder in {folder}/:", { folder: parent }) : t("Name of the new folder:");
     let value = "tests";
     for (; ; ) {
       const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: "tests" });
@@ -11379,7 +11453,7 @@ function createWorkspace(svc, options, mode) {
       const name = normalizePath(answer.trim()).replace(/\/+$/, "");
       if (!validFolder(name)) {
         value = answer;
-        message = "A folder name is letters, digits, _ - and ., folders inside it with /.";
+        message = t("A folder name is letters, digits, _ - and ., folders inside it with /.");
         continue;
       }
       await newFile(parent ? `${parent}/${name}` : name);
@@ -11388,7 +11462,7 @@ function createWorkspace(svc, options, mode) {
   };
   const moveFiles = (moves, undo = false) => {
     if (!editor || moves.size === 0) return;
-    const refused = refuseMoves(Object.keys(files), moves);
+    const refused = refuseMoves(Object.keys(files), moves, t);
     if (refused) {
       setStatus("error", refused);
       return;
@@ -11402,15 +11476,15 @@ function createWorkspace(svc, options, mode) {
     renderFiles();
     check();
     const [[from, to]] = [...moves];
-    const what = moves.size === 1 ? `${from} is now ${to}` : `${moves.size} files moved`;
-    const text = `${what}${moved.imports ? `; ${moved.imports} import${moved.imports === 1 ? "" : "s"} rewritten` : ""}.`;
+    const what = moves.size === 1 ? t("{from} is now {to}", { from, to }) : t("{n} files moved", { n: moves.size });
+    const text = moved.imports ? t("{what}; {n, plural, one {# import} other {# imports}} rewritten.", { what, n: moved.imports }) : `${what}.`;
     log(text);
     if (undo) {
       shell.dismiss("move");
       return;
     }
     const back = new Map([...moves].map(([a2, b]) => [b, a2]));
-    shell.notify({ key: "move", kind: "info", text, timeout: NOTICE_MS * 2, actions: [{ label: "Undo", run: () => moveFiles(back, true) }] });
+    shell.notify({ key: "move", kind: "info", text, timeout: NOTICE_MS * 2, actions: [{ label: t("Undo"), run: () => moveFiles(back, true) }] });
   };
   const moveTo = (from, to) => {
     if (!editor || from === to) return;
@@ -11418,13 +11492,13 @@ function createWorkspace(svc, options, mode) {
   };
   const renameFile = async (path) => {
     if (!editor || path === ENTRY_FILE) return;
-    const name = await askName(`Rename ${path} to (a folder before the name moves it):`, path);
+    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path);
     if (!name) return;
     moveTo(path, name);
   };
   const renameFolder = async (folder) => {
     if (!editor) return;
-    let message = `Rename the folder ${folder} to (its files go with it, and the imports follow):`;
+    let message = t("Rename the folder {folder} to (its files go with it, and the imports follow):", { folder });
     let value = folder;
     for (; ; ) {
       const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: folder });
@@ -11432,12 +11506,12 @@ function createWorkspace(svc, options, mode) {
       const name = normalizePath(answer.trim()).replace(/\/+$/, "");
       if (!validFolder(name)) {
         value = answer;
-        message = "A folder name is letters, digits, _ - and ., folders inside it with /.";
+        message = t("A folder name is letters, digits, _ - and ., folders inside it with /.");
         continue;
       }
       if (name === folder) return;
       const moves = movesOf(Object.keys(files), folder, name);
-      const refused = refuseMoves(Object.keys(files), moves);
+      const refused = refuseMoves(Object.keys(files), moves, t);
       if (refused) {
         value = answer;
         message = refused;
@@ -11467,14 +11541,14 @@ function createWorkspace(svc, options, mode) {
   };
   const removeFile = async (path) => {
     if (!editor || path === ENTRY_FILE) return;
-    if (!await api.ui.confirm(`Remove ${path} from the script? Its text is not kept anywhere else.`, { title: "TrigScript", confirmLabel: "Remove", danger: true })) return;
+    if (!await api.ui.confirm(t("Remove {path} from the script? Its text is not kept anywhere else.", { path }), { title: "TrigScript", confirmLabel: t("Remove"), danger: true })) return;
     removeFiles([path]);
   };
   const removeFolder = async (folder) => {
     if (!editor) return;
     const under = filesUnder(Object.keys(files), folder);
     if (under.includes(ENTRY_FILE)) return;
-    if (!await api.ui.confirm(`Remove the folder ${folder} and the ${under.length === 1 ? "file" : `${under.length} files`} in it? Their text is not kept anywhere else.`, { title: "TrigScript", confirmLabel: "Remove", danger: true })) return;
+    if (!await api.ui.confirm(t("Remove the folder {folder} and {n, plural, one {the file} other {the # files}} in it? Their text is not kept anywhere else.", { folder, n: under.length }), { title: "TrigScript", confirmLabel: t("Remove"), danger: true })) return;
     removeFiles(under);
   };
   const refreshNames = () => {
@@ -11501,49 +11575,49 @@ function createWorkspace(svc, options, mode) {
   };
   const commands = [
     // The editor's own Ctrl+S does not reach a map under a dialog, and a browser would offer to save the page.
-    { id: "save", label: "Save the Map", key: { code: "KeyS", mod: true }, run: () => {
+    { id: "save", label: t("Save the Map"), key: { code: "KeyS", mod: true }, run: () => {
       void api.document.save();
     } },
-    { id: "test", label: "Play the Map", key: { code: "F5" }, run: () => {
+    { id: "test", label: t("Play the Map"), key: { code: "F5" }, run: () => {
       void test();
     } },
-    { id: "runTests", label: "Run All Tests", run: () => {
+    { id: "runTests", label: t("Run All Tests"), run: () => {
       void runTests2();
     } },
-    { id: "runTestAtCursor", label: "Run Test at Cursor", context: true, run: () => {
+    { id: "runTestAtCursor", label: t("Run Test at Cursor"), context: true, run: () => {
       void runTestAtCursor();
     } },
-    { id: "runFailedTests", label: "Run Failed Tests", run: () => {
+    { id: "runFailedTests", label: t("Run Failed Tests"), run: () => {
       void runFailedTests();
     } },
-    { id: "testing", label: "Show Testing", run: () => testingView.show() },
-    { id: "simulate", label: "Simulate", key: { code: "F5", mod: true }, run: () => {
+    { id: "testing", label: t("Show Testing"), run: () => testingView.show() },
+    { id: "simulate", label: t("Simulate"), key: { code: "F5", mod: true }, run: () => {
       void simulateNow();
     } },
-    { id: "apply", label: "Apply the Script to the Map", key: { code: "KeyB", mod: true, shift: true }, run: () => {
+    { id: "apply", label: t("Apply the Script to the Map"), key: { code: "KeyB", mod: true, shift: true }, run: () => {
       void build();
     } },
-    { id: "pick", label: "Pick a Location or Unit from the Map", context: true, run: () => {
+    { id: "pick", label: t("Pick a Location or Unit from the Map"), context: true, run: () => {
       void pickFromMap();
     } },
-    { id: "import", label: "Import the Map's Triggers", run: () => {
+    { id: "import", label: t("Import the Map's Triggers"), run: () => {
       void importHand();
     } },
-    { id: "newFile", label: "New File\u2026", run: () => {
+    { id: "newFile", label: t("New File\u2026"), run: () => {
       void newFile();
     } },
-    { id: "newFolder", label: "New Folder\u2026", run: () => {
+    { id: "newFolder", label: t("New Folder\u2026"), run: () => {
       void newFolder();
     } },
-    { id: "mode", label: mode === "dialog" ? "Open Beside the Map" : "Open in a Window", run: () => switchMode() },
-    { id: "problems", label: "Show Problems", key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
-    { id: "output", label: "Show Output", key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },
-    { id: "settings", label: "Open Settings", key: { code: "Comma", mod: true }, run: () => {
+    { id: "mode", label: mode === "dialog" ? t("Open Beside the Map") : t("Open in a Window"), run: () => switchMode() },
+    { id: "problems", label: t("Show Problems"), key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
+    { id: "output", label: t("Show Output"), key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },
+    { id: "settings", label: t("Open Settings"), key: { code: "Comma", mod: true }, run: () => {
       shell.showPanel("settings");
       renderSettings();
     } },
-    { id: "panel", label: "Toggle Panel", key: { code: "KeyJ", mod: true }, run: () => shell.togglePanel() },
-    { id: "explorer", label: "Toggle Explorer", key: { code: "KeyB", mod: true }, run: () => shell.toggleSidebar() }
+    { id: "panel", label: t("Toggle Panel"), key: { code: "KeyJ", mod: true }, run: () => shell.togglePanel() },
+    { id: "explorer", label: t("Toggle Explorer"), key: { code: "KeyB", mod: true }, run: () => shell.toggleSidebar() }
   ];
   const keysOf = (c2) => c2.key ? `${c2.key.mod ? `${MOD}+` : ""}${c2.key.shift ? "Shift+" : ""}${c2.key.code.replace(/^Key/, "")}` : void 0;
   const menuItem = (id) => {
@@ -11566,7 +11640,7 @@ function createWorkspace(svc, options, mode) {
   root.addEventListener("keydown", onKey, true);
   const attach = (close) => {
     render();
-    const loadingCover = w.busy(hostEl, "Loading the editor\u2026");
+    const loadingCover = w.busy(hostEl, t("Loading the editor\u2026"));
     const releaseWorker = retainCompileWorker();
     const subs = [
       svc.watchLibrary((s) => {
@@ -11635,7 +11709,7 @@ function createWorkspace(svc, options, mode) {
         if (!cancelled) {
           loadingCover.done();
           failed = true;
-          setStatus("error", `The editor failed to load: ${err.message}`);
+          setStatus("error", t("The editor failed to load: {message}", { message: err.message }));
         }
       }
     );
@@ -11662,9 +11736,284 @@ function createWorkspace(svc, options, mode) {
   };
 }
 
+// ko.ts
+var KO = {
+  "**{name}** is a variable of the program: {what}, one value shared by every player the program runs for. It lives in the game while the map is played.": "**{name}**: \uD504\uB85C\uADF8\uB7A8\uC758 \uBCC0\uC218 \u2014 {what}. \uD504\uB85C\uADF8\uB7A8\uC774 \uC2E4\uD589\uB418\uB294 \uBAA8\uB4E0 \uD50C\uB808\uC774\uC5B4\uAC00 \uD55C \uAC12\uC744 \uACF5\uC720\uD569\uB2C8\uB2E4. \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 \uAC8C\uC784 \uC548\uC5D0 \uC788\uC2B5\uB2C8\uB2E4.",
+  "**{name}** is a variable of the program: {what}. It lives in the game while the map is played.": "**{name}**: \uD504\uB85C\uADF8\uB7A8\uC758 \uBCC0\uC218 \u2014 {what}. \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 \uAC8C\uC784 \uC548\uC5D0 \uC788\uC2B5\uB2C8\uB2E4.",
+  "**{name}** \u2014 location {n}: {w} \xD7 {h} tiles at {x}, {y}. Ctrl+click to show it on the map.": "**{name}** \u2014 \uB85C\uCF00\uC774\uC158 {n}: {x}, {y}\uC5D0 {w} \xD7 {h} \uD0C0\uC77C. Ctrl+\uD074\uB9AD\uD558\uBA74 \uB9F5\uC5D0\uC11C \uBCF4\uC5EC \uC90D\uB2C8\uB2E4.",
+  ", one per player": ", \uD50C\uB808\uC774\uC5B4\uB9C8\uB2E4 \uD558\uB098",
+  ", one value shared by every player": ", \uBAA8\uB4E0 \uD50C\uB808\uC774\uC5B4\uAC00 \uD55C \uAC12\uC744 \uACF5\uC720",
+  "A failing test refuses the build": "\uD14C\uC2A4\uD2B8\uAC00 \uC2E4\uD328\uD558\uBA74 \uBE4C\uB4DC\uD558\uC9C0 \uC54A\uC74C",
+  "A file name is letters, digits, _ - and ., folders with /, ending in .ts.": "\uD30C\uC77C \uC774\uB984\uC740 \uBB38\uC790, \uC22B\uC790, _ - . \uB85C \uC774\uB8E8\uC5B4\uC9C0\uACE0, \uD3F4\uB354\uB294 /\uB85C \uB098\uB204\uBA70, .ts\uB85C \uB05D\uB098\uC57C \uD569\uB2C8\uB2E4.",
+  "A folder name is letters, digits, _ - and ., folders inside it with /.": "\uD3F4\uB354 \uC774\uB984\uC740 \uBB38\uC790, \uC22B\uC790, _ - . \uB85C \uC774\uB8E8\uC5B4\uC9C0\uACE0, \uC548\uCABD \uD3F4\uB354\uB294 /\uB85C \uB098\uB215\uB2C8\uB2E4.",
+  "An only is left in: the other tests of this file do not run.": "only\uAC00 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4: \uC774 \uD30C\uC77C\uC758 \uB2E4\uB978 \uD14C\uC2A4\uD2B8\uB294 \uC2E4\uD589\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "Append instead": "\uB300\uC2E0 \uCD94\uAC00",
+  "Applied {n, plural, one {# trigger} other {# triggers}} \u2192 #{first}\u2013#{last} (appended: the previous block had been edited outside the script).": "\uD2B8\uB9AC\uAC70 {n}\uAC1C \uC801\uC6A9 \u2192 #{first}\u2013#{last} (\uB4A4\uC5D0 \uCD94\uAC00\uD568: \uC774\uC804 \uBE14\uB85D\uC774 \uC2A4\uD06C\uB9BD\uD2B8 \uBC16\uC5D0\uC11C \uD3B8\uC9D1\uB418\uC5C8\uC2B5\uB2C8\uB2E4).",
+  "Applied {n, plural, one {# trigger} other {# triggers}} \u2192 #{first}\u2013#{last} (replaced the previous block's {removed, plural, one {# unchanged trigger} other {# unchanged triggers}}; {kept, plural, one {# edited one} other {# edited ones}} kept after it).": "\uD2B8\uB9AC\uAC70 {n}\uAC1C \uC801\uC6A9 \u2192 #{first}\u2013#{last} (\uC774\uC804 \uBE14\uB85D\uC758 \uBC14\uB00C\uC9C0 \uC54A\uC740 \uD2B8\uB9AC\uAC70 {removed}\uAC1C\uB97C \uAD50\uCCB4\uD588\uACE0, \uD3B8\uC9D1\uB41C {kept}\uAC1C\uB294 \uADF8 \uB4A4\uC5D0 \uB0A8\uACBC\uC2B5\uB2C8\uB2E4).",
+  "Applied {n, plural, one {# trigger} other {# triggers}} \u2192 #{first}\u2013#{last}.": "\uD2B8\uB9AC\uAC70 {n}\uAC1C \uC801\uC6A9 \u2192 #{first}\u2013#{last}.",
+  "Applied: the script defines no triggers.": "\uC801\uC6A9\uB428: \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uD2B8\uB9AC\uAC70\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "Applied: the script defines no triggers; its block is empty.": "\uC801\uC6A9\uB428: \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uD2B8\uB9AC\uAC70\uAC00 \uC5C6\uC5B4 \uBE14\uB85D\uC774 \uBE44\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.",
+  "Apply": "\uC801\uC6A9",
+  "Apply ({mod}+Shift+B): run the script and write its triggers into the map now. Saving and testing the map do this by themselves; programs are built into the saved file, not into the trigger list": "\uC801\uC6A9 ({mod}+Shift+B): \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uC2E4\uD589\uD574 \uC9C0\uAE08 \uD2B8\uB9AC\uAC70\uB97C \uB9F5\uC5D0 \uC501\uB2C8\uB2E4. \uB9F5\uC744 \uC800\uC7A5\uD558\uAC70\uB098 \uD14C\uC2A4\uD2B8\uD558\uBA74 \uC800\uC808\uB85C \uC774\uB807\uAC8C \uB429\uB2C8\uB2E4. \uD504\uB85C\uADF8\uB7A8\uC740 \uD2B8\uB9AC\uAC70 \uBAA9\uB85D\uC774 \uC544\uB2C8\uB77C \uC800\uC7A5\uB41C \uD30C\uC77C\uC5D0 \uBE4C\uB4DC\uB429\uB2C8\uB2E4",
+  "Apply the Script to the Map": "\uC2A4\uD06C\uB9BD\uD2B8\uB97C \uB9F5\uC5D0 \uC801\uC6A9",
+  "Arrays a program pushes to share one pool of cells; this is its size. A single array can reach between a quarter and a half of it. When the pool runs out, nothing more is pushed and the game says so once.": "\uD504\uB85C\uADF8\uB7A8\uC774 push\uD558\uB294 \uBC30\uC5F4\uB4E4\uC740 \uD558\uB098\uC758 \uC140 \uD480\uC744 \uD568\uAED8 \uC501\uB2C8\uB2E4. \uC774 \uAC12\uC774 \uADF8 \uD06C\uAE30\uC785\uB2C8\uB2E4. \uBC30\uC5F4 \uD558\uB098\uB294 \uD480\uC758 4\uBD84\uC758 1\uC5D0\uC11C 2\uBD84\uC758 1\uAE4C\uC9C0 \uC4F8 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uD480\uC774 \uBC14\uB2E5\uB098\uBA74 \uB354 \uC774\uC0C1 push\uB418\uC9C0 \uC54A\uACE0, \uAC8C\uC784\uC774 \uD55C \uBC88 \uC54C\uB824 \uC90D\uB2C8\uB2E4.",
+  "Beside the map: open the script as a panel, so the map stays in reach": "\uB9F5 \uC606\uC5D0: \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uD328\uB110\uB85C \uC5F4\uC5B4 \uB9F5\uC744 \uACC4\uC18D \uB2E4\uB8F0 \uC218 \uC788\uAC8C \uD569\uB2C8\uB2E4",
+  "Build failed": "\uBE4C\uB4DC \uC2E4\uD328",
+  "Build failed: {message}": "\uBE4C\uB4DC \uC2E4\uD328: {message}",
+  "Building for Save\u2026": "\uC800\uC7A5\uC6A9\uC73C\uB85C \uBE4C\uB4DC \uC911\u2026",
+  "Building for Test Map\u2026": "\uB9F5 \uD14C\uC2A4\uD2B8\uC6A9\uC73C\uB85C \uBE4C\uB4DC \uC911\u2026",
+  "Building for an export\u2026": "\uB0B4\uBCF4\uB0B4\uAE30\uC6A9\uC73C\uB85C \uBE4C\uB4DC \uC911\u2026",
+  "Building the map\u2026": "\uB9F5 \uBE4C\uB4DC \uC911\u2026",
+  "Building the programs for Save": "\uC800\uC7A5\uC6A9\uC73C\uB85C \uD504\uB85C\uADF8\uB7A8 \uBE4C\uB4DC",
+  "Building the programs for Test Map": "\uB9F5 \uD14C\uC2A4\uD2B8\uC6A9\uC73C\uB85C \uD504\uB85C\uADF8\uB7A8 \uBE4C\uB4DC",
+  "Building the programs for an export": "\uB0B4\uBCF4\uB0B4\uAE30\uC6A9\uC73C\uB85C \uD504\uB85C\uADF8\uB7A8 \uBE4C\uB4DC",
+  "Built {kb} KB \xB7 {seconds} s": "\uBE4C\uB4DC\uB428 {kb} KB \xB7 {seconds}\uCD08",
+  "Built: {kb} KB of scenario in {seconds} s": "\uBE4C\uB4DC\uB428: \uC2DC\uB098\uB9AC\uC624 {kb} KB, {seconds}\uCD08",
+  "Changes not applied": "\uBCC0\uACBD \uC0AC\uD56D \uC801\uC6A9 \uC548 \uB428",
+  "Checking\u2026": "\uD655\uC778\uD558\uB294 \uC911\u2026",
+  "Clear the output": "\uCD9C\uB825 \uC9C0\uC6B0\uAE30",
+  "Click a location or a unit for the script": "\uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uB123\uC744 \uB85C\uCF00\uC774\uC158\uC774\uB098 \uC720\uB2DB\uC744 \uD074\uB9AD\uD558\uC138\uC694",
+  "Close": "\uB2EB\uAE30",
+  "Command Palette\u2026": "\uBA85\uB839 \uD314\uB808\uD2B8\u2026",
+  "Compiler: {message}": "\uCEF4\uD30C\uC77C\uB7EC: {message}",
+  "Computed when the script is built, not in the game.": "\uAC8C\uC784 \uC548\uC774 \uC544\uB2C8\uB77C \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uBE4C\uB4DC\uD560 \uB54C \uACC4\uC0B0\uB429\uB2C8\uB2E4.",
+  "Default ({n})": "\uAE30\uBCF8\uAC12 ({n})",
+  "Dismiss": "\uB2EB\uAE30",
+  "Expected:": "\uC608\uC0C1:",
+  "Explorer": "\uD0D0\uC0C9\uAE30",
+  "Failed": "\uC2E4\uD328",
+  "Force {n}": "\uC138\uB825 {n}",
+  "Go to line\u2026": "\uC904\uB85C \uC774\uB3D9\u2026",
+  "Go to the test": "\uD14C\uC2A4\uD2B8\uB85C \uC774\uB3D9",
+  "Go to where it failed": "\uC2E4\uD328\uD55C \uACF3\uC73C\uB85C \uC774\uB3D9",
+  "Got:": "\uC2E4\uC81C:",
+  "Hide the panel (Ctrl+J)": "\uD328\uB110 \uC228\uAE30\uAE30 (Ctrl+J)",
+  "How many calls deep a function that calls itself may go. Around each such call the function's variables are kept on a stack, which is only in the built map when some function calls itself. A call past the limit stops the program, and the game says where; Simulate stops at the same call.": "\uC790\uAE30 \uC790\uC2E0\uC744 \uD638\uCD9C\uD558\uB294 \uD568\uC218\uAC00 \uBA87 \uB2E8\uACC4\uAE4C\uC9C0 \uD638\uCD9C\uD560 \uC218 \uC788\uB294\uC9C0\uC785\uB2C8\uB2E4. \uADF8\uB7F0 \uD638\uCD9C\uB9C8\uB2E4 \uD568\uC218\uC758 \uBCC0\uC218\uAC00 \uC2A4\uD0DD\uC5D0 \uBCF4\uAD00\uB418\uBA70, \uC2A4\uD0DD\uC740 \uC790\uAE30 \uC790\uC2E0\uC744 \uD638\uCD9C\uD558\uB294 \uD568\uC218\uAC00 \uC788\uC744 \uB54C\uB9CC \uBE4C\uB4DC\uB41C \uB9F5\uC5D0 \uB4E4\uC5B4\uAC11\uB2C8\uB2E4. \uD55C\uB3C4\uB97C \uB118\uB294 \uD638\uCD9C\uC740 \uD504\uB85C\uADF8\uB7A8\uC744 \uBA48\uCD94\uACE0 \uAC8C\uC784\uC774 \uADF8 \uC704\uCE58\uB97C \uC54C\uB824 \uC90D\uB2C8\uB2E4. \uC2DC\uBBAC\uB808\uC774\uC158\uB3C4 \uAC19\uC740 \uD638\uCD9C\uC5D0\uC11C \uBA48\uCDA5\uB2C8\uB2E4.",
+  "Import the Map's Triggers": "\uB9F5\uC758 \uD2B8\uB9AC\uAC70 \uAC00\uC838\uC624\uAE30",
+  "Imported {n, plural, one {# hand-made trigger} other {# hand-made triggers}}; every trigger is now generated by the script.": "\uC9C1\uC811 \uB9CC\uB4E0 \uD2B8\uB9AC\uAC70 {n}\uAC1C\uB97C \uAC00\uC838\uC654\uC2B5\uB2C8\uB2E4. \uC774\uC81C \uBAA8\uB4E0 \uD2B8\uB9AC\uAC70\uB97C \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uB9CC\uB4ED\uB2C8\uB2E4.",
+  "In a window: open the script full-screen": "\uCC3D\uC73C\uB85C: \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uC804\uCCB4 \uD654\uBA74\uC73C\uB85C \uC5FD\uB2C8\uB2E4",
+  "Inserted {name}.": "{name|\uC744} \uB123\uC5C8\uC2B5\uB2C8\uB2E4.",
+  "Keys, clicks, the mouse and chat are not simulated: they read as nothing.": "\uD0A4, \uD074\uB9AD, \uB9C8\uC6B0\uC2A4, \uCC44\uD305\uC740 \uC2DC\uBBAC\uB808\uC774\uC158\uB418\uC9C0 \uC54A\uC73C\uBA70 \uC544\uBB34\uAC83\uB3C4 \uC5C6\uB294 \uAC83\uC73C\uB85C \uC77D\uD799\uB2C8\uB2E4.",
+  "Leave": "\uADF8\uB300\uB85C \uB450\uAE30",
+  "Ln {line}": "{line}\uD589",
+  "Ln {line}, Col {column}": "{line}\uD589, {column}\uC5F4",
+  "Loading the editor\u2026": "\uD3B8\uC9D1\uAE30\uB97C \uBD88\uB7EC\uC624\uB294 \uC911\u2026",
+  "Memory for arrays that grow": "\uB298\uC5B4\uB098\uB294 \uBC30\uC5F4\uC758 \uBA54\uBAA8\uB9AC",
+  "More actions\u2026": "\uCD94\uAC00 \uC791\uC5C5\u2026",
+  "Name of the new file (folder/name.ts puts it in a folder):": "\uC0C8 \uD30C\uC77C\uC758 \uC774\uB984 (\uD3F4\uB354/\uC774\uB984.ts\uB85C \uC4F0\uBA74 \uD3F4\uB354\uC5D0 \uB123\uC2B5\uB2C8\uB2E4):",
+  "Name of the new file in {folder}/:": "{folder}/\uC5D0 \uB9CC\uB4E4 \uC0C8 \uD30C\uC77C\uC758 \uC774\uB984:",
+  "Name of the new folder in {folder}/:": "{folder}/\uC5D0 \uB9CC\uB4E4 \uC0C8 \uD3F4\uB354\uC758 \uC774\uB984:",
+  "Name of the new folder:": "\uC0C8 \uD3F4\uB354\uC758 \uC774\uB984:",
+  "New File\u2026": "\uC0C8 \uD30C\uC77C\u2026",
+  "New Folder\u2026": "\uC0C8 \uD3F4\uB354\u2026",
+  "New file in {folder}\u2026": "{folder}\uC5D0 \uC0C8 \uD30C\uC77C\u2026",
+  'New file\u2026: main.ts imports it with import { \u2026 } from "./name"': '\uC0C8 \uD30C\uC77C\u2026: main.ts\uC5D0\uC11C import { \u2026 } from "./name"\uC73C\uB85C \uAC00\uC838\uC635\uB2C8\uB2E4',
+  "New folder\u2026: a folder is there while a file is in it, so its first file is asked for next": "\uC0C8 \uD3F4\uB354\u2026: \uD3F4\uB354\uB294 \uC548\uC5D0 \uD30C\uC77C\uC774 \uC788\uC744 \uB54C\uB9CC \uC874\uC7AC\uD558\uBBC0\uB85C, \uC774\uC5B4\uC11C \uCCAB \uD30C\uC77C \uC774\uB984\uC744 \uBB3B\uC2B5\uB2C8\uB2E4",
+  "No actions ran in {frames} frames.": "{frames}\uD504\uB808\uC784 \uB3D9\uC548 \uC2E4\uD589\uB41C \uC561\uC158\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "No map is open.": "\uC5F4\uB9B0 \uB9F5\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "No problems": "\uBB38\uC81C \uC5C6\uC74C",
+  "No problems have been detected in the script.": "\uC2A4\uD06C\uB9BD\uD2B8\uC5D0\uC11C \uBC1C\uACAC\uB41C \uBB38\uC81C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "No test fails.": "\uC2E4\uD328\uD558\uB294 \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "No test has failed.": "\uC2E4\uD328\uD55C \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "No test has run yet: they run after a change that compiles, or from the Testing view.": "\uC544\uC9C1 \uC2E4\uD589\uB41C \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uD14C\uC2A4\uD2B8\uB294 \uCEF4\uD30C\uC77C\uB418\uB294 \uBCC0\uACBD \uB4A4\uC5D0, \uB610\uB294 \uD14C\uC2A4\uD2B8 \uBCF4\uAE30\uC5D0\uC11C \uC2E4\uD589\uB429\uB2C8\uB2E4.",
+  "No test ran.": "\uC2E4\uD589\uB41C \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "Not applied yet": "\uC544\uC9C1 \uC801\uC6A9 \uC548 \uB428",
+  "Not applied.": "\uC801\uC6A9\uB418\uC9C0 \uC54A\uC74C.",
+  "Not applied: another map is in front now.": "\uC801\uC6A9\uB418\uC9C0 \uC54A\uC74C: \uC774\uC81C \uB2E4\uB978 \uB9F5\uC774 \uC55E\uC5D0 \uC788\uC2B5\uB2C8\uB2E4.",
+  "Not applied: the map changed while the script was running. Apply again.": "\uC801\uC6A9\uB418\uC9C0 \uC54A\uC74C: \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC2E4\uD589\uB418\uB294 \uB3D9\uC548 \uB9F5\uC774 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC801\uC6A9\uD558\uC138\uC694.",
+  "Not applied: the map closed.": "\uC801\uC6A9\uB418\uC9C0 \uC54A\uC74C: \uB9F5\uC774 \uB2EB\uD614\uC2B5\uB2C8\uB2E4.",
+  "Not applied: {n, plural, one {# problem} other {# problems}} in the script.": "\uC801\uC6A9\uB418\uC9C0 \uC54A\uC74C: \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uBB38\uC81C\uAC00 {n}\uAC1C \uC788\uC2B5\uB2C8\uB2E4.",
+  "Not run yet": "\uC544\uC9C1 \uC2E4\uD589 \uC548 \uB428",
+  "Not simulated: {n, plural, one {# problem} other {# problems}} in the script.": "\uC2DC\uBBAC\uB808\uC774\uC158\uD558\uC9C0 \uC54A\uC74C: \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uBB38\uC81C\uAC00 {n}\uAC1C \uC788\uC2B5\uB2C8\uB2E4.",
+  "Not tested: the programs need the eudplib plugin (0.4 or newer) to be built. Install or turn it on under Plugins \u25B8 Manage Plugins\u2026.": "\uD14C\uC2A4\uD2B8\uD558\uC9C0 \uC54A\uC74C: \uD504\uB85C\uADF8\uB7A8\uC744 \uBE4C\uB4DC\uD558\uB824\uBA74 eudplib \uD50C\uB7EC\uADF8\uC778(0.4 \uC774\uC0C1)\uC774 \uD544\uC694\uD569\uB2C8\uB2E4. \uD50C\uB7EC\uADF8\uC778 \u25B8 \uD50C\uB7EC\uADF8\uC778 \uAD00\uB9AC\u2026\uC5D0\uC11C \uC124\uCE58\uD558\uAC70\uB098 \uCF1C\uC138\uC694.",
+  "Not tested: {message}": "\uD14C\uC2A4\uD2B8\uD558\uC9C0 \uC54A\uC74C: {message}",
+  "Open Beside the Map": "\uB9F5 \uC606\uC5D0 \uC5F4\uAE30",
+  "Open Settings": "\uC124\uC815 \uC5F4\uAE30",
+  "Open TrigScript": "TrigScript \uC5F4\uAE30",
+  "Open in a Window": "\uCC3D\uC73C\uB85C \uC5F4\uAE30",
+  "Open or create a map first.": "\uBA3C\uC800 \uB9F5\uC744 \uC5F4\uAC70\uB098 \uB9CC\uB4DC\uC138\uC694.",
+  "Output": "\uCD9C\uB825",
+  "Passed": "\uD1B5\uACFC",
+  "Pick a Location or Unit from the Map": "\uB9F5\uC5D0\uC11C \uB85C\uCF00\uC774\uC158\uC774\uB098 \uC720\uB2DB \uACE0\uB974\uAE30",
+  "Pick from map: click a location or a unit on the map to put its name at the cursor": "\uB9F5\uC5D0\uC11C \uACE0\uB974\uAE30: \uB9F5\uC5D0\uC11C \uB85C\uCF00\uC774\uC158\uC774\uB098 \uC720\uB2DB\uC744 \uD074\uB9AD\uD558\uBA74 \uADF8 \uC774\uB984\uC774 \uCEE4\uC11C \uC704\uCE58\uC5D0 \uB4E4\uC5B4\uAC11\uB2C8\uB2E4",
+  "Play (F5): apply the script, build the map as Save would and start it in the game through Test Map": "\uD50C\uB808\uC774 (F5): \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uC801\uC6A9\uD558\uACE0, \uC800\uC7A5\uD560 \uB54C\uCC98\uB7FC \uB9F5\uC744 \uBE4C\uB4DC\uD574 \uB9F5 \uD14C\uC2A4\uD2B8\uB85C \uAC8C\uC784\uC5D0\uC11C \uC2DC\uC791\uD569\uB2C8\uB2E4",
+  "Play the Map": "\uB9F5 \uD50C\uB808\uC774",
+  "Problems": "\uBB38\uC81C",
+  "Program {n}": "\uD504\uB85C\uADF8\uB7A8 {n}",
+  "Programs": "\uD504\uB85C\uADF8\uB7A8",
+  "Programs are built into the saved map, which then needs StarCraft: Remastered. Click for the programs and their variables": "\uD504\uB85C\uADF8\uB7A8\uC740 \uC800\uC7A5\uB41C \uB9F5\uC5D0 \uBE4C\uB4DC\uB418\uBA70, \uADF8 \uB9F5\uC740 StarCraft: Remastered\uAC00 \uC788\uC5B4\uC57C \uD569\uB2C8\uB2E4. \uD074\uB9AD\uD558\uBA74 \uD504\uB85C\uADF8\uB7A8\uACFC \uBCC0\uC218\uB97C \uBD05\uB2C8\uB2E4",
+  "Recursion depth": "\uC7AC\uADC0 \uAE4A\uC774",
+  "Remove": "\uC81C\uAC70",
+  "Remove the folder {folder} and {n, plural, one {the file} other {the # files}} in it? Their text is not kept anywhere else.": "\uD3F4\uB354 {folder|\uACFC} \uADF8 \uC548\uC758 \uD30C\uC77C {n}\uAC1C\uB97C \uC81C\uAC70\uD560\uAE4C\uC694? \uADF8 \uB0B4\uC6A9\uC740 \uB2E4\uB978 \uACF3\uC5D0 \uB0A8\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "Remove {path} from the script? Its text is not kept anywhere else.": "\uC2A4\uD06C\uB9BD\uD2B8\uC5D0\uC11C {path|\uC744} \uC81C\uAC70\uD560\uAE4C\uC694? \uADF8 \uB0B4\uC6A9\uC740 \uB2E4\uB978 \uACF3\uC5D0 \uB0A8\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "Remove\u2026": "\uC81C\uAC70\u2026",
+  "Rename or move\u2026": "\uC774\uB984 \uBC14\uAFB8\uAE30 \uB610\uB294 \uC774\uB3D9\u2026",
+  "Rename the folder {folder} to (its files go with it, and the imports follow):": "\uD3F4\uB354 {folder}\uC758 \uC0C8 \uC774\uB984 (\uC548\uC758 \uD30C\uC77C\uC774 \uD568\uAED8 \uC62E\uACA8\uC9C0\uACE0 import\uB3C4 \uB530\uB77C \uBC14\uB01D\uB2C8\uB2E4):",
+  "Rename {path} to (a folder before the name moves it):": "{path}\uC758 \uC0C8 \uC774\uB984 (\uC774\uB984 \uC55E\uC5D0 \uD3F4\uB354\uB97C \uC4F0\uBA74 \uC62E\uAE41\uB2C8\uB2E4):",
+  "Rename\u2026": "\uC774\uB984 \uBC14\uAFB8\uAE30\u2026",
+  "Replace instead": "\uB300\uC2E0 \uAD50\uCCB4",
+  "Run All Tests": "\uBAA8\uB4E0 \uD14C\uC2A4\uD2B8 \uC2E4\uD589",
+  "Run Failed Tests": "\uC2E4\uD328\uD55C \uD14C\uC2A4\uD2B8 \uC2E4\uD589",
+  "Run Test at Cursor": "\uCEE4\uC11C \uC704\uCE58\uC758 \uD14C\uC2A4\uD2B8 \uC2E4\uD589",
+  "Run all tests": "\uBAA8\uB4E0 \uD14C\uC2A4\uD2B8 \uC2E4\uD589",
+  "Run the tests that failed": "\uC2E4\uD328\uD55C \uD14C\uC2A4\uD2B8 \uC2E4\uD589",
+  "Run these tests": "\uC774 \uD14C\uC2A4\uD2B8\uB4E4 \uC2E4\uD589",
+  "Run this test": "\uC774 \uD14C\uC2A4\uD2B8 \uC2E4\uD589",
+  "Running the script\u2026": "\uC2A4\uD06C\uB9BD\uD2B8 \uC2E4\uD589 \uC911\u2026",
+  "Running\u2026": "\uC2E4\uD589 \uC911\u2026",
+  "Save the Map": "\uB9F5 \uC800\uC7A5",
+  "Saved without its programs": "\uD504\uB85C\uADF8\uB7A8 \uC5C6\uC774 \uC800\uC7A5\uB428",
+  "Script": "\uC2A4\uD06C\uB9BD\uD2B8",
+  "Settings": "\uC124\uC815",
+  "Show Output": "\uCD9C\uB825 \uBCF4\uAE30",
+  "Show Problems": "\uBB38\uC81C \uBCF4\uAE30",
+  "Show Testing": "\uD14C\uC2A4\uD2B8 \uBCF4\uAE30",
+  "Show on the map": "\uB9F5\uC5D0\uC11C \uBCF4\uAE30",
+  "Show only the tests that fail": "\uC2E4\uD328\uD558\uB294 \uD14C\uC2A4\uD2B8\uB9CC \uBCF4\uAE30",
+  "Show the log": "\uB85C\uADF8 \uBCF4\uAE30",
+  "Simulate": "\uC2DC\uBBAC\uB808\uC774\uC158",
+  "Simulate ({mod}+F5) runs the script's first {seconds} seconds in a built-in interpreter and lists what happened. A change to the script clears the list.": "\uC2DC\uBBAC\uB808\uC774\uC158({mod}+F5)\uC740 \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uCC98\uC74C {seconds}\uCD08\uB97C \uB0B4\uC7A5 \uC778\uD130\uD504\uB9AC\uD130\uC5D0\uC11C \uC2E4\uD589\uD558\uACE0 \uC77C\uC5B4\uB09C \uC77C\uC744 \uB098\uC5F4\uD569\uB2C8\uB2E4. \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uBC14\uAFB8\uBA74 \uBAA9\uB85D\uC774 \uC9C0\uC6CC\uC9D1\uB2C8\uB2E4.",
+  "Simulate ({mod}+F5): run the script's triggers and programs for {frames} frames ({seconds} seconds of the game) in a built-in interpreter and list what happened": "\uC2DC\uBBAC\uB808\uC774\uC158 ({mod}+F5): \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD2B8\uB9AC\uAC70\uC640 \uD504\uB85C\uADF8\uB7A8\uC744 \uB0B4\uC7A5 \uC778\uD130\uD504\uB9AC\uD130\uC5D0\uC11C {frames}\uD504\uB808\uC784(\uAC8C\uC784 \uC2DC\uAC04 {seconds}\uCD08) \uB3D9\uC548 \uC2E4\uD589\uD558\uACE0 \uC77C\uC5B4\uB09C \uC77C\uC744 \uB098\uC5F4\uD569\uB2C8\uB2E4",
+  "Simulated {frames} frames for {who}: {n, plural, one {# action} other {# actions}} ran.": "{who}, {frames}\uD504\uB808\uC784 \uC2DC\uBBAC\uB808\uC774\uC158: \uC561\uC158 {n}\uAC1C\uAC00 \uC2E4\uD589\uB418\uC5C8\uC2B5\uB2C8\uB2E4.",
+  "Simulation stopped: {message}": "\uC2DC\uBBAC\uB808\uC774\uC158 \uC911\uB2E8: {message}",
+  "Skipped": "\uAC74\uB108\uB700",
+  "Started the game with {path} ({kb} KB).": "{path|\uC73C\uB85C} \uAC8C\uC784\uC744 \uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4 ({kb} KB).",
+  "Test Results": "\uD14C\uC2A4\uD2B8 \uACB0\uACFC",
+  "Testing": "\uD14C\uC2A4\uD2B8",
+  "Tests": "\uD14C\uC2A4\uD2B8",
+  "Tests not run: {n, plural, one {# problem} other {# problems}} in the script.": "\uD14C\uC2A4\uD2B8\uB97C \uC2E4\uD589\uD558\uC9C0 \uC54A\uC74C: \uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uBB38\uC81C\uAC00 {n}\uAC1C \uC788\uC2B5\uB2C8\uB2E4.",
+  "That location is not in the script's tables yet; try again after the map's names refresh.": "\uADF8 \uB85C\uCF00\uC774\uC158\uC740 \uC544\uC9C1 \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD45C\uC5D0 \uC5C6\uC2B5\uB2C8\uB2E4. \uB9F5\uC758 \uC774\uB984\uC774 \uAC31\uC2E0\uB41C \uB4A4 \uB2E4\uC2DC \uD574 \uBCF4\uC138\uC694.",
+  "That unit's type has no name in the script's tables.": "\uADF8 \uC720\uB2DB\uC758 \uC885\uB958\uB294 \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD45C\uC5D0 \uC774\uB984\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "The editor failed to load: {message}": "\uD3B8\uC9D1\uAE30\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: {message}",
+  "The eudplib plugin builds the programs into the map when it is saved or tested; its runtime is downloaded once, the first time": "eudplib \uD50C\uB7EC\uADF8\uC778\uC740 \uB9F5\uC744 \uC800\uC7A5\uD558\uAC70\uB098 \uD14C\uC2A4\uD2B8\uD560 \uB54C \uD504\uB85C\uADF8\uB7A8\uC744 \uB9F5\uC5D0 \uBE4C\uB4DC\uD569\uB2C8\uB2E4. \uB7F0\uD0C0\uC784\uC740 \uCC98\uC74C \uD55C \uBC88\uB9CC \uB0B4\uB824\uBC1B\uC2B5\uB2C8\uB2E4",
+  "The last build of the programs": "\uD504\uB85C\uADF8\uB7A8\uC758 \uB9C8\uC9C0\uB9C9 \uBE4C\uB4DC",
+  "The map changed while the script ran; running it again\u2026": "\uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC2E4\uD589\uB418\uB294 \uB3D9\uC548 \uB9F5\uC774 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2E4\uD589\uD558\uB294 \uC911\u2026",
+  "The map changed while the script was compiling; save again.": "\uC2A4\uD06C\uB9BD\uD2B8\uB97C \uCEF4\uD30C\uC77C\uD558\uB294 \uB3D9\uC548 \uB9F5\uC774 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC800\uC7A5\uD558\uC138\uC694.",
+  "The map is built, but this browser has no test folder yet: pick one once under Tools \u25B8 Test Map\u2026, which builds the map the same way.": "\uB9F5\uC740 \uBE4C\uB4DC\uB418\uC5C8\uC9C0\uB9CC \uC774 \uBE0C\uB77C\uC6B0\uC800\uC5D0\uB294 \uC544\uC9C1 \uD14C\uC2A4\uD2B8 \uD3F4\uB354\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uB3C4\uAD6C \u25B8 \uB9F5 \uD14C\uC2A4\uD2B8\u2026\uC5D0\uC11C \uD55C \uBC88 \uACE8\uB77C \uB450\uC138\uC694. \uAC70\uAE30\uC11C\uB3C4 \uB9F5\uC744 \uB611\uAC19\uC774 \uBE4C\uB4DC\uD569\uB2C8\uB2E4.",
+  "The map renamed things the script names": "\uB9F5\uC5D0\uC11C \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC4F0\uB294 \uC774\uB984\uC774 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4",
+  "The map renamed {n, plural, one {something the script names} other {# things the script names}}: {list}.": "\uB9F5\uC5D0\uC11C \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC4F0\uB294 \uC774\uB984 {n}\uAC1C\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4: {list}.",
+  "The map was saved with the script in it, but its programs were not built, so they do not run in the game. Fix the error and save again": "\uB9F5\uC740 \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uB2F4\uC544 \uC800\uC7A5\uB418\uC5C8\uC9C0\uB9CC \uD504\uB85C\uADF8\uB7A8\uC774 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC544 \uAC8C\uC784\uC5D0\uC11C \uC2E4\uD589\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC624\uB958\uB97C \uACE0\uCE58\uACE0 \uB2E4\uC2DC \uC800\uC7A5\uD558\uC138\uC694",
+  "The map was saved without its programs, which were not built: {message}": "\uD504\uB85C\uADF8\uB7A8\uC774 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC544 \uB9F5\uC774 \uD504\uB85C\uADF8\uB7A8 \uC5C6\uC774 \uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4: {message}",
+  "The next Apply leaves them all as hand-made triggers and appends a fresh block.": "\uB2E4\uC74C \uC801\uC6A9\uC740 \uBAA8\uB450 \uC9C1\uC811 \uB9CC\uB4E0 \uD2B8\uB9AC\uAC70\uB85C \uB0A8\uACA8 \uB450\uACE0 \uC0C8 \uBE14\uB85D\uC744 \uB4A4\uC5D0 \uCD94\uAC00\uD569\uB2C8\uB2E4.",
+  "The next Apply replaces the {unchanged} and keeps the {changed, plural, one {# edited one} other {# edited ones}} as hand-made triggers right after the new block.": "\uB2E4\uC74C \uC801\uC6A9\uC740 {unchanged}\uAC1C\uB97C \uBC14\uAFB8\uACE0, \uD3B8\uC9D1\uB41C {changed}\uAC1C\uB294 \uC0C8 \uBE14\uB85D \uBC14\uB85C \uB4A4\uC5D0 \uC9C1\uC811 \uB9CC\uB4E0 \uD2B8\uB9AC\uAC70\uB85C \uB0A8\uAE41\uB2C8\uB2E4.",
+  "The programs were not built: {message}": "\uD504\uB85C\uADF8\uB7A8\uC774 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4: {message}",
+  "The programs will not be built: install or turn on the eudplib plugin under Plugins \u25B8 Manage Plugins\u2026": "\uD504\uB85C\uADF8\uB7A8\uC774 \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uD50C\uB7EC\uADF8\uC778 \u25B8 \uD50C\uB7EC\uADF8\uC778 \uAD00\uB9AC\u2026\uC5D0\uC11C eudplib \uD50C\uB7EC\uADF8\uC778\uC744 \uC124\uCE58\uD558\uAC70\uB098 \uCF1C\uC138\uC694",
+  "The script changed since it was applied: saving or testing the map applies the script by itself. Click to apply it now ({mod}+Shift+B)": "\uC801\uC6A9\uD55C \uB4A4 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB9F5\uC744 \uC800\uC7A5\uD558\uAC70\uB098 \uD14C\uC2A4\uD2B8\uD558\uBA74 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC800\uC808\uB85C \uC801\uC6A9\uB429\uB2C8\uB2E4. \uD074\uB9AD\uD558\uBA74 \uC9C0\uAE08 \uC801\uC6A9\uD569\uB2C8\uB2E4 ({mod}+Shift+B)",
+  "The script changed since this build: the programs in the saved map are the older ones until the next Save": "\uC774 \uBE4C\uB4DC \uB4A4\uC5D0 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC74C\uC5D0 \uC800\uC7A5\uD560 \uB54C\uAE4C\uC9C0 \uC800\uC7A5\uB41C \uB9F5\uC758 \uD504\uB85C\uADF8\uB7A8\uC740 \uC774\uC804 \uAC83\uC785\uB2C8\uB2E4",
+  'The script has no tests yet. A test is a test(name, (sim) => { \u2026 }) imported from "trigscript", in any file or in one named *.test.ts: it runs here, in the simulator, after every change that compiles.': '\uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uC544\uC9C1 \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uD14C\uC2A4\uD2B8\uB294 "trigscript"\uC5D0\uC11C \uAC00\uC838\uC628 test(name, (sim) => { \u2026 })\uB85C, \uC544\uBB34 \uD30C\uC77C\uC774\uB098 *.test.ts\uB77C\uB294 \uC774\uB984\uC758 \uD30C\uC77C\uC5D0 \uC501\uB2C8\uB2E4. \uCEF4\uD30C\uC77C\uB418\uB294 \uBCC0\uACBD\uC774 \uC788\uC744 \uB54C\uB9C8\uB2E4 \uC5EC\uAE30 \uC2DC\uBBAC\uB808\uC774\uD130\uC5D0\uC11C \uC2E4\uD589\uB429\uB2C8\uB2E4.',
+  "The script has no tests.": "\uC2A4\uD06C\uB9BD\uD2B8\uC5D0 \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "The script's test() blocks run in the simulator after every compile that goes through. A failing test is a warning. With this on it also refuses the build: Save, Test Map and an export then say which test fails and write the map without the script applied again.": "\uC2A4\uD06C\uB9BD\uD2B8\uC758 test() \uBE14\uB85D\uC740 \uCEF4\uD30C\uC77C\uC774 \uC131\uACF5\uD560 \uB54C\uB9C8\uB2E4 \uC2DC\uBBAC\uB808\uC774\uD130\uC5D0\uC11C \uC2E4\uD589\uB429\uB2C8\uB2E4. \uC2E4\uD328\uD55C \uD14C\uC2A4\uD2B8\uB294 \uACBD\uACE0\uC785\uB2C8\uB2E4. \uC774 \uC124\uC815\uC744 \uCF1C\uBA74 \uBE4C\uB4DC\uB3C4 \uAC70\uBD80\uD569\uB2C8\uB2E4. \uC774\uB54C \uC800\uC7A5, \uB9F5 \uD14C\uC2A4\uD2B8, \uB0B4\uBCF4\uB0B4\uAE30\uB294 \uC5B4\uB290 \uD14C\uC2A4\uD2B8\uAC00 \uC2E4\uD328\uD558\uB294\uC9C0 \uC54C\uB9AC\uACE0 \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uB2E4\uC2DC \uC801\uC6A9\uD558\uC9C0 \uC54A\uC740 \uCC44 \uB9F5\uC744 \uC501\uB2C8\uB2E4.",
+  "The script's triggers are in the map's trigger list, from #{start}. Click to apply the script again": "\uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD2B8\uB9AC\uAC70\uAC00 \uB9F5\uC758 \uD2B8\uB9AC\uAC70 \uBAA9\uB85D #{start}\uBD80\uD130 \uB4E4\uC5B4 \uC788\uC2B5\uB2C8\uB2E4. \uD074\uB9AD\uD558\uBA74 \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uB2E4\uC2DC \uC801\uC6A9\uD569\uB2C8\uB2E4",
+  "The script's triggers are not in the map yet: saving or testing the map applies the script by itself. Click to apply it now ({mod}+Shift+B)": "\uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD2B8\uB9AC\uAC70\uAC00 \uC544\uC9C1 \uB9F5\uC5D0 \uC5C6\uC2B5\uB2C8\uB2E4. \uB9F5\uC744 \uC800\uC7A5\uD558\uAC70\uB098 \uD14C\uC2A4\uD2B8\uD558\uBA74 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC800\uC808\uB85C \uC801\uC6A9\uB429\uB2C8\uB2E4. \uD074\uB9AD\uD558\uBA74 \uC9C0\uAE08 \uC801\uC6A9\uD569\uB2C8\uB2E4 ({mod}+Shift+B)",
+  "The script's triggers were edited or removed outside the script, so it was not applied. Open Triggers \u25B8 TrigScript\u2026 and press Apply to choose what becomes of them.": "\uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD2B8\uB9AC\uAC70\uAC00 \uC2A4\uD06C\uB9BD\uD2B8 \uBC16\uC5D0\uC11C \uD3B8\uC9D1\uB418\uAC70\uB098 \uC81C\uAC70\uB418\uC5B4 \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uC801\uC6A9\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. \uD2B8\uB9AC\uAC70 \u25B8 TrigScript\u2026\uB97C \uC5F4\uACE0 \uC801\uC6A9\uC744 \uB20C\uB7EC \uADF8 \uD2B8\uB9AC\uAC70\uB97C \uC5B4\uB5BB\uAC8C \uD560\uC9C0 \uACE0\uB974\uC138\uC694.",
+  "The script's triggers were edited or removed outside the script. They stay as hand-made triggers; the next Apply appends a fresh block. Saving the map does not apply the script until this is settled.": "\uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD2B8\uB9AC\uAC70\uAC00 \uC2A4\uD06C\uB9BD\uD2B8 \uBC16\uC5D0\uC11C \uD3B8\uC9D1\uB418\uAC70\uB098 \uC81C\uAC70\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uADF8 \uD2B8\uB9AC\uAC70\uB294 \uC9C1\uC811 \uB9CC\uB4E0 \uD2B8\uB9AC\uAC70\uB85C \uB0A8\uACE0, \uB2E4\uC74C \uC801\uC6A9\uC740 \uC0C8 \uBE14\uB85D\uC744 \uB4A4\uC5D0 \uCD94\uAC00\uD569\uB2C8\uB2E4. \uC774 \uBB38\uC81C\uAC00 \uC815\uB9AC\uB420 \uB54C\uAE4C\uC9C0 \uB9F5\uC744 \uC800\uC7A5\uD574\uB3C4 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC801\uC6A9\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "The script's triggers were edited outside the script: {unchanged, plural, one {# trigger is} other {# triggers are}} still the script's, {changed, plural, one {# trigger was} other {# triggers were}} changed.": "\uC2A4\uD06C\uB9BD\uD2B8\uC758 \uD2B8\uB9AC\uAC70\uAC00 \uC2A4\uD06C\uB9BD\uD2B8 \uBC16\uC5D0\uC11C \uD3B8\uC9D1\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uD2B8\uB9AC\uAC70 {unchanged}\uAC1C\uB294 \uC5EC\uC804\uD788 \uC2A4\uD06C\uB9BD\uD2B8\uC758 \uAC83\uC774\uACE0, {changed}\uAC1C\uB294 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4.",
+  'The test "{name}" fails: {message}': '\uD14C\uC2A4\uD2B8 "{name}" \uC2E4\uD328: {message}',
+  "The variable's value when the run ended": "\uC2E4\uD589\uC774 \uB05D\uB0AC\uC744 \uB54C \uBCC0\uC218\uC758 \uAC12",
+  "There are no hand-made triggers to import.": "\uAC00\uC838\uC62C \uC9C1\uC811 \uB9CC\uB4E0 \uD2B8\uB9AC\uAC70\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "There is already a {name}.": "{name|\uC774} \uC774\uBBF8 \uC788\uC2B5\uB2C8\uB2E4.",
+  "There is no test at the cursor.": "\uCEE4\uC11C \uC704\uCE58\uC5D0 \uD14C\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",
+  "This trigger is generated by the map's TrigScript ({file}, line {line}). Edit the source instead; applying the script (saving the map does it) replaces the whole block.": "\uC774 \uD2B8\uB9AC\uAC70\uB294 \uB9F5\uC758 TrigScript\uAC00 \uB9CC\uB4E0 \uAC83\uC785\uB2C8\uB2E4 ({file}, {line}\uD589). \uB300\uC2E0 \uC18C\uC2A4\uB97C \uD3B8\uC9D1\uD558\uC138\uC694. \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uC801\uC6A9\uD558\uBA74(\uB9F5\uC744 \uC800\uC7A5\uD560 \uB54C \uC801\uC6A9\uB429\uB2C8\uB2E4) \uBE14\uB85D \uC804\uCCB4\uAC00 \uBC14\uB01D\uB2C8\uB2E4.",
+  "This trigger is generated by the map's TrigScript. Edit the source instead; applying the script (saving the map does it) replaces the whole block.": "\uC774 \uD2B8\uB9AC\uAC70\uB294 \uB9F5\uC758 TrigScript\uAC00 \uB9CC\uB4E0 \uAC83\uC785\uB2C8\uB2E4. \uB300\uC2E0 \uC18C\uC2A4\uB97C \uD3B8\uC9D1\uD558\uC138\uC694. \uC2A4\uD06C\uB9BD\uD2B8\uB97C \uC801\uC6A9\uD558\uBA74(\uB9F5\uC744 \uC800\uC7A5\uD560 \uB54C \uC801\uC6A9\uB429\uB2C8\uB2E4) \uBE14\uB85D \uC804\uCCB4\uAC00 \uBC14\uB01D\uB2C8\uB2E4.",
+  "Toggle Explorer": "\uD0D0\uC0C9\uAE30 \uC804\uD658",
+  "Toggle Panel": "\uD328\uB110 \uC804\uD658",
+  "TrigScript beside the map": "\uB9F5 \uC606\uC5D0 TrigScript",
+  "TrigScript: build": "TrigScript: \uBE4C\uB4DC",
+  "TrigScript: compile": "TrigScript: \uCEF4\uD30C\uC77C",
+  "TrigScript: declarations": "TrigScript: \uC120\uC5B8",
+  "TrigScript: print records as script": "TrigScript: \uB808\uCF54\uB4DC\uB97C \uC2A4\uD06C\uB9BD\uD2B8\uB85C \uCD9C\uB825",
+  "TrigScript: simulate records": "TrigScript: \uB808\uCF54\uB4DC \uC2DC\uBBAC\uB808\uC774\uC158",
+  "TrigScript: state": "TrigScript: \uC0C1\uD0DC",
+  "TrigScript: trigger at a source line": "TrigScript: \uC18C\uC2A4 \uC904\uC758 \uD2B8\uB9AC\uAC70",
+  "TrigScript\u2026": "TrigScript\u2026",
+  "Trigger #{n}": "\uD2B8\uB9AC\uAC70 #{n}",
+  "Triggers edited outside the script": "\uC2A4\uD06C\uB9BD\uD2B8 \uBC16\uC5D0\uC11C \uD3B8\uC9D1\uB41C \uD2B8\uB9AC\uAC70",
+  "Undo": "\uC2E4\uD589 \uCDE8\uC18C",
+  "Update references": "\uCC38\uC870 \uC5C5\uB370\uC774\uD2B8",
+  "Update the eudplib plugin to build the programs": "\uD504\uB85C\uADF8\uB7A8\uC744 \uBE4C\uB4DC\uD558\uB824\uBA74 eudplib \uD50C\uB7EC\uADF8\uC778\uC744 \uC5C5\uB370\uC774\uD2B8\uD558\uC138\uC694",
+  "Updated {n, plural, one {# reference} other {# references}}.": "\uCC38\uC870 {n}\uAC1C\uB97C \uC5C5\uB370\uC774\uD2B8\uD588\uC2B5\uB2C8\uB2E4.",
+  "Views": "\uBCF4\uAE30",
+  "What Apply, Play and the builds of the programs report is kept here.": "\uC801\uC6A9, \uD50C\uB808\uC774, \uD504\uB85C\uADF8\uB7A8 \uBE4C\uB4DC\uAC00 \uC54C\uB9AC\uB294 \uB0B4\uC6A9\uC774 \uC5EC\uAE30\uC5D0 \uB0A8\uC2B5\uB2C8\uB2E4.",
+  "What the next Apply does about it": "\uB2E4\uC74C \uC801\uC6A9\uC774 \uC774\uB97C \uC5B4\uB5BB\uAC8C \uCC98\uB9AC\uD558\uB294\uC9C0",
+  "Writing the triggers\u2026": "\uD2B8\uB9AC\uAC70 \uC4F0\uB294 \uC911\u2026",
+  "Written to {path} ({kb} KB) \u2014 {message}.": "{path}\uC5D0 \uC37C\uC2B5\uB2C8\uB2E4 ({kb} KB) \u2014 {message}.",
+  "Written to {path} ({kb} KB).": "{path}\uC5D0 \uC37C\uC2B5\uB2C8\uB2E4 ({kb} KB).",
+  "a boolean": "\uBD88\uB9AC\uC5B8",
+  "a number (\u22122 147 483 648 \u2026 2 147 483 647, whole, wrapping at either end as `x | 0` does)": "\uC22B\uC790 (\u22122 147 483 648 \u2026 2 147 483 647, \uC815\uC218, `x | 0`\uCC98\uB7FC \uC591 \uB05D\uC5D0\uC11C \uB118\uC5B4\uAC00\uBA74 \uBC18\uB300\uCABD\uC73C\uB85C \uB3CC\uC544\uAC10)",
+  "a text \u2014 `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes": "\uD14D\uC2A4\uD2B8 \u2014 `length`, `s[i]`, `slice`\uB294 \uBB38\uC790(\uCF54\uB4DC \uD3EC\uC778\uD2B8) \uB2E8\uC704\uB85C \uC138\uBA70, \uB9CC\uB4E0 \uD14D\uC2A4\uD2B8\uB294 1 023\uBC14\uC774\uD2B8\uAE4C\uC9C0 \uB2F4\uC2B5\uB2C8\uB2E4",
+  "a u32 number (0 \u2026 4 294 967 295, wrapping at either end as `x >>> 0` does)": "u32 \uC22B\uC790 (0 \u2026 4 294 967 295, `x >>> 0`\uCC98\uB7FC \uC591 \uB05D\uC5D0\uC11C \uB118\uC5B4\uAC00\uBA74 \uBC18\uB300\uCABD\uC73C\uB85C \uB3CC\uC544\uAC10)",
+  "a unit of the game, or none \u2014 checked before every use: once the unit is gone it reads 0 and takes no write": "\uAC8C\uC784\uC758 \uC720\uB2DB \uB610\uB294 \uC5C6\uC74C \u2014 \uC4F8 \uB54C\uB9C8\uB2E4 \uD655\uC778\uD569\uB2C8\uB2E4. \uC720\uB2DB\uC774 \uC0AC\uB77C\uC9C0\uBA74 0\uC73C\uB85C \uC77D\uD788\uACE0 \uC4F0\uAE30\uB294 \uBB34\uC2DC\uB429\uB2C8\uB2E4",
+  "a u{bits} number (0 \u2026 {max}, stopping at either end)": "u{bits} \uC22B\uC790 (0 \u2026 {max}, \uC591 \uB05D\uC5D0\uC11C \uBA48\uCDA4)",
+  "after": "\uC885\uB8CC \uD6C4",
+  "all players": "\uBAA8\uB4E0 \uD50C\uB808\uC774\uC5B4",
+  "and {n} more": "\uC678 {n}\uAC1C",
+  "and {n} more actions": "\uC561\uC158 {n}\uAC1C \uB354",
+  "and {n} more lines with a fault": "\uC624\uB958\uAC00 \uC788\uB294 \uC904 {n}\uAC1C \uB354",
+  "calls deep \u2014 no function of this script calls itself": "\uB2E8\uACC4 \u2014 \uC774 \uC2A4\uD06C\uB9BD\uD2B8\uC5D0\uB294 \uC790\uAE30 \uC790\uC2E0\uC744 \uD638\uCD9C\uD558\uB294 \uD568\uC218\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4",
+  "calls deep \u2014 {frame} cells a call here, {size} while the map is played": "\uB2E8\uACC4 \u2014 \uC5EC\uAE30\uC11C\uB294 \uD638\uCD9C\uB2F9 {frame}\uC140, \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 {size}",
+  "calls deep \u2014 {frame} cells a call here, {size} while the map is played: more than the {max} a map may use, and it will not build": "\uB2E8\uACC4 \u2014 \uC5EC\uAE30\uC11C\uB294 \uD638\uCD9C\uB2F9 {frame}\uC140, \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 {size}: \uB9F5\uC774 \uC4F8 \uC218 \uC788\uB294 {max}\uBCF4\uB2E4 \uB9CE\uC544\uC11C \uBE4C\uB4DC\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4",
+  "cells \u2014 {size} of the built map": "\uC140 \u2014 \uBE4C\uB4DC\uB41C \uB9F5\uC758 {size}",
+  "click to run these tests": "\uD074\uB9AD\uD558\uBA74 \uC774 \uD14C\uC2A4\uD2B8\uB4E4\uC744 \uC2E4\uD589\uD569\uB2C8\uB2E4",
+  "click to run this test": "\uD074\uB9AD\uD558\uBA74 \uC774 \uD14C\uC2A4\uD2B8\uB97C \uC2E4\uD589\uD569\uB2C8\uB2E4",
+  "compiler": "\uCEF4\uD30C\uC77C\uB7EC",
+  "edited since": "\uC774\uD6C4 \uD3B8\uC9D1\uB428",
+  "eudplib plugin not running": "eudplib \uD50C\uB7EC\uADF8\uC778\uC774 \uC2E4\uD589 \uC911\uC774 \uC544\uB2D8",
+  "eudplib plugin older than 0.4": "eudplib \uD50C\uB7EC\uADF8\uC778\uC774 0.4\uBCF4\uB2E4 \uC624\uB798\uB428",
+  "expected": "\uC608\uC0C1",
+  "failed": "\uC2E4\uD328",
+  "frame {n}": "{n}\uD504\uB808\uC784",
+  "got": "\uC2E4\uC81C",
+  "per player": "\uD50C\uB808\uC774\uC5B4\uBCC4",
+  "printed": "\uCD9C\uB825",
+  "program {n}": "\uD504\uB85C\uADF8\uB7A8 {n}",
+  "runtime downloading\u2026": "\uB7F0\uD0C0\uC784 \uB0B4\uB824\uBC1B\uB294 \uC911\u2026",
+  "runtime downloads on the first save": "\uCCAB \uC800\uC7A5 \uB54C \uB7F0\uD0C0\uC784\uC744 \uB0B4\uB824\uBC1B\uC74C",
+  "runtime failed": "\uB7F0\uD0C0\uC784 \uC2E4\uD328",
+  "runtime ready": "\uB7F0\uD0C0\uC784 \uC900\uBE44\uB428",
+  "script": "\uC2A4\uD06C\uB9BD\uD2B8",
+  "shared": "\uACF5\uC720",
+  "skipped": "\uAC74\uB108\uB700",
+  "tests": "\uD14C\uC2A4\uD2B8",
+  "the TrigScript block": "TrigScript \uBE14\uB85D",
+  "types": "\uD0C0\uC785",
+  "{failed} failed": "{failed}\uAC1C \uC2E4\uD328",
+  "{failed} failed, {passed} passed": "{failed}\uAC1C \uC2E4\uD328, {passed}\uAC1C \uD1B5\uACFC",
+  "{failed} of {n, plural, one {# test} other {# tests}} failed: {name} \u2014 {message}": "\uD14C\uC2A4\uD2B8 {n}\uAC1C \uC911 {failed}\uAC1C \uC2E4\uD328: {name} \u2014 {message}",
+  "{file} [Ln {line}, Col {column}]": "{file} [{line}\uD589, {column}\uC5F4]",
+  "{file} [Ln {line}]": "{file} [{line}\uD589]",
+  "{file} is where the script starts: it stays where it is.": "{file}\uC5D0\uC11C \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC2DC\uC791\uD558\uBBC0\uB85C \uADF8 \uC790\uB9AC\uC5D0 \uC788\uC5B4\uC57C \uD569\uB2C8\uB2E4.",
+  "{frames, plural, one {# frame} other {# frames}} \xB7 {ms} ms": "{frames}\uD504\uB808\uC784 \xB7 {ms}ms",
+  "{frames} frames ({seconds} s) for {players}, from the map's placed units. Units are made, given, moved, killed and counted, but nothing walks or fights; scores and the countdown read 0; wait takes no time.": "{players}, {frames}\uD504\uB808\uC784({seconds}\uCD08), \uB9F5\uC5D0 \uBC30\uCE58\uB41C \uC720\uB2DB\uC5D0\uC11C \uC2DC\uC791. \uC720\uB2DB\uC740 \uC0DD\uC131, \uB118\uACA8\uC8FC\uAE30, \uC774\uB3D9, \uC8FD\uC774\uAE30, \uC138\uAE30\uAC00 \uB418\uC9C0\uB9CC \uAC77\uAC70\uB098 \uC2F8\uC6B0\uC9C0\uB294 \uC54A\uC2B5\uB2C8\uB2E4. \uC810\uC218\uC640 \uCE74\uC6B4\uD2B8\uB2E4\uC6B4\uC740 0\uC73C\uB85C \uC77D\uD788\uACE0, wait\uB294 \uC2DC\uAC04\uC774 \uAC78\uB9AC\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",
+  "{from} is now {to}": "{from} \u2192 {to}",
+  "{message} (and {n, plural, one {# more time} other {# more times}} at this line)": "{message} (\uC774 \uC904\uC5D0\uC11C {n}\uBC88 \uB354)",
+  "{min} to {max} calls. The limit costs nothing until it is reached, but each call deep keeps and brings back every variable of its function, so thousands of calls within one frame make the game stutter. Kept in the map, like the pool above.": "{min}\u2013{max}\uB2E8\uACC4. \uD55C\uB3C4\uB294 \uB2FF\uAE30 \uC804\uAE4C\uC9C0\uB294 \uBE44\uC6A9\uC774 \uC5C6\uC9C0\uB9CC, \uD55C \uB2E8\uACC4 \uAE4A\uC5B4\uC9C8 \uB54C\uB9C8\uB2E4 \uD568\uC218\uC758 \uBAA8\uB4E0 \uBCC0\uC218\uB97C \uBCF4\uAD00\uD588\uB2E4\uAC00 \uB418\uB3CC\uB9AC\uBBC0\uB85C \uD55C \uD504\uB808\uC784 \uC548\uC5D0 \uC218\uCC9C \uBC88 \uD638\uCD9C\uD558\uBA74 \uAC8C\uC784\uC774 \uB04A\uAE41\uB2C8\uB2E4. \uC704\uC758 \uD480\uCC98\uB7FC \uB9F5\uC5D0 \uC800\uC7A5\uB429\uB2C8\uB2E4.",
+  "{min} to {max} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.": "{min}\u2013{max}\uC140, \uC140\uB9C8\uB2E4 4\uBC14\uC774\uD2B8. \uD480\uC774 \uCEE4\uB3C4 \uAC8C\uC784\uC774 \uB290\uB824\uC9C0\uC9C0 \uC54A\uACE0 \uC800\uC7A5 \uD30C\uC77C\uB3C4 \uAC70\uC758 \uCEE4\uC9C0\uC9C0 \uC54A\uC9C0\uB9CC, \uB9F5\uC744 \uD50C\uB808\uC774\uD558\uB294 \uB3D9\uC548 \uBA54\uBAA8\uB9AC\uB97C \uB354 \uC501\uB2C8\uB2E4. \uB9F5\uC5D0 \uC800\uC7A5\uB418\uBBC0\uB85C \uC5B4\uB290 \uCEF4\uD4E8\uD130\uC5D0\uC11C\uB098 \uB611\uAC19\uC774 \uBE4C\uB4DC\uB429\uB2C8\uB2E4.",
+  "{ms} ms": "{ms}ms",
+  "{n, plural, one {# fault} other {# faults}}: an array read or written past its end, or out of memory \u2014 first in the list.": "\uC624\uB958 {n}\uAC1C: \uBC30\uC5F4\uC758 \uB05D\uC744 \uB118\uC5B4 \uC77D\uAC70\uB098 \uC37C\uAC70\uB098 \uBA54\uBAA8\uB9AC\uAC00 \uBD80\uC871\uD569\uB2C8\uB2E4 \u2014 \uBAA9\uB85D \uB9E8 \uC704\uC5D0 \uC788\uC2B5\uB2C8\uB2E4.",
+  "{n, plural, one {# problem} other {# problems}}": "\uBB38\uC81C {n}\uAC1C",
+  "{n, plural, one {# program} other {# programs}} \xB7 Remastered": "\uD504\uB85C\uADF8\uB7A8 {n}\uAC1C \xB7 Remastered",
+  "{n, plural, one {# test} other {# tests}}": "\uD14C\uC2A4\uD2B8 {n}\uAC1C",
+  "{n, plural, one {# test} other {# tests}} passed.": "\uD14C\uC2A4\uD2B8 {n}\uAC1C \uD1B5\uACFC.",
+  "{n, plural, one {# test} other {# tests}}. Click for the Testing view": "\uD14C\uC2A4\uD2B8 {n}\uAC1C. \uD074\uB9AD\uD558\uBA74 \uD14C\uC2A4\uD2B8 \uBCF4\uAE30\uB97C \uC5FD\uB2C8\uB2E4",
+  "{n, plural, one {# test} other {# tests}}; running them all takes a while, so only the open file's run after a change. Click for the Testing view": "\uD14C\uC2A4\uD2B8 {n}\uAC1C. \uBAA8\uB450 \uC2E4\uD589\uD558\uB294 \uB370 \uC2DC\uAC04\uC774 \uAC78\uB824\uC11C, \uBCC0\uACBD \uD6C4\uC5D0\uB294 \uC5F4\uB9B0 \uD30C\uC77C\uC758 \uD14C\uC2A4\uD2B8\uB9CC \uC2E4\uD589\uB429\uB2C8\uB2E4. \uD074\uB9AD\uD558\uBA74 \uD14C\uC2A4\uD2B8 \uBCF4\uAE30\uB97C \uC5FD\uB2C8\uB2E4",
+  "{n, plural, one {# trigger} other {# triggers}} at #{start}": "#{start}\uBD80\uD130 \uD2B8\uB9AC\uAC70 {n}\uAC1C",
+  "{n, plural, one {A test fails} other {# tests fail}}: see the Testing view.": "\uD14C\uC2A4\uD2B8 {n}\uAC1C\uAC00 \uC2E4\uD328\uD569\uB2C8\uB2E4: \uD14C\uC2A4\uD2B8 \uBCF4\uAE30\uB97C \uD655\uC778\uD558\uC138\uC694.",
+  "{n, plural, one {The program is} other {The # programs are}} built into the map when it is saved or tested.": "\uD504\uB85C\uADF8\uB7A8 {n}\uAC1C\uB294 \uB9F5\uC744 \uC800\uC7A5\uD558\uAC70\uB098 \uD14C\uC2A4\uD2B8\uD560 \uB54C \uB9F5\uC5D0 \uBE4C\uB4DC\uB429\uB2C8\uB2E4.",
+  "{name}, run as {owner}": "{name}, {owner|\uC73C\uB85C} \uC2E4\uD589",
+  "{n} files moved": "\uD30C\uC77C {n}\uAC1C \uC774\uB3D9\uD568",
+  "{n} not run": "{n}\uAC1C \uC2E4\uD589 \uC548 \uB428",
+  "{n} passed": "{n}\uAC1C \uD1B5\uACFC",
+  "{n} renamed": "\uC774\uB984 {n}\uAC1C \uBC14\uB01C",
+  "{n} skipped": "{n}\uAC1C \uAC74\uB108\uB700",
+  "{what}. Click for its log": "{what}. \uD074\uB9AD\uD558\uBA74 \uB85C\uADF8\uB97C \uBD05\uB2C8\uB2E4",
+  "{what}; {n, plural, one {# import} other {# imports}} rewritten.": "{what}. import {n}\uAC1C\uB97C \uACE0\uCCD0 \uC37C\uC2B5\uB2C8\uB2E4."
+};
+
 // plugin.ts
 function activate(api) {
+  api.i18n.register({ ko: KO });
   const svc = new ScriptService(api, (file, line) => openScriptEditor(svc, { file, line }));
+  api.events.on("language", () => relabelScriptEditor(svc));
   api.events.on("triggers", () => {
     svc.relocate();
     if (svc.manifestChanged()) svc.claim.refresh();
@@ -11676,17 +12025,17 @@ function activate(api) {
     svc.manifestChanged();
     svc.claim.refresh();
   });
-  api.commands.register({ id: "open", title: "TrigScript\u2026", enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num(options.line), dock: options.dock === true ? true : options.dock === false ? false : void 0 } : {}) });
-  api.commands.register({ id: "dock", title: "TrigScript beside the map", enabled: () => api.document.isOpen(), run: () => openScriptEditor(svc, { dock: true }) });
-  api.menu.add("Triggers", { label: "TrigScript\u2026", after: "Text Trigger Editor\u2026", enabled: () => api.document.isOpen(), command: "open" });
-  api.menu.add("Triggers", { label: "TrigScript beside the map", after: "TrigScript\u2026", enabled: () => api.document.isOpen(), command: "dock" });
-  api.commands.register({ id: "state", title: "TrigScript: state", run: () => svc.state() });
-  api.commands.register({ id: "declarations", title: "TrigScript: declarations", run: (options) => svc.declarations({ compact: isRecord(options) && options.compact === true }) });
-  api.commands.register({ id: "compile", title: "TrigScript: compile", run: (input) => svc.compile(scriptInput(input)) });
-  api.commands.register({ id: "build", title: "TrigScript: build", run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true, replaceStale: isRecord(options) && options.replaceStale === true }) });
-  api.commands.register({ id: "print", title: "TrigScript: print records as script", run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : void 0) });
-  api.commands.register({ id: "simulate", title: "TrigScript: simulate records", run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
-  api.commands.register({ id: "triggerAt", title: "TrigScript: trigger at a source line", run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
+  api.commands.register({ id: "open", title: msg("TrigScript\u2026"), enabled: () => api.document.isOpen(), run: (options) => openScriptEditor(svc, isRecord(options) ? { file: str(options.file), line: num(options.line), dock: options.dock === true ? true : options.dock === false ? false : void 0 } : {}) });
+  api.commands.register({ id: "dock", title: msg("TrigScript beside the map"), enabled: () => api.document.isOpen(), run: () => openScriptEditor(svc, { dock: true }) });
+  api.menu.add("Triggers", { label: msg("TrigScript\u2026"), after: "Text Trigger Editor\u2026", enabled: () => api.document.isOpen(), command: "open" });
+  api.menu.add("Triggers", { label: msg("TrigScript beside the map"), after: "TrigScript\u2026", enabled: () => api.document.isOpen(), command: "dock" });
+  api.commands.register({ id: "state", title: msg("TrigScript: state"), run: () => svc.state() });
+  api.commands.register({ id: "declarations", title: msg("TrigScript: declarations"), run: (options) => svc.declarations({ compact: isRecord(options) && options.compact === true }) });
+  api.commands.register({ id: "compile", title: msg("TrigScript: compile"), run: (input) => svc.compile(scriptInput(input)) });
+  api.commands.register({ id: "build", title: msg("TrigScript: build"), run: (input, options) => svc.build(scriptInput(input), { takeOver: isRecord(options) && options.takeOver === true, replaceStale: isRecord(options) && options.replaceStale === true }) });
+  api.commands.register({ id: "print", title: msg("TrigScript: print records as script"), run: (triggers, options) => svc.print(records(triggers), isRecord(options) ? { imports: options.imports === true, header: str(options.header) } : void 0) });
+  api.commands.register({ id: "simulate", title: msg("TrigScript: simulate records"), run: (triggers, cycles, options) => svc.simulate(records(triggers), Math.max(1, Math.round(Number(cycles) || 30)), { player: isRecord(options) && typeof options.player === "number" ? options.player : void 0 }) });
+  api.commands.register({ id: "triggerAt", title: msg("TrigScript: trigger at a source line"), run: (file, line) => svc.triggerAt(str(file) ?? "main.ts", Number(line) || 0) });
   const attached = svc.attach();
   return () => attached.dispose();
 }

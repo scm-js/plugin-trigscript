@@ -7,6 +7,7 @@
  */
 import { ENTRY_FILE, normalizePath, type ScriptFiles } from "./compiler/compiler";
 import { resolveModule } from "./compiler/link";
+import { english, type Translate } from "./i18n";
 
 export interface TreeFile {
   kind: "file";
@@ -172,10 +173,10 @@ export function movesOf(paths: readonly string[], from: string, to: string): Map
 }
 
 /** Why a set of moves cannot be made, or null: the entry file stays where it is, and nothing lands on a file that stays. */
-export function refuseMoves(paths: readonly string[], moves: Moves): string | null {
-  if (moves.has(ENTRY_FILE)) return `${ENTRY_FILE} is where the script starts: it stays where it is.`;
+export function refuseMoves(paths: readonly string[], moves: Moves, t: Translate = english): string | null {
+  if (moves.has(ENTRY_FILE)) return t("{file} is where the script starts: it stays where it is.", { file: ENTRY_FILE });
   const stay = new Set(paths.filter((p) => !moves.has(p)));
-  for (const to of moves.values()) if (stay.has(to)) return `There is already a ${to}.`;
+  for (const to of moves.values()) if (stay.has(to)) return t("There is already a {name}.", { name: to });
   return null;
 }
 

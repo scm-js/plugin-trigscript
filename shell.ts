@@ -14,6 +14,7 @@
  * `ready()` says so, and until then the glyphs are hidden rather than drawn as boxes.
  */
 import type { PluginApi } from "@scm-js/plugin-api";
+import { english, type Translate } from "./i18n";
 
 type El = PluginApi["ui"]["el"];
 
@@ -152,6 +153,8 @@ export interface ShellOptions {
   onLayout(layout: ShellLayout): void;
   onTabSelect(id: string): void;
   onTabClose(id: string): void;
+  /** The frame's own few words (Explorer, Close, Dismiss) in the editor's language. */
+  t?: Translate;
 }
 
 export interface Shell {
@@ -315,6 +318,7 @@ button.tsd-status-item:hover { background: var(--bg-4); color: var(--text); }
 
 export function createShell(options: ShellOptions): Shell {
   const { el } = options;
+  const t = options.t ?? english;
   const layout: ShellLayout = { ...options.layout };
 
   const icon = (name: IconName, spin = false) => el("span", { className: `tsd-i tsd-i-${name}${spin ? " tsd-spin" : ""}`, ariaHidden: "true" });
@@ -341,10 +345,10 @@ export function createShell(options: ShellOptions): Shell {
   const actionsEl = el("div", { className: "tsd-actions" });
   const editorHost = el("div", { className: "tsd-editor" });
   const sectionsEl = el("div", { className: "tsd-sections" });
-  const sidebarTitle = el("div", { className: "tsd-sidebar-title" }, "Explorer");
+  const sidebarTitle = el("div", { className: "tsd-sidebar-title" }, t("Explorer"));
   const sidebarHolder = el("div", { className: "tsd-sidebar-body" }, sectionsEl);
   const sidebar = el("div", { className: "tsd-sidebar" }, sidebarTitle, sidebarHolder);
-  const activity = el("div", { className: "tsd-activity", role: "tablist", ariaLabel: "Views", hidden: true });
+  const activity = el("div", { className: "tsd-activity", role: "tablist", ariaLabel: t("Views"), hidden: true });
   const sidebarSash = el("div", { className: "tsd-sash tsd-sash-v" });
   const panelTabs = el("div", { className: "tsd-panel-tabs", role: "tablist" });
   const panelActions = el("div", { className: "tsd-panel-actions" });
@@ -431,11 +435,11 @@ export function createShell(options: ShellOptions): Shell {
     activity.hidden = sideViews.size < 2;
     return view;
   };
-  addSide({ id: "explorer", title: "Explorer", icon: "files" }, sectionsEl);
+  addSide({ id: "explorer", title: t("Explorer"), icon: "files" }, sectionsEl);
 
   /* ── The panel's views ── */
   const views = new Map<string, { tab: HTMLElement; badge: HTMLElement; body: HTMLElement; actions: HTMLElement[]; onShow?: () => void }>();
-  const closePanel = iconButton({ icon: "close", title: "Hide the panel (Ctrl+J)", run: () => togglePanel() });
+  const closePanel = iconButton({ icon: "close", title: t("Hide the panel (Ctrl+J)"), run: () => togglePanel() });
   const showView = (id: string, announce = true) => {
     const wanted = views.has(id) ? id : [...views.keys()][0];
     if (!wanted) return;
@@ -512,7 +516,7 @@ export function createShell(options: ShellOptions): Shell {
       el("div", { className: "tsd-notification-row" },
         icon(spec.kind === "warn" ? "warning" : spec.kind),
         el("span", { className: "tsd-text" }, spec.text),
-        iconButton({ icon: "close", title: "Dismiss", run: () => dismiss(spec.key) }).element,
+        iconButton({ icon: "close", title: t("Dismiss"), run: () => dismiss(spec.key) }).element,
       ),
       spec.actions?.length
         ? el("div", { className: "tsd-notification-actions" }, ...spec.actions.map((a) =>
@@ -533,18 +537,18 @@ export function createShell(options: ShellOptions): Shell {
     icon: (name) => icon(name),
     iconButton,
     setTabs(tabs, active) {
-      tabsEl.replaceChildren(...tabs.map((t) => {
-        const on = t.id === active;
+      tabsEl.replaceChildren(...tabs.map((spec) => {
+        const on = spec.id === active;
         const tab = el("div", {
-          className: on ? "tsd-tab tsd-active" : "tsd-tab", role: "tab", ariaSelected: String(on), title: t.title ?? t.label,
-          onClick: () => options.onTabSelect(t.id),
+          className: on ? "tsd-tab tsd-active" : "tsd-tab", role: "tab", ariaSelected: String(on), title: spec.title ?? spec.label,
+          onClick: () => options.onTabSelect(spec.id),
           // The middle button closes a tab, as it does everywhere else.
-          onAuxClick: (e: MouseEvent) => { if (e.button === 1 && t.closable) { e.preventDefault(); options.onTabClose(t.id); } },
+          onAuxClick: (e: MouseEvent) => { if (e.button === 1 && spec.closable) { e.preventDefault(); options.onTabClose(spec.id); } },
         },
           el("span", { className: "tsd-ts" }, "TS"),
-          el("span", { className: t.problems ? "tsd-problem" : undefined }, t.problems ? `${t.label} ${t.problems}` : t.label),
-          t.about ? el("span", { className: "tsd-about" }, t.about) : undefined,
-          t.closable ? iconButton({ icon: "close", title: "Close", run: () => options.onTabClose(t.id) }).element : el("span", { className: "tsd-pad" }),
+          el("span", { className: spec.problems ? "tsd-problem" : undefined }, spec.problems ? `${spec.label} ${spec.problems}` : spec.label),
+          spec.about ? el("span", { className: "tsd-about" }, spec.about) : undefined,
+          spec.closable ? iconButton({ icon: "close", title: t("Close"), run: () => options.onTabClose(spec.id) }).element : el("span", { className: "tsd-pad" }),
         );
         if (on) queueMicrotask(() => tab.scrollIntoView({ block: "nearest", inline: "nearest" }));
         return tab;

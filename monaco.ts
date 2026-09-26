@@ -20,6 +20,7 @@ import { DECLARATIONS_FILE } from "./compiler/declarations";
 import type { LineHint, ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
 import { describeVariable, normalizePath } from "./compiler/compiler";
 import { findReferences } from "./refs";
+import { english, type Translate } from "./i18n";
 
 export const MONACO_VERSION = "0.56.0";
 /** The tag `dist/` is served from; move it when the bundle changes (`git tag monaco-<version>-<n>`). */
@@ -163,7 +164,12 @@ const pathOfUri = (uri: Monaco.Uri) => normalizePath(uri.path.replace(/^\/+/, ""
 
 /** The class the build-time parts of a program are drawn with; the dialog's stylesheet gives it its underline. */
 export const BUILD_TIME_CLASS = "trigscript-build-time";
-export const BUILD_TIME_NOTE = "Computed when the script is built, not in the game.";
+
+/** The open workspace's words (`api.i18n.t`): the hovers here are registered once per Monaco and read it when they show. */
+let tr: Translate = english;
+export function setMonacoTranslator(t: Translate) {
+  tr = t;
+}
 
 let hoverVariables: () => VariableInfo[] = () => [];
 let hoverRegistered = false;
@@ -194,7 +200,9 @@ export function setHoverVariables(monaco: MonacoApi, variables: () => VariableIn
         if (!v) continue;
         return {
           range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-          contents: [{ value: `**${v.name}** is a variable of the program: ${describeVariable(v)}${v.shared ? ", one value shared by every player the program runs for" : ""}. It lives in the game while the map is played.` }],
+          contents: [{ value: v.shared
+            ? tr("**{name}** is a variable of the program: {what}, one value shared by every player the program runs for. It lives in the game while the map is played.", { name: v.name, what: describeVariable(v, tr) })
+            : tr("**{name}** is a variable of the program: {what}. It lives in the game while the map is played.", { name: v.name, what: describeVariable(v, tr) }) }],
         };
       }
       return null;
@@ -281,7 +289,7 @@ export function setMapRefs(monaco: MonacoApi, refs: () => MapRefs | null) {
       const links = findReferences(model.getValue(), r.object).filter((x) => r.byKey.has(x.key)).map((x) => ({
         range: new monaco.Range(x.line, x.column, x.line, x.endColumn),
         url: monaco.Uri.from({ scheme: LINK_SCHEME, path: `/location/${r.byKey.get(x.key)!.index}` }),
-        tooltip: "Show on the map",
+        tooltip: tr("Show on the map"),
       }));
       return { links };
     },
@@ -310,7 +318,7 @@ export function setMapRefs(monaco: MonacoApi, refs: () => MapRefs | null) {
       if (!ref) return null;
       return {
         range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
-        contents: [{ value: `**${ref.name}** — location ${ref.index + 1}: ${ref.w} × ${ref.h} tiles at ${ref.x}, ${ref.y}. Ctrl+click to show it on the map.` }],
+        contents: [{ value: tr("**{name}** — location {n}: {w} × {h} tiles at {x}, {y}. Ctrl+click to show it on the map.", { name: ref.name, n: ref.index + 1, w: ref.w, h: ref.h, x: ref.x, y: ref.y }) }],
       };
     },
   });
@@ -540,7 +548,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
         const next = ranges.filter((r) => normalizePath(r.file) === p).map((r) => ({
           range: new monaco.Range(r.line, r.column, r.endLine, r.endColumn),
           // Never grows with typing at its edges: the next check redraws it where the compiler says.
-          options: { inlineClassName: BUILD_TIME_CLASS, hoverMessage: { value: BUILD_TIME_NOTE }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+          options: { inlineClassName: BUILD_TIME_CLASS, hoverMessage: { value: tr("Computed when the script is built, not in the game.") }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
         }));
         decorations.set(p, model.deltaDecorations(decorations.get(p) ?? [], next));
       }
