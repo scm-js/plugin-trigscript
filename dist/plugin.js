@@ -1009,6 +1009,7 @@ var World = class {
 };
 
 // compiler/simulate.ts
+var FOREVER = 4294967295;
 var Simulation = class {
   triggers;
   /** The simulated player: the only one, without the map's player settings; with them, the one inputs and logs default to. */
@@ -1022,8 +1023,17 @@ var Simulation = class {
   deaths = /* @__PURE__ */ new Map();
   /** Trigger × player, for the triggers that ran without Preserve. */
   done = /* @__PURE__ */ new Set();
+  /** Trigger × player: the copies that have run, where they stand. */
+  copies = /* @__PURE__ */ new Map();
+  /** Each player's wait slot while it is busy: the milliseconds left. */
+  waiting = /* @__PURE__ */ new Map();
   options;
+  /** Passes run. */
   cycle = 0;
+  /** Frames run: the game's frame number. */
+  frame = 0;
+  /** The game's pass countdown: a pass on the frame it is found at 0. */
+  countdown = 1;
   constructor(triggers, options = {}) {
     this.triggers = triggers;
     this.options = options;
@@ -1057,33 +1067,73 @@ var Simulation = class {
     const s = strings[index - 1];
     return s && "text" in s ? s.text : void 0;
   }
-  /** Run one trigger cycle. */
+  /** One frame of the game: the wait slots counted down, then a pass if one is due. True when a pass ran. */
+  tick() {
+    this.frame++;
+    const ms = this.options.msPerFrame ?? 42;
+    for (const [player, left] of this.waiting) {
+      if (left === FOREVER) continue;
+      if (ms < left) this.waiting.set(player, left - ms);
+      else {
+        this.waiting.delete(player);
+        this.countdown = 1;
+      }
+    }
+    const due = this.countdown === 0;
+    this.countdown = Math.max(0, this.countdown - 1);
+    if (!due) return false;
+    this.pass();
+    return true;
+  }
+  /** Frames until the next pass, and that pass. */
   step() {
+    while (!this.tick()) ;
+    return this;
+  }
+  /** `cycles` passes. */
+  run(cycles) {
+    for (let i = 0; i < cycles; i++) this.step();
+    return this;
+  }
+  /** One pass of the list, as the game makes it. */
+  pass() {
+    this.countdown = 30;
     let runs = 0;
     const limit = this.options.maxRunsPerCycle ?? 1e5;
     for (const player of this.game.players.slots) {
       this.current = player;
       for (let i = 0; i < this.triggers.length; i++) {
-        const t = this.triggers[i];
-        if (this.done.has(i * 12 + player) || t.flags & TriggerFlag.Disabled) continue;
+        const t = this.triggers[i], key = i * 12 + player;
+        if (this.done.has(key) || t.flags & TriggerFlag.Disabled) continue;
         if (!this.game.players.owns(t.players, player)) continue;
-        if (!t.conditions.every((c2) => this.condition(c2))) continue;
-        if (++runs > limit) throw new Error(`More than ${limit} trigger runs in one cycle.`);
-        let preserve = (t.flags & TriggerFlag.Preserve) !== 0;
-        for (const a2 of t.actions) {
-          if (a2.flags & ActionFlag.Disabled) continue;
-          if (a2.type === ActionType.PreserveTrigger) preserve = true;
-          else this.action(a2, i);
+        let copy = this.copies.get(key);
+        if (!copy?.executing) {
+          if (!t.conditions.every((c2) => this.condition(c2))) continue;
+          if (++runs > limit) throw new Error(`More than ${limit} trigger runs in one cycle.`);
+          copy = { executing: true, at: 0, preserved: copy?.preserved || (t.flags & TriggerFlag.Preserve) !== 0, started: /* @__PURE__ */ new Set() };
+          this.copies.set(key, copy);
         }
-        if (!preserve) this.done.add(i * 12 + player);
+        let held = false;
+        for (; copy.at < t.actions.length; copy.at++) {
+          const a2 = t.actions[copy.at];
+          if (a2.type === ActionType.None) break;
+          if (a2.flags & ActionFlag.Disabled) continue;
+          if (!this.action(a2, i, copy)) {
+            held = true;
+            break;
+          }
+        }
+        if (held) continue;
+        if (copy.preserved) {
+          copy.executing = false;
+          copy.at = 0;
+          copy.started.clear();
+        } else this.done.add(key);
       }
     }
     this.current = this.player;
     this.cycle++;
-  }
-  run(cycles) {
-    for (let i = 0; i < cycles; i++) this.step();
-    return this;
+    if (this.options.everyFrame) this.countdown = 0;
   }
   condition(c2) {
     if (c2.flags & ConditionFlag.Disabled) return true;
@@ -1096,18 +1146,40 @@ var Simulation = class {
         return compare2(this.death(c2.player, c2.unitId), c2.comparison, c2.amount);
       case ConditionType.Switch:
         return c2.comparison === SwitchState.Set ? this.switches[c2.resource] === 1 : this.switches[c2.resource] === 0;
+      case ConditionType.ElapsedTime:
+        return this.options.condition?.(c2, this) ?? compare2(Math.floor(this.frame / 16), c2.comparison, c2.amount);
       default:
         return this.options.condition?.(c2, this) ?? this.game.holds(c2, this.current) ?? false;
     }
   }
-  action(a2, trigger) {
+  /** Runs an action of a copy; false when it holds the trigger there (a Wait or a Transmission with its time to run). */
+  action(a2, trigger, copy) {
     switch (a2.type) {
+      case ActionType.PreserveTrigger:
+        copy.preserved = true;
+        return true;
+      case ActionType.Wait:
+      case ActionType.Transmission: {
+        const player = this.current;
+        if (a2.type === ActionType.Transmission && (a2.location === 0 || this.options.computers?.includes(player))) return true;
+        if (this.waiting.has(player)) return false;
+        if (copy.started.delete(copy.at)) return true;
+        let ms = a2.time >>> 0;
+        if (a2.type === ActionType.Transmission) {
+          const n = a2.target >>> 0;
+          ms = a2.modifier === SetModifier.SetTo ? n : a2.modifier === SetModifier.Add ? ms + n >>> 0 : a2.modifier === SetModifier.Subtract ? n > ms ? 0 : ms - n : ms;
+        }
+        this.waiting.set(player, ms);
+        copy.started.add(copy.at);
+        this.log(a2, trigger);
+        return false;
+      }
       case ActionType.SetDeaths:
         this.changeDeath(a2.player, a2.unitId, a2.modifier, a2.target);
-        return;
+        return true;
       case ActionType.SetSwitch: {
         const i = a2.target;
-        if (i < 0 || i >= SWITCH_COUNT) return;
+        if (i < 0 || i >= SWITCH_COUNT) return true;
         switch (a2.modifier) {
           case SwitchAction.Set:
             this.switches[i] = 1;
@@ -1122,18 +1194,21 @@ var Simulation = class {
             this.switches[i] = (this.options.random ?? Math.random)() < 0.5 ? 0 : 1;
             break;
         }
-        return;
+        return true;
       }
       case ActionType.Comment:
-        return;
-      default: {
+        return true;
+      default:
         this.game.act(a2, this.current);
-        const ev = { cycle: this.cycle, trigger, player: this.current, action: a2 };
-        const text = this.text(a2.text);
-        if (text !== void 0) ev.text = text;
-        this.events.push(ev);
-      }
+        this.log(a2, trigger);
+        return true;
     }
+  }
+  log(a2, trigger) {
+    const ev = { cycle: this.cycle, frame: this.frame, trigger, player: this.current, action: a2 };
+    const text = this.text(a2.text);
+    if (text !== void 0) ev.text = text;
+    this.events.push(ev);
   }
 };
 function compare2(value, comparison, amount) {
@@ -2124,12 +2199,12 @@ var ProgramRun = class {
       if (!of) throw new Error(`The array ${a2.decl.slice.of} is not one of the program's (line ${at.line}).`);
       const j = (Number(this.read(a2.decl.slice.offset)) | 0) + i;
       if (i >= 0 && i < a2.decl.length && j >= 0 && j < (of.decl.dynamic ? of.cells.length : of.decl.length)) return { decl: a2.decl, cells: of.cells, i: j };
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the row (its length is ${a2.decl.length}): ${what}.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the row (its length is ${a2.decl.length}): ${what}.` });
       return void 0;
     }
     const length = a2.decl.dynamic ? a2.cells.length : a2.decl.length;
     if (i >= 0 && i < length) return { ...a2, i };
-    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
+    this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
     return void 0;
   }
   /**
@@ -2141,7 +2216,7 @@ var ProgramRun = class {
     let room = Math.max(a2.room, HEAP_SMALLEST);
     while (room < cells) room *= 2;
     if (!this.sim.heap.take(room)) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: ${a2.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `Out of memory: ${a2.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
       return false;
     }
     if (a2.room) this.sim.heap.give(a2.room);
@@ -2175,7 +2250,7 @@ var ProgramRun = class {
     }
     const held = this.sim.inner.get(ptr);
     if (!held) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: decl.at, message: `${decl.name} was given back \u2014 the row that held it was popped, cut off or declared again \u2014 and this is a copy of its handle: in the game it reads whatever has the block now.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: decl.at, message: `${decl.name} was given back \u2014 the row that held it was popped, cut off or declared again \u2014 and this is a copy of its handle: in the game it reads whatever has the block now.` });
       return nothing();
     }
     held.decl = decl;
@@ -2370,12 +2445,12 @@ var ProgramRun = class {
    */
   made(s, at, cameTo = bytesOf(s)) {
     if (bytesOf(s) > TEXT_BYTES) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text came to ${cameTo.toLocaleString("en-US")} bytes, and a text that is made holds ${TEXT_BYTES.toLocaleString("en-US")}: it is cut off there, as it is in the game.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `This text came to ${cameTo.toLocaleString("en-US")} bytes, and a text that is made holds ${TEXT_BYTES.toLocaleString("en-US")}: it is cut off there, as it is in the game.` });
       s = cutTo(s, TEXT_BYTES);
     }
     const room = textRoom(bytesOf(s));
     if (!this.sim.heap.take(room)) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: no room for this text (the heap the programs' arrays and texts share is ${this.sim.heap.cells} cells; the script's settings set it). It is empty instead, as it is in the game.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `Out of memory: no room for this text (the heap the programs' arrays and texts share is ${this.sim.heap.cells} cells; the script's settings set it). It is empty instead, as it is in the game.` });
       return { s: "", room: 0, taken: true };
     }
     return { s, room, taken: true };
@@ -2420,7 +2495,7 @@ var ProgramRun = class {
         const a2 = this.arrays.get(e.array);
         const i = yield* this.num(e.index);
         const found = a2?.decl.texts?.[i];
-        if (found === void 0) this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: e.at, message: `${a2?.decl.name ?? e.array}[${i}] is past the end of the list (its length is ${a2?.decl.texts?.length ?? 0}): it reads an empty text.` });
+        if (found === void 0) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: e.at, message: `${a2?.decl.name ?? e.array}[${i}] is past the end of the list (its length is ${a2?.decl.texts?.length ?? 0}): it reads an empty text.` });
         return { s: found ?? "", room: 0, taken: true };
       }
       case "template": {
@@ -2490,7 +2565,7 @@ var ProgramRun = class {
   /** A made text where the game shows at most `TEXT_FIELD_BYTES` of one: an action's field, a unit type's name. */
   shown(v, at, where) {
     if (!v.room || bytesOf(v.s) <= TEXT_FIELD_BYTES) return v.s;
-    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text is ${bytesOf(v.s)} bytes, and ${where} shows ${TEXT_FIELD_BYTES} of a text that was made: it is cut off there, as it is in the game.` });
+    this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `This text is ${bytesOf(v.s)} bytes, and ${where} shows ${TEXT_FIELD_BYTES} of a text that was made: it is cut off there, as it is in the game.` });
     return cutTo(v.s, TEXT_FIELD_BYTES);
   }
   /** A number as the game takes one: the 32 bits from 0 up. What goes to a unit, a table, an action or the map is never below zero by then (the compiler saw to it). */
@@ -2637,7 +2712,7 @@ var ProgramRun = class {
   keep(c2) {
     const saves = c2.saves;
     if (this.depth >= this.sim.stackDepth) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: c2.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: c2.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
       throw new Stopped();
     }
     this.depth++;
@@ -2700,7 +2775,7 @@ var ProgramRun = class {
         const i = yield* this.num(s.index);
         const cells = [s.addr, s.block, s.chars].map((id) => this.arrays.get(id));
         if (cells.some((a2) => !a2 || i < 0 || i >= a2.cells.length)) {
-          this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${cells[0]?.decl.name ?? s.addr}[${i}] is past the end of the array (its length is ${cells[0]?.cells.length ?? 0}): nothing is stored.` });
+          this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `${cells[0]?.decl.name ?? s.addr}[${i}] is past the end of the array (its length is ${cells[0]?.cells.length ?? 0}): nothing is stored.` });
           if (v.room) this.sim.heap.give(v.room);
           return "next";
         }
@@ -2843,7 +2918,7 @@ var ProgramRun = class {
             return "next";
           }
           if (i >= 0 && i < a2.cells.length) a2.cells[i] = this.kept(v, a2.decl);
-          else this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${a2.cells.length}): nothing is stored.` });
+          else this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `${a2.decl.name}[${i}] is past the end of the array (its length is ${a2.cells.length}): nothing is stored.` });
           return "next";
         }
         const c2 = yield* this.cell(s.array, s.index, s.at, "nothing is stored");
@@ -3065,6 +3140,15 @@ var ProgramSimulation = class {
   /** Where each player's mouse is, in map pixels. */
   mice = /* @__PURE__ */ new Map();
   cycle = 0;
+  /** The world is the caller's, run on the game's schedule: the programs run in its passes, and its frame is the game's. */
+  shared;
+  /**
+   * The game's frame the programs stand in. A world of the caller's says (a map with a program has a pass every frame
+   * from frame 2, and the programs run in it); one of their own has the programs run every frame from frame 1.
+   */
+  get frame() {
+    return this.shared ? this.world.frame : this.cycle + 1;
+  }
   constructor(programs, options) {
     this.world = options.world ?? new Simulation([], {
       player: options.player ?? (options.players ? void 0 : programs[0]?.owner ?? 0),
@@ -3079,6 +3163,7 @@ var ProgramSimulation = class {
       properties: options.properties
     });
     this.game = this.world.game;
+    this.shared = options.world !== void 0;
     if (options.world) {
       for (const [n, b] of Object.entries(options.locations ?? {})) this.game.locations.set(Number(n), { ...b });
       for (const u of options.units ?? []) this.game.make(u);
@@ -3189,7 +3274,7 @@ var ProgramSimulation = class {
         return (c2.resource === ResourceType.Ore ? ore : c2.resource === ResourceType.Gas ? gas : ore + gas) % U32;
       }
       case ConditionType.ElapsedTime:
-        return Math.floor(this.cycle / FRAMES_PER_GAME_SECOND);
+        return Math.floor((this.shared ? this.world.frame : this.cycle) / FRAMES_PER_GAME_SECOND);
       default:
         return this.game.quantity(c2, this.world.current);
     }
@@ -3296,14 +3381,14 @@ var ProgramSimulation = class {
   /** What a program did to a unit, for the log: the game's nearest action, with the unit in words. */
   unitEvent(run, type, u, at, extra = {}) {
     const what = `unit ${u.slot} (type ${u.type}, P${u.owner + 1})`;
-    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...extra.location ? { location: extra.location } : {} }, text: extra.text ? `${extra.text}: ${what}` : what });
+    this.events.push({ cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...extra.location ? { location: extra.location } : {} }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
   partText(p) {
     return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
   }
   /** A printed text: an event like a Display Text action's, the text already filled in. */
   print(run, text, to, at) {
-    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
+    this.events.push({ cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
   }
   /** An action a program takes: the world's own kinds are applied, the rest logged. */
   act(run, a2, at, programText) {
@@ -3345,7 +3430,7 @@ var ProgramSimulation = class {
         return;
       default: {
         this.game.act(a2, run.player);
-        const ev = { cycle: this.cycle, program: run.index, player: run.player, at, action: a2 };
+        const ev = { cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: a2 };
         const text = programText ?? this.world.text(a2.text);
         if (text !== void 0) ev.text = text;
         this.events.push(ev);
@@ -4198,7 +4283,7 @@ ${kw}function program(body: () => void, options?: ProgramOptions): void;
  * Its body follows program()'s rules; arguments pass by value and it may return a value. Calling it when the script is built is an error.
  */
 ${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
-/** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
+/** Three preserved triggers of sixty-two Wait(0) each: the game goes through the trigger list every 2 frames instead of every 31. Owned by one player whose triggers never wait: a player has one wait slot. */
 ${kw}function hyperTriggers(owner?: Player): void;
 /** A coin toss, inside program() only: \`flag = random()\`, \`if (random() && \u2026)\`. */
 ${kw}function random(): boolean;
@@ -4215,7 +4300,7 @@ ${kw}function cycles(n: number): Duration;
 /**
  * Pause the program, inside program() only: the statements after it run that much later, and nothing
  * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); sleep(seconds(15)); }\`
- * is a wave every fifteen seconds. Unlike wait(), it stalls no other trigger.
+ * is a wave every fifteen seconds. Unlike wait(), it takes nothing from the triggers: a Wait uses the player's one wait slot.
  */
 ${kw}function sleep(duration: Duration): void;
 /** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(\u2026)))\`. */
@@ -5344,7 +5429,7 @@ function createScriptEditor(monaco, host, files, active, onChange, onMark) {
 }
 
 // version.ts
-var VERSION = "3.11.0";
+var VERSION = "3.12.0";
 
 // compile.ts
 var TS_URL = "https://cdn.jsdelivr.net/npm/typescript@6.0.3/lib/typescript.js";
@@ -9379,8 +9464,9 @@ var ScriptService = class {
         invincible: state(16)
       };
     });
+    const computers = scn.playerTypes.slice(0, 8).flatMap((type, slot) => type === OWNER_COMPUTER ? [slot] : []);
     const settings = this.settings();
-    return { units, locations, ...players.length ? { players, forces } : {}, unitStats, properties, heapCells: settings.heapCells, stackDepth: settings.stackDepth };
+    return { units, locations, ...players.length ? { players, forces, computers } : {}, unitStats, properties, heapCells: settings.heapCells, stackDepth: settings.stackDepth };
   }
   /** With the map's setting on, a failing test refuses the build: said as the first of them, and how many. */
   guardTests(compiled) {
@@ -9523,7 +9609,7 @@ var ScriptService = class {
     const names = this.names()?.names ?? scriptNames();
     return printScript(triggers, { names, string: (i) => this.api.names.string(i) }, options);
   }
-  /** The trigger-cycle interpreter over records: Deaths, Switch, Always and Never modelled, other conditions false, other actions logged. */
+  /** The trigger interpreter over records, for `cycles` passes on the game's schedule (the first on frame 2, then every 31 frames, sooner when a Wait runs out): Deaths, Switch, Always, Never, Elapsed Time and the wait slots modelled, other conditions false, other actions logged with their pass and frame. */
   simulate(triggers, cycles, options = {}) {
     const sim = simulate(triggers, cycles, { player: options.player, strings: (i) => this.api.names.string(i) });
     const switches = [];
@@ -10839,7 +10925,7 @@ function createWorkspace(svc, options, mode) {
         { onClick: () => {
           if (e.file && e.line) goTo(e.file, e.line);
         } },
-        el("span", { className: "frame" }, t("frame {n}", { n: e.frame + 1 })),
+        el("span", { className: "frame" }, t("frame {n}", { n: e.frame })),
         el("span", { className: "msg note" }, `${several ? `${playersLabel(e.players)} \xB7 ` : ""}${e.text}`),
         el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "")
       ));
@@ -10911,7 +10997,7 @@ function createWorkspace(svc, options, mode) {
       list.append(el(
         "li",
         { className: "tsd-fault", title: f.message, onClick: () => goTo(f.at.file, f.at.line, f.at.column) },
-        el("span", { className: "frame" }, t("frame {n}", { n: f.cycle + 1 })),
+        el("span", { className: "frame" }, t("frame {n}", { n: f.frame })),
         shell.icon("error"),
         el("span", { className: "msg" }, times > 1 ? t("{message} (and {n, plural, one {# more time} other {# more times}} at this line)", { message: f.message, n: times - 1 }) : f.message),
         el("span", { className: "where" }, where({ file: f.at.file, line: f.at.line }))
@@ -10924,7 +11010,7 @@ function createWorkspace(svc, options, mode) {
         const at = r.sources[e.trigger];
         return { frame: e.cycle, order: i, player: e.player, text: describeEvent(e), file: at?.file, line: at?.line, column: 1, title: t("Trigger #{n}", { n: e.trigger + 1 }) };
       }),
-      ...(ps?.events ?? []).map((e, i) => ({ frame: e.cycle, order: sim.events.length + i, player: e.player, text: describeEvent(e), file: e.at.file, line: e.at.line, column: e.at.column, title: t("Program {n}", { n: e.program + 1 }) }))
+      ...(ps?.events ?? []).map((e, i) => ({ frame: e.frame, order: sim.events.length + i, player: e.player, text: describeEvent(e), file: e.at.file, line: e.at.line, column: e.at.column, title: t("Program {n}", { n: e.program + 1 }) }))
     ].sort((x, y) => x.frame - y.frame || x.order - y.order);
     const rows = foldPlayers(flat).map((e) => ({
       line: () => el(
@@ -10932,7 +11018,7 @@ function createWorkspace(svc, options, mode) {
         { title: e.title, onClick: () => {
           if (e.file && e.line) goTo(e.file, e.line, e.column);
         } },
-        el("span", { className: "frame" }, t("frame {n}", { n: e.frame + 1 })),
+        el("span", { className: "frame" }, t("frame {n}", { n: e.frame })),
         el("span", { className: "msg" }, `${several ? `${playersLabel(e.players)} \xB7 ` : ""}${e.text}`),
         el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "?")
       )
@@ -11328,7 +11414,8 @@ function createWorkspace(svc, options, mode) {
         invincible: state(16)
       };
     };
-    return { units, locations, ...players.length ? { players, forces } : {}, unitStats: (id) => typeOf2(id), properties };
+    const computers = scn.playerTypes.slice(0, 8).flatMap((type, slot) => type === OWNER_COMPUTER2 ? [slot] : []);
+    return { units, locations, ...players.length ? { players, forces, computers } : {}, unitStats: (id) => typeOf2(id), properties };
   };
   const simulateNow = async () => {
     const r = (await compileNow())?.compiled;
@@ -11342,12 +11429,9 @@ function createWorkspace(svc, options, mode) {
       const { unitStats, ...map } = simulatedMap();
       const owner = r.programs[0]?.owner;
       const player = owner !== void 0 && owner < 12 && (!map.players || map.players.includes(owner)) ? owner : map.players?.[0] ?? owner;
-      const sim = new Simulation(r.triggers, { strings: r.strings, player, unitStats, ...map });
+      const sim = new Simulation(r.triggers, { strings: r.strings, player, unitStats, everyFrame: r.ir.length > 0, ...map });
       const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, stackDepth: svc.settings().stackDepth, unitStats }) : null;
-      for (let i = 0; i < SIMULATE_FRAMES; i++) {
-        sim.step();
-        programs?.step();
-      }
+      for (let i = 0; i < SIMULATE_FRAMES; i++) if (sim.tick()) programs?.step();
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
       const quiet = r.input ? ` ${t("Keys, clicks, the mouse and chat are not simulated: they read as nothing.")}` : "";

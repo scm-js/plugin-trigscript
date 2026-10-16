@@ -90,14 +90,14 @@ describe("what fails a test without being asked", () => {
   const FAULTY = `import { test, expect, program, sleep, frames } from "trigscript";
 program(() => { const xs = [1, 2, 3]; let i = 5; let got = xs[i]; sleep(frames(1)); });`;
   it("a fault of the simulator, at the program's line", () => {
-    const r = run(`${FAULTY}\ntest("reads past the end", (sim) => { sim.frames(1); });`);
+    const r = run(`${FAULTY}\ntest("reads past the end", (sim) => { sim.frames(2); });`);
     const [t] = r.tests!.results;
     expect(t.status).toBe("failed");
     expect(t.message).toMatch(/xs\[5\] is past the end/);
     expect(t.at).toMatchObject({ file: "main.ts", line: 2 });
   });
   it("unless the test asks for it", () => {
-    const r = run(`${FAULTY}\ntest("reads past the end", (sim) => { sim.frames(1); expect(sim).toHaveFaulted(/past the end/); });`);
+    const r = run(`${FAULTY}\ntest("reads past the end", (sim) => { sim.frames(2); expect(sim).toHaveFaulted(/past the end/); });`);
     expect(outcome(r)).toEqual({ "reads past the end": "passed" });
   });
   it("anything it throws, at the line that threw", () => {
@@ -113,24 +113,25 @@ program(() => { const xs = [1, 2, 3]; let i = 5; let got = xs[i]; sleep(frames(1
 describe("Vitest's names", () => {
   const SCRIPT = `import { test, it, describe, beforeEach, afterEach, expect, program, setDeaths, deaths, sleep, frames, units, P1 } from "trigscript";
 program(() => { while (true) { setDeaths(P1, units.TerranMarine, "add", 1); sleep(frames(1)); } });
+// The game's first pass is on frame 2, and a program runs in the passes: n frames from the start are n - 1 runs.
 const calls: string[] = [];
 describe("counting", () => {
   beforeEach((sim) => { sim.frames(3); calls.push("before"); });
   afterEach(() => { calls.push("after"); });
-  test("starts from the hook", (sim) => { expect(sim.deaths(P1, units.TerranMarine)).toBe(3); expect(calls).toEqual(["before"]); });
+  test("starts from the hook", (sim) => { expect(sim.deaths(P1, units.TerranMarine)).toBe(2); expect(calls).toEqual(["before"]); });
   describe("deeper", () => {
     beforeEach((sim) => { sim.frames(2); });
-    it("runs the outer hook first", (sim) => { expect(sim.deaths(P1, units.TerranMarine)).toBe(5); expect(calls).toEqual(["before", "after", "before"]); });
+    it("runs the outer hook first", (sim) => { expect(sim.deaths(P1, units.TerranMarine)).toBe(4); expect(calls).toEqual(["before", "after", "before"]); });
   });
   test.skip("not now", () => { throw new Error("never runs"); });
-  test.each([[1, 4], [10, 13]])("after %i more frames there are %i", (sim, more, total) => { sim.frames(more); expect(sim.deaths(P1, units.TerranMarine)).toBe(total); });
+  test.each([[1, 3], [10, 12]])("after %i more frames there are %i", (sim, more, total) => { sim.frames(more); expect(sim.deaths(P1, units.TerranMarine)).toBe(total); });
 });`;
   it("describe, the hooks, skip and each", () => {
     const r = run(SCRIPT);
     expect(r.diagnostics.map((d) => d.message)).toEqual([]);
     expect(outcome(r)).toEqual({
       "counting > starts from the hook": "passed", "counting > deeper > runs the outer hook first": "passed", "counting > not now": "skipped",
-      "counting > after 1 more frames there are 4": "passed", "counting > after 10 more frames there are 13": "passed",
+      "counting > after 1 more frames there are 3": "passed", "counting > after 10 more frames there are 12": "passed",
     });
     expect(r.tests!.list.filter((t) => t.kind === "suite").map((t) => [t.name, t.path])).toEqual([["counting", []], ["deeper", ["counting"]]]);
   });
@@ -157,7 +158,7 @@ describe("test files", () => {
   it("run after the entry, in any folder, and import the script's own functions", () => {
     const r = run({
       "main.ts": MAIN,
-      "tests/clock.test.ts": `import { test, expect } from "trigscript";\nimport { double } from "../main";\ntest("ticks", (sim) => { sim.frames(7); expect(sim.program("clock").ticks).toBe(7); });\ntest("plain TypeScript", () => { expect(double(21)).toBe(42); });`,
+      "tests/clock.test.ts": `import { test, expect } from "trigscript";\nimport { double } from "../main";\ntest("ticks", (sim) => { sim.frames(7); expect(sim.program("clock").ticks).toBe(6); });\ntest("plain TypeScript", () => { expect(double(21)).toBe(42); });`,
     });
     expect(r.diagnostics.map((d) => d.message)).toEqual([]);
     expect(r.tests!.results.map((t) => [t.id, t.status])).toEqual([["tests/clock.test.ts::ticks", "passed"], ["tests/clock.test.ts::plain TypeScript", "passed"]]);
@@ -185,7 +186,7 @@ program(() => {
   }
 }, { owner: [P1, P2], name: "input" });
 test("as the first player", (sim) => {
-  sim.press("F2").frames(1);
+  sim.press("F2").frames(2);
   expect(sim.program("input").pos).toEqual({ x: 11, y: 2 });
   expect(sim.program("input").seen).toEqual([0, 7, 0]);
   expect(sim.program("input").label).toBe("pressed 11");
@@ -209,7 +210,7 @@ test("no such program", (sim) => { sim.program("waves"); });`);
 program(() => { let mine = 0; let all = shared(0); while (true) { mine += 1; all += 1; if (mine === 2) createUnit(CurrentPlayer, units.TerranMarine, 1, 1 as Location); sleep(frames(1)); } }, { owner: AllPlayers, name: "each" });
 test("each player has a run of their own", (sim) => {
   sim.frames(3);
-  expect([sim.program("each", P1).mine, sim.program("each", P3).mine]).toEqual([3, 3]);
+  expect([sim.program("each", P1).mine, sim.program("each", P3).mine]).toEqual([2, 2]);
   expect(sim.count(AllPlayers, units.TerranMarine)).toBe(2);
   expect(() => sim.program("each", P2)).toThrow(/runs for P2/);
   const [marine] = sim.units({ owner: P3 });

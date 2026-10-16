@@ -269,8 +269,9 @@ export class ScriptService {
         cloaked: state(1), burrowed: state(2), hallucinated: state(8), invincible: state(16),
       };
     });
+    const computers = scn.playerTypes.slice(0, 8).flatMap((type, slot) => (type === OWNER_COMPUTER ? [slot] : []));
     const settings = this.settings();
-    return { units, locations, ...(players.length ? { players, forces } : {}), unitStats, properties, heapCells: settings.heapCells, stackDepth: settings.stackDepth };
+    return { units, locations, ...(players.length ? { players, forces, computers } : {}), unitStats, properties, heapCells: settings.heapCells, stackDepth: settings.stackDepth };
   }
 
   /** With the map's setting on, a failing test refuses the build: said as the first of them, and how many. */
@@ -422,7 +423,7 @@ export class ScriptService {
     return printScript(triggers, { names, string: (i) => this.api.names.string(i) }, options);
   }
 
-  /** The trigger-cycle interpreter over records: Deaths, Switch, Always and Never modelled, other conditions false, other actions logged. */
+  /** The trigger interpreter over records, for `cycles` passes on the game's schedule (the first on frame 2, then every 31 frames, sooner when a Wait runs out): Deaths, Switch, Always, Never, Elapsed Time and the wait slots modelled, other conditions false, other actions logged with their pass and frame. */
   simulate(triggers: TriggerRecord[], cycles: number, options: { player?: number } = {}): ScriptSimulation {
     const sim = simulate(triggers, cycles, { player: options.player, strings: (i) => this.api.names.string(i) });
     const switches: number[] = [];

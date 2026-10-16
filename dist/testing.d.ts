@@ -1436,8 +1436,10 @@ export declare class World {
 	act(a: ActionRecord, current: number, made?: SimUnit[]): boolean;
 }
 export interface SimulationEvent {
-	/** 0-based cycle. */
+	/** 0-based pass. */
 	cycle: number;
+	/** The game's frame it happened in: the first pass is on frame 2. */
+	frame: number;
 	/** Index of the trigger in the list. */
 	trigger: number;
 	/** The player it ran for. */
@@ -1457,6 +1459,12 @@ export interface SimulationOptions extends WorldOptions {
 	strings?: ScriptString[] | ((index: number) => string | null);
 	/** Stop a cycle after this many trigger runs (a runaway guard); default 100 000. */
 	maxRunsPerCycle?: number;
+	/** A pass every frame from the first, as in a map built with a program (eudplib's eudTurbo). Default: the game's own schedule, one every 31 frames. */
+	everyFrame?: boolean;
+	/** How many milliseconds a frame lasts at the game speed, which a Wait is counted down in: 42 at Fastest (the default), 67 at Normal, 167 at Slowest. */
+	msPerFrame?: number;
+	/** The computer players: a Transmission of theirs does nothing. */
+	computers?: readonly number[];
 }
 export declare class Simulation {
 	readonly triggers: TriggerRecord[];
@@ -1471,8 +1479,17 @@ export declare class Simulation {
 	private readonly deaths;
 	/** Trigger × player, for the triggers that ran without Preserve. */
 	private readonly done;
+	/** Trigger × player: the copies that have run, where they stand. */
+	private readonly copies;
+	/** Each player's wait slot while it is busy: the milliseconds left. */
+	readonly waiting: Map<number, number>;
 	private readonly options;
+	/** Passes run. */
 	cycle: number;
+	/** Frames run: the game's frame number. */
+	frame: number;
+	/** The game's pass countdown: a pass on the frame it is found at 0. */
+	private countdown;
 	constructor(triggers: TriggerRecord[], options?: SimulationOptions);
 	/** A player's deaths of a unit; a group's are its players' together. */
 	death(player: number, unit: number): number;
@@ -1481,13 +1498,20 @@ export declare class Simulation {
 	/** A Set Deaths action: set to, add or subtract, for each player the action names. */
 	changeDeath(player: number, unit: number, modifier: number, amount: number): void;
 	text(index: number): string | undefined;
-	/** Run one trigger cycle. */
-	step(): void;
+	/** One frame of the game: the wait slots counted down, then a pass if one is due. True when a pass ran. */
+	tick(): boolean;
+	/** Frames until the next pass, and that pass. */
+	step(): this;
+	/** `cycles` passes. */
 	run(cycles: number): this;
+	/** One pass of the list, as the game makes it. */
+	private pass;
 	private condition;
+	/** Runs an action of a copy; false when it holds the trigger there (a Wait or a Transmission with its time to run). */
 	private action;
+	private log;
 }
-/** Compile-result convenience: run a script's triggers for `cycles` cycles. */
+/** Compile-result convenience: run a script's triggers for `cycles` passes. */
 export declare function simulate(triggers: TriggerRecord[], cycles: number, options?: SimulationOptions): Simulation;
 /** How the text format names things it cannot know on its own. */
 export interface TriggerNames {
@@ -1574,6 +1598,8 @@ export interface TestWorld {
 	locations?: Record<number, SimBounds>;
 	players?: number[];
 	forces?: Record<number, number>;
+	/** The computer players among `players`: a Transmission of theirs does nothing. */
+	computers?: number[];
 	/** By unit type. */
 	unitStats?: Record<number, {
 		hp?: number;

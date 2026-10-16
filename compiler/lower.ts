@@ -59,9 +59,11 @@ export function negateCondition(c: ConditionRecord): ConditionRecord[] | null {
 
 /**
  * The community's hyper triggers: three preserved triggers of 62 `Wait(0)`s each make the
- * game run the whole trigger loop every frame instead of every two seconds. Owned by one
- * player; their waits stall that player's other `Wait` actions ("wait blocks"), so give
- * them a player whose triggers never wait.
+ * game go through the whole trigger list every 2 frames instead of every 31 (a Wait that
+ * runs out brings the next pass to the frame after, and the shortest runs out the frame
+ * after it starts). Owned by one player; their waits keep that player's one wait slot busy
+ * and stall the player's other `Wait` actions ("wait blocks"), so give them a player whose
+ * triggers never wait.
  */
 export function hyperTriggers(owner: number, comment?: (text: string) => number): TriggerRecord[] {
   return [0, 1, 2].map(() => {

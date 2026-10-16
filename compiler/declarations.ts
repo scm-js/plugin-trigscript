@@ -236,7 +236,7 @@ ${kw}function program(body: () => void, options?: ProgramOptions): void;
  * Its body follows program()'s rules; arguments pass by value and it may return a value. Calling it when the script is built is an error.
  */
 ${kw}function game<F extends (...args: any[]) => unknown>(body: F): GameFunction<F>;
-/** Three preserved triggers of sixty-two Wait(0) each: the trigger loop runs every frame. Owned by one player whose triggers never wait. */
+/** Three preserved triggers of sixty-two Wait(0) each: the game goes through the trigger list every 2 frames instead of every 31. Owned by one player whose triggers never wait: a player has one wait slot. */
 ${kw}function hyperTriggers(owner?: Player): void;
 /** A coin toss, inside program() only: \`flag = random()\`, \`if (random() && …)\`. */
 ${kw}function random(): boolean;
@@ -253,7 +253,7 @@ ${kw}function cycles(n: number): Duration;
 /**
  * Pause the program, inside program() only: the statements after it run that much later, and nothing
  * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); sleep(seconds(15)); }\`
- * is a wave every fifteen seconds. Unlike wait(), it stalls no other trigger.
+ * is a wave every fifteen seconds. Unlike wait(), it takes nothing from the triggers: a Wait uses the player's one wait slot.
  */
 ${kw}function sleep(duration: Duration): void;
 /** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(…)))\`. */
