@@ -206,9 +206,13 @@ export class Debugger {
     const b = box.isConnected ? box.getBoundingClientRect() : null;
     let key = "none";
     if (b) {
-      // (Only what of it the column shows.)
-      const c = this.gameCol.getBoundingClientRect();
-      const left = Math.max(b.left, c.left), top = Math.max(b.top, c.top), right = Math.min(b.right, c.right), bottom = Math.min(b.bottom, c.bottom);
+      // (Only what of it shows: every box around it that clips, up to the workspace, cuts it.)
+      let left = b.left, top = b.top, right = b.right, bottom = b.bottom;
+      for (let e = box.parentElement; e && e !== root; e = e.parentElement) {
+        if (getComputedStyle(e).overflow === "visible") continue;
+        const c = e.getBoundingClientRect();
+        left = Math.max(left, c.left); top = Math.max(top, c.top); right = Math.min(right, c.right); bottom = Math.min(bottom, c.bottom);
+      }
       const o = root.getBoundingClientRect();
       if (right - left > 0 && bottom - top > 0) key = `${Math.round(left - o.left)},${Math.round(top - o.top)},${Math.round(right - left)},${Math.round(bottom - top)}`;
     }
