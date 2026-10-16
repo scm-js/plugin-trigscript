@@ -32,6 +32,75 @@ export interface GameHandle {
   chat(text: string): void;
   call(address: number, registers: Record<string, number>, args?: number[]): number;
   reset(): void;
+  /** When the game is one of several copies kept in step, a copy for each of a test's players (scm-sim's `CopyHandle`). */
+  readonly copy?: GameCopy;
+}
+
+/** One copy of several (TrigScript 4, A3): which, the slot each copy plays, and where they stopped agreeing. */
+export interface GameCopy {
+  readonly index: number;
+  readonly copies: number;
+  readonly players: readonly number[];
+  readonly desync: Desync | null;
+  label: string | null;
+  linesOf(slot: number): { frame: number; text: string }[] | null;
+}
+export interface Desync {
+  frame: number;
+  /** Each copy's frame, when they were not even at the same one. */
+  apart: number[] | null;
+  differences: { what: string; values: (number | null)[] }[];
+  /** By copy: the lines that wrote what differs in the turn before, and those that read the local machine's own memory. */
+  wrote: string[][];
+  readLocal: string[][];
+  players: number[];
+  /** eudplib's payload, watched: dwords that had come to differ before the split, from which frame, by copy. */
+  watched?: { address: number; since: number; values: (number | null)[] }[];
+}
+
+/** The script's variables by the address of their cells (`program.name` or `program #k.name`), from the build's map. */
+export function variableNames(map: VariableMap | null): Map<number, string> {
+  const out = new Map<number, string>();
+  for (const p of map?.programs ?? []) {
+    const program = p.name ? p.name : `program #${p.index}`;
+    for (const v of p.vars) for (const [cell, at] of Object.entries(v.cells)) if (at !== null && at !== undefined) {
+      const name = `${v.id.replace(/#\d+$/, "")}${cell === "value" ? "" : ` (${cell})`}`;
+      if (v.rowed) for (let k = 0; k < 12; k++) out.set(at + 4 * k, `${name} of P${k + 1}, in ${program}`);
+      else out.set(at, `${name}, in ${program}`);
+    }
+    for (const a of p.arrays) if (a.at !== null && a.at !== undefined && !a.dynamic) {
+      const cells = a.length * (a.rowed ? 12 : 1);
+      const id = a.id.replace(/#\d+$/, "");
+      for (let i = 0; i < cells && i < 4096; i++) out.set(a.at + 4 * i, `${id}[${a.rowed ? `${Math.floor(i / 12)}] of P${(i % 12) + 1}` : `${i}]`}, in ${program}`);
+    }
+  }
+  return out;
+}
+
+/** "12:5" → "line 12"; "lib.ts:3:1" → "lib.ts line 3"; anything else as it is. */
+const lineWords = (origin: string) => origin.replace(/(?:^|(?<= ))(?:([^\s:]+):)?(\d+):\d+(?= |$)/g, (_m, file: string | undefined, line: string) => `${file ? `${file} ` : ""}line ${line}`);
+
+/**
+ * A desync in words: what differs, where, what each computer's triggers did in the turn before, and which of the
+ * script's variables had already come apart (`names`: by the address of their cells).
+ */
+export function desyncMessage(d: Desync, names: Map<number, string> = new Map()): string {
+  const who = (c: number) => `P${d.players[c] + 1}'s computer`;
+  if (d.apart) return `the players' games stopped agreeing: they were at different frames (${d.apart.map((f, c) => `${f} at ${who(c)}`).join(", ")})`;
+  const first = d.differences[0];
+  const what = first ? `${first.what} is ${first.values.map((v, c) => `${v ?? "?"} at ${who(c)}`).join(", ")}` : "their state differs";
+  const more = d.differences.length > 1 ? ` (and ${d.differences.length - 1} more)` : "";
+  const notes = d.players.map((_, c) => {
+    const said = [...d.wrote[c] ?? [], ...d.readLocal[c] ?? []].map(lineWords);
+    return said.length ? ` At ${who(c)}: ${said.slice(0, 4).join("; ")}.` : "";
+  }).join("");
+  const known = (d.watched ?? []).filter((w) => names.has(w.address));
+  const theirs = (d.watched ?? []).length - known.length;
+  const before = known.length
+    ? ` Before that, the script's ${known.slice(0, 3).map((w) => `${names.get(w.address)} from frame ${w.since} (${w.values.map((v, c) => `${v ?? "?"} at ${who(c)}`).join(", ")})`).join("; ")}${known.length > 3 ? ` and ${known.length - 3} more` : ""} had come apart.`
+    : "";
+  const own = theirs ? ` (${theirs} of eudplib's own cells differed too; some are each computer's own on purpose.)` : "";
+  return `the players' games stopped agreeing at frame ${d.frame}: ${what}${more}.${notes}${before}${own}`;
 }
 
 // 1.16.1's addresses, which Remastered's emulation keeps.
@@ -147,15 +216,30 @@ export class GameSim implements TestWorldLike {
    * (`readLocations`); from then on the game's own are read. `variables`: where the build put each program's
    * variables, for `program()`.
    */
-  constructor(game: GameHandle, options: { locations?: Record<number, SimBounds>; variables?: VariableMap | null } = {}) {
+  constructor(game: GameHandle, options: { locations?: Record<number, SimBounds>; variables?: VariableMap | null; test?: { id: string; players?: number[] } } = {}) {
     this.game = game;
     this.known = options.locations ?? {};
     this.variables = options.variables ?? null;
+    if (game.copy) {
+      game.copy.label = options.test?.id ?? null;
+      for (const p of game.copy.players) if (p !== game.localPlayer) this.shownBy.set(p, []);
+    }
     game.reset();
     this.take();
   }
 
-  private take(): void { for (const l of this.game.lines()) this.shown.push(l); }
+  /** In a test of several players: what each other player's computer showed, by slot. */
+  private readonly shownBy = new Map<number, { frame: number; text: string }[]>();
+  private take(): void {
+    for (const l of this.game.lines()) this.shown.push(l);
+    for (const [p, list] of this.shownBy) for (const l of this.game.copy!.linesOf(p) ?? []) list.push(l);
+  }
+  /** The copies stopped agreeing: the test fails here, at every computer alike. */
+  private checkStep(): void {
+    const d = this.game.copy?.desync;
+    if (d) throw new ExpectError(desyncMessage(d, this.names ??= variableNames(this.variables)));
+  }
+  private names: Map<number, string> | null = null;
   private record(type: number, fields: { location?: number; player?: number; number?: number; unit?: number; count?: number }): Uint8Array {
     const r = new Uint8Array(32), v = new DataView(r.buffer);
     v.setUint32(0x00, fields.location ?? 0, true);
@@ -175,7 +259,7 @@ export class GameSim implements TestWorldLike {
   /* ── time ── */
 
   frames(n = 1): this {
-    for (let i = 0; i < n && !this.game.over; i++) { this.game.step(); this.take(); this.releaseKeys(); }
+    for (let i = 0; i < n && !this.game.over; i++) { this.game.step(); this.take(); this.releaseKeys(); this.checkStep(); }
     return this;
   }
   seconds(n: number): this { return this.frames(Math.round(n * FRAMES_PER_SECOND)); }
@@ -250,16 +334,27 @@ export class GameSim implements TestWorldLike {
     return this.scratch(SCRATCH_TO, b, (dest) => this.onOne(unit, (loc) => this.act(this.record(ActionType.MoveUnit, { location: loc, player: unit.owner, number: dest, unit: unit.type, count: 1 }), unit.owner)));
   }
 
-  /* ── what the players do: the local player only ── */
+  /* ── what the players do: at their own computer ── */
 
   private held: number[] = [];
-  private local(player: number | undefined, what: string): void {
-    if (player !== undefined && player !== this.game.localPlayer) throw new ExpectError(`${what}: in the game only the player at this computer (P${this.game.localPlayer + 1}) can do it`);
+  /**
+   * Whether what `player` does is done here. One game: only the player at this computer can act. Copies of a game
+   * (a test's `players`): each player acts at their own copy, and no player named is the first of them.
+   */
+  private local(player: number | undefined, what: string): boolean {
+    const copy = this.game.copy;
+    if (!copy) {
+      if (player !== undefined && player !== this.game.localPlayer) throw new ExpectError(`${what}: in the game only the player at this computer (P${this.game.localPlayer + 1}) can do it; a test of several players says so: test(…, { players: [P1, P${player + 1}] }, …)`);
+      return true;
+    }
+    const who = player ?? copy.players[0];
+    if (!copy.players.includes(who)) throw new ExpectError(`${what}: P${who + 1} is not one of this test's players (${copy.players.map((p) => `P${p + 1}`).join(", ")})`);
+    return who === this.game.localPlayer;
   }
   /** A key down for one frame, as a press is (MSQC sees it down, then up). */
-  press(key: string, player?: number): this { this.local(player, "press"); const k = virtualKey(key); this.game.u8[KEYS + k] = 1; this.held.push(k); return this; }
+  press(key: string, player?: number): this { const k = virtualKey(key); if (!this.local(player, "press")) return this; this.game.u8[KEYS + k] = 1; this.held.push(k); return this; }
   click(button: "left" | "right" | "middle" = "left", player?: number): this {
-    this.local(player, "click");
+    if (!this.local(player, "click")) return this;
     const m = this.game.m;
     m.setUint32(BUTTONS, m.getUint32(BUTTONS, true) | BUTTON_BITS[button], true);
     this.held.push(-BUTTON_BITS[button]);
@@ -270,9 +365,9 @@ export class GameSim implements TestWorldLike {
     const m = this.game.m;
     for (const k of this.held.splice(0)) { if (k >= 0) this.game.u8[KEYS + k] = 0; else m.setUint32(BUTTONS, m.getUint32(BUTTONS, true) & ~-k, true); }
   }
-  type(line: string, player?: number): this { this.local(player, "type"); this.game.chat(line); return this; }
+  type(line: string, player?: number): this { if (this.local(player, "type")) this.game.chat(line); return this; }
   moveMouse(x: number, y: number, player?: number): this {
-    this.local(player, "moveMouse");
+    if (!this.local(player, "moveMouse")) return this;
     this.game.m.setUint16(MOUSE, x, true);
     this.game.m.setUint16(MOUSE + 2, y, true);
     return this;
@@ -322,10 +417,24 @@ export class GameSim implements TestWorldLike {
 
   /** What was shown, in order, with the game's colour codes taken out. `player`: only the player at this computer is seen. */
   printed(player?: number): string[] {
-    if (player !== undefined && player !== this.game.localPlayer) throw new ExpectError(`printed(P${player + 1}): in the game only what the player at this computer (P${this.game.localPlayer + 1}) was shown is seen`);
-    return this.shown.map((l) => clean(l.text));
+    if (player === undefined) {
+      // (A line every computer showed at once is one line, as the simulator has it.)
+      const seen = new Set<string>();
+      return this.everyone().filter((l) => { const k = `${l.frame}\u0000${l.text}`; if (seen.has(k)) return false; seen.add(k); return true; }).map((l) => clean(l.text));
+    }
+    if (player === this.game.localPlayer) return this.shown.map((l) => clean(l.text));
+    const theirs = this.shownBy.get(player);
+    if (theirs) return theirs.map((l) => clean(l.text));
+    throw new ExpectError(this.game.copy
+      ? `printed(P${player + 1}): P${player + 1} is not one of this test's players (${this.game.copy.players.map((p) => `P${p + 1}`).join(", ")})`
+      : `printed(P${player + 1}): in the game only what the player at this computer (P${this.game.localPlayer + 1}) was shown is seen; a test of several players sees each one's: test(…, { players: [P1, P${player + 1}] }, …)`);
   }
-  log(): TestEvent[] { return this.shown.map((l) => ({ frame: l.frame, text: `Display Text Message — ${clean(l.text)}`, player: this.game.localPlayer })); }
+  /** Every player's lines, by frame (one game: the local player's). */
+  private everyone(): { frame: number; text: string; player?: number }[] {
+    const all = [...this.shown.map((l) => ({ ...l, player: this.game.localPlayer })), ...[...this.shownBy].flatMap(([player, list]) => list.map((l) => ({ ...l, player })))];
+    return all.sort((a, b) => a.frame - b.frame || a.player - b.player);
+  }
+  log(): TestEvent[] { return this.everyone().map((l) => ({ frame: l.frame, text: `Display Text Message — ${clean(l.text)}`, player: l.player ?? this.game.localPlayer })); }
   get events(): TestEvent[] { return this.log(); }
   /** A program's faults, as it says them in the game: a red line that begins "TrigScript:". */
   get faults(): { at: At; message: string; cycle: number; frame: number; program: number }[] {

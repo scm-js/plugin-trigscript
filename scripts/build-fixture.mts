@@ -4,7 +4,7 @@
  * plugin-eudplib checkout's `scripts/build-map.mts`, write the built map. For probe maps
  * that get played.
  *
- *   [TRIGGER_MAP=1] npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike-eud.scx [map.scx] [../plugin-eudplib]
+ *   [TRIGGER_MAP=1] [PEOPLE=0,1] npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike-eud.scx [map.scx] [../plugin-eudplib]
  *
  * The output lands in the ignored fixtures/ folder: it is built on a Blizzard map, which is never committed.
  *
@@ -46,6 +46,8 @@ const scn = parseScenario(loaded.chk);
 // with User Selectable the game hands out melee units and drops the placed ones.
 patchPlayer(scn, 0, { type: 6, race: 1, force: 0 });
 patchPlayer(scn, 1, { type: 5, race: 0, force: 1 });
+// PEOPLE=0,1: those slots open to a person each (Terran), for a test of several players (scripts/test-game.mts).
+for (const slot of (process.env.PEOPLE ?? "").split(",").filter(Boolean).map(Number)) patchPlayer(scn, slot, { type: 6, race: 1, force: slot === 0 ? 0 : 1 });
 // The base map is a melee map: its stock triggers defeat whoever commands no buildings, and in
 // Use Map Settings nobody is handed melee units — both players lose at once and the game
 // ends in a draw a second in. The probe's own script is the only source of triggers it should have,

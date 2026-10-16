@@ -14,7 +14,7 @@ import type { VariableMap } from "./gameVariables";
 import { locate, runModules, type LinkedFile } from "./link";
 import type { ScriptNames } from "./names";
 import { Collector, createRuntime } from "./runtime";
-import { isTestFile, runTests, TestRegistry, TESTING_NAMES, type TestReport } from "./testing";
+import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type TestReport, type TestResult } from "./testing";
 import type { SimBounds } from "./world";
 
 export interface GameTestPayload {
@@ -41,5 +41,18 @@ export function runGameTests(game: GameHandle, payload: GameTestPayload): TestRe
   collector.running = false;
   if (failure) return { list: [], results: [], only: [], ms: 0, error: `${failure.file ?? ENTRY_FILE}:${failure.line ?? 1}: ${failure.message}` };
   const locations = payload.locations ?? readLocations(game);
-  return runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { files: payload.files, ids: payload.ids, makeWorld: () => new GameSim(game, { locations, variables: payload.variables }) });
+  // A test of several players runs only where the game is one of several copies, one a player (A3); one game says so.
+  const several = listTests(registry).list.filter((t) => t.kind === "test" && t.players);
+  const ids = game.copy ? payload.ids : payload.ids ?? listTests(registry).list.filter((t) => t.kind === "test" && !t.players).map((t) => t.id);
+  const report = runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { files: payload.files, ids, makeWorld: (_as, test) => new GameSim(game, { locations, variables: payload.variables, test }) });
+  if (!game.copy && !payload.ids) {
+    const held: TestResult[] = several.filter((t) => !payload.files || payload.files.includes(t.file)).map((t) => ({ id: t.id, status: "skipped", message: `a test of ${t.players!.length} players runs as a copy of the game for each`, printed: [], events: [], frames: 0, ms: 0 }));
+    report.results.push(...held);
+  }
+  return report;
+}
+
+/** What a copy of the game runs (scm-sim's `runCopies` driver): the same tests, at this copy's computer. */
+export function drive(game: GameHandle, payload: GameTestPayload): TestReport & { error?: string } {
+  return runGameTests(game, payload);
 }
