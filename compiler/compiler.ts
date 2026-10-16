@@ -150,6 +150,11 @@ export interface CompileResult {
   input: InputPlan | null;
   /** The script's `test()`s, and what running them found; null when it has none, or did not compile that far. */
   tests: TestReport | null;
+  /**
+   * The script as JavaScript, file by file, when it has tests and compiled: what runs them somewhere else — in the
+   * lifted game, beside the engine (`gameTests.ts`) — without TypeScript there.
+   */
+  modules?: [string, LinkedFile][];
   /** No errors: `triggers` and `ir` are the complete output. */
   ok: boolean;
 }
@@ -401,7 +406,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests)
       : { list: listTests(registry).list, results: [], only: [], ms: 0 };
   }
-  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints, tests });
+  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }) });
 }
 
 /**

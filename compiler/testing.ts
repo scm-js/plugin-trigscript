@@ -25,8 +25,8 @@ import type { SimBounds, SimUnit, SimUnitInit, SimUnitProperties } from "./world
 /* ── What is registered ── */
 
 type Mode = "run" | "skip" | "only";
-type TestFn = (sim: TestSim, ...args: unknown[]) => unknown;
-type Hook = (sim: TestSim) => unknown;
+type TestFn = (sim: TestWorldLike, ...args: unknown[]) => unknown;
+type Hook = (sim: TestWorldLike) => unknown;
 interface Where { file: string; line: number; column?: number }
 
 interface Suite {
@@ -112,6 +112,11 @@ export interface TestWorld {
 
 export interface TestRunOptions {
   world?: TestWorld;
+  /**
+   * A world other than the simulator's for each test (the lifted game's, `GameSim`): made fresh for every test,
+   * given the player the test asked to be (`{ as: P2 }`). Absent: the simulator.
+   */
+  makeWorld?: (as?: number) => TestWorldLike;
   /** Run only these: tests of these files, or with these ids (a suite's id runs what is under it). Absent: all. */
   files?: string[];
   ids?: string[];
@@ -212,13 +217,51 @@ export class TestRegistry {
 /** The names `library()` gives: a script imports them, they are not globals (a script may well have a `test` of its own). */
 export const TESTING_NAMES = ["test", "it", "describe", "beforeEach", "afterEach", "expect"] as const;
 
+/* ── The world a test is handed ── */
+
+/** What every world a test may be handed carries: the simulator's (`TestSim`) and the lifted game's (`GameSim`). */
+export const WORLD = Symbol.for("trigscript.world");
+export const isWorld = (v: unknown): v is TestWorldLike => typeof v === "object" && v !== null && (v as { [WORLD]?: unknown })[WORLD] === true;
+
+/** What a test can ask of its world, whichever it was handed. */
+export interface TestWorldLike {
+  readonly [WORLD]: true;
+  faultsExpected: boolean;
+  readonly frame: number;
+  seed(n: number): this;
+  frames(n?: number): this;
+  seconds(n: number): this;
+  until(done: () => unknown, most?: number): this;
+  place(player: number, type: number, at: number, n?: number): SimUnit[];
+  kill(unit: SimUnit, by?: number): this;
+  remove(unit: SimUnit): this;
+  give(unit: SimUnit, to: number): this;
+  move(unit: SimUnit, to: number | { x: number; y: number }): this;
+  press(key: string, player?: number): this;
+  click(button?: "left" | "right" | "middle", player?: number): this;
+  type(line: string, player?: number): this;
+  moveMouse(x: number, y: number, player?: number): this;
+  count(player: number, type: number, at?: number): number;
+  units(filter?: { owner?: number; type?: number; at?: number }): SimUnit[];
+  resources(player: number): { ore: number; gas: number };
+  deaths(player: number, type: number): number;
+  kills(player: number, type: number): number;
+  switch(n: number): boolean;
+  location(n: number): SimBounds | undefined;
+  program(name?: string | number, player?: number): Record<string, unknown>;
+  printed(player?: number): string[];
+  log(sourceOf?: (trigger: number) => Where | null): TestEvent[];
+  readonly events: TestEvent[];
+  readonly faults: { at: At; message: string; cycle: number; frame: number; program: number }[];
+}
+
 /* ── expect ── */
 
 const show = (v: unknown): string => {
   if (typeof v === "string") return JSON.stringify(v);
   if (typeof v === "function") return "a function";
   if (v instanceof RegExp) return String(v);
-  if (v instanceof TestSim) return "sim";
+  if (isWorld(v)) return "sim";
   try { return JSON.stringify(v, (_, x) => (typeof x === "bigint" ? String(x) : x === undefined ? "undefined" : x)) ?? String(v); } catch { return String(v); }
 };
 const brief = (v: unknown): string => { const s = show(v); return s.length > 60 ? `${s.slice(0, 57)}…` : s; };
@@ -237,11 +280,11 @@ function expect(actual: unknown) {
     /** `holds` is the matcher's answer; `what` finishes "expected …". */
     const check = (holds: boolean, what: string, expected?: unknown) => {
       if (holds !== not) return;
-      const got = actual instanceof TestSim ? "" : `, got ${brief(actual)}`;
-      throw new ExpectError(`expected ${not ? "not " : ""}${what}${got}`, expected === undefined ? undefined : show(expected), actual instanceof TestSim ? undefined : show(actual));
+      const got = isWorld(actual) ? "" : `, got ${brief(actual)}`;
+      throw new ExpectError(`expected ${not ? "not " : ""}${what}${got}`, expected === undefined ? undefined : show(expected), isWorld(actual) ? undefined : show(actual));
     };
     const number = (name: string): number => { if (typeof actual !== "number") throw new ExpectError(`${name}: ${brief(actual)} is not a number`); return actual; };
-    const sim = (name: string): TestSim => { if (!(actual instanceof TestSim)) throw new ExpectError(`${name} is asked of the world: expect(sim).${name}(…)`); return actual; };
+    const sim = (name: string): TestWorldLike => { if (!isWorld(actual)) throw new ExpectError(`${name} is asked of the world: expect(sim).${name}(…)`); return actual; };
     return {
       toBe: (e: unknown) => check(Object.is(actual, e), brief(e), e),
       toEqual: (e: unknown) => check(same(actual, e), brief(e), e),
@@ -293,8 +336,9 @@ const mulberry = (seed: number) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 };
 
-/** The world a test is handed. */
-export class TestSim {
+/** The world a test is handed: the simulator's. */
+export class TestSim implements TestWorldLike {
+  readonly [WORLD] = true as const;
   /** Set by `expect(sim).toHaveFaulted`: the faults are the test's business, and do not fail it by themselves. */
   faultsExpected = false;
   private rng = mulberry(DEFAULT_SEED);
@@ -476,7 +520,7 @@ export function runTests(registry: TestRegistry, ctx: TestContext, options: Test
       for (let s: Suite | null = test.parent; s; s = s.parent) chain.unshift(s);
       const skipped = test.mode === "skip" || chain.some((s) => s.mode === "skip") || (narrowed.has(info.file) && test.mode !== "only" && !chain.some((s) => s.mode === "only"));
       if (skipped) { results.push({ id: info.id, status: "skipped", printed: [], events: [], frames: 0, ms: 0 }); continue; }
-      results.push(runOne(info.id, test, chain, ctx, options.world ?? {}));
+      results.push(runOne(info.id, test, chain, ctx, options.world ?? {}, options.makeWorld));
     }
   } finally {
     registry.running = false;
@@ -484,14 +528,14 @@ export function runTests(registry: TestRegistry, ctx: TestContext, options: Test
   return { list, results, only, ms: Date.now() - started };
 }
 
-function runOne(id: string, test: Case, chain: Suite[], ctx: TestContext, world: TestWorld): TestResult {
+function runOne(id: string, test: Case, chain: Suite[], ctx: TestContext, world: TestWorld, makeWorld?: (as?: number) => TestWorldLike): TestResult {
   const began = Date.now();
-  let sim: TestSim | null = null;
+  let sim: TestWorldLike | null = null;
   const done = (extra: Partial<TestResult>): TestResult => ({
     id, status: "passed", printed: sim?.printed() ?? [], events: (sim?.log((t) => ctx.sources[t] ?? null) ?? []).slice(0, 500), frames: sim?.frame ?? 0, ms: Date.now() - began, ...extra,
   });
   try {
-    sim = new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);
+    sim = makeWorld ? makeWorld(test.as) : new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);
     for (const s of chain) for (const h of s.before) h(sim);
     const returned = test.fn(sim, ...test.args);
     if (returned && typeof (returned as { then?: unknown }).then === "function") throw new Error("A test is not async: what it returned is a promise. Nothing in sim waits.");
