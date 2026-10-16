@@ -54,6 +54,19 @@ const ICONS = {
   "circle-outline": "eabc",
   "circle-slash": "eabd",
   "pass-filled": "ebb3",
+  // The debugger's (TrigScript 4, A5).
+  "debug-alt": "eb91",
+  "debug-continue": "eacf",
+  "debug-reverse-continue": "eb8e",
+  "debug-step-over": "ead6",
+  "debug-step-back": "eb8f",
+  "debug-stop": "ead7",
+  "debug-restart": "ead2",
+  "debug-line-by-line": "ebd0",
+  "arrow-left": "ea9b",
+  "arrow-right": "ea9c",
+  eye: "ea70",
+  game: "ec17",
 } as const;
 
 export type IconName = keyof typeof ICONS;

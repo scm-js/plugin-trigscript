@@ -390,6 +390,11 @@ export interface ScriptEditor {
   insert(text: string): void;
   /** The file and line the cursor is on. */
   cursor(): { file: string; line: number };
+  /**
+   * The debugger's marks (TrigScript 4, A5): breakpoints in the margin, the line about to run and the test's line
+   * lit; `onBreakpoint` (of `createScriptEditor`) hears a click in the margin where no test's mark is.
+   */
+  setDebug(marks: { breakpoints: { file: string; line: number }[]; at: { file: string; line: number } | null; test: { file: string; line: number } | null }): void;
   dispose(): void;
 }
 
@@ -411,7 +416,7 @@ export function releaseScriptEditor(monaco: MonacoApi): void {
   defaults.setCompilerOptions(defaults.getCompilerOptions());
 }
 
-export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: ScriptFiles, active: string, onChange: (path: string, text: string) => void, onMark?: (id: string) => void): ScriptEditor {
+export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: ScriptFiles, active: string, onChange: (path: string, text: string) => void, onMark?: (id: string) => void, onBreakpoint?: (file: string, line: number) => void): ScriptEditor {
   disposeModels(monaco);
   const models = new Map<string, Monaco.editor.ITextModel>();
   const subs = new Map<string, Monaco.IDisposable>();
@@ -419,6 +424,8 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
   const decorations = new Map<string, string[]>();
   /** Per file, the ids of the tests' decorations. */
   const testDecorations = new Map<string, string[]>();
+  /** Per file, the ids of the debugger's. */
+  const debugDecorations = new Map<string, string[]>();
   /** The marks as last set, to find the one a click in the margin is on. */
   let testMarks: TestMark[] = [];
   /** Per file, the view state (cursor, scroll) to restore when it is shown again. */
@@ -442,6 +449,8 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     minimap: { enabled: false },
     // Where a test's mark goes; it stays narrow for a script without any.
     glyphMargin: true,
+    // (Room for the debugger's arrow beside the line numbers.)
+    lineDecorationsWidth: 16,
     scrollBeyondLastLine: false,
     renderLineHighlight: "line",
     tabSize: 2,
@@ -458,6 +467,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     const line = e.target.position?.lineNumber;
     const mark = testMarks.find((m) => normalizePath(m.file) === current && m.line === line);
     if (mark) onMark?.(mark.id);
+    else if (line) onBreakpoint?.(current, line);
   });
   const show = (path: string) => {
     const p = normalizePath(path);
@@ -492,6 +502,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
       views.delete(p);
       decorations.delete(p);
       testDecorations.delete(p);
+      debugDecorations.delete(p);
       model.dispose();
     },
     rename(from, to) {
@@ -508,6 +519,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
       views.delete(a);
       decorations.delete(a);
       testDecorations.delete(a);
+      debugDecorations.delete(a);
       if (wasCurrent) editor.setModel(null);
       model.dispose();
       const next = make(b, text);
@@ -551,6 +563,19 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
           options: { inlineClassName: BUILD_TIME_CLASS, hoverMessage: { value: tr("Computed when the script is built, not in the game.") }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
         }));
         decorations.set(p, model.deltaDecorations(decorations.get(p) ?? [], next));
+      }
+    },
+    setDebug(d) {
+      const here = (p: { file: string; line: number } | null, path: string, lines: number) => p && normalizePath(p.file) === path && p.line >= 1 && p.line <= lines;
+      for (const [p, model] of models) {
+        const lines = model.getLineCount();
+        const next: Monaco.editor.IModelDeltaDecoration[] = d.breakpoints.filter((b) => here(b, p, lines)).map((b) => ({
+          range: new monaco.Range(b.line, 1, b.line, 1),
+          options: { glyphMarginClassName: "trigscript-bp", glyphMarginHoverMessage: { value: tr("Breakpoint: the debugger's Continue stops before this line runs (a test's line: at the end of the frame it asks for). Click to take it away.") }, stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
+        }));
+        if (d.test && here(d.test, p, d.test.line) && d.test.line <= lines && !(d.at && normalizePath(d.at.file) === p && d.at.line === d.test.line)) next.push({ range: new monaco.Range(d.test.line, 1, d.test.line, 1), options: { isWholeLine: true, className: "trigscript-debug-test", linesDecorationsClassName: "trigscript-debug-test-arrow" } });
+        if (d.at && here(d.at, p, lines)) next.push({ range: new monaco.Range(d.at.line, 1, d.at.line, 1), options: { isWholeLine: true, className: "trigscript-debug-line", linesDecorationsClassName: "trigscript-debug-arrow" } });
+        debugDecorations.set(p, model.deltaDecorations(debugDecorations.get(p) ?? [], next));
       }
     },
     dispose() {

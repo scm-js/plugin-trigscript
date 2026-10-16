@@ -52,6 +52,9 @@ import { applyMoves, buildTree, filesUnder, folderOf, movesOf, refuseMoves, tabL
 import { ProgramSimulation, type ProgramEvent, type ProgramSimulationOptions, type SimBounds, type SimUnitInit } from "./compiler/simulateIr";
 import { positionIn, type BuildRefusal, type MapNames, type ScriptArtifact, type ScriptService } from "./service";
 import { COMPACT_LAYOUT, DEFAULT_LAYOUT, SHELL_STYLE, createShell, type IconName, type ShellLayout } from "./shell";
+import { DEBUG_STYLE, Debugger, type DebugGameView } from "./debugger";
+import type { DebugRecording } from "./compiler/gameDebug";
+import type { ScmSimDebugView } from "./vendor/scmSim";
 import type { EudplibBuildEvent, EudplibService } from "./vendor/eudplib";
 import type { Translate } from "./i18n";
 
@@ -179,7 +182,7 @@ const STYLE = `${SHELL_STYLE}
 .tsd .tsd-cost-graph { flex: 1 1 auto; min-width: 0; max-width: 480px; height: 36px; }
 .tsd .tsd-cost-graph path { fill: var(--teal); fill-opacity: 0.35; stroke: var(--teal); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
-`;
+${DEBUG_STYLE}`;
 
 /** "P1", "all players", "Force 2", "P1, P2" — who a program runs for. */
 function ownerLabel(p: { owners: number[] }, t: Translate): string {
@@ -377,6 +380,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     { icon: "filter", title: t("Show only the tests that fail"), run: () => { onlyFailing = !onlyFailing; renderTesting(); } },
   ] });
   testingView.body.append(testingList);
+  /** The debugger in the game (TrigScript 4, A5): the Debug view, its marks in the editor, its values beside the lines. */
+  const debug = new Debugger({
+    t, el, shell,
+    reveal: (file, line) => { if (!editor) return; openFile(file); editor.editor.revealLineInCenterIfOutsideViewport(line); },
+    changed: () => { editor?.setDebug(debug.marks()); refreshLineHints(); },
+    setStatus: (kind, text, timeout) => setStatus(kind, text, timeout),
+  });
 
   /**
    * The map's script settings (`script.ts#ScriptSettings`): kept in the map beside the script, because the built map
@@ -729,6 +739,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
           result && result.status !== "skipped" ? el("span", { className: "tsd-about" }, t("{ms} ms", { ms: result.ms })) : undefined,
           el("span", { className: "tsd-row-actions" },
             shell.iconButton({ icon: "play", title: node.kind === "test" ? t("Run this test") : t("Run these tests"), run: () => { void runTests(node.kind === "file" ? { files: [node.path] } : { ids }); } }).element,
+            node.kind === "test" ? shell.iconButton({ icon: "debug-alt", title: t("Debug this test in the game: run it once with everything it did written down, then walk it forwards and back"), run: () => { void debugTest(node.info.id); } }).element : undefined,
           ),
         );
         row.style.paddingLeft = `${10 + depth * 12}px`;
@@ -756,37 +767,57 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    * JavaScript and `dist/gametest.js` to the scm-sim plugin's engine page, which runs each test beside the game. The
    * simulator runs them too, so that each test has both marks.
    */
+  /**
+   * What a run in the game needs, made ready: the engine there and willing, the script applied and compiled, the map
+   * built as Save builds it and exported whole (a bare .chk has no room for what the build steps make, so the engine's
+   * page reads the scenario out of it), with the build's maps of variables and triggers from its log, and the text of
+   * `dist/gametest.js`. Null, the reason said in the status bar, when something is missing.
+   */
+  const prepareInGame = async (filter: Pick<TestRunOptions, "files" | "ids">, ask: "tests" | "debug") => {
+    const engine = svc.engine();
+    if (!engine?.present || !engine.test || (ask === "debug" && !engine.debug)) {
+      setStatus("error", ask === "debug"
+        ? t("Debugging in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install, update or turn it on under Plugins ▸ Manage Plugins….")
+        : t("Running tests in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins…."));
+      return null;
+    }
+    const notRun = (message: string) => (ask === "debug" ? t("Not debugged in the game: {message}", { message }) : t("Not run in the game: {message}", { message }));
+    const status = await engine.status();
+    if (!status.available) { setStatus("error", notRun(status.reason ?? t("the engine cannot run a game now"))); return null; }
+    if (!status.tests) { setStatus("error", t("Not run in the game: the engine's page is from before tests in the game. Reload the editor and try again.")); return null; }
+    if (ask === "debug" && !status.debug) { setStatus("error", t("Not debugged: the engine's page is from before the debugger. Reload the editor and try again.")); return null; }
+    if (!(await build()) || cancelled) return null;
+    const a = await compileNow({ world: svc.world(), ...filter });
+    if (!a || cancelled) return null;
+    if (!a.compiled.ok) { setStatus("error", t("Tests not run: {n, plural, one {# problem} other {# problems}} in the script.", { n: a.compiled.diagnostics.length }), NOTICE_MS); shell.showPanel("problems"); return null; }
+    if (!a.compiled.modules) { setStatus("info", t("The script has no tests.")); return null; }
+    if (!a.compiled.ir.length) { setStatus("info", t("Tests run in the game only for a script with a program: without one, nothing of the script is built into the map.")); return null; }
+    const names = svc.names()?.names;
+    if (!names) { setStatus("error", t("No map is open.")); return null; }
+    setStatus("busy", t("Building the map…"));
+    const built = { ...files };
+    // (The build says in its log where it put the programs' variables, for sim.program().)
+    const logged: string[] = [];
+    const heard = svc.onBuild((e) => { if (e.kind === "log") logged.push(e.line); else if (e.kind === "done" && !logged.length) logged.push(...e.log.split("\n")); });
+    const file = await svc.withVariableMap(() => api.document.export({ format: "scx" })).finally(() => heard.dispose());
+    if (!file || cancelled) { if (!file) setStatus("error", t("No map is open.")); return null; }
+    const variables = readVariableMap(logged), triggers = readTriggerMap(logged);
+    gametest ??= fetch(gametestUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`gametest.js: ${r.status}`); return r.text(); });
+    const module = await gametest.catch((err) => { gametest = null; throw err; });
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return { engine, status, a, names, variables, triggers, module, bytes, built };
+  };
+
   const runTestsInGame = async (filter: Pick<TestRunOptions, "files" | "ids"> = {}) => {
     if (!editor || testsRunning || building || testing || !ready) return;
-    const engine = svc.engine();
-    if (!engine?.present || !engine.test) { setStatus("error", t("Running tests in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….")); return; }
     testsRunning = true;
     renderTesting();
     try {
-      const status = await engine.status();
-      if (!status.available) { setStatus("error", t("Not run in the game: {message}", { message: status.reason ?? t("the engine cannot run a game now") })); return; }
-      if (!status.tests) { setStatus("error", t("Not run in the game: the engine's page is from before tests in the game. Reload the editor and try again.")); return; }
-      if (!(await build()) || cancelled) return;
-      const a = await compileNow({ world: svc.world(), ...filter });
-      if (!a || cancelled) return;
-      if (!a.compiled.ok) { setStatus("error", t("Tests not run: {n, plural, one {# problem} other {# problems}} in the script.", { n: a.compiled.diagnostics.length }), NOTICE_MS); shell.showPanel("problems"); return; }
-      if (!a.compiled.modules) { setStatus("info", t("The script has no tests.")); return; }
-      if (!a.compiled.ir.length) { setStatus("info", t("Tests run in the game only for a script with a program: without one, nothing of the script is built into the map.")); return; }
-      const names = svc.names()?.names;
-      if (!names) { setStatus("error", t("No map is open.")); return; }
-      setStatus("busy", t("Building the map…"));
-      // (Whole: a bare .chk has no room for what the build steps make, so the engine's page reads the scenario out of
-      // it. The build says in its log where it put the programs' variables, for sim.program().)
-      const logged: string[] = [];
-      const heard = svc.onBuild((e) => { if (e.kind === "log") logged.push(e.line); else if (e.kind === "done" && !logged.length) logged.push(...e.log.split("\n")); });
-      const file = await svc.withVariableMap(() => api.document.export({ format: "scx" })).finally(() => heard.dispose());
-      if (!file || cancelled) { if (!file) setStatus("error", t("No map is open.")); return; }
-      const variables = readVariableMap(logged), triggers = readTriggerMap(logged);
-      gametest ??= fetch(gametestUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`gametest.js: ${r.status}`); return r.text(); });
-      const module = await gametest.catch((err) => { gametest = null; throw err; });
+      const ready = await prepareInGame(filter, "tests");
+      if (!ready || cancelled) return;
+      const { engine, status, a, names, variables, triggers, module, bytes } = ready;
       setStatus("busy", t("Running the tests in the game…"));
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const report = await engine.test(bytes, module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids, variables, triggers }) as TestReport & { error?: string };
+      const report = await engine.test!(bytes, module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids, variables, triggers }) as TestReport & { error?: string };
       if (cancelled) return;
       if (report.error) { setStatus("error", t("Not run in the game: {message}", { message: report.error })); return; }
       // A test of several players (TrigScript 4, A3): a copy of the game for each player, kept in step, where the
@@ -827,6 +858,63 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       testsRunning = false;
       render();
     }
+  };
+
+  /**
+   * One test debugged in the game (TrigScript 4, A5): built as for a run in the game, then run once by the engine's
+   * page with everything it did written down; the Debug view walks that record. The game stays with the page for
+   * pictures of the run's frames, drawn by a view of the scm-sim plugin's where this copy of the game may draw.
+   */
+  const debugTest = async (id: string) => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    const info = tests.list.find((x) => x.id === id);
+    if (!info || info.kind !== "test") { setStatus("info", t("There is no test at the cursor.")); return; }
+    if (info.players) { setStatus("info", t("“{test}” is a test of several players: the debugger runs one game, and a test of several players runs as a copy of the game for each. Not yet.", { test: info.name })); return; }
+    testsRunning = true;
+    renderTesting();
+    try {
+      const got = await prepareInGame({ ids: [id] }, "debug");
+      if (!got || cancelled) return;
+      const { engine, a, names, variables, triggers, module, bytes, built } = got;
+      setStatus("busy", t("Running “{test}” in the game, writing down everything it does…", { test: info.name }));
+      const session = await engine.debug!(bytes, module, { modules: a.compiled.modules, names, variables, triggers, test: id });
+      if (cancelled) { session.close(); return; }
+      const recording = session.recording as DebugRecording;
+      // A view to draw the pictures in, where the plugin has one for a debugged run.
+      let view: DebugGameView | string | null = null;
+      if (engine.view) {
+        try {
+          const host = el("div");
+          const v = engine.view(host) as ScmSimDebugView;
+          if (typeof v.debug === "function" && typeof v.show === "function") {
+            const shown = await v.debug(bytes).then(() => null, (err: Error) => err.message);
+            if (shown) { v.dispose(); view = shown; }
+            else {
+              v.onError?.((message) => setStatus("error", t("No picture of the game: {message}", { message })));
+              view = { element: host, show: (p) => v.show!(p), dispose: () => v.dispose() };
+            }
+          } else { v.dispose(); view = t("The scm-sim plugin's view is from before the debugger: update the plugin for a picture of the game."); }
+        } catch (err) { view = (err as Error).message; }
+      }
+      debug.start({ recording, variables, pictures: session, view, files: built });
+      debug.setFiles(files);
+      const r = recording.result;
+      setStatus(r.status === "failed" ? "error" : "ok", r.status === "failed"
+        ? t("Debugging “{test}”: it failed in the game at frame {frame}. The debugger stands there; step back to see how it came to that.", { test: info.name, frame: recording.first + recording.frames - 1 })
+        : t("Debugging “{test}”: {frames, plural, one {# frame} other {# frames}} in the game, recorded in {ms} ms.", { test: info.name, frames: recording.frames, ms: recording.ms }), NOTICE_MS);
+    } catch (err) {
+      setStatus("error", t("Not debugged in the game: {message}", { message: (err as Error).message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
+  };
+
+  const debugTestAtCursor = () => {
+    const at = editor?.cursor();
+    const here = at ? tests.list.filter((x) => x.kind === "test" && x.file === normalizePath(at.file) && x.line <= at.line).sort((a, b) => b.line - a.line)[0] : undefined;
+    if (!here) { setStatus("info", t("There is no test at the cursor.")); return; }
+    void debugTest(here.id);
   };
 
   /**
@@ -1619,8 +1707,19 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /* ── Commands ── */
 
   /** Everything the workspace does, once: the keys, the More menu and Monaco's command palette are all read from here. */
-  interface Command { id: string; label: string; key?: { code: string; mod?: boolean; shift?: boolean }; context?: boolean; run(): void }
+  interface Command { id: string; label: string; key?: { code: string; mod?: boolean; shift?: boolean }; context?: boolean; run(): void; when?: () => boolean }
+  /** While a test is debugged, its keys come before the others (F5 continues rather than plays). */
+  const debugging = () => debug.active;
   const commands: Command[] = [
+    { id: "debugContinue", label: t("Debug: Continue"), key: { code: "F5" }, when: debugging, run: () => debug.continueForward() },
+    { id: "debugContinueBack", label: t("Debug: Continue Backwards"), key: { code: "F6" }, when: debugging, run: () => debug.continueBack() },
+    { id: "debugStep", label: t("Debug: On a Line"), key: { code: "F10" }, when: debugging, run: () => debug.stepForward() },
+    { id: "debugStepBack", label: t("Debug: Back a Line"), key: { code: "F10", shift: true }, when: debugging, run: () => debug.stepBack() },
+    { id: "debugFrame", label: t("Debug: On a Frame"), key: { code: "F11" }, when: debugging, run: () => debug.nextFrame() },
+    { id: "debugFrameBack", label: t("Debug: Back a Frame"), key: { code: "F11", shift: true }, when: debugging, run: () => debug.prevFrame() },
+    { id: "debugStop", label: t("Debug: Stop"), key: { code: "F5", shift: true }, when: debugging, run: () => debug.end() },
+    { id: "debugTestAtCursor", label: t("Debug Test at Cursor in the Game"), context: true, run: () => debugTestAtCursor() },
+    { id: "toggleBreakpoint", label: t("Toggle Breakpoint"), key: { code: "F9" }, run: () => { const at = editor?.cursor(); if (at) debug.toggleBreakpoint(normalizePath(at.file), at.line); } },
     // The editor's own Ctrl+S does not reach a map under a dialog, and a browser would offer to save the page.
     { id: "save", label: t("Save the Map"), key: { code: "KeyS", mod: true }, run: () => { void api.document.save(); } },
     { id: "test", label: t("Play the Map"), key: { code: "F5" }, run: () => { void test(); } },
@@ -1660,7 +1759,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     // F1 is the editor's list of shortcuts outside the workspace; inside it, it is the palette, as it is in VS Code.
     const c = (mod && e.shiftKey && e.code === "KeyP") || (!mod && !e.shiftKey && e.code === "F1")
       ? { run: palette }
-      : commands.find((x) => x.key && x.key.code === e.code && !!x.key.mod === mod && !!x.key.shift === e.shiftKey);
+      : commands.find((x) => x.key && x.key.code === e.code && !!x.key.mod === mod && !!x.key.shift === e.shiftKey && (!x.when || x.when()));
     if (!c) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1689,7 +1788,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         monaco = m;
         if (generated) setDeclarations(m, generated.decls);
         setHoverVariables(m, () => result?.variables ?? []);
-        setLineHints(m, () => [...(result?.hints ?? []), ...costHints()]);
+        setLineHints(m, () => [...(result?.hints ?? []), ...costHints(), ...debug.hints()]);
         setMapRefs(m, mapRefs);
         // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
         loadingCover.done();
@@ -1698,14 +1797,18 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
           files = { ...files, [path]: text };
           svc.writeFiles(files);
+          debug.setFiles(files);
           check();
-        }, (id) => { void runTests({ ids: [id] }); });
+        }, (id) => { void runTests({ ids: [id] }); }, (file, line) => debug.toggleBreakpoint(file, line));
+        debug.setFiles(files);
+        editor.setDebug(debug.marks());
         const code = editor.editor;
         for (const c of commands) {
           code.addAction({
             id: `trigscript.${c.id}`,
             label: `TrigScript: ${c.label}`,
-            keybindings: c.key ? [(c.key.mod ? m.KeyMod.CtrlCmd : 0) | (c.key.shift ? m.KeyMod.Shift : 0) | m.KeyCode[c.key.code as keyof typeof m.KeyCode]] : undefined,
+            // (A key that only means something while debugging is the workspace's to hear, not Monaco's.)
+            keybindings: c.key && !c.when ? [(c.key.mod ? m.KeyMod.CtrlCmd : 0) | (c.key.shift ? m.KeyMod.Shift : 0) | m.KeyCode[c.key.code as keyof typeof m.KeyCode]] : undefined,
             ...(c.context ? { contextMenuGroupId: "navigation", contextMenuOrder: 9 } : {}),
             run: () => c.run(),
           });
@@ -1741,6 +1844,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       if (timer !== null) clearTimeout(timer);
       if (statusTimer !== null) clearTimeout(statusTimer);
       root.removeEventListener("keydown", onKey, true);
+      debug.end();
       shell.dispose();
       editor?.dispose();
       editor = null;
