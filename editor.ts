@@ -171,7 +171,7 @@ const STYLE = `${SHELL_STYLE}
 .${TEST_MARK_CLASS}-note { color: var(--danger); font-style: italic; opacity: 0.9; }
 .tsd .tsd-list li.tsd-cost { align-items: center; }
 .tsd .tsd-cost-graph { flex: 1 1 auto; min-width: 0; max-width: 480px; height: 36px; }
-.tsd .tsd-cost-graph path { fill: var(--accent); fill-opacity: 0.35; stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.tsd .tsd-cost-graph path { fill: var(--teal); fill-opacity: 0.35; stroke: var(--teal); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 
