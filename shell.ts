@@ -230,6 +230,8 @@ ${Object.entries(ICONS).map(([name, code]) => `.tsd-i-${name}::before { content:
 .tsd-row.tsd-active { background: var(--bg-4); color: var(--text); }
 .tsd-row .tsd-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .tsd-row .tsd-about { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); font-size: var(--fs-sm); }
+.tsd-row .tsd-game { display: inline-flex; flex: none; margin-left: -2px; border-radius: 50%; }
+.tsd-row .tsd-game-differs { box-shadow: 0 0 0 1px var(--danger); }
 .tsd-row .tsd-problem, .tsd-tab .tsd-problem { color: var(--danger); }
 .tsd-row .tsd-count { flex: none; margin-left: auto; color: var(--danger); font-size: var(--fs-sm); }
 .tsd-row .tsd-icon-button { display: none; margin-left: 0; }

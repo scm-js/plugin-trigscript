@@ -700,9 +700,10 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         };
         const row = el("li", { className: node.kind === "test" && node.info.id === chosenTest ? "tsd-row tsd-active" : "tsd-row", title: result?.message ?? name, onClick: open },
           stateIcon(state),
+          // (The game's mark next to the simulator's, where a narrow sidebar still shows it.)
+          node.kind === "test" && gameResults.has(node.info.id) ? gameMark(gameResults.get(node.info.id)!, result) : undefined,
           el("span", { className: state === "failed" ? "tsd-name tsd-problem" : "tsd-name" }, name),
           result && result.status !== "skipped" ? el("span", { className: "tsd-about" }, t("{ms} ms", { ms: result.ms })) : undefined,
-          node.kind === "test" && gameResults.has(node.info.id) ? gameMark(gameResults.get(node.info.id)!, result) : undefined,
           el("span", { className: "tsd-row-actions" },
             shell.iconButton({ icon: "play", title: node.kind === "test" ? t("Run this test") : t("Run these tests"), run: () => { void runTests(node.kind === "file" ? { files: [node.path] } : { ids }); } }).element,
           ),
@@ -717,14 +718,14 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     testingList.replaceChildren(...rows);
   };
 
-  /** A test's mark from the game, beside the simulator's: its state, and a word when the two disagree. */
+  /** A test's mark from the game, the second beside the simulator's: its state, ringed when the two disagree, and in words on hover. */
   const gameMark = (game: TestResult, simulated: TestResult | undefined) => {
     const state: TestStateName = game.status === "failed" ? "failed" : game.status === "passed" ? "passed" : "skipped";
     const differ = simulated && simulated.status !== "skipped" && game.status !== "skipped" && simulated.status !== game.status;
-    return el("span", { className: differ ? "tsd-about tsd-problem" : "tsd-about", title: differ
+    return el("span", { className: differ ? "tsd-game tsd-game-differs" : "tsd-game", title: differ
       ? t("In the game: {status}. The simulator and the game disagree: the game is right, so the simulator is wrong here (or the test leans on something it does differently).", { status: game.status === "failed" ? game.message ?? t("failed") : t("passed") })
       : game.status === "failed" ? t("In the game: {message}", { message: game.message ?? t("failed") }) : t("In the game: passed") },
-    stateIcon(state), t("game"));
+    stateIcon(state));
   };
 
   /**
@@ -735,7 +736,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const runTestsInGame = async (filter: Pick<TestRunOptions, "files" | "ids"> = {}) => {
     if (!editor || testsRunning || building || testing || !ready) return;
     const engine = svc.engine();
-    if (!engine?.present || !engine.test) { setStatus("error", t("Running tests in the game needs the scm-sim plugin (0.8 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….")); return; }
+    if (!engine?.present || !engine.test) { setStatus("error", t("Running tests in the game needs the scm-sim plugin (0.9 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….")); return; }
     testsRunning = true;
     renderTesting();
     try {

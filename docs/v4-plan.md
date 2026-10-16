@@ -325,8 +325,19 @@ stays JavaScript and is handed a world backed by the game, and it runs where the
     passes in the game and in the simulator under Node, and through scm-sim's analysis page in
     headless Chromium (3.3 s, game start included).
   - plugin-scm-sim's bridge has two new tests.
-  - The editor's button has not been driven end to end in the built editor yet. Its parts have:
-    compile, export and the page, each on its own.
+  - **End to end in a built editor (2026-10-16):** scm-js `main` built under `/editor/` and
+    served by scm-sim's dev server beside its analysis page, with the local TrigScript and
+    scm-sim plugin builds in place of the released ones, driven in headless Chromium:
+    1. The probe map is opened and the script written into it.
+    2. **Run all tests in the game** is clicked.
+    3. eudplib asks for its one-time runtime and gets it, then builds the 721 KB map in 3.7 s.
+    4. The status bar says "In the game: 4 of 5 tests passed. The simulator disagrees on 1
+       test." That came about 9 seconds after the click.
+
+    The fifth test reads `sim.program()`, which the game cannot answer yet, and it shows as
+    meant: a ringed red mark beside the simulator's green one, and the game's reason on its own
+    line in Test Results. The game's mark sits beside the simulator's icon rather than at the
+    row's end, where a narrow sidebar cut it off in the first run.
 
 ### A3. The desync detector (4.1.0)
 
