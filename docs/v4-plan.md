@@ -742,6 +742,57 @@ Open: whether `Promise.race` cancels the tasks that lost. JavaScript does not ca
 them, and a wave that keeps running after its race was lost is rarely what the author
 meant. See *Open decisions*.
 
+**As built, first part (2026-10-16, under Node and in the lifted game; branch `b1-async`).**
+The design above was built in a smaller form. No task lives on the heap: every task is
+known when the script is built, so its place and its wait are two cells, like a program's.
+
+- **An async function is inlined where it is awaited.** A function that sleeps has been
+  inlined since 3.0, so `await wave(n)` puts `wave`'s body in the program. Where it waits,
+  the program waits. `await f()` reads as `f()` in the front end. The type checker's
+  awaited type gives a call's kind, so `Promise<number>` is a number. An async function is
+  never one called copy.
+- **`until(test)`** is `while (!test()) sleep(frames(1))`. It asks once at once, then once
+  a frame, and goes on in the frame the answer is true. A condition (`until(bring(…))`)
+  is taken as it is. No new IR.
+- **`Promise.all` / `race` / `any`** are the one new statement, `parallel` (IR 15). Each
+  item is a branch, and each branch is a coroutine of its own: its state and wait cells
+  (rows of twelve in a per-player program), its own jump table, and its own frame end. A
+  branch's `sleep` parks that branch alone. The program waits at the statement through a
+  resume point of its own, and the statement *is* that point: the first frame falls into
+  it and later frames jump to it. There, each branch that has not ended goes on, in
+  order. `all` goes on when every branch has ended. `race` goes on at the first one, and
+  the others are set to "ended". `any` is a race, since nothing in a program fails. An
+  item may be an async call, `sleep()`, `until()`, another `Promise.all` / `race`, an
+  async arrow called where it is written, or any of these with `.then(() => value)`.
+  `const v = await Promise.race([…])` keeps the winner's value: each branch sets a
+  variable as it ends, and only the winner gets to the end.
+- **The lowering.** `python/trigscript.py` gained a `Coroutine` (state, wait, resume points,
+  frame end). The program's frame is the first coroutine, and a branch is another, lowered
+  with the same code. The simulator runs each branch as a generator of its own and hands
+  up any body run apart (recursion) from inside a branch.
+- **What is said.** In an async function, a promise nothing awaits is an error that names
+  the `await` to write. Without async, an async call says to make the program async.
+  `sleep()` on its own in a program that is not async still pauses, as in 3.x. A race
+  whose value is kept and has a branch without one says to add `.then(() => …)`.
+  `Promise.all` has no value yet. `await` inside a loop over units or a text is refused,
+  as `sleep` is.
+- **Checked.** `tests/async.test.ts` (12) and two eudplib build fixtures (`tasks`,
+  `tasksPerPlayer`). `probes/game-async.ts` runs in the lifted game and in the simulator,
+  and both pass all three tests at the same frames: the branches side by side, `until()`
+  in the frame its answer turns, a race's value and its losers stopped, and a wave whose
+  Zerglings the test kills. Cost: a waiting `Promise.all` of two branches is about 60
+  conditions and actions a frame.
+- **Decided while building, for the user to confirm:** a race's losers stop where they
+  are. JavaScript does not cancel them, but here a branch is a fixed pair of cells, so a
+  race met again in a loop could not run a second copy beside the first. Stopping is also
+  what the plan's own example means. (Open decisions, below.)
+- **Not yet.** Starting a task and leaving it running (`spawn`, or an async call nothing
+  awaits) needs tasks that are not known when the script is built, which is the heap
+  frame of the design above. Also not yet: generators, `const [a, b] = await
+  Promise.all(…)`, async methods of a class, a parameter for `.then`'s function, and
+  recursion through `await` (it is the inline limit's error today). These are the second
+  part of B1, together with the hint for an async function that never awaits.
+
 ### B2. Events (4.4.0)
 
 ```ts
@@ -1018,7 +1069,10 @@ build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
   nothing of the game is drawn. A5's "the game beside the code" draws, so it needs the
   person's own copy, as Test Map does.
 - **Does `Promise.race` cancel the losers?** JavaScript: no. Proposed: no, as JavaScript,
-  plus an explicit `task.cancel()` on what `spawn(…)` returns.
+  plus an explicit `task.cancel()` on what `spawn(…)` returns. *Built otherwise in B1's
+  first part (2026-10-16), for the user to confirm:* the losers stop, because a branch is
+  a fixed pair of cells and a race met again cannot run beside its last run. Once `spawn`
+  exists, a loser that should go on can be spawned.
 - **What a closure may capture.** Proposed above (B3): `const` by value, `let` only when
   the closure does not outlive its frame. The alternative is reference-counted
   environments: closer to JavaScript, more Python, and a new kind of fault.
