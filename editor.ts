@@ -739,7 +739,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const runTestsInGame = async (filter: Pick<TestRunOptions, "files" | "ids"> = {}) => {
     if (!editor || testsRunning || building || testing || !ready) return;
     const engine = svc.engine();
-    if (!engine?.present || !engine.test) { setStatus("error", t("Running tests in the game needs the scm-sim plugin (0.10 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….")); return; }
+    if (!engine?.present || !engine.test) { setStatus("error", t("Running tests in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….")); return; }
     testsRunning = true;
     renderTesting();
     try {

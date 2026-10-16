@@ -22,7 +22,7 @@ export interface ScmSimEngine {
    * A script's tests beside the game: the map as Save builds it (a whole .scx; the page reads
    * its scenario) or that scenario as eudplib built it, the text of a module
    * whose `runGameTests(game, payload)` runs them, and its payload; resolves with what the
-   * module returned. Absent from the plugin before 0.10.0.
+   * module returned. Absent from the plugin before 0.11.0.
    */
   test?(scenario: Uint8Array, module: string, payload: unknown, options?: { signal?: AbortSignal; onProgress?: (p: { stage: "starting" }) => void }): Promise<unknown>;
 }
