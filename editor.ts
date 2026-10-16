@@ -124,8 +124,14 @@ const STATUS_MS = 10_000;
 const NOTICE_MS = 8_000;
 /** When running every test takes longer than this, only the open file's run by themselves after a compile. */
 const TESTS_SLOW_MS = 2_000;
-/** A line that ran this many conditions and actions in one frame of a test in the game says so beside it. */
-const COST_HINT = 1_000;
+/**
+ * What Remastered was seen to run in a frame with no effect: the dial (probes/frame-cost.ts, played 2026-10-16) ran
+ * 500 thousand conditions and actions a frame with none, and a million with a flicker of the screen that the player
+ * found distracting, though the game did not slow.
+ */
+const COST_SEEN = 500_000;
+/** A line that ran this many conditions and actions in one frame of a test in the game says so beside it: 2% of COST_SEEN. */
+const COST_HINT = 10_000;
 /** The costliest lines a test's results name. */
 const COST_LINES = 3;
 /** The key the shortcuts are written with. */
@@ -837,9 +843,12 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       .map((l) => ({
         file: l.file, line: l.line,
         label: t("{n} a frame", { n: shortCount(l.peak) }),
-        note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. A trigger costs the game by its conditions and actions, so the count is the measure.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames }),
+        note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. Remastered has run 500 thousand a frame with no visible effect, and its screen flickers at a million; this is {share} of the 500 thousand.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames, share: shareOf(l.peak) }),
       }));
   };
+
+  /** "0.2%", "31%": a count as a share of what Remastered was seen to run in a frame. */
+  const shareOf = (n: number) => `${(n / COST_SEEN * 100).toFixed(n < COST_SEEN / 10 ? 1 : 0)}%`;
 
   /** The test's conditions and actions a frame in the game, as a small graph; eudplib's own work is not in it. */
   const costGraph = (cost: TestCost): Element => {
@@ -893,7 +902,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         const other = cost.other.slice(3), runtime = other.length ? Math.round(other.reduce((a, b) => a + b, 0) / other.length) : 0;
         list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game: the script's own triggers and the variables they go through. eudplib's work at the top of each frame is apart: {n} a frame.", { n: runtime.toLocaleString() }) },
           el("span", { className: "frame" }, t("cost")),
-          el("span", { className: "msg" }, t("{average} conditions and actions a frame on average, {peak} at the most (frame {frame})", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), frame: cost.peakFrame }))));
+          el("span", { className: "msg" }, t("{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), frame: cost.peakFrame, share: shareOf(cost.peak) }))));
         if (cost.perFrame.length > 1) list.append(el("li", { className: "tsd-plain tsd-cost" }, el("span", { className: "frame" }), costGraph(cost)));
         for (const l of cost.lines.slice(0, COST_LINES)) {
           list.append(el("li", { title: t("Go to the line"), onClick: () => goTo(l.file, l.line) },

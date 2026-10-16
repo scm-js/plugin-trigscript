@@ -506,7 +506,7 @@ k × 1,000 actions a frame, the user says when it stutters) gives the first numb
   - `scripts/test-game.mts` prints each test's average, peak and three costliest lines. The copies of A3 count too.
     A merged result keeps the first copy's.
   - The editor:
-    - A line that ran 1,000 or more in one frame of any test gets a hint at its end, such as "31k a frame". The
+    - A line that ran 10,000 or more in one frame of any test gets a hint at its end, such as "31k a frame". The
       note names the test and frame.
     - The hint shows only while the file's text is what was measured.
     - Test Results shows a "cost" row (average and peak), a graph of the frames and the three costliest lines.
@@ -528,8 +528,14 @@ k × 1,000 actions a frame, the user says when it stutters) gives the first numb
   lifted game (`--cost`), each step lands at its target plus about 630 (eudplib's own and the program's).
   1,004,714 at the top.
   - Built to `fixtures/eud/frame-cost.scx` and copied to the Remastered maps folder (`TrigScript/`).
-  - Nothing yet says what count stutters. The hint's threshold (1,000) and the graph have no line for "lags"
-    until the dial has been played.
+  - **Played in Remastered (2026-10-16, single player, Fastest):**
+    - steps 1–9, up to 500 thousand a frame: no visible effect;
+    - step 10, a million: the screen flickers slightly, enough to distract, and the game does not slow.
+
+    So the budget is 500 thousand a frame, about 12,800 turns of a plain loop. The editor's hint starts at 10,000 a
+    line (2% of it). The cost row and the hint's note give a count as a share of the 500 thousand.
+    - Steps 11 and 12 were added (2 and 5 million; measured 2,000,640 and 5,000,643) to find where the game slows.
+    - Not played yet: those two steps, and the patch number and machine.
 
 ### A5. The debugger in the game (4.2.0)
 

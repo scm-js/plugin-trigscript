@@ -10,6 +10,9 @@
 //
 //   W  one step up        Q  one step down        E  stop climbing / climb again
 //
+// Played 2026-10-16 (steps 0–10 then): no effect up to step 9 (500 thousand); at step 10 (a million) the screen
+// flickered, enough to distract, and the game did not slow. Steps 11 and 12 (2 and 5 million) were added to find where it does.
+//
 // WHAT TO NOTE: the first step at which the game stutters (units jerk, the screen hitches), the first at which it
 // is plainly slow (a game second clearly longer than a real one), and, if it gets there, the step at which it
 // freezes or drops. Say which Remastered (patch number) and the computer it ran on.
@@ -21,8 +24,8 @@ const STEP = 10;
 
 program(() => {
   // Turns of the loop for each step, and what that comes to a frame in thousands (39 a turn, measured).
-  const turns = [0, 26, 51, 128, 256, 513, 1282, 2564, 5128, 12820, 25641];
-  const thousands = [0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+  const turns = [0, 26, 51, 128, 256, 513, 1282, 2564, 5128, 12820, 25641, 51282, 128205];
+  const thousands = [0, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
   let step = 0;
   let climbing = true;
   let next = 0;
@@ -31,10 +34,10 @@ program(() => {
   let frame = 0;
   while (true) {
     frame += 1;
-    if (keyPressed(P1, "W") && step < 10) { step += 1; next = frame + STEP * 24; }
+    if (keyPressed(P1, "W") && step < 12) { step += 1; next = frame + STEP * 24; }
     if (keyPressed(P1, "Q") && step > 0) { step -= 1; next = frame + STEP * 24; }
     if (keyPressed(P1, "E")) { climbing = !climbing; displayText(climbing ? "climbing again" : "holding at this step"); next = frame + STEP * 24; }
-    if (climbing && frame >= next && step < 10) { if (next > 0) step += 1; next = frame + STEP * 24; }
+    if (climbing && frame >= next && step < 12) { if (next > 0) step += 1; next = frame + STEP * 24; }
     if (step != shown) {
       shown = step;
       if (step == 0) displayText("step 0: nothing a frame — W up, Q down, E holds");
