@@ -375,7 +375,7 @@ A test can ask for it: `test("shop", { players: 4 }, …)`. The Testing view the
 
 To check first: UMS with several people on one instance (melee is measured, UMS is not).
 
-**As built (2026-10-16, under Node; the editor's half is not done).** The check was already done:
+**As built (2026-10-16, under Node and in the editor).** The check was already done:
 scm-sim's `tests/exact-net-ums` plays two people on one instance in UMS. Two parts of the design
 above changed. The option is a list (`{ players: [P1, P2] }`), because a test's inputs name the
 player anyway. And the hash is not the game's own.
@@ -435,9 +435,25 @@ player anyway. And the hash is not the game's own.
     first pass, and both name the trigger.
   - A 3000-frame fight with a computer player stays in step with 2 and with 4 copies (8 s,
     3.5 GB for four).
+- **The editor.** "Run All Tests in the Game" runs a test of several players through the scm-sim
+  plugin's `testCopies`. The analysis page runs one copy each in workers of its own
+  (`web/copyWorker.ts`, sharing `src/exact/copy.ts` with Node), and the reports merge into one
+  mark (`compiler/gameCopies.ts`). The build is asked for its trigger map beside the variable
+  map, so a desync names lines.
+  - The copies need SharedArrayBuffer, so the page must be cross-origin isolated. COOP/COEP
+    cannot do it: the page is a frame inside the editor, isolation needs the top-level page too,
+    and COOP `same-origin` on the editor cuts scmjs.dev's sign-in popup off from the editor
+    (it posts back through `window.opener`).
+  - `Document-Isolation-Policy: isolate-and-credentialless` isolates the one document instead:
+    `/play/analyse.html`, sent by the site's worker (cloudflare-link-previews
+    `ISOLATED_PLAY_PAGES`) and by the dev server. Chromium 137 on; elsewhere, or without the
+    header, the tests are marked not run, and the mark says why.
+  - Measured in headless Chromium 153 (`web/smoke-copies.mjs`, then a built editor):
+    - the editor stays as it is;
+    - `postMessage`, OPFS and the moments BroadcastChannel cross the boundary;
+    - replay analysis, pathing and measure still pass under the header;
+    - 4/4 tests in the game from the Testing view, three of them as two copies (11 s).
 - **Not done.**
-  - The editor: the play page needs cross-origin isolation for SharedArrayBuffer in its workers,
-    so "Run All Tests in the Game" lists these tests as skipped.
   - Dwords that come apart later in a payload block already watched are not reported.
   - `sim.place` and the other actions between frames run at every copy, as a trigger for that
     player would.

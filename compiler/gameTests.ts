@@ -15,6 +15,7 @@ import { locate, runModules, type LinkedFile } from "./link";
 import type { ScriptNames } from "./names";
 import { Collector, createRuntime } from "./runtime";
 import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type TestReport, type TestResult } from "./testing";
+export { mergeCopies } from "./gameCopies";
 import type { SimBounds } from "./world";
 
 export interface GameTestPayload {
@@ -56,3 +57,4 @@ export function runGameTests(game: GameHandle, payload: GameTestPayload): TestRe
 export function drive(game: GameHandle, payload: GameTestPayload): TestReport & { error?: string } {
   return runGameTests(game, payload);
 }
+

@@ -307,7 +307,8 @@ export class ScriptService {
     if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
     if (guard) this.guardTests(artifact.compiled);
     const plugins = buildPlugins(artifact.compiled.input, "/work/files/trigscript.json");
-    if (this.variableMaps) (plugins.trigscript as Record<string, string>).variableMap = "1";
+    // (And where each trigger is, for the lines of a desync between copies of the game, TrigScript 4's A3.)
+    if (this.variableMaps) Object.assign(plugins.trigscript as Record<string, string>, { variableMap: "1", triggerMap: "1" });
     return {
       // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
       plugins,
@@ -317,8 +318,8 @@ export class ScriptService {
   }
 
   /**
-   * `run` with every build it starts asked to say where the programs' variables are — lines of the build's log
-   * (`compiler/gameVariables.ts`) — for tests in the lifted game to read them.
+   * `run` with every build it starts asked to say where the programs' variables and its triggers are — lines of the
+   * build's log (`compiler/gameVariables.ts`) — for tests in the lifted game to read them and name lines.
    */
   async withVariableMap<T>(run: () => Promise<T>): Promise<T> {
     this.variableMaps++;

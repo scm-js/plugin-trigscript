@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { desyncMessage, GameSim, variableNames, type Desync, type GameCopy, type GameHandle } from "../compiler/gameSim";
 import { listTests, TestRegistry } from "../compiler/testing";
-import type { VariableMap } from "../compiler/gameVariables";
+import { readTriggerMap, type VariableMap } from "../compiler/gameVariables";
+import { mergeCopies } from "../compiler/gameCopies";
 
 // TrigScript 4, A3: a test of several players, each at a copy of the game of their own (scm-sim's CopyHandle).
 const KEYS = 0x596a18;
@@ -82,5 +83,28 @@ describe("a desync's words", () => {
 
   it("say when the copies were not even at the same frame", () => {
     expect(desyncMessage({ frame: 9, apart: [9, 12], players: [0, 2], differences: [], wrote: [], readLocal: [] })).toBe("the players' games stopped agreeing: they were at different frames (9 at P1's computer, 12 at P3's computer)");
+  });
+});
+
+describe("a test of several players' result, from each copy's report", () => {
+  const report = (status: "passed" | "failed", message?: string) => ({ list: [], only: [], ms: 0, results: [{ id: "t", status, message, printed: [], events: [], frames: 30, ms: 5 }] });
+  it("passes when it passed at every computer", () => {
+    expect(mergeCopies(["t"], [{ player: 0, result: report("passed"), error: null }, { player: 1, result: report("passed"), error: null }])[0]).toMatchObject({ status: "passed", frames: 30 });
+  });
+  it("fails with the first computer's reason, said to be that computer's when the others differ", () => {
+    expect(mergeCopies(["t"], [{ player: 0, result: report("passed"), error: null }, { player: 1, result: report("failed", "expected 1, got 0"), error: null }])[0]).toMatchObject({ status: "failed", message: "at P2's computer: expected 1, got 0" });
+    expect(mergeCopies(["t"], [{ player: 0, result: report("failed", "split"), error: null }, { player: 1, result: report("failed", "split"), error: null }])[0].message).toBe("split");
+  });
+  it("fails every test of a copy that could not run", () => {
+    expect(mergeCopies(["t"], [{ player: 0, result: null, error: "P2 is not a slot the map opens to a person" }, { player: 1, result: report("passed"), error: null }])[0]).toMatchObject({ status: "failed", message: "at P1's computer: P2 is not a slot the map opens to a person" });
+  });
+});
+
+describe("the build's map of triggers", () => {
+  it("is read from its lines, and is none when cut short", () => {
+    const lines = ["TRIGSCRIPT-MAP {\"payload\":4096,\"count\":2}", "TRIGSCRIPT-ROWS [[0,1,2,\"3:1\"]]", "hello", "TRIGSCRIPT-ROWS [[2408,0,1,\"eudplib\"]]"];
+    expect(readTriggerMap(lines)).toEqual({ payload: 4096, triggers: [[0, 1, 2, "3:1"], [2408, 0, 1, "eudplib"]] });
+    expect(readTriggerMap(lines.slice(0, 2))).toBeNull();
+    expect(readTriggerMap(["hello"])).toBeNull();
   });
 });

@@ -3,5 +3,6 @@
  * The plugin never loads it itself; it hands its text to the host.
  */
 export { drive, runGameTests, type GameTestPayload } from "./gameTests";
+export { mergeCopies } from "./gameCopies";
 export { desyncMessage, GameSim, readLocations, readUnitStats, type Desync, type GameCopy, type GameHandle } from "./gameSim";
 export { programVariables, readVariableMap, type VariableMap } from "./gameVariables";
