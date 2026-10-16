@@ -29,11 +29,17 @@ export interface AllowEntry {
   evidence: string[];
   /** A value that differs between the players' computers (the mouse, the screen): never to change the game itself. */
   local?: boolean;
+  /** "dump": read off Remastered's own EUD emulator rather than seen in a game; a played entry over the same byte wins. */
+  from?: "dump";
+  /** What a person needs besides the verdict ("a unit pointer: the game takes only the address of a unit"). */
+  note?: string;
 }
 
 export interface Allowlist {
   version: 1;
   entries: AllowEntry[];
+  /** What Remastered does with an address no entry covers, and why (its emulator has no region there: the game ends). */
+  outside?: { verdict: Verdict; evidence: string[] };
 }
 
 /** [origin, address, write (1) or read (0), mask, times] — origin as the build's map of triggers names it. */
@@ -107,20 +113,47 @@ function covers(e: AllowEntry, byte: number): boolean {
   return off % e.stride < e.width && Math.floor(off / e.stride) < (e.count ?? 1);
 }
 
+/** The entries by the 256-byte blocks they reach into, made once a list: the dump's entries cover most of the game. */
+const BLOCK = 8;
+const indexes = new WeakMap<Allowlist, Map<number, AllowEntry[]>>();
+function indexOf(list: Allowlist): Map<number, AllowEntry[]> {
+  let index = indexes.get(list);
+  if (index) return index;
+  index = new Map();
+  for (const e of list.entries) {
+    const end = e.base + (e.stride ? e.stride * ((e.count ?? 1) - 1) : 0) + e.width;
+    for (let b = e.base >>> BLOCK; b <= (end - 1) >>> BLOCK; b++) {
+      const at = index.get(b);
+      if (at) at.push(e); else index.set(b, [e]);
+    }
+  }
+  indexes.set(list, index);
+  return index;
+}
+
 /** How grave a verdict is when a row is summed up from its bytes: one byte not known makes the row not known. */
 const RANK: Record<Verdict, number> = { ends: 3, ignored: 2, unknown: 1, allowed: 0 };
 /** Which of several entries over one byte decides: a failure seen beats a success, a success beats no word at all. */
 const WEIGHT: Record<Verdict, number> = { ends: 3, ignored: 2, allowed: 1, unknown: 0 };
 
-/** What the allowlist says of one byte, for a read or a write, and the entry that says it. */
+/**
+ * What the allowlist says of one byte, for a read or a write, and the entry that says it. What was played in
+ * Remastered decides first; the dump of its emulator decides where nothing played says more than "not known"; an
+ * address neither covers takes the list's `outside`.
+ */
 export function verdictOf(list: Allowlist, byte: number, write: boolean): { verdict: Verdict; entry: AllowEntry | null } {
-  let best: { verdict: Verdict; entry: AllowEntry | null } = { verdict: "unknown", entry: null };
-  for (const e of list.entries) {
+  let played: { verdict: Verdict; entry: AllowEntry | null } = { verdict: "unknown", entry: null };
+  let dumped: { verdict: Verdict; entry: AllowEntry | null } = { verdict: "unknown", entry: null };
+  for (const e of indexOf(list).get(byte >>> BLOCK) ?? []) {
     if (!covers(e, byte)) continue;
     const v = write ? e.write : e.read;
-    if (best.entry === null || WEIGHT[v] > WEIGHT[best.verdict]) best = { verdict: v, entry: e };
+    const best = e.from === "dump" ? dumped : played;
+    if (best.entry === null || WEIGHT[v] > WEIGHT[best.verdict]) { best.verdict = v; best.entry = e; }
   }
-  return best;
+  if (played.entry && played.verdict !== "unknown") return played;
+  if (dumped.entry) return dumped;
+  if (played.entry) return played;
+  return { verdict: list.outside?.verdict ?? "unknown", entry: null };
 }
 
 /**
@@ -144,7 +177,8 @@ export function checkTrace(trace: Trace, list: Allowlist): TraceCheck {
       if (RANK[v.verdict] > RANK[worst.verdict]) worst = v;
     }
     if (worst.verdict === "allowed") { counted.allowed++; continue; }
-    add(origin, address, write === 1, worst.verdict, worst.entry, worst.entry?.evidence ?? [], times);
+    const evidence = worst.entry ? [...worst.entry.evidence, ...(worst.entry.note ? [worst.entry.note] : [])] : worst.verdict === list.outside?.verdict ? list.outside.evidence : [];
+    add(origin, address, write === 1, worst.verdict, worst.entry, evidence, times);
   }
   function add(origin: string, address: number, write: boolean, verdict: Verdict, entry: AllowEntry | null, evidence: string[], times: number) {
     counted[verdict as "ends" | "ignored" | "unknown"]++;
