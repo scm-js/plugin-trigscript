@@ -56,6 +56,7 @@ export interface DebugStart {
 }
 
 export const DEBUG_STYLE = `
+.tsd .tsd-debug:focus { outline: none; }
 .tsd .tsd-debug { box-sizing: border-box; height: 100%; display: flex; flex-direction: column; min-height: 0; font-size: var(--fs-md); }
 .tsd .tsd-debug-bar { flex: none; display: flex; align-items: center; gap: 2px; padding: 2px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; }
 .tsd .tsd-debug-bar .tsd-icon-button { display: inline-flex; }
@@ -93,7 +94,8 @@ export const DEBUG_STYLE = `
 .tsd .tsd-debug-col .tsd-empty { padding: 6px 10px; color: var(--text-faint); white-space: normal; line-height: 1.45; }
 .tsd .tsd-debug-game { flex: 1.3 1 0; display: flex; flex-direction: column; }
 .tsd .tsd-debug-game .tsd-view { position: relative; flex: 1; min-height: 120px; background: #000; }
-.tsd .tsd-debug-game .tsd-view > * { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.tsd .tsd-debug-overlay { position: absolute; z-index: 4; display: none; background: #000; }
+.tsd .tsd-debug-overlay > div, .tsd .tsd-debug-overlay iframe { display: block; width: 100%; height: 100%; border: 0; }
 .tsd .tsd-debug-game .tsd-shown { flex: none; max-height: 40%; overflow: auto; padding: 2px 10px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); }
 .tsd .tsd-debug-game .tsd-shown div { white-space: pre-wrap; }
 .trigscript-debug-line { background: rgba(214, 178, 74, 0.18); }
@@ -107,6 +109,8 @@ export const DEBUG_STYLE = `
 
 const NS = "http://www.w3.org/2000/svg";
 
+/** How tall the panel is made for a session: the bar, the timeline, and room for the columns and the game. */
+const DEBUG_PANEL = 340;
 /** How long the cursor must stay before a picture of its frame is asked for (scrubbing asks for none on the way). */
 const PICTURE_MS = 60;
 
@@ -132,12 +136,21 @@ export class Debugger {
   private readonly bar: HTMLElement;
   private readonly time: HTMLElement;
   private readonly cols: HTMLElement;
+  private readonly root: HTMLElement;
   /** The three columns, made once a session (the game's view is a frame: moved, it would load again). */
   private readonly varsCol: HTMLElement;
   private readonly stepsCol: HTMLElement;
   private readonly gameCol: HTMLElement;
   private readonly viewBox: HTMLElement;
   private readonly shownBox: HTMLElement;
+  /**
+   * Where the game's view lives: over the workspace, laid over `viewBox` while the Debug view shows and hidden
+   * otherwise. The view is a frame, which loads again whenever it is moved or taken out of the page, and the panel
+   * takes a view's body out when another is shown.
+   */
+  private readonly overlay: HTMLElement;
+  private placing = 0;
+  private placed = "";
 
   constructor(deps: DebuggerDeps) {
     this.d = deps;
@@ -152,7 +165,11 @@ export class Debugger {
     this.viewBox = el("div");
     this.shownBox = el("div", { className: "tsd-shown", title: t("The text lines up to this frame") });
     this.gameCol = el("div", { className: "tsd-debug-col tsd-debug-game" }, el("h5", {}, t("The game")), this.viewBox, this.shownBox);
-    this.body.append(el("div", { className: "tsd-debug" }, this.bar, this.time, this.cols));
+    this.overlay = el("div", { className: "tsd-debug-overlay" });
+    shell.root.append(this.overlay);
+    // (Focusable, so that a click anywhere in the view leaves the keys with the workspace: F10 and the rest.)
+    this.root = el("div", { className: "tsd-debug", tabIndex: -1 }, this.bar, this.time, this.cols);
+    this.body.append(this.root);
     this.time.addEventListener("pointerdown", (e) => {
       if (!this.session) return;
       this.time.setPointerCapture(e.pointerId);
@@ -167,28 +184,67 @@ export class Debugger {
 
   get active(): boolean { return this.session !== null; }
 
+  /**
+   * Where a view of the game for the next session goes (`DebugStart.view`'s element must be this): in the page from
+   * the start, since a frame made outside it never loads.
+   */
+  gameHost(): HTMLElement {
+    const host = this.d.el("div");
+    this.overlay.replaceChildren(host);
+    return host;
+  }
+
+  /** Keeps the game's view over its place in the Debug view, and out of sight while that is not shown. */
+  private place = () => {
+    this.placing = 0;
+    const s = this.session;
+    if (!s || !s.view || typeof s.view === "string") { this.overlay.style.display = "none"; this.placed = ""; return; }
+    const root = this.d.shell.root, box = this.viewBox;
+    const r = box.isConnected ? box.getBoundingClientRect() : null;
+    let key = "none";
+    if (r && r.width > 0 && r.height > 0) {
+      const o = root.getBoundingClientRect();
+      key = `${Math.round(r.left - o.left)},${Math.round(r.top - o.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+    }
+    if (key !== this.placed) {
+      this.placed = key;
+      if (key === "none") this.overlay.style.display = "none";
+      else {
+        const [x, y, w, h] = key.split(",");
+        Object.assign(this.overlay.style, { display: "block", left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+      }
+    }
+    this.placing = requestAnimationFrame(this.place);
+  };
+
   /** A recorded run to walk: the cursor at its start, or at its end when the test failed (where debugging begins). */
   start(s: DebugStart): void {
-    this.end();
+    const keep = s.view && typeof s.view !== "string" ? s.view.element : null;
+    this.end(keep);
     const cursor = new DebugCursor(s.recording, s.variables);
     this.session = { ...s, cursor, costs: cursor.frameCosts(), last: new Map(), stop: null, picture: { timer: null, asked: -1, shown: -1 } };
     const { el, t } = this.d;
-    this.viewBox.replaceChildren(s.view && typeof s.view !== "string" ? s.view.element : el("div", { className: "tsd-empty" }, typeof s.view === "string" ? s.view : t("No picture of the game here.")));
-    this.viewBox.className = s.view && typeof s.view !== "string" ? "tsd-view" : "";
+    this.viewBox.replaceChildren(...(keep ? [] : [el("div", { className: "tsd-empty" }, typeof s.view === "string" ? s.view : t("No picture of the game here."))]));
+    this.viewBox.className = keep ? "tsd-view" : "";
+    if (!keep) this.overlay.replaceChildren();
+    if (keep && !this.placing) this.placing = requestAnimationFrame(this.place);
     this.cols.replaceChildren(this.varsCol, this.stepsCol, this.gameCol);
     if (s.recording.result.status === "failed" && s.recording.frames) cursor.toFrame(s.recording.frames - 1);
     else this.firstLine();
     this.d.shell.showPanel("debug");
+    this.d.shell.growPanel(DEBUG_PANEL);
     this.moved();
   }
 
-  /** The session is over: the engine's game let go, the editor's marks taken away. */
-  end(): void {
+  /** The session is over: the engine's game let go, the editor's marks taken away (`keep`: a view made for the next). */
+  end(keep: HTMLElement | null = null): void {
+    if (!keep) { this.overlay.replaceChildren(); this.overlay.style.display = "none"; this.placed = ""; }
+    if (this.placing) { cancelAnimationFrame(this.placing); this.placing = 0; }
     const s = this.session;
     if (!s) return;
     if (s.picture.timer) clearTimeout(s.picture.timer);
     s.pictures?.close();
-    if (s.view && typeof s.view !== "string") s.view.dispose();
+    if (s.view && typeof s.view !== "string" && s.view.element !== keep) s.view.dispose();
     this.viewBox.replaceChildren();
     this.session = null;
     this.render();
@@ -325,6 +381,13 @@ export class Debugger {
   }
 
   private render() {
+    // (A button pressed here is drawn anew: the keys stay with the view rather than going to the page.)
+    const focused = this.root.contains(document.activeElement);
+    this.draw();
+    if (focused && !this.root.contains(document.activeElement)) this.root.focus({ preventScroll: true });
+  }
+
+  private draw() {
     const { el, t } = this.d;
     const s = this.session;
     if (!s) {
@@ -340,6 +403,7 @@ export class Debugger {
       if (!this.current()) return { text: t("The script changed since this run: its lines may have moved. Debug the test again to walk the script as it is."), failed: true };
       if (s.stop?.kind === "breakpoint") return { text: t("Stopped at the breakpoint on line {line}.", { line: s.stop.place.line }), failed: false };
       if (s.stop?.kind === "watch") return { text: t("{name} changed: {before} → {after}", { name: s.stop.name, before: s.stop.before, after: s.stop.after }), failed: false };
+      if (s.stop?.kind === "start") return { text: t("The start of the run."), failed: false };
       if (s.stop?.kind === "end") return { text: rec.result.status === "failed" ? t("The end of the run: {message}", { message: rec.result.message ?? t("the test failed") }) : t("The end of the run: the test passed."), failed: rec.result.status === "failed" };
       if (rec.cut && !c.known) return { text: t("The record stops at frame {frame} ({why}): the variables are not known past it.", { frame: rec.cut.frame, why: rec.cut.why }), failed: true };
       return rec.result.status === "failed" ? { text: t("{test} failed: {message}", { test: rec.test.name, message: rec.result.message ?? "" }), failed: true } : { text: t("{test} passed.", { test: rec.test.name }), failed: false };

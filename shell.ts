@@ -191,6 +191,8 @@ export interface Shell {
   showPanel(id?: string): void;
   /** What the view's shortcut does: show it, or hide the panel when it is already what is shown. */
   togglePanel(id?: string): void;
+  /** The panel at least this tall (as far as the editor leaves room), for a view that needs it: the debugger's. */
+  growPanel(height: number): void;
   statusItem(side: "left" | "right"): StatusItemHandle;
   notify(spec: NotificationSpec): void;
   dismiss(key: string): void;
@@ -619,6 +621,14 @@ export function createShell(options: ShellOptions): Shell {
     },
     showPanel,
     togglePanel,
+    growPanel(height) {
+      const most = Math.max(PANEL_MIN, main.clientHeight - 120);
+      const next = Math.min(most, Math.max(layout.panelHeight, height));
+      if (next === layout.panelHeight) return;
+      layout.panelHeight = next;
+      applyLayout();
+      saveLayout();
+    },
     statusItem(side) {
       const slot = el("span", { hidden: true, style: "display: contents" });
       (side === "left" ? statusLeft : statusRight).append(slot);

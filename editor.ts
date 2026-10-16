@@ -884,7 +884,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       let view: DebugGameView | string | null = null;
       if (engine.view) {
         try {
-          const host = el("div");
+          const host = debug.gameHost();
           const v = engine.view(host) as ScmSimDebugView;
           if (typeof v.debug === "function" && typeof v.show === "function") {
             const shown = await v.debug(bytes).then(() => null, (err: Error) => err.message);

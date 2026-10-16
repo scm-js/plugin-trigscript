@@ -310,6 +310,7 @@ export const KO: Record<string, string> = {
   "{name} changed: {before} → {after}": "{name} 바뀜: {before} → {after}",
   "The end of the run: {message}": "실행의 끝: {message}",
   "the test failed": "테스트 실패",
+  "The start of the run.": "실행의 처음.",
   "The end of the run: the test passed.": "실행의 끝: 테스트 통과.",
   "The record stops at frame {frame} ({why}): the variables are not known past it.": "기록이 {frame}번째 프레임에서 끝납니다({why}). 그 뒤의 변수 값은 알 수 없습니다.",
   "{test} failed: {message}": "{test} 실패: {message}",

@@ -174,6 +174,7 @@ export class DebugCursor {
       return null;
     };
     let { k, s } = this.at;
+    const from = { k, s };
     // Positions in order: each step of a frame, then its end. A position is checked as it is reached, never where
     // the cursor stood; `passed` is the step gone over on the way to it.
     const next = (): number | null => {
@@ -190,7 +191,9 @@ export class DebugCursor {
       const passed = next();
       if (Number.isNaN(passed)) break;
       // A watched variable a passed step wrote, and whose value it changed: stop just after that step.
-      const name = passed !== null && cells.size ? touches(passed) : null;
+      // (Backwards, the change the cursor stands just after is where it is already: the one before it is next.)
+      const here = dir < 0 && passed !== null && k === from.k && passed + 1 === from.s;
+      const name = passed !== null && cells.size && !here ? touches(passed) : null;
       if (name && passed !== null) {
         this.moveTo({ k, s: passed });
         const before = this.watchText(name);

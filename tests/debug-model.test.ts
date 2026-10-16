@@ -127,6 +127,10 @@ describe("walking a debugged run", () => {
     expect(c.where.k).toBe(3);
     expect(c.continueBack(new Set(), ["a"])).toEqual({ kind: "watch", name: "a", before: "10", after: "20" });
     expect(c.where.k).toBe(3);
+    // Again: the change before that one, not the one the cursor stands after.
+    expect(c.continueBack(new Set(), ["a"])).toEqual({ kind: "watch", name: "a", before: "0", after: "10" });
+    expect(c.where.k).toBe(1);
+    expect(c.continueBack(new Set(), ["a"])).toEqual({ kind: "start" });
   });
 
   it("says what each line wrote in the frame so far, and what the frames cost", () => {
