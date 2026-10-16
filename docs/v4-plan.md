@@ -467,6 +467,70 @@ like the existing hints ("~1,200 actions a frame"), and as a graph over a test's
 Open: what count, on what machine, actually lags Remastered. A probe with a dial (run
 k × 1,000 actions a frame, the user says when it stutters) gives the first number.
 
+**As built (2026-10-16, under Node and in the editor; the dial not yet played).**
+
+- **The count.** scm-sim `src/exact/cost.ts`. The game runs a trigger's conditions at 0x489200 and its actions at
+  0x489130, each through a table of routines by type: conditions at 0x515A98, actions at 0x512800, the record in
+  ecx. Those routines are reached by pointer. `installCost` therefore wraps every one of them with a count, after
+  `installEud`, so the two EUD routines are counted too. It also wraps the engine's own stand-ins behind import
+  cells (Center View and Minimap Ping, from `live.ts`).
+  - What is not counted: a switched-off condition and an empty slot cost nothing, because the game calls nothing
+    for them.
+  - What is counted every time: an action that waits (Wait, Transmission) is counted on every frame it runs, as
+    the game does the work every frame.
+  - A check: on the units probe the tap's Deaths and Set Deaths totals agree with `EudTap`'s.
+- **Records to lines.** A group function turns a record into its line, through the build's map of triggers (A1).
+  `CARRY` puts a record under the line that ran just before it in the frame. eudplib's variables, its functions
+  and the triggers no statement made are carried. A variable is a trigger the line's triggers jump through, so a
+  line's work includes the variables it touches. Measured on `for (…) { x += 1; }`, one turn of the loop is:
+  - the compare: 21;
+  - `i++`: 9;
+  - `x += 1`: 9 (7 of its own and 2 in the variable).
+
+  That is 39 conditions and actions a turn.
+- **What is apart from the lines (`TestCost.other`).** Records carried before any line in a frame, and records
+  outside the payload, count under no line:
+  - eudplib's start, once: about 82–89 thousand at frame 2 on any map, mostly payload set-up reached from the
+    scenario's own TRIG;
+  - eudplib's work at the top of every frame: about 580 a frame on the game-tests probe (payloadMain, ReceiveQC
+    for MSQC, RunTrigTrigger), more than that probe's own lines (about 225).
+
+  Without this split, eudplib's start was every test's peak.
+- **Where it shows.**
+  - `scripts/exact-eud.ts` prints the totals and the costliest origins, and writes them with `--cost=`.
+    `scripts/game-check.mts` passes `--cost` through.
+  - The test handle carries the tap. It is paused for a test's own actions between frames, and cleared on
+    `reset()`.
+  - `GameSim.cost()` reads it after each test, so `TestResult.cost` holds a series a frame and the lines by their
+    peak.
+  - `scripts/test-game.mts` prints each test's average, peak and three costliest lines. The copies of A3 count too.
+    A merged result keeps the first copy's.
+  - The editor:
+    - A line that ran 1,000 or more in one frame of any test gets a hint at its end, such as "31k a frame". The
+      note names the test and frame.
+    - The hint shows only while the file's text is what was measured.
+    - Test Results shows a "cost" row (average and peak), a graph of the frames and the three costliest lines.
+- **Measured.**
+  - The units probe peaks at 103,639 in one frame (frame 842): three unit-loop lines of about 30 thousand each.
+  - The game-tests probe runs about 225 a frame of its own.
+  - **End to end in a built editor:** a program with `for (let i = 0; i < 200; i++) { x += 1; }` every frame and
+    two tests. The status bar said "In the game: 2 of 2 tests passed." about 8 s after the click. Test Results
+    showed:
+    - the cost row: "1,834 conditions and actions a frame on average, 1,837 at the most (frame 49)";
+    - the graph;
+    - the line at 1,800 a frame.
+
+    The line's hint read "1.8k a frame" after "unrolled ×200", the same numbers as under Node. A loop with bounds
+    known at build time is unrolled, so it costs 9 a turn (only `x += 1`), not 39. The graph's colour first used a
+    token the editor does not have (`--accent`); it now uses `--teal`.
+- **The dial.** `probes/frame-cost.ts` climbs a ladder by itself, one step every 10 game seconds. Keys: W up,
+  Q down, E holds. The steps aim at 1, 2, 5, 10, 20, 50, 100, 200, 500 and 1,000 thousand a frame. Measured in the
+  lifted game (`--cost`), each step lands at its target plus about 630 (eudplib's own and the program's).
+  1,004,714 at the top.
+  - Built to `fixtures/eud/frame-cost.scx` and copied to the Remastered maps folder (`TrigScript/`).
+  - Nothing yet says what count stutters. The hint's threshold (1,000) and the graph have no line for "lags"
+    until the dial has been played.
+
 ### A5. The debugger in the game (4.2.0)
 
 9½'s debugger gets a second backend.
