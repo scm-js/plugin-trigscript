@@ -534,8 +534,11 @@ k × 1,000 actions a frame, the user says when it stutters) gives the first numb
 
     So the budget is 500 thousand a frame, about 12,800 turns of a plain loop. The editor's hint starts at 10,000 a
     line (2% of it). The cost row and the hint's note give a count as a share of the 500 thousand.
-    - Steps 11 and 12 were added (2 and 5 million; measured 2,000,640 and 5,000,643) to find where the game slows.
-    - Not played yet: those two steps, and the patch number and machine.
+    - Steps 11 and 12 were added (2 and 5 million; measured 2,000,640 and 5,000,643) and played the same day:
+      - 2 million: the flicker, no slowing;
+      - 5 million: the game slows.
+    - The machine: AMD Ryzen 9 7900X (12 cores, 4.7 GHz), a fast one. A slower computer reaches each step sooner,
+      so the budget stays at 500 thousand and the note says it was a fast computer. Patch number not noted.
 
 ### A5. The debugger in the game (4.2.0)
 

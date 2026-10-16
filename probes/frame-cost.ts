@@ -11,7 +11,8 @@
 //   W  one step up        Q  one step down        E  stop climbing / climb again
 //
 // Played 2026-10-16 (steps 0–10 then): no effect up to step 9 (500 thousand); at step 10 (a million) the screen
-// flickered, enough to distract, and the game did not slow. Steps 11 and 12 (2 and 5 million) were added to find where it does.
+// flickered, enough to distract, and the game did not slow. Steps 11 and 12 (2 and 5 million) were added and played
+// the same day: still the flicker at 2 million, the game slows at 5 million. Ryzen 9 7900X.
 //
 // WHAT TO NOTE: the first step at which the game stutters (units jerk, the screen hitches), the first at which it
 // is plainly slow (a game second clearly longer than a real one), and, if it gets there, the step at which it

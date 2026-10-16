@@ -126,8 +126,8 @@ const NOTICE_MS = 8_000;
 const TESTS_SLOW_MS = 2_000;
 /**
  * What Remastered was seen to run in a frame with no effect: the dial (probes/frame-cost.ts, played 2026-10-16) ran
- * 500 thousand conditions and actions a frame with none, and a million with a flicker of the screen that the player
- * found distracting, though the game did not slow.
+ * 500 thousand conditions and actions a frame with none; from a million the screen flickers, enough to distract,
+ * and at 5 million the game slows. That was a fast computer (Ryzen 9 7900X): a slower one reaches each sooner.
  */
 const COST_SEEN = 500_000;
 /** A line that ran this many conditions and actions in one frame of a test in the game says so beside it: 2% of COST_SEEN. */
@@ -843,7 +843,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       .map((l) => ({
         file: l.file, line: l.line,
         label: t("{n} a frame", { n: shortCount(l.peak) }),
-        note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. Remastered has run 500 thousand a frame with no visible effect, and its screen flickers at a million; this is {share} of the 500 thousand.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames, share: shareOf(l.peak) }),
+        note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran 500 thousand a frame with no visible effect; its screen flickers from a million and the game slows at 5 million. This is {share} of the 500 thousand.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames, share: shareOf(l.peak) }),
       }));
   };
 
