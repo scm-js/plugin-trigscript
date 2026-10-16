@@ -224,6 +224,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "and": case "or": e.items.forEach(expr); break;
       case "not": case "test": expr(e.expr); break;
       case "edge": expr(e.cond); break;
+      case "running": expr(e.task); break;
       case "call": call(e.call); break;
       default: break;
     }
@@ -252,6 +253,8 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "for": if (s.cond) expr(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": call(s.call); break;
+      case "cancel": expr(s.task); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;

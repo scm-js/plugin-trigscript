@@ -120,8 +120,8 @@ describe("async functions and await", () => {
 
 describe("async functions and await: what is said", () => {
   it("a promise nothing waits for", () => {
-    expect(messages(`sleep(frames(1));`)).toEqual(["sleep() gives a promise, and nothing waits for it here: await sleep(frames(1)). A program cannot yet start something and leave it running beside it."]);
-    expect(messages(`async function f(): Promise<void> { await sleep(frames(1)); } f();`)).toEqual(["f() gives a promise, and nothing waits for it here: await f(). A program cannot yet start something and leave it running beside it."]);
+    expect(messages(`sleep(frames(1));`)).toEqual(["sleep() gives a promise, and nothing waits for it here: await sleep(frames(1))."]);
+    expect(messages(`async function f(): Promise<void> { await sleep(frames(1)); } f();`)).toEqual(["f() gives a promise, and nothing waits for it here: await f() — or, to leave it running beside the program, start(f())."]);
     expect(messages("", `program(() => { async function f(): Promise<void> { await sleep(frames(1)); } f(); });`)).toEqual(["f() waits, and a program waits in an async function: program(async () => { … await f(); … })."]);
   });
 

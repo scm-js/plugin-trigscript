@@ -309,6 +309,30 @@ const FIXTURES: Record<string, string> = {
     const first = await Promise.race([until(() => total >= 2).then(() => true), sleep(seconds(5)).then(() => false)]);
     if (first) setResources(CurrentPlayer, "add", 50, "ore");
   }, { owner: AllPlayers });`,
+  started: `program(async () => {
+    let made = 0;
+    async function drip(k: number, name: string) {
+      for (let i = 0; i < k; i++) { createUnit(P8, units.ZergZergling, 1, locations.Anywhere); made++; await sleep(frames(2)); }
+      print(\`\${name} done\`);
+    }
+    const t = start(drip(3, "a"), { max: 4 });
+    for (let i = 0; i < made + 2; i++) start(drip(i, "b"));
+    void drip(1, "c");
+    start(async () => { await Promise.all([sleep(frames(1)), until(() => made >= 2)]); start(drip(1, "inner")); });
+    await t;
+    if (t.running) defeat();
+    const f = start(async () => { while (true) await sleep(frames(1)); });
+    f.cancel();
+    victory();
+  });`,
+  startedPerPlayer: `program(async () => {
+    let mine = 0;
+    async function add(k: number) { await sleep(frames(k)); mine += k; }
+    start(add(1));
+    start(add(2), { max: 2 });
+    await until(() => mine >= 3);
+    setResources(CurrentPlayer, "add", 50, "ore");
+  }, { owner: AllPlayers });`,
 };
 
 function build(name: string, src: string): { out: number; triggers: number } {
@@ -526,6 +550,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(15);
+    expect(ir.version).toBe(16);
   });
 });

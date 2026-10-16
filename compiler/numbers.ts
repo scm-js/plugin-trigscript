@@ -171,6 +171,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "and": case "or": e.items = e.items.map(bool); return e;
       case "not": e.expr = bool(e.expr); return e;
       case "edge": e.cond = bool(e.cond); return e;
+      case "running": e.task = num(e.task)[0]; return e;
       case "ternary": e.cond = bool(e.cond); e.whenTrue = bool(e.whenTrue); e.whenFalse = bool(e.whenFalse); return e;
       case "unitAlive": case "unitFlag": unit(e.unit); return e;
       case "unitSame": unit(e.left); unit(e.right); return e;
@@ -279,6 +280,8 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "for": if (s.cond) s.cond = bool(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": call(s.call); break;
+      case "cancel": s.task = num(s.task)[0]; break;
       case "switch": s.value = num(s.value)[0]; s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value && result) s.value = valueFor(result, s.value, s.at); break;
       case "action": for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at); if (s.text) s.text = text(s.text); break;

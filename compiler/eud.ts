@@ -57,6 +57,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "not": expr(e.expr); break;
       case "test": expr(e.expr); break;
       case "edge": expr(e.cond); break;
+      case "running": expr(e.task); break;
       case "call": call(e.call); break;
       default: break;
     }
@@ -85,6 +86,8 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "for": if (s.cond) expr(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": call(s.call); break;
+      case "cancel": expr(s.task); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
@@ -108,6 +111,7 @@ function statements(body: Stmt[], visit: (s: Stmt) => void) {
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": s.call.body.forEach(stmt); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -185,6 +189,7 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, 
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at); s.call.body.forEach(stmt); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at); s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -204,6 +209,7 @@ function remarks(body: Stmt[], out: LineHint[]) {
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": s.call.body.forEach(stmt); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -333,6 +339,7 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
       case "unitLoop": s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": s.call.body.forEach(stmt); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -380,6 +387,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "and": case "or": return { ...e, items: e.items.map(expr) };
       case "not": return { ...e, expr: expr(e.expr) };
       case "edge": return { ...e, cond: expr(e.cond) };
+      case "running": return { ...e, task: expr(e.task) };
       default: return e;
     }
   };
@@ -408,6 +416,8 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "for": return { ...s, ...(s.cond ? { cond: expr(s.cond) } : {}), update: s.update.map(stmt), body: s.body.map(stmt) };
       case "unrolled": return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
       case "parallel": return { ...s, branches: s.branches.map((b) => b.map(stmt)) };
+      case "start": return { ...s, call: call(s.call) };
+      case "cancel": return { ...s, task: expr(s.task) };
       case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
       case "return": return s.value ? { ...s, value: any(s.value) } : s;
       case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}), ...(s.text ? { text: text(s.text) } : {}) };

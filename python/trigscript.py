@@ -68,7 +68,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 15
+IR_VERSION = 16
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -134,15 +134,46 @@ class Leave(Exception):
     """Raised through the lowering when a statement ends the straight line (break / continue / return)."""
 
 
-class Storage:
-    """A variable's cell: plain, or a 12-slot row of a per-player program."""
+class Rows:
+    """Which of a cell's copies is the one in use: a per-player program has one a player, a task's body one a slot of its
+    start (`Pool`), and a task's in a per-player program one a slot within each player's. Called, it is the index."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, lowering, per_player, pool):
+        self.lowering, self.per_player, self.pool = lowering, per_player, pool
+        self.count = (12 if per_player else 1) * (pool.max if pool else 1)
+
+    def __call__(self):
+        if self.pool:
+            return self.pool.row
+        return self.lowering.player_of()
+
+
+class RowCell:
+    """A cell of the lowering's own (a coroutine's place, a latch), with a copy for each row of `rows` when it has them."""
+
+    def __init__(self, rows, initial=0):
+        self.rows = rows
+        self.store = EUDArray([initial] * rows.count) if rows else EUDVariable(initial)  # initial: the lowering's own state
+
+    def get(self):
+        return self.store[self.rows()] if self.rows else self.store
+
+    def set(self, value):
+        if self.rows:
+            self.store[self.rows()] = value
+        else:
+            self.store << value
+
+
+class Storage:
+    """A variable's cell: plain, or one of rows (`Rows`) - a 12-slot row of a per-player program, a row a task's slot."""
+
+    def __init__(self, decl, rows):
         self.decl = decl
         self.bits = decl.get("bits")
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        self.store = EUDArray([0] * 12) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
+        self.rowed = rows is not None
+        self.player_of = rows
+        self.store = EUDArray([0] * rows.count) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
 
     def get(self):
         return self.store[self.player_of()] if self.rowed else self.store
@@ -161,20 +192,20 @@ class ArrayStorage:
     the script computed when it was built, which is in the map as it loads and which nothing writes. An index
     past either end (read from 0 up, so one below zero too) reads 0 and stores nothing."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, decl, rows):
         self.decl = decl
         self.length = int(decl["length"])
         self.bits = decl.get("bits")
         values = decl.get("values")
-        self.rowed = per_player and not decl.get("shared") and values is None
-        self.player_of = player_of
+        self.rowed = rows is not None and values is None
+        self.player_of = rows
         if decl.get("texts") is not None:
             # A list of texts the script has: a cell is the text's id in the built map's table.
             values = [text_id(t) for t in decl["texts"]]
-        self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (12 if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
+        self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (rows.count if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
 
     def at(self, index):
-        """The cell's place among the store's: the player's row first."""
+        """The cell's place among the store's: the row first (the player's, the task's)."""
         if not self.rowed:
             return index
         p = self.player_of()
@@ -418,12 +449,12 @@ class ListStorage:
     in use, how many the block has room for, and the block's size class - a cell each, or a row of twelve each in
     a per-player program. Reads and stores are bounded by the cells in use; a store at exactly the length is a push."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, decl, rows):
         self.decl = decl
         self.bits = decl.get("bits")
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no block
+        self.rowed = rows is not None
+        self.player_of = rows
+        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no block
         self.handle = {name: make() for name in ("ptr", "len", "room", "k")}
         self.heap = heap()
 
@@ -879,13 +910,13 @@ class TextVal:
 
 
 class TextStorage:
-    """A text variable that is made: three cells, or three rows of twelve in a per-player program."""
+    """A text variable that is made: three cells, or three rows (of twelve in a per-player program, of a task's slots)."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, decl, rows):
         self.decl = decl
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no text yet, and no block
+        self.rowed = rows is not None
+        self.player_of = rows
+        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no text yet, and no block
         self.addr, self.block, self.len = make(), make(), make()
 
     def cell(self, cell):
@@ -931,13 +962,13 @@ NO_UNIT = UnitRef(0, 0, 0)
 
 
 class UnitStorage:
-    """A unit variable: three cells, or three 12-slot rows of a per-player program."""
+    """A unit variable: three cells, or three rows (12-slot of a per-player program, of a task's slots)."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, decl, rows):
         self.decl = decl
-        self.rowed = per_player
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
+        self.rowed = rows is not None
+        self.player_of = rows
+        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
         self.ptr, self.epd, self.uid = make(), make(), make()
 
     def get(self):
@@ -1001,33 +1032,40 @@ def fresh(value=0):
 
 class Coroutine:
     """Where a coroutine is: the label it goes on from (0 its start, DONE once it ended) and the frames it still waits,
-    a cell each, a row of twelve in a per-player program. The program is one; each branch of a Promise.all / race is
-    another, which the program runs inside its own frame for as long as it is waiting at that statement."""
+    a cell each, a row of twelve in a per-player program, a row a slot in a task's body. The program is one; each branch
+    of a Promise.all / race is another, which runs inside the frame of what waits at that statement; a task is one too.
+    `task`: the coroutine is a task's own, which a cancel() may have ended while it ran: parking leaves an end an end."""
 
-    def __init__(self, lowering):
+    def __init__(self, lowering, rows, initial=0, task=False):
         self.lowering = lowering
-        self.state = EUDArray([0] * 12) if lowering.per_player else EUDVariable(0)  # initial: program state
-        self.wait = EUDArray([0] * 12) if lowering.per_player else EUDVariable(0)  # initial: program state
+        self.state = RowCell(rows, initial)
+        self.wait = RowCell(rows, 0)
+        self.task = task
         self.resumes = []  # (index, Forward) for every place it can go on from
         self.frame_end = None
 
     def get_state(self):
-        return self.state[self.lowering.player] if self.lowering.per_player else self.state
+        return self.state.get()
 
     def set_state(self, value):
-        if self.lowering.per_player:
-            self.state[self.lowering.player] = value
-        else:
-            self.state << value
+        self.state.set(value)
 
     def get_wait(self):
-        return self.wait[self.lowering.player] if self.lowering.per_player else self.wait
+        return self.wait.get()
 
     def set_wait(self, value):
-        if self.lowering.per_player:
-            self.wait[self.lowering.player] = value
+        self.wait.set(value)
+
+    def park(self, index, wait):
+        """Stop here for this frame, to go on from `index` once `wait` more frames have passed."""
+        if self.task:
+            if EUDIfNot()(as_var(self.get_state()) == DONE):
+                self.set_state(index)
+            EUDEndIf()
         else:
-            self.wait << value
+            self.set_state(index)
+        self.set_wait(wait)
+        EUDJump(self.frame_end)
 
     def resume_point(self):
         """A place to go on from: its number, which the state takes, and its label, to be placed where it is."""
@@ -1035,6 +1073,45 @@ class Coroutine:
         label = Forward()
         self.resumes.append((index, label))
         return index, label
+
+
+class Pool:
+    """A `start` statement's tasks: `max` slots, each a row of the cells of the task's body - its coroutine's place
+    (DONE: the slot is free), the generation of the task in it, the frame it last had its turn in. `slot` is the slot
+    being run or started, `row` its row among the cells (the player's rows first in a per-player program, from `base`)."""
+
+    def __init__(self, lowering, st):
+        self.st = st
+        self.task = int(st["task"])
+        self.max = int(st["max"])
+        self.slot = EUDVariable(0)  # initial: the pool's own state
+        self.row = EUDVariable(0)  # initial: the pool's own state
+        self.base = EUDVariable(0)  # initial: the pool's own state
+        self.said = EUDVariable(0)  # initial: nothing said yet
+        self.rows = Rows(lowering, lowering.per_player, self)
+        self.co = Coroutine(lowering, self.rows, DONE, task=True)
+        self.gen = RowCell(self.rows, 0)
+        self.ran = RowCell(self.rows, 0)
+        # How many of its slots are running (the player's, in a per-player program), and that count where the tasks'
+        # turn can test it every time round: the slots after the last running one are not looked at.
+        self.live = RowCell(Rows(lowering, True, None) if lowering.per_player else None, 0)
+        self.count = self.live.store if not lowering.per_player else EUDVariable(0)  # initial: the pool's own state
+
+    def add(self, n):
+        """One more task running (1) or one fewer (-1)."""
+        if self.count is self.live.store:
+            self.count += n
+            return
+        self.live.set(as_var(self.live.get()) + n)
+        self.count += n
+
+    def select(self, i):
+        self.slot << i
+        self.row << self.base + i
+
+    def at(self, cell, slot):
+        """A cell of the slot `slot`, without selecting it: the one being run stays where it is."""
+        return cell.store[self.base + slot]
 
 
 class Lowering:
@@ -1045,9 +1122,29 @@ class Lowering:
         self.slots = owner_slots(program)
         self.player = None
         self.vars = {}
-        self.arrays = {a["id"]: SliceStorage(a, self) if a.get("slice") else InnerListStorage(a, self) if a.get("through") else (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
-        # The program's own coroutine, and the one being lowered (a branch of a Promise.all / race inside it).
-        self.top = Coroutine(self)
+        # The `start` statements' tasks, by their number, in that order; the one whose body is being lowered.
+        starts = []
+        each_start([program.get("body", []), program.get("functions", [])], starts.append)
+        self.pools = {}
+        self.pool = None
+        for st in sorted(starts, key=lambda st: int(st["task"])):
+            self.pools[int(st["task"])] = Pool(self, st)
+        self.tick = EUDVariable(0)  # initial: frames the tasks have run
+        self.again = EUDVariable(0)  # initial: no task started during the tasks' turn
+        self.arrays = {}
+        for a in program.get("arrays", []):
+            if a.get("slice"):
+                self.arrays[a["id"]] = SliceStorage(a, self)
+            elif a.get("through"):
+                self.arrays[a["id"]] = InnerListStorage(a, self)
+            else:
+                self.arrays[a["id"]] = (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.rows_of(a))
+        # A task's parameters are set where it is started, which may be lowered after its body: theirs are made now.
+        for pool in self.pools.values():
+            for prm in pool.st["call"]["params"]:
+                self.declare(prm["decl"])
+        # The program's own coroutine, and the one being lowered (a branch of a Promise.all / race inside it, a task).
+        self.top = Coroutine(self, self.rows())
         self.co = self.top
         self.latches = {}
         # The functions that are called, by id, and each one's EUDFunc once something has called it.
@@ -1063,13 +1160,26 @@ class Lowering:
             raise Fail("trigscript: a per-player variable outside the player loop")
         return self.player
 
+    def rows(self):
+        """The rows a cell of the lowering's own has where the lowering is: a player's, a task's slot's, or none."""
+        return Rows(self, self.per_player, self.pool) if self.per_player or self.pool else None
+
+    def rows_of(self, decl):
+        """The rows of a variable's or an array's cells: one a player unless it is shared, one a slot of its task."""
+        pool = self.pools.get(decl["task"]) if decl.get("task") is not None else None
+        per_player = self.per_player and not decl.get("shared")
+        return Rows(self, per_player, pool) if per_player or pool else None
+
     def declare(self, decl):
+        made = self.vars.get(decl["id"])
+        if made is not None and decl.get("task") is not None:
+            return made  # (a task's parameter, made with its pool)
         if decl.get("kind") == "unit":
-            s = UnitStorage(decl, self.per_player, self.player_of)
+            s = UnitStorage(decl, Rows(self, self.per_player, self.pools.get(decl.get("task"))) if self.per_player or decl.get("task") is not None else None)
         elif decl.get("kind") == "text" and decl.get("text") != "id":
-            s = TextStorage(decl, self.per_player, self.player_of)
+            s = TextStorage(decl, self.rows_of(decl))
         else:
-            s = Storage(decl, self.per_player, self.player_of)
+            s = Storage(decl, self.rows_of(decl))
         self.vars[decl["id"]] = s
         return s
 
@@ -1383,6 +1493,8 @@ class Lowering:
             return (f_rand() & 1) >= 1
         if k in ("unitAlive", "unitFlag", "unitSame"):
             return as_var(self.truth(e)) >= 1
+        if k == "running":
+            return as_var(self.running(e)) >= 1
         if k == "edge":
             return self.edge(e)
         if k == "ternary":
@@ -1417,6 +1529,8 @@ class Lowering:
             return t
         if e["kind"] == "unitFlag":
             return self.unit_flag(e)
+        if e["kind"] == "running":
+            return self.running(e)
         if e["kind"] == "unitSame":
             a, b = self.unit(e["left"]), self.unit(e["right"])
             t = fresh(0)
@@ -1436,17 +1550,9 @@ class Lowering:
         """rose(c): true on the frame c becomes true; once(c): true the first time it holds."""
         key = id(e)
         if key not in self.latches:
-            self.latches[key] = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: the latch
+            self.latches[key] = RowCell(self.rows(), 0)  # initial: the latch
         latch = self.latches[key]
-
-        def get():
-            return latch[self.player] if self.per_player else latch
-
-        def put(v):
-            if self.per_player:
-                latch[self.player] = v
-            else:
-                latch << v
+        get, put = latch.get, latch.set
 
         fired = fresh(0)
         held = self.truth(e["cond"])
@@ -2013,6 +2119,10 @@ class Lowering:
             self.sleep(st)
         elif k == "parallel":
             self.parallel(st)
+        elif k == "start":
+            self.start(st)
+        elif k == "cancel":
+            self.cancel(st)
         elif k == "action":
             self.action(st)
         elif k == "print":
@@ -2110,11 +2220,9 @@ class Lowering:
             frames = max(1, int(round(float(st.get("ms", 0)) * FRAMES_PER_SECOND / 1000)))
         co = self.co
         index, resume = co.resume_point()
-        co.set_state(index)
         # The frame after this one is one frame later: sleep(frames(1)) goes on in the next frame, as the
         # simulator has it. (Until 3.4 the wait was one frame longer, so a loop sleeping a frame ran every other.)
-        co.set_wait(frames - 1)
-        EUDJump(co.frame_end)
+        co.park(index, frames - 1)
         resume << NextTrigger()
 
     def parallel(self, st):
@@ -2125,7 +2233,7 @@ class Lowering:
         if self.in_function:
             raise Fail("trigscript: await inside a function that is called%s" % where(st))
         parent = self.co
-        kids = [Coroutine(self) for _ in st["branches"]]
+        kids = [Coroutine(self, self.rows()) for _ in st["branches"]]
         for k in kids:
             k.set_state(0)
             k.set_wait(0)
@@ -2145,9 +2253,7 @@ class Lowering:
             skip << NextTrigger()
         if st["mode"] == "all":
             EUDJumpIf([as_var(k.get_state()) == DONE for k in kids], after)
-        parent.set_state(index)
-        parent.set_wait(0)
-        EUDJump(parent.frame_end)
+        parent.park(index, 0)
         after << NextTrigger()
 
     def action(self, st):
@@ -2643,26 +2749,26 @@ class Lowering:
                 continue
             if isinstance(s, UnitStorage):
                 for cell in (s.ptr, s.epd, s.uid):
-                    pairs.append(self.cell_pair(cell, s.rowed))
+                    pairs.append(self.cell_pair(cell, s.player_of if s.rowed else None))
             elif isinstance(s, TextStorage):
                 for cell in (s.addr, s.block, s.len):
-                    pairs.append(self.cell_pair(cell, s.rowed))
+                    pairs.append(self.cell_pair(cell, s.player_of if s.rowed else None))
             elif isinstance(s, Storage):
-                pairs.append(self.cell_pair(s.store, s.rowed))
+                pairs.append(self.cell_pair(s.store, s.player_of if s.rowed else None))
         for id_ in saves.get("arrays", []):
             a = self.array(id_, node)
             if isinstance(a, ListStorage):
                 for name in HANDLE:
-                    pairs.append(self.cell_pair(a.handle[name], a.rowed))
+                    pairs.append(self.cell_pair(a.handle[name], a.player_of if a.rowed else None))
         return pairs
 
     def saved_texts(self, saves):
         """The made texts among what a frame keeps: each owns a block, which the frame keeps for it."""
         return [s for s in (self.vars.get(id_) for id_ in saves.get("vars", [])) if isinstance(s, TextStorage)]
 
-    def cell_pair(self, cell, rowed):
-        if rowed:
-            return (lambda: cell[self.player_of()]), (lambda v: cell.__setitem__(self.player_of(), v))
+    def cell_pair(self, cell, rows):
+        if rows:
+            return (lambda: cell[rows()]), (lambda v: cell.__setitem__(rows(), v))
         return (lambda: cell), (lambda v: cell << v)
 
     def keep(self, call):
@@ -2678,8 +2784,10 @@ class Lowering:
             GetGlobalStringBuffer().print("\x06TrigScript: stack overflow in %s, line %s - %d calls deep. The program has stopped." % (saves.get("within", "a function"), (call.get("at") or {}).get("line", "?"), STACK_DEPTH))
             st["depth"] << 0
             st["at"] << st["base"]
-            self.top.set_state(DONE)
-            EUDJump(self.top.frame_end)
+            # The program stops for good, or, in a task, the task does.
+            stopped = self.pool.co if self.pool else self.top
+            stopped.set_state(DONE)
+            EUDJump(stopped.frame_end)
         EUDEndIf()
         pairs = self.saved_cells(saves, call)
         at = st["at"]
@@ -2787,9 +2895,150 @@ class Lowering:
 
     # ── one frame ──
     def frame(self):
+        if self.pools:
+            self.tick += 1
+            if self.per_player:
+                for pool in self.pools.values():
+                    pool.base << f_mul(self.player, pool.max)
         self.coroutine(self.top, self.p["body"])
+        self.run_tasks()
 
-    def coroutine(self, co, body):
+    def run_tasks(self):
+        """The tasks' turn, after the program's: each slot whose task is running and has not had its turn in this frame
+        goes on until it sleeps, waits or ends - by the number of its start, then by slot. A task started meanwhile
+        sets `again`, and the slots are gone through once more, so that it starts in this frame too."""
+        if not self.pools:
+            return
+        if self.per_player:
+            for pool in self.pools.values():
+                pool.count << pool.live.get()
+        sweep = Forward()
+        sweep << NextTrigger()
+        self.again << 0
+        for pool in self.pools.values():
+            i, seen = EUDVariable(), EUDVariable()
+            i << 0
+            seen << 0
+            # `seen`: the running slots so far, less those that ended on their turn - so while it is below the count,
+            # a running slot is still ahead (or one started meanwhile, which the next time round finds).
+            if EUDWhile()([i <= pool.max - 1, seen < pool.count]):
+                pool.select(i)
+                skip = Forward()
+                EUDJumpIf(as_var(pool.co.get_state()) == DONE, skip)
+                seen += 1
+                EUDJumpIf(as_var(pool.ran.get()) == self.tick, skip)
+                pool.ran.set(self.tick)
+                outer = self.pool
+                self.pool = pool
+                end = Forward()
+                call = pool.st["call"]
+                result = self.declare(call["result"]["decl"]) if call.get("result") else None
+                self.coroutine(pool.co, call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}}, end)
+                self.pool = outer
+                if EUDIf()(as_var(pool.co.get_state()) == DONE):
+                    pool.add(-1)
+                    seen -= 1
+                EUDEndIf()
+                skip << NextTrigger()
+                i += 1
+            EUDEndWhile()
+        EUDJumpIf(self.again >= 1, sweep)
+
+    def start(self, st):
+        """A task into a free slot of its start: the arguments worked out as things are now, then the slot taken - its
+        generation one more, its parameters set, its place the body's start - and the number the task is known by
+        into `handle`. With every slot running nothing starts, and the game says so once."""
+        pool = self.pools[int(st["task"])]
+        call = st["call"]
+        values = []
+        for prm in call["params"]:
+            kind = prm["decl"]["kind"]
+            target = self.var(prm["decl"]["id"], st)
+            if kind == "unit":
+                ref = self.unit(prm["init"])
+                uid = ref.uid if ref.uid is not None else f_maskread_epd(ref.epd + OFF_UID, 0xFF00)
+                values.append(UnitRef(fresh(ref.ptr), fresh(ref.epd), fresh(uid)))
+            elif kind == "text" and isinstance(target, TextStorage):
+                v = self.own(self.text(prm["init"]))
+                values.append(TextVal(fresh(v.addr), fresh(v.block), fresh(v.length()), True))
+            elif kind == "text":
+                values.append(fresh(self.text_id_of(prm["init"])))
+            else:
+                values.append(fresh(self.value(prm["init"], kind)))
+        found, after = Forward(), Forward()
+        i = fresh(0)
+        if EUDWhile()(i <= pool.max - 1):
+            pool.select(i)
+            EUDJumpIf(as_var(pool.co.get_state()) == DONE, found)
+            i += 1
+        EUDEndWhile()
+        # Every slot is running.
+        for v in values:
+            if isinstance(v, TextVal):
+                texts()["release"](v.block)
+        if EUDIf()(pool.said == 0):
+            pool.said << 1
+            GetGlobalStringBuffer().print("\x06TrigScript: %s did not start, line %s - all %d of this start's tasks are running." % (call.get("name") or "a task", (st.get("at") or {}).get("line", "?"), pool.max))
+        EUDEndIf()
+        if st.get("handle"):
+            self.var(st["handle"], st).set(0)
+        EUDJump(after)
+        found << NextTrigger()
+        gen = fresh(pool.gen.get())
+        if EUDIf()(gen >= 0xFFFF):
+            gen << 0
+        EUDEndIf()
+        gen += 1
+        pool.gen.set(gen)
+        for prm, v in zip(call["params"], values):
+            target = self.var(prm["decl"]["id"], st)
+            if isinstance(v, UnitRef):
+                target.set(v)
+            elif isinstance(v, TextVal):
+                texts()["release"](target.cell(target.block))
+                target.write(v.addr, v.block, v.length())
+            else:
+                target.set(v)
+        pool.co.set_state(0)
+        pool.co.set_wait(0)
+        pool.ran.set(self.tick - 1)
+        pool.add(1)
+        self.again << 1
+        if st.get("handle"):
+            self.var(st["handle"], st).set(pool.slot + pool.task * 256 + f_bitlshift(fresh(gen), 16))
+        after << NextTrigger()
+
+    def task_slot(self, e, act):
+        """The slot a task's number names, when the task is in it: `act(pool, slot)` runs for it, the slot being run left as it is."""
+        h = fresh(self.num(e))
+        slot = self.bitwise("&", h, 0xFF)
+        task = self.bitwise("&", self.bitwise(">>>", h, 8), 0xFF)
+        gen = self.bitwise(">>>", h, 16)
+        for pool in self.pools.values():
+            if EUDIf()([as_var(task) == pool.task, as_var(slot) <= pool.max - 1]):
+                if EUDIf()([EUDNot(as_var(pool.at(pool.co.state, slot)) == DONE), as_var(pool.at(pool.gen, slot)) == gen]):
+                    act(pool, slot)
+                EUDEndIf()
+            EUDEndIf()
+
+    def running(self, e):
+        out = fresh(0)
+        self.task_slot(e["task"], lambda pool, slot: out << 1)
+        return out
+
+    def cancel(self, st):
+        def stop(pool, slot):
+            pool.co.state.store[pool.base + slot] = DONE
+            # The task whose turn this is ends on it: the tasks' turn counts it then.
+            if self.pool is pool:
+                if EUDIfNot()(as_var(slot) == pool.slot):
+                    pool.add(-1)
+                EUDEndIf()
+            else:
+                pool.add(-1)
+        self.task_slot(st["task"], stop)
+
+    def coroutine(self, co, body, ctx=None, end=None):
         """One frame of a coroutine: count its wait down and leave, or go on from where it stopped until it sleeps or
         ends. Its body is lowered here, once, and the places to go on from are recorded as they are met; the jump
         table is filled in after."""
@@ -2807,9 +3056,11 @@ class Lowering:
         EUDJump(table)
         start << NextTrigger()
         try:
-            self.block(body, {})
+            self.block(body, ctx or {})
         except Leave:
             pass
+        if end is not None:
+            end << NextTrigger()  # (where a `return` in a task's body goes)
         # The body ended: it stops for good, as the classic backend's program does.
         co.set_state(DONE)
         EUDJump(co.frame_end)
@@ -2843,6 +3094,21 @@ def flipped(t):
         out << 1
     EUDEndIf()
     return out
+
+
+def each_start(node, visit):
+    """Every `start` statement in a piece of the IR, outer ones before those in their bodies."""
+    if isinstance(node, list):
+        for x in node:
+            each_start(x, visit)
+        return
+    if not isinstance(node, dict):
+        return
+    if node.get("kind") == "start" and isinstance(node.get("task"), int) and isinstance(node.get("call"), dict):
+        visit(node)
+    for v in node.values():
+        if isinstance(v, (dict, list)):
+            each_start(v, visit)
 
 
 def has_call(node):
@@ -3292,12 +3558,12 @@ if settings.get("variableMap"):
         for id_, s in low.vars.items():
             # (A loop's unit is the scan's own pointer for one turn, kept nowhere: nothing to read.)
             d = getattr(s, "decl", None)
-            if d is None or d.get("temp"):
-                continue
+            if d is None or d.get("temp") or d.get("task") is not None:
+                continue  # (a task's variable is a row a slot: nothing a test reads by name)
             out["vars"].append({"id": id_, "kind": d.get("kind"), "text": d.get("text"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")),
                                 "rowed": bool(s.rowed), "cells": {name: _place(cell) for name, cell in _cells_of(s).items()}})
         for id_, a in low.arrays.items():
-            if isinstance(a, (InnerListStorage, SliceStorage)):
+            if isinstance(a, (InnerListStorage, SliceStorage)) or a.decl.get("task") is not None:
                 continue  # (a row of another's cells, or a list inside one: read through what it is in, not here)
             d = a.decl
             row = {"id": id_, "kind": d.get("kind"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")), "length": int(d.get("length", 0)), "rowed": bool(a.rowed)}
