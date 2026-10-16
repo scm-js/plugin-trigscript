@@ -3096,6 +3096,83 @@ class Input:
         EUDEndIf()
 
 
+# Where each trigger came from, for a run in the lifted game to name the line a trigger belongs to (TrigScript 4,
+# A1). Only when the build asks for it (the `triggerMap` setting): every RawTrigger made is tagged with the
+# statement being lowered, or with the eudplib function whose body it is, and once the payload is laid out one
+# header line and lines of rows say where each trigger sits in it:
+#   TRIGSCRIPT-MAP {"payload": <bytes>, "count": <triggers>}
+#   TRIGSCRIPT-ROWS [[offset, conditions, actions, origin], ...]     (400 a line, as many lines as it takes)
+# An origin is "line:column" (or "file:line:column"), "fn:<name>" for a function of eudplib's, "" for what no
+# statement made (a program's frame, its sleeps), or "eudplib" for what eudplib made before this file was read. The payload sits at the end of the strings section, so a run
+# finds it at the section's address plus its length less the payload's.
+if settings.get("triggerMap"):
+    import eudplib.core.allocator.payload as _payload
+    from eudplib.core.eudfunc.eudfuncn import EUDFuncN as _EUDFuncN
+    from eudplib.core.rawtrigger.rawtriggerdef import RawTrigger as _RawTrigger
+
+    _ORIGINS = []
+    _MADE = {}
+
+    def _origin_of(at):
+        if not at:
+            return ""
+        if at.get("file"):
+            return "%s:%s:%s" % (at.get("file"), at.get("line"), at.get("column"))
+        return "%s:%s" % (at.get("line"), at.get("column"))
+
+    _trigger_init = _RawTrigger.__init__
+
+    def _tagged_trigger(self, *args, **kwargs):
+        _trigger_init(self, *args, **kwargs)
+        _MADE[self] = _ORIGINS[-1] if _ORIGINS else ""
+
+    _RawTrigger.__init__ = _tagged_trigger
+
+    _func_body = _EUDFuncN._create_func_body
+
+    def _tagged_body(self):
+        _ORIGINS.append("fn:" + getattr(self._bodyfunc, "__name__", "?"))
+        try:
+            return _func_body(self)
+        finally:
+            _ORIGINS.pop()
+
+    _EUDFuncN._create_func_body = _tagged_body
+
+    _statement = Lowering.statement
+
+    def _tagged_statement(self, st, ctx):
+        _ORIGINS.append(_origin_of(st.get("at")) or (_ORIGINS[-1] if _ORIGINS else ""))
+        try:
+            return _statement(self, st, ctx)
+        finally:
+            _ORIGINS.pop()
+
+    Lowering.statement = _tagged_statement
+
+    _construct = _payload._construct_payload
+
+    def _construct_and_say():
+        built = _construct()
+        found = _payload._found_objects_dict
+        rows = []
+        # (Every trigger in the payload, also those eudplib made before this file was read, at its own import:
+        # those say "eudplib".)
+        for trg, i in found.items():
+            if not isinstance(trg, _RawTrigger):
+                continue
+            origin = _MADE.get(trg, "eudplib")
+            rows.append([_payload._payload_builder.get_object_addr(i).offset, len(trg._conditions), len(trg._actions), origin])
+        rows.sort()
+        # (In parts, so that no one line of the log runs to megabytes.)
+        print("TRIGSCRIPT-MAP " + json.dumps({"payload": len(built.data), "count": len(rows)}, separators=(",", ":")))
+        for k in range(0, len(rows), 400):
+            print("TRIGSCRIPT-ROWS " + json.dumps(rows[k:k + 400], separators=(",", ":")))
+        return built
+
+    _payload._construct_payload = _construct_and_say
+
+
 INPUT = Input(IR.get("input"))
 PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
 

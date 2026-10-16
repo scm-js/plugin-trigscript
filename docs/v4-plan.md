@@ -204,6 +204,50 @@ coverage. A1 therefore also shows coverage: lines that ran in the game, lines th
 
 Ships as 4.0.0, the first version with *Run in the game*, because it adds a whole mode.
 
+**As built (2026-10-15, under Node; the editor's half comes with A2).** One command does it:
+`npx tsx scripts/game-check.mts probes/units.ts`. It builds the script, plays it in the lifted
+game with nobody at it, prints the probe's own checks, then lists each access Remastered was
+seen to refuse or ignore, or has never been seen to do, by line.
+
+- **Back to the line** works as the candidate said, without touching eudplib.
+  `python/trigscript.py`, when the build sets `triggerMap`, wraps `RawTrigger.__init__`,
+  `Lowering.statement` and `EUDFuncN._create_func_body`, so every trigger is tagged with
+  the statement being lowered (or the eudplib function whose body it is). It also wraps
+  eudplib's module-level `_construct_payload` to log where each tagged trigger landed:
+  offset, conditions, actions, origin, 400 a line. The runner turns those offsets into the
+  address of every condition and action record (the payload sits at the end of `STRx`), and
+  the hooks already see each record's address. Triggers eudplib made at its own import, and
+  its variables (trigger-shaped, but not `RawTrigger`s), are put down as "eudplib". Only
+  eudplib's start code in the scenario's own TRIG stays unnamed.
+- **The trace** (`scm-sim scripts/exact-eud.ts --trace`) is one row per origin, dword and
+  direction, with the union of the masks, so a check is byte by byte. A run of the units
+  probe has 42,815 rows.
+- **The allowlist** (`data/allowlist.json`, made by `scripts/allowlist.mts`, 191 entries)
+  has three sources:
+  - Magenta's catalogue: 73 entries, a verified yes counts as allowed.
+  - Three failures seen in the game: unit position write ends the game; cloak bits and game
+    speed writes are ignored.
+  - The traces of the 15 played probes: 115 runs of bytes, the unit table folded into one
+    entry per field. Each probe passed in Remastered, so what its build touches was
+    allowed there. The traces come from today's builds, not the ones played, so this is
+    evidence by family of address, and a probe played again settles a new one.
+
+  The map's own memory (strings and payload) is always allowed. eudplib's walk of the
+  game's heap (its trigger lists) is allowed; a line of the script in the heap is not seen.
+- **What it showed with Magenta's catalogue alone** (an allowlist built without the
+  probes): nearly every line of every probe touches something Magenta never verified.
+  Examples are 0x6509B0 (eudplib's current-player trick, written around every action that
+  takes a player), the trigger lists at 0x51A284, and unit-table fields read by unit
+  loops. So the played probes are the larger part of the evidence. The check names each
+  such line, and an unseen field of the unit table is one finding however many units the
+  loop read.
+- **Not yet:** the check sees only what the run reached (no coverage view yet), and runs only
+  under Node. The editor needs scm-sim's `run` (A2) before it can show a finding at its line.
+- **Found on the way:** `spawnSync` keeps 1 MB of a child's output by default, and
+  plugin-eudplib's `build-map.mts` exits before a long log has gone down its pipe. It now
+  writes the log to `EUDPLIB_LOG_FILE` when asked, and `build-fixture.mts` reads it from
+  there.
+
 ### A2. Tests in the game (4.0.0, with A1)
 
 `test()` blocks run in the lifted game as well as the simulator.

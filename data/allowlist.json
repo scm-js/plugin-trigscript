@@ -1,0 +1,2073 @@
+{
+ "version": 1,
+ "entries": [
+  {
+   "name": "max hit points of a unit type",
+   "base": 6693712,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.maxHp, verified by its probes"
+   ]
+  },
+  {
+   "name": "max shields of a unit type",
+   "base": 6688256,
+   "width": 2,
+   "stride": 2,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.maxShields, verified by its probes"
+   ]
+  },
+  {
+   "name": "armor of a unit type",
+   "base": 6684360,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.armor, verified by its probes"
+   ]
+  },
+  {
+   "name": "build time of a unit type",
+   "base": 6685736,
+   "width": 2,
+   "stride": 2,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.buildTime, verified by its probes"
+   ]
+  },
+  {
+   "name": "mineral cost of a unit type",
+   "base": 6699144,
+   "width": 2,
+   "stride": 2,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.mineralCost, verified by its probes"
+   ]
+  },
+  {
+   "name": "gas cost of a unit type",
+   "base": 6683904,
+   "width": 2,
+   "stride": 2,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.gasCost, verified by its probes"
+   ]
+  },
+  {
+   "name": "supply used by a unit type",
+   "base": 6700264,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.supplyRequired, verified by its probes"
+   ]
+  },
+  {
+   "name": "supply provided by a unit type",
+   "base": 6702792,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.supplyProvided, verified by its probes"
+   ]
+  },
+  {
+   "name": "sight range of a unit type",
+   "base": 6697528,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.sightRange, verified by its probes"
+   ]
+  },
+  {
+   "name": "target acquisition range of a unit type",
+   "base": 6696376,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "unknown",
+   "write": "unknown",
+   "evidence": [
+    "Magenta unit.seekRange, not verified"
+   ]
+  },
+  {
+   "name": "ground weapon of a unit type",
+   "base": 6698680,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.groundWeapon, verified by its probes"
+   ]
+  },
+  {
+   "name": "air weapon of a unit type",
+   "base": 6690528,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.airWeapon, verified by its probes"
+   ]
+  },
+  {
+   "name": "speed of a unit type",
+   "base": 7118584,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.speed, verified by its probes"
+   ]
+  },
+  {
+   "name": "name of a unit type",
+   "base": 6685280,
+   "width": 2,
+   "stride": 2,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.name, verified by its probes"
+   ]
+  },
+  {
+   "name": "size of a unit type",
+   "base": 6693248,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.sizeClass, verified by its probes"
+   ]
+  },
+  {
+   "name": "looks of a unit type",
+   "base": 6702328,
+   "width": 1,
+   "stride": 1,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.graphics, verified by its probes"
+   ]
+  },
+  {
+   "name": "detector flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.detector, verified by its probes"
+   ]
+  },
+  {
+   "name": "permanent cloak flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.permanentCloak, verified by its probes"
+   ]
+  },
+  {
+   "name": "cloak ability flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.cloakable, verified by its probes"
+   ]
+  },
+  {
+   "name": "burrow ability flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.burrowable, verified by its probes"
+   ]
+  },
+  {
+   "name": "regeneration flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.regeneratesHp, verified by its probes"
+   ]
+  },
+  {
+   "name": "invincible flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.invincible, verified by its probes"
+   ]
+  },
+  {
+   "name": "hero flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.hero, verified by its probes"
+   ]
+  },
+  {
+   "name": "organic flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.organic, verified by its probes"
+   ]
+  },
+  {
+   "name": "mechanical flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.mechanical, verified by its probes"
+   ]
+  },
+  {
+   "name": "robotic flag of a unit type",
+   "base": 6701184,
+   "width": 4,
+   "stride": 4,
+   "count": 228,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta unit.robotic, verified by its probes"
+   ]
+  },
+  {
+   "name": "damage of a weapon",
+   "base": 6647472,
+   "width": 2,
+   "stride": 2,
+   "count": 130,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta weapon.damage, verified by its probes"
+   ]
+  },
+  {
+   "name": "damage bonus per upgrade of a weapon",
+   "base": 6649464,
+   "width": 2,
+   "stride": 2,
+   "count": 130,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta weapon.bonus, verified by its probes"
+   ]
+  },
+  {
+   "name": "cooldown of a weapon",
+   "base": 6647736,
+   "width": 1,
+   "stride": 1,
+   "count": 130,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta weapon.cooldown, verified by its probes"
+   ]
+  },
+  {
+   "name": "damage factor of a weapon",
+   "base": 6644960,
+   "width": 1,
+   "stride": 1,
+   "count": 130,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta weapon.factor, verified by its probes"
+   ]
+  },
+  {
+   "name": "range of a weapon",
+   "base": 6648944,
+   "width": 4,
+   "stride": 4,
+   "count": 130,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta weapon.range, verified by its probes"
+   ]
+  },
+  {
+   "name": "minimum range of a weapon",
+   "base": 6646296,
+   "width": 4,
+   "stride": 4,
+   "count": 130,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta weapon.minRange, verified by its probes"
+   ]
+  },
+  {
+   "name": "mineral cost of an upgrade",
+   "base": 6641472,
+   "width": 2,
+   "stride": 2,
+   "count": 61,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta upgrade.mineralCost, verified by its probes"
+   ]
+  },
+  {
+   "name": "gas cost of an upgrade",
+   "base": 6641728,
+   "width": 2,
+   "stride": 2,
+   "count": 61,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta upgrade.gasCost, verified by its probes"
+   ]
+  },
+  {
+   "name": "research time of an upgrade",
+   "base": 6642560,
+   "width": 2,
+   "stride": 2,
+   "count": 61,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta upgrade.time, verified by its probes"
+   ]
+  },
+  {
+   "name": "maximum level of an upgrade",
+   "base": 6641408,
+   "width": 1,
+   "stride": 1,
+   "count": 61,
+   "read": "unknown",
+   "write": "unknown",
+   "evidence": [
+    "Magenta upgrade.maxLevel, not verified"
+   ]
+  },
+  {
+   "name": "mineral cost of a technology",
+   "base": 6644296,
+   "width": 2,
+   "stride": 2,
+   "count": 44,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta tech.mineralCost, verified by its probes"
+   ]
+  },
+  {
+   "name": "gas cost of a technology",
+   "base": 6644208,
+   "width": 2,
+   "stride": 2,
+   "count": 44,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta tech.gasCost, verified by its probes"
+   ]
+  },
+  {
+   "name": "research time of a technology",
+   "base": 6644696,
+   "width": 2,
+   "stride": 2,
+   "count": 44,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta tech.time, verified by its probes"
+   ]
+  },
+  {
+   "name": "energy cost of a technology",
+   "base": 6644608,
+   "width": 2,
+   "stride": 2,
+   "count": 44,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta tech.energy, verified by its probes"
+   ]
+  },
+  {
+   "name": "minerals of a player",
+   "base": 5763312,
+   "width": 4,
+   "stride": 4,
+   "count": 12,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.minerals, verified by its probes"
+   ]
+  },
+  {
+   "name": "gas of a player",
+   "base": 5763360,
+   "width": 4,
+   "stride": 4,
+   "count": 12,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.gas, verified by its probes"
+   ]
+  },
+  {
+   "name": "upgrade level of a player",
+   "base": 5821104,
+   "width": 552,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.upgradeLevel, verified by its probes"
+   ]
+  },
+  {
+   "name": "technology researched by a player",
+   "base": 5820228,
+   "width": 288,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.techResearched, verified by its probes"
+   ]
+  },
+  {
+   "name": "alliance of a player toward another",
+   "base": 5822004,
+   "width": 144,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.alliance, verified by its probes"
+   ]
+  },
+  {
+   "name": "shared vision between players",
+   "base": 5763564,
+   "width": 4,
+   "stride": 4,
+   "count": 12,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.vision, verified by its probes"
+   ]
+  },
+  {
+   "name": "colour of a player",
+   "base": 5774710,
+   "width": 1,
+   "stride": 1,
+   "count": 12,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.color, verified by its probes"
+   ]
+  },
+  {
+   "name": "supply provided to a player",
+   "base": 5775684,
+   "width": 336,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.supplyProvided, verified by its probes"
+   ]
+  },
+  {
+   "name": "supply used by a player",
+   "base": 5775732,
+   "width": 336,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.supplyUsed, verified by its probes"
+   ]
+  },
+  {
+   "name": "supply cap of a player",
+   "base": 5775780,
+   "width": 336,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta player.supplyMax, verified by its probes"
+   ]
+  },
+  {
+   "name": "slot of a player",
+   "base": 5763508,
+   "width": 1,
+   "stride": 1,
+   "count": 12,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta player.slotType, verified by its probes"
+   ]
+  },
+  {
+   "name": "race of a player",
+   "base": 5763520,
+   "width": 1,
+   "stride": 1,
+   "count": 12,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta player.race, verified by its probes"
+   ]
+  },
+  {
+   "name": "whether a player has left",
+   "base": 5774690,
+   "width": 1,
+   "stride": 1,
+   "count": 8,
+   "read": "unknown",
+   "write": "unknown",
+   "evidence": [
+    "Magenta player.left, not verified"
+   ]
+  },
+  {
+   "name": "game speed",
+   "base": 7135188,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.speed, verified by its probes"
+   ]
+  },
+  {
+   "name": "trigger timer",
+   "base": 6621600,
+   "width": 4,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta game.triggerTimer, verified by its probes"
+   ]
+  },
+  {
+   "name": "local player",
+   "base": 5318276,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.localPlayer, verified by its probes"
+   ],
+   "local": true
+  },
+  {
+   "name": "mouse x on screen",
+   "base": 7134660,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.mouseX, verified by its probes"
+   ],
+   "local": true
+  },
+  {
+   "name": "mouse y on screen",
+   "base": 7134662,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.mouseY, verified by its probes"
+   ],
+   "local": true
+  },
+  {
+   "name": "screen x on the map",
+   "base": 6456460,
+   "width": 4,
+   "read": "unknown",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.screenX, not verified"
+   ],
+   "local": true
+  },
+  {
+   "name": "screen y on the map",
+   "base": 6456488,
+   "width": 4,
+   "read": "unknown",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.screenY, not verified"
+   ],
+   "local": true
+  },
+  {
+   "name": "keyboard key state",
+   "base": 5859864,
+   "width": 1,
+   "stride": 1,
+   "count": 256,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.key, verified by its probes"
+   ],
+   "local": true
+  },
+  {
+   "name": "frames the game has run",
+   "base": 5763644,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.frames, verified by its probes"
+   ]
+  },
+  {
+   "name": "seconds on the game clock",
+   "base": 5822200,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta game.seconds, verified by its probes"
+   ]
+  },
+  {
+   "name": "hit points of a placed unit",
+   "base": 5885104,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta cunit.hp, verified by its probes"
+   ]
+  },
+  {
+   "name": "shields of a placed unit",
+   "base": 5885192,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta cunit.shields, verified by its probes"
+   ]
+  },
+  {
+   "name": "energy of a placed unit",
+   "base": 5885258,
+   "width": 2,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta cunit.energy, verified by its probes"
+   ]
+  },
+  {
+   "name": "owner of a placed unit",
+   "base": 5885172,
+   "width": 1,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta cunit.owner, verified by its probes"
+   ]
+  },
+  {
+   "name": "type of a placed unit",
+   "base": 5885196,
+   "width": 2,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta cunit.type, verified by its probes"
+   ]
+  },
+  {
+   "name": "x position of a placed unit",
+   "base": 5885136,
+   "width": 2,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta cunit.x, verified by its probes"
+   ]
+  },
+  {
+   "name": "y position of a placed unit",
+   "base": 5885138,
+   "width": 2,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta cunit.y, verified by its probes"
+   ]
+  },
+  {
+   "name": "invincibility of a placed unit",
+   "base": 5885316,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta cunit.invincible, verified by its probes"
+   ]
+  },
+  {
+   "name": "hallucination flag of a placed unit",
+   "base": 5885316,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "Magenta cunit.hallucination, verified by its probes"
+   ]
+  },
+  {
+   "name": "cloak state of a placed unit",
+   "base": 5885316,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "Magenta cunit.cloaked, verified by its probes"
+   ]
+  },
+  {
+   "name": "unit table: position",
+   "base": 5885136,
+   "stride": 336,
+   "count": 1700,
+   "width": 4,
+   "read": "allowed",
+   "write": "ends",
+   "evidence": [
+    "Magenta probe 6, key I (2026-09-14): writing a unit's position ends the game, \"EUD not supported\""
+   ]
+  },
+  {
+   "name": "unit table: cloak flags",
+   "base": 5885317,
+   "stride": 336,
+   "count": 1700,
+   "width": 1,
+   "read": "allowed",
+   "write": "ignored",
+   "evidence": [
+    "Magenta probe 6, keys Y and H (2026-09-14): status flags 0x100 and 0x200 written, no visible cloak"
+   ]
+  },
+  {
+   "name": "game speed",
+   "base": 7135188,
+   "width": 4,
+   "read": "allowed",
+   "write": "ignored",
+   "evidence": [
+    "Magenta probe 5, key 9 (2026-09-14): written, the game kept its speed"
+   ]
+  },
+  {
+   "name": "0x512684",
+   "base": 5318276,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x512685",
+   "base": 5318277,
+   "width": 3,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x51a284",
+   "base": 5350020,
+   "width": 8,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x51a290",
+   "base": 5350032,
+   "width": 8,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x51a29c",
+   "base": 5350044,
+   "width": 8,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x51a2a8",
+   "base": 5350056,
+   "width": 8,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x51a2b4",
+   "base": 5350068,
+   "width": 8,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x51a2c0",
+   "base": 5350080,
+   "width": 8,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x51a2cc",
+   "base": 5350092,
+   "width": 8,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x51a2d8",
+   "base": 5350104,
+   "width": 8,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x57eeeb",
+   "base": 5762795,
+   "width": 7,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), strings (2026-09-19), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x57ef0f",
+   "base": 5762831,
+   "width": 11,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes classes (2026-09-19), reads (2026-09-18), strings (2026-09-19), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x57f0d8",
+   "base": 5763288,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x57f0f0",
+   "base": 5763312,
+   "width": 8,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x57f120",
+   "base": 5763360,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x57f1b4",
+   "base": 5763508,
+   "width": 3,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x57f1c0",
+   "base": 5763520,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x57f23c",
+   "base": 5763644,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x581d60",
+   "base": 5774688,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x581d76",
+   "base": 5774710,
+   "width": 1,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x581d7e",
+   "base": 5774718,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x581dd6",
+   "base": 5774806,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x582178",
+   "base": 5775736,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x5821d4",
+   "base": 5775828,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x582204",
+   "base": 5775876,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x582234",
+   "base": 5775924,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x587f94",
+   "base": 5799828,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58a364",
+   "base": 5808996,
+   "width": 4,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58a388",
+   "base": 5809032,
+   "width": 12,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58cf45",
+   "base": 5820229,
+   "width": 1,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58d2b7",
+   "base": 5821111,
+   "width": 1,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58dc60",
+   "base": 5823584,
+   "width": 16,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes classes (2026-09-19), leftovers (2026-09-19), units (2026-09-18), arrays (2026-09-19), callbacks (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58dc70",
+   "base": 5823600,
+   "width": 4,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58dc74",
+   "base": 5823604,
+   "width": 16,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58dc84",
+   "base": 5823620,
+   "width": 1204,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58e138",
+   "base": 5824824,
+   "width": 20,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58e14c",
+   "base": 5824844,
+   "width": 3820,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x58f038",
+   "base": 5828664,
+   "width": 20,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x596a49",
+   "base": 5859913,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x596a5d",
+   "base": 5859933,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x596a69",
+   "base": 5859945,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x596a6f",
+   "base": 5859951,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x596a8e",
+   "base": 5859982,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6283f8",
+   "base": 6456312,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x628438",
+   "base": 6456376,
+   "width": 4,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x62848c",
+   "base": 6456460,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6284a8",
+   "base": 6456488,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6284b8",
+   "base": 6456504,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x640b60",
+   "base": 6556512,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x640c3a",
+   "base": 6556730,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x640d14",
+   "base": 6556948,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x640dee",
+   "base": 6557166,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x640ec8",
+   "base": 6557384,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x640fa2",
+   "base": 6557602,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x64107c",
+   "base": 6557820,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x641156",
+   "base": 6558038,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x641230",
+   "base": 6558256,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x64130a",
+   "base": 6558474,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6413e4",
+   "base": 6558692,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x641598",
+   "base": 6559128,
+   "width": 4,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x64159c",
+   "base": 6559132,
+   "width": 8,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6415a4",
+   "base": 6559140,
+   "width": 48,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes reads (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6509a0",
+   "base": 6621600,
+   "width": 4,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6509b0",
+   "base": 6621616,
+   "width": 4,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), input (2026-09-18), inside (2026-09-19), leftovers (2026-09-19), map (2026-09-19), numbers (2026-09-18), reads (2026-09-18), recursion (2026-09-19), spike (2026-09-18), strings (2026-09-19), units (2026-09-18), v3 (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x654887",
+   "base": 6637703,
+   "width": 15,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x654aa0",
+   "base": 6638240,
+   "width": 4,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x656eb0",
+   "base": 6647472,
+   "width": 2,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x660260",
+   "base": 6685280,
+   "width": 2,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes strings (2026-09-19), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6602aa",
+   "base": 6685354,
+   "width": 2,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x661002",
+   "base": 6688770,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x66158c",
+   "base": 6690188,
+   "width": 2,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x66171a",
+   "base": 6690586,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x661998",
+   "base": 6691224,
+   "width": 8,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6620d2",
+   "base": 6693074,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x662350",
+   "base": 6693712,
+   "width": 4,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x662948",
+   "base": 6695240,
+   "width": 4,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x662df2",
+   "base": 6696434,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x66318a",
+   "base": 6697354,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x663272",
+   "base": 6697586,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6636f2",
+   "base": 6698738,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6637a0",
+   "base": 6698912,
+   "width": 2,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6637c0",
+   "base": 6698944,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6637c3",
+   "base": 6698947,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6637c5",
+   "base": 6698949,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6637da",
+   "base": 6698970,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x66380a",
+   "base": 6699018,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x663823",
+   "base": 6699043,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x663888",
+   "base": 6699144,
+   "width": 2,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x664081",
+   "base": 6701185,
+   "width": 1,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x664101",
+   "base": 6701313,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x664168",
+   "base": 6701416,
+   "width": 4,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6644f8",
+   "base": 6702328,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x664532",
+   "base": 6702386,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6c98a6",
+   "base": 7116966,
+   "width": 1,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6c9a68",
+   "base": 7117416,
+   "width": 4,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6c9d14",
+   "base": 7118100,
+   "width": 2,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6ca030",
+   "base": 7118896,
+   "width": 4,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6cddc0",
+   "base": 7134656,
+   "width": 1,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "0x6cddc4",
+   "base": 7134660,
+   "width": 8,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x8",
+   "base": 5885104,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), leftovers (2026-09-19), numbers (2026-09-18), recursion (2026-09-19), units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0xc",
+   "base": 5885108,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), leftovers (2026-09-19), numbers (2026-09-18), recursion (2026-09-19), units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x10",
+   "base": 5885112,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x28",
+   "base": 5885136,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes classes (2026-09-19), input (2026-09-18), leftovers (2026-09-19), units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x34",
+   "base": 5885148,
+   "width": 4,
+   "stride": 336,
+   "count": 1700,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x4c",
+   "base": 5885172,
+   "width": 1,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), leftovers (2026-09-19), numbers (2026-09-18), recursion (2026-09-19), units (2026-09-18), input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x4d",
+   "base": 5885173,
+   "width": 1,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), leftovers (2026-09-19), numbers (2026-09-18), recursion (2026-09-19), units (2026-09-18), input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x4e",
+   "base": 5885174,
+   "width": 2,
+   "stride": 336,
+   "count": 1700,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x64",
+   "base": 5885196,
+   "width": 2,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "unknown",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), leftovers (2026-09-19), numbers (2026-09-18), recursion (2026-09-19), units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x68",
+   "base": 5885200,
+   "width": 8,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x8f",
+   "base": 5885239,
+   "width": 1,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0xa2",
+   "base": 5885258,
+   "width": 2,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0xa5",
+   "base": 5885261,
+   "width": 1,
+   "stride": 336,
+   "count": 1700,
+   "read": "allowed",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes arrays (2026-09-19), callbacks (2026-09-19), classes (2026-09-19), functions (2026-09-19), leftovers (2026-09-19), numbers (2026-09-18), recursion (2026-09-19), units (2026-09-18), input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0xdc",
+   "base": 5885316,
+   "width": 3,
+   "stride": 336,
+   "count": 1700,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0xdf",
+   "base": 5885319,
+   "width": 1,
+   "stride": 336,
+   "count": 1700,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes input (2026-09-18), units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  },
+  {
+   "name": "unit table: +0x117",
+   "base": 5885375,
+   "width": 1,
+   "stride": 336,
+   "count": 1700,
+   "read": "unknown",
+   "write": "allowed",
+   "evidence": [
+    "touched by the probes units (2026-09-18), each played in Remastered with every line as expected"
+   ]
+  }
+ ]
+}

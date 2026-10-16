@@ -4,7 +4,7 @@
  * plugin-eudplib checkout's `scripts/build-map.mts`, write the built map. For probe maps
  * that get played.
  *
- *   npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike-eud.scx [map.scx] [../plugin-eudplib]
+ *   [TRIGGER_MAP=1] npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike-eud.scx [map.scx] [../plugin-eudplib]
  *
  * The output lands in the ignored fixtures/ folder: it is built on a Blizzard map, which is never committed.
  *
@@ -95,10 +95,24 @@ writeFileSync(mapPath, withStrings);
 const extra = process.env.EXTRA_PLUGIN;
 const extraName = extra?.slice(0, extra.indexOf("="));
 const sections = buildPlugins(r.input, "/work/files/trigscript.json");
+// TRIGGER_MAP=1: the Python says where each trigger it made sits in the payload (a TRIGSCRIPT-MAP line in the
+// log), and that line is written beside the map as <out>.triggers.json, for scm-sim's run in the lifted game.
+if (process.env.TRIGGER_MAP) (sections.trigscript as Record<string, string>).triggerMap = "1";
 const { eudTurbo, ...before } = sections;
 writeFileSync(pluginsPath, JSON.stringify(extraName ? { ...before, [extraName]: {}, eudTurbo } : sections));
 const extraArgs = extra && extraName ? [`${extraName}=${resolve(extra.slice(extraName.length + 1))}`] : [];
-const res = spawnSync("npx", ["tsx", join(eudplib, "scripts", "build-map.mts"), mapPath, resolve(outPath), pluginsPath, `trigscript=${join(root, "python", "trigscript.py")}`, `file=trigscript.json=${irPath}`, ...extraArgs], { cwd: eudplib, encoding: "utf8", env: { ...process.env, EUDPLIB_LOG: "1" } });
+const logPath = join(dir, "eudplib.log");
+const res = spawnSync("npx", ["tsx", join(eudplib, "scripts", "build-map.mts"), mapPath, resolve(outPath), pluginsPath, `trigscript=${join(root, "python", "trigscript.py")}`, `file=trigscript.json=${irPath}`, ...extraArgs], { cwd: eudplib, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, EUDPLIB_LOG: "1", EUDPLIB_LOG_FILE: logPath } });
+// (The log whole, from the file: the copy on stdout can be cut short when it runs to megabytes.)
+const fullLog = existsSync(logPath) ? readFileSync(logPath, "utf8") : res.stdout;
 rmSync(dir, { recursive: true, force: true });
-process.stdout.write(res.stdout);
+const logLines = fullLog.split("\n");
+const mapLine = logLines.find((l) => l.startsWith("TRIGSCRIPT-MAP "));
+if (mapLine) {
+  const head = JSON.parse(mapLine.slice("TRIGSCRIPT-MAP ".length)) as { payload: number; count: number };
+  const triggers = logLines.filter((l) => l.startsWith("TRIGSCRIPT-ROWS ")).flatMap((l) => JSON.parse(l.slice("TRIGSCRIPT-ROWS ".length)) as unknown[]);
+  if (triggers.length !== head.count) { console.error(`the map of triggers came out with ${triggers.length} of ${head.count} rows`); process.exit(1); }
+  writeFileSync(resolve(outPath).replace(/\.scx$/, ".triggers.json"), JSON.stringify({ payload: head.payload, triggers }));
+}
+process.stdout.write(res.stdout.split("\n").filter((l) => !l.startsWith("TRIGSCRIPT-MAP ") && !l.startsWith("TRIGSCRIPT-ROWS ")).join("\n"));
 if (res.status !== 0) { console.error(res.stderr); process.exit(1); }
