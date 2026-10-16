@@ -4,3 +4,4 @@
  */
 export { runGameTests, type GameTestPayload } from "./gameTests";
 export { GameSim, readLocations, readUnitStats, type GameHandle } from "./gameSim";
+export { programVariables, readVariableMap, type VariableMap } from "./gameVariables";

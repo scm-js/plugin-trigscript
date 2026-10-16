@@ -8,13 +8,14 @@
  * centred on it (the last of the map's 255, put back afterwards). A typed line is the game's chat command; a key and
  * the mouse are the local machine's memory, where MSQC reads them.
  *
- * Not in the game yet, and said so when asked: a program's variables (`program()`, which needs the build to say
- * where each lives) and what another player was shown. A
- * program's fault is the red line it prints ("TrigScript: …"), its line not known.
+ * A program's variables (`program()`) are read where the build said they are (`gameVariables.ts`), when it was asked
+ * to say. Not in the game yet, and said so when asked: what another player was shown. A program's fault is the red
+ * line it prints ("TrigScript: …"), its line not known.
  */
 import { ActionType } from "../vendor/triggers";
 import type { At } from "./ir";
 import { msqcKey } from "./input";
+import { programVariables, type VariableMap } from "./gameVariables";
 import { ExpectError, WORLD, type TestEvent, type TestWorldLike } from "./testing";
 import type { SimBounds, SimUnit } from "./world";
 
@@ -138,15 +139,18 @@ export class GameSim implements TestWorldLike {
   private readonly units_ = new Map<number, GameUnit>();
   private readonly game: GameHandle;
   private readonly known: Record<number, SimBounds>;
+  private readonly variables: VariableMap | null;
 
   /**
    * `locations`: the map's locations as the script means them. eudplib keeps them scrambled in the game until its
    * first frames put them right (frame 2 on a probe's map), so a test that acts at frame 0 needs them from elsewhere
-   * (`readLocations`); from then on the game's own are read.
+   * (`readLocations`); from then on the game's own are read. `variables`: where the build put each program's
+   * variables, for `program()`.
    */
-  constructor(game: GameHandle, options: { locations?: Record<number, SimBounds> } = {}) {
+  constructor(game: GameHandle, options: { locations?: Record<number, SimBounds>; variables?: VariableMap | null } = {}) {
     this.game = game;
     this.known = options.locations ?? {};
+    this.variables = options.variables ?? null;
     game.reset();
     this.take();
   }
@@ -304,8 +308,16 @@ export class GameSim implements TestWorldLike {
     if (this.game.frame < LOCATIONS_READY) return this.known[n] ? { ...this.known[n] } : undefined;
     return readLocation(this.game, n);
   }
-  program(): Record<string, unknown> {
-    throw new ExpectError("sim.program(…) reads a program's variables in the simulator only, for now: in the game, read what the program did (printed, resources, units)");
+  program(name: string | number = 0, player?: number): Record<string, unknown> {
+    if (!this.variables) throw new ExpectError("sim.program(…): the build did not say where the programs' variables are, so the game cannot be read for them");
+    return programVariables({ m: this.game.m, u8: this.game.u8, unitAt: (ptr, uid) => this.unitAt(ptr, uid) }, this.variables, name, player);
+  }
+  /** The unit a variable holds: by its pointer, while its slot still has the uniqueness byte the variable kept with it. */
+  private unitAt(ptr: number, uid: number): SimUnit | null {
+    const slot = (ptr - UNITS) / UNIT_BYTES;
+    if (!Number.isInteger(slot) || slot < 0 || slot >= UNIT_COUNT || this.game.u8[ptr + 0xa5] !== ((uid >>> 8) & 0xff)) return null;
+    const u = this.unit(slot);
+    return u.alive ? u : null;
   }
 
   /** What was shown, in order, with the game's colour codes taken out. `player`: only the player at this computer is seen. */

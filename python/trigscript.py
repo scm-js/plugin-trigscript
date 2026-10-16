@@ -3173,6 +3173,120 @@ if settings.get("triggerMap"):
     _payload._construct_payload = _construct_and_say
 
 
+# Where each program's variables are, for a test in the lifted game to read them as `sim.program()` reads the
+# simulator's (TrigScript 4, A2). Only when the build asks for it (the `variableMap` setting): once the payload is
+# placed, a header line and a line a program give the address of every cell:
+#   TRIGSCRIPT-VARS {"programs": <count>, "heap": <address of the heap's cells>, "strings": <address of STRx>}
+#   TRIGSCRIPT-PROGRAM {"index", "name", "perPlayer", "owners", "vars": [...], "arrays": [...]}
+# A variable is its id (what the simulator keys it by), its kind, and its cells: `value` (a number, a boolean, a text
+# of the table by its id), `addr` + `len` (a text that is made), `ptr` + `uid` (a unit). An array is its cells' `at`,
+# or, growing, its handle's `ptr` + `len` among the heap's cells. A cell of a per-player program's own (`rowed`) is a
+# row of twelve, one a player; an address is null for what nothing in the map uses, which eudplib leaves out.
+if settings.get("variableMap"):
+    import eudplib.core.allocator.payload as _vpayload
+    import eudplib.maprw.injector.apply_injector as _injector
+    from eudplib.core.allocator.constexpr import Evaluate as _evaluate
+    from eudplib.core.mapdata.stringmap import get_string_section_name as _strings_name
+    from eudplib.core.variable.vbuf import get_current_varbuffer as _varbuffer
+    from eudplib.utils import unProxy as _unproxy
+
+    _PLACES = {}
+
+    def _offset(expr):
+        """A payload-relative address as a byte offset into the payload: eudplib's own (relocated whole) or an EPD
+        (relocated a quarter at a time, as EPD(x) = (x - 0x58A364) / 4 is)."""
+        r = _evaluate(expr)
+        if r.rlocmode == 4:
+            return r.offset
+        if r.rlocmode == 1:
+            return r.offset * 4 + 0x58A364
+        return None
+
+    def _place(obj):
+        """Where a variable's value or an array's first cell is in the payload; None for what it left out."""
+        if isinstance(obj, EUDVariable):
+            vb = _varbuffer()
+            if vb is None or obj.GetVTable() not in vb._vdict:
+                return None
+            return _offset(obj.getValueAddr())
+        # An EUDArray is a proxy of its data's EPD (or of the data itself), the data an object of its own.
+        data = _unproxy(obj)
+        while not isinstance(data, EUDObject) and hasattr(data, "_value"):
+            data = _unproxy(data)
+        try:
+            return _offset(data)
+        except Exception:
+            return None  # (nothing in the map uses it, so eudplib did not place it)
+
+    def _cells_of(s):
+        if isinstance(s, UnitStorage):
+            return {"ptr": s.ptr, "uid": s.uid}
+        if isinstance(s, TextStorage):
+            return {"addr": s.addr, "len": s.len}
+        return {"value": s.store}
+
+    def _program_places(k, low):
+        p = low.p
+        out = {"index": k, "name": p.get("name"), "perPlayer": low.per_player, "owners": p.get("owners", [low.owner]), "vars": [], "arrays": []}
+        for id_, s in low.vars.items():
+            d = s.decl
+            if d.get("temp"):
+                continue
+            out["vars"].append({"id": id_, "kind": d.get("kind"), "text": d.get("text"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")),
+                                "rowed": bool(s.rowed), "cells": {name: _place(cell) for name, cell in _cells_of(s).items()}})
+        for id_, a in low.arrays.items():
+            if isinstance(a, (InnerListStorage, SliceStorage)):
+                continue  # (a row of another's cells, or a list inside one: read through what it is in, not here)
+            d = a.decl
+            row = {"id": id_, "kind": d.get("kind"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")), "length": int(d.get("length", 0)), "rowed": bool(a.rowed)}
+            if isinstance(a, ListStorage):
+                row.update(dynamic=True, ptr=_place(a.handle["ptr"]), len=_place(a.handle["len"]))
+            else:
+                row.update(at=_place(a.store))
+            out["arrays"].append(row)
+        return out
+
+    _vconstruct = _vpayload._construct_payload
+
+    def _construct_and_place():
+        built = _vconstruct()
+        # (eudplib works addresses out only while it writes the payload: for as long as this takes, it is again.)
+        was = _vpayload.phase
+        _vpayload.phase = _vpayload.PHASE_WRITING
+        try:
+            _PLACES["programs"] = [_program_places(k, low) for k, low in enumerate(PROGRAMS)]
+            _PLACES["heap"] = _place(_HEAP["cells"]) if _HEAP else None
+        finally:
+            _vpayload.phase = was
+        _PLACES["bytes"] = len(built.data)
+        return built
+
+    _vpayload._construct_payload = _construct_and_place
+
+    _initialize = _injector.initialize_payload
+
+    def _initialize_and_say(chkt, payload, *args, **kwargs):
+        out = _initialize(chkt, payload, *args, **kwargs)
+        # The payload is the end of the strings section, which Remastered keeps at 0x191943C8.
+        base = 0x191943C8 + len(chkt.getsection(_strings_name())) - _PLACES["bytes"]
+
+        def at(o):
+            return None if o is None else base + o
+
+        print("TRIGSCRIPT-VARS " + json.dumps({"programs": len(_PLACES["programs"]), "heap": at(_PLACES["heap"]), "strings": 0x191943C8}, separators=(",", ":")))
+        for prog in _PLACES["programs"]:
+            for v in prog["vars"]:
+                v["cells"] = {name: at(o) for name, o in v["cells"].items()}
+            for a in prog["arrays"]:
+                for key in ("at", "ptr", "len"):
+                    if key in a:
+                        a[key] = at(a[key])
+            print("TRIGSCRIPT-PROGRAM " + json.dumps(prog, separators=(",", ":")))
+        return out
+
+    _injector.initialize_payload = _initialize_and_say
+
+
 INPUT = Input(IR.get("input"))
 PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
 

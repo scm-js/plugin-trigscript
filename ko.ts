@@ -275,7 +275,7 @@ export const KO: Record<string, string> = {
   "passed": "통과",
   "In the game: {message}": "게임에서: {message}",
   "In the game: passed": "게임에서: 통과",
-  "Running tests in the game needs the scm-sim plugin (0.9 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….": "테스트를 게임에서 실행하려면 scmjs.dev에서 scm-sim 플러그인(0.9 이상)이 필요합니다. 플러그인 ▸ 플러그인 관리…에서 설치하거나 켜세요.",
+  "Running tests in the game needs the scm-sim plugin (0.10 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….": "테스트를 게임에서 실행하려면 scmjs.dev에서 scm-sim 플러그인(0.10 이상)이 필요합니다. 플러그인 ▸ 플러그인 관리…에서 설치하거나 켜세요.",
   "Not run in the game: {message}": "게임에서 실행하지 못함: {message}",
   "the engine cannot run a game now": "엔진이 지금 게임을 실행할 수 없습니다",
   "Not run in the game: the engine's page is from before tests in the game. Reload the editor and try again.": "게임에서 실행하지 못함: 엔진 페이지가 게임 속 테스트보다 오래된 판입니다. 편집기를 새로 고친 뒤 다시 시도하세요.",

@@ -288,8 +288,8 @@ stays JavaScript and is handed a world backed by the game, and it runs where the
     in play, and MSQC sends it on.
   - A key and a mouse button are the local machine's memory (0x596A18, 0x6CDDC0), held for one
     frame.
-  - Not yet: `program()` (a program's variables; the build would have to say where each lives),
-    and what another player was shown.
+  - `program()` reads a program's variables where the build put them (below). Not yet: what
+    another player was shown.
 - **The same tests, twice.** `TestRunOptions.makeWorld` hands each test a world other than the
   simulator's. A compile also returns the script as JavaScript (`CompileResult.modules`).
   `compiler/gameTests.ts`, bundled as `dist/gametest.js` (198 KB, no TypeScript in it), runs those
@@ -334,10 +334,34 @@ stays JavaScript and is handed a world backed by the game, and it runs where the
     4. The status bar says "In the game: 4 of 5 tests passed. The simulator disagrees on 1
        test." That came about 9 seconds after the click.
 
-    The fifth test reads `sim.program()`, which the game cannot answer yet, and it shows as
+    The fifth test reads `sim.program()`, which the game could not answer yet, and it showed as
     meant: a ringed red mark beside the simulator's green one, and the game's reason on its own
     line in Test Results. The game's mark sits beside the simulator's icon rather than at the
     row's end, where a narrow sidebar cut it off in the first run.
+- **`sim.program()` in the game (2026-10-16).**
+  - The build says where every variable is when asked (the `variableMap` setting, which
+    **Run All Tests in the Game** and `scripts/test-game.mts` set). Once eudplib has laid the
+    payload out, the lowering works out each cell's address, and it prints them once
+    `initialize_payload` has placed the payload at the end of STRx (0x191943C8 plus the
+    section's length): a `TRIGSCRIPT-VARS` line, then a `TRIGSCRIPT-PROGRAM` line a program.
+    The editor keeps these lines out of Output.
+  - `compiler/gameVariables.ts` reads them, and reads a program's variables out of the game's
+    memory by the same rules as the simulator's lookup. That covers numbers (signed, `u8`/`u16`,
+    `u32`), booleans, texts of the table and texts that are made, units (null once the slot's
+    uniqueness byte has moved on), fixed and growing arrays, records and lists of records, and a
+    per-player program's row by player.
+  - Two differences, both because the game has every cell from the start. A variable not yet
+    declared reads as its zero. Of two declarations with one name, the later in the source wins.
+    A list inside a list and a row of a grid are not read.
+  - Traps: an `EUDArray` is a proxy of its data's EPD, not of its address (relocation mode 1, so
+    `4·offset + 0x58A364`). eudplib works addresses out only while it writes the payload, so the
+    lowering sets that phase again for as long as it reads them.
+  - Checked: `probes/game-program.ts` (every kind above, a unit, a per-player program by player)
+    passes in the game and in the simulator under Node, and so does `probes/game-tests.ts`. In a
+    built editor the five tests of the end-to-end run now pass in the game: "In the game: 5 of 5
+    tests passed.", about 10 seconds after the click.
+  - plugin-scm-sim released 0.9.0 with the Replay view's zoom in the meantime, so `test()`
+    ships in 0.10, and TrigScript's message now asks for that.
 
 ### A3. The desync detector (4.1.0)
 

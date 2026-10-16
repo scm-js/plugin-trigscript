@@ -31,7 +31,7 @@ const dir = mkdtempSync(join(tmpdir(), "trigscript-tests-"));
 try {
   // The map, built as Save builds it.
   const built = join(dir, basename(script, ".ts") + ".scx");
-  const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), resolve(script), built, ...(baseMap ? [resolve(baseMap)] : [])], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20 });
+  const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), resolve(script), built, ...(baseMap ? [resolve(baseMap)] : [])], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, VARIABLE_MAP: "1" } });
   if (b.status !== 0) { console.error(b.stdout.split("\n").slice(-20).join("\n"), b.stderr); process.exit(1); }
 
   // The game, at frame 0, EUD let through.
@@ -64,7 +64,9 @@ try {
   const bundle = join(dir, "gametest.js");
   spawnSync("npx", ["esbuild", join(root, "compiler", "gameTestEntry.ts"), "--bundle", "--format=esm", "--target=es2022", "--platform=neutral", `--outfile=${bundle}`], { cwd: root });
   const host = await import(`data:text/javascript;base64,${Buffer.from(readFileSync(bundle)).toString("base64")}`) as typeof import("../compiler/gameTestEntry");
-  const inGame = host.runGameTests(handle, { modules: compiled.modules, names, locations }) as TestReport & { error?: string };
+  // (Where the build put the programs' variables, for sim.program().)
+  const variables = JSON.parse(readFileSync(built.replace(/\.scx$/, ".variables.json"), "utf8"));
+  const inGame = host.runGameTests(handle, { modules: compiled.modules, names, locations, variables }) as TestReport & { error?: string };
   if (inGame.error) { console.error(`the script did not run beside the game: ${inGame.error}`); process.exit(1); }
   const bySim = new Map((simulated?.results ?? []).map((r) => [r.id, r]));
   let failed = 0;

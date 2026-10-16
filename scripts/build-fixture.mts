@@ -20,6 +20,7 @@ import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { serializeIr } from "../compiler/eud";
 import { buildPlugins } from "../compiler/input";
+import { readVariableMap } from "../compiler/gameVariables";
 import { resolveStrings } from "../script";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -98,6 +99,9 @@ const sections = buildPlugins(r.input, "/work/files/trigscript.json");
 // TRIGGER_MAP=1: the Python says where each trigger it made sits in the payload (a TRIGSCRIPT-MAP line in the
 // log), and that line is written beside the map as <out>.triggers.json, for scm-sim's run in the lifted game.
 if (process.env.TRIGGER_MAP) (sections.trigscript as Record<string, string>).triggerMap = "1";
+// VARIABLE_MAP=1: the same for where each program's variables are (TRIGSCRIPT-VARS), as <out>.variables.json, for a
+// test in the lifted game to read them (`sim.program()`).
+if (process.env.VARIABLE_MAP) (sections.trigscript as Record<string, string>).variableMap = "1";
 const { eudTurbo, ...before } = sections;
 writeFileSync(pluginsPath, JSON.stringify(extraName ? { ...before, [extraName]: {}, eudTurbo } : sections));
 const extraArgs = extra && extraName ? [`${extraName}=${resolve(extra.slice(extraName.length + 1))}`] : [];
@@ -114,5 +118,8 @@ if (mapLine) {
   if (triggers.length !== head.count) { console.error(`the map of triggers came out with ${triggers.length} of ${head.count} rows`); process.exit(1); }
   writeFileSync(resolve(outPath).replace(/\.scx$/, ".triggers.json"), JSON.stringify({ payload: head.payload, triggers }));
 }
-process.stdout.write(res.stdout.split("\n").filter((l) => !l.startsWith("TRIGSCRIPT-MAP ") && !l.startsWith("TRIGSCRIPT-ROWS ")).join("\n"));
+const variables = readVariableMap(logLines);
+if (variables) writeFileSync(resolve(outPath).replace(/\.scx$/, ".variables.json"), JSON.stringify(variables));
+else if (process.env.VARIABLE_MAP && res.status === 0) { console.error("the build said nothing of where the variables are"); process.exit(1); }
+process.stdout.write(res.stdout.split("\n").filter((l) => !/^TRIGSCRIPT-[A-Z]+ /.test(l)).join("\n"));
 if (res.status !== 0) { console.error(res.stderr); process.exit(1); }

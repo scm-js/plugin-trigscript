@@ -10,6 +10,7 @@
 import { ENTRY_FILE } from "./compiler";
 import { MODULE_NAME } from "./api";
 import { GameSim, readLocations, type GameHandle } from "./gameSim";
+import type { VariableMap } from "./gameVariables";
 import { locate, runModules, type LinkedFile } from "./link";
 import type { ScriptNames } from "./names";
 import { Collector, createRuntime } from "./runtime";
@@ -24,6 +25,8 @@ export interface GameTestPayload {
   ids?: string[];
   /** The map's locations as the script means them; read from the game (frame 2) when absent. */
   locations?: Record<number, SimBounds>;
+  /** Where the build put each program's variables (`readVariableMap` of its log), for `sim.program()`. */
+  variables?: VariableMap | null;
 }
 
 export function runGameTests(game: GameHandle, payload: GameTestPayload): TestReport & { error?: string } {
@@ -38,5 +41,5 @@ export function runGameTests(game: GameHandle, payload: GameTestPayload): TestRe
   collector.running = false;
   if (failure) return { list: [], results: [], only: [], ms: 0, error: `${failure.file ?? ENTRY_FILE}:${failure.line ?? 1}: ${failure.message}` };
   const locations = payload.locations ?? readLocations(game);
-  return runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { files: payload.files, ids: payload.ids, makeWorld: () => new GameSim(game, { locations }) });
+  return runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { files: payload.files, ids: payload.ids, makeWorld: () => new GameSim(game, { locations, variables: payload.variables }) });
 }

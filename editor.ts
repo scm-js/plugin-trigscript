@@ -42,6 +42,7 @@ import {
 } from "./monaco";
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
 import { FILE_NAME } from "./script";
+import { isMachineLine, readVariableMap } from "./compiler/gameVariables";
 import { isTestFile, type TestInfo, type TestReport, type TestResult, type TestRunOptions } from "./compiler/testing";
 import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, playersLabel, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
 import { testName } from "./service";
@@ -108,6 +109,8 @@ const OWNER_COMPUTER = 5;
 const OWNER_HUMAN = 6;
 /** How many of a simulation's events the list shows before it says how many more there were. */
 const SIMULATE_ROWS = 200;
+/** A build's log as a person reads it: without the lines the lowering says for a run in the lifted game. */
+const withoutMachineLines = (text: string) => text.split("\n").filter((l) => !isMachineLine(l)).join("\n");
 /** The most lines with a fault the Simulate view lists. */
 const SIMULATE_FAULTS = 20;
 
@@ -736,7 +739,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const runTestsInGame = async (filter: Pick<TestRunOptions, "files" | "ids"> = {}) => {
     if (!editor || testsRunning || building || testing || !ready) return;
     const engine = svc.engine();
-    if (!engine?.present || !engine.test) { setStatus("error", t("Running tests in the game needs the scm-sim plugin (0.9 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….")); return; }
+    if (!engine?.present || !engine.test) { setStatus("error", t("Running tests in the game needs the scm-sim plugin (0.10 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….")); return; }
     testsRunning = true;
     renderTesting();
     try {
@@ -752,13 +755,17 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const names = svc.names()?.names;
       if (!names) { setStatus("error", t("No map is open.")); return; }
       setStatus("busy", t("Building the map…"));
-      // (Whole: a bare .chk has no room for what the build steps make, so the engine's page reads the scenario out of it.)
-      const file = await api.document.export({ format: "scx" });
+      // (Whole: a bare .chk has no room for what the build steps make, so the engine's page reads the scenario out of
+      // it. The build says in its log where it put the programs' variables, for sim.program().)
+      const logged: string[] = [];
+      const heard = svc.onBuild((e) => { if (e.kind === "log") logged.push(e.line); else if (e.kind === "done" && !logged.length) logged.push(...e.log.split("\n")); });
+      const file = await svc.withVariableMap(() => api.document.export({ format: "scx" })).finally(() => heard.dispose());
       if (!file || cancelled) { if (!file) setStatus("error", t("No map is open.")); return; }
+      const variables = readVariableMap(logged);
       gametest ??= fetch(gametestUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`gametest.js: ${r.status}`); return r.text(); });
       const module = await gametest.catch((err) => { gametest = null; throw err; });
       setStatus("busy", t("Running the tests in the game…"));
-      const report = await engine.test(new Uint8Array(await file.arrayBuffer()), module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids }) as TestReport & { error?: string };
+      const report = await engine.test(new Uint8Array(await file.arrayBuffer()), module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids, variables }) as TestReport & { error?: string };
       if (cancelled) return;
       if (report.error) { setStatus("error", t("Not run in the game: {message}", { message: report.error })); return; }
       const ran = report.results.filter((x) => x.status !== "skipped");
@@ -1184,14 +1191,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       if (failing) log(t("{n, plural, one {A test fails} other {# tests fail}}: see the Testing view.", { n: failing }), false);
     } else if (e.kind === "log") {
       streamed++;
-      log(e.line, false);
+      // (What the lowering says for a run in the lifted game is not for a person to read.)
+      if (!isMachineLine(e.line)) log(e.line, false);
     } else if (e.kind === "done") {
-      if (!streamed && e.log) log(e.log, false);
+      if (!streamed && e.log) log(withoutMachineLines(e.log), false);
       const kb = Math.round(e.chkBytes / 1024), seconds = (e.ms / 1000).toFixed(1);
       buildState = { kind: "ok", text: t("Built {kb} KB · {seconds} s", { kb, seconds }), of: buildState?.of ?? files };
       log(t("Built: {kb} KB of scenario in {seconds} s", { kb, seconds }));
     } else {
-      if (!streamed && e.log) log(e.log, false);
+      if (!streamed && e.log) log(withoutMachineLines(e.log), false);
       // Save goes on without the step: the file is the map and its script, with no programs in it.
       const saved = e.purpose === "save";
       buildState = {
