@@ -1,7 +1,8 @@
 # TrigScript 4 — the plan
 
 Written 2026-10-15. Status: Part A built (A0–A5, each with its *As built*), and Remastered's
-emulator read from a dump (*R0*, 2026-10-16); Part B not started. The question it answers: now that there is a
+emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece maps
+(*Showpieces*, 2026-10-16), B1 started. The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -865,6 +866,117 @@ already says so.
 | Unit stats changed while the game runs | the type tables | Magenta-verified fields only |
 | Computer players written in TrigScript | B1 tasks, unit orders through the scratch-box trick | the trick is verified (Magenta); a behaviour library is new |
 | Camera work for one player | `centerView`, B5 | ordinary actions; B5 makes them safe |
+
+## Showpieces
+
+Added 2026-10-16, after Part A was built. Part A is tooling: it makes TrigScript right, and
+a map maker sees little of it. What a map maker sees is what a map can do. So Part B is
+steered by three demonstration maps, each a map someone would want to play, each built
+from the slices it needs, in the order those slices come. A slice that no showpiece needs
+waits behind one that does. Each showpiece is also a test: it runs in the lifted game
+(A2) and in several copies (A3), its cost per frame is under the budget (A4), and it is
+played in Remastered before it is shown to anyone.
+
+### S1. Act out a cutscene
+
+The map maker plays the scene in the editor's game: moves the units, sends them into the
+fight, places the camera. TrigScript writes the script that plays it back.
+
+```ts
+// Written by Record Scene, 0:42 of play, 3 players' units, 61 orders.
+export async function ambush() {
+  centerView(locations.Ridge);
+  order(group.raiders, "move", locations.Ford);
+  await sleep(frames(96));
+  order(group.raiders, "attack", locations.Camp);
+  …
+}
+```
+
+- **The recording** is scm-sim's: the person plays the map in the Replay view's game, and
+  every command they give is a replay command with its frame. A cutscene is a replay of
+  the person's own play.
+- **Writing it back:** a trigger cannot give every command a player can. What it can give
+  is the game's Order (move, patrol, attack) to a location, through the scratch-location
+  trick Magenta verified, plus Create Unit, Center View and the transmission. A recorded
+  command becomes the nearest of those; the rest (a spell, a build) are said at their
+  line and left out. Units are named by groups the recorder makes (`group.raiders`), which
+  are units found by type, owner and place when the scene starts.
+- **Checking it:** the written script runs in the lifted game and the units' places are
+  compared with the recording, frame by frame. The script will not match exactly (an order
+  through a trigger lands on a trigger pass, a player's command on its turn), so the
+  comparison has a tolerance, and the view shows where the two part.
+- **Needs:** B1 (the script is an `async` function), B2 for "when the raiders arrive", and
+  scm-sim's view taking commands from the editor (it plays the person's own copy: rendering,
+  so the StarEdit rule applies).
+- **Probe:** none of its own for the playback (only ordinary actions). Its probe is the
+  scene played in Remastered beside the recording.
+
+### S2. A live interface in the game's text
+
+The objectives panel, the leaderboard's label and a unit type's name are re-read every
+time the game draws them, and a made text can be written into them for one player (the
+strings spike, 2026-09-19). That is a screen. S2 gives it a TypeScript way to be drawn:
+JSX.
+
+```tsx
+ui.objectives(P1, () => (
+  <panel>
+    <line color="yellow">Wave {wave} of 10</line>
+    <bar value={baseHp} max={1500} width={20} />
+    {heroes.map((h) => <line>{h.name}: {h.kills} kills</line>)}
+  </panel>
+));
+```
+
+- **The compiler** reads the script as TSX. An element is a text built from its children;
+  `<bar>` is characters in colour codes; `color` is the game's colour codes. Nothing of
+  React runs in the game: the tree is lowered to a template (IR `template`), known parts at
+  build time and the rest as values.
+- **Redrawn when it changes:** the function is a reactive view. The compiler knows which
+  variables it reads, and the lowering rewrites the text only on a frame when one of them
+  changed, so a panel that is not changing costs a comparison a frame.
+- **Needs:** 3.9's texts (built), B3 for `map` with a callback over an array that grows,
+  and the made-text field writes (built). No new address.
+- **Probe:** one, for how many characters and colour codes a panel holds before the game
+  cuts it, and whether a rewrite every frame flickers.
+
+### S3. A hero moved with the keys
+
+W A S D move a hero, the mouse aims, a key casts. The map plays as an action game.
+
+```ts
+on.key("W", (p) => heroOf(p).order("move", ahead(heroOf(p), 64)));
+const aim = await sync(localMouse());          // Local<Point> → Point, the same on every machine
+```
+
+- **Keys held:** Magenta 7 found that Remastered sends one event a press and no key-up, so
+  "held" does not reach other machines today. R0 found that the keyboard region of
+  Remastered's emulator calls `GetKeyState`: reading it gives the key's state on the local
+  machine, now. That is a `Local<boolean>` (B5), and `sync()` makes it shared a few frames
+  later.
+- **Movement** is a location centred ahead of the hero and Order to it (positions are never
+  written; Magenta 6 and R0). B6 gives the directions and distances.
+- **Checking it:** A3 runs the map in two copies with keys held on one, and the copies must
+  stay the same. That is the whole point of B5's type, shown working.
+- **Needs:** B2 (`on.key`), B5 (`Local`, `sync`), B6 (directions).
+- **Probe:** the first, before B5 is built: hold a key and read the keyboard region every
+  frame in Remastered; then the same in a two-person game, to see each machine reads only
+  its own.
+
+### Smaller things that show well
+
+Each is small and makes the editor feel like it knows the game. They go in where a slice
+passes near them.
+
+| Idea | Built from | Where |
+| --- | --- | --- |
+| EUD error code to line: Remastered's "EUD ERROR: 0x…" is the refused address inverted (R0); the editor reads the code and points at the line that touches that address | the trigger map and trace (A1), R0 | now: a day |
+| Typed chat patterns: `on.chat("-give {n}", (p, { n }) => …)` with `n: number` worked out by template literal types | B2 | B2 |
+| A line's values over time beside it, as a small graph, from the debugger's recording | A5 | after A5's open items |
+| Changes kept while the game runs: edit the script, rebuild, carry the variables over by name into a snapshot and go on | A2's variable map, scm-sim snapshots | after B1 (a task's place has to carry over too) |
+| Fuzzing: random inputs on every seat at the lifted game's speed, looking for desyncs, games that end and failed expectations, then the smallest input that still fails | A2, A3 | after B5 |
+| A memory field's hover says what Remastered does with it ("read: fine, from the dump; write: ends the game, probe 6") | R0, Ghidra structs (the analysis has to be run again) | B7 |
 
 ## Slices
 
