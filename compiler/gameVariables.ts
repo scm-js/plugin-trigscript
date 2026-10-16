@@ -138,3 +138,22 @@ export function programVariables(game: VariableReader, map: VariableMap, name: s
   };
   return new Proxy({}, { get: (_, key) => (typeof key === "string" ? lookup(key) : undefined), has: (_, key) => typeof key === "string" && lookup(key) !== undefined });
 }
+
+/** Where each trigger the build made sits in eudplib's payload, and the line it came from (the `triggerMap` setting). */
+export interface TriggerMap {
+  /** The payload's length in bytes: it ends where the strings section does. */
+  payload: number;
+  /** Offset in the payload, conditions, actions, origin ("line:column", "file:line:column", "fn:<name>", "eudplib"). */
+  triggers: [number, number, number, string][];
+}
+
+/** The trigger map in a build's log (TRIGSCRIPT-MAP and its TRIGSCRIPT-ROWS); null when there is none or it is cut short. */
+export function readTriggerMap(lines: Iterable<string>): TriggerMap | null {
+  let head: { payload: number; count: number } | null = null;
+  const triggers: TriggerMap["triggers"] = [];
+  for (const line of lines) {
+    if (line.startsWith("TRIGSCRIPT-MAP ")) head = JSON.parse(line.slice("TRIGSCRIPT-MAP ".length));
+    else if (line.startsWith("TRIGSCRIPT-ROWS ")) triggers.push(...JSON.parse(line.slice("TRIGSCRIPT-ROWS ".length)));
+  }
+  return head && triggers.length === head.count ? { payload: head.payload, triggers } : null;
+}

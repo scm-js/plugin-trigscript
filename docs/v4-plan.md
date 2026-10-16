@@ -375,6 +375,89 @@ A test can ask for it: `test("shop", { players: 4 }, …)`. The Testing view the
 
 To check first: UMS with several people on one instance (melee is measured, UMS is not).
 
+**As built (2026-10-16, under Node and in the editor).** The check was already done:
+scm-sim's `tests/exact-net-ums` plays two people on one instance in UMS. Two parts of the design
+above changed. The option is a list (`{ players: [P1, P2] }`), because a test's inputs name the
+player anyway. And the hash is not the game's own.
+
+- **Copies.** scm-sim `src/exact/copies.ts`, `copyWorker.ts` and `copiesNode.ts`: one worker
+  thread a copy (one game a process), each seated as a different person, 0.9 GB each.
+  - Each turn, inside the game's own request for every player's turn (`TurnFeed.exchange`), the
+    copies trade what their games queued, over a SharedArrayBuffer barrier. Every machine's
+    commands reach every game in the same turn, as on a real network. Before this, `TurnFeed` sent
+    only the checksum command, so a typed line or MSQC's commands from the map's own code went
+    nowhere.
+  - After every frame the copies also trade what each was shown, so `printed(P2)` reads the same
+    at every copy.
+- **The digest.** One FNV word per 256-byte block of the memory every machine must hold alike:
+  units, deaths, kills, resources, supply, switches, locations, the seed.
+  - The game's 0x37 checksum command does not do: it is built at 0x47CC50 from a ring at
+    0x65EB30, filled at 0x47CFC0, and hashed at 0x47CF10. Depending on a mode byte (0x65FBF0) it
+    hashes the units on some turns and the resources, seed and frame on others. It always folds
+    in a rolling chunk of the map's tile flags. It never hashes death counts. And it mixes in the
+    local player (0x47CF93), so machines that agree send different bytes. Measured: deaths, ore,
+    hit points, position, the seed and a switch changed at frame 40 left 80 turns of it as they
+    were.
+  - Two unit fields are each machine's own, found by copies in step that disagreed, and left
+    out:
+    - +0x87, the under-attack alert's quiet time (0x48EB30 when the owner is 0x512684, then
+      0x48EAE0);
+    - +0x8A and +0x8B, the minimap blink (0x48F230, 0x45F08B).
+  - eudplib's payload is **watched, not compared**. chatEvent's line and the unit MSQC selects
+    for this computer's player differ on purpose, from frame 2 of every map that reads input. So
+    a payload difference is noted with its frame, and is reported only once what the game holds
+    splits.
+  - The strings are never digested: TrigScript's made text for one player is written on that
+    player's computer only (`IsUserCP`).
+- **The report.** At the first turn the digests differ, every copy runs the same detail rounds and
+  reports the same thing:
+  - the dwords, named (unit slot and field, deaths of a unit for a player);
+  - each copy's lines that wrote them that turn;
+  - each copy's lines that read the local machine's memory (0x512684, the keys, the mouse, the
+    screen);
+  - the script's variables that had come apart before, named from the build's variable map.
+
+  In the test it fails the test at that frame, in every copy alike: "the players' games stopped
+  agreeing at frame 5: deaths of unit 7 for P1 is 1 at P1's computer, 0 at P2's computer. At P1's
+  computer: line 12 wrote …".
+- **TrigScript.**
+  - `test(…, { players: [P1, P2] }, …)` runs in one copy for each player. `press`, `click`,
+    `type` and `moveMouse` with a player act at that player's copy; with none, at the first
+    player's.
+  - A one-game run lists such a test as skipped ("runs as a copy of the game for each").
+  - `scripts/test-game.mts` builds the map again with those slots open to people
+    (build-fixture's `PEOPLE=0,1`), then runs them through `runCopies` with
+    `dist/gametest.js`'s `drive`.
+- **Measured.**
+  - `probes/game-players.ts`: a key and a line from P2's computer reach P1's, and a text made for
+    P2 is seen at P2's only. 3/3 pass in two copies with no desync, beside the one-computer test.
+  - scm-sim `tests/exact-copies`: a classic EUD trigger on 0x512684 splits two copies at its
+    first pass, and both name the trigger.
+  - A 3000-frame fight with a computer player stays in step with 2 and with 4 copies (8 s,
+    3.5 GB for four).
+- **The editor.** "Run All Tests in the Game" runs a test of several players through the scm-sim
+  plugin's `testCopies`. The analysis page runs one copy each in workers of its own
+  (`web/copyWorker.ts`, sharing `src/exact/copy.ts` with Node), and the reports merge into one
+  mark (`compiler/gameCopies.ts`). The build is asked for its trigger map beside the variable
+  map, so a desync names lines.
+  - The copies need SharedArrayBuffer, so the page must be cross-origin isolated. COOP/COEP
+    cannot do it: the page is a frame inside the editor, isolation needs the top-level page too,
+    and COOP `same-origin` on the editor cuts scmjs.dev's sign-in popup off from the editor
+    (it posts back through `window.opener`).
+  - `Document-Isolation-Policy: isolate-and-credentialless` isolates the one document instead:
+    `/play/analyse.html`, sent by the site's worker (cloudflare-link-previews
+    `ISOLATED_PLAY_PAGES`) and by the dev server. Chromium 137 on; elsewhere, or without the
+    header, the tests are marked not run, and the mark says why.
+  - Measured in headless Chromium 153 (`web/smoke-copies.mjs`, then a built editor):
+    - the editor stays as it is;
+    - `postMessage`, OPFS and the moments BroadcastChannel cross the boundary;
+    - replay analysis, pathing and measure still pass under the header;
+    - 4/4 tests in the game from the Testing view, three of them as two copies (11 s).
+- **Not done.**
+  - Dwords that come apart later in a payload block already watched are not reported.
+  - `sim.place` and the other actions between frames run at every copy, as a trigger for that
+    player would.
+
 ### A4. What a frame costs (4.1.0)
 
 From A1's hooks: conditions and actions run per frame, by IR node and by line. Lifted

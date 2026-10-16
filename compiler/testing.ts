@@ -49,6 +49,8 @@ interface Case {
   args: unknown[];
   /** `{ as: P2 }`: the player the world is simulated as, when the map's player settings are not given. */
   as?: number;
+  /** `{ players: [P1, P2] }`: in the game, a copy of it for each, kept in step. */
+  players?: number[];
 }
 
 /** A test or a `describe`, as the editor lists it. `id` is the file and the names down to it: the same from one compile to the next. */
@@ -61,6 +63,8 @@ export interface TestInfo {
   file: string;
   line: number;
   mode: Mode;
+  /** A test's `{ players }`: run in the game as a copy for each. */
+  players?: number[];
 }
 
 export interface TestEvent { frame: number; text: string; file?: string; line?: number; player: number }
@@ -116,7 +120,7 @@ export interface TestRunOptions {
    * A world other than the simulator's for each test (the lifted game's, `GameSim`): made fresh for every test,
    * given the player the test asked to be (`{ as: P2 }`). Absent: the simulator.
    */
-  makeWorld?: (as?: number) => TestWorldLike;
+  makeWorld?: (as?: number, test?: { id: string; players?: number[] }) => TestWorldLike;
   /** Run only these: tests of these files, or with these ids (a suite's id runs what is under it). Absent: all. */
   files?: string[];
   ids?: string[];
@@ -160,7 +164,11 @@ export class TestRegistry {
     if (typeof fn !== "function") throw new Error(`test("${name}"): the second argument is the test's function, (sim) => { … }.`);
     if (fn.constructor?.name === "AsyncFunction") throw new Error(`test("${name}"): a test is not async. Nothing in sim waits: sim.frames(n) and sim.until(…) have run by the time they return.`);
     const as = options && typeof options === "object" && typeof (options as { as?: unknown }).as === "number" ? (options as { as: number }).as : undefined;
-    this.current.children.push({ kind: "test", name, at: this.where(), mode, parent: this.current, fn: fn as TestFn, args, ...(as !== undefined ? { as } : {}) });
+    const given = options && typeof options === "object" ? (options as { players?: unknown }).players : undefined;
+    if (given !== undefined && !(Array.isArray(given) && given.length >= 2 && given.length <= 8 && given.every((p) => Number.isInteger(p) && p >= 0 && p < 8) && new Set(given).size === given.length))
+      throw new Error(`test("${name}", { players }): two to eight different players of P1 to P8, as [P1, P2].`);
+    const players = given as number[] | undefined;
+    this.current.children.push({ kind: "test", name, at: this.where(), mode, parent: this.current, fn: fn as TestFn, args, ...(as !== undefined ? { as } : {}), ...(players ? { players: [...players] } : {}) });
   }
 
   private addSuite(mode: Mode, name: unknown, body: unknown): void {
@@ -493,7 +501,7 @@ export function listTests(registry: TestRegistry): { list: TestInfo[]; cases: Ma
       const n = (seen.get(id) ?? 0) + 1;
       seen.set(id, n);
       if (n > 1) id = `${id} #${n}`;
-      list.push({ id, kind: node.kind, name: node.name, path, file: node.at.file, line: node.at.line, mode: node.mode });
+      list.push({ id, kind: node.kind, name: node.name, path, file: node.at.file, line: node.at.line, mode: node.mode, ...(node.kind === "test" && node.players ? { players: node.players } : {}) });
       if (node.kind === "suite") walk(node, [...path, node.name]);
       else cases.set(id, node);
     }
@@ -528,14 +536,14 @@ export function runTests(registry: TestRegistry, ctx: TestContext, options: Test
   return { list, results, only, ms: Date.now() - started };
 }
 
-function runOne(id: string, test: Case, chain: Suite[], ctx: TestContext, world: TestWorld, makeWorld?: (as?: number) => TestWorldLike): TestResult {
+function runOne(id: string, test: Case, chain: Suite[], ctx: TestContext, world: TestWorld, makeWorld?: TestRunOptions["makeWorld"]): TestResult {
   const began = Date.now();
   let sim: TestWorldLike | null = null;
   const done = (extra: Partial<TestResult>): TestResult => ({
     id, status: "passed", printed: sim?.printed() ?? [], events: (sim?.log((t) => ctx.sources[t] ?? null) ?? []).slice(0, 500), frames: sim?.frame ?? 0, ms: Date.now() - began, ...extra,
   });
   try {
-    sim = makeWorld ? makeWorld(test.as) : new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);
+    sim = makeWorld ? makeWorld(test.as, { id, players: test.players }) : new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);
     for (const s of chain) for (const h of s.before) h(sim);
     const returned = test.fn(sim, ...test.args);
     if (returned && typeof (returned as { then?: unknown }).then === "function") throw new Error("A test is not async: what it returned is a promise. Nothing in sim waits.");

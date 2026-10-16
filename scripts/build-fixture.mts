@@ -4,7 +4,7 @@
  * plugin-eudplib checkout's `scripts/build-map.mts`, write the built map. For probe maps
  * that get played.
  *
- *   [TRIGGER_MAP=1] npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike-eud.scx [map.scx] [../plugin-eudplib]
+ *   [TRIGGER_MAP=1] [PEOPLE=0,1] [PREP_ONLY=1] npx tsx scripts/build-fixture.mts probes/spike.ts fixtures/eud/spike-eud.scx [map.scx] [../plugin-eudplib]
  *
  * The output lands in the ignored fixtures/ folder: it is built on a Blizzard map, which is never committed.
  *
@@ -20,7 +20,7 @@ import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { serializeIr } from "../compiler/eud";
 import { buildPlugins } from "../compiler/input";
-import { readVariableMap } from "../compiler/gameVariables";
+import { readTriggerMap, readVariableMap } from "../compiler/gameVariables";
 import { resolveStrings } from "../script";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -46,6 +46,8 @@ const scn = parseScenario(loaded.chk);
 // with User Selectable the game hands out melee units and drops the placed ones.
 patchPlayer(scn, 0, { type: 6, race: 1, force: 0 });
 patchPlayer(scn, 1, { type: 5, race: 0, force: 1 });
+// PEOPLE=0,1: those slots open to a person each (Terran), for a test of several players (scripts/test-game.mts).
+for (const slot of (process.env.PEOPLE ?? "").split(",").filter(Boolean).map(Number)) patchPlayer(scn, slot, { type: 6, race: 1, force: slot === 0 ? 0 : 1 });
 // The base map is a melee map: its stock triggers defeat whoever commands no buildings, and in
 // Use Map Settings nobody is handed melee units — both players lose at once and the game
 // ends in a draw a second in. The probe's own script is the only source of triggers it should have,
@@ -84,6 +86,8 @@ markDirty(scn, "TRIG", "UNIT");
 const ir = serializeIr(r.ir, r.strings, r.input);
 const extras = loaded.archive ? await readExtras(loaded.archive, loaded.files) : new Map();
 const withStrings = await saveMap(serializeScenario(scn), { extras, compress: "pkware", listfile: true });
+// PREP_ONLY=1: the prepared map as it is, not built: what the editor opens in a run end to end, and builds itself.
+if (process.env.PREP_ONLY) { writeFileSync(resolve(outPath), withStrings); process.exit(0); }
 const dir = mkdtempSync(join(tmpdir(), "trigscript-fixture-"));
 const irPath = join(dir, "trigscript.json");
 const pluginsPath = join(dir, "plugins.json");
@@ -111,13 +115,9 @@ const res = spawnSync("npx", ["tsx", join(eudplib, "scripts", "build-map.mts"), 
 const fullLog = existsSync(logPath) ? readFileSync(logPath, "utf8") : res.stdout;
 rmSync(dir, { recursive: true, force: true });
 const logLines = fullLog.split("\n");
-const mapLine = logLines.find((l) => l.startsWith("TRIGSCRIPT-MAP "));
-if (mapLine) {
-  const head = JSON.parse(mapLine.slice("TRIGSCRIPT-MAP ".length)) as { payload: number; count: number };
-  const triggers = logLines.filter((l) => l.startsWith("TRIGSCRIPT-ROWS ")).flatMap((l) => JSON.parse(l.slice("TRIGSCRIPT-ROWS ".length)) as unknown[]);
-  if (triggers.length !== head.count) { console.error(`the map of triggers came out with ${triggers.length} of ${head.count} rows`); process.exit(1); }
-  writeFileSync(resolve(outPath).replace(/\.scx$/, ".triggers.json"), JSON.stringify({ payload: head.payload, triggers }));
-}
+const triggerMap = readTriggerMap(logLines);
+if (triggerMap) writeFileSync(resolve(outPath).replace(/\.scx$/, ".triggers.json"), JSON.stringify(triggerMap));
+else if (logLines.some((l) => l.startsWith("TRIGSCRIPT-MAP "))) { console.error("the map of triggers came out cut short"); process.exit(1); }
 const variables = readVariableMap(logLines);
 if (variables) writeFileSync(resolve(outPath).replace(/\.scx$/, ".variables.json"), JSON.stringify(variables));
 else if (process.env.VARIABLE_MAP && res.status === 0) { console.error("the build said nothing of where the variables are"); process.exit(1); }

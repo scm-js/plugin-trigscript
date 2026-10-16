@@ -8,7 +8,7 @@
  *
  * Needs a scm-sim checkout beside this repository (or SCM_SIM_DIR) with its lifted game generated.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { readLocations, readUnitStats, type GameHandle } from "../compiler/gameSim";
+import { mergeCopies } from "../compiler/gameCopies";
 import { defaultScriptNames } from "../compiler/names";
 import type { TestReport, TestWorld } from "../compiler/testing";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -71,6 +72,7 @@ try {
   const bySim = new Map((simulated?.results ?? []).map((r) => [r.id, r]));
   let failed = 0;
   for (const r of inGame.results) {
+    if (r.status === "skipped" && r.message?.startsWith("a test of ")) continue;
     const s = bySim.get(r.id);
     const mark = (st: string | undefined) => (st === "passed" ? "✓" : st === "failed" ? "✗" : st === "skipped" ? "–" : "?");
     if (r.status === "failed") failed++;
@@ -79,7 +81,43 @@ try {
     if (s?.status === "failed") console.log(`    in the simulator: ${s.message}${s.at ? ` — line ${s.at.line}` : ""}${s.actual !== undefined ? `\n      got ${s.actual}` : ""}`);
     if (s && s.status !== r.status) console.log("    the two disagree: one of them is wrong");
   }
-  console.log(`\n${inGame.results.length} tests in the game: ${inGame.results.length - failed} passed, ${failed} failed`);
+  // A test of several players: the map built again with their slots open to people, then a copy of the game for
+  // each player, kept in step (scm-sim's runCopies), all running the same tests.
+  const groups = new Map<string, { players: number[]; ids: string[] }>();
+  for (const t of simulated?.list ?? []) if (t.kind === "test" && t.players) { const k = t.players.join(","); const g = groups.get(k) ?? { players: t.players, ids: [] }; g.ids.push(t.id); groups.set(k, g); }
+  if (groups.size) {
+    const people = [...new Set([...groups.values()].flatMap((g) => g.players))].sort((a, b) => a - b);
+    const several = join(dir, basename(script, ".ts") + "-people.scx");
+    const b2 = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), resolve(script), several, ...(baseMap ? [resolve(baseMap)] : [])], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, VARIABLE_MAP: "1", TRIGGER_MAP: "1", PEOPLE: people.join(",") } });
+    if (b2.status !== 0) { console.error(b2.stdout.split("\n").slice(-20).join("\n"), b2.stderr); process.exit(1); }
+    const { runCopies } = await from("src/exact/copiesNode.ts");
+    const triggers = JSON.parse(readFileSync(several.replace(/\.scx$/, ".triggers.json"), "utf8"));
+    const severalVariables = JSON.parse(readFileSync(several.replace(/\.scx$/, ".variables.json"), "utf8"));
+    // TRIGSCRIPT_DUMP=<dir>: what the copies are handed, kept for a run in a browser (scm-sim's web/smoke-copies.mjs).
+    if (process.env.TRIGSCRIPT_DUMP) {
+      const to = resolve(process.env.TRIGSCRIPT_DUMP);
+      mkdirSync(to, { recursive: true });
+      writeFileSync(join(to, "map.scx"), readFileSync(several));
+      writeFileSync(join(to, "gametest.js"), readFileSync(bundle));
+      writeFileSync(join(to, "request.json"), JSON.stringify({ groups: [...groups.values()], triggers, payload: { modules: compiled.modules, names, locations, variables: severalVariables } }));
+    }
+    for (const g of groups.values()) {
+      const out = await runCopies({ map: new Uint8Array(readFileSync(several)), seats: g.players.map((slot) => ({ slot, race: 1, name: `P${slot + 1}` })), driver: readFileSync(bundle, "utf8"), payload: { modules: compiled.modules, names, locations, variables: severalVariables, ids: g.ids }, triggers }) as { result: (TestReport & { error?: string }) | null; error: string | null; player: number }[];
+      for (const c of out) if (c.error || c.result?.error) { console.error(`P${c.player + 1}'s copy: ${c.error ?? c.result?.error}`); process.exit(1); }
+      // A test passes when it passes at every computer; the first that failed says why.
+      for (const r of mergeCopies(g.ids, out)) {
+        const s = bySim.get(r.id);
+        const mark = (st: string | undefined) => (st === "passed" ? "✓" : st === "failed" ? "✗" : st === "skipped" ? "–" : "?");
+        if (r.status === "failed") failed++;
+        console.log(`${mark(r.status)} game ×${g.players.length}  ${mark(s?.status)} simulator  ${r.id.replace(/^.*?::/, "")}  (${r.frames} frames, ${r.ms} ms)`);
+        if (r.status === "failed") console.log(`    in the game: ${r.message}${r.at ? ` — line ${r.at.line}` : ""}`);
+        if (s?.status === "failed") console.log(`    in the simulator: ${s.message}${s.at ? ` — line ${s.at.line}` : ""}`);
+        if (s && s.status !== r.status) console.log("    the two disagree: one of them is wrong");
+      }
+    }
+  }
+  const counted = inGame.results.filter((r) => r.status !== "skipped" || !r.message?.startsWith("a test of ")).length + [...groups.values()].reduce((n, g) => n + g.ids.length, 0);
+  console.log(`\n${counted} tests in the game: ${counted - failed} passed, ${failed} failed`);
   if (failed) process.exitCode = 1;
 } finally {
   rmSync(dir, { recursive: true, force: true });

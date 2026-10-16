@@ -42,7 +42,8 @@ import {
 } from "./monaco";
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
 import { FILE_NAME } from "./script";
-import { isMachineLine, readVariableMap } from "./compiler/gameVariables";
+import { isMachineLine, readTriggerMap, readVariableMap } from "./compiler/gameVariables";
+import { mergeCopies } from "./compiler/gameCopies";
 import { isTestFile, type TestInfo, type TestReport, type TestResult, type TestRunOptions } from "./compiler/testing";
 import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, playersLabel, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
 import { testName } from "./service";
@@ -727,7 +728,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const differ = simulated && simulated.status !== "skipped" && game.status !== "skipped" && simulated.status !== game.status;
     return el("span", { className: differ ? "tsd-game tsd-game-differs" : "tsd-game", title: differ
       ? t("In the game: {status}. The simulator and the game disagree: the game is right, so the simulator is wrong here (or the test leans on something it does differently).", { status: game.status === "failed" ? game.message ?? t("failed") : t("passed") })
-      : game.status === "failed" ? t("In the game: {message}", { message: game.message ?? t("failed") }) : t("In the game: passed") },
+      : game.status === "failed" ? t("In the game: {message}", { message: game.message ?? t("failed") }) : game.status === "skipped" ? game.message ?? t("In the game: not run") : t("In the game: passed") },
     stateIcon(state));
   };
 
@@ -761,22 +762,44 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const heard = svc.onBuild((e) => { if (e.kind === "log") logged.push(e.line); else if (e.kind === "done" && !logged.length) logged.push(...e.log.split("\n")); });
       const file = await svc.withVariableMap(() => api.document.export({ format: "scx" })).finally(() => heard.dispose());
       if (!file || cancelled) { if (!file) setStatus("error", t("No map is open.")); return; }
-      const variables = readVariableMap(logged);
+      const variables = readVariableMap(logged), triggers = readTriggerMap(logged);
       gametest ??= fetch(gametestUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`gametest.js: ${r.status}`); return r.text(); });
       const module = await gametest.catch((err) => { gametest = null; throw err; });
       setStatus("busy", t("Running the tests in the game…"));
-      const report = await engine.test(new Uint8Array(await file.arrayBuffer()), module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids, variables }) as TestReport & { error?: string };
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const report = await engine.test(bytes, module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids, variables }) as TestReport & { error?: string };
       if (cancelled) return;
       if (report.error) { setStatus("error", t("Not run in the game: {message}", { message: report.error })); return; }
+      // A test of several players (TrigScript 4, A3): a copy of the game for each player, kept in step, where the
+      // engine's page can run them; where it cannot, the test is marked as not run, and why.
+      const several = new Map<string, { players: number[]; ids: string[] }>();
+      for (const x of tests.list) {
+        if (x.kind !== "test" || !x.players || (filter.files && !filter.files.includes(x.file)) || (filter.ids && !filter.ids.some((id) => x.id === id || x.id.startsWith(`${id} > `)))) continue;
+        const key = x.players.join(","), g = several.get(key) ?? { players: x.players, ids: [] };
+        g.ids.push(x.id);
+        several.set(key, g);
+      }
+      const notRun: TestResult[] = [];
+      if (several.size && (!engine.testCopies || !status.copies)) {
+        const why = t("Not run: a test of several players runs a copy of the game for each, which needs memory shared between them. This browser does not allow that on the engine's page (Chrome and Edge from version 137 do).");
+        for (const g of several.values()) for (const id of g.ids) notRun.push({ id, status: "skipped", message: why, printed: [], events: [], frames: 0, ms: 0 });
+      } else for (const g of several.values()) {
+        setStatus("busy", t("Running a test of {n} players in the game: a copy of the game for each…", { n: g.players.length }));
+        const out = await engine.testCopies!(bytes, module, { modules: a.compiled.modules, names, ids: g.ids, variables }, { players: g.players, triggers });
+        if (cancelled) return;
+        report.results.push(...mergeCopies(g.ids, out));
+      }
       const ran = report.results.filter((x) => x.status !== "skipped");
       const asked = new Set(ran.map((x) => x.id));
       gameResults = new Map([...gameResults].filter(([id]) => !asked.has(id) && tests.list.some((x) => x.id === id)));
       for (const r of ran) gameResults.set(r.id, r);
+      for (const r of notRun) gameResults.set(r.id, r);
       const failed = ran.filter((x) => x.status === "failed");
       const differ = ran.filter((x) => { const s = tests.results.get(x.id); return s && s.status !== "skipped" && s.status !== x.status; });
       if (failed.length) { chosenTest = failed[0].id; shell.showPanel("tests"); }
       const said = t("In the game: {passed} of {n, plural, one {# test} other {# tests}} passed.", { passed: ran.length - failed.length, n: ran.length });
-      setStatus(failed.length || differ.length ? "error" : "ok", differ.length ? `${said} ${t("The simulator disagrees on {n, plural, one {# test} other {# tests}}.", { n: differ.length })}` : said, NOTICE_MS);
+      const whole = notRun.length ? `${said} ${t("{n, plural, one {# test of several players was} other {# tests of several players were}} not run: this browser cannot run copies of the game.", { n: notRun.length })}` : said;
+      setStatus(failed.length || differ.length ? "error" : notRun.length ? "info" : "ok", differ.length ? `${whole} ${t("The simulator disagrees on {n, plural, one {# test} other {# tests}}.", { n: differ.length })}` : whole, NOTICE_MS);
     } catch (err) {
       setStatus("error", t("Not run in the game: {message}", { message: (err as Error).message }));
     } finally {

@@ -622,6 +622,13 @@ export function expect<T>(actual: T): Expectation<T> & { readonly not: Expectati
 export interface TestOptions {
   /** Without the map's player settings the world has one player: this one. */
   as?: Player;
+  /**
+   * In the game: these players, each at a computer of their own — a copy of the game for each, kept in step as a
+   * game between people is. What a player does (press, click, type, moveMouse) is done at their computer, and the
+   * test fails at the frame the copies stop agreeing, the lines that made them differ named. The simulator runs the
+   * test once, as without it.
+   */
+  players?: readonly Player[];
 }
 type TestBody<A extends readonly unknown[] = []> = (sim: Sim, ...args: A) => void;
 interface TestEach<F> { <T>(cases: readonly T[]): (name: string, fn: F extends "suite" ? (...args: T extends readonly unknown[] ? T : [T]) => void : TestBody<T extends readonly unknown[] ? T : [T]>) => void }
