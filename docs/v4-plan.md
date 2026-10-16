@@ -782,7 +782,7 @@ known when the script is built, so its place and its wait are two cells, like a 
   in the frame its answer turns, a race's value and its losers stopped, and a wave whose
   Zerglings the test kills. Cost: a waiting `Promise.all` of two branches is about 60
   conditions and actions a frame.
-- **Decided while building, for the user to confirm:** a race's losers stop where they
+- **Decided while building, confirmed by the user (2026-10-16):** a race's losers stop where they
   are. JavaScript does not cancel them, but here a branch is a fixed pair of cells, so a
   race met again in a loop could not run a second copy beside the first. Stopping is also
   what the plan's own example means. (Open decisions, below.)
@@ -1069,8 +1069,8 @@ build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
   nothing of the game is drawn. A5's "the game beside the code" draws, so it needs the
   person's own copy, as Test Map does.
 - **Does `Promise.race` cancel the losers?** JavaScript: no. Proposed: no, as JavaScript,
-  plus an explicit `task.cancel()` on what `spawn(…)` returns. *Built otherwise in B1's
-  first part (2026-10-16), for the user to confirm:* the losers stop, because a branch is
+  plus an explicit `task.cancel()` on what `spawn(…)` returns. *Decided otherwise in B1's
+  first part (2026-10-16), and confirmed by the user:* the losers stop, because a branch is
   a fixed pair of cells and a race met again cannot run beside its last run. Once `spawn`
   exists, a loser that should go on can be spawned.
 - **What a closure may capture.** Proposed above (B3): `const` by value, `let` only when
