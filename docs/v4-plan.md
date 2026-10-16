@@ -551,6 +551,74 @@ k × 1,000 actions a frame, the user says when it stutters) gives the first numb
 - **Watchpoints.** "Stop when this changes" compares a dword once a frame, which is cheap.
 - **The game beside the code.** scm-sim renders the frame the debugger stands at.
 
+**As built (2026-10-16, under Node; the editor end to end below).** There was no first backend: 9½ was never
+built, and 3.11.0 became the Korean release. So this is the debugger itself, with the game as its only backend.
+It also does not stop a running game. A test is synchronous JavaScript and a frame is the game's trigger loop run
+to its end, so neither can pause in the middle. Instead the test runs once with everything it did written down,
+and the debugger walks the record.
+
+- **The record** (`compiler/gameDebug.ts`, `RecordingHandle`). It wraps the host's test handle for one test, and
+  writes down each frame of the run:
+  - *Steps.* scm-sim's cost tap now also says each record as it runs (`CostTap.trace`), with the line A4's grouping
+    gives it. Records of one line in a row make one step. A loop's turns come out as its lines over and over.
+  - *Writes.* `EudTap.listen` now says what a dword held before. Every dword of the script's memory a step changed
+    is kept with its value before and after. "The script's memory" is the start of `STRx` to the end of the payload:
+    variables, arrays, the heap, made texts and the string table. With both values, a step back puts writes back,
+    so it is as quick as a step forward.
+  - *What no record said.* At each frame's end the memory is compared with the record's copy. A difference becomes
+    the frame's last step ("the game itself"), so the copy cannot drift. None has turned up on the probes.
+  - *The test's line* that asked for the frame. This is read from V8's call sites, not from stack text: under Node
+    with source maps, formatting a stack every frame cost ten times what the game did. That took a 216-frame
+    record from 4.6 s to 0.5 s.
+  - *What was shown* on the text lines.
+- **Pictures.** These stay on the host's side and are never sent with the record:
+  - The handle can now keep the game and put it back (`keep()` / `restore()`): the engine's snapshot plus the
+    payload range it does not cover.
+  - A game is kept every 48 frames, and when the kept games pass 256 MB, half go and the spacing doubles.
+  - `GameSim` now tells the handle of its own writes between frames (`wrote()`: keys, the mouse, a scratch
+    location, hit points), and the recorder keeps those with the test's actions, typed lines and calls.
+  - A picture of frame F is then the nearest kept game, those things done again at their frames, and the frames
+    played. Mid-frame it is the frame before's end.
+  - The analysis page holds the run in a session (`scmjs.sim.debug`, `picture`; the plugin's `debug()`). The
+    viewer page starts the same map the same way and draws a kept game put back over it (`scmjs.view.debug`,
+    `show`). It refuses one whose frame-0 state differs.
+- **The walk** (`compiler/debugModel.ts`, `DebugCursor`):
+  - a line or a frame, either way;
+  - continue to a breakpoint or a watched variable's change, either way;
+  - the variables at the cursor, read as `sim.program()` reads them, over the record's copy of the memory;
+  - what each line wrote in the frame so far.
+- **In the workspace** (`debugger.ts`):
+  - *Starting.* *Debug this test in the game* is on each test's row in Testing, and *Debug Test at Cursor* is in
+    the palette and the editor's menu. A failed test opens at its failure.
+  - *The Debug view* has a bar of controls, a timeline (the frames' cost, breakpoint hits in red, shown text in
+    gold; click or drag), the variables (changes in gold, an eye to watch one), the frame's steps, and the game
+    with its text lines.
+  - *The editor* shows breakpoints in the margin (F9 or a click), the line about to run and the test's line lit,
+    and beside each line run in the frame, the values it wrote.
+  - *Keys:* F5 and F6 continue forwards and back; F10 and F11 step a line and a frame, with Shift for back;
+    Shift+F5 stops.
+  - The marks show only while the script is the text that was run.
+- **Found on the way:** the build's variable map crashed on any program with a loop over units (`LoopUnit` has no
+  `decl`). Fixed in `trigscript.py`. The units probe could not run in the game before this.
+- **Measured** (under Node, `scripts/debug-game.mts`, `probes/game-debug.ts`): recording costs about 2.5 ms a
+  frame, kept games included.
+
+  | Test | Frames | Steps | Writes | Record | Time |
+  | --- | --- | --- | --- | --- | --- |
+  | waves | 216 | 268 | 121,213 | 1.7 MB | 536 ms |
+  | the failing test | 146 | 183 | 96,936 | 1.4 MB | 349 ms |
+
+  Most writes are eudplib's own. A picture takes 45 ms (played on from the last) to 110 ms (from a kept game).
+  At six frames of each test, both ways, the picture's memory was what the record said, and the variables read
+  from each agreed.
+- **Not done:**
+  - A test of several players. The debugger runs one game.
+  - Units are known only by their slot: the record keeps the script's memory, not the unit table.
+  - Conditional breakpoints, hover values, a call stack. The stack's frames are cells too, so the record has
+    them, but nothing reads them yet.
+  - On a copy that may only watch (StarEdit's download), there is no picture: a picture of a map's run is the map
+    played. Everything else works.
+
 ## Part B — the language
 
 Each slice states what changes in the IR, the simulator and the Python, and has a probe.
