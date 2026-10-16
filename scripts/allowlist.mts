@@ -1,6 +1,6 @@
 /**
  * Writes data/allowlist.json: what Remastered is known to allow, each entry with what it rests on (see
- * compiler/allowlist.ts). Three sources, in this order:
+ * compiler/allowlist.ts). Four sources, in this order:
  *
  * 1. Magenta's catalogue (plugin-magenta's src/catalogue/eud.json): every entry with its address, its Remastered
  *    read/write and whether a probe verified it. A verified yes is allowed; anything else is not known.
@@ -9,8 +9,12 @@
  *    probe here was played in Remastered with every line as expected, so whatever its build reads or writes was
  *    allowed there. A trace is made from today's build of the probe, not the build that was played; the families of
  *    addresses are the same, and a probe played again is what makes a new one certain.
+ * 4. data/remastered.json: Remastered's own EUD emulator, run on a dump of the running game (2026-10-16): every
+ *    region it emulates and what it does with each dword read and written, and that anything outside its regions
+ *    ends the game. Facts about addresses only. Entries from it carry `from: "dump"`; what was played (1–3) wins
+ *    over the same byte.
  *
- *   npx tsx scripts/allowlist.mts <dir of <probe>.trace.json> [--magenta=<eud.json>] [--out=<path>]
+ *   npx tsx scripts/allowlist.mts <dir of <probe>.trace.json> [--magenta=<eud.json>] [--remastered=<json>] [--out=<path>]
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -57,7 +61,9 @@ for (const e of magenta.entries) {
 
 // 2. What the game was seen to refuse or ignore (Magenta's docs/candidates.md).
 entries.push(
-  { name: "unit table: position", base: 0x59ccd0, ...ROWS, width: 4, read: "allowed", write: "ends", evidence: ["Magenta probe 6, key I (2026-09-14): writing a unit's position ends the game, \"EUD not supported\""] },
+  { name: "unit table: position", base: 0x59ccd0, ...ROWS, width: 4, read: "allowed", write: "ignored", evidence: ["the dump probe, steps A and B (2026-10-16): a unit's X and Y written, the game went on and nothing was seen to move", "Magenta probe 6, key I (2026-09-14) ended the game writing the unit's position and its sprite's together; the dump probe wrote each alone and neither did"] },
+  { name: "sprite table: position", base: 0x629d98 + 0x14, stride: 36, count: 2500, width: 4, read: "allowed", write: "ignored", evidence: ["the dump probe, step C (2026-10-16): a sprite's X and Y written, the game went on and nothing on the screen changed"] },
+  { name: "unit table: +0x74", base: 0x59cd1c, ...ROWS, width: 4, read: "ends", write: "ends", evidence: ["the dump probe, step D (2026-10-16): read, the game ended \"EUD ERROR: 0xFFA632E3\" (the address, bits flipped), as the dump said"] },
   { name: "unit table: cloak flags", base: 0x59cd85, ...ROWS, width: 1, read: "allowed", write: "ignored", evidence: ["Magenta probe 6, keys Y and H (2026-09-14): status flags 0x100 and 0x200 written, no visible cloak"] },
   { name: "game speed", base: 0x6cdfd4, width: 4, read: "allowed", write: "ignored", evidence: ["Magenta probe 5, key 9 (2026-09-14): written, the game kept its speed"] },
 );
@@ -106,7 +112,24 @@ for (const r of runs) {
   });
 }
 
-const list: Allowlist = { version: 1, entries };
+// 4. The dump of Remastered's emulator.
+const remasteredPath = args.find((a) => a.startsWith("--remastered="))?.slice(13) ?? join(root, "data", "remastered.json");
+let outside: Allowlist["outside"];
+let dumped = 0;
+if (existsSync(remasteredPath)) {
+  const r = JSON.parse(readFileSync(remasteredPath, "utf8")) as {
+    build: string; source: string; outside: Verdict;
+    entries: { name: string; base: number; width: number; stride?: number; count?: number; read: Verdict; write: Verdict; note?: string }[];
+  };
+  const evidence = [`Remastered ${r.build}'s own EUD emulator, run on a dump of the game (2026-10-16)`];
+  for (const e of r.entries) {
+    entries.push({ ...e, evidence, from: "dump" });
+    dumped++;
+  }
+  outside = { verdict: r.outside, evidence: [`no region of Remastered ${r.build}'s EUD emulator covers it (a dump of the game, 2026-10-16); the game ends with "EUD ERROR" and the address with its bits flipped`] };
+}
+
+const list: Allowlist = { version: 1, entries, ...(outside ? { outside } : {}) };
 const out = args.find((a) => a.startsWith("--out="))?.slice(6) ?? join(root, "data", "allowlist.json");
 writeFileSync(out, JSON.stringify(list, null, 1) + "\n");
-console.log(`${out}: ${entries.length} entries — ${magenta.entries.length} from Magenta's catalogue, 3 failures, ${runs.length} runs from ${probes} probes' traces`);
+console.log(`${out}: ${entries.length} entries — ${magenta.entries.length} from Magenta's catalogue, 6 seen in the game, ${runs.length} runs from ${probes} probes' traces, ${dumped} from the dump of Remastered's emulator`);
