@@ -736,7 +736,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const events = foldPlayers(r.events);
     for (const e of events.slice(0, SIMULATE_ROWS)) {
       list.append(el("li", { onClick: () => { if (e.file && e.line) goTo(e.file, e.line); } },
-        el("span", { className: "frame" }, t("frame {n}", { n: e.frame + 1 })), el("span", { className: "msg note" }, `${several ? `${playersLabel(e.players)} · ` : ""}${e.text}`), el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "")));
+        el("span", { className: "frame" }, t("frame {n}", { n: e.frame })), el("span", { className: "msg note" }, `${several ? `${playersLabel(e.players)} · ` : ""}${e.text}`), el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "")));
     }
     if (events.length > SIMULATE_ROWS) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "…"), el("span", { className: "msg" }, t("and {n} more", { n: events.length - SIMULATE_ROWS }))));
     resultsView.body.replaceChildren(list);
@@ -791,7 +791,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     }
     for (const { first: f, times } of [...faults.values()].slice(0, SIMULATE_FAULTS)) {
       list.append(el("li", { className: "tsd-fault", title: f.message, onClick: () => goTo(f.at.file, f.at.line, f.at.column) },
-        el("span", { className: "frame" }, t("frame {n}", { n: f.cycle + 1 })), shell.icon("error"),
+        el("span", { className: "frame" }, t("frame {n}", { n: f.frame })), shell.icon("error"),
         el("span", { className: "msg" }, times > 1 ? t("{message} (and {n, plural, one {# more time} other {# more times}} at this line)", { message: f.message, n: times - 1 }) : f.message),
         el("span", { className: "where" }, where({ file: f.at.file, line: f.at.line }))));
     }
@@ -801,11 +801,11 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const several = sim.game.players.slots.length > 1;
     const flat = [
       ...sim.events.map((e, i) => { const at = r.sources[e.trigger]; return { frame: e.cycle, order: i, player: e.player, text: describeEvent(e), file: at?.file, line: at?.line, column: 1, title: t("Trigger #{n}", { n: e.trigger + 1 }) }; }),
-      ...(ps?.events ?? []).map((e, i) => ({ frame: e.cycle, order: sim.events.length + i, player: e.player, text: describeEvent(e), file: e.at.file as string | undefined, line: e.at.line as number | undefined, column: e.at.column, title: t("Program {n}", { n: e.program + 1 }) })),
+      ...(ps?.events ?? []).map((e, i) => ({ frame: e.frame, order: sim.events.length + i, player: e.player, text: describeEvent(e), file: e.at.file as string | undefined, line: e.at.line as number | undefined, column: e.at.column, title: t("Program {n}", { n: e.program + 1 }) })),
     ].sort((x, y) => x.frame - y.frame || x.order - y.order);
     const rows = foldPlayers(flat).map((e) => ({
       line: () => el("li", { title: e.title, onClick: () => { if (e.file && e.line) goTo(e.file, e.line, e.column); } },
-        el("span", { className: "frame" }, t("frame {n}", { n: e.frame + 1 })), el("span", { className: "msg" }, `${several ? `${playersLabel(e.players)} · ` : ""}${e.text}`), el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "?")),
+        el("span", { className: "frame" }, t("frame {n}", { n: e.frame })), el("span", { className: "msg" }, `${several ? `${playersLabel(e.players)} · ` : ""}${e.text}`), el("span", { className: "where" }, e.file && e.line ? where({ file: e.file, line: e.line }) : "?")),
     }));
     if (rows.length === 0) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, "—"), el("span", { className: "msg" }, t("No actions ran in {frames} frames.", { frames: SIMULATE_FRAMES }))));
     for (const row of rows.slice(0, SIMULATE_ROWS)) list.append(row.line());
@@ -1160,7 +1160,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    * What a simulated program finds on the map: the placed units, in the order the map has them, with
    * the hit points their type and their own percentage give, and the map's locations as boxes.
    */
-  const simulatedMap = (): Pick<ProgramSimulationOptions, "units" | "locations" | "players" | "forces" | "unitStats" | "properties"> => {
+  const simulatedMap = (): Pick<ProgramSimulationOptions, "units" | "locations" | "players" | "forces" | "unitStats" | "properties"> & { computers?: number[] } => {
     const scn = api.document.scenario();
     if (!scn) return {};
     const types = new Map<number, { hp: number; shields: number }>();
@@ -1197,7 +1197,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         cloaked: state(1), burrowed: state(2), hallucinated: state(8), invincible: state(16),
       };
     };
-    return { units, locations, ...(players.length ? { players, forces } : {}), unitStats: (id) => typeOf(id), properties };
+    const computers = scn.playerTypes.slice(0, 8).flatMap((type, slot) => (type === OWNER_COMPUTER ? [slot] : []));
+    return { units, locations, ...(players.length ? { players, forces, computers } : {}), unitStats: (id) => typeOf(id), properties };
   };
 
   /** Run the compiled triggers through the trigger-cycle interpreter and show what happened. */
@@ -1211,9 +1212,11 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const { unitStats, ...map } = simulatedMap();
       const owner = r.programs[0]?.owner;
       const player = owner !== undefined && owner < 12 && (!map.players || map.players.includes(owner)) ? owner : map.players?.[0] ?? owner;
-      const sim = new Simulation(r.triggers, { strings: r.strings, player, unitStats, ...map });
+      // On the game's schedule: a pass every 31 frames, sooner when a Wait runs out; a script with a program is built
+      // with eudTurbo, a pass every frame, and its programs run inside the passes.
+      const sim = new Simulation(r.triggers, { strings: r.strings, player, unitStats, everyFrame: r.ir.length > 0, ...map });
       const programs = r.ir.length ? new ProgramSimulation(r.ir, { world: sim, strings: r.strings, player, heapCells: svc.settings().heapCells, stackDepth: svc.settings().stackDepth, unitStats }) : null;
-      for (let i = 0; i < SIMULATE_FRAMES; i++) { sim.step(); programs?.step(); }
+      for (let i = 0; i < SIMULATE_FRAMES; i++) if (sim.tick()) programs?.step();
       simulation = { sim, programs, result: r };
       const count = sim.events.length + (programs?.events.length ?? 0);
       // Nobody presses a key in a simulation: said, so that a program waiting for one is not taken for broken.

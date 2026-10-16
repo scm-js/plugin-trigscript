@@ -6,8 +6,10 @@
  * A program is a coroutine the game resumes every frame. Its body runs until it sleeps or
  * ends: loops run to completion within the frame, only `sleep` gives the frame back
  * (`sleep(frames(n))` is n frames, `seconds` at twenty-four a second), and a program whose
- * body ends stops for good. With eudTurbo the game's own trigger loop runs every frame
- * too, so a frame here is also one cycle of the `trigger()` records run beside the programs.
+ * body ends stops for good. A map with a program is built with eudTurbo, so the game goes
+ * through its trigger list every frame from frame 2; with a world of the caller's on the
+ * game's schedule (`Simulation.tick`), the programs run inside its passes, as the build
+ * runs them, and the `trigger()` records beside them in the same pass.
  *
  * Numbers keep the one contract: 32 bits, signed unless the variable is a `u32`, wrapping
  * at either end as `x | 0` does; a `u8` / `u16` stops at 0 and at its maximum. The world — death
@@ -50,8 +52,10 @@ export const FRAMES_PER_GAME_SECOND = 16;
 const U32 = 0x1_0000_0000;
 
 export interface ProgramEvent {
-  /** 0-based frame. */
+  /** 0-based run of the programs. */
   cycle: number;
+  /** The game's frame it happened in (with a world of the caller's on the game's schedule, the first is frame 2). */
+  frame: number;
   /** Index of the program in the list. */
   program: number;
   /** The player the program was running as. */
@@ -312,12 +316,12 @@ class ProgramRun {
       if (!of) throw new Error(`The array ${a.decl.slice.of} is not one of the program's (line ${at.line}).`);
       const j = (Number(this.read(a.decl.slice.offset)) | 0) + i;
       if (i >= 0 && i < a.decl.length && j >= 0 && j < (of.decl.dynamic ? of.cells.length : of.decl.length)) return { decl: a.decl, cells: of.cells, i: j };
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a.decl.name}[${i}] is past the end of the row (its length is ${a.decl.length}): ${what}.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `${a.decl.name}[${i}] is past the end of the row (its length is ${a.decl.length}): ${what}.` });
       return undefined;
     }
     const length = a.decl.dynamic ? a.cells.length : a.decl.length;
     if (i >= 0 && i < length) return { ...a, i };
-    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
+    this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${length}): ${what}.` });
     return undefined;
   }
 
@@ -330,7 +334,7 @@ class ProgramRun {
     let room = Math.max(a.room, HEAP_SMALLEST);
     while (room < cells) room *= 2;
     if (!this.sim.heap.take(room)) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: ${a.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `Out of memory: ${a.decl.name} could not grow to ${cells} cells (the heap the programs' arrays share is ${this.sim.heap.cells} cells; the script's settings set it).` });
       return false;
     }
     if (a.room) this.sim.heap.give(a.room);
@@ -359,7 +363,7 @@ class ProgramRun {
     }
     if (!ptr) { const made: Held = { decl, cells: [], room: 0 }; ptrs.cells[i] = ++this.sim.lastInner; this.sim.inner.set(this.sim.lastInner, made); return made; }
     const held = this.sim.inner.get(ptr);
-    if (!held) { this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: decl.at, message: `${decl.name} was given back — the row that held it was popped, cut off or declared again — and this is a copy of its handle: in the game it reads whatever has the block now.` }); return nothing(); }
+    if (!held) { this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: decl.at, message: `${decl.name} was given back — the row that held it was popped, cut off or declared again — and this is a copy of its handle: in the game it reads whatever has the block now.` }); return nothing(); }
     held.decl = decl;
     return held;
   }
@@ -492,12 +496,12 @@ class ProgramRun {
    */
   private made(s: string, at: At, cameTo = bytesOf(s)): TextValue {
     if (bytesOf(s) > TEXT_BYTES) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text came to ${cameTo.toLocaleString("en-US")} bytes, and a text that is made holds ${TEXT_BYTES.toLocaleString("en-US")}: it is cut off there, as it is in the game.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `This text came to ${cameTo.toLocaleString("en-US")} bytes, and a text that is made holds ${TEXT_BYTES.toLocaleString("en-US")}: it is cut off there, as it is in the game.` });
       s = cutTo(s, TEXT_BYTES);
     }
     const room = textRoom(bytesOf(s));
     if (!this.sim.heap.take(room)) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `Out of memory: no room for this text (the heap the programs' arrays and texts share is ${this.sim.heap.cells} cells; the script's settings set it). It is empty instead, as it is in the game.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `Out of memory: no room for this text (the heap the programs' arrays and texts share is ${this.sim.heap.cells} cells; the script's settings set it). It is empty instead, as it is in the game.` });
       return { s: "", room: 0, taken: true };
     }
     return { s, room, taken: true };
@@ -539,7 +543,7 @@ class ProgramRun {
         const a = this.arrays.get(e.array);
         const i = yield* this.num(e.index);
         const found = a?.decl.texts?.[i];
-        if (found === undefined) this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: e.at, message: `${a?.decl.name ?? e.array}[${i}] is past the end of the list (its length is ${a?.decl.texts?.length ?? 0}): it reads an empty text.` });
+        if (found === undefined) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: e.at, message: `${a?.decl.name ?? e.array}[${i}] is past the end of the list (its length is ${a?.decl.texts?.length ?? 0}): it reads an empty text.` });
         return { s: found ?? "", room: 0, taken: true };
       }
       case "template": {
@@ -615,7 +619,7 @@ class ProgramRun {
   /** A made text where the game shows at most `TEXT_FIELD_BYTES` of one: an action's field, a unit type's name. */
   private shown(v: TextValue, at: At, where: string): string {
     if (!v.room || bytesOf(v.s) <= TEXT_FIELD_BYTES) return v.s;
-    this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at, message: `This text is ${bytesOf(v.s)} bytes, and ${where} shows ${TEXT_FIELD_BYTES} of a text that was made: it is cut off there, as it is in the game.` });
+    this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `This text is ${bytesOf(v.s)} bytes, and ${where} shows ${TEXT_FIELD_BYTES} of a text that was made: it is cut off there, as it is in the game.` });
     return cutTo(v.s, TEXT_FIELD_BYTES);
   }
 
@@ -733,7 +737,7 @@ class ProgramRun {
   private keep(c: Call): Frame {
     const saves = c.saves!;
     if (this.depth >= this.sim.stackDepth) {
-      this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: c.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
+      this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: c.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
       throw new Stopped();
     }
     this.depth++;
@@ -792,7 +796,7 @@ class ProgramRun {
         const i = yield* this.num(s.index);
         const cells = [s.addr, s.block, s.chars].map((id) => this.arrays.get(id));
         if (cells.some((a) => !a || i < 0 || i >= a.cells.length)) {
-          this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${cells[0]?.decl.name ?? s.addr}[${i}] is past the end of the array (its length is ${cells[0]?.cells.length ?? 0}): nothing is stored.` });
+          this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `${cells[0]?.decl.name ?? s.addr}[${i}] is past the end of the array (its length is ${cells[0]?.cells.length ?? 0}): nothing is stored.` });
           if (v.room) this.sim.heap.give(v.room);
           return "next";
         }
@@ -904,7 +908,7 @@ class ProgramRun {
           const i = yield* this.num(s.index);
           if (i === a.cells.length) { if (this.grow(a, i + 1, s.at)) a.cells.push(this.kept(v, a.decl)); return "next"; }
           if (i >= 0 && i < a.cells.length) a.cells[i] = this.kept(v, a.decl);
-          else this.sim.faults.push({ cycle: this.sim.cycle, program: this.index, at: s.at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${a.cells.length}): nothing is stored.` });
+          else this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `${a.decl.name}[${i}] is past the end of the array (its length is ${a.cells.length}): nothing is stored.` });
           return "next";
         }
         const c = yield* this.cell(s.array, s.index, s.at, "nothing is stored");
@@ -1053,7 +1057,7 @@ export class ProgramSimulation {
   readonly events: ProgramEvent[] = [];
   /** What the game would let pass without a word and is a mistake all the same: an index past the end of an array. */
   /** What a program did that is always a mistake — an index past an array's end, a push the heap had no room for — and the frame it happened in. */
-  readonly faults: { at: At; message: string; cycle: number; program: number }[] = [];
+  readonly faults: { at: At; message: string; cycle: number; frame: number; program: number }[] = [];
   /**
    * The heap the programs' growing arrays share, counted as the game counts it: blocks are powers of two, a block given
    * back waits in its size's list for the next array that wants that size, and new ground is taken from the bottom up
@@ -1099,6 +1103,13 @@ export class ProgramSimulation {
   /** Where each player's mouse is, in map pixels. */
   readonly mice = new Map<number, { x: number; y: number }>();
   cycle = 0;
+  /** The world is the caller's, run on the game's schedule: the programs run in its passes, and its frame is the game's. */
+  private readonly shared: boolean;
+  /**
+   * The game's frame the programs stand in. A world of the caller's says (a map with a program has a pass every frame
+   * from frame 2, and the programs run in it); one of their own has the programs run every frame from frame 1.
+   */
+  get frame(): number { return this.shared ? this.world.frame : this.cycle + 1; }
 
   constructor(programs: Program[], options: ProgramSimulationOptions) {
     this.world = options.world ?? new Simulation([], {
@@ -1106,6 +1117,7 @@ export class ProgramSimulation {
       players: options.players, forces: options.forces, units: options.units, locations: options.locations, unitClass: options.unitClass, properties: options.properties,
     });
     this.game = this.world.game;
+    this.shared = options.world !== undefined;
     // A world of the caller's gets the units and locations handed here, as it would have had them handed to itself.
     if (options.world) {
       for (const [n, b] of Object.entries(options.locations ?? {})) this.game.locations.set(Number(n), { ...b });
@@ -1198,7 +1210,7 @@ export class ProgramSimulation {
         for (const p of slots) { const s = this.stockOf(p); ore += s[0]; gas += s[1]; }
         return (c.resource === ResourceType.Ore ? ore : c.resource === ResourceType.Gas ? gas : ore + gas) % U32;
       }
-      case ConditionType.ElapsedTime: return Math.floor(this.cycle / FRAMES_PER_GAME_SECOND);
+      case ConditionType.ElapsedTime: return Math.floor((this.shared ? this.world.frame : this.cycle) / FRAMES_PER_GAME_SECOND);
       default: return this.game.quantity(c, this.world.current);
     }
   }
@@ -1291,7 +1303,7 @@ export class ProgramSimulation {
   /** What a program did to a unit, for the log: the game's nearest action, with the unit in words. */
   unitEvent(run: ProgramRun, type: number, u: SimUnit, at: At, extra: { location?: number; text?: string } = {}): void {
     const what = `unit ${u.slot} (type ${u.type}, P${u.owner + 1})`;
-    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
+    this.events.push({ cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
 
   partText(p: Exclude<TextPart, { kind: "number" | "value" }>): string {
@@ -1301,7 +1313,7 @@ export class ProgramSimulation {
 
   /** A printed text: an event like a Display Text action's, the text already filled in. */
   print(run: ProgramRun, text: string, to: number, at: At): void {
-    this.events.push({ cycle: this.cycle, program: run.index, player: run.player, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
+    this.events.push({ cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: { ...emptyAction(), type: ActionType.DisplayText, player: to }, text });
   }
 
   /** An action a program takes: the world's own kinds are applied, the rest logged. */
@@ -1336,7 +1348,7 @@ export class ProgramSimulation {
       default: {
         // What is done to units is done, and said like everything else.
         this.game.act(a, run.player);
-        const ev: ProgramEvent = { cycle: this.cycle, program: run.index, player: run.player, at, action: a };
+        const ev: ProgramEvent = { cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: a };
         const text = programText ?? this.world.text(a.text);
         if (text !== undefined) ev.text = text;
         this.events.push(ev);

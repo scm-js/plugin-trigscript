@@ -103,9 +103,15 @@ list, marked as errors, is what a program did that is always a mistake and that 
 passes over in silence — a read or a store past an array's end, a push the heap had no room
 for — and a recursion that ran out of stack, which stops the program here as it does in the
 game — one row a line however often a loop came past it. The `trigger()` records run in a trigger
-interpreter (death counters, switches, preserve, list order) and the programs in a
-program interpreter that computes every number the way the game will, the two sharing one
-world, so a program's `setDeaths` is seen by a trigger and the other way round. Reads
+interpreter (death counters, switches, preserve, list order, the wait slots) and the
+programs in a program interpreter that computes every number the way the game will, the
+two sharing one world, so a program's `setDeaths` is seen by a trigger and the other way
+round. Both keep the game's time: the game goes through the trigger list in passes, the
+first on frame 2, and a script with a program is built to have one every frame, with the
+programs inside them. A script of `trigger()`s alone keeps the game's own schedule — a pass
+every 31 frames (2, 33, 64, …), and on the frame after a Wait runs out — and a Wait holds
+its trigger for its time at Fastest, so the frames Simulate lists are the frames the game
+would act on. Reads
 find what the simulation holds — death counters, the resources the programs themselves
 set, the clock, the units — and 0 for what it does not (scores, the countdown); a printed
 text shows with its numbers filled in and "Player 1" for a name.
@@ -197,6 +203,13 @@ go when the source is left out of a copy.
 world](#use) — the map's placed units, locations and players, the script's programs at
 frame 0 and its `trigger()`s beside them — with `random()` seeded the same every time
 (`sim.seed(n)` for another run). A test is not `async`: nothing in `sim` waits.
+
+**Time is the game's.** The game goes through the trigger list in passes, the first on
+frame 2. A script with a program is built to have a pass every frame, and its programs run
+inside them, so a program first runs on frame 2 and then every frame. A script of
+`trigger()`s alone keeps the game's own schedule: a pass every 31 frames (2, 33, 64, …),
+and the frame after a Wait runs out. A Wait holds its trigger for its time, in
+milliseconds at Fastest, and a player has one wait slot that their triggers share.
 
 | `sim.` | |
 | --- | --- |
@@ -299,7 +312,7 @@ program(() => {
 }, { name: "barracks" });
 
 describe("the barracks", () => {
-  beforeEach((sim) => { sim.frames(1); });
+  beforeEach((sim) => { sim.frames(2); });
 
   test.each([[0, 3], [1, 4], [2, 6]])("after %i more frames %i Marines stand at the base", (sim: Sim, more: number, marines: number) => {
     sim.frames(more);
@@ -1416,9 +1429,9 @@ for now: `parseInt`, regular expressions and the words a player typed in chat.
 later; other programs and the map's triggers go on meanwhile. `frames(n)` is the game's
 own clock, `seconds()` is twenty-four frames at Fastest, `minutes()` sixty of those.
 (`cycles(n)`, from before 3.0, is the same as `frames(n)`.) `wait()` inside a program is
-allowed but is a different thing: the game's own Wait stalls every trigger of that player
-for the time, so use it for a short pause inside one frame (a text, then a sound) and
-`sleep` to pass time. Something that runs on its own clock is another program: one
+allowed but is a different thing: the game's own Wait holds the rest of its trigger for
+the time, and a player has one wait slot, so any other Wait of that player stops until it
+is free. Use it for a short pause (a text, then a sound) and `sleep` to pass time. Something that runs on its own clock is another program: one
 program per concurrent activity.
 
 **Edges.** `if (rose(bring(P1, units.AnyUnit, locations.Beacon, ">=", 1)))` is true on

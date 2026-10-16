@@ -98,6 +98,8 @@ export interface TestWorld {
   locations?: Record<number, SimBounds>;
   players?: number[];
   forces?: Record<number, number>;
+  /** The computer players among `players`: a Transmission of theirs does nothing. */
+  computers?: number[];
   /** By unit type. */
   unitStats?: Record<number, { hp?: number; shields?: number; energy?: number }>;
   /** Create Unit with Properties slots, the first at 0. */
@@ -302,9 +304,11 @@ export class TestSim {
   constructor(triggers: TriggerRecord[], ir: Program[], strings: ScriptString[], options: TestWorld, as?: number) {
     const random = () => this.rng();
     const stats = options.unitStats ?? {};
+    // A script with a program is built with eudTurbo: the list runs every frame. Without one, on the game's own schedule.
     this.world = new Simulation(triggers, {
+      everyFrame: ir.length > 0,
       strings, random, units: options.units, locations: options.locations,
-      players: options.players, forces: options.forces, unitStats: (type) => stats[type],
+      players: options.players, forces: options.forces, computers: options.computers, unitStats: (type) => stats[type],
       properties: (slot) => options.properties?.[slot - 1] ?? undefined,
       ...(as !== undefined ? { player: as } : options.players ? {} : { player: ir[0]?.owner !== undefined && ir[0].owner < 12 ? ir[0].owner : undefined }),
     });
@@ -312,8 +316,8 @@ export class TestSim {
     this.programs = new ProgramSimulation(ir, { world: this.world, strings, random, heapCells: options.heapCells, stackDepth: options.stackDepth, unitStats: (type) => stats[type], unitByName: (lower) => names[lower] });
   }
 
-  /** How many frames have run. */
-  get frame(): number { return this.programs.cycle; }
+  /** How many frames have run: the game's frame number. */
+  get frame(): number { return this.world.frame; }
 
   /** `random()` from this number on: the same run every time. Before anything that draws one. */
   seed(n: number): this { this.rng = mulberry(n >>> 0); return this; }
@@ -321,7 +325,8 @@ export class TestSim {
   /* ── time ── */
 
   frames(n = 1): this {
-    for (let i = 0; i < n; i++) { this.world.step(); this.programs.step(); }
+    // The programs run inside the game's passes, as the build runs them.
+    for (let i = 0; i < n; i++) if (this.world.tick()) this.programs.step();
     return this;
   }
   seconds(n: number): this { return this.frames(Math.round(n * FRAMES_PER_SECOND)); }
@@ -398,8 +403,8 @@ export class TestSim {
   printed(player?: number): string[] {
     const shown = (to: number, runner: number) => player === undefined || this.world.game.players.of(to, runner).includes(player);
     const lines: { frame: number; order: number; text: string }[] = [];
-    this.world.events.forEach((e, i) => { if (e.action.type === ActionType.DisplayText && e.text !== undefined && shown(e.action.player || 13, e.player)) lines.push({ frame: e.cycle, order: i, text: e.text }); });
-    this.programs.events.forEach((e, i) => { if (e.action.type === ActionType.DisplayText && e.text !== undefined && shown(e.action.player || 13, e.player)) lines.push({ frame: e.cycle, order: this.world.events.length + i, text: e.text }); });
+    this.world.events.forEach((e, i) => { if (e.action.type === ActionType.DisplayText && e.text !== undefined && shown(e.action.player || 13, e.player)) lines.push({ frame: e.frame, order: i, text: e.text }); });
+    this.programs.events.forEach((e, i) => { if (e.action.type === ActionType.DisplayText && e.text !== undefined && shown(e.action.player || 13, e.player)) lines.push({ frame: e.frame, order: this.world.events.length + i, text: e.text }); });
     return lines.sort((a, b) => a.frame - b.frame || a.order - b.order).map((l) => l.text);
   }
 
@@ -408,12 +413,12 @@ export class TestSim {
     const out: (TestEvent & { order: number })[] = [];
     // As Simulate says it: the action by its name, and its text when it has one.
     const say = (action: ActionRecord, text?: string) => { const name = actionDef(action.type)?.name ?? `Action ${action.type}`; return text !== undefined ? `${name} — ${text}` : name; };
-    this.world.events.forEach((e, i) => { const at = sourceOf(e.trigger); out.push({ frame: e.cycle, order: i, player: e.player, text: say(e.action, e.text), ...(at ? { file: at.file, line: at.line } : {}) }); });
-    this.programs.events.forEach((e, i) => out.push({ frame: e.cycle, order: this.world.events.length + i, player: e.player, text: say(e.action, e.text), file: e.at.file, line: e.at.line }));
+    this.world.events.forEach((e, i) => { const at = sourceOf(e.trigger); out.push({ frame: e.frame, order: i, player: e.player, text: say(e.action, e.text), ...(at ? { file: at.file, line: at.line } : {}) }); });
+    this.programs.events.forEach((e, i) => out.push({ frame: e.frame, order: this.world.events.length + i, player: e.player, text: say(e.action, e.text), file: e.at.file, line: e.at.line }));
     return out.sort((a, b) => a.frame - b.frame || a.order - b.order).map(({ order: _order, ...e }) => e);
   }
   get events(): TestEvent[] { return this.log(); }
-  get faults(): { at: At; message: string; cycle: number; program: number }[] { return this.programs.faults; }
+  get faults(): { at: At; message: string; cycle: number; frame: number; program: number }[] { return this.programs.faults; }
 }
 
 /* ── Running ── */
@@ -493,7 +498,7 @@ function runOne(id: string, test: Case, chain: Suite[], ctx: TestContext, world:
     for (const s of [...chain].reverse()) for (const h of s.after) h(sim);
     // What is always a mistake fails the test that did not ask for it.
     const fault = sim.faultsExpected ? undefined : sim.faults[0];
-    if (fault) return done({ status: "failed", message: `${fault.message} (frame ${fault.cycle + 1})`, at: { file: fault.at.file, line: fault.at.line, column: fault.at.column } });
+    if (fault) return done({ status: "failed", message: `${fault.message} (frame ${fault.frame})`, at: { file: fault.at.file, line: fault.at.line, column: fault.at.column } });
     return done({});
   } catch (err) {
     const at = ctx.locate(err) ?? test.at;
