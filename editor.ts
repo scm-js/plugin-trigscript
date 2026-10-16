@@ -28,7 +28,7 @@
  */
 import type { PluginApi } from "@scm-js/plugin-api";
 import { CompileSuperseded, gametestUrl, retainCompileWorker } from "./compile";
-import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
+import { ENTRY_FILE, normalizePath, type CompileResult, type LineHint, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_CELLS_MAX, STACK_DEPTH, STACK_DEPTH_MAX, STACK_DEPTH_MIN, heapCells, stackDepth } from "./compiler/ir";
 import { largestFrame } from "./compiler/recursion";
 import { entryFor } from "./compiler/names";
@@ -44,6 +44,7 @@ import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./re
 import { FILE_NAME } from "./script";
 import { isMachineLine, readTriggerMap, readVariableMap } from "./compiler/gameVariables";
 import { mergeCopies } from "./compiler/gameCopies";
+import { costByLine, shortCount, type TestCost } from "./compiler/gameCost";
 import { isTestFile, type TestInfo, type TestReport, type TestResult, type TestRunOptions } from "./compiler/testing";
 import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, playersLabel, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
 import { testName } from "./service";
@@ -123,6 +124,16 @@ const STATUS_MS = 10_000;
 const NOTICE_MS = 8_000;
 /** When running every test takes longer than this, only the open file's run by themselves after a compile. */
 const TESTS_SLOW_MS = 2_000;
+/**
+ * What Remastered was seen to run in a frame with no effect: the dial (probes/frame-cost.ts, played 2026-10-16) ran
+ * 500 thousand conditions and actions a frame with none; from a million the screen flickers, enough to distract,
+ * and at 5 million the game slows. That was a fast computer (Ryzen 9 7900X): a slower one reaches each sooner.
+ */
+const COST_SEEN = 500_000;
+/** A line that ran this many conditions and actions in one frame of a test in the game says so beside it: 2% of COST_SEEN. */
+const COST_HINT = 10_000;
+/** The costliest lines a test's results name. */
+const COST_LINES = 3;
 /** The key the shortcuts are written with. */
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl";
 
@@ -137,7 +148,7 @@ const STYLE = `${SHELL_STYLE}
 .tsd .tsd-settings p { margin: 0 0 8px; color: var(--text-dim); line-height: 1.45; }
 .tsd .tsd-settings .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .tsd .tsd-settings input { width: 110px; padding: 2px 6px; font: inherit; font-family: var(--font-mono); color: var(--text); background: var(--bg-1); border: 1px solid var(--border); border-radius: 2px; }
-.tsd .tsd-settings input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+.tsd .tsd-settings input:focus { outline: 1px solid var(--teal); outline-offset: -1px; }
 .tsd .tsd-settings button { padding: 2px 8px; font: inherit; color: var(--text); background: var(--bg-3); border: 1px solid var(--border); border-radius: 2px; cursor: pointer; }
 .tsd .tsd-settings button:disabled { opacity: 0.5; cursor: default; }
 .tsd .tsd-settings .now { color: var(--text-faint); }
@@ -153,9 +164,9 @@ const STYLE = `${SHELL_STYLE}
 .tsd .tsd-output { margin: 0; padding: 4px 20px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); }
 .tsd .tsd-list li.tsd-warning .tsd-i { color: var(--warn); }
 .tsd .tsd-rows .tsd-empty { padding: 6px 12px 6px 20px; color: var(--text-faint); white-space: normal; line-height: 1.45; cursor: default; }
-.tsd .tsd-test-passed { color: var(--ok); }
+.tsd .tsd-test-passed, .tsd .tsd-list .tsd-i.tsd-test-passed { color: var(--ok); }
 .tsd .tsd-test-failed { color: var(--danger); }
-.tsd .tsd-test-none, .tsd .tsd-test-skipped { color: var(--text-faint); }
+.tsd .tsd-test-none, .tsd .tsd-test-skipped, .tsd .tsd-list .tsd-i.tsd-test-none, .tsd .tsd-list .tsd-i.tsd-test-skipped { color: var(--text-faint); }
 .${TEST_MARK_CLASS} { cursor: pointer; font: normal normal normal 14px/18px codicon; text-align: center; color: var(--text-faint); }
 .${TEST_MARK_CLASS}::before { content: "\\eabc"; }
 .${TEST_MARK_CLASS}-passed { color: var(--ok); }
@@ -164,6 +175,9 @@ const STYLE = `${SHELL_STYLE}
 .${TEST_MARK_CLASS}-failed::before { content: "\\ea87"; }
 .${TEST_MARK_CLASS}-skipped::before { content: "\\eabd"; }
 .${TEST_MARK_CLASS}-note { color: var(--danger); font-style: italic; opacity: 0.9; }
+.tsd .tsd-list li.tsd-cost { align-items: center; }
+.tsd .tsd-cost-graph { flex: 1 1 auto; min-width: 0; max-width: 480px; height: 36px; }
+.tsd .tsd-cost-graph path { fill: var(--teal); fill-opacity: 0.35; stroke: var(--teal); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
 `;
 
@@ -442,6 +456,11 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    * kept until the next run in the game. The game is the judge: where the two differ, the simulator is wrong.
    */
   let gameResults = new Map<string, TestResult>();
+  /**
+   * The files as they were when the game counted what each line costs (TrigScript 4, A4): a line's count is shown
+   * beside it only while its file is still that text, since an edit moves the lines.
+   */
+  let costFiles: ScriptFiles | null = null;
   /** The text of `dist/gametest.js`, fetched once. */
   let gametest: Promise<string> | null = null;
   /** The files with a tab, in the order they were opened. */
@@ -767,7 +786,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       const module = await gametest.catch((err) => { gametest = null; throw err; });
       setStatus("busy", t("Running the tests in the game…"));
       const bytes = new Uint8Array(await file.arrayBuffer());
-      const report = await engine.test(bytes, module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids, variables }) as TestReport & { error?: string };
+      const report = await engine.test(bytes, module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids, variables, triggers }) as TestReport & { error?: string };
       if (cancelled) return;
       if (report.error) { setStatus("error", t("Not run in the game: {message}", { message: report.error })); return; }
       // A test of several players (TrigScript 4, A3): a copy of the game for each player, kept in step, where the
@@ -785,7 +804,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         for (const g of several.values()) for (const id of g.ids) notRun.push({ id, status: "skipped", message: why, printed: [], events: [], frames: 0, ms: 0 });
       } else for (const g of several.values()) {
         setStatus("busy", t("Running a test of {n} players in the game: a copy of the game for each…", { n: g.players.length }));
-        const out = await engine.testCopies!(bytes, module, { modules: a.compiled.modules, names, ids: g.ids, variables }, { players: g.players, triggers });
+        const out = await engine.testCopies!(bytes, module, { modules: a.compiled.modules, names, ids: g.ids, variables, triggers }, { players: g.players, triggers });
         if (cancelled) return;
         report.results.push(...mergeCopies(g.ids, out));
       }
@@ -794,6 +813,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       gameResults = new Map([...gameResults].filter(([id]) => !asked.has(id) && tests.list.some((x) => x.id === id)));
       for (const r of ran) gameResults.set(r.id, r);
       for (const r of notRun) gameResults.set(r.id, r);
+      costFiles = { ...files };
+      refreshLineHints();
       const failed = ran.filter((x) => x.status === "failed");
       const differ = ran.filter((x) => { const s = tests.results.get(x.id); return s && s.status !== "skipped" && s.status !== x.status; });
       if (failed.length) { chosenTest = failed[0].id; shell.showPanel("tests"); }
@@ -806,6 +827,44 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       testsRunning = false;
       render();
     }
+  };
+
+  /**
+   * What a frame costs, beside the line (TrigScript 4, A4): after a run in the game, each line that ran at least
+   * COST_HINT conditions and actions in one frame of some test says how many at the most, while its file is as it
+   * was then.
+   */
+  const costHints = (): LineHint[] => {
+    if (!costFiles) return [];
+    const seen = costFiles;
+    const costs = [...gameResults.values()].flatMap((r) => (r.cost ? [{ id: r.id, cost: r.cost }] : []));
+    return costByLine(costs)
+      .filter((l) => l.peak >= COST_HINT && seen[normalizePath(l.file)] === files[normalizePath(l.file)])
+      .map((l) => ({
+        file: l.file, line: l.line,
+        label: t("{n} a frame", { n: shortCount(l.peak) }),
+        note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran 500 thousand a frame with no visible effect; its screen flickers from a million and the game slows at 5 million. This is {share} of the 500 thousand.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames, share: shareOf(l.peak) }),
+      }));
+  };
+
+  /** "0.2%", "31%": a count as a share of what Remastered was seen to run in a frame. */
+  const shareOf = (n: number) => `${(n / COST_SEEN * 100).toFixed(n < COST_SEEN / 10 ? 1 : 0)}%`;
+
+  /** The test's conditions and actions a frame in the game, as a small graph; eudplib's own work is not in it. */
+  const costGraph = (cost: TestCost): Element => {
+    const NS = "http://www.w3.org/2000/svg", n = Math.max(cost.perFrame.length, 2), top = Math.max(cost.peak, 1);
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "tsd-cost-graph");
+    svg.setAttribute("viewBox", `0 0 ${n - 1} 100`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    const points = cost.perFrame.map((v, i) => `${i},${(100 - (v / top) * 96).toFixed(2)}`);
+    const area = document.createElementNS(NS, "path");
+    area.setAttribute("d", `M0,100 L${points.join(" L")} L${cost.perFrame.length - 1},100 Z`);
+    svg.append(area);
+    const title = document.createElementNS(NS, "title");
+    title.textContent = t("Conditions and actions a frame, frame {from} to {to}: {peak} at the most, at frame {frame}", { from: cost.from, to: cost.from + cost.perFrame.length - 1, peak: cost.peak.toLocaleString(), frame: cost.peakFrame });
+    svg.append(title);
+    return svg;
   };
 
   /** Test Results: the chosen test's message, what it printed, and what happened by frame, each a link to its line. */
@@ -836,6 +895,21 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         el("span", { className: "msg" }, game.status === "failed" ? game.message ?? t("failed") : t("passed")),
         el("span", { className: "where" }, game.status === "failed" ? where({ file: gat.file, line: gat.line }) : t("{frames, plural, one {# frame} other {# frames}} · {ms} ms", { frames: game.frames, ms: game.ms }))));
       if (game.status === "failed" && game.actual !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("got")), el("span", { className: "msg" }, game.actual)));
+      // (What its frames cost in the game, and the lines that cost the most.)
+      const cost = game.cost;
+      if (cost) {
+        const ran = cost.perFrame.filter((x) => x > 0), average = ran.length ? Math.round(ran.reduce((a, b) => a + b, 0) / ran.length) : 0;
+        const other = cost.other.slice(3), runtime = other.length ? Math.round(other.reduce((a, b) => a + b, 0) / other.length) : 0;
+        list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game: the script's own triggers and the variables they go through. eudplib's work at the top of each frame is apart: {n} a frame.", { n: runtime.toLocaleString() }) },
+          el("span", { className: "frame" }, t("cost")),
+          el("span", { className: "msg" }, t("{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), frame: cost.peakFrame, share: shareOf(cost.peak) }))));
+        if (cost.perFrame.length > 1) list.append(el("li", { className: "tsd-plain tsd-cost" }, el("span", { className: "frame" }), costGraph(cost)));
+        for (const l of cost.lines.slice(0, COST_LINES)) {
+          list.append(el("li", { title: t("Go to the line"), onClick: () => goTo(l.file, l.line) },
+            el("span", { className: "frame" }), el("span", { className: "msg note" }, t("{peak} a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}", { peak: l.peak.toLocaleString(), frame: l.peakFrame, frames: l.frames })),
+            el("span", { className: "where" }, where({ file: l.file, line: l.line }))));
+        }
+      }
     }
     // The same line several times over — to each of eight players, say — is one row that says how often.
     const printed: { line: string; times: number }[] = [];
@@ -1615,7 +1689,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         monaco = m;
         if (generated) setDeclarations(m, generated.decls);
         setHoverVariables(m, () => result?.variables ?? []);
-        setLineHints(m, () => result?.hints ?? []);
+        setLineHints(m, () => [...(result?.hints ?? []), ...costHints()]);
         setMapRefs(m, mapRefs);
         // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
         loadingCover.done();

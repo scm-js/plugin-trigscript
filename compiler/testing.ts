@@ -16,6 +16,7 @@
  */
 import { ActionType, type ActionRecord, type TriggerRecord } from "../vendor/triggers";
 import { actionDef } from "../vendor/triggerDefs";
+import type { TestCost } from "./gameCost";
 import type { At, Program } from "./ir";
 import type { ScriptString } from "./runtime";
 import { Simulation } from "./simulate";
@@ -85,6 +86,8 @@ export interface TestResult {
   events: TestEvent[];
   frames: number;
   ms: number;
+  /** In the lifted game: what the test's frames cost, by frame and by line (TrigScript 4, A4). */
+  cost?: TestCost;
 }
 
 export interface TestReport {
@@ -234,6 +237,8 @@ export const isWorld = (v: unknown): v is TestWorldLike => typeof v === "object"
 /** What a test can ask of its world, whichever it was handed. */
 export interface TestWorldLike {
   readonly [WORLD]: true;
+  /** What the test's frames cost, where the world counts it (the lifted game's). */
+  cost?(): TestCost | null;
   faultsExpected: boolean;
   readonly frame: number;
   seed(n: number): this;
@@ -536,11 +541,16 @@ export function runTests(registry: TestRegistry, ctx: TestContext, options: Test
   return { list, results, only, ms: Date.now() - started };
 }
 
+function costOf(sim: TestWorldLike | null): { cost?: TestCost } {
+  const cost = sim?.cost?.();
+  return cost ? { cost } : {};
+}
+
 function runOne(id: string, test: Case, chain: Suite[], ctx: TestContext, world: TestWorld, makeWorld?: TestRunOptions["makeWorld"]): TestResult {
   const began = Date.now();
   let sim: TestWorldLike | null = null;
   const done = (extra: Partial<TestResult>): TestResult => ({
-    id, status: "passed", printed: sim?.printed() ?? [], events: (sim?.log((t) => ctx.sources[t] ?? null) ?? []).slice(0, 500), frames: sim?.frame ?? 0, ms: Date.now() - began, ...extra,
+    id, status: "passed", printed: sim?.printed() ?? [], events: (sim?.log((t) => ctx.sources[t] ?? null) ?? []).slice(0, 500), frames: sim?.frame ?? 0, ms: Date.now() - began, ...costOf(sim), ...extra,
   });
   try {
     sim = makeWorld ? makeWorld(test.as, { id, players: test.players }) : new TestSim(ctx.triggers, ctx.ir, ctx.strings, world, test.as);

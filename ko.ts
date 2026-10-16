@@ -290,4 +290,12 @@ export const KO: Record<string, string> = {
   "Go to where it failed in the game": "게임에서 실패한 곳으로 이동",
   "in the game": "게임에서",
   "Run All Tests in the Game": "게임에서 모든 테스트 실행",
+  "{n} a frame": "프레임당 {n}",
+  "In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran 500 thousand a frame with no visible effect; its screen flickers from a million and the game slows at 5 million. This is {share} of the 500 thousand.": "게임에서 이 줄은 한 프레임에 조건과 액션을 최대 {n}개 실행했습니다: 테스트 “{test}”의 {frame}번째 프레임이며, 그 테스트에서 이 줄이 실행된 프레임은 {frames}개입니다. 빠른 컴퓨터에서 리마스터는 프레임당 50만 개에서 눈에 띄는 영향이 없었고, 백만 개부터 화면이 깜박이며 5백만 개에서 게임이 느려졌습니다. 이것은 50만 개 중 {share}입니다.",
+  "Conditions and actions a frame, frame {from} to {to}: {peak} at the most, at frame {frame}": "프레임당 조건과 액션, {from}–{to}번째 프레임: {frame}번째 프레임에서 최대 {peak}개",
+  "Counted in the lifted game: the script's own triggers and the variables they go through. eudplib's work at the top of each frame is apart: {n} a frame.": "리프트한 게임에서 센 수입니다: 스크립트 자신의 트리거와 그 트리거가 거치는 변수. 매 프레임 처음에 eudplib가 하는 일은 따로입니다: 프레임당 {n}개.",
+  "cost": "비용",
+  "{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect": "프레임당 조건과 액션 평균 {average}개, 최대 {peak}개 ({frame}번째 프레임): 리마스터가 눈에 띄는 영향 없이 실행한 프레임당 50만 개 중 {share}",
+  "Go to the line": "그 줄로 이동",
+  "{peak} a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}": "프레임당 최대 {peak}개 ({frame}번째 프레임), {frames}개 프레임에서 실행",
 };
