@@ -199,24 +199,21 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, 
   body.forEach(stmt);
 }
 
-/** The `remark` statements, as hints for their lines. */
+/** The `remark` statements, as hints for their lines: those of calls inside expressions too. */
 function remarks(body: Stmt[], out: LineHint[]) {
-  const stmt = (s: Stmt) => {
-    switch (s.kind) {
-      case "remark": if (s.short) out.push({ file: s.at.file, line: s.at.line, label: s.short, note: s.text }); break;
-      case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
-      case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
-      case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
-      case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
-      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
-      case "start": s.call.body.forEach(stmt); break;
-      case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
-      case "call": s.call.body.forEach(stmt); break;
-      case "block": s.body.forEach(stmt); break;
-      default: break;
+  const visit = (root: unknown): void => {
+    if (Array.isArray(root)) { root.forEach(visit); return; }
+    if (!root || typeof root !== "object") return;
+    const o = root as Record<string, unknown>;
+    if (o.kind === "remark") {
+      // (A function's body inlined at several calls says the same of its line each time: once is enough.)
+      const r = o as Extract<Stmt, { kind: "remark" }>;
+      if (r.short && !out.some((h) => h.file === r.at.file && h.line === r.at.line && h.label === r.short)) out.push({ file: r.at.file, line: r.at.line, label: r.short, note: r.text });
+      return;
     }
+    Object.values(o).forEach((v) => { if (v && typeof v === "object") visit(v); });
   };
-  body.forEach(stmt);
+  visit(body);
 }
 
 /** The variables a statement list assigns (declares count too), by id — and `THE_GAME` when it takes an action, which may change what a read finds. */
@@ -323,12 +320,29 @@ function sleepsOnEveryPath(body: Stmt[]): boolean {
   return false;
 }
 
+/** Whether a loop's body can leave it: a `break` of its own (not of a loop or a switch inside it), or a `return`. */
+function leaves(body: Stmt[]): boolean {
+  const stmt = (s: Stmt, own: boolean): boolean => {
+    switch (s.kind) {
+      case "break": return own;
+      case "return": return true;
+      case "if": return s.then.some((x) => stmt(x, own)) || !!s.else?.some((x) => stmt(x, own));
+      case "block": return s.body.some((x) => stmt(x, own));
+      case "unrolled": return s.iterations.some((i) => i.some((x) => stmt(x, own)));
+      case "while": case "do": case "for": return s.body.some((x) => stmt(x, false));
+      case "switch": return s.cases.some((c) => c.body.some((x) => stmt(x, false)));
+      default: return false;
+    }
+  };
+  return body.some((s) => stmt(s, true));
+}
+
 function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<string, FuncDecl>) {
   const stmt = (s: Stmt) => {
     switch (s.kind) {
       case "while": case "for": case "do": {
         const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body, functions).has(id)) : false;
-        if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond
+        if (!moves && !sleepsOnEveryPath(s.body) && !leaves(s.body) && !(s.kind === "do" && s.cond.kind === "const" && s.cond.value === false)) out.push({ at: s.at, message: s.cond
           ? "This loop's condition never changes inside it, and no path around it sleeps. A program runs until it sleeps or ends, all within one frame of the game, so this loop would never give the frame back and the game would freeze. Add sleep(frames(1)) inside it, or change what it tests."
           : "A loop without an end needs a sleep() on every path around it. A program runs until it sleeps or ends, all within one frame of the game, so this loop would freeze the game. Add sleep(frames(1)) at the end of its body." });
         s.body.forEach(stmt);

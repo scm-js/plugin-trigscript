@@ -304,6 +304,8 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
       if (property) return;
       const decl = declarationOf(ts, checker, n);
       if (decl && isGameDecl(decl)) { ok = false; return; }
+      // A generator is walked by the program's for…of, a copy of its body at each loop: never run when the script is built.
+      if (decl && (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl)) && decl.asteriskToken) { ok = false; return; }
     };
     const check = (n: TS.Node): void => {
       if (!ok) return;

@@ -122,3 +122,78 @@ describe("tasks", () => {
     expect(messages(`start(async () => {}, { max: 0 });`)).toEqual(["start()'s options are written out, as { max: 40 }: how many of this start's tasks can run at once, a whole number from 1 to 255."]);
   });
 });
+
+describe("the rest of B1", () => {
+  it("const [a, b] = await Promise.all([…]): each name its branch's value, set as the branch ends", () => {
+    const r = compile(`
+      async function slow(n: number): Promise<number> { await sleep(frames(n)); return n * 10; }
+      const [a, , c] = await Promise.all([slow(3), sleep(frames(1)), until(() => true).then(() => true)]);
+      print(\`\${a} \${c ? 1 : 0}\`);`);
+    expect(printed(r, 6)).toEqual(["3:30 1"]);
+    expect(messages(`const v = await Promise.all([sleep(frames(1))]);`)).toContain("Promise.all() gives a value for each item: take them apart where it is awaited — const [a, b] = await Promise.all([…]).");
+    expect(messages(`const [a] = await Promise.all([sleep(frames(1))]);`)).toEqual(["a would be void: its item gives no value. Give it one with .then(() => …), or leave a hole for it — [, b]."]);
+  });
+
+  it(".then((value) => …) is handed what the promise gives", () => {
+    const r = compile(`
+      async function wave(n: number): Promise<number> { await sleep(frames(n)); return n; }
+      const v = await Promise.race([wave(2).then((k) => k * 100), sleep(frames(5)).then(() => -1)]);
+      print(\`\${v}\`);
+      await wave(1).then((k) => { print(\`then \${k}\`); });`);
+    expect(printed(r, 6)).toEqual(["2:200", "3:then 1"]);
+    expect(messages(`await sleep(frames(1)).then((x) => x);`)[0]).toContain("this one gives nothing");
+  });
+
+  it("an async method is awaited, and started, as an async function is", () => {
+    const r = compile(`
+      class Squad {
+        left: number;
+        constructor(n: number) { this.left = n; }
+        async drain(name: string) { while (this.left > 0) { this.left--; await sleep(frames(1)); } print(\`\${name} empty\`); }
+      }
+      const a = new Squad(2);
+      const b = new Squad(4);
+      start(b.drain("b"));
+      await a.drain("a");
+      print(\`b has \${b.left}\`);`);
+    expect(printed(r, 8)).toEqual(["2:a empty", "2:b has 2", "4:b empty"]);
+  });
+
+  it("a generator walked by for…of: the loop's body at each yield, values the script knows kept as they are", () => {
+    const r = compile(`
+      function* waves(n: number) {
+        yield { count: 2, unit: units.ZergZergling };
+        for (let i = 1; i <= n; i++) yield { count: i * 3, unit: units.ZergHydralisk };
+        print("after the last");
+      }
+      for (const w of waves(2)) {
+        createUnit(P8, w.unit, w.count, locations.Anywhere);
+        print(\`\${w.count}\`);
+        await sleep(frames(1));
+      }
+      print("done");`);
+    expect(printed(r, 6)).toEqual(["0:2", "1:3", "2:6", "3:after the last", "3:done"]);
+  });
+
+  it("break leaves the generator, continue goes on after the yield; for await walks an async one", () => {
+    const r = compile(`
+      function* count() { let i = 0; while (true) { i++; yield i; } }
+      for (const k of count()) { if (k % 2 == 0) continue; if (k > 5) break; print(\`\${k}\`); }
+      async function* slowly() { for (let i = 0; i < 2; i++) { await sleep(frames(2)); yield i; } }
+      for await (const k of slowly()) print(\`slow \${k}\`);
+      print("end");`);
+    expect(printed(r, 6)).toEqual(["0:1", "0:3", "0:5", "2:slow 0", "4:slow 1", "4:end"]);
+    expect(messages(`function* g() { yield 1; } const it = g();`)[0]).toContain("is a generator: a program walks one with for…of");
+    expect(messages(`function* g() { yield 1; } for (const k of g()) { if (k) return; }`)).toEqual(["return inside a for…of over a generator is not supported yet: break out of the loop, and return after it."]);
+  });
+
+  it("an async function that never awaits is a hint on its name, once", () => {
+    const r = compile(`
+      async function idle(): Promise<number> { return 3; }
+      async function busy() { await sleep(frames(1)); }
+      const a = await idle(); const b = await idle(); await busy();
+      print(\`\${a + b}\`);`);
+    expect(r.hints.filter((h) => h.label === "never awaits").map((h) => h.line)).toEqual([2]);
+    expect(printed(r, 3)).toEqual(["1:6"]);
+  });
+});

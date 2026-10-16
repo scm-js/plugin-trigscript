@@ -333,6 +333,17 @@ const FIXTURES: Record<string, string> = {
     await until(() => mine >= 3);
     setResources(CurrentPlayer, "add", 50, "ore");
   }, { owner: AllPlayers });`,
+  generators: `program(async () => {
+    class Squad { left: number; constructor(n: number) { this.left = n; } async drain() { while (this.left > 0) { this.left--; await sleep(frames(1)); } } }
+    async function slow(n: number): Promise<number> { await sleep(frames(n)); return n * 10; }
+    function* waves(n: number) { yield { count: 1, unit: units.ZergZergling }; for (let i = 1; i <= n; i++) { if (i == 3) continue; yield { count: i + 1, unit: units.ZergZergling }; } }
+    for (const w of waves(4)) { if (w.count > 4) break; createUnit(P8, w.unit, w.count, locations.Anywhere); await sleep(frames(1)); }
+    const [a, , c] = await Promise.all([slow(3), sleep(frames(1)), slow(1).then((k) => k > 5)]);
+    const v = await Promise.race([slow(2).then((k) => k + a), sleep(frames(10)).then(() => 0)]);
+    if (c) setResources(P1, "set", v, "ore");
+    const s = new Squad(3);
+    await s.drain();
+  });`,
 };
 
 function build(name: string, src: string): { out: number; triggers: number } {
