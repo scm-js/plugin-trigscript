@@ -68,7 +68,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 14
+IR_VERSION = 15
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -999,6 +999,44 @@ def fresh(value=0):
     return v
 
 
+class Coroutine:
+    """Where a coroutine is: the label it goes on from (0 its start, DONE once it ended) and the frames it still waits,
+    a cell each, a row of twelve in a per-player program. The program is one; each branch of a Promise.all / race is
+    another, which the program runs inside its own frame for as long as it is waiting at that statement."""
+
+    def __init__(self, lowering):
+        self.lowering = lowering
+        self.state = EUDArray([0] * 12) if lowering.per_player else EUDVariable(0)  # initial: program state
+        self.wait = EUDArray([0] * 12) if lowering.per_player else EUDVariable(0)  # initial: program state
+        self.resumes = []  # (index, Forward) for every place it can go on from
+        self.frame_end = None
+
+    def get_state(self):
+        return self.state[self.lowering.player] if self.lowering.per_player else self.state
+
+    def set_state(self, value):
+        if self.lowering.per_player:
+            self.state[self.lowering.player] = value
+        else:
+            self.state << value
+
+    def get_wait(self):
+        return self.wait[self.lowering.player] if self.lowering.per_player else self.wait
+
+    def set_wait(self, value):
+        if self.lowering.per_player:
+            self.wait[self.lowering.player] = value
+        else:
+            self.wait << value
+
+    def resume_point(self):
+        """A place to go on from: its number, which the state takes, and its label, to be placed where it is."""
+        index = len(self.resumes) + 1
+        label = Forward()
+        self.resumes.append((index, label))
+        return index, label
+
+
 class Lowering:
     def __init__(self, program):
         self.p = program
@@ -1008,10 +1046,9 @@ class Lowering:
         self.player = None
         self.vars = {}
         self.arrays = {a["id"]: SliceStorage(a, self) if a.get("slice") else InnerListStorage(a, self) if a.get("through") else (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
-        self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
-        self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
-        self.resumes = []  # (index, Forward) for every sleep
-        self.frame_end = None
+        # The program's own coroutine, and the one being lowered (a branch of a Promise.all / race inside it).
+        self.top = Coroutine(self)
+        self.co = self.top
         self.latches = {}
         # The functions that are called, by id, and each one's EUDFunc once something has called it.
         self.functions = {f["id"]: f for f in program.get("functions", [])}
@@ -1047,24 +1084,6 @@ class Lowering:
         if s is None:
             raise Fail("trigscript: unknown variable %r%s" % (id_, where(node)))
         return s
-
-    def get_state(self):
-        return self.state[self.player] if self.per_player else self.state
-
-    def set_state(self, value):
-        if self.per_player:
-            self.state[self.player] = value
-        else:
-            self.state << value
-
-    def get_wait(self):
-        return self.wait[self.player] if self.per_player else self.wait
-
-    def set_wait(self, value):
-        if self.per_player:
-            self.wait[self.player] = value
-        else:
-            self.wait << value
 
     # ── numbers: an int (the 32 bits, 0 … 2^32 - 1) or an EUDVariable ──
     def num(self, e):
@@ -1992,6 +2011,8 @@ class Lowering:
             raise Leave()
         elif k == "sleep":
             self.sleep(st)
+        elif k == "parallel":
+            self.parallel(st)
         elif k == "action":
             self.action(st)
         elif k == "print":
@@ -2087,15 +2108,47 @@ class Lowering:
             frames = int(st["cycles"])
         else:
             frames = max(1, int(round(float(st.get("ms", 0)) * FRAMES_PER_SECOND / 1000)))
-        index = len(self.resumes) + 1
-        resume = Forward()
-        self.resumes.append((index, resume))
-        self.set_state(index)
+        co = self.co
+        index, resume = co.resume_point()
+        co.set_state(index)
         # The frame after this one is one frame later: sleep(frames(1)) goes on in the next frame, as the
         # simulator has it. (Until 3.4 the wait was one frame longer, so a loop sleeping a frame ran every other.)
-        self.set_wait(frames - 1)
-        EUDJump(self.frame_end)
+        co.set_wait(frames - 1)
+        EUDJump(co.frame_end)
         resume << NextTrigger()
+
+    def parallel(self, st):
+        """Promise.all / race: each branch a coroutine of its own, started here and run from here, in order, every frame
+        the program waits at this statement; the program goes on when every branch has ended (all) or the first has
+        (race, which leaves the others where they are). The program waits here through a place of its own to go on
+        from, which this same statement is: the first frame falls into it, the later ones jump to it."""
+        if self.in_function:
+            raise Fail("trigscript: await inside a function that is called%s" % where(st))
+        parent = self.co
+        kids = [Coroutine(self) for _ in st["branches"]]
+        for k in kids:
+            k.set_state(0)
+            k.set_wait(0)
+        index, again = parent.resume_point()
+        again << NextTrigger()
+        after = Forward()
+        for k, body in zip(kids, st["branches"]):
+            skip = Forward()
+            EUDJumpIf(as_var(k.get_state()) == DONE, skip)
+            self.coroutine(k, body)
+            if st["mode"] == "race":
+                EUDJumpIfNot(as_var(k.get_state()) == DONE, skip)
+                for other in kids:
+                    if other is not k:
+                        other.set_state(DONE)
+                EUDJump(after)
+            skip << NextTrigger()
+        if st["mode"] == "all":
+            EUDJumpIf([as_var(k.get_state()) == DONE for k in kids], after)
+        parent.set_state(index)
+        parent.set_wait(0)
+        EUDJump(parent.frame_end)
+        after << NextTrigger()
 
     def action(self, st):
         r = st["record"]
@@ -2625,8 +2678,8 @@ class Lowering:
             GetGlobalStringBuffer().print("\x06TrigScript: stack overflow in %s, line %s - %d calls deep. The program has stopped." % (saves.get("within", "a function"), (call.get("at") or {}).get("line", "?"), STACK_DEPTH))
             st["depth"] << 0
             st["at"] << st["base"]
-            self.set_state(DONE)
-            EUDJump(self.frame_end)
+            self.top.set_state(DONE)
+            EUDJump(self.top.frame_end)
         EUDEndIf()
         pairs = self.saved_cells(saves, call)
         at = st["at"]
@@ -2734,31 +2787,39 @@ class Lowering:
 
     # ── one frame ──
     def frame(self):
-        self.frame_end = Forward()
+        self.coroutine(self.top, self.p["body"])
+
+    def coroutine(self, co, body):
+        """One frame of a coroutine: count its wait down and leave, or go on from where it stopped until it sleeps or
+        ends. Its body is lowered here, once, and the places to go on from are recorded as they are met; the jump
+        table is filled in after."""
+        outer = self.co
+        self.co = co
+        co.frame_end = Forward()
         start = Forward()
         skip = Forward()
         # Still waiting: count down and leave.
-        EUDJumpIfNot(as_var(self.get_wait()) >= 1, skip)
-        self.set_wait(as_var(self.get_wait()) - 1)
-        EUDJump(self.frame_end)
+        EUDJumpIfNot(as_var(co.get_wait()) >= 1, skip)
+        co.set_wait(as_var(co.get_wait()) - 1)
+        EUDJump(co.frame_end)
         skip << NextTrigger()
-        # The body once, resumes recorded as sleeps are met; the jump table is filled in after.
         table = Forward()
         EUDJump(table)
         start << NextTrigger()
         try:
-            self.block(self.p["body"], {})
+            self.block(body, {})
         except Leave:
             pass
-        # The body ended: the program stops for good, as the classic backend's does.
-        self.set_state(DONE)
-        EUDJump(self.frame_end)
+        # The body ended: it stops for good, as the classic backend's program does.
+        co.set_state(DONE)
+        EUDJump(co.frame_end)
         table << NextTrigger()
-        EUDJumpIf(as_var(self.get_state()) == DONE, self.frame_end)
-        for index, resume in self.resumes:
-            EUDJumpIf(as_var(self.get_state()) == index, resume)
+        EUDJumpIf(as_var(co.get_state()) == DONE, co.frame_end)
+        for index, resume in co.resumes:
+            EUDJumpIf(as_var(co.get_state()) == index, resume)
         EUDJump(start)
-        self.frame_end << NextTrigger()
+        co.frame_end << NextTrigger()
+        self.co = outer
 
     def run(self):
         if self.per_player:

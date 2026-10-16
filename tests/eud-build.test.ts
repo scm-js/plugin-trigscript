@@ -282,6 +282,33 @@ const FIXTURES: Record<string, string> = {
       sleep(frames(12));
     }
   }, { owner: AllPlayers });`,
+  tasks: `program(async () => {
+    let n = 0;
+    async function wave(k: number): Promise<number> {
+      createUnit(P8, units.ZergZergling, k, locations.Anywhere);
+      await until(() => countUnits(P8, units.ZergZergling) === 0);
+      return k;
+    }
+    for (let i = 1; i <= 3; i++) {
+      const won = await Promise.race([wave(i * 2), sleep(seconds(30)).then(() => -1)]);
+      if (won < 0) defeat();
+      await Promise.all([
+        (async () => { while (n < i * 10) { n++; await sleep(frames(1)); } })(),
+        sleep(seconds(2)),
+      ]);
+    }
+    victory();
+  });`,
+  tasksPerPlayer: `program(async () => {
+    let mine = 0;
+    let total = shared(0);
+    await Promise.all([
+      (async () => { for (let i = 0; i < 5; i++) { mine++; await sleep(frames(3)); } })(),
+      (async () => { await until(() => mine >= 5); total += 1; })(),
+    ]);
+    const first = await Promise.race([until(() => total >= 2).then(() => true), sleep(seconds(5)).then(() => false)]);
+    if (first) setResources(CurrentPlayer, "add", 50, "ore");
+  }, { owner: AllPlayers });`,
 };
 
 function build(name: string, src: string): { out: number; triggers: number } {
@@ -499,6 +526,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(14);
+    expect(ir.version).toBe(15);
   });
 });

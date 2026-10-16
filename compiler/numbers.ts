@@ -278,6 +278,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "do": s.body.forEach(stmt); s.cond = bool(s.cond); break;
       case "for": if (s.cond) s.cond = bool(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": s.value = num(s.value)[0]; s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value && result) s.value = valueFor(result, s.value, s.at); break;
       case "action": for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at); if (s.text) s.text = text(s.text); break;

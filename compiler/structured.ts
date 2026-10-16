@@ -367,7 +367,8 @@ export class Structured {
   private unwrap(expr: TS.Expression): TS.Expression {
     const { ts } = this;
     for (;;) {
-      if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr)) expr = expr.expression;
+      // `await f()` is what f gives: an async function is inlined, and where it waits the program waits.
+      if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertionExpression(expr) || ts.isNonNullExpression(expr) || ts.isSatisfiesExpression(expr) || ts.isAwaitExpression(expr)) expr = expr.expression;
       else return expr;
     }
   }
@@ -843,6 +844,9 @@ export class Structured {
         const over = this.overOf(init.expression.expression);
         if (over) { this.searchCall(init, over, init.expression.name.text, over.kind === "array" ? over.a.kind : "number"); continue; }
       }
+      // `const v = await Promise.race([wave(), sleep(…)])` is a number or nothing.
+      const race = !kind ? this.promiseCall(init) : undefined;
+      if (race && race !== "all") { this.c.error(d, `${d.name.text} would be ${this.c.checker.typeToString(type)}: Promise.${race} gives the value of the branch that ends first, so every branch gives one. Give a sleep() or an until() a value with .then(() => …).`); continue; }
       if (!kind) { this.c.error(d, `Variables hold numbers, booleans, texts, units of the game or records of them ({ lives: 3 }); ${d.name.text} is ${this.c.checker.typeToString(type)}.`); continue; }
       // `let total = shared(0)`: one cell for every player of a per-player program, initialised with the argument.
       const shared = ts.isCallExpression(init) && this.isLibraryCall(init, "shared") ? init : null;
@@ -2650,12 +2654,13 @@ export class Structured {
   }
 
   /** The function a method is given: written there, or the name of one declared in the body. */
-  private functionOf(arg: TS.Expression | undefined, method: string, e: TS.Node): { parameters: readonly TS.ParameterDeclaration[]; body: TS.Block | TS.Expression; closure: Scope | null; name?: string } | null {
+  private functionOf(arg: TS.Expression | undefined, method: string, e: TS.Node, waits = false): { parameters: readonly TS.ParameterDeclaration[]; body: TS.Block | TS.Expression; closure: Scope | null; name?: string } | null {
     const { ts } = this;
     if (!arg) { this.c.error(e, `${method}() takes a function: xs.${method}((x) => …).`); return null; }
     const fn = this.unwrap(arg);
     if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
-      if (fn.asteriskToken || fn.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) { this.c.error(fn, "Generators and async functions are not supported in a program."); return null; }
+      if (fn.asteriskToken) { this.c.error(fn, "Generators are not supported in a program yet."); return null; }
+      if (!waits && fn.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) { this.c.error(fn, `An async function given to ${method}(): the method is one loop within the frame, and nothing waits for what the function gives. A for…of over the same list can await between its turns.`); return null; }
       return { parameters: fn.parameters, body: fn.body, closure: this.scope };
     }
     if (ts.isIdentifier(fn)) {
@@ -2671,9 +2676,10 @@ export class Structured {
    * its place, the list. A variable it uses from outside is the program's own cell, so nothing is captured and nothing
    * is made when the map is played. `kind` is what it has to give back; "any" takes what it says it returns.
    */
-  private callback(arg: TS.Expression | undefined, method: string, bound: Binding[], kind: Kind | "void" | "any", e: TS.CallExpression): Call | undefined {
+  private callback(arg: TS.Expression | undefined, method: string, bound: Binding[], kind: Kind | "void" | "any", e: TS.CallExpression, waits = false): Call | undefined {
     const { ts } = this;
-    const fn = this.functionOf(arg, method, e);
+    // `waits`: an async arrow called where it is written, whose body is the program's own and may wait.
+    const fn = this.functionOf(arg, method, e, waits);
     if (!fn) return undefined;
     if (kind === "any") {
       const signature = this.c.checker.getSignaturesOfType(this.c.checker.getTypeAtLocation(arg!), ts.SignatureKind.Call)[0];
@@ -2716,8 +2722,8 @@ export class Structured {
       scope.bind(p, b);
     });
     if (!ok) return undefined;
-    this.inCallback++;
-    try { out.body = this.walkFunction(fn.body, kind, this.body, scope, () => patterns.forEach((take) => take())); } finally { this.inCallback--; }
+    if (!waits) this.inCallback++;
+    try { out.body = this.walkFunction(fn.body, kind, this.body, scope, () => patterns.forEach((take) => take())); } finally { if (!waits) this.inCallback--; }
     return out;
   }
 
@@ -3575,6 +3581,7 @@ export class Structured {
 
   /** What a `u8` / `u16` / `u32` annotation declares, read off the brand in the type; nothing for a plain number, which is signed. */
   private widthOf(type: TS.Type): { bits?: 8 | 16; unsigned?: boolean } {
+    type = this.awaited(type);
     for (const t of type.isIntersection() ? type.types : [type]) {
       const p = t.getProperty("__kind");
       if (!p) continue;
@@ -3587,8 +3594,14 @@ export class Structured {
     return {};
   }
 
+  /** What a promise gives once it is awaited (an async function's `Promise<number>` is a number); any other type as it is. */
+  private awaited(type: TS.Type): TS.Type {
+    return this.c.checker.getAwaitedType(type) ?? type;
+  }
+
   private kindOf(type: TS.Type): Kind | null {
     const { ts } = this;
+    type = this.awaited(type);
     // `c ? 1 : 0` is `0 | 1`: a union of numbers is a number.
     const isNumber = (t: TS.Type): boolean => (t.flags & ts.TypeFlags.NumberLike) !== 0 || (t.isIntersection() && t.types.some(isNumber)) || (t.isUnion() && t.types.every(isNumber));
     if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
@@ -3656,6 +3669,7 @@ export class Structured {
   /** Whether a type is a string's: `string`, a text written out, a union of those (`undefined` beside it is what `at()` adds, and is nothing here). */
   private isTextType(type: TS.Type): boolean {
     const { ts } = this;
+    type = this.awaited(type);
     const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
     return bare.length > 0 && bare.every((t) => (t.flags & ts.TypeFlags.StringLike) !== 0);
   }
@@ -4127,8 +4141,145 @@ export class Structured {
     this.emit({ kind: "sleep", ...(d.cycles !== undefined ? { cycles: d.cycles } : {}), ...(d.ms !== undefined ? { ms: d.ms } : {}), at: this.at(call), label: this.label(call) }, call);
   }
 
-  private expressionStatement(expr: TS.Expression) {
+  /** `await until(() => condition)`: the program waits, asking again every frame, until the condition holds — not at all when it holds now. */
+  private untilStatement(call: TS.CallExpression) {
     const { ts } = this;
+    if (this.inCallback > 0) { this.c.error(call, "until() inside a function given to an array method: the method is one loop within the frame. A for…of over the same list can await between its turns."); return; }
+    if (call.arguments.length !== 1) { this.c.error(call, "until() takes a function that answers true or false: await until(() => countUnits(P8, units.ZergZergling) === 0)."); return; }
+    const arg = call.arguments[0];
+    const fn = this.unwrap(arg);
+    let cond: BoolExpr | null;
+    if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) cond = this.predicate(arg, "until", [], call);
+    else if (isCondition(this.evaluate(arg)?.value)) cond = this.bool(arg);
+    else { this.c.error(arg, "until() takes a function, which is asked again every frame: until(() => …). A condition — until(bring(…)) — is asked again on its own."); return; }
+    if (!cond) return;
+    const at = this.at(call), label = this.label(call);
+    this.emit({ kind: "while", cond: { kind: "not", expr: cond }, body: [{ kind: "sleep", cycles: 1, at, label }], at, label }, call);
+  }
+
+  /** `Promise.all(…)`, `Promise.race(…)`, `Promise.any(…)`: which one, when the call is one of the language's own Promise. */
+  private promiseCall(e: TS.Expression): "all" | "race" | "any" | undefined {
+    const { ts } = this;
+    if (!ts.isCallExpression(e) || !ts.isPropertyAccessExpression(e.expression) || !ts.isIdentifier(e.expression.expression) || e.expression.expression.text !== "Promise") return undefined;
+    if (this.gameDeclaration(e.expression.expression)) return undefined;
+    const name = e.expression.name.text;
+    return name === "all" || name === "race" || name === "any" ? name : undefined;
+  }
+
+  /** Whether an expression's type is a promise: what an async function, sleep(), until() and Promise.all give. */
+  private isPromise(e: TS.Expression): boolean {
+    const type = this.c.checker.getTypeAtLocation(e);
+    return this.awaited(type) !== type;
+  }
+
+  /** Whether a node is inside an async function: `program(async () => …)`, an `async function`, an async arrow called where it is written. */
+  private inAsync(node: TS.Node): boolean {
+    const { ts } = this;
+    for (let n = node.parent; n; n = n.parent) if (ts.isFunctionLike(n)) return !!ts.getModifiers(n as TS.FunctionLikeDeclaration)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+    return false;
+  }
+
+  /** A promise as a statement on its own: in a program, what is not awaited never runs beside it. */
+  private notAwaited(e: TS.CallExpression) {
+    const text = e.getText();
+    const mode = this.promiseCall(e);
+    const what = this.isLibraryCall(e, "sleep") ? "sleep()" : this.isLibraryCall(e, "until") ? "until()" : mode ? `Promise.${mode}()` : `${this.unwrap(e.expression).getText()}()`;
+    if (this.inAsync(e)) this.c.error(e, `${what} gives a promise, and nothing waits for it here: await ${text}. A program cannot yet start something and leave it running beside it.`);
+    else this.c.error(e, `${what} waits, and a program waits in an async function: program(async () => { … await ${text}; … }).`);
+  }
+
+  /**
+   * What is awaited, as statements of the program — or of a branch, inside Promise.all / race: sleep(), until(), an async
+   * call, an async arrow called where it is written, a Promise.all / race inside another, `….then(() => value)`. `into`:
+   * the result of a race, which the branch sets as it ends.
+   */
+  private task(expr: TS.Expression, into?: { decl: VarDecl; kind: "number" | "boolean" }) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const valueless = (what: string) => { if (into) this.c.error(e, `${what} gives no value, and Promise.race gives the value of the branch that ends first: give this one a value with .then(() => …).`); };
+    const keep = (call: Call | undefined, node: TS.Node) => {
+      if (!call) return;
+      this.emit({ kind: "call", call, at: call.at, label: call.label }, node);
+      if (!into) return;
+      if (!call.result || call.result.kind !== into.kind) { this.c.error(node, `Every branch of a race whose value is kept gives a ${into.kind}.`); return; }
+      const value = { kind: "var" as const, id: call.result.decl.id };
+      this.emit(into.kind === "number" ? { kind: "assign", target: into.decl.id, value, at: call.at, label: call.label } : { kind: "assignBool", target: into.decl.id, value, at: call.at, label: call.label }, node);
+    };
+    if (ts.isCallExpression(e)) {
+      if (this.isLibraryCall(e, "sleep")) { this.sleepStatement(e); valueless("sleep()"); return; }
+      if (this.isLibraryCall(e, "until")) { this.untilStatement(e); valueless("until()"); return; }
+      const mode = this.promiseCall(e);
+      if (mode) {
+        if (mode === "all") valueless("Promise.all()");
+        this.parallel(e, mode, mode === "all" ? undefined : into);
+        return;
+      }
+      if (ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "then" && this.isPromise(e.expression.expression)) {
+        if (e.arguments.length !== 1) { this.c.error(e, ".then() takes one function: sleep(seconds(90)).then(() => false)."); return; }
+        const fn = this.unwrap(e.arguments[0]);
+        if ((ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) && fn.parameters.length) { this.c.error(fn, "The function given to .then() takes nothing here. To use what a call gives, keep it first: const v = await f(); then use v."); return; }
+        this.task(e.expression.expression);
+        keep(this.callback(e.arguments[0], "then", [], into?.kind ?? "any", e), e);
+        return;
+      }
+      const callee = this.unwrap(e.expression);
+      if (ts.isArrowFunction(callee) || ts.isFunctionExpression(callee)) {
+        if (e.arguments.length || callee.parameters.length) { this.c.error(e, "An async arrow called where it is written takes nothing: (async () => { … })()."); return; }
+        keep(this.callback(e.expression, "an async function", [], into?.kind ?? "any", e, true), e);
+        return;
+      }
+    }
+    if (into) {
+      const value = into.kind === "number" ? this.num(expr) : this.boolValue(expr);
+      if (!value) return;
+      const at = this.at(e), label = this.label(e);
+      this.emit(into.kind === "number" ? { kind: "assign", target: into.decl.id, value: value as NumExpr, at, label } : { kind: "assignBool", target: into.decl.id, value: value as BoolExpr, at, label }, e);
+      return;
+    }
+    this.expressionStatement(expr, true);
+  }
+
+  /**
+   * `await Promise.all([…])` / `race` / `any`: each item a branch of its own, side by side (`parallel` in the IR). Nothing in
+   * a program fails, so the first branch to end is the first to succeed, and `any` is a race.
+   */
+  private parallel(call: TS.CallExpression, mode: "all" | "race" | "any", into?: { decl: VarDecl; kind: "number" | "boolean" }) {
+    const { ts } = this;
+    const name = `Promise.${mode}`;
+    if (this.inCallback > 0) { this.c.error(call, `${name}() inside a function given to an array method: the method is one loop within the frame.`); return; }
+    const list = call.arguments.length === 1 ? this.unwrap(call.arguments[0]) : undefined;
+    if (!list || !ts.isArrayLiteralExpression(list)) { this.c.error(call, `${name}() takes a list written where it is called: ${name}([wave(1), sleep(seconds(90))]).`); return; }
+    if (!list.elements.length) { this.c.error(list, mode === "all" ? "Promise.all([]) has nothing to wait for." : `${name}([]) never ends.`); return; }
+    const branches: Stmt[][] = [];
+    for (const el of list.elements) {
+      if (ts.isSpreadElement(el) || ts.isOmittedExpression(el)) { this.c.error(el, `Each item of ${name}() is written out: what runs side by side is settled when the script is built.`); return; }
+      branches.push(this.collect(() => this.task(el, into)));
+    }
+    this.emit({ kind: "parallel", mode: mode === "all" ? "all" : "race", branches, at: this.at(call), label: this.label(call) }, call);
+  }
+
+  /** `const first = await Promise.race([…])`: the value of the branch that ends first, in a variable of its own. */
+  private raceValue(e: TS.CallExpression, kind: "number" | "boolean"): NumExpr | BoolExpr | null {
+    const { ts } = this;
+    const mode = this.promiseCall(e)!;
+    if (mode === "all") { this.c.error(e, "Promise.all() gives no value yet: await it as a statement, and keep what each branch finds in variables of the program."); return null; }
+    let up: TS.Node = e.parent;
+    while (ts.isParenthesizedExpression(up)) up = up.parent;
+    if (!ts.isAwaitExpression(up)) { this.c.error(e, `Promise.${mode}() gives a promise: await it — const v = await Promise.${mode}([…]).`); return null; }
+    const at = this.at(e), label = this.label(e);
+    const t = this.newVar(`(Promise.${mode} result)`, kind, at, { temp: true });
+    this.emit({ kind: "declare", decl: t, init: kind === "number" ? num(0) : FALSE, at, label }, e);
+    this.parallel(e, mode, { decl: t, kind });
+    return kind === "number" ? varRef(t) : { kind: "var", id: t.id };
+  }
+
+  private expressionStatement(expr: TS.Expression, awaited = false) {
+    const { ts } = this;
+    let bare = expr;
+    while (ts.isParenthesizedExpression(bare)) bare = bare.expression;
+    if (ts.isAwaitExpression(bare)) { this.task(bare.expression); return; }
+    // A promise nothing waits for. sleep() in a function that is not async is the language before 4: it pauses there.
+    if (!awaited && ts.isCallExpression(bare) && this.isPromise(bare) && !(this.isLibraryCall(bare, "sleep") && !this.inAsync(bare))) { this.notAwaited(bare); return; }
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
     if (h) { this.hoistedStatement(e, h); return; }
@@ -5310,7 +5461,7 @@ export class Structured {
     if (cls.typeParameters?.length) this.c.error(cls.typeParameters[0], "A class of a program takes no type parameters: what each field holds has to be known when the script is built.");
     for (const m of cls.members) {
       if (ts.isClassStaticBlockDeclaration(m)) { this.c.error(m, "A static block is not supported in a program; give the static fields their values where they are declared."); continue; }
-      if (ts.isMethodDeclaration(m) && (m.asteriskToken || ts.getModifiers(m)?.some((x) => x.kind === ts.SyntaxKind.AsyncKeyword))) this.c.error(m, "Generators and async functions are not supported in a program.");
+      if (ts.isMethodDeclaration(m) && (m.asteriskToken || ts.getModifiers(m)?.some((x) => x.kind === ts.SyntaxKind.AsyncKeyword))) this.c.error(m, "A generator or an async method is not supported in a class yet; an async function declared in the program can take the instance.");
       if (!ts.isPropertyDeclaration(m) || !this.isStatic(m)) continue;
       const key = this.memberKey(m.name);
       if (!key) { this.c.error(m.name, "A field's name is written out."); continue; }
@@ -5562,7 +5713,7 @@ export class Structured {
     if (!body) { this.c.error(call, "The function has no body."); return undefined; }
     // A copy of a body inside a copy of a body, sixteen times over: what happens from here is decided once the arguments are known.
     const deep = this.inlineDepth >= MAX_INLINE_DEPTH;
-    if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl) || ts.isMethodDeclaration(decl)) && (decl.asteriskToken || decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))) { this.c.error(decl, "Generators and async functions are not supported in a program."); return undefined; }
+    if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl) || ts.isMethodDeclaration(decl)) && decl.asteriskToken) { this.c.error(decl, "Generators are not supported in a program yet."); return undefined; }
     const kind: Kind | "text" | "void" = as.nothing ? "void" : this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? (this.isTextType(this.c.checker.getTypeAtLocation(call)) ? "text" : "void");
     const line = this.line(call);
     const out: Call = { ...(name ? { name } : {}), at: this.at(call), label: this.label(call), params: [], body: [] };
@@ -5916,7 +6067,7 @@ export class Structured {
       (this.c as { error: StructuredContext["error"] }).error = error;
     }
     if (caught.length) return `with its parameters as variables of the game it does not compile — ${caught[0].replace(/\.$/, "")}`;
-    if (mentions(fn.body, "sleep")) return "it sleeps, and the program wakes up inside it";
+    if (mentions(fn.body, "sleep") || mentions(fn.body, "parallel")) return "it sleeps, and the program wakes up inside it";
     if (mentions(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
     this.mark(fn, decl);
     this.functions.push(fn);
@@ -6227,6 +6378,7 @@ export class Structured {
     const { ts } = this;
     const ofText = this.textNumber(e);
     if (ofText !== undefined) return ofText;
+    if (this.promiseCall(e)) return this.raceValue(e, "number") as NumExpr | null;
     const method = this.methodCall(e);
     if (method !== undefined) return this.numberOf(method, e);
     if (ts.isIdentifier(e.expression) && (e.expression.text === "parseInt" || e.expression.text === "Number" || e.expression.text === "parseFloat") && !this.gameDeclaration(e.expression)) {
@@ -6782,7 +6934,8 @@ export class Structured {
       }
       if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose");
       if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
-      if (this.isLibraryCall(e, "sleep")) { this.c.error(e, "sleep() is a statement, not a condition."); return FALSE; }
+      if (this.isLibraryCall(e, "sleep") || this.isLibraryCall(e, "until")) { this.c.error(e, `${this.isLibraryCall(e, "sleep") ? "sleep" : "until"}() is a statement, not a condition: await it on a line of its own.`); return FALSE; }
+      if (this.promiseCall(e)) return (this.raceValue(e, "boolean") as BoolExpr | null) ?? FALSE;
       const read = this.readCall(e);
       if (read !== undefined) return read ? this.readBool(read, e) : FALSE;
       const callee = this.evaluate(e.expression)?.value;
