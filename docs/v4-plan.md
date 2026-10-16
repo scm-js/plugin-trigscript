@@ -1,6 +1,7 @@
 # TrigScript 4 — the plan
 
-Written 2026-10-15. Status: nothing built. The question it answers: now that there is a
+Written 2026-10-15. Status: Part A built (A0–A5, each with its *As built*), and Remastered's
+emulator read from a dump (*R0*, 2026-10-16); Part B not started. The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -62,7 +63,7 @@ have already met:
 
 | Probe | 1.16.1 meaning | Remastered |
 | --- | --- | --- |
-| Magenta 6, I | a unit's position written | ends the game ("EUD not supported") |
+| Magenta 6, I | a unit's position written | ~~ends the game~~ — the dump probe (R0) wrote it alone: the game goes on, nothing moves |
 | Magenta 10, 1–3 | the tile buffer written through the MTXM pointer | nothing changes on screen |
 | Magenta 10, 4 | sprite image flags (tint) | ends the game |
 | Magenta 6, J K | a unit's own top speed | no effect; only the type's table counts |
@@ -75,9 +76,12 @@ be read from the file. The user agreed on 2026-10-15 that Remastered may be take
 through Ghidra to settle rules the compiler needs, provided none of it ships. The way in
 would be a dump of the running process, once it has unpacked itself, read in Ghidra; the
 rules found go into the allowlist with "Remastered, disassembled" as their evidence, and
-a probe still confirms each family before a library offers it. Until that is done, the
-lifted game tells us **what an address means and what the triggers did with it**;
-only a played probe tells us **whether Remastered allows it**. Part A turns that split
+a probe still confirms each family before a library offers it. That was done on
+2026-10-16 (*R0* below): the allowlist now knows, for every address, whether Remastered
+lets a read or a write through, and a probe is needed only to learn what the game *does*
+with it. The lifted game tells us **what an address means and what the triggers did with
+it**; the dump tells us **whether Remastered allows it**; a played probe tells us **what it
+looks like**. Part A turns that split
 into a file (the allowlist) and a check, so the gap is seen at the line that falls into
 it rather than in a game that ends.
 
@@ -638,6 +642,60 @@ and the debugger walks the record.
   - On a copy that may only watch (StarEdit's download), there is no picture: a picture of a map's run is the map
     played. Everything else works.
 
+### R0. Remastered's emulator, read from a dump (2026-10-16)
+
+Asked for on 2026-10-16 ("start with the Remastered dump"), before B1, so that the
+allowlist stops saying "not known" for most of the game.
+
+- **The dump.** Remastered 1.23.10.13515, the 64-bit executable, in a single-player game
+  on an EUD map. A small read-only dumper (Windows Python, `ReadProcessMemory`) wrote the
+  executable's image and every readable region of the heap (2 GB). Its code section is
+  encrypted on disk and plain in memory. The dump, the tools and everything read from it
+  stay in a private folder outside every repository.
+- **What Remastered's EUD support is.** An emulator object, reached from one global,
+  holding a tree of 12,290 *regions*: each a 1.16.1 address range, a class (34 of them,
+  each with its own read and write) and the game's own object behind it. The Deaths
+  condition and the Set Deaths action look the address up; a dword in no region, or one
+  whose class refuses it, ends the game. The object tables (1,700 units, 2,500 sprites,
+  5,000 images, 100 bullets, the order queue) are a region per object. Writes are checked
+  before the class sees them: unaligned dwords are split, a flag makes a region's writes
+  accepted and dropped, and the mask is applied as A0 found by trying
+  (`(old & ~mask) | (op(old & mask, value & mask) & mask)`).
+- **Run, not read.** Rather than read 34 classes of decompiled code, the emulator itself was
+  run under Unicorn from the dump: the image at its own address, heap pages mapped from the
+  dump when touched, the game's main thread block for its thread-local data, and Windows
+  stood in for (locks, the heap; the one other call is `GetKeyState`, for the keyboard
+  region). Every dword of every region (the object tables sampled at four objects) was read
+  and then written through Remastered's own entry points, and the memory before and after
+  compared: 1,581,605 dwords in 20 minutes. A write lands in **the game's own object**, in
+  **memory the emulator keeps beside it** (read back, never used by the game), or nowhere.
+- **Pointers are typed.** A unit's pointer fields (+0x00, +0x04, +0x14, +0x5C order target,
+  +0x68 … +0x11C) take the address of a unit and set the game's real pointer; +0x0C takes a
+  sprite. Anything else written there is kept beside the game. So "make this unit target
+  that one" works through memory.
+- **Fields that end the game when read:** unit +0x74, +0x78, +0x88, +0xB0–0xBC, +0xF0,
+  +0xF4, +0x100, +0x108, +0x10C, +0x130–0x148; and most of the block from 0x6D1200.
+  Writes to the terrain buffers behind the tile pointers are dropped, as Magenta probe 10
+  found by playing.
+- **The probe** (`probes/remastered-dump.py`, played 2026-10-16) took Magenta's `nudge`
+  apart: A, B (a unit's X, then Y) and C (its sprite's X and Y) went through with nothing
+  seen to move; D (a read of unit +0x74) ended the game, as the dump said, with "EUD ERROR:
+  0xFFA632E3", which is 0x0059CD1C with its bits flipped. **The error code is the refused
+  address**, so a line can be named from it. Probe 6's "a position write ends the game"
+  was wrong; what ended it is not known.
+- **In the allowlist.** `data/remastered.json` (1,285 entries: addresses, widths, verdicts,
+  notes; no code or bytes of the game) is the fourth source of `scripts/allowlist.mts`,
+  each entry `from: "dump"`. What was played wins over it byte by byte; where they differ
+  it is "played: ignored, dump: allowed" (the write reaches the game and nothing visible
+  happens), never the other way. An address no region covers is `outside`: the game ends.
+  The units probe's trace now has no finding at all, where before most unit fields were
+  "not known". `verdictOf` indexes entries by 256-byte block (190 ms for 42,745 rows).
+- **Still open:** the keyboard region (filled from Windows on each read, so local by
+  construction); images, bullets and orders were sampled at objects not in use; the
+  error-code-to-line feature; the dump is one build, so a Remastered patch means a new dump
+  (the tools take an hour end to end). Ghidra's project of the dump exists for B7's struct
+  names.
+
 ## Part B — the language
 
 Each slice states what changes in the IR, the simulator and the Python, and has a probe.
@@ -867,7 +925,7 @@ build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
   several people on one instance; 2,200–4,100 frames a second in Node; snapshots ~45 ms /
   0.6 MB; hooks by address at generation; `callAt` between turns; `triggerView`;
   extended Deaths reads work and writes are refused by 1.16.1's check.
-- Remastered's executable is encrypted; no disassembly of it is planned.
+- Remastered's executable is encrypted on disk and decrypted in memory; its EUD emulator was read from a dump of the running game and run under Unicorn (R0, 2026-10-16). Nothing of it ships: only addresses and verdicts, in `data/remastered.json`.
 - Magenta's played probes 5–11 (2026-09-14/15): position, tint and image writes end the
   game; tile buffer writes are not drawn; per-unit speed and cloak flags do nothing; key
   hold does not exist; the scratch-box order trick and the damage/heal verb work.
