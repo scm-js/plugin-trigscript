@@ -270,6 +270,64 @@ seen to refuse or ignore, or has never been seen to do, by line.
 A headless run draws nothing, and is allowed from any copy that unlocks the editor
 (decided 2026-10-15, see *Open decisions*).
 
+**As built (2026-10-16).** One part of the design above was wrong and was not built: a test does
+*not* become a program. A test is synchronous JavaScript that steps frames and reads between them
+(`until(() => …)` among it), which cannot be compiled into triggers ahead of time. Instead the test
+stays JavaScript and is handed a world backed by the game, and it runs where the game is.
+
+- **`GameSim`** (`compiler/gameSim.ts`) has `TestSim`'s surface over a small synchronous
+  `GameHandle`. scm-sim supplies the handle (`src/exact/testGame.ts`), and TrigScript never imports
+  the engine.
+  - Every read is the game's memory.
+  - `place`, `kill`, `remove`, `give` and `move` are the game's own trigger actions, run between
+    frames as a player's trigger would run them, through a scratch location (255; 254 for a
+    destination) whose twenty bytes are put back afterwards.
+  - `kill` is a fight, as `TestSim` has it: the game's death-counting routine (0x488AF0) is called
+    first, so `by` gets the kill.
+  - A typed line is the game's own chat command (0x5C). chatEvent reads it from the text lines as
+    in play, and MSQC sends it on.
+  - A key and a mouse button are the local machine's memory (0x596A18, 0x6CDDC0), held for one
+    frame.
+  - Not yet: `program()` (a program's variables; the build would have to say where each lives),
+    and what another player was shown.
+- **The same tests, twice.** `TestRunOptions.makeWorld` hands each test a world other than the
+  simulator's. A compile also returns the script as JavaScript (`CompileResult.modules`).
+  `compiler/gameTests.ts`, bundled as `dist/gametest.js` (198 KB, no TypeScript in it), runs those
+  modules again beside the game, registers the tests and runs each with a `GameSim`. The game is
+  put back to frame 0 before each test.
+- **Where it runs.**
+  - Under Node: `npx tsx scripts/test-game.mts <script.ts>` prints each test's game and simulator
+    marks side by side.
+  - In the editor: **Run All Tests in the Game** in the Testing view and the palette. It builds
+    the map as Save does, exports it whole (a bare `.chk` has no room for what the build steps
+    make), and hands it, with `gametest.js`'s text and the modules, to scm-sim's analysis page
+    through the plugin's new `test()` (contract unchanged in version; `status().tests`). The page
+    reads the scenario out of the map, starts it in a worker of its own with EUD let through,
+    loads the module from its text and answers with the report. Each test then shows a second
+    mark, "game", which turns red when the two disagree. Nothing is drawn, so under the decision
+    of 2026-10-15 any copy of the game that unlocks the editor is enough.
+- **Traps met.**
+  - eudplib keeps the map's locations scrambled until its first frames put them right (by frame 2
+    on a probe's map). So an action at frame 0 goes through a scratch location given the map's
+    real bounds, read from the game once (`readLocations`), with the elevation flags cleared,
+    since scrambled flags keep units out of a location.
+  - The game's snapshot covers only the pages it had mapped at the start. eudplib's payload lies
+    outside them, so a reset left eudplib's variables and its self-rewriting triggers as the last
+    test left them, and typed lines and keys went unanswered from the second test on. The handle
+    now keeps that range itself.
+- **What the first run found:** a simulator bug. Kill Unit, Kill Unit At Location, a unit's
+  `kill()` and hit points written down to 0 all counted a death in the simulator. The game counts
+  none of them, and the editor's trigger reference, checked in the real game, says the same of
+  Kill Unit. Fixed in the simulator (`World.gone(…, fought)`), with three tests corrected to the
+  game's rule.
+- **Checked:**
+  - `probes/game-tests.ts` (time, a typed line, a key; units placed, killed, given and moved)
+    passes in the game and in the simulator under Node, and through scm-sim's analysis page in
+    headless Chromium (3.3 s, game start included).
+  - plugin-scm-sim's bridge has two new tests.
+  - The editor's button has not been driven end to end in the built editor yet. Its parts have:
+    compile, export and the page, each on its own.
+
 ### A3. The desync detector (4.1.0)
 
 Run two to eight copies of the game seated as different local players

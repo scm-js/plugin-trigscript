@@ -32,6 +32,7 @@ import {
 } from "./script";
 import { english, msg, type Translate } from "./i18n";
 import { EUDPLIB_SERVICE, type EudplibBuildEvent, type EudplibInput, type EudplibService } from "./vendor/eudplib";
+import { SCM_SIM_SERVICE, type ScmSimEngine } from "./vendor/scmSim";
 
 /**
  * A compile, with what it was compiled *for*: the map it read its names from and the
@@ -186,6 +187,16 @@ export class ScriptService {
   /** The eudplib plugin's service, or null when it is not installed or is off. */
   library(): EudplibService | null {
     return this.api.services.get<EudplibService>(EUDPLIB_SERVICE);
+  }
+
+  /** The scm-sim plugin's engine, or null when it is not installed or is off: where a script's tests run in the game. */
+  engine(): ScmSimEngine | null {
+    return this.api.services.get<ScmSimEngine>(SCM_SIM_SERVICE);
+  }
+
+  /** Called at once and whenever the scm-sim plugin arrives or goes. */
+  watchEngine(listener: (service: ScmSimEngine | null) => void): { dispose(): void } {
+    return this.api.services.watch<ScmSimEngine>(SCM_SIM_SERVICE, (s) => listener(s));
   }
 
   /** Called at once and whenever the eudplib plugin arrives or goes. */

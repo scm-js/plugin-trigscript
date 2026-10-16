@@ -27,7 +27,7 @@
  * Monaco and TypeScript come from the CDN on first open.
  */
 import type { PluginApi } from "@scm-js/plugin-api";
-import { CompileSuperseded, retainCompileWorker } from "./compile";
+import { CompileSuperseded, gametestUrl, retainCompileWorker } from "./compile";
 import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_CELLS_MAX, STACK_DEPTH, STACK_DEPTH_MAX, STACK_DEPTH_MIN, heapCells, stackDepth } from "./compiler/ir";
 import { largestFrame } from "./compiler/recursion";
@@ -42,7 +42,7 @@ import {
 } from "./monaco";
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
 import { FILE_NAME } from "./script";
-import { isTestFile, type TestInfo, type TestRunOptions } from "./compiler/testing";
+import { isTestFile, type TestInfo, type TestReport, type TestResult, type TestRunOptions } from "./compiler/testing";
 import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, playersLabel, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
 import { testName } from "./service";
 import { applyMoves, buildTree, filesUnder, folderOf, movesOf, refuseMoves, tabLabels, validFolder, type Moves, type TreeNode } from "./tree";
@@ -326,7 +326,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     null,
     ...["import", "newFile", "newFolder"].map(menuItem),
     null,
-    ...["runTests", "runFailedTests"].map(menuItem),
+    ...["runTests", "runFailedTests", "runTestsInGame"].map(menuItem),
     null,
     ...["problems", "output", "panel", "explorer", "testing"].map(menuItem),
     null,
@@ -355,6 +355,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const testingView = shell.sidebarView({ id: "testing", title: t("Testing"), icon: "beaker", actions: [
     { icon: "run-all", title: t("Run all tests"), run: () => { void runTests(); } },
     { icon: "run-errors", title: t("Run the tests that failed"), run: () => { void runFailedTests(); } },
+    { icon: "target", title: t("Run all tests in the game (the lifted game of the scm-sim plugin): each gets a second mark"), run: () => { void runTestsInGame(); } },
     { icon: "filter", title: t("Show only the tests that fail"), run: () => { onlyFailing = !onlyFailing; renderTesting(); } },
   ] });
   testingView.body.append(testingList);
@@ -432,6 +433,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /** Running every test took more than `TESTS_SLOW_MS` the last time. */
   let testsSlow = false;
   let testsRunning = false;
+  /**
+   * The tests' last results in the lifted game (TrigScript 4, A2), by id: a mark of their own beside the simulator's,
+   * kept until the next run in the game. The game is the judge: where the two differ, the simulator is wrong.
+   */
+  let gameResults = new Map<string, TestResult>();
+  /** The text of `dist/gametest.js`, fetched once. */
+  let gametest: Promise<string> | null = null;
   /** The files with a tab, in the order they were opened. */
   let openTabs: string[] = [normalizePath(options.file ?? ENTRY_FILE)];
   /** What Apply, Play and the builds of the programs reported, oldest first. */
@@ -694,6 +702,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
           stateIcon(state),
           el("span", { className: state === "failed" ? "tsd-name tsd-problem" : "tsd-name" }, name),
           result && result.status !== "skipped" ? el("span", { className: "tsd-about" }, t("{ms} ms", { ms: result.ms })) : undefined,
+          node.kind === "test" && gameResults.has(node.info.id) ? gameMark(gameResults.get(node.info.id)!, result) : undefined,
           el("span", { className: "tsd-row-actions" },
             shell.iconButton({ icon: "play", title: node.kind === "test" ? t("Run this test") : t("Run these tests"), run: () => { void runTests(node.kind === "file" ? { files: [node.path] } : { ids }); } }).element,
           ),
@@ -706,6 +715,66 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     walk(testTree(tests.list), 0);
     if (rows.length === 0) rows.push(el("li", { className: "tsd-empty" }, t("No test fails.")));
     testingList.replaceChildren(...rows);
+  };
+
+  /** A test's mark from the game, beside the simulator's: its state, and a word when the two disagree. */
+  const gameMark = (game: TestResult, simulated: TestResult | undefined) => {
+    const state: TestStateName = game.status === "failed" ? "failed" : game.status === "passed" ? "passed" : "skipped";
+    const differ = simulated && simulated.status !== "skipped" && game.status !== "skipped" && simulated.status !== game.status;
+    return el("span", { className: differ ? "tsd-about tsd-problem" : "tsd-about", title: differ
+      ? t("In the game: {status}. The simulator and the game disagree: the game is right, so the simulator is wrong here (or the test leans on something it does differently).", { status: game.status === "failed" ? game.message ?? t("failed") : t("passed") })
+      : game.status === "failed" ? t("In the game: {message}", { message: game.message ?? t("failed") }) : t("In the game: passed") },
+    stateIcon(state), t("game"));
+  };
+
+  /**
+   * The tests run in the lifted game (TrigScript 4, A2): the map built as Save builds it, handed with the script's
+   * JavaScript and `dist/gametest.js` to the scm-sim plugin's engine page, which runs each test beside the game. The
+   * simulator runs them too, so that each test has both marks.
+   */
+  const runTestsInGame = async (filter: Pick<TestRunOptions, "files" | "ids"> = {}) => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    const engine = svc.engine();
+    if (!engine?.present || !engine.test) { setStatus("error", t("Running tests in the game needs the scm-sim plugin (0.8 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins….")); return; }
+    testsRunning = true;
+    renderTesting();
+    try {
+      const status = await engine.status();
+      if (!status.available) { setStatus("error", t("Not run in the game: {message}", { message: status.reason ?? t("the engine cannot run a game now") })); return; }
+      if (!status.tests) { setStatus("error", t("Not run in the game: the engine's page is from before tests in the game. Reload the editor and try again.")); return; }
+      if (!(await build()) || cancelled) return;
+      const a = await compileNow({ world: svc.world(), ...filter });
+      if (!a || cancelled) return;
+      if (!a.compiled.ok) { setStatus("error", t("Tests not run: {n, plural, one {# problem} other {# problems}} in the script.", { n: a.compiled.diagnostics.length }), NOTICE_MS); shell.showPanel("problems"); return; }
+      if (!a.compiled.modules) { setStatus("info", t("The script has no tests.")); return; }
+      if (!a.compiled.ir.length) { setStatus("info", t("Tests run in the game only for a script with a program: without one, nothing of the script is built into the map.")); return; }
+      const names = svc.names()?.names;
+      if (!names) { setStatus("error", t("No map is open.")); return; }
+      setStatus("busy", t("Building the map…"));
+      // (Whole: a bare .chk has no room for what the build steps make, so the engine's page reads the scenario out of it.)
+      const file = await api.document.export({ format: "scx" });
+      if (!file || cancelled) { if (!file) setStatus("error", t("No map is open.")); return; }
+      gametest ??= fetch(gametestUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`gametest.js: ${r.status}`); return r.text(); });
+      const module = await gametest.catch((err) => { gametest = null; throw err; });
+      setStatus("busy", t("Running the tests in the game…"));
+      const report = await engine.test(new Uint8Array(await file.arrayBuffer()), module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids }) as TestReport & { error?: string };
+      if (cancelled) return;
+      if (report.error) { setStatus("error", t("Not run in the game: {message}", { message: report.error })); return; }
+      const ran = report.results.filter((x) => x.status !== "skipped");
+      const asked = new Set(ran.map((x) => x.id));
+      gameResults = new Map([...gameResults].filter(([id]) => !asked.has(id) && tests.list.some((x) => x.id === id)));
+      for (const r of ran) gameResults.set(r.id, r);
+      const failed = ran.filter((x) => x.status === "failed");
+      const differ = ran.filter((x) => { const s = tests.results.get(x.id); return s && s.status !== "skipped" && s.status !== x.status; });
+      if (failed.length) { chosenTest = failed[0].id; shell.showPanel("tests"); }
+      const said = t("In the game: {passed} of {n, plural, one {# test} other {# tests}} passed.", { passed: ran.length - failed.length, n: ran.length });
+      setStatus(failed.length || differ.length ? "error" : "ok", differ.length ? `${said} ${t("The simulator disagrees on {n, plural, one {# test} other {# tests}}.", { n: differ.length })}` : said, NOTICE_MS);
+    } catch (err) {
+      setStatus("error", t("Not run in the game: {message}", { message: (err as Error).message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
   };
 
   /** Test Results: the chosen test's message, what it printed, and what happened by frame, each a link to its line. */
@@ -727,6 +796,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         el("span", { className: "frame" }, t("failed")), el("span", { className: "msg" }, r.message ?? t("failed")), el("span", { className: "where" }, where({ file: at.file, line: at.line }))));
       if (r.expected !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("expected")), el("span", { className: "msg" }, r.expected)));
       if (r.actual !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("got")), el("span", { className: "msg" }, r.actual)));
+    }
+    const game = gameResults.get(info.id);
+    if (game && game.status !== "skipped") {
+      const gat = game.at ?? { file: info.file, line: info.line };
+      list.append(el("li", { className: game.status === "failed" ? "tsd-fault" : "tsd-plain", title: t("Go to where it failed in the game"), onClick: () => goTo(gat.file, gat.line, gat.column ?? 1) },
+        el("span", { className: "frame" }, t("in the game")),
+        el("span", { className: "msg" }, game.status === "failed" ? game.message ?? t("failed") : t("passed")),
+        el("span", { className: "where" }, game.status === "failed" ? where({ file: gat.file, line: gat.line }) : t("{frames, plural, one {# frame} other {# frames}} · {ms} ms", { frames: game.frames, ms: game.ms }))));
+      if (game.status === "failed" && game.actual !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("got")), el("span", { className: "msg" }, game.actual)));
     }
     // The same line several times over — to each of eight players, say — is one row that says how often.
     const printed: { line: string; times: number }[] = [];
@@ -1441,6 +1519,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     { id: "save", label: t("Save the Map"), key: { code: "KeyS", mod: true }, run: () => { void api.document.save(); } },
     { id: "test", label: t("Play the Map"), key: { code: "F5" }, run: () => { void test(); } },
     { id: "runTests", label: t("Run All Tests"), run: () => { void runTests(); } },
+    { id: "runTestsInGame", label: t("Run All Tests in the Game"), run: () => { void runTestsInGame(); } },
     { id: "runTestAtCursor", label: t("Run Test at Cursor"), context: true, run: () => { void runTestAtCursor(); } },
     { id: "runFailedTests", label: t("Run Failed Tests"), run: () => { void runFailedTests(); } },
     { id: "testing", label: t("Show Testing"), run: () => testingView.show() },
