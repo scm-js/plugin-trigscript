@@ -14,6 +14,29 @@ export interface ScmSimStatus {
   tests?: number | null;
   /** The version of the request for a test of several players; null or absent: the page (or the browser) cannot run copies. */
   copies?: number | null;
+  /** The version of the debugger's requests (TrigScript 4, A5); null or absent: the page has no debugger. */
+  debug?: number | null;
+}
+
+/** A test recorded for the debugger: the module's record, and the run's game held for pictures until `close()`. */
+export interface ScmSimDebugSession {
+  readonly recording: unknown;
+  picture(frame: number, options?: { signal?: AbortSignal }): Promise<{ frame: number; kept: unknown }>;
+  close(): void;
+  readonly closed: boolean;
+}
+
+/**
+ * The part of the plugin's view (`ScmSimView`) the debugger draws with: `debug(map)` starts the built map the way
+ * the engine's page started it for the record, `show(picture)` draws a picture of the run. Absent from a view from
+ * before the debugger.
+ */
+export interface ScmSimDebugView {
+  debug?(map: Uint8Array): Promise<unknown>;
+  show?(picture: { frame: number; kept: unknown }): void;
+  /** What went wrong with no request waiting on it: a picture that could not be drawn. */
+  onError?(listener: (message: string) => void): { dispose(): void };
+  dispose(): void;
 }
 
 /** One copy's answer to `testCopies`. */
@@ -42,4 +65,11 @@ export interface ScmSimEngine {
    * Resolves with each copy's answer, in the order of `players`. Absent from the plugin before 0.11.0.
    */
   testCopies?(scenario: Uint8Array, module: string, payload: unknown, options: { players: number[]; triggers?: { payload: number; triggers: [number, number, number, string][] } | null; signal?: AbortSignal; onProgress?: (p: { stage: "starting" }) => void }): Promise<TestCopyResult[]>;
+  /**
+   * One test recorded for the debugger (TrigScript 4, A5): the module's `debugGameTest(game, payload)` runs it once
+   * with everything written down, and the run's game stays with the page for pictures. Absent before 0.11.0.
+   */
+  debug?(scenario: Uint8Array, module: string, payload: unknown, options?: { signal?: AbortSignal; onProgress?: (p: { stage: "starting" }) => void }): Promise<ScmSimDebugSession>;
+  /** A view of the game in `element` (the plugin's replay view, which draws a debugged run's pictures from 0.11.0). */
+  view?(element: HTMLElement): ScmSimDebugView;
 }

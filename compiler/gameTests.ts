@@ -12,7 +12,8 @@ import { MODULE_NAME } from "./api";
 import { GameSim, readLocations, type GameHandle } from "./gameSim";
 import type { TriggerMap, VariableMap } from "./gameVariables";
 import { CostLines } from "./gameCost";
-import { locate, runModules, type LinkedFile } from "./link";
+import { RecordingHandle, type DebugHost, type DebugLimits, type DebugRecording } from "./gameDebug";
+import { here, locate, runModules, type LinkedFile } from "./link";
 import type { ScriptNames } from "./names";
 import { Collector, createRuntime } from "./runtime";
 import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type TestReport, type TestResult } from "./testing";
@@ -33,7 +34,8 @@ export interface GameTestPayload {
   triggers?: TriggerMap | null;
 }
 
-export function runGameTests(game: GameHandle, payload: GameTestPayload): TestReport & { error?: string } {
+/** The modules run again to register the tests: the registry, or what stopped them. */
+function register(payload: GameTestPayload) {
   const linked = new Map(payload.modules);
   const collector = new Collector();
   const registry = new TestRegistry();
@@ -43,7 +45,12 @@ export function runGameTests(game: GameHandle, payload: GameTestPayload): TestRe
   collector.running = true;
   const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: [...linked.keys()].filter(isTestFile).sort() });
   collector.running = false;
-  if (failure) return { list: [], results: [], only: [], ms: 0, error: `${failure.file ?? ENTRY_FILE}:${failure.line ?? 1}: ${failure.message}` };
+  return { linked, registry, where, error: failure ? `${failure.file ?? ENTRY_FILE}:${failure.line ?? 1}: ${failure.message}` : null };
+}
+
+export function runGameTests(game: GameHandle, payload: GameTestPayload): TestReport & { error?: string } {
+  const { registry, where, error } = register(payload);
+  if (error) return { list: [], results: [], only: [], ms: 0, error };
   const locations = payload.locations ?? readLocations(game);
   // A test of several players runs only where the game is one of several copies, one a player (A3); one game says so.
   const several = listTests(registry).list.filter((t) => t.kind === "test" && t.players);
@@ -64,3 +71,30 @@ export function drive(game: GameHandle, payload: GameTestPayload): TestReport & 
   return runGameTests(game, payload);
 }
 
+
+/** What `debugGameTest` is asked: the tests' payload and the one test to run. */
+export interface GameDebugPayload extends GameTestPayload {
+  test: string;
+  limits?: DebugLimits;
+}
+
+/**
+ * One test run in the game with everything written down (A5, `gameDebug.ts`): the record goes to the editor, and the
+ * session stays with the host for pictures of the run's frames (`picture`). Throws when the test cannot be run so.
+ */
+export function debugGameTest<K, P>(game: DebugHost<K, P>, payload: GameDebugPayload): { recording: DebugRecording; picture(frame: number): { frame: number; kept: P; transfer: ArrayBuffer[] }; close(): void } {
+  const { linked, registry, where, error } = register(payload);
+  if (error) throw new Error(error);
+  const info = listTests(registry).list.find((t) => t.id === payload.test);
+  if (!info || info.kind !== "test") throw new Error(`There is no test with the id ${payload.test} in the script any more.`);
+  if (info.players) throw new Error(`"${info.name}" is a test of ${info.players.length} players: the debugger runs one game, and a test of several players runs as a copy for each. Not yet.`);
+  const locations = payload.locations ?? readLocations(game);
+  const costLines = payload.triggers && game.cost && game.payloadEnd ? new CostLines(payload.triggers, game.payloadEnd) : null;
+  if (costLines && game.cost) game.cost.group = costLines.group;
+  // (The test's line from inside a step: the stack's innermost line of a file of the script.)
+  const recorder = new RecordingHandle<K, P>(game, () => here(linked), payload.limits);
+  const report = runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { ids: [info.id], makeWorld: (_as, test) => new GameSim(recorder, { locations, variables: payload.variables, test, costLines }) });
+  const result = report.results.find((r) => r.id === info.id) ?? { id: info.id, status: "skipped", message: "the test did not run", printed: [], events: [], frames: 0, ms: 0 } as TestResult;
+  const recording = recorder.finish({ id: info.id, name: info.name, file: info.file, line: info.line }, result, costLines ? [...costLines.places] : []);
+  return { recording, picture: (frame) => recorder.picture(frame), close: () => recorder.stop() };
+}

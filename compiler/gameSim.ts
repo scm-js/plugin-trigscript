@@ -39,6 +39,11 @@ export interface GameHandle {
   readonly payloadEnd?: number;
   /** When the game is one of several copies kept in step, a copy for each of a test's players (scm-sim's `CopyHandle`). */
   readonly copy?: GameCopy;
+  /**
+   * Told after the test wrote the game's memory itself between frames (a key, the mouse, a scratch location, hit
+   * points), when the handle listens: the debugger (A5) keeps every such write, to play the run again to a frame.
+   */
+  wrote?(address: number, length: number): void;
 }
 
 /** One copy of several (TrigScript 4, A3): which, the slot each copy plays, and where they stopped agreeing. */
@@ -189,7 +194,7 @@ class GameUnit implements SimUnit {
   get x() { return this.read("x", () => this.m.getInt16(this.at + 0x28, true)); }
   get y() { return this.read("y", () => this.m.getInt16(this.at + 0x2a, true)); }
   get hp() { return this.read("hp", () => Math.ceil(this.m.getInt32(this.at + 0x08, true) / 256)); }
-  set hp(v: number) { if (this.alive) this.m.setInt32(this.at + 0x08, Math.max(0, v) * 256, true); }
+  set hp(v: number) { if (this.alive) { this.m.setInt32(this.at + 0x08, Math.max(0, v) * 256, true); this.game.wrote?.(this.at + 0x08, 4); } }
   get maxHp() { return Math.floor(this.m.getInt32(MAX_HP + 4 * this.type, true) / 256); }
   get shields() { return this.read("shields", () => Math.floor(this.m.getInt32(this.at + 0x60, true) / 256)); }
   get maxShields() { return this.m.getUint16(MAX_SHIELDS + 2 * this.type, true); }
@@ -305,7 +310,8 @@ export class GameSim implements TestWorldLike {
     const u8 = this.game.u8, m = this.game.m, at = LOCATIONS + 20 * (n - 1), was = u8.slice(at, at + 20);
     [b.left, b.top, b.right, b.bottom].forEach((v, i) => m.setUint32(at + 4 * i, Math.max(0, v), true));
     m.setUint16(at + 0x12, 0, true);
-    try { return run(n); } finally { u8.set(was, at); }
+    this.game.wrote?.(at, 20);
+    try { return run(n); } finally { u8.set(was, at); this.game.wrote?.(at, 20); }
   }
   private within255<T>(b: SimBounds, run: (location: number) => T): T { return this.scratch(SCRATCH, b, run); }
   place(player: number, type: number, at: number, n = 1): SimUnit[] {
@@ -361,24 +367,29 @@ export class GameSim implements TestWorldLike {
     return who === this.game.localPlayer;
   }
   /** A key down for one frame, as a press is (MSQC sees it down, then up). */
-  press(key: string, player?: number): this { const k = virtualKey(key); if (!this.local(player, "press")) return this; this.game.u8[KEYS + k] = 1; this.held.push(k); return this; }
+  press(key: string, player?: number): this { const k = virtualKey(key); if (!this.local(player, "press")) return this; this.game.u8[KEYS + k] = 1; this.game.wrote?.(KEYS + k, 1); this.held.push(k); return this; }
   click(button: "left" | "right" | "middle" = "left", player?: number): this {
     if (!this.local(player, "click")) return this;
     const m = this.game.m;
     m.setUint32(BUTTONS, m.getUint32(BUTTONS, true) | BUTTON_BITS[button], true);
+    this.game.wrote?.(BUTTONS, 4);
     this.held.push(-BUTTON_BITS[button]);
     return this;
   }
   private releaseKeys(): void {
     if (!this.held.length) return;
     const m = this.game.m;
-    for (const k of this.held.splice(0)) { if (k >= 0) this.game.u8[KEYS + k] = 0; else m.setUint32(BUTTONS, m.getUint32(BUTTONS, true) & ~-k, true); }
+    for (const k of this.held.splice(0)) {
+      if (k >= 0) { this.game.u8[KEYS + k] = 0; this.game.wrote?.(KEYS + k, 1); }
+      else { m.setUint32(BUTTONS, m.getUint32(BUTTONS, true) & ~-k, true); this.game.wrote?.(BUTTONS, 4); }
+    }
   }
   type(line: string, player?: number): this { if (this.local(player, "type")) this.game.chat(line); return this; }
   moveMouse(x: number, y: number, player?: number): this {
     if (!this.local(player, "moveMouse")) return this;
     this.game.m.setUint16(MOUSE, x, true);
     this.game.m.setUint16(MOUSE + 2, y, true);
+    this.game.wrote?.(MOUSE, 4);
     return this;
   }
 

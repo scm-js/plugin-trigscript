@@ -3229,8 +3229,9 @@ if settings.get("variableMap"):
         p = low.p
         out = {"index": k, "name": p.get("name"), "perPlayer": low.per_player, "owners": p.get("owners", [low.owner]), "vars": [], "arrays": []}
         for id_, s in low.vars.items():
-            d = s.decl
-            if d.get("temp"):
+            # (A loop's unit is the scan's own pointer for one turn, kept nowhere: nothing to read.)
+            d = getattr(s, "decl", None)
+            if d is None or d.get("temp"):
                 continue
             out["vars"].append({"id": id_, "kind": d.get("kind"), "text": d.get("text"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")),
                                 "rowed": bool(s.rowed), "cells": {name: _place(cell) for name, cell in _cells_of(s).items()}})
