@@ -42,7 +42,7 @@ test("the second wave is bigger", (sim) => {
   expect(sim.count(P2, units.ZergZergling, SPAWN)).toBe(12);
   expect(sim).toHavePrinted("Wave 2");
   expect(sim).not.toHavePrinted(/Wave 3/);
-  expect(sim.deaths(P1, units.TerranMarine)).toBe(2);
+  expect(sim.deaths(P1, units.TerranMarine)).toBe(0); // killed by the program's trigger: not deaths
 });
 test("nothing happens with nobody on the beacon", (sim) => {
   sim.seconds(2);

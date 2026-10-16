@@ -181,12 +181,17 @@ export class World {
     });
   }
 
-  /** Off the map, its place free for the next unit made. `killed`: it died — counted as a death, and as a kill of `by` when someone is named. */
-  gone(unit: SimUnit, killed: boolean, by?: number): void {
+  /**
+   * Off the map, its place free for the next unit made. `killed`: it died. `fought`: it died in the game — shot, or
+   * killed by a spell — and so counts as a death, and as a kill of `by` when someone is named. A unit a trigger or a
+   * program kills (Kill Unit, a unit's kill(), hit points written down to 0) dies without counting: the lifted game
+   * says so for all three (TrigScript 4, A2, 2026-10-16), as the editor's trigger reference does for Kill Unit.
+   */
+  gone(unit: SimUnit, killed: boolean, by?: number, fought = true): void {
     if (!unit.alive) return;
     unit.alive = false;
     if (this.table[unit.slot] === unit) this.table[unit.slot] = null;
-    if (!killed) return;
+    if (!killed || !fought) return;
     this.onDeath(unit);
     if (by !== undefined) this.killed.set(unit.type * 4096 + by, (this.killed.get(unit.type * 4096 + by) ?? 0) + 1);
   }
@@ -288,9 +293,9 @@ export class World {
         for (const owner of owners) if (owner < 12) for (let i = 0; i < Math.max(1, a.modifier); i++) { const u = this.create(a.unitId, owner, x, y, properties); if (u) made?.push(u); }
         return true;
       }
-      case ActionType.KillUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, true); return true;
+      case ActionType.KillUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, true, undefined, false); return true;
       case ActionType.RemoveUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, false); return true;
-      case ActionType.KillUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, true); return true;
+      case ActionType.KillUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, true, undefined, false); return true;
       case ActionType.RemoveUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, false); return true;
       case ActionType.GiveUnits: {
         const to = this.players.of(a.target, current)[0];

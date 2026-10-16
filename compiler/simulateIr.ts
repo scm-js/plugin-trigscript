@@ -405,7 +405,7 @@ class ProgramRun {
     const amount = verb.do === "damage" || verb.do === "heal" ? yield* this.amount(verb.amount) : 0;
     if (!u) return;
     switch (verb.do) {
-      case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill"); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
+      case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill", undefined, false); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
       case "give": { const to = this.sim.slotOf(verb.to); if (to < 12) u.owner = to; break; }
       case "order": this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
       case "locate": this.sim.centre(verb.location, u.x, u.y); break;
@@ -414,7 +414,7 @@ class ProgramRun {
         const step = verb.percent ? Math.floor((u.maxHp * 256 * amount) / 100) : amount * 256;
         const raw = verb.do === "damage" ? Math.max(0, u.hp * 256 - step) : Math.min(u.maxHp * 256, u.hp * 256 + step);
         u.hp = Math.ceil(raw / 256);
-        if (u.hp === 0) { this.sim.game.gone(u, true); this.sim.unitEvent(this, ActionType.KillUnit, u, at); }
+        if (u.hp === 0) { this.sim.game.gone(u, true, undefined, false); this.sim.unitEvent(this, ActionType.KillUnit, u, at); }
         break;
       }
     }
@@ -849,7 +849,7 @@ class ProgramRun {
         const value = yield* this.amount(s.value as NumExpr);
         if (!u) return "next";
         (u as unknown as Record<string, number>)[field] = Math.min(value, UNIT_FIELD_MAX[field as UnitNumField] ?? 0xffff_ffff);
-        if (field === "hp" && u.hp === 0) { this.sim.game.gone(u, true); this.sim.unitEvent(this, ActionType.KillUnit, u, s.at); }
+        if (field === "hp" && u.hp === 0) { this.sim.game.gone(u, true, undefined, false); this.sim.unitEvent(this, ActionType.KillUnit, u, s.at); }
         return "next";
       }
       case "unitDo": yield* this.unitDo(s.unit, s.verb, s.at); return "next";
