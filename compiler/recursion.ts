@@ -373,6 +373,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             continue;
           }
           case "unrolled": s.iterations = s.iterations.map((i) => body(i, returns)); break;
+          case "parallel": s.branches = s.branches.map((b) => body(b, returns)); break;
           case "block": s.body = body(s.body, returns); break;
           case "textLoop":
             errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over a text holds such a call: the loop's place in the text is not something a call can keep. Walk it by place — for (let i = 0; i < s.length; i++) — which a call keeps as it keeps any number.` });

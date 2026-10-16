@@ -229,7 +229,7 @@ ${kw}function trigger(players: Player | readonly Player[], conditions: Condition
  * A map with a program in it needs StarCraft: Remastered: the programs are built into the
  * saved map by the eudplib plugin. trigger() makes ordinary triggers that play anywhere.
  */
-${kw}function program(body: () => void, options?: ProgramOptions): void;
+${kw}function program(body: () => void | Promise<void>, options?: ProgramOptions): void;
 /**
  * A function that runs in the game, for programs to call — from any file, imported like any
  * other: \`export const award = game((p: Player, n: number) => { setResources(p, "add", n, "ore"); })\`.
@@ -252,10 +252,17 @@ ${kw}function frames(n: number): Duration;
 ${kw}function cycles(n: number): Duration;
 /**
  * Pause the program, inside program() only: the statements after it run that much later, and nothing
- * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); sleep(seconds(15)); }\`
+ * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); await sleep(seconds(15)); }\`
  * is a wave every fifteen seconds. Unlike wait(), it takes nothing from the triggers: a Wait uses the player's one wait slot.
+ * In an async function it is awaited; in a program that is not async, \`sleep(…)\` on its own pauses as before.
  */
-${kw}function sleep(duration: Duration): void;
+${kw}function sleep(duration: Duration): Promise<void>;
+/**
+ * Wait until a condition holds, inside an async program only: \`await until(() => countUnits(P8, units.ZergZergling) === 0)\`.
+ * The function is asked once now and then once every frame; the program goes on in the frame it answers true.
+ * A condition on its own is asked again the same way: \`await until(bring(P1, units.AnyUnit, locations.Exit, ">=", 1))\`.
+ */
+${kw}function until(test: (() => boolean) | Condition): Promise<void>;
 /** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(…)))\`. */
 ${kw}function rose(condition: Condition | boolean): boolean;
 /** True the first time its condition holds, never again. Inside program(), in an if. */

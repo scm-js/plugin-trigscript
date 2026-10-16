@@ -108,7 +108,7 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "rose", "once", "shared"]);
+const GAME_CALLS = new Set(["random", "sleep", "until", "rose", "once", "shared"]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -133,6 +133,23 @@ export function isCallbackArgument(ts: typeof TS, node: TS.Node): node is TS.Arr
   while (ts.isParenthesizedExpression(at.parent)) at = at.parent;
   const call = at.parent;
   return ts.isCallExpression(call) && call.arguments.includes(at as TS.Expression) && ts.isPropertyAccessExpression(call.expression) && CALLBACK_METHODS.has(call.expression.name.text);
+}
+
+/**
+ * A function that is part of what a program waits for: the one `until(…)` asks every frame, the one given to `.then(…)`,
+ * and an async arrow called where it is written — `(async () => { … })()` in a `Promise.all`. Like a callback, its body
+ * is the program's and is walked, not run when the script is built.
+ */
+export function isTaskFunction(ts: typeof TS, checker: TS.TypeChecker, node: TS.Node): node is TS.ArrowFunction | TS.FunctionExpression {
+  if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) return false;
+  let at: TS.Node = node;
+  while (ts.isParenthesizedExpression(at.parent)) at = at.parent;
+  const call = at.parent;
+  if (!ts.isCallExpression(call)) return false;
+  if (call.expression === at) return !!node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+  if (!call.arguments.includes(at as TS.Expression)) return false;
+  if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "then") return true;
+  return libraryCallName(ts, checker, call) === "until";
 }
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {
@@ -160,7 +177,7 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     plan.body = ts.factory.createBlock([]);
   }
   if (arrow.parameters.length && !options.parameters) error(arrow.parameters[0], "The program's arrow takes no parameters.");
-  if (arrow.asteriskToken || arrow.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) error(arrow, `A ${what} body cannot be async or a generator.`);
+  if (arrow.asteriskToken) error(arrow, `A ${what} body cannot be a generator.`);
 
   /* ── Bindings ── */
   const declare = (node: TS.Node) => plan.game.add(node);
@@ -293,6 +310,7 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
       // what its function does, and what this one does is the game's. Run when the script is built it would make actions
       // nobody receives, and the line would silently do nothing; it is the program's loop, unrolled.
       if (isCallbackArgument(ts, n) && doesSomething(n)) { ok = false; return; }
+      if ((ts.isArrowFunction(n) || ts.isFunctionExpression(n)) && n.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) { ok = false; return; }
       if (isFunctionValue(n)) { scan(n); return; }
       if (ts.isIdentifier(n)) {
         // A property name (`obj.name`, `{ name: v }`) is not a value reference.
@@ -341,11 +359,14 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
       // `random()`, `sleep()`, … are the game's: their callee is never a value, however it is spelt (`ts.random()` through a namespace import).
       // Of a method call the object is the value, not the method: `cost.get(u.type)` has to leave `cost` — the Map — in reach, and a
       // method read off its object on its own has lost it.
-      if (!lib || !GAME_CALLS.has(lib)) value(ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) ? e.expression.expression : e.expression, items);
+      let callee: TS.Expression = e.expression;
+      while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+      if (isTaskFunction(ts, checker, callee)) callback(callee, items);
+      else if (!lib || !GAME_CALLS.has(lib)) value(ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) ? e.expression.expression : e.expression, items);
       for (const a of e.arguments ?? []) {
         let fn: TS.Expression = a;
         while (ts.isParenthesizedExpression(fn)) fn = fn.expression;
-        if (isCallbackArgument(ts, fn)) callback(fn, items); else value(a, items);
+        if (isCallbackArgument(ts, fn) || isTaskFunction(ts, checker, fn)) callback(fn, items); else value(a, items);
       }
       return;
     }

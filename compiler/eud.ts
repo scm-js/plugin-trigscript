@@ -84,6 +84,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "do": s.body.forEach(stmt); expr(s.cond); break;
       case "for": if (s.cond) expr(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
@@ -106,6 +107,7 @@ function statements(body: Stmt[], visit: (s: Stmt) => void) {
       case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -120,6 +122,7 @@ function checkUnitLoops(body: Stmt[], out: ProgramDiagnostic[]) {
   statements(body, (s) => {
     if (s.kind !== "unitLoop") return;
     statements(s.body, (inner) => {
+      if (inner.kind === "parallel") out.push({ at: inner.at, message: "await inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. Collect the units into an array first, and await in a loop over that array." });
       if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. To do something to one unit at a time, find it again after each sleep: while (true) { const u = first(…); if (!u) break; u.kill(); sleep(seconds(1)); }" });
     });
   });
@@ -130,6 +133,7 @@ function checkTextLoops(body: Stmt[], out: ProgramDiagnostic[]) {
   statements(body, (s) => {
     if (s.kind !== "textLoop") return;
     statements(s.body, (inner) => {
+      if (inner.kind === "parallel") out.push({ at: inner.at, message: "await inside a for…of over a text: the loop walks the text once, within the frame. A loop over its places can wait between turns: for (let i = 0; i < s.length; i++) { … }" });
       if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a for…of over a text: the loop walks the text once, within the frame. A loop over its places can sleep between turns: for (let i = 0; i < s.length; i++) { const ch = s[i]; … sleep(frames(2)); }" });
     });
   });
@@ -180,6 +184,7 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, 
       case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at); s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -198,6 +203,7 @@ function remarks(body: Stmt[], out: LineHint[]) {
       case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -224,6 +230,7 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
       case "while": case "for": s.body.forEach(stmt); if (s.kind === "for") s.update.forEach(stmt); break;
       case "do": s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
@@ -295,6 +302,8 @@ function sleepsOnEveryPath(body: Stmt[]): boolean {
       case "if": if (s.else && sleepsOnEveryPath(s.then) && sleepsOnEveryPath(s.else)) return true; break;
       case "block": if (sleepsOnEveryPath(s.body)) return true; break;
       case "unrolled": if (s.iterations.some(sleepsOnEveryPath)) return true; break;
+      // `all` waits for every branch, so one that always sleeps is enough; `race` goes on when the first ends, so every one has to.
+      case "parallel": if (s.mode === "all" ? s.branches.some(sleepsOnEveryPath) : s.branches.length > 0 && s.branches.every(sleepsOnEveryPath)) return true; break;
       case "switch": {
         const hasDefault = s.cases.some((c) => c.value === null);
         if (hasDefault && s.cases.every((c) => sleepsOnEveryPath(c.body))) return true;
@@ -323,6 +332,7 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -397,6 +407,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "do": return { ...s, body: s.body.map(stmt), cond: expr(s.cond) };
       case "for": return { ...s, ...(s.cond ? { cond: expr(s.cond) } : {}), update: s.update.map(stmt), body: s.body.map(stmt) };
       case "unrolled": return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
+      case "parallel": return { ...s, branches: s.branches.map((b) => b.map(stmt)) };
       case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
       case "return": return s.value ? { ...s, value: any(s.value) } : s;
       case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}), ...(s.text ? { text: text(s.text) } : {}) };

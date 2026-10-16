@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 15: `parallel` — `await Promise.all([…])` / `Promise.race([…])`: branches that run side by side, each a coroutine of its own inside the program's frame.
  * 14: a text in the cells of three arrays — `textAt`, `storeText`, `releaseText` — which is what lets a row of an array of records hold one.
  * 13: texts — a `text` variable (`VarDecl.text`: the id of a text of the built map's table, or a text that was made: where it is, the block of the heap it owns, its length in characters), `TextExpr`, `assignText`, `textLoop`, a text among a `print`'s parts, in an action's text field (`action.text`) and as a unit type's name; `textLength` / `textIndexOf` / `textCode` among the numbers, `textCompare` / `textTest` among the conditions; `ArrayDecl.texts`.
  * 12: arrays inside things — `ArrayDecl.slice` (a window on another array's cells) and `ArrayDecl.through` (a growing array whose handle is a cell of four others).
@@ -24,7 +25,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 14;
+export const IR_VERSION = 15;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -488,6 +489,14 @@ export type Stmt =
   | { kind: "return"; value?: NumExpr | BoolExpr | UnitExpr | TextExpr; at: At; label: string }
   /** `cycles` is a count of frames (`frames(n)`; `cycles(n)` is the older word for the same). */
   | { kind: "sleep"; ms?: number; cycles?: number; at: At; label: string }
+  /**
+   * `await Promise.all([…])` (`all`) / `await Promise.race([…])` (`race`): each branch is a coroutine of its own, started
+   * here, in order, within this frame. From then on, every frame the program is here, each branch that has not ended
+   * goes on from where it slept, in order, and the program goes on past this statement on the frame the last branch
+   * ends (`all`) or the first does (`race`, whose other branches then stop where they are). A branch's `sleep` is its
+   * own; `break`, `continue` and `return` never leave a branch.
+   */
+  | { kind: "parallel"; mode: "all" | "race"; branches: Stmt[][]; at: At; label: string }
   /** A trigger action; each of `variables` names a field that takes an expression's value instead of the record's. */
   /**
    * `text`: the action's text is the program's. One of the table goes into the action as its id. One that was made is
@@ -591,6 +600,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "do": s.body.forEach(stmt); init(s.cond); break;
       case "for": if (s.cond) init(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) init(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;

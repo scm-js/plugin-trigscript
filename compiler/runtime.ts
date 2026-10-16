@@ -427,6 +427,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   // The word from before 3.0, when a program's clock was the trigger cycle; a program's clock is the frame now.
   rt.cycles = (n: unknown): DurationValue => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
   rt.sleep = () => { throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement — sleep(seconds(2))."); };
+  rt.until = () => { throw new ScriptError("until() waits inside a program: await until(() => …), inside program(async () => { … })."); };
   rt.rose = () => { throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if."); };
   rt.once = () => { throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if."); };
   rt.shared = () => { throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program()."); };
@@ -691,7 +692,7 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
-  out.push("seconds", "minutes", "frames", "cycles", "sleep", "rose", "once", "shared", "clamp", "u32", "i32");
+  out.push("seconds", "minutes", "frames", "cycles", "sleep", "until", "rose", "once", "shared", "clamp", "u32", "i32");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
   return out;

@@ -977,6 +977,29 @@ class ProgramRun {
         for (let i = 0; i < n; i++) yield;
         return "next";
       }
+      case "parallel": {
+        // Each branch a coroutine of its own: started here in order, then once a frame each one still running goes on, in
+        // order. A body run apart (a recursive call) inside a branch is handed up to the run's loop and its outcome back.
+        const branches = s.branches.map((b) => this.block(b, {}));
+        const done = branches.map(() => false);
+        for (;;) {
+          for (let i = 0; i < branches.length; i++) {
+            if (done[i]) continue;
+            let send: unknown;
+            for (;;) {
+              const r = branches[i].next(send);
+              send = undefined;
+              if (r.done) { done[i] = true; break; }
+              if (r.value === undefined) break;
+              send = yield r.value;
+            }
+            // The first to end wins a race; the others stop where they are.
+            if (done[i] && s.mode === "race") return "next";
+          }
+          if (done.every(Boolean)) return "next";
+          yield;
+        }
+      }
       case "action": {
         const record: ActionRecord = { ...s.record };
         // A unit count is that many units (the game does the action once for each), whatever a byte could hold.
