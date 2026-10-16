@@ -538,7 +538,7 @@ k × 1,000 actions a frame, the user says when it stutters) gives the first numb
       - 2 million: the flicker, no slowing;
       - 5 million: the game slows.
     - The machine: AMD Ryzen 9 7900X (12 cores, 4.7 GHz), a fast one. A slower computer reaches each step sooner,
-      so the budget stays at 500 thousand and the note says it was a fast computer. Patch number not noted.
+      so the budget stays at 500 thousand and the note says it was a fast computer. Remastered 1.23.10.13515.
 
 ### A5. The debugger in the game (4.2.0)
 
