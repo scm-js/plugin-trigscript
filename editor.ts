@@ -142,7 +142,7 @@ const STYLE = `${SHELL_STYLE}
 .tsd .tsd-settings p { margin: 0 0 8px; color: var(--text-dim); line-height: 1.45; }
 .tsd .tsd-settings .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .tsd .tsd-settings input { width: 110px; padding: 2px 6px; font: inherit; font-family: var(--font-mono); color: var(--text); background: var(--bg-1); border: 1px solid var(--border); border-radius: 2px; }
-.tsd .tsd-settings input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+.tsd .tsd-settings input:focus { outline: 1px solid var(--teal); outline-offset: -1px; }
 .tsd .tsd-settings button { padding: 2px 8px; font: inherit; color: var(--text); background: var(--bg-3); border: 1px solid var(--border); border-radius: 2px; cursor: pointer; }
 .tsd .tsd-settings button:disabled { opacity: 0.5; cursor: default; }
 .tsd .tsd-settings .now { color: var(--text-faint); }
@@ -158,9 +158,9 @@ const STYLE = `${SHELL_STYLE}
 .tsd .tsd-output { margin: 0; padding: 4px 20px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); }
 .tsd .tsd-list li.tsd-warning .tsd-i { color: var(--warn); }
 .tsd .tsd-rows .tsd-empty { padding: 6px 12px 6px 20px; color: var(--text-faint); white-space: normal; line-height: 1.45; cursor: default; }
-.tsd .tsd-test-passed { color: var(--ok); }
+.tsd .tsd-test-passed, .tsd .tsd-list .tsd-i.tsd-test-passed { color: var(--ok); }
 .tsd .tsd-test-failed { color: var(--danger); }
-.tsd .tsd-test-none, .tsd .tsd-test-skipped { color: var(--text-faint); }
+.tsd .tsd-test-none, .tsd .tsd-test-skipped, .tsd .tsd-list .tsd-i.tsd-test-none, .tsd .tsd-list .tsd-i.tsd-test-skipped { color: var(--text-faint); }
 .${TEST_MARK_CLASS} { cursor: pointer; font: normal normal normal 14px/18px codicon; text-align: center; color: var(--text-faint); }
 .${TEST_MARK_CLASS}::before { content: "\\eabc"; }
 .${TEST_MARK_CLASS}-passed { color: var(--ok); }
