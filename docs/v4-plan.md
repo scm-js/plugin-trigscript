@@ -611,7 +611,26 @@ and the debugger walks the record.
   Most writes are eudplib's own. A picture takes 45 ms (played on from the last) to 110 ms (from a kept game).
   At six frames of each test, both ways, the picture's memory was what the record said, and the variables read
   from each agreed.
+- **End to end in a built editor (2026-10-16).** scm-js `main` was built under `/editor/` with scm-sim's dev server
+  beside it and the local plugin builds, on `probes/game-debug.ts`.
+  - *Debugging the failing test* took about 11 s from the click (the eudplib build was 3.4 s of it) and opened at
+    frame 146: "failed: expected 0, got 5".
+  - *Keys:* every key moved the cursor as it should. F6 with `wave` watched stopped at "wave changed: 2 → 3", then
+    at "1 → 2".
+  - *Breakpoints:* a click in the margin set one, and F5 stopped before its line.
+  - *The picture* was drawn in the game column. The two workers' frame-0 states matched.
+  - *Picture latency:* 210–250 ms a move, 60 ms of it the debounce.
+  - *Fixed in that run:*
+    - The view's frame was made inside a detached box and never loaded. It now lives in an overlay over the game
+      column.
+    - The keys stopped after a click in the view or the timeline.
+    - The panel is now made 340 px tall for a session.
+    - A second backwards continue on a watched variable stood still.
+    - A passing test opened on frame 1, where no line runs.
+  - *Seen:* the simulator and the game disagree on this test (6 Zerglings at Home against 5). That is the kind of
+    finding A2 was for.
 - **Not done:**
+  - The picture's camera stays where the viewer put it first.
   - A test of several players. The debugger runs one game.
   - Units are known only by their slot: the record keeps the script's memory, not the unit table.
   - Conditional breakpoints, hover values, a call stack. The stack's frames are cells too, so the record has
