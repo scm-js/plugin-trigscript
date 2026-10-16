@@ -87,6 +87,50 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
   }
 }
 
+/**
+ * Where in the script the code calling this is now: the innermost line of a file of the script on the stack. Called
+ * every frame of a debugged test (A5), so on V8 it reads the stack as call sites rather than text: Node with source
+ * maps on formats every frame's path, which cost a debugged run more than the game did.
+ */
+const placed = new WeakMap<LinkedFile, Map<number, { file: string; line: number; column: number }>>();
+
+export function here(files: ReadonlyMap<string, LinkedFile>): { file: string; line: number; column: number } | null {
+  type Site = { getFileName(): string | null; getScriptNameOrSourceURL?(): string | null; getLineNumber(): number | null; getColumnNumber(): number | null };
+  const E = Error as unknown as { prepareStackTrace?: unknown; captureStackTrace?: (o: object) => void };
+  if (typeof E.captureStackTrace === "function") {
+    const was = E.prepareStackTrace;
+    const holder: { stack?: unknown } = {};
+    try {
+      E.prepareStackTrace = (_e: unknown, sites: Site[]) => sites;
+      E.captureStackTrace(holder);
+      const sites = holder.stack;
+      if (Array.isArray(sites)) {
+        for (const site of sites as Site[]) {
+          // (A Function's body is named by its sourceURL, which only this says.)
+          const name = site.getScriptNameOrSourceURL?.() ?? site.getFileName();
+          if (!name || !name.startsWith(SOURCE_URL_PREFIX)) continue;
+          const file = name.slice(SOURCE_URL_PREFIX.length), linked = files.get(file);
+          if (!linked) continue;
+          const line = (site.getLineNumber() ?? 1) - 2, column = site.getColumnNumber() ?? 1;
+          let seen = placed.get(linked);
+          if (!seen) { seen = new Map(); placed.set(linked, seen); }
+          const key = line * 65536 + column;
+          let out = seen.get(key);
+          if (!out) {
+            const original = linked.map ? mapPosition(linked.map, line, column) : null;
+            out = original ? { file, line: original.line, column: original.column } : { file, line: Math.max(1, line), column };
+            seen.set(key, out);
+          }
+          return out;
+        }
+        return null;
+      }
+    } catch { /* the text below */ } finally { E.prepareStackTrace = was; }
+  }
+  const at = locate(new Error(), files);
+  return at.file ? { file: at.file, line: at.line ?? 1, column: at.column ?? 1 } : null;
+}
+
 /** The error's message and, from its stack, where in the script it happened. */
 export function locate(err: unknown, files: ReadonlyMap<string, LinkedFile>): RunError {
   const message = err instanceof Error ? err.message : String(err);

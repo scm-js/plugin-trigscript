@@ -93,6 +93,9 @@ export class CostLines {
     return id;
   }
 
+  /** The lines groups stand for, by group: what the tap's groups are numbers into. */
+  get places(): readonly { file: string; line: number }[] { return this.at; }
+
   /** For the host's tap. */
   readonly group = (record: number): number => {
     const g = this.byRecord.get(record);
