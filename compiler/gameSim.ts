@@ -16,6 +16,7 @@ import { ActionType } from "../vendor/triggers";
 import type { At } from "./ir";
 import { msqcKey } from "./input";
 import { programVariables, type VariableMap } from "./gameVariables";
+import type { CostLines, GameCostTap, TestCost } from "./gameCost";
 import { ExpectError, WORLD, type TestEvent, type TestWorldLike } from "./testing";
 import type { SimBounds, SimUnit } from "./world";
 
@@ -32,6 +33,10 @@ export interface GameHandle {
   chat(text: string): void;
   call(address: number, registers: Record<string, number>, args?: number[]): number;
   reset(): void;
+  /** What each frame of the map's triggers ran (TrigScript 4, A4), when the host counts it; `reset()` clears it. */
+  readonly cost?: GameCostTap;
+  /** Where eudplib's payload ends in the game's memory, when the host knows: with the build's map of triggers, each record's line. */
+  readonly payloadEnd?: number;
   /** When the game is one of several copies kept in step, a copy for each of a test's players (scm-sim's `CopyHandle`). */
   readonly copy?: GameCopy;
 }
@@ -209,6 +214,7 @@ export class GameSim implements TestWorldLike {
   private readonly game: GameHandle;
   private readonly known: Record<number, SimBounds>;
   private readonly variables: VariableMap | null;
+  private readonly costLines: CostLines | null;
 
   /**
    * `locations`: the map's locations as the script means them. eudplib keeps them scrambled in the game until its
@@ -216,8 +222,9 @@ export class GameSim implements TestWorldLike {
    * (`readLocations`); from then on the game's own are read. `variables`: where the build put each program's
    * variables, for `program()`.
    */
-  constructor(game: GameHandle, options: { locations?: Record<number, SimBounds>; variables?: VariableMap | null; test?: { id: string; players?: number[] } } = {}) {
+  constructor(game: GameHandle, options: { locations?: Record<number, SimBounds>; variables?: VariableMap | null; test?: { id: string; players?: number[] }; costLines?: CostLines | null } = {}) {
     this.game = game;
+    this.costLines = options.costLines ?? null;
     this.known = options.locations ?? {};
     this.variables = options.variables ?? null;
     if (game.copy) {
@@ -255,6 +262,8 @@ export class GameSim implements TestWorldLike {
 
   get frame(): number { return this.game.frame; }
   seed(_n: number): this { return this; }
+  /** What the test's frames cost in the game, by line; null when the host does not count it or the build gave no map of triggers. */
+  cost(): TestCost | null { return this.costLines && this.game.cost ? this.costLines.read(this.game.cost) : null; }
 
   /* ── time ── */
 

@@ -10,7 +10,8 @@
 import { ENTRY_FILE } from "./compiler";
 import { MODULE_NAME } from "./api";
 import { GameSim, readLocations, type GameHandle } from "./gameSim";
-import type { VariableMap } from "./gameVariables";
+import type { TriggerMap, VariableMap } from "./gameVariables";
+import { CostLines } from "./gameCost";
 import { locate, runModules, type LinkedFile } from "./link";
 import type { ScriptNames } from "./names";
 import { Collector, createRuntime } from "./runtime";
@@ -28,6 +29,8 @@ export interface GameTestPayload {
   locations?: Record<number, SimBounds>;
   /** Where the build put each program's variables (`readVariableMap` of its log), for `sim.program()`. */
   variables?: VariableMap | null;
+  /** The build's map of triggers (`readTriggerMap` of its log): with it, what each test's frames cost is read by line. */
+  triggers?: TriggerMap | null;
 }
 
 export function runGameTests(game: GameHandle, payload: GameTestPayload): TestReport & { error?: string } {
@@ -45,7 +48,10 @@ export function runGameTests(game: GameHandle, payload: GameTestPayload): TestRe
   // A test of several players runs only where the game is one of several copies, one a player (A3); one game says so.
   const several = listTests(registry).list.filter((t) => t.kind === "test" && t.players);
   const ids = game.copy ? payload.ids : payload.ids ?? listTests(registry).list.filter((t) => t.kind === "test" && !t.players).map((t) => t.id);
-  const report = runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { files: payload.files, ids, makeWorld: (_as, test) => new GameSim(game, { locations, variables: payload.variables, test }) });
+  // (What a frame costs, where the host counts it and knows where the payload is.)
+  const costLines = payload.triggers && game.cost && game.payloadEnd ? new CostLines(payload.triggers, game.payloadEnd) : null;
+  if (costLines && game.cost) game.cost.group = costLines.group;
+  const report = runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { files: payload.files, ids, makeWorld: (_as, test) => new GameSim(game, { locations, variables: payload.variables, test, costLines }) });
   if (!game.copy && !payload.ids) {
     const held: TestResult[] = several.filter((t) => !payload.files || payload.files.includes(t.file)).map((t) => ({ id: t.id, status: "skipped", message: `a test of ${t.players!.length} players runs as a copy of the game for each`, printed: [], events: [], frames: 0, ms: 0 }));
     report.results.push(...held);

@@ -4,7 +4,7 @@
  * at it by a scm-sim checkout's scripts/exact-eud.ts (its lifted game, EUD let through, nothing drawn), and every
  * dword the run read or wrote checked against data/allowlist.json, line by line.
  *
- *   npx tsx scripts/game-check.mts <script.ts | built.scx> [--frames=N] [--allowlist=path] [map.scx]
+ *   npx tsx scripts/game-check.mts <script.ts | built.scx> [--frames=N] [--allowlist=path] [--cost=out.json] [map.scx]
  *
  * A built map is taken as it is, with its <name>.triggers.json beside it when there is one. Needs a scm-sim
  * checkout beside this repository (or SCM_SIM_DIR) with its lifted game generated; says so when it is not there.
@@ -34,7 +34,7 @@ try {
     if (built.status !== 0) { console.error(built.stdout.split("\n").slice(-20).join("\n"), built.stderr); process.exit(1); }
   }
   const tracePath = join(dir, "trace.json");
-  const run = spawnSync("node", ["--experimental-strip-types", join(sim, "scripts", "exact-eud.ts"), map, `--frames=${flag("frames") ?? 3000}`, "--quiet", `--trace=${tracePath}`], { cwd: sim, encoding: "utf8", maxBuffer: 256 << 20 });
+  const run = spawnSync("node", ["--experimental-strip-types", join(sim, "scripts", "exact-eud.ts"), map, `--frames=${flag("frames") ?? 3000}`, "--quiet", `--trace=${tracePath}`, ...(flag("cost") ? [`--cost=${resolve(flag("cost")!)}`] : [])], { cwd: sim, encoding: "utf8", maxBuffer: 256 << 20 });
   process.stdout.write(run.stdout.split("\n").filter((l) => !/^pages (read|written):/.test(l)).join("\n"));
   if (!existsSync(tracePath)) { console.error(run.stderr || "the run left no trace"); process.exit(1); }
   const trace = JSON.parse(readFileSync(tracePath, "utf8")) as Trace;

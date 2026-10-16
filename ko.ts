@@ -290,4 +290,12 @@ export const KO: Record<string, string> = {
   "Go to where it failed in the game": "게임에서 실패한 곳으로 이동",
   "in the game": "게임에서",
   "Run All Tests in the Game": "게임에서 모든 테스트 실행",
+  "{n} a frame": "프레임당 {n}",
+  "In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. A trigger costs the game by its conditions and actions, so the count is the measure.": "게임에서 이 줄은 한 프레임에 조건과 액션을 최대 {n}개 실행했습니다: 테스트 “{test}”의 {frame}번째 프레임이며, 그 테스트에서 이 줄이 실행된 프레임은 {frames}개입니다. 트리거가 게임에 드는 비용은 조건과 액션의 수로 정해지므로, 이 수가 기준입니다.",
+  "Conditions and actions a frame, frame {from} to {to}: {peak} at the most, at frame {frame}": "프레임당 조건과 액션, {from}–{to}번째 프레임: {frame}번째 프레임에서 최대 {peak}개",
+  "Counted in the lifted game: the script's own triggers and the variables they go through. eudplib's work at the top of each frame is apart: {n} a frame.": "리프트한 게임에서 센 수입니다: 스크립트 자신의 트리거와 그 트리거가 거치는 변수. 매 프레임 처음에 eudplib가 하는 일은 따로입니다: 프레임당 {n}개.",
+  "cost": "비용",
+  "{average} conditions and actions a frame on average, {peak} at the most (frame {frame})": "프레임당 조건과 액션 평균 {average}개, 최대 {peak}개 ({frame}번째 프레임)",
+  "Go to the line": "그 줄로 이동",
+  "{peak} a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}": "프레임당 최대 {peak}개 ({frame}번째 프레임), {frames}개 프레임에서 실행",
 };
