@@ -92,8 +92,8 @@ export const DEBUG_STYLE = `
 .tsd .tsd-debug-col li:hover .tsd-icon-button, .tsd .tsd-debug-col li .tsd-icon-button.tsd-on { visibility: visible; }
 .tsd .tsd-debug-col .tsd-icon-button.tsd-on { color: var(--gold); }
 .tsd .tsd-debug-col .tsd-empty { padding: 6px 10px; color: var(--text-faint); white-space: normal; line-height: 1.45; }
-.tsd .tsd-debug-game { flex: 1.3 1 0; display: flex; flex-direction: column; }
-.tsd .tsd-debug-game .tsd-view { position: relative; flex: 1; min-height: 120px; background: #000; }
+.tsd .tsd-debug-game { flex: 1.3 1 0; display: flex; flex-direction: column; overflow: hidden; }
+.tsd .tsd-debug-game .tsd-view { position: relative; flex: 1; min-height: 0; background: #000; }
 .tsd .tsd-debug-overlay { position: absolute; z-index: 4; display: none; background: #000; }
 .tsd .tsd-debug-overlay > div, .tsd .tsd-debug-overlay iframe { display: block; width: 100%; height: 100%; border: 0; }
 .tsd .tsd-debug-game .tsd-shown { flex: none; max-height: 40%; overflow: auto; padding: 2px 10px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-dim); }
@@ -172,6 +172,9 @@ export class Debugger {
     this.body.append(this.root);
     this.time.addEventListener("pointerdown", (e) => {
       if (!this.session) return;
+      // (The graph is drawn anew under the pointer, so the browser would give the focus to the page: the view takes it.)
+      e.preventDefault();
+      this.root.focus({ preventScroll: true });
       this.time.setPointerCapture(e.pointerId);
       this.scrub(e);
       const move = (m: PointerEvent) => this.scrub(m);
@@ -200,11 +203,14 @@ export class Debugger {
     const s = this.session;
     if (!s || !s.view || typeof s.view === "string") { this.overlay.style.display = "none"; this.placed = ""; return; }
     const root = this.d.shell.root, box = this.viewBox;
-    const r = box.isConnected ? box.getBoundingClientRect() : null;
+    const b = box.isConnected ? box.getBoundingClientRect() : null;
     let key = "none";
-    if (r && r.width > 0 && r.height > 0) {
+    if (b) {
+      // (Only what of it the column shows.)
+      const c = this.gameCol.getBoundingClientRect();
+      const left = Math.max(b.left, c.left), top = Math.max(b.top, c.top), right = Math.min(b.right, c.right), bottom = Math.min(b.bottom, c.bottom);
       const o = root.getBoundingClientRect();
-      key = `${Math.round(r.left - o.left)},${Math.round(r.top - o.top)},${Math.round(r.width)},${Math.round(r.height)}`;
+      if (right - left > 0 && bottom - top > 0) key = `${Math.round(left - o.left)},${Math.round(top - o.top)},${Math.round(right - left)},${Math.round(bottom - top)}`;
     }
     if (key !== this.placed) {
       this.placed = key;
@@ -274,10 +280,17 @@ export class Debugger {
   prevFrame(): void { this.go((c) => { c.prevFrame(); return null; }); }
   restart(): void { this.go(() => { this.firstLine(); return null; }); }
 
+  /** The run's first line of the script (frames with none run, such as the first, are passed over). */
   private firstLine() {
     const c = this.session!.cursor;
     c.moveTo({ k: 0, s: c.frameStart(0) });
-    if (!c.line() && !this.everyStep && !c.atEnd()) c.stepForward(false);
+    if (this.everyStep) return;
+    while (!c.line()) {
+      const was = c.where;
+      c.stepForward(false);
+      const now = c.where;
+      if (now.k === was.k && now.s === was.s) { c.moveTo({ k: 0, s: c.frameStart(0) }); return; }
+    }
   }
 
   private go(move: (c: DebugCursor) => DebugStop | null): void {

@@ -133,6 +133,14 @@ describe("walking a debugged run", () => {
     expect(c.continueBack(new Set(), ["a"])).toEqual({ kind: "start" });
   });
 
+  it("stops at a breakpoint before the watched change its line makes", () => {
+    const c = new DebugCursor(record(), MAP);
+    // (Not where the cursor stands: the next time line 3 is about to run, before it writes `a`.)
+    expect(c.continueForward(new Set(["main.ts:3"]), ["a"])).toEqual({ kind: "breakpoint", place: { file: "main.ts", line: 3 } });
+    expect(c.where).toEqual({ k: 1, s: 2 });
+    expect(value(c, "a")).toBe(0);
+  });
+
   it("says what each line wrote in the frame so far, and what the frames cost", () => {
     const c = new DebugCursor(record(), MAP);
     c.toFrame(3);
