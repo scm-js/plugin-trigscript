@@ -44,6 +44,10 @@ import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
 import { TABLE_FIELDS } from "./tables";
+import { FOG_SHAPES } from "./fogShapes";
+
+/** The tiles across and down the simulator's fog keeps: the largest map's. */
+const FOG_SIZE = 256;
 import type { SimBounds, SimUnit, SimUnitInit, World } from "./world";
 
 export type { SimBounds, SimUnit, SimUnitInit, SimUnitProperties } from "./world";
@@ -1516,8 +1520,53 @@ export class ProgramSimulation {
     return given === undefined ? 0 : Math.max(0, Math.trunc(given));
   }
 
+  /**
+   * The fog of war, as far as the simulator draws it: each player's tiles, 0 never seen, 1 seen before, 2 seen now. A
+   * unit lights the tiles of its sight when it is made — a unit whose type's sight a program set (\`stats(t).sight\`),
+   * with the shape a flying unit of that sight has in the game (FOG_SHAPES), which is what the fog library draws with —
+   * and the vision countdown (\`memory.vision.countdown\`) run down to 0 at the start of a frame puts every tile seen
+   * now back to seen before and has the units there light theirs again, as the game's frame step does.
+   */
+  private readonly vision = new Map<number, Uint8Array>();
+  private countdown = 0;
+  private visionOf(player: number): Uint8Array {
+    let v = this.vision.get(player);
+    if (!v) { v = new Uint8Array(FOG_SIZE * FOG_SIZE); this.vision.set(player, v); }
+    return v;
+  }
+  private reveal(u: SimUnit): void {
+    const sight = this.tables.get(`unit.sight:${u.type}`);
+    if (typeof sight !== "number" || sight < 1 || u.owner > 7) return;
+    const shape = FOG_SHAPES[Math.min(sight, FOG_SHAPES.length) - 1];
+    const cy = shape.findIndex((r) => r.includes("@")), cx = shape[cy].indexOf("@");
+    const tx = Math.floor(u.x / 32), ty = Math.floor(u.y / 32), v = this.visionOf(u.owner);
+    shape.forEach((row, dy) => { for (let dx = 0; dx < row.length; dx++) if (row[dx] !== ".") { const x = tx + dx - cx, y = ty + dy - cy; if (x >= 0 && y >= 0 && x < FOG_SIZE && y < FOG_SIZE) v[y * FOG_SIZE + x] = 2; } });
+  }
+  /** At the start of a frame: the countdown, and the wipe when it runs out. */
+  private visionStep(): void {
+    if (this.countdown <= 0) return;
+    if (--this.countdown > 0) return;
+    this.countdown = 100;
+    for (const v of this.vision.values()) for (let i = 0; i < v.length; i++) if (v[i] === 2) v[i] = 1;
+    for (const u of this.world.game.units) if (u.alive) this.reveal(u);
+  }
+  /** What a player sees of the fog, as GameSim.fog gives it from the game: "#" now, "+" before, "." never. */
+  fog(player: number, area?: { x: number; y: number; width: number; height: number }): string[] {
+    const w = this.tableOf?.({ name: "memory.map.width", base: 0x57f1d4, stride: 0, index: 0, width: 2 }) || 128;
+    const h = this.tableOf?.({ name: "memory.map.height", base: 0x57f1d6, stride: 0, index: 0, width: 2 }) || 128;
+    const { x = 0, y = 0, width = w, height = h } = area ?? {};
+    const v = this.visionOf(player), rows: string[] = [];
+    for (let ty = y; ty < Math.min(y + height, FOG_SIZE); ty++) {
+      let row = "";
+      for (let tx = x; tx < Math.min(x + width, FOG_SIZE); tx++) row += ".+#"[v[ty * FOG_SIZE + tx]];
+      rows.push(row);
+    }
+    return rows;
+  }
+
   /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
   tableWrite(c: TableCell, value: number, scaled: boolean, text?: string): void {
+    if (c.name === "memory.vision.countdown") this.countdown = value;
     if (text !== undefined) { this.tables.set(this.cellKey(c), text); return; }
     const raw = scaled ? value : value * (c.scale ?? 1);
     this.tables.set(this.cellKey(c), Math.min(raw, cellMax(c.width)));
@@ -1570,7 +1619,9 @@ export class ProgramSimulation {
       case ActionType.Comment: case ActionType.PreserveTrigger: return;
       default: {
         // What is done to units is done, and said like everything else.
-        this.game.act(a, run.player);
+        const made: SimUnit[] = [];
+        this.game.act(a, run.player, made);
+        for (const u of made) this.reveal(u);
         const ev: ProgramEvent = { cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: a };
         const text = programText ?? this.world.text(a.text);
         if (text !== undefined) ev.text = text;
@@ -1623,6 +1674,7 @@ export class ProgramSimulation {
   /** One frame: every program in order, from where it left off. */
   step(): void {
     this.eventsPass();
+    this.visionStep();
     // What was done since the last frame is what this one finds, and only this one.
     this.current = this.queued;
     this.queued = { events: new Set(), lines: new Map() };

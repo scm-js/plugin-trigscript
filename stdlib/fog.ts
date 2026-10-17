@@ -79,7 +79,7 @@ const SPOT = reserveLocation("fog: where each brush is made");
 const disc = game((player: Player, x: number, y: number, size: number) => {
   centerLocation(SPOT, x * 32 + 16, y * 32 + 16, 32, 32);
   switch (size) {
-    case 1: createUnit(player, BRUSHES[0], 1, SPOT); removeUnit(player, BRUSHES[0]); break;
+    case 0: case 1: createUnit(player, BRUSHES[0], 1, SPOT); removeUnit(player, BRUSHES[0]); break;
     case 2: createUnit(player, BRUSHES[1], 1, SPOT); removeUnit(player, BRUSHES[1]); break;
     case 3: createUnit(player, BRUSHES[2], 1, SPOT); removeUnit(player, BRUSHES[2]); break;
     case 4: createUnit(player, BRUSHES[3], 1, SPOT); removeUnit(player, BRUSHES[3]); break;
@@ -89,9 +89,7 @@ const disc = game((player: Player, x: number, y: number, size: number) => {
     case 8: createUnit(player, BRUSHES[7], 1, SPOT); removeUnit(player, BRUSHES[7]); break;
     case 9: createUnit(player, BRUSHES[8], 1, SPOT); removeUnit(player, BRUSHES[8]); break;
     case 10: createUnit(player, BRUSHES[9], 1, SPOT); removeUnit(player, BRUSHES[9]); break;
-    default:
-      if (size < 1) { createUnit(player, BRUSHES[0], 1, SPOT); removeUnit(player, BRUSHES[0]); }
-      else { createUnit(player, BRUSHES[10], 1, SPOT); removeUnit(player, BRUSHES[10]); }
+    default: createUnit(player, BRUSHES[10], 1, SPOT); removeUnit(player, BRUSHES[10]);
   }
 });
 
@@ -317,31 +315,48 @@ const columnBar = game((player: Player, x: number, top: number, bottom: number, 
 });
 
 /**
+ * A shaded column of fog.columns(), the other face of a raycaster's walls: hollow — lit along its top and bottom edges,
+ * a brush deep, and dark between (light ink), or lit across its middle (dark ink). Two brushes a column, where lines at
+ * its quarters took two dozen, and its edges still run to the horizon. `a` is half the column's height; one too short to
+ * be hollow is lit whole.
+ */
+const columnHollow = game((player: Player, cx: number, mid: number, a: number, dark: boolean) => {
+  if (dark) { if (a >= 6) columnBar(player, cx, mid - 4, mid, 4); return; }
+  if (a < 8) columnBar(player, cx, mid - a, mid, a);
+  else columnBar(player, cx, mid - a, mid + a - 4, 4);
+});
+
+/**
  * Light columns for this frame — the walls of a raycaster, a bar chart — each as tall as the program says, centred on
  * the layout's middle row. The covers are worked out when the script is built (see ColumnLayout), so a frame costs a
  * brush for each part of the picture that differs from its neighbours, not one for every few tiles: a wall that fills
  * the board is a few large brushes.
  *
  *   const VIEW = { count: 42, height: 96, ink: "dark" } as const;
- *   fog.columns(P1, 1, 0, VIEW, heights);   // heights: one a column, in tiles, the program's
+ *   fog.columns(P1, 1, 0, VIEW, heights);           // heights: one a column, in tiles, the program's
+ *   fog.columns(P1, 1, 0, VIEW, heights, shaded);   // shaded: 1 for a column drawn hollow, 0 whole
  *
  * @param player Whose fog: P1 … P8, known when the script is built.
  * @param x The column of the layout's left edge.
  * @param y The row of its top edge.
  * @param layout How the columns are laid out: known when the script is built.
  * @param heights Each column's height in tiles (0 to the layout's height), an array of the program's.
+ * @param shaded Which columns are drawn hollow (not 0) — the other face of a raycaster's walls, so that a corner
+ *   shows — an array of the program's as long as `heights`. Optional.
  */
-export const columns = game((player: Player, x: number, y: number, layout: ColumnLayout, heights: readonly number[]) => {
+export const columns = game((player: Player, x: number, y: number, layout: ColumnLayout, heights: readonly number[], shaded?: readonly number[]) => {
   const { words, starts, half, group } = columnPlan(layout);
   const count = layout.count, width = layout.width ?? 3, dark = layout.ink === "dark";
   const span = half + 1;
   // Each column's depth from where its lit part starts: the middle row for light ink, the top and bottom for dark.
+  // A shaded column of light ink is drawn on its own, after the rest: to the rest it is as if it were not there.
   const depth: number[] = new Array(count).fill(0);
   let least = half;
   let i = 0;
   while (i < count) {
     const a = Math.min(Math.max(heights[i] >> 1, 0), half);
-    const d = dark ? half - a : a;
+    let d = dark ? half - a : a;
+    if (shaded !== undefined && !dark && shaded[i] != 0) d = 0;
     depth[i] = d;
     if (d < least) least = d;
     i++;
@@ -379,6 +394,13 @@ export const columns = game((player: Player, x: number, y: number, layout: Colum
       j++;
     }
     g = last;
+  }
+  if (shaded !== undefined) {
+    i = 0;
+    while (i < count) {
+      if (shaded[i] != 0) columnHollow(player, x + i * width + 1, mid, Math.min(Math.max(heights[i] >> 1, 0), half), dark);
+      i++;
+    }
   }
 });
 

@@ -73,6 +73,9 @@ import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { FIXED_MAX, FIXED_MIN, fixedRaw } from "./numbers";
 import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
+/** Bindings that are there once they are made, never null or undefined: what `x !== undefined` of one is known to be. */
+const PRESENT_KINDS: ReadonlySet<string> = new Set(["array", "records", "record", "grid", "lists", "texts", "hash", "keyed", "row"]);
+
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
 /** What an on.…() of units looks for, known when the script is built: the units, and on.order()'s order or on.killed()'s killer. */
@@ -520,6 +523,7 @@ export class Structured {
     const sub = (x: TS.Expression) => this.evaluate(x, depth + 1);
     if (ts.isIdentifier(e)) {
       const b = this.bindingOf(e);
+      if (!b && e.text === "undefined") return { value: undefined };
       return b?.kind === "value" ? { value: b.value } : undefined;
     }
     if (e.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
@@ -610,13 +614,28 @@ export class Structured {
       const cls = this.classOf(e.right);
       return b?.kind === "record" && b.cls && cls ? { value: this.chainOf(b.cls).includes(cls) } : undefined;
     }
+    // `shaded !== undefined` of an optional parameter: an array, a record or a collection the call gave is there, whatever
+    // is in it (a unit is not one of these: it may be null while the game runs).
+    if (ts.isBinaryExpression(e) && [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken].includes(e.operatorToken.kind)) {
+      const nothing = (x: TS.Expression) => { const u = this.unwrap(x); return u.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(u) && u.text === "undefined" && !this.bindingOf(u)); };
+      const other = nothing(e.left) ? e.right : nothing(e.right) ? e.left : null;
+      const b = other ? this.bindingOf(other) : undefined;
+      if (b && PRESENT_KINDS.has(b.kind)) {
+        const equal = e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken || e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
+        return { value: !equal };
+      }
+    }
     if (ts.isBinaryExpression(e) && (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken || e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)) {
       // `options.width ?? 3`, `a || b`, `a && b` of values known when the script is built: as JavaScript decides them,
       // the right side only looked at when the left does not decide.
       const l = sub(e.left);
       if (!l || isGameValue(l.value)) return undefined;
       const k = e.operatorToken.kind;
-      const decided = k === ts.SyntaxKind.QuestionQuestionToken ? l.value !== null && l.value !== undefined : k === ts.SyntaxKind.BarBarToken ? !!l.value : !l.value;
+      // Only of plain values: a condition or an action of the library is an object, and its truth is the game's.
+      const v = l.value;
+      const plain = v === null || v === undefined || typeof v === "number" || typeof v === "boolean" || typeof v === "string";
+      if (!plain && (k !== ts.SyntaxKind.QuestionQuestionToken || isBuilder(v))) return undefined;
+      const decided = k === ts.SyntaxKind.QuestionQuestionToken ? v !== null && v !== undefined : k === ts.SyntaxKind.BarBarToken ? !!v : !v;
       if (decided) return l;
       const r = sub(e.right);
       return r && !isGameValue(r.value) ? r : undefined;
@@ -5353,8 +5372,16 @@ export class Structured {
       if (from < 0) from = values.indexOf(null);
       if (from < 0) return;
     }
+    // (Those after the one that applies only as far as it falls through: a clause ending in break or return ends it.)
+    let to = clauses.length;
+    if (value.kind === "const") {
+      const ends = (c: TS.CaseOrDefaultClause) => { const l = c.statements[c.statements.length - 1]; return !!l && (ts.isBreakStatement(l) || ts.isReturnStatement(l) || ts.isContinueStatement(l) || ts.isThrowStatement(l)); };
+      to = from;
+      while (to < clauses.length && !ends(clauses[to])) to++;
+      to = Math.min(to + 1, clauses.length);
+    }
     const scope = new Scope(this.scope);
-    const cases = clauses.slice(from).map((c, i) => ({ value: value.kind === "const" ? value.value | 0 : values[from + i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    const cases = clauses.slice(from, to).map((c, i) => ({ value: value.kind === "const" ? value.value | 0 : values[from + i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
     this.emit({ kind: "switch", value, cases, at: this.at(s), label: this.label(s) }, s);
   }
 
@@ -6901,6 +6928,12 @@ export class Structured {
         return;
       }
       if (!arg) {
+        // An optional parameter left out (\`shaded?: number[]\`) is undefined, which the body can ask about when it is built.
+        if (!p.initializer && p.questionToken) {
+          scope.bind(p, { kind: "value", value: undefined });
+          asCalled(`${p.name.text} is left out of this call`);
+          return;
+        }
         if (!p.initializer) { this.c.error(call, `Missing argument ${p.name.text}.`); ok = false; return; }
         // The default is the function's own expression: evaluated in its body.
         const saved = this.enterBody(target);
@@ -7364,6 +7397,8 @@ export class Structured {
       if (isInput(h.value)) return this.inputValue(h.value, e);
       if (isMouse(h.value)) { this.c.error(e, "mouse() is a place on the map: read its x or its y."); return null; }
       if (isChat(h.value)) { this.c.error(e, "chatted() is what a player typed: test it in an if, or read one of the values its pattern names."); return null; }
+      // A value whose type is \`fixed\` (fixed(2), a parameter declared so) is a fixed number even when it is whole.
+      if (typeof h.value === "number" && Number.isInteger(h.value) && this.brandOf(e) === "fixed") return this.fixedConst(h.value, e);
       return this.constOf(h, e);
     }
     if (ts.isPropertyAccessExpression(e)) {
