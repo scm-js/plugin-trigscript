@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 15** (14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 16** (15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -60,7 +60,7 @@ the statement as the source has it ("L12: while (x < 3)"), for a log or a debugg
 ## Variables
 
 ```
-VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | "made", shared, bits?: 8 | 16, unsigned?, temp?, at }
+VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | "made", shared, bits?: 8 | 16, unsigned?, temp?, task?, at }
 ```
 
 `id` is unique within the program (`name#n`); `name` is the source's. `shared` is a
@@ -69,12 +69,13 @@ VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | 
 call's result). A variable exists from its `declare` statement on; a backend allocates
 storage in that order. A `unit` variable holds a unit of the game or none; its `declare`,
 a parameter's `init` and a `return` carry a unit expression (below). A `text` variable
-is kept the way `text` says (*Texts*, below).
+is kept the way `text` says (*Texts*, below). `task` marks a variable of a task's body (*Tasks*,
+below): it has a cell for each slot of that `start`, within each player's row in a per-player program.
 
 ## Arrays
 
 ```
-ArrayDecl { id, name, kind: "number" | "boolean", length, shared, bits?: 8 | 16, unsigned?, values?: number[], dynamic?, slice?, through?, at }
+ArrayDecl { id, name, kind: "number" | "boolean", length, shared, bits?: 8 | 16, unsigned?, values?: number[], dynamic?, slice?, through?, task?, at }
 ```
 
 `Program.arrays` lists every array of the program, those of inlined functions included, so a
@@ -181,12 +182,32 @@ frame's `saves`, and a `slice` is never declared.
 | `return` | `value?` | Inside a `call` body: writes the result and leaves the call. |
 | `sleep` | `ms?`, `cycles?` | Park the program: a duration in milliseconds, or in frames (`cycles`). `cycles: 1` goes on in the very next frame. Inside a `parallel` branch it parks that branch alone. |
 | `parallel` | `mode`, `branches` | `await Promise.all([…])` (`all`) or `await Promise.race([…])` / `Promise.any` (`race`). Each branch is a coroutine of its own with its own place to go on from and its own wait: started here, in order, in this frame; then, every frame the program is at this statement, each branch that has not ended goes on, in order. The program goes on past it in the frame the last branch ends (`all`) or the first (`race`, which leaves the others where they are: they never run again). A branch is never left by `break`, `continue` or `return`. Not inside a called function, a `unitLoop` or a `textLoop`. Since version 15. |
+| `start` | `task`, `max`, `call`, `handle?` | `start(wave(n))`, `void wave(n)`: a task that runs beside what started it (*Tasks*, below). `call` is the async function's body inlined, its `params` copies of this start's arguments, worked out here; the body runs in the task. `handle` takes the task's number, or 0 when every slot was running. Since version 16. |
+| `cancel` | `task` (a number) | `t.cancel()`: the task stops where it is; nothing happens for a number that is no running task's. Since version 16. |
 | `print` | `parts`, `to`, `position` | Text with values in it. `parts` are `{ kind: "text", text }`, `{ kind: "number", expr, unsigned? }` (its digits, with a minus sign when it is below zero and not `unsigned`), `{ kind: "name", player }` and `{ kind: "color", player }` (the colour code of the player's colour), a player being a slot or 13 for the current player. `to` is who sees it: a slot, 13, All Players (17) or a force (18–21). `position` is `chat` or `center`, the line the game's own errors use. Every number is evaluated before anything is shown. |
 | `action` | `record`, `variables?` | A trigger action. Each of `variables` names a field of the record that takes an expression's value: `{ field, bits: 8, 16 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, a unit type a 16-bit one (the lowering stops it at 228), an amount with a modifier a 32-bit one. Version 4 had one, as `variable`. |
 | `centerLocation` | `location`, `x`, `y` | Centre a location (1-based) on a point of the map in pixels, its size kept. |
 | `call` | `call` | A function as a statement (its result, if any, unused): inlined, or with `fn` called. |
 | `block` | `body` | Scoping only. |
 | `remark` | `text`, `short?` | A word for the editor about the line: a loop unrolled when the script was applied. |
+
+### Tasks
+
+Each `start` statement is a body of its own — a loop unrolled when the script is built has one
+for each turn — numbered from 1 in the order the front end meets them (`task`; one inside
+another's body comes after it), with `max` slots. A slot is a row of the cells of everything
+the body declares (`VarDecl.task`, `ArrayDecl.task`), plus its place to go on from, its wait,
+its generation and the frame it last had its turn in. A `start` works its arguments out, takes
+the lowest free slot — one more generation, its parameters set, its place the body's start —
+and gives `slot | task << 8 | generation << 16`. With every slot running nothing starts, and
+the game says so once.
+
+Each frame, after the program's own turn (whether it slept, waited or ended), every running
+task goes on until it sleeps, waits or ends: by `task`, then by slot. A task started during
+that turn has its first turn in the same frame — the slots are gone through again until none
+was started. Tasks run on after the program has ended. A task's body may read the program's
+variables, but not those of a task it was started from (the front end refuses that), and a
+`sleep`, an `await` or a `parallel` in it is the task's own.
 
 ## Expressions
 
@@ -226,6 +247,7 @@ Booleans (`BoolExpr`):
 | `not` | `expr` |
 | `random` | a coin toss, fresh at every evaluation |
 | `unitAlive` | `unit` — `if (target)`: there is a unit and it is still on the map |
+| `running` | `task` (a number) — `t.running`: the task that number stands for has not ended or been cancelled |
 | `unitSame` | `left`, `right` — both name one unit of the game (none is never the same as anything) |
 | `unitFlag` | `unit`, `flag: hallucinated | cloaked | burrowed | invincible | underAttack`; false when the unit is none or gone |
 | `edge` | `edge: rose | once`, `cond` |

@@ -263,6 +263,27 @@ ${kw}function sleep(duration: Duration): Promise<void>;
  * A condition on its own is asked again the same way: \`await until(bring(P1, units.AnyUnit, locations.Exit, ">=", 1))\`.
  */
 ${kw}function until(test: (() => boolean) | Condition): Promise<void>;
+/**
+ * A task that start() started: \`t.cancel()\` stops it where it is, \`t.running\` is true until it ends or is cancelled,
+ * and \`await t\` waits for it to end. Kept in a variable, it is a number of the program, 0 for none.
+ */
+${kw}interface Task extends Promise<void> {
+  readonly __task: true;
+  /** Stop the task where it is. Nothing happens when it has ended already. */
+  cancel(): void;
+  /** True until the task ends or is cancelled. */
+  readonly running: boolean;
+}
+/**
+ * Start a task and go on without waiting for it, inside an async program only: \`start(wave(3))\`, or
+ * \`start(async () => { … })\`. The arguments are worked out now; the task runs beside the program, from this frame on,
+ * and keeps running after the program ends. \`void wave(3)\` starts one too, without a Task to keep.
+ *
+ * Each start() is a body of its own, and \`max\` of its tasks (16 unless said) can run at once: a start with all of
+ * them running starts nothing, and the game says so. \`for (…) start(wave(n), { max: 40 })\`. A loop unrolled when the
+ * script is built has a start() for each of its turns.
+ */
+${kw}function start(task: Promise<unknown> | (() => Promise<unknown>), options?: { max?: number }): Task;
 /** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(…)))\`. */
 ${kw}function rose(condition: Condition | boolean): boolean;
 /** True the first time its condition holds, never again. Inside program(), in an if. */

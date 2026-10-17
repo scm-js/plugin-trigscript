@@ -108,7 +108,7 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "until", "rose", "once", "shared"]);
+const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared"]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -137,7 +137,7 @@ export function isCallbackArgument(ts: typeof TS, node: TS.Node): node is TS.Arr
 
 /**
  * A function that is part of what a program waits for: the one `until(…)` asks every frame, the one given to `.then(…)`,
- * and an async arrow called where it is written — `(async () => { … })()` in a `Promise.all`. Like a callback, its body
+ * an async arrow called where it is written — `(async () => { … })()` in a `Promise.all` — and the one start(…) runs as a task. Like a callback, its body
  * is the program's and is walked, not run when the script is built.
  */
 export function isTaskFunction(ts: typeof TS, checker: TS.TypeChecker, node: TS.Node): node is TS.ArrowFunction | TS.FunctionExpression {
@@ -149,7 +149,8 @@ export function isTaskFunction(ts: typeof TS, checker: TS.TypeChecker, node: TS.
   if (call.expression === at) return !!node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
   if (!call.arguments.includes(at as TS.Expression)) return false;
   if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "then") return true;
-  return libraryCallName(ts, checker, call) === "until";
+  const lib = libraryCallName(ts, checker, call);
+  return lib === "until" || (lib === "start" && call.arguments[0] === at);
 }
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {
@@ -303,6 +304,8 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
       if (property) return;
       const decl = declarationOf(ts, checker, n);
       if (decl && isGameDecl(decl)) { ok = false; return; }
+      // A generator is walked by the program's for…of, a copy of its body at each loop: never run when the script is built.
+      if (decl && (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl)) && decl.asteriskToken) { ok = false; return; }
     };
     const check = (n: TS.Node): void => {
       if (!ok) return;

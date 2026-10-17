@@ -120,8 +120,8 @@ describe("async functions and await", () => {
 
 describe("async functions and await: what is said", () => {
   it("a promise nothing waits for", () => {
-    expect(messages(`sleep(frames(1));`)).toEqual(["sleep() gives a promise, and nothing waits for it here: await sleep(frames(1)). A program cannot yet start something and leave it running beside it."]);
-    expect(messages(`async function f(): Promise<void> { await sleep(frames(1)); } f();`)).toEqual(["f() gives a promise, and nothing waits for it here: await f(). A program cannot yet start something and leave it running beside it."]);
+    expect(messages(`sleep(frames(1));`)).toEqual(["sleep() gives a promise, and nothing waits for it here: await sleep(frames(1))."]);
+    expect(messages(`async function f(): Promise<void> { await sleep(frames(1)); } f();`)).toEqual(["f() gives a promise, and nothing waits for it here: await f() — or, to leave it running beside the program, start(f())."]);
     expect(messages("", `program(() => { async function f(): Promise<void> { await sleep(frames(1)); } f(); });`)).toEqual(["f() waits, and a program waits in an async function: program(async () => { … await f(); … })."]);
   });
 
@@ -129,7 +129,7 @@ describe("async functions and await: what is said", () => {
     expect(messages(`await Promise.all([]);`)).toEqual(["Promise.all([]) has nothing to wait for."]);
     expect(messages(`const ps = [sleep(frames(1))]; await Promise.all(ps);`)).toContain("Promise.all() takes a list written where it is called: Promise.all([wave(1), sleep(seconds(90))]).");
     expect(messages(`const v = await Promise.race([sleep(frames(1)), sleep(frames(2)).then(() => 1)]); print(\`\${v}\`);`)).toContain("v would be number | void: Promise.race gives the value of the branch that ends first, so every branch gives one. Give a sleep() or an until() a value with .then(() => …).");
-    expect(messages(`const v: number = await Promise.all([sleep(frames(1)).then(() => 1)]) as never; print(\`\${v}\`);`)).toEqual(["Promise.all() gives no value yet: await it as a statement, and keep what each branch finds in variables of the program."]);
+    expect(messages(`const v: number = await Promise.all([sleep(frames(1)).then(() => 1)]) as never; print(\`\${v}\`);`)).toEqual(["Promise.all() gives a value for each item: take them apart where it is awaited — const [a, b] = await Promise.all([…])."]);
   });
 
   it("await where the game cannot leave and come back", () => {

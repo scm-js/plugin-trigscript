@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 16: tasks — `start`: a task that runs beside what started it, a copy of an async function's body with the arguments it was started with; `cancel` and `running` on what `start()` gives back. A task's variables and arrays (`VarDecl.task`, `ArrayDecl.task`) are a row a task, as many rows as tasks of it can run at once.
  * 15: `parallel` — `await Promise.all([…])` / `Promise.race([…])`: branches that run side by side, each a coroutine of its own inside the program's frame.
  * 14: a text in the cells of three arrays — `textAt`, `storeText`, `releaseText` — which is what lets a row of an array of records hold one.
  * 13: texts — a `text` variable (`VarDecl.text`: the id of a text of the built map's table, or a text that was made: where it is, the block of the heap it owns, its length in characters), `TextExpr`, `assignText`, `textLoop`, a text among a `print`'s parts, in an action's text field (`action.text`) and as a unit type's name; `textLength` / `textIndexOf` / `textCode` among the numbers, `textCompare` / `textTest` among the conditions; `ArrayDecl.texts`.
@@ -25,7 +26,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 15;
+export const IR_VERSION = 16;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -52,6 +53,8 @@ export interface VarDecl {
   unsigned?: boolean;
   /** A backend's scratch value that dies with the statement (a function's result). */
   temp?: boolean;
+  /** A variable of a task's body (`start`, its `task`): a cell for each of its slots, within each player's row. */
+  task?: number;
   at: At;
 }
 
@@ -73,6 +76,8 @@ export interface ArrayDecl {
   values?: number[];
   /** A list of texts the script has, which a program indexes with a variable (`titles[level]`): `values` are their places here, the lowering's their ids in the built map's table. */
   texts?: string[];
+  /** An array declared in a task's body (`start`, its `task`): its cells once for each of its slots. */
+  task?: number;
   /**
    * The array grows: something pushes to it, pops from it or sets its length. Its cells are a block of the
    * programs' heap (`HEAP_CELLS`), reached through a handle — where the block is, how many cells are in use, how
@@ -118,6 +123,8 @@ export const HEAP_SMALLEST = 4;
  * largest frame any program has — and only there when some function recurses, so the limit is the same whatever the
  * programs' arrays hold: the simulator and the game stop at the same call.
  */
+/** How many tasks of one `start` can run at once, unless the start says (`{ max }`, 1 … 255). */
+export const TASK_MAX = 16;
 export const STACK_DEPTH = 1024;
 export const STACK_DEPTH_MIN = 16;
 export const STACK_DEPTH_MAX = 65536;
@@ -364,6 +371,8 @@ export type BoolExpr =
   | { kind: "not"; expr: BoolExpr }
   /** `random()`: a coin toss, fresh at every evaluation. */
   | { kind: "random"; at: At }
+  /** `t.running`: the task the number stands for (what `start()` gave) has not ended, nor been cancelled. 0 is no task. */
+  | { kind: "running"; task: NumExpr; at: At }
   /** `if (target)`: the variable holds a unit and that unit is still on the map. */
   | { kind: "unitAlive"; unit: UnitExpr; at: At; label: string }
   /** `u == target`: both name the same unit of the game (and there is one). */
@@ -497,6 +506,19 @@ export type Stmt =
    * own; `break`, `continue` and `return` never leave a branch.
    */
   | { kind: "parallel"; mode: "all" | "race"; branches: Stmt[][]; at: At; label: string }
+  /**
+   * `start(wave(n))`: a task — `call`, an async function's body inlined, its parameters copies of this start's arguments —
+   * that runs beside what started it. Each `start` statement is a body of its own, `task` its number (they are numbered
+   * from 1 in the order they are met, a task inside another's body after it), with `max` slots: that many of its tasks can
+   * run at once, and a start with every slot taken starts nothing (the game says so once). A task starts in the frame it
+   * is started in, once the program has given the frame back (it slept, waited or ended); from then on it goes on every
+   * frame, after the program, the tasks in order of their number and slot. It runs on after the program ends. `handle`:
+   * the variable that takes a number for the task — `slot | task << 8 | generation << 16`, the generation one more at
+   * every start in the slot — or 0 when nothing started.
+   */
+  | { kind: "start"; task: number; max: number; call: Call; handle?: string; at: At; label: string }
+  /** `t.cancel()`: the task stops where it is. Nothing happens when it has ended, or the number is no task's. */
+  | { kind: "cancel"; task: NumExpr; at: At; label: string }
   /** A trigger action; each of `variables` names a field that takes an expression's value instead of the record's. */
   /**
    * `text`: the action's text is the program's. One of the table goes into the action as its id. One that was made is
@@ -557,6 +579,15 @@ export function eachCall(root: unknown, visit: (c: Call) => void): void {
   for (const v of Object.values(o)) if (v && typeof v === "object") eachCall(v, visit);
 }
 
+/** Every `start` of a piece of IR, in the order of their numbers: outer ones before the ones in their bodies. */
+export function eachStart(root: unknown, visit: (s: Extract<Stmt, { kind: "start" }>) => void): void {
+  if (Array.isArray(root)) { for (const x of root) eachStart(x, visit); return; }
+  if (!root || typeof root !== "object") return;
+  const o = root as Record<string, unknown>;
+  if (o.kind === "start" && typeof o.task === "number" && o.call && typeof o.call === "object") visit(o as Extract<Stmt, { kind: "start" }>);
+  for (const v of Object.values(o)) if (v && typeof v === "object") eachStart(v, visit);
+}
+
 export const isUnitExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is UnitExpr =>
   e.kind === "unitNull" || e.kind === "unitVar" || e.kind === "pick" || e.kind === "unitAt" || (e.kind === "call" && e.call.result?.kind === "unit");
 
@@ -601,6 +632,8 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "for": if (s.cond) init(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": call(s.call); break;
+      case "cancel": expr(s.task); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) init(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
@@ -661,6 +694,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "ternary": bool(b.cond); bool(b.whenTrue); bool(b.whenFalse); break;
       case "textCompare": text(b.left); text(b.right); break;
       case "textTest": text(b.of); text(b.find); break;
+      case "running": expr(b.task); break;
       case "call": call(b.call); break;
       default: break;
     }

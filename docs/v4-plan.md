@@ -2,7 +2,7 @@
 
 Written 2026-10-15. Status: Part A built (A0–A5, each with its *As built*), and Remastered's
 emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece maps
-(*Showpieces*, 2026-10-16), B1 started. The question it answers: now that there is a
+(*Showpieces*, 2026-10-16), B1 built (both parts, 2026-10-16). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -786,12 +786,62 @@ known when the script is built, so its place and its wait are two cells, like a 
   are. JavaScript does not cancel them, but here a branch is a fixed pair of cells, so a
   race met again in a loop could not run a second copy beside the first. Stopping is also
   what the plan's own example means. (Open decisions, below.)
-- **Not yet.** Starting a task and leaving it running (`spawn`, or an async call nothing
-  awaits) needs tasks that are not known when the script is built, which is the heap
-  frame of the design above. Also not yet: generators, `const [a, b] = await
-  Promise.all(…)`, async methods of a class, a parameter for `.then`'s function, and
-  recursion through `await` (it is the inline limit's error today). These are the second
-  part of B1, together with the hint for an async function that never awaits.
+- **Not yet** in the first part: starting a task and leaving it running, generators,
+  `const [a, b] = await Promise.all(…)`, async methods, a parameter for `.then`'s
+  function, recursion through `await`, the hint for an async function that never awaits.
+  All but recursion are the second part, below.
+
+**As built, second part (2026-10-16, under Node and in the lifted game; branch `b1-tasks`).**
+
+- **Tasks: `start()`, not `spawn()`.** Scripts already call their own wave functions
+  `spawn` (the guide's examples do, and so do the tests), so the library's name is
+  `start`: `start(wave(3))`, `start(async () => { … })`, and `void wave(3)` as JavaScript
+  leaves a promise nobody keeps. A bare `wave(3);` in an async function stays an error,
+  which now names both `await` and `start()`.
+- **No heap after all.** A task is not a frame on the heap. Each `start` is a body of its
+  own, inlined once, with `max` slots (16 unless `{ max }` says, up to 255). A slot is a row
+  of everything the body declares (`VarDecl.task`, `ArrayDecl.task` in IR 16), the same
+  rows a per-player program has, one level down. In a per-player program they are rows
+  within each player's. The arguments are worked out at the start, and the parameters
+  are always copies, never the caller's variables. A start with every slot running starts
+  nothing, and the game says so once.
+- **When a task runs.** It starts in the frame it is started in, once the program has
+  given the frame back. After that it goes on every frame after the program's turn, by
+  start and then by slot, and it runs on after the program ends. A task started during
+  the tasks' turn gets its first turn in the same frame: the slots are gone through
+  again. Each start keeps a count of its running tasks, so a start with none costs a few
+  conditions a frame, and the slots after the last running one are not looked at. That
+  took the probe from about 7,700 conditions and actions a frame to about 1,000.
+- **A Task.** `start()` gives a number:
+  `slot | start << 8 | generation << 16`. `t.running`, `t.cancel()` and `await t` work
+  through it, and a number of a slot that has been taken again finds nothing. A task
+  that cancels itself stops at its next wait.
+- **What is refused.** A task that reads a variable of the task it was started from is
+  refused, because which of that task's copies it would find is not settled. So is a task
+  closing over a variable that the loop around the `start()` changes (JavaScript gives
+  each turn its own). A function that starts a task is never one called copy. A function
+  that starts itself, directly or round about, is the inline limit's error, and the
+  message now says to write it as a loop.
+- **Generators** are walked by `for…of` (`for await` for an `async function*`). The
+  generator's body is inlined, and at each `yield` sits a copy of the loop's body. The
+  loop variable is what was yielded: a value the script knows stays one, as in an
+  unrolled loop, and anything else goes in a variable of that turn. `continue` goes on
+  after the yield, and `break` leaves the generator. A generator kept in a `const` and
+  stepped with `.next()` is not supported, nor is `yield*` or a `return` in the loop's
+  body. Each says so.
+- **The rest.** `const [a, , c] = await Promise.all([…])` gives each name its item's
+  value, set as the item ends. `.then((k) => …)` is handed what the promise gives. A
+  class may have async methods. An async function that never awaits gets a hint on its
+  name. Unrelated, but met on the way: a loop that has a `break` or a `return` in it is
+  no longer reported as freezing the game.
+- **Recursion through `await`: decided, not built.** An async function that waits keeps
+  its place where it waits, one place for each copy, so a call of itself would need the
+  whole chain of places kept and brought back. A loop does the same job, and the error
+  says so.
+- **Checked.** `tests/tasks.test.ts` (15) and three eudplib build fixtures (`started`,
+  `startedPerPlayer`, `generators`). `probes/game-tasks.ts` (4) and
+  `probes/game-generators.ts` (3) pass in the lifted game and in the simulator at the
+  same frames. Every older game probe still passes.
 
 ### B2. Events (4.4.0)
 
@@ -1069,10 +1119,11 @@ build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
   nothing of the game is drawn. A5's "the game beside the code" draws, so it needs the
   person's own copy, as Test Map does.
 - **Does `Promise.race` cancel the losers?** JavaScript: no. Proposed: no, as JavaScript,
-  plus an explicit `task.cancel()` on what `spawn(…)` returns. *Decided otherwise in B1's
+  plus an explicit `task.cancel()` on what `start(…)` returns (built as `t.cancel()`). *Decided otherwise in B1's
   first part (2026-10-16), and confirmed by the user:* the losers stop, because a branch is
-  a fixed pair of cells and a race met again cannot run beside its last run. Once `spawn`
-  exists, a loser that should go on can be spawned.
+  a fixed pair of cells and a race met again cannot run beside its last run. A loser that
+  should go on can be started with `start()` and raced as `await t` (built in B1's second
+  part).
 - **What a closure may capture.** Proposed above (B3): `const` by value, `let` only when
   the closure does not outlive its frame. The alternative is reference-counted
   environments: closer to JavaScript, more Python, and a new kind of fault.

@@ -36,7 +36,7 @@
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
-import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, heapCells, isTextExpr, stackDepth } from "./ir";
+import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
 import type { TextExpr, ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
@@ -122,6 +122,21 @@ class Halt extends Error {}
 /** The program stops for good, as the game stops it: its stack ran out. Said as a fault where it happened. */
 class Stopped extends Error {}
 
+/** A slot of a `start`: the task in it (none: free), its generation, the frame it last ran in, and its own cells. */
+interface TaskSlot {
+  exec: Exec | null;
+  apart: Exec[];
+  gen: number;
+  ran: number;
+  vars: Map<string, Value>;
+  units: Map<string, SimUnit | null>;
+  texts: Map<string, HeldText>;
+  arrays: Map<string, Held>;
+  latches: Map<object, boolean>;
+}
+/** A `start` statement's tasks: its slots, and the ids of the variables and arrays a slot has a copy of. */
+interface TaskPool { start: Extract<Stmt, { kind: "start" }>; vars: string[]; arrays: ArrayDecl[]; slots: TaskSlot[]; said: boolean }
+
 /** One program's run: its variables, its latches, and the coroutine that is its body. */
 /** What a recursive function holds, kept for the length of a call that may come back into it. */
 interface Frame {
@@ -197,7 +212,8 @@ class ProgramRun {
   readonly bits = new Map<string, 8 | 16>();
   /** The `u32` variables. */
   readonly unsigned = new Set<string>();
-  readonly latches = new Map<object, boolean>();
+  /** Every latch's state; a task has its own, swapped in while it runs. */
+  latches = new Map<object, boolean>();
   /** The program's arrays: their cells, as a variable's value is kept. */
   readonly arrays: Map<string, Held> = new (class extends Map<string, Held> {
     run!: ProgramRun;
@@ -210,7 +226,13 @@ class ProgramRun {
   /** How many calls deep the program is in functions that call themselves: frames on the stack. Nothing is on it between frames. */
   depth = 0;
   /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
-  private readonly apart: Exec[] = [];
+  private apart: Exec[] = [];
+  /** The `start` statements' tasks, in order of their numbers. */
+  private readonly pools: TaskPool[] = [];
+  /** Frames the tasks have run, for a slot to tell whether it has had its turn in this one. */
+  private taskFrame = 0;
+  /** A task was started during this frame's turn of the tasks: they are gone through again, for it to start in this frame too. */
+  private again = false;
   readonly sim: ProgramSimulation;
   readonly index: number;
   readonly program: Program;
@@ -235,6 +257,14 @@ class ProgramRun {
       this.arrays.set(decl.id, held);
     }
     this.body = this.run();
+    const decls = programDeclarations(this.program);
+    const starts: Extract<Stmt, { kind: "start" }>[] = [];
+    eachStart([program.body, program.functions ?? []], (st) => starts.push(st));
+    starts.sort((a, b) => a.task - b.task);
+    for (const start of starts) {
+      const slots = Array.from({ length: start.max }, (): TaskSlot => ({ exec: null, apart: [], gen: 0, ran: 0, vars: new Map(), units: new Map(), texts: new Map(), arrays: new Map(), latches: new Map() }));
+      this.pools.push({ start, vars: decls.filter((d) => d.task === start.task).map((d) => d.id), arrays: (program.arrays ?? []).filter((a) => a.task === start.task), slots, said: false });
+    }
   }
 
   private *run(): Exec {
@@ -243,26 +273,95 @@ class ProgramRun {
     return "next";
   }
 
-  /** One frame: resume the body until it gives the frame back or ends. */
+  /** One frame: resume the body until it gives the frame back or ends, then each task that is running. */
   tick(): void {
-    if (this.done || !this.body) return;
     this.steps = 0;
+    if (!this.done && this.body) {
+      try {
+        if (this.drive(this.body)) { this.done = true; this.body = null; }
+      } catch (err) {
+        this.apart.length = 0;
+        if (!(err instanceof Stopped)) throw err;
+        this.done = true;
+        this.body = null;
+        this.depth = 0;
+      }
+    }
+    this.runTasks();
+  }
+
+  /** Whether a task of the program is still running. */
+  get tasksRunning(): boolean { return this.pools.some((p) => p.slots.some((s) => s.exec)); }
+
+  /**
+   * The tasks' turn, after the program's: each that is running goes on until it gives the frame back or ends, in order of
+   * their start's number and then of their slot. A task started meanwhile has its first turn in this frame too.
+   */
+  private runTasks(): void {
+    if (!this.pools.length) return;
+    this.taskFrame++;
+    do {
+      this.again = false;
+      for (const pool of this.pools) {
+        for (const slot of pool.slots) {
+          if (!slot.exec || slot.ran === this.taskFrame) continue;
+          slot.ran = this.taskFrame;
+          this.runSlot(pool, slot);
+        }
+      }
+    } while (this.again);
+  }
+
+  /** A task's turn: its cells in place of the slot's, its body driven as the program's is. */
+  private runSlot(pool: TaskPool, slot: TaskSlot): void {
+    const exec = slot.exec!;
+    const outer = this.apart, latches = this.latches;
+    this.swap(pool, slot, true);
+    this.apart = slot.apart;
+    this.latches = slot.latches;
     try {
-      if (this.drive()) { this.done = true; this.body = null; }
+      if (this.drive(exec)) { slot.exec = null; slot.apart.length = 0; }
     } catch (err) {
-      this.apart.length = 0;
+      slot.apart.length = 0;
       if (!(err instanceof Stopped)) throw err;
-      this.done = true;
-      this.body = null;
+      slot.exec = null;
       this.depth = 0;
+    } finally {
+      this.apart = outer;
+      this.latches = latches;
+      this.swap(pool, slot, false);
     }
   }
 
+  /** A slot's cells into the run's (`into`), or back out of them: between turns nothing of a task is among the run's. */
+  private swap(pool: TaskPool, slot: TaskSlot, into: boolean): void {
+    const move = <V>(run: Map<string, V>, own: Map<string, V>, id: string) => {
+      if (into) { if (own.has(id)) run.set(id, own.get(id)!); else run.delete(id); }
+      else { if (run.has(id)) own.set(id, run.get(id)!); else own.delete(id); run.delete(id); }
+    };
+    for (const id of pool.vars) { move(this.vars, slot.vars, id); move(this.unitVars, slot.units, id); move(this.textVars, slot.texts, id); }
+    for (const a of pool.arrays) {
+      if (into) this.arrays.set(a.id, slot.arrays.get(a.id) ?? this.newHeld(a));
+      else { const held = (this.arrays as Map<string, Held>).get(a.id); if (held) slot.arrays.set(a.id, held); }
+    }
+  }
+
+  private newHeld(decl: ArrayDecl): Held {
+    return { decl, room: 0, cells: decl.values ? [...decl.values] : decl.dynamic ? [] : new Array<Value>(decl.length).fill(decl.kind === "number" ? 0 : false) };
+  }
+
+  /** The pool and slot a task's number names, while that task is in it; undefined for a number that is no running task's. */
+  private taskOf(handle: number): { pool: TaskPool; slot: TaskSlot } | undefined {
+    const pool = this.pools.find((p) => p.start.task === ((handle >>> 8) & 0xff));
+    const slot = pool?.slots[handle & 0xff];
+    return pool && slot?.exec && slot.gen === handle >>> 16 ? { pool, slot } : undefined;
+  }
+
   /** The run until it gives the frame back (false) or ends (true): the body, and above it each body that was handed over to be run apart. */
-  private drive(): boolean {
+  private drive(body: Exec): boolean {
     let send: unknown;
     for (;;) {
-      const top = this.apart[this.apart.length - 1] ?? this.body!;
+      const top = this.apart[this.apart.length - 1] ?? body;
       const r = top.next(send);
       send = undefined;
       if (r.done) {
@@ -671,6 +770,7 @@ class ProgramRun {
         return false;
       }
       case "ternary": return (yield* this.bool(e.cond)) ? yield* this.bool(e.whenTrue) : yield* this.bool(e.whenFalse);
+      case "running": return !!this.taskOf((yield* this.num(e.task)) >>> 0);
       case "call": return Boolean(yield* this.call(e.call));
       case "textCompare": {
         const a = yield* this.text(e.left);
@@ -697,6 +797,14 @@ class ProgramRun {
     if (decl.kind === "text" || isTextExpr(e)) { yield* this.putText(decl.id, e as TextExpr, at ?? decl.at ?? { file: "", line: 0, column: 0 }); return; }
     if (decl.kind === "unit") this.unitVars.set(decl.id, yield* this.unit(e as UnitExpr));
     else this.store(decl.id, yield* this.init(e as NumExpr | BoolExpr, decl.kind));
+  }
+
+  /** A task's body, as its slot runs it: what it returns into is the task's own, and nothing reads it. */
+  private *taskBody(c: Call): Exec {
+    if (c.result) this.declare(c.result.decl);
+    const flow = yield* this.block(c.body, { fn: { result: c.result?.decl } });
+    if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a task reached its end (line ${c.at.line}).`);
+    return "next";
   }
 
   private *call(c: Call): Gen<Value> {
@@ -1016,6 +1124,44 @@ class ProgramRun {
         return "next";
       }
       case "centerLocation": { const x = yield* this.amount(s.x); const y = yield* this.amount(s.y); this.sim.centre(s.location, x, y); return "next"; }
+      case "start": {
+        const pool = this.pools.find((p) => p.start === s);
+        if (!pool) throw new Error(`The start of task ${s.task} is not one of the program's (line ${s.at.line}).`);
+        // The arguments as they are now, before any parameter is set.
+        const values: (Value | SimUnit | HeldText | null)[] = [];
+        for (const p of s.call.params) values.push(p.decl.kind === "unit" ? yield* this.unit(p.init as UnitExpr) : p.decl.kind === "text" ? this.owned(yield* this.text(p.init as TextExpr), s.at) : this.kept(yield* this.init(p.init as NumExpr | BoolExpr, p.decl.kind), p.decl));
+        const i = pool.slots.findIndex((slot) => !slot.exec);
+        if (i < 0) {
+          for (const v of values) if (v && typeof v === "object" && "room" in v && v.room) this.sim.heap.give(v.room);
+          if (!pool.said) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `${s.call.name ?? "The task"} did not start: all ${s.max} of this start's tasks are running. start(…, { max: … }) lets more run at once.` });
+          pool.said = true;
+          if (s.handle) this.store(s.handle, 0);
+          return "next";
+        }
+        const slot = pool.slots[i];
+        slot.gen = slot.gen >= 0xffff ? 1 : slot.gen + 1;
+        s.call.params.forEach((p, k) => {
+          this.declare(p.decl);
+          if (p.decl.kind === "unit") slot.units.set(p.decl.id, values[k] as SimUnit | null);
+          else if (p.decl.kind === "text") { const old = slot.texts.get(p.decl.id); if (old?.room) this.sim.heap.give(old.room); slot.texts.set(p.decl.id, values[k] as HeldText); }
+          else slot.vars.set(p.decl.id, values[k] as Value);
+          // (declare() put the parameter among the run's own: it is the slot's.)
+          this.vars.delete(p.decl.id);
+          this.unitVars.delete(p.decl.id);
+          this.textVars.delete(p.decl.id);
+        });
+        slot.exec = this.taskBody(s.call);
+        slot.apart = [];
+        slot.ran = 0;
+        this.again = true;
+        if (s.handle) this.store(s.handle, i | (s.task << 8) | (slot.gen << 16));
+        return "next";
+      }
+      case "cancel": {
+        const t = this.taskOf((yield* this.num(s.task)) >>> 0);
+        if (t) { t.slot.exec = null; t.slot.apart.length = 0; }
+        return "next";
+      }
       case "call": { yield* this.call(s.call); return "next"; }
       case "block": return yield* this.block(s.body, ctx);
       case "remark": return "next";
@@ -1398,7 +1544,7 @@ export class ProgramSimulation {
   }
 
   /** Whether every program has ended. */
-  finished(): boolean { return this.runs.every((r) => r.done); }
+  finished(): boolean { return this.runs.every((r) => r.done && !r.tasksRunning); }
 
   /** A program's run: the program by its place in the list or its name, and of a per-player program the player's (the first by default). */
   runOf(program: number | string = 0, player?: number): ProgramRun | undefined {

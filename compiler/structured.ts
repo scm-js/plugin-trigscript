@@ -66,7 +66,7 @@ import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGa
 import { cellMax } from "./tables";
 import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { I32_MAX, I32_MIN, IR_VERSION, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, eachCall, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -115,6 +115,8 @@ interface Ctx {
   canContinue?: boolean;
   /** Inside an inlined function: what it returns. `instance`: it returns an instance — which one is settled as its body is walked, and kept here. */
   fn?: { kind: Kind | "text" | "void"; instance?: { name: string; made?: Binding } };
+  /** Inside the body of a for…of over a generator, walked where a `yield` is: `break` sets this first, and the generator then leaves. */
+  breakFlag?: VarDecl;
 }
 
 /** What a variable of a program holds. */
@@ -221,7 +223,7 @@ const SEARCHES = new Set(["some", "every", "find", "findLast", "findIndex", "fin
 type CallArgument = { init: NumExpr | BoolExpr | UnitExpr | TextExpr; label: string } | { binding: Binding };
 
 /** What a call that is not written as one hands `inline`: a method's instance, and — for `new`, a getter, a setter — the arguments, that nothing comes back, and what runs first in the body. */
-interface MethodCall { self?: Binding; args?: readonly TS.Expression[]; nothing?: boolean; first?: (scope: Scope) => void; /** The call gives an instance: where the one it returns is kept, and the name one it makes is declared under. */ instance?: { name: string; made?: Binding }; /** What runs before the body, inside the call: the calls before this one in a chain (`v.add(w).scale(2)`), so that they run where the expression does. */ before?: Stmt[] }
+interface MethodCall { /** A generator, walked by a for…of: a copy of its body at each loop. */ generator?: boolean; self?: Binding; args?: readonly TS.Expression[]; nothing?: boolean; first?: (scope: Scope) => void; /** The call gives an instance: where the one it returns is kept, and the name one it makes is declared under. */ instance?: { name: string; made?: Binding }; /** What runs before the body, inside the call: the calls before this one in a chain (`v.add(w).scale(2)`), so that they run where the expression does. */ before?: Stmt[] }
 
 /** A function at one set of arrays passed: inlined where it was first met, called from then on (`fn`), or never to be (`never` says why). */
 interface FunctionSite {
@@ -257,6 +259,23 @@ export class Structured {
   /** The body being walked: the program's, or the game function being inlined. */
   private body: Body;
   private inlineDepth = 0;
+  /** An async function with no await in it (nor a for await): its name or the node to say so at; undefined for any other. */
+  private neverAwaits(decl: TS.Node): TS.Node | undefined {
+    const { ts } = this;
+    if (!(ts.isFunctionDeclaration(decl) || ts.isMethodDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl)) || decl.asteriskToken || !decl.body) return undefined;
+    if (!ts.getModifiers(decl)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return undefined;
+    let found = false;
+    const look = (n: TS.Node): void => { if (found || (n !== decl.body && ts.isFunctionLike(n))) return; if (ts.isAwaitExpression(n) || (ts.isForOfStatement(n) && n.awaitModifier)) { found = true; return; } ts.forEachChild(n, look); };
+    look(decl.body);
+    return found ? undefined : (decl.name ?? decl);
+  }
+
+  /** What a `yield` does in each generator a for…of is walking, innermost last. */
+  private yields: ((y: TS.YieldExpression) => void)[] = [];
+  /** The `start` statements so far: the next one's number is one more. */
+  private taskCount = 0;
+  /** The inline depth at which the next call is a task's (`start(wave(n))`): its parameters are copies of the arguments, never the caller's variables. */
+  private copyArgsAt = -1;
   private scope: Scope = new Scope(null);
   /** The program's outermost scope: what an inlined function of the body closes over. */
   private readonly topScope = this.scope;
@@ -295,6 +314,7 @@ export class Structured {
       this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
     }
     this.settleFunctions(program);
+    this.checkTasks(program);
     return { program, nodeOf: (node) => this.nodes.get(node) };
   }
 
@@ -362,6 +382,11 @@ export class Structured {
   }
 
   /* ── Values and bindings ── */
+
+  private stripParens(e: TS.Expression): TS.Expression {
+    while (this.ts.isParenthesizedExpression(e)) e = e.expression;
+    return e;
+  }
 
   /** Strip parentheses, `as`, `satisfies`, `!` — the wrappers that change nothing. */
   private unwrap(expr: TS.Expression): TS.Expression {
@@ -648,6 +673,7 @@ export class Structured {
     if (ts.isBreakStatement(s) || ts.isContinueStatement(s)) {
       if (s.label) { this.c.error(s, "Labelled break / continue is not supported."); return; }
       if (ts.isBreakStatement(s) ? !ctx.canBreak : !ctx.canContinue) { this.c.error(s, `${ts.isBreakStatement(s) ? "break" : "continue"} outside a loop.`); return; }
+      if (ts.isBreakStatement(s) && ctx.breakFlag) this.emit({ kind: "assignBool", target: ctx.breakFlag.id, value: TRUE, at: this.at(s), label: this.label(s) }, s);
       this.emit({ kind: ts.isBreakStatement(s) ? "break" : "continue", at: this.at(s), label: this.label(s) }, s);
       return;
     }
@@ -712,12 +738,21 @@ export class Structured {
       if (!ts.isIdentifier(d.name)) {
         // `const { x, y } = mouse(P1)`, `const [a, b] = pair`: every name a variable of its own.
         if (!d.initializer) { this.c.error(d, "A pattern is taken from something: const { x, y } = p."); continue; }
+        let given: TS.Expression = d.initializer;
+        while (ts.isParenthesizedExpression(given)) given = given.expression;
+        const all = ts.isAwaitExpression(given) ? this.unwrap(given.expression) : undefined;
+        if (all && ts.isCallExpression(all) && this.promiseCall(all) === "all" && ts.isArrayBindingPattern(d.name)) { this.allValues(d.name, all, d); continue; }
         const from = this.patternSource(d.initializer, d);
         if (from) this.bindPattern(d.name, d, from, this.scope);
         continue;
       }
       if (!d.initializer) { this.c.error(d, `Give ${d.name.text} an initial value: let ${d.name.text} = 0 or = false.`); continue; }
       const init = this.unwrap(d.initializer);
+      if (ts.isCallExpression(init) && ts.isIdentifier(init.expression)) {
+        const g = this.gameDeclaration(init.expression);
+        if (g && ts.isFunctionDeclaration(g) && g.asteriskToken) { this.c.error(init, `${init.expression.text} is a generator: a program walks one with for…of — for (const w of ${init.expression.text}(…)) { … }.`); continue; }
+      }
+      if (ts.isAwaitExpression(this.stripParens(d.initializer)) && ts.isCallExpression(init) && this.promiseCall(init) === "all") { this.c.error(init, "Promise.all() gives a value for each item: take them apart where it is awaited — const [a, b] = await Promise.all([…])."); continue; }
       if (ts.isObjectLiteralExpression(init) && !this.keyedForm(init, this.c.checker.getTypeAtLocation(d.name))) {
         const record = this.declareRecord(d.name.text, init, this.c.checker.getTypeAtLocation(d.name), d);
         if (record) this.scope.bind(d, record);
@@ -3601,6 +3636,8 @@ export class Structured {
 
   private kindOf(type: TS.Type): Kind | null {
     const { ts } = this;
+    // What start() gives back: a number of the program that stands for the task.
+    if (this.isTaskType(type)) return "number";
     type = this.awaited(type);
     // `c ? 1 : 0` is `0 | 1`: a union of numbers is a number.
     const isNumber = (t: TS.Type): boolean => (t.flags & ts.TypeFlags.NumberLike) !== 0 || (t.isIntersection() && t.types.some(isNumber)) || (t.isUnion() && t.types.every(isNumber));
@@ -3610,6 +3647,11 @@ export class Structured {
     const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
     if (bare.length > 0 && bare.every((t) => !!t.getProperty("__unit"))) return "unit";
     return null;
+  }
+
+  /** Whether a type is the Task start() gives back. */
+  private isTaskType(type: TS.Type): boolean {
+    return !!type.getProperty("__task") && (type.flags & this.ts.TypeFlags.Any) === 0;
   }
 
   private isUnitTyped(e: TS.Expression): boolean {
@@ -4184,7 +4226,7 @@ export class Structured {
     const text = e.getText();
     const mode = this.promiseCall(e);
     const what = this.isLibraryCall(e, "sleep") ? "sleep()" : this.isLibraryCall(e, "until") ? "until()" : mode ? `Promise.${mode}()` : `${this.unwrap(e.expression).getText()}()`;
-    if (this.inAsync(e)) this.c.error(e, `${what} gives a promise, and nothing waits for it here: await ${text}. A program cannot yet start something and leave it running beside it.`);
+    if (this.inAsync(e)) this.c.error(e, `${what} gives a promise, and nothing waits for it here: await ${text}${mode || what === "sleep()" || what === "until()" ? "" : ` — or, to leave it running beside the program, start(${text})`}.`);
     else this.c.error(e, `${what} waits, and a program waits in an async function: program(async () => { … await ${text}; … }).`);
   }
 
@@ -4196,15 +4238,24 @@ export class Structured {
   private task(expr: TS.Expression, into?: { decl: VarDecl; kind: "number" | "boolean" }) {
     const { ts } = this;
     const e = this.unwrap(expr);
-    const valueless = (what: string) => { if (into) this.c.error(e, `${what} gives no value, and Promise.race gives the value of the branch that ends first: give this one a value with .then(() => …).`); };
+    const valueless = (what: string) => { if (into) this.c.error(e, `${what} gives no value, and the value of this item is kept: give it one with .then(() => …).`); };
     const keep = (call: Call | undefined, node: TS.Node) => {
       if (!call) return;
       this.emit({ kind: "call", call, at: call.at, label: call.label }, node);
       if (!into) return;
-      if (!call.result || call.result.kind !== into.kind) { this.c.error(node, `Every branch of a race whose value is kept gives a ${into.kind}.`); return; }
+      if (!call.result || call.result.kind !== into.kind) { this.c.error(node, `This item gives ${call.result ? `a ${call.result.kind}` : "no value"}, and what is kept from it is a ${into.kind}.`); return; }
       const value = { kind: "var" as const, id: call.result.decl.id };
       this.emit(into.kind === "number" ? { kind: "assign", target: into.decl.id, value, at: call.at, label: call.label } : { kind: "assignBool", target: into.decl.id, value, at: call.at, label: call.label }, node);
     };
+    if (this.isTaskType(this.c.checker.getTypeAtLocation(e))) {
+      // `await t`, `await start(…)`: until the task has ended.
+      const t = this.num(e);
+      if (!t) return;
+      const at = this.at(e), label = this.label(e);
+      this.emit({ kind: "while", cond: { kind: "running", task: t, at }, body: [{ kind: "sleep", cycles: 1, at, label }], at, label }, e);
+      valueless("A task");
+      return;
+    }
     if (ts.isCallExpression(e)) {
       if (this.isLibraryCall(e, "sleep")) { this.sleepStatement(e); valueless("sleep()"); return; }
       if (this.isLibraryCall(e, "until")) { this.untilStatement(e); valueless("until()"); return; }
@@ -4217,7 +4268,18 @@ export class Structured {
       if (ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "then" && this.isPromise(e.expression.expression)) {
         if (e.arguments.length !== 1) { this.c.error(e, ".then() takes one function: sleep(seconds(90)).then(() => false)."); return; }
         const fn = this.unwrap(e.arguments[0]);
-        if ((ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) && fn.parameters.length) { this.c.error(fn, "The function given to .then() takes nothing here. To use what a call gives, keep it first: const v = await f(); then use v."); return; }
+        if ((ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) && fn.parameters.length) {
+          // `wave(n).then((cleared) => …)`: what the promise gives, in a variable the function's parameter is.
+          const before = e.expression.expression;
+          const kind = this.kindOf(this.c.checker.getTypeAtLocation(before));
+          if (fn.parameters.length > 1 || (kind !== "number" && kind !== "boolean")) { this.c.error(fn, `The function given to .then() takes what the promise gives${kind ? "" : ", and this one gives nothing"}: wave(n).then((cleared) => …), for a promise of a number or a boolean.`); return; }
+          const at = this.at(before), label = this.label(before);
+          const value = this.newVar(`(${fn.parameters[0].name.getText()})`, kind, at, kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(before)) : {});
+          this.emit({ kind: "declare", decl: value, init: kind === "number" ? num(0) : FALSE, at, label }, before);
+          this.task(before, { decl: value, kind });
+          keep(this.callback(e.arguments[0], "then", [{ kind: "var", v: value }], into?.kind ?? "any", e), e);
+          return;
+        }
         this.task(e.expression.expression);
         keep(this.callback(e.arguments[0], "then", [], into?.kind ?? "any", e), e);
         return;
@@ -4243,26 +4305,52 @@ export class Structured {
    * `await Promise.all([…])` / `race` / `any`: each item a branch of its own, side by side (`parallel` in the IR). Nothing in
    * a program fails, so the first branch to end is the first to succeed, and `any` is a race.
    */
-  private parallel(call: TS.CallExpression, mode: "all" | "race" | "any", into?: { decl: VarDecl; kind: "number" | "boolean" }) {
+  private parallel(call: TS.CallExpression, mode: "all" | "race" | "any", into?: { decl: VarDecl; kind: "number" | "boolean" }, intos?: ({ decl: VarDecl; kind: "number" | "boolean" } | undefined)[]) {
     const { ts } = this;
     const name = `Promise.${mode}`;
     if (this.inCallback > 0) { this.c.error(call, `${name}() inside a function given to an array method: the method is one loop within the frame.`); return; }
     const list = call.arguments.length === 1 ? this.unwrap(call.arguments[0]) : undefined;
     if (!list || !ts.isArrayLiteralExpression(list)) { this.c.error(call, `${name}() takes a list written where it is called: ${name}([wave(1), sleep(seconds(90))]).`); return; }
     if (!list.elements.length) { this.c.error(list, mode === "all" ? "Promise.all([]) has nothing to wait for." : `${name}([]) never ends.`); return; }
+    if (intos && intos.length > list.elements.length) { this.c.error(call, `Promise.all() here has ${list.elements.length} item${list.elements.length === 1 ? "" : "s"}, so it gives ${list.elements.length} value${list.elements.length === 1 ? "" : "s"}, not ${intos.length}.`); return; }
     const branches: Stmt[][] = [];
-    for (const el of list.elements) {
+    for (const [i, el] of list.elements.entries()) {
       if (ts.isSpreadElement(el) || ts.isOmittedExpression(el)) { this.c.error(el, `Each item of ${name}() is written out: what runs side by side is settled when the script is built.`); return; }
-      branches.push(this.collect(() => this.task(el, into)));
+      branches.push(this.collect(() => this.task(el, intos ? intos[i] : into)));
     }
     this.emit({ kind: "parallel", mode: mode === "all" ? "all" : "race", branches, at: this.at(call), label: this.label(call) }, call);
+  }
+
+  /** `const [a, b] = await Promise.all([…])`: each name the value of its branch, which the branch sets as it ends. */
+  private allValues(pattern: TS.ArrayBindingPattern, call: TS.CallExpression, d: TS.VariableDeclaration) {
+    const { ts } = this;
+    const intos: ({ decl: VarDecl; kind: "number" | "boolean" } | undefined)[] = [];
+    const from: Binding[] = [];
+    for (const el of pattern.elements) {
+      if (ts.isOmittedExpression(el)) { intos.push(undefined); from.push({ kind: "value", value: undefined }); continue; }
+      if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name)) { this.c.error(el, "Each value of Promise.all() goes to a name of its own: const [a, b] = await Promise.all([…]), with a hole — [, b] — for one you do not keep."); return; }
+      const type = this.c.checker.getTypeAtLocation(el.name);
+      const kind = this.kindOf(type);
+      if (kind !== "number" && kind !== "boolean") {
+        const none = (type.flags & ts.TypeFlags.Void) !== 0;
+        this.c.error(el, none ? `${el.name.text} would be void: its item gives no value. Give it one with .then(() => …), or leave a hole for it — [, b].` : `${el.name.text} would be ${this.c.checker.typeToString(type)}: what Promise.all() gives a name here is a number or a boolean.`);
+        return;
+      }
+      const at = this.at(el), label = this.label(el);
+      const v = this.newVar(el.name.text, kind, at, kind === "number" ? this.widthOf(type) : {});
+      this.emit({ kind: "declare", decl: v, init: kind === "number" ? num(0) : FALSE, at, label }, el);
+      intos.push({ decl: v, kind });
+      from.push({ kind: "var", v });
+    }
+    this.parallel(call, "all", undefined, intos);
+    this.bindPattern(pattern, d, from, this.scope);
   }
 
   /** `const first = await Promise.race([…])`: the value of the branch that ends first, in a variable of its own. */
   private raceValue(e: TS.CallExpression, kind: "number" | "boolean"): NumExpr | BoolExpr | null {
     const { ts } = this;
     const mode = this.promiseCall(e)!;
-    if (mode === "all") { this.c.error(e, "Promise.all() gives no value yet: await it as a statement, and keep what each branch finds in variables of the program."); return null; }
+    if (mode === "all") { this.c.error(e, "Promise.all() gives a value for each item: take them apart where it is awaited — const [a, b] = await Promise.all([…])."); return null; }
     let up: TS.Node = e.parent;
     while (ts.isParenthesizedExpression(up)) up = up.parent;
     if (!ts.isAwaitExpression(up)) { this.c.error(e, `Promise.${mode}() gives a promise: await it — const v = await Promise.${mode}([…]).`); return null; }
@@ -4273,11 +4361,219 @@ export class Structured {
     return kind === "number" ? varRef(t) : { kind: "var", id: t.id };
   }
 
+  /** `start(…)`'s `{ max }`: how many of its tasks can run at once, 16 unless said. */
+  private startMax(arg: TS.Expression | undefined): number | null {
+    if (!arg) return TASK_MAX;
+    const h = this.evaluate(arg);
+    const max = h && typeof h.value === "object" && h.value !== null ? (h.value as { max?: unknown }).max : undefined;
+    if (!h || (max !== undefined && (typeof max !== "number" || !Number.isInteger(max) || max < 1 || max > 255))) {
+      this.c.error(arg, "start()'s options are written out, as { max: 40 }: how many of this start's tasks can run at once, a whole number from 1 to 255.");
+      return null;
+    }
+    return (max as number | undefined) ?? TASK_MAX;
+  }
+
+  /** `start(task, options?)` as a statement, or into `handle` — the variable that takes the number the task is known by. */
+  private startCall(call: TS.CallExpression, handle?: VarDecl) {
+    if (call.arguments.length < 1 || call.arguments.length > 2) { this.c.error(call, "start() takes a task, and options if you like: start(wave(3)), start(async () => { … }, { max: 4 })."); return; }
+    const max = this.startMax(call.arguments[1]);
+    if (max === null) return;
+    this.startTask(call.arguments[0], call, max, handle);
+  }
+
+  /** `const t = start(…)`: the task's number, in a variable of its own. */
+  private startValue(e: TS.CallExpression): NumExpr {
+    const at = this.at(e), label = this.label(e);
+    const t = this.newVar("(task)", "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: t, init: num(0), at, label }, e);
+    this.startCall(e, t);
+    return varRef(t);
+  }
+
+  /**
+   * A task, started here and left running (`start` in the IR): `start(wave(n))` — the async function's body inlined for
+   * this start alone, its parameters copies of the arguments as they are now — or `start(async () => { … })`. The body's
+   * variables and arrays are the task's: a cell for each of its slots, so tasks of the same start keep theirs apart.
+   */
+  private startTask(expr: TS.Expression, node: TS.Node, max: number, handle?: VarDecl) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const task = ++this.taskCount;
+    const refuse = () => this.c.error(e, `start() takes a call of an async function — start(wave(3)) — or an async function: start(async () => { … }). For anything else, start an async function that awaits it: start(async () => { await ${e.getText()}; }).`);
+    let call: Call | undefined;
+    const fn = ts.isCallExpression(e) ? this.unwrap(e.expression) : e;
+    const caught = (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) ? this.loopCapture(fn, node) : undefined;
+    if (caught) { this.c.error(caught, `This task reads ${caught.text}, which the loop around the start() changes: JavaScript gives each turn its own, and here the task would find it as it is when it reads it. Hand it over as an argument instead — an async function that takes it, start(f(${caught.text})).`); return; }
+    if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) {
+      if (e.parameters.length) { this.c.error(e, "The function start() runs takes nothing: start(async () => { … })."); return; }
+      if (!ts.isCallExpression(node)) { refuse(); return; }
+      call = this.callback(expr, "start", [], "any", node, true);
+    } else if (ts.isCallExpression(e) && this.isPromise(e)) {
+      // The call's arguments are worked out at the start: the parameters are copies, whatever the function does with them.
+      this.copyArgsAt = this.inlineDepth;
+      let stmts: Stmt[];
+      try { stmts = this.collect(() => this.task(e)); } finally { this.copyArgsAt = -1; }
+      // Only a call of a function of the script is a body to run as a task; sleep(), until(), Promise.all and .then() are not.
+      call = stmts.length === 1 && stmts[0].kind === "call" && !stmts[0].call.fn ? stmts[0].call : undefined;
+      if (!call) { if (stmts.length) refuse(); return; }
+    } else { refuse(); return; }
+    if (!call) return;
+    // What the body declares is the task's own: one of each a slot. A start inside it marked its own task's first.
+    for (const d of [...call.params.map((p) => p.decl), ...(call.result ? [call.result.decl] : []), ...declarations(call.body)]) d.task ??= task;
+    const arrays = new Set<string>();
+    const visit = (root: unknown): void => {
+      if (Array.isArray(root)) { root.forEach(visit); return; }
+      if (!root || typeof root !== "object") return;
+      const o = root as Record<string, unknown>;
+      if (o.kind === "declareArray" && typeof o.array === "string") arrays.add(o.array);
+      Object.values(o).forEach((v) => { if (v && typeof v === "object") visit(v); });
+    };
+    visit(call.body);
+    for (const a of this.arrays) if (arrays.has(a.id)) a.task ??= task;
+    this.emit({ kind: "start", task, max, call, ...(handle ? { handle: handle.id } : {}), at: this.at(node), label: this.label(node) }, node);
+  }
+
+  /**
+   * A task's body may use the program's variables, its own, and those of the tasks it starts — not those of a task it is
+   * started from: which slot of that one's is in its cells is settled when that one runs, not when this one does.
+   */
+  private checkTasks(program: Program) {
+    const owner = new Map<string, { task: number; name: string }>();
+    for (const d of programDeclarations(program)) if (d.task !== undefined) owner.set(d.id, { task: d.task, name: d.name });
+    for (const a of this.arrays) if (a.task !== undefined) owner.set(a.id, { task: a.task, name: a.name });
+    eachStart(program.body, (st) => {
+      const mine = new Set([st.task]);
+      eachStart(st.call.body, (inner) => mine.add(inner.task));
+      let found: string | undefined;
+      const visit = (root: unknown): void => {
+        if (found || !root || typeof root !== "object") return;
+        if (Array.isArray(root)) { root.forEach(visit); return; }
+        const o = root as Record<string, unknown>;
+        for (const key of ["id", "target", "array", "handle"]) {
+          const v = o[key];
+          const of = typeof v === "string" ? owner.get(v) : undefined;
+          if (of && !mine.has(of.task)) { found = of.name; return; }
+        }
+        Object.values(o).forEach(visit);
+      };
+      visit(st.call.body);
+      const node = this.nodes.get(st);
+      if (found && node) this.c.error(node, `This task uses ${found}, a variable of the task it is started from: which of that task's copies it would find is not settled. Hand it over as an argument instead — start(f(${found})).`);
+    });
+  }
+
+  /** A variable of the program, declared inside a loop around `at`, that `fn` reads: what a task must not close over. */
+  private loopCapture(fn: TS.ArrowFunction | TS.FunctionExpression, at: TS.Node): TS.Identifier | undefined {
+    const { ts } = this;
+    const loops: TS.Node[] = [];
+    for (let n: TS.Node | undefined = at.parent; n; n = n.parent) {
+      if (ts.isIterationStatement(n, false)) loops.push(n);
+      if (ts.isFunctionLike(n)) break;
+    }
+    if (!loops.length) return undefined;
+    let found: TS.Identifier | undefined;
+    const visit = (n: TS.Node): void => {
+      if (found) return;
+      if (ts.isIdentifier(n)) {
+        const d = this.c.checker.getSymbolAtLocation(n)?.valueDeclaration;
+        if (d && ts.isVariableDeclaration(d) && !(d.pos >= fn.pos && d.end <= fn.end) && loops.some((l) => d.pos >= l.pos && d.end <= l.end) && this.bindingOf(n)?.kind === "var") found = n;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(fn.body);
+    return found;
+  }
+
+  /**
+   * `for (const w of waves(…))`, waves a generator (`function*`, or `async function*` with `for await`): the generator's
+   * body inlined, and at each `yield` the loop's body, its variable what was yielded — a value the script knows as it
+   * is, anything else in a variable of the turn. `continue` goes on after the yield; `break` leaves the generator.
+   */
+  private generatorLoop(s: TS.ForOfStatement, decl: TS.VariableDeclaration, ctx: Ctx): boolean {
+    const { ts } = this;
+    const e = this.unwrap(s.expression);
+    if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression)) return false;
+    const fn = this.gameDeclaration(e.expression);
+    if (!fn || !ts.isFunctionDeclaration(fn) || !fn.asteriskToken) return false;
+    let returns: TS.Node | undefined;
+    const look = (n: TS.Node): void => { if (returns || ts.isFunctionLike(n)) return; if (ts.isReturnStatement(n)) { returns = n; return; } ts.forEachChild(n, look); };
+    look(s.statement);
+    if (returns) { this.c.error(returns, "return inside a for…of over a generator is not supported yet: break out of the loop, and return after it."); return true; }
+    const loopBody = this.body, loopScope = this.scope;
+    const at = this.at(s), label = this.label(s);
+    const stop = this.newVar("(loop left)", "boolean", at);
+    this.emit({ kind: "declare", decl: stop, init: FALSE, at, label }, s);
+    const kind = this.kindOf(this.c.checker.getTypeAtLocation(decl.name));
+    const handler = (y: TS.YieldExpression) => {
+      if (y.asteriskToken) { this.c.error(y, "yield* is not supported yet: walk the other generator with a for…of and yield each of its items."); return; }
+      if (!y.expression) { this.c.error(y, "yield gives the loop a value here: yield 3, yield { count: 4 }."); return; }
+      // The value, worked out where the yield is.
+      const h = this.evaluate(y.expression);
+      let item: Binding | null = null;
+      if (h && !isGameValue(h.value)) item = { kind: "value", value: h.value };
+      else if (kind) {
+        const v = this.newVar(ts.isIdentifier(decl.name) ? decl.name.text : "(item)", kind, this.sourceOf(decl.name), kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(decl.name)) : {});
+        const init = kind === "number" ? this.num(y.expression) : kind === "unit" ? this.unitExpr(y.expression) : this.boolValue(y.expression);
+        if (!init) return;
+        this.emit({ kind: "declare", decl: v, init, at: this.at(y), label: this.label(y) }, y);
+        item = { kind: "var", v };
+      } else if (ts.isObjectLiteralExpression(this.unwrap(y.expression))) {
+        item = this.declareRecord(ts.isIdentifier(decl.name) ? decl.name.text : "(item)", this.unwrap(y.expression) as TS.ObjectLiteralExpression, this.c.checker.getTypeAtLocation(decl.name), y);
+      } else item = this.bindingOf(y.expression) ?? null;
+      if (!item) { this.c.error(y.expression, "A generator walked by a program yields numbers, booleans, units, records of them, or values the script knows."); return; }
+      // The loop's body, where the loop is: its scope, its file, and a yield in it is the generator's around the loop, if any.
+      const saved = this.enterBody(loopBody);
+      const inner = this.scope;
+      const mine = this.yields.pop()!;
+      const scope = new Scope(loopScope);
+      this.scope = scope;
+      let body: Stmt[] = [];
+      try {
+        const bound = ts.isIdentifier(decl.name) ? (scope.bind(decl, item), true) : this.bindPattern(decl.name, decl, item, scope);
+        if (bound) body = this.collect(() => this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true, breakFlag: stop }, new Scope(scope)));
+      } finally {
+        this.yields.push(mine);
+        this.scope = inner;
+        this.leaveBody(saved);
+      }
+      const where = this.at(y), what = this.label(y);
+      this.emit({ kind: "do", body, cond: FALSE, at: where, label: what, condLabel: what }, y);
+      this.emit({ kind: "if", cond: { kind: "var", id: stop.id }, then: [{ kind: "return", at: where, label: what }], at: where, label: what }, y);
+    };
+    this.yields.push(handler);
+    try {
+      const call = this.inline(e, fn.parameters, fn.body, this.body, fn.name?.text, fn, { generator: true, nothing: true });
+      if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, s);
+    } finally {
+      this.yields.pop();
+    }
+    return true;
+  }
+
+  /** `yield v;` in a generator a for…of walks: the loop's body, there. */
+  private yieldStatement(y: TS.YieldExpression) {
+    const handler = this.yields[this.yields.length - 1];
+    if (!handler) { this.c.error(y, "yield is for a generator that a for…of walks: for (const w of waves()) { … }."); return; }
+    handler(y);
+  }
+
+  /** `t.cancel()`: the task stops where it is. */
+  private cancelTask(e: TS.CallExpression, receiver: TS.Expression) {
+    if (e.arguments.length) { this.c.error(e, "cancel() takes nothing."); return; }
+    const task = this.num(receiver);
+    if (task) this.emit({ kind: "cancel", task, at: this.at(e), label: this.label(e) }, e);
+  }
+
   private expressionStatement(expr: TS.Expression, awaited = false) {
     const { ts } = this;
     let bare = expr;
     while (ts.isParenthesizedExpression(bare)) bare = bare.expression;
     if (ts.isAwaitExpression(bare)) { this.task(bare.expression); return; }
+    if (ts.isYieldExpression(bare)) { this.yieldStatement(bare); return; }
+    // `void wave(3)`: started, and nothing waits for it — what JavaScript does with a promise nobody keeps.
+    if (ts.isVoidExpression(bare) && this.isPromise(bare.expression)) { this.startTask(bare.expression, bare, TASK_MAX); return; }
+    if (ts.isCallExpression(bare) && this.isLibraryCall(bare, "start")) { this.startCall(bare); return; }
+    if (ts.isCallExpression(bare) && ts.isPropertyAccessExpression(bare.expression) && bare.expression.name.text === "cancel" && this.isTaskType(this.c.checker.getTypeAtLocation(bare.expression.expression))) { this.cancelTask(bare, bare.expression.expression); return; }
     // A promise nothing waits for. sleep() in a function that is not async is the language before 4: it pauses there.
     if (!awaited && ts.isCallExpression(bare) && this.isPromise(bare) && !(this.isLibraryCall(bare, "sleep") && !this.inAsync(bare))) { this.notAwaited(bare); return; }
     const e = this.unwrap(expr);
@@ -4763,8 +5059,9 @@ export class Structured {
 
   private forOfStatement(s: TS.ForOfStatement, ctx: Ctx) {
     const { ts } = this;
-    if (s.awaitModifier) { this.c.error(s, "for await is not supported in a program."); return; }
     const decl = ts.isVariableDeclarationList(s.initializer) && s.initializer.declarations.length === 1 ? s.initializer.declarations[0] : undefined;
+    if (decl && this.generatorLoop(s, decl, ctx)) return;
+    if (s.awaitModifier) { this.c.error(s, "for await walks a generator here: for await (const w of waves()) { … }, waves an async function*."); return; }
     if (decl && this.keyedLoop(s, decl, ctx)) return;
     if (!decl) { this.c.error(s.initializer, "for…of takes one variable: for (const w of waves) { … }."); return; }
     if (!ts.isIdentifier(decl.name)) {
@@ -5461,7 +5758,7 @@ export class Structured {
     if (cls.typeParameters?.length) this.c.error(cls.typeParameters[0], "A class of a program takes no type parameters: what each field holds has to be known when the script is built.");
     for (const m of cls.members) {
       if (ts.isClassStaticBlockDeclaration(m)) { this.c.error(m, "A static block is not supported in a program; give the static fields their values where they are declared."); continue; }
-      if (ts.isMethodDeclaration(m) && (m.asteriskToken || ts.getModifiers(m)?.some((x) => x.kind === ts.SyntaxKind.AsyncKeyword))) this.c.error(m, "A generator or an async method is not supported in a class yet; an async function declared in the program can take the instance.");
+      if (ts.isMethodDeclaration(m) && m.asteriskToken) this.c.error(m, "A generator method is not supported in a class yet; a generator function declared in the program can take the instance.");
       if (!ts.isPropertyDeclaration(m) || !this.isStatic(m)) continue;
       const key = this.memberKey(m.name);
       if (!key) { this.c.error(m.name, "A field's name is written out."); continue; }
@@ -5710,10 +6007,13 @@ export class Structured {
       for (const item of items) { spread.set(given.length, item); given.push(arg); }
     }
     const what = name ?? "The function";
+    // The call start() runs as a task: its arguments are worked out at the start, and the caller's variables may change after.
+    const copies = this.copyArgsAt === this.inlineDepth;
+    if (copies) this.copyArgsAt = -1;
     if (!body) { this.c.error(call, "The function has no body."); return undefined; }
     // A copy of a body inside a copy of a body, sixteen times over: what happens from here is decided once the arguments are known.
     const deep = this.inlineDepth >= MAX_INLINE_DEPTH;
-    if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl) || ts.isMethodDeclaration(decl)) && decl.asteriskToken) { this.c.error(decl, "Generators are not supported in a program yet."); return undefined; }
+    if ((ts.isFunctionDeclaration(decl) || ts.isArrowFunction(decl) || ts.isFunctionExpression(decl) || ts.isMethodDeclaration(decl)) && decl.asteriskToken && !as.generator) { this.c.error(call, `${what} is a generator: a program walks one with for…of — for (const w of ${name ?? "gen"}(…)) { … }.`); return undefined; }
     const kind: Kind | "text" | "void" = as.nothing ? "void" : this.kindOf(this.c.checker.getTypeAtLocation(call)) ?? (this.isTextType(this.c.checker.getTypeAtLocation(call)) ? "text" : "void");
     const line = this.line(call);
     const out: Call = { ...(name ? { name } : {}), at: this.at(call), label: this.label(call), params: [], body: [] };
@@ -5735,6 +6035,8 @@ export class Structured {
     };
     // Which instance comes back is settled where the call is: a copy of the body a call.
     if (as.instance) asCalled("it returns an instance, and which one is settled at each call");
+    if (copies) asCalled("it runs as a task, a copy of its body for each start()");
+    if (as.generator) asCalled("it is a generator, a copy of its body at each for…of");
     if (as.before?.length) asCalled("it is called on what another call gives, which runs first and inside it");
     // `function len({ x, y }: Point)`: taken apart when the function starts, inside its body — a called function's too.
     const patterns: (() => void)[] = [];
@@ -5800,7 +6102,7 @@ export class Structured {
         // A text of the program: the caller's own variable when the function only reads it, else a variable of the parameter's own that starts as a copy.
         // A function that is called has the parameter for a variable either way, set to a copy at each call.
         const given = this.bindingOf(arg);
-        if (given?.kind === "var" && given.v.kind === "text" && !this.assigns(body, p)) { scope.bind(p, given); asCalled({ init: { kind: "textVar", id: given.v.id }, label }); return; }
+        if (given?.kind === "var" && given.v.kind === "text" && !this.assigns(body, p) && !copies) { scope.bind(p, given); asCalled({ init: { kind: "textVar", id: given.v.id }, label }); return; }
         const value = this.text(arg);
         if (!value) { ok = false; return; }
         asCalled({ init: value, label });
@@ -5853,7 +6155,7 @@ export class Structured {
         const init = variable.kind === "number" ? varRef(variable) : variable.kind === "unit" ? unitRef(variable) : boolRef(variable);
         asCalled({ init, label });
         // By value, as in TypeScript. A parameter the function never assigns can read the caller's variable directly; one it assigns gets a copy.
-        if (!this.assigns(body, p)) { scope.bind(p, { kind: "var", v: variable }); return; }
+        if (!this.assigns(body, p) && !copies) { scope.bind(p, { kind: "var", v: variable }); return; }
         const copy = this.newVar(p.name.text, variable.kind, this.sourceOfIn(target, p.name), { ...(variable.bits ? { bits: variable.bits } : {}), ...(variable.unsigned ? { unsigned: true } : {}) });
         out.params.push({ decl: copy, init, label });
         scope.bind(p, { kind: "var", v: copy });
@@ -5914,7 +6216,7 @@ export class Structured {
     if (because) this.inlinedBecause.set(decl, { why: because, name: name ?? "function", at });
     if (deep) {
       this.c.error(call, (this.walkingBodies.get(decl) ?? 0) > 0
-        ? `${what} calls itself, and here it cannot be a function that is called${because ? ` — ${because}` : ""}. A call that is not one is a copy of the function's body, and these copies would have no end.`
+        ? `${what} calls itself, and here it cannot be a function that is called${because ? ` — ${because}` : ""}. A call that is not one is a copy of the function's body, and these copies would have no end.${because.startsWith("it sleeps") || because.startsWith("it runs as a task") ? " A function that waits cannot call itself yet: write the recursion as a loop — while (n > 0) { …; await sleep(…); n--; }." : ""}`
         : "Functions nest too deeply: a call that is inlined is a copy of the function's body, and these are sixteen inside one another.");
       return undefined;
     }
@@ -5922,6 +6224,10 @@ export class Structured {
     this.walkingBodies.set(decl, (this.walkingBodies.get(decl) ?? 0) + 1);
     try {
       out.body = this.walkFunction(body, kind, target, scope, () => { patterns.forEach((take) => take()); as.first?.(scope); }, as.instance);
+      const idle = this.neverAwaits(decl);
+      if (idle) {
+        out.body.unshift({ kind: "remark", short: "never awaits", text: `${what} is async but never awaits: it runs to its end in the frame it is called, as a function that is not async would. Take the async away, or await something in it.`, at: this.sourceOfIn(target, idle) });
+      }
       if (as.before?.length) {
         // The chain so far, then this call's own arguments, then its body: the order JavaScript works them out in.
         out.body = [...as.before, ...out.params.map((p): Stmt => ({ kind: "declare", decl: p.decl, init: p.init, at: out.at, label: p.label })), ...out.body];
@@ -6068,7 +6374,12 @@ export class Structured {
     }
     if (caught.length) return `with its parameters as variables of the game it does not compile — ${caught[0].replace(/\.$/, "")}`;
     if (mentions(fn.body, "sleep") || mentions(fn.body, "parallel")) return "it sleeps, and the program wakes up inside it";
+    if (mentions(fn.body, "start")) return "it starts a task";
     if (mentions(fn.body, "edge")) return "rose() / once() remember what they saw, a call each";
+    const idle = this.neverAwaits(decl);
+    if (idle) {
+      fn.body.unshift({ kind: "remark", short: "never awaits", text: `${name} is async but never awaits: it runs to its end in the frame it is called, as a function that is not async would. Take the async away, or await something in it.`, at: this.sourceOfIn(target, idle) });
+    }
     this.mark(fn, decl);
     this.functions.push(fn);
     this.declared.set(fn, decl);
@@ -6379,6 +6690,7 @@ export class Structured {
     const ofText = this.textNumber(e);
     if (ofText !== undefined) return ofText;
     if (this.promiseCall(e)) return this.raceValue(e, "number") as NumExpr | null;
+    if (this.isLibraryCall(e, "start")) return this.startValue(e);
     const method = this.methodCall(e);
     if (method !== undefined) return this.numberOf(method, e);
     if (ts.isIdentifier(e.expression) && (e.expression.text === "parseInt" || e.expression.text === "Number" || e.expression.text === "parseFloat") && !this.gameDeclaration(e.expression)) {
@@ -6820,6 +7132,10 @@ export class Structured {
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return { kind: "not", expr: this.boolInner(e.operand, depth + 1) };
+    if (ts.isPropertyAccessExpression(e) && e.name.text === "running" && this.isTaskType(this.c.checker.getTypeAtLocation(e.expression))) {
+      const task = this.num(e.expression);
+      return task ? { kind: "running", task, at: this.at(e) } : FALSE;
+    }
     if ((ts.isCallExpression(e) || ts.isPropertyAccessExpression(e)) && !this.isTextTyped(e)) {
       // `if (s.alive())`, `if (s.ready)`: a method or a getter, tested as any call is.
       const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
