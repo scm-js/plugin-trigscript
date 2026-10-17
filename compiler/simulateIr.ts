@@ -1495,6 +1495,8 @@ export class ProgramSimulation {
 
   /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
   tableRead(c: TableCell): number {
+    // The game's own count of frames, which a program can read and never write (memory.ts).
+    if (c.name === "memory.game.frame") return this.frame;
     const stored = this.tables.get(this.cellKey(c));
     if (typeof stored === "number") return Math.floor(stored / (c.scale ?? 1));
     const given = this.tableOf?.(c);

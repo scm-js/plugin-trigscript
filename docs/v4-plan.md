@@ -1096,6 +1096,62 @@ unsafe("the guard's cooldown, read for the HUD; probe 23", () => {
 - This is the door the crazy tier walks through, so it comes after the allowlist and the
   tracer are settled.
 
+**Started 2026-10-17, steered by S4** (the user: "a fog screen library for awesome DX —
+developer experience first, enjoyable and easy to use"). Bad Apple in TrigScript is the
+first program that needs memory the language has no word for (the vision countdown), so B7
+starts from what it needs, and the fog screen (Part C) is built on it in the same slice.
+What a map maker should write:
+
+```tsx
+import { program, fog, playSound, nextFrame, P1 } from "trigscript";
+import badApple from "./bad-apple.webm";   // B8: frames at the game's rate, as fog pictures
+import song from "./bad-apple.ogg";        // put in the map's archive
+
+program(async () => {
+  fog.reveal(P1);                         // light the whole board once: dark is fog from now on
+  playSound(song);
+  for (const frame of badApple) {         // one frame of video a game frame
+    fog.draw(P1, frame);
+    await nextFrame();
+  }
+});
+```
+
+and, for anything drawn while the game runs (the raycaster's columns, a radar, a ripple):
+
+```ts
+program(async () => {
+  while (true) {
+    for (let i = 0; i < 8; i++) fog.light(P1, cx + dx[i], cy + dy[i], 3);   // this frame only
+    await nextFrame();
+  }
+});
+```
+
+- **The model is a canvas cleared every frame**: what a program lights this frame is what
+  shows this frame, and nothing else needs saying. The library's machinery is the
+  compiler's: a map that uses `fog` gets the countdown written after every trigger pass
+  and the brushes' sight ranges set every frame. The unit types the brushes are made of are
+  heroes no ordinary map places (Remastered takes a sight write a frame late, so each size
+  is a type of its own), and a free location is taken from the top of the first 63, as
+  input does — the map maker never chooses either. A map that places or makes one of those
+  heroes gets an error that says which and why.
+- **Coordinates are tiles**, because fog is kept per tile, and a size is a sight range,
+  1 to 11; the hover shows each size's shape (the game's own masks, lopsided by a row).
+- `fog.draw(player, picture)` draws a picture made when the script is built:
+  `fog.picture(["..##..", ".####.", "######"])` from rows of text, an imported image or a
+  video's frames (B8). The encoder is `bad-apple-encode.mts`'s, moved into the compiler.
+- **Memory** (`memory.vision.countdown` and the rest) is the general door the library walks
+  through: fields from a list like `tables.ts`, each with Remastered's verdict from R0 and
+  the played probes in its hover; a read-only field is `readonly` in the declarations, so a
+  write is a type error before anything is built.
+
+The order: the `memory` list and its lowering (a cell with no index, through the table
+read and write that exist) → `fog.light`, the canvas machinery and `fog.reveal` → pictures
+from text → B8's imports (an image, then a video, decoded in the editor where the script is
+built; the plugin's 4 MB limit on data files is planned for) → Bad Apple written as above,
+then its lyrics with S2's JSX and the never-seen opening.
+
 ### B8. Built from the game (4.9.0)
 
 Tables a map could not afford to compute while it runs, computed by running the lifted

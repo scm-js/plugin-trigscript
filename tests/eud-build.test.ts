@@ -397,6 +397,16 @@ function build(name: string, src: string): { out: number; triggers: number } {
 
 // TrigScript 4, S2: JSX put together in a buffer, a cell of the program's colour, a bar, ui.lines redrawn when what it reads
 // changes — and the Tetris that shows it all off, keys and all.
+// B7: memory cells — a write every frame, a read in arithmetic and in a condition.
+FIXTURES.memory = `program(async () => {
+  let seen = 0;
+  while (true) {
+    memory.vision.countdown = 1;
+    seen = memory.game.frame * 2;
+    if (memory.game.frame % 24 == 0) displayText("a second");
+    await sleep(frames(1));
+  }
+});`;
 FIXTURES.uiTsx = `program(async () => {
     const cells = [0, 8, 17, 0];
     let hp = 40;

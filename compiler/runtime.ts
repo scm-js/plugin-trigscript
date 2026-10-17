@@ -26,6 +26,7 @@ import { DEAF_KEYS, keyName, KEY_NAMES, MOUSE_BUTTONS, parseChatPattern, type Ch
 import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
 import type { HoistedThunks } from "./hoist";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
+import { MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -609,6 +610,17 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     }
     return Object.freeze(out);
   };
+  /** `memory`: each field a table cell with no index (`memory.ts`), named by its path. */
+  // On the trigger level's memory(address, …) condition, which keeps its name: memory.vision.countdown.
+  Object.assign(rt.memory as object, Object.fromEntries(Object.keys(MEMORY_GROUPS).map((group) => [group, Object.freeze(Object.fromEntries(
+    MEMORY_FIELDS.filter((f) => f.path[0] === group).map((f) => {
+      const field = memoryTableField(f);
+      const ident = `memory.${field.name}`;
+      const fail = (): never => { throw new ScriptError(`${ident} is a value the game holds: it has no value when the script is built. Inside program(), assign to it, assign it to a let, or use it in the program's own arithmetic and comparisons.`); };
+      const cell: TableCell = { name: ident, base: field.base, stride: 0, index: 0, width: field.width };
+      return [f.path[1], { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail } as TableValue];
+    }),
+  ))])));
   const tableNames: Record<TableKind, ScriptNames[keyof ScriptNames]> = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
   const entryName = (kind: TableKind, value: number): string => {
     const t = tableNames[kind];

@@ -131,6 +131,8 @@ const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once",
  */
 const READ_CALLS = new Set<string>([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
 const isReadCall = (lib: string | null, args: number) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
+/** The library objects whose fields are cells of the game (`memory.vision.countdown`): a field is a value, but nothing around it is the script's. */
+const GAME_CELL_ROOTS = new Set(["memory"]);
 /**
  * The methods that take a function — `xs.map((x) => x * 2)`, `unitsOf(P1).forEach((u) => u.kill())`. Where such a call
  * is the program's, the function written in it is part of the program as a function declared in the body is: its
@@ -386,8 +388,18 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       // A generator is walked by the program's for…of, a copy of its body at each loop: never run when the script is built.
       if (decl && (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl)) && decl.asteriskToken) { ok = false; return; }
     };
+    /** `memory.vision.countdown` — a field of one of GAME_CELL_ROOTS, two names down. */
+    const isGameCell = (n: TS.Node): boolean => {
+      if (!ts.isPropertyAccessExpression(n) || !ts.isPropertyAccessExpression(n.expression)) return false;
+      const root = n.expression.expression;
+      if (!ts.isIdentifier(root)) return false;
+      const lib = libraryName(ts, checker, root);
+      return !!lib && GAME_CELL_ROOTS.has(lib);
+    };
     const check = (n: TS.Node): void => {
       if (!ok) return;
+      // The cell itself is a value (its handle); an expression around it — `memory.game.frame * 2` — is the program's.
+      if (n !== e && isGameCell(n)) { ok = false; return; }
       // `waves.forEach((w) => createUnit(P2, w.unit, w.count, at))`: nothing of the program is named, but forEach is there for
       // what its function does, and what this one does is the game's. Run when the script is built it would make actions
       // nobody receives, and the line would silently do nothing; it is the program's loop, unrolled.
