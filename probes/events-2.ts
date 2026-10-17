@@ -11,7 +11,7 @@
 //          "top: Marine down" (that one is a listener at the top of the script).
 //   B  12  two Firebats killed by the program: "died 32" twice, and no "killed".
 //   C  15  your turn, at your own pace: two High Templar with Psionic Storm and full energy, and a Siege Tank with Siege
-//          Mode, beside your base. Type -storm: eight Zerglings of the neutral player's beside your base, standing still. Storm them.
+//          Mode, beside your base. Type -storm: eight Zerglings of yours beside your base, standing still. Storm them.
 //          "Storm!" when a Templar starts casting; "killed 37 by P1" for each Zergling the storm kills.
 //          Then merge the two Templar into an Archon: "morphed 67 -> 68", and "died 67" for the other one.
 //   D      siege the tank: "morphed 5 -> 30"; unsiege it: "morphed 30 -> 5".
@@ -24,7 +24,7 @@
 // Host it as a multiplayer game, alone: a typed line (-storm, -zerg, -many) reaches the map only there.
 //   npx tsx scripts/build-fixture.mts probes/events-2.ts fixtures/eud/events-2.scx
 //   npx tsx scripts/test-game.mts probes/events-2.ts     (A and B in the lifted game)
-import { test, expect, type Sim, program, print, createUnit, setResources, sleep, seconds, unitsOf, on, units, orders, techs, stats, P1, P2, P12, type Location } from "trigscript";
+import { test, expect, type Sim, program, print, createUnit, setResources, sleep, seconds, unitsOf, on, units, orders, techs, stats, P1, P2, type Location } from "trigscript";
 
 const HOME = 1 as Location;
 
@@ -41,8 +41,9 @@ program(async () => {
   on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, () => print("Storm!"));
   on.order({ owner: P1, type: units.TerranMarine, order: orders.Move }, (u, order, was) => print(`move from ${was}`));
   on.morphed({ owner: P1 }, (u, was) => print(`morphed ${was} -> ${u.type}`));
-  // (The neutral player's Zerglings stand still where you can see them; the computer's at Away were made in the dark.)
-  on.chat("-storm", () => { print("-storm: eight Zerglings"); createUnit(P12, units.ZergZergling, 8, HOME); });
+  // (Your own Zerglings stand still where you can see them: the computer's at Away were made in the dark, and the
+  // neutral player's were not made in Remastered.)
+  on.chat("-storm", () => { print("-storm: eight Zerglings"); createUnit(P1, units.ZergZergling, 8, HOME); });
   on.chat("-zerg", () => { print("-zerg: two Drones"); setResources(P1, "add", 1000, "ore"); createUnit(P1, units.ZergDrone, 2, HOME); });
   on.chat("-many", () => { print("-many: 300 Overlords"); for (let i = 0; i < 12; i++) createUnit(P1, units.ZergOverlord, 25, HOME); });
   on.chat("-clear", () => { print("-clear"); for (const u of unitsOf(P1, { type: units.ZergOverlord })) u.remove(); });
