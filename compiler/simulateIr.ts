@@ -34,6 +34,7 @@
  * the next frame finds. A key, a click and a typed line last that one frame, as they do in the
  * game; the mouse stays where it was put.
  */
+import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "./fixedMath";
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
 import { ORDER_OF_VERB } from "./orders";
@@ -577,6 +578,13 @@ class ProgramRun {
         const args: number[] = [];
         for (const a of e.args) args.push(yield* this.num(a));
         if (e.name === "abs") return Math.abs(args[0]) | 0;
+        if (e.name === "fmul") return fixedMul(args[0], args[1]);
+        if (e.name === "fdiv") return fixedDiv(args[0], args[1]);
+        if (e.name === "sqrt") return fixedSqrt(args[0], !!e.unsigned);
+        if (e.name === "atan2" || e.name === "sin" || e.name === "cos") {
+          const table = (this.arrays.get(e.table ?? "")?.cells ?? []).map((c) => Number(c) | 0);
+          return e.name === "atan2" ? fixedAtan2(args[0], args[1], table) : fixedSin(args[0], args[1], table, e.name === "cos");
+        }
         const seen = e.unsigned ? args.map((a) => a >>> 0) : args;
         return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
       }
@@ -629,7 +637,7 @@ class ProgramRun {
   private *parts(parts: TextPart[], used: TextValue[]): Gen<string> {
     let out = "";
     for (const p of parts) {
-      if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      if (p.kind === "number") out += p.fixed ? fixedText(yield* this.num(p.expr)) : String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
       // A colour code is a control character in the game; the log keeps the words, as it does for a player's colour.
       else if (p.kind === "char") yield* this.num(p.expr);
       else if (p.kind === "value") { const v = yield* this.text(p.text); used.push(v); out += v.s; }

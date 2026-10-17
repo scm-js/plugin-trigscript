@@ -205,6 +205,7 @@ export const KO: Record<string, string> = {
   "a number (−2 147 483 648 … 2 147 483 647, whole, wrapping at either end as `x | 0` does)": "숫자 (−2 147 483 648 … 2 147 483 647, 정수, `x | 0`처럼 양 끝에서 넘어가면 반대쪽으로 돌아감)",
   "a text — `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes": "텍스트 — `length`, `s[i]`, `slice`는 문자(코드 포인트) 단위로 세며, 만든 텍스트는 1 023바이트까지 담습니다",
   "a u32 number (0 … 4 294 967 295, wrapping at either end as `x >>> 0` does)": "u32 숫자 (0 … 4 294 967 295, `x >>> 0`처럼 양 끝에서 넘어가면 반대쪽으로 돌아감)",
+  "a fixed number (−32 768 … 32 767.99998, in steps of 1/65 536): a number with a fraction": "fixed 숫자 (−32 768 … 32 767.99998, 1/65 536 단위): 소수가 있는 숫자",
   "a unit of the game, or none — checked before every use: once the unit is gone it reads 0 and takes no write": "게임의 유닛 또는 없음 — 쓸 때마다 확인합니다. 유닛이 사라지면 0으로 읽히고 쓰기는 무시됩니다",
   "a u{bits} number (0 … {max}, stopping at either end)": "u{bits} 숫자 (0 … {max}, 양 끝에서 멈춤)",
   "after": "종료 후",

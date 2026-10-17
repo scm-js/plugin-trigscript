@@ -70,6 +70,7 @@ import { markViewWrites, type View } from "./views";
 import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
 import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
+import { FIXED_MAX, FIXED_MIN, fixedRaw } from "./numbers";
 import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
@@ -408,14 +409,14 @@ export class Structured {
   private readonly collections = new Map<object, Keyed>();
   private readonly recordLists = new Map<object, Extract<Binding, { kind: "records" }>>();
 
-  private newArray(name: string, kind: "number" | "boolean", length: number, at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; values?: number[] } = {}): ArrayDecl {
-    const a: ArrayDecl = { id: `${name}#${this.nextId++}`, name, kind, length, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.values ? { values: extra.values } : {}), at };
+  private newArray(name: string, kind: "number" | "boolean", length: number, at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; fixed?: boolean; values?: number[] } = {}): ArrayDecl {
+    const a: ArrayDecl = { id: `${name}#${this.nextId++}`, name, kind, length, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.fixed ? { fixed: true } : {}), ...(extra.values ? { values: extra.values } : {}), at };
     this.arrays.push(a);
     return a;
   }
 
-  private newVar(name: string, kind: VarDecl["kind"], at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; temp?: boolean; text?: "id" | "made" } = {}): VarDecl {
-    const v: VarDecl = { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.temp ? { temp: true } : {}), ...(kind === "text" ? { text: extra.text ?? "made" } : {}), at };
+  private newVar(name: string, kind: VarDecl["kind"], at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; fixed?: boolean; temp?: boolean; text?: "id" | "made" } = {}): VarDecl {
+    const v: VarDecl = { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.fixed ? { fixed: true } : {}), ...(extra.temp ? { temp: true } : {}), ...(kind === "text" ? { text: extra.text ?? "made" } : {}), at };
     if (kind === "text") this.textKinds.set(v.id, v.text ?? "made");
     return v;
   }
@@ -1289,7 +1290,7 @@ export class Structured {
         let v: NumExpr | BoolExpr | null;
         if ("value" in src) {
           if (f.kind === "boolean") { if (typeof src.value !== "boolean") { this.c.error(where, `${name}: ${field} is true or false, got ${describe(src.value)}.`); return false; } v = { kind: "const", value: src.value }; }
-          else { const n = this.asInteger({ value: src.value }, where); v = n === null ? null : num(n); }
+          else v = this.constOf({ value: src.value }, where);
         } else if ("expr" in src) v = f.kind === "number" ? this.num(src.expr) : this.boolValue(src.expr);
         else v = src.binding.kind === "record" ? null : (this.valueOf(src.binding, f.kind, where) as NumExpr | BoolExpr | null);
         if (!v) return false;
@@ -1693,7 +1694,7 @@ export class Structured {
         const index = this.keyConstant(keyed, typeof k === "string" && /^\d+$/.test(k) ? Number(k) : k, init);
         if (index === null) continue;
         if (values) {
-          const value: NumExpr | BoolExpr | null = values.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : (() => { const n = this.asInteger({ value: v }, init); return n === null ? null : num(n); })();
+          const value: NumExpr | BoolExpr | null = values.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : this.constOf({ value: v }, init);
           if (!value) { if (values.kind === "boolean") this.c.error(init, `Expected true or false, got ${describe(v)}.`); continue; }
           this.emit({ kind: "store", array: values.id, index: num(index), value, at: atIr, label }, at);
         }
@@ -2184,7 +2185,7 @@ export class Structured {
       if (!Array.isArray(h.value)) { this.c.error(e, `Expected a list here, got ${describe(h.value)}.`); return false; }
       for (const v of h.value as unknown[]) {
         if (of === "boolean") { if (typeof v !== "boolean") { this.c.error(e, `Expected true or false, got ${describe(v)}.`); return false; } this.emit({ kind: "push", array: into.id, value: { kind: "const", value: v }, at, label }, e); }
-        else { const n = this.asInteger({ value: v }, e); if (n === null) return false; this.emit({ kind: "push", array: into.id, value: num(n), at, label }, e); }
+        else { const n = this.constOf({ value: v }, e); if (n === null) return false; this.emit({ kind: "push", array: into.id, value: n, at, label }, e); }
       }
       return true;
     }
@@ -2233,7 +2234,7 @@ export class Structured {
       if (Array.isArray(row)) {
         for (const v of row) {
           if (shape.kind === "boolean") { if (typeof v !== "boolean") { this.c.error(init, `Expected true or false, got ${describe(v)}.`); return null; } this.emit({ kind: "push", array: inner.id, value: { kind: "const", value: v }, at: this.at(at), label: this.label(at) }, at); }
-          else { const n = this.asInteger({ value: v }, init); if (n === null) return null; this.emit({ kind: "push", array: inner.id, value: num(n), at: this.at(at), label: this.label(at) }, at); }
+          else { const n = this.constOf({ value: v }, init); if (n === null) return null; this.emit({ kind: "push", array: inner.id, value: n, at: this.at(at), label: this.label(at) }, at); }
         }
       } else if (!this.fillInner(inner, shape.kind, row)) return null;
     }
@@ -2327,8 +2328,8 @@ export class Structured {
     if (b.kind !== "value") return this.takenCopy(b, name, at);
     const kind: Kind = typeof b.value === "boolean" ? "boolean" : "number";
     const v = this.newVar(name, kind, this.sourceOf(at));
-    const n = kind === "number" ? this.asInteger({ value: b.value }, at) : null;
-    this.emit({ kind: "declare", decl: v, init: kind === "boolean" ? { kind: "const", value: b.value as boolean } : num(n ?? 0), at: this.at(at), label: this.label(at) }, at);
+    const n = kind === "number" ? this.constOf({ value: b.value }, at) : null;
+    this.emit({ kind: "declare", decl: v, init: kind === "boolean" ? { kind: "const", value: b.value as boolean } : n ?? num(0), at: this.at(at), label: this.label(at) }, at);
     return { kind: "var", v };
   }
 
@@ -2595,7 +2596,7 @@ export class Structured {
   }
 
   private isPlainList(v: unknown): v is (number | boolean)[] {
-    return Array.isArray(v) && v.length > 0 && v.length <= MAX_TABLE && (v.every((x) => typeof x === "number" && Number.isInteger(x)) || v.every((x) => typeof x === "boolean"));
+    return Array.isArray(v) && v.length > 0 && v.length <= MAX_TABLE && (v.every((x) => typeof x === "number" && (Number.isInteger(x) || (Number.isFinite(x) && x >= FIXED_MIN && x <= FIXED_MAX))) || v.every((x) => typeof x === "boolean"));
   }
 
   /** A list the script has, as the array nothing writes that a program reads it through: once a list. */
@@ -2605,8 +2606,9 @@ export class Structured {
     let a = this.tables.get(list);
     if (!a) {
       const booleans = typeof list[0] === "boolean";
-      const values = list.map((v) => (typeof v === "boolean" ? (v ? 1 : 0) : v));
-      a = this.newArray(expr.getText(this.body.sf).replace(/\s+/g, " "), booleans ? "boolean" : "number", values.length, this.at(expr), { shared: true, values, ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
+      const cells = this.listCells(list.map((v) => (typeof v === "boolean" ? (v ? 1 : 0) : v)));
+      const values = cells.values;
+      a = this.newArray(expr.getText(this.body.sf).replace(/\s+/g, " "), booleans ? "boolean" : "number", values.length, this.at(expr), { shared: true, values, ...(cells.fixed ? { fixed: true } : {}), ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
       this.tables.set(list, a);
     }
     return { kind: "array", a };
@@ -2865,7 +2867,7 @@ export class Structured {
     if (b.kind === "unitAt" && kind === "unit") return this.unitAtPlaces(b, at);
     if (b.kind === "value") {
       if (kind === "boolean" && typeof b.value === "boolean") return { kind: "const", value: b.value };
-      if (kind === "number") { const n = this.asInteger({ value: b.value }, at); return n === null ? null : num(n); }
+      if (kind === "number") return this.constOf({ value: b.value }, at);
     }
     this.c.error(at, `Expected a ${kind} here.`);
     return null;
@@ -3406,8 +3408,7 @@ export class Structured {
     };
     const constant = (v: unknown, where: TS.Node): NumExpr | BoolExpr | null => {
       if (kind === "boolean") { if (typeof v === "boolean") return { kind: "const", value: v }; this.c.error(where, `Expected true or false, got ${describe(v)}.`); return null; }
-      const n = this.asInteger({ value: v }, where);
-      return n === null ? null : num(n);
+      return this.constOf({ value: v }, where);
     };
     const h = this.evaluate(init);
     if (h) {
@@ -3466,7 +3467,7 @@ export class Structured {
         if (!Array.isArray(h.value)) { this.c.error(x, `... spreads a list, got ${describe(h.value)}.`); return null; }
         for (const v of h.value as unknown[]) {
           if (kind === "boolean") { if (typeof v !== "boolean") { this.c.error(x, `Expected true or false, got ${describe(v)}.`); return null; } parts.push({ value: { kind: "const", value: v } }); }
-          else { const n = this.asInteger({ value: v }, x); if (n === null) return null; parts.push({ value: num(n) }); }
+          else { const n = this.constOf({ value: v }, x); if (n === null) return null; parts.push({ value: n }); }
         }
         continue;
       }
@@ -3535,15 +3536,22 @@ export class Structured {
       a = this.tables.get(list);
       if (!a) {
         const booleans = list.length > 0 && list.every((v) => typeof v === "boolean");
-        const values: number[] = [];
+        const raw: number[] = [];
         for (const v of list as unknown[]) {
+          if (!booleans && typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v)) {
+            if (v < FIXED_MIN || v > FIXED_MAX) { this.c.error(e.expression, `${v} has a fraction, which makes it a fixed number, and a fixed number holds −32 768 … 32 767.99998.`); return null; }
+            raw.push(v);
+            continue;
+          }
           const n = booleans ? (v ? 1 : 0) : this.asInteger({ value: v }, e.expression);
           if (n === null) return null;
-          values.push(n);
+          raw.push(n);
         }
+        const cells = this.listCells(raw);
+        const values = cells.values;
         if (values.length < 1 || values.length > MAX_TABLE) { this.c.error(e.expression, `A list a program looks a value up in has 1 to ${MAX_TABLE.toLocaleString("en-US")} entries (got ${values.length.toLocaleString("en-US")}).`); return null; }
         const name = e.expression.getText(this.body.sf).replace(/\s+/g, " ");
-        a = this.newArray(name, booleans ? "boolean" : "number", values.length, this.at(e.expression), { shared: true, values, ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
+        a = this.newArray(name, booleans ? "boolean" : "number", values.length, this.at(e.expression), { shared: true, values, ...(cells.fixed ? { fixed: true } : {}), ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
         this.tables.set(list, a);
       }
     }
@@ -3669,7 +3677,7 @@ export class Structured {
   }
 
   /** What a `u8` / `u16` / `u32` annotation declares, read off the brand in the type; nothing for a plain number, which is signed. */
-  private widthOf(type: TS.Type): { bits?: 8 | 16; unsigned?: boolean } {
+  private widthOf(type: TS.Type): { bits?: 8 | 16; unsigned?: boolean; fixed?: boolean } {
     type = this.awaited(type);
     for (const t of type.isIntersection() ? type.types : [type]) {
       const p = t.getProperty("__kind");
@@ -3679,7 +3687,9 @@ export class Structured {
       if (names.includes("u8")) return { bits: 8 };
       if (names.includes("u16")) return { bits: 16 };
       if (names.includes("u32")) return { unsigned: true };
+      if (names.includes("fixed")) return { fixed: true };
     }
+    // `fixed[]` read as its element's type is the caller's to ask; a `number` is whole until something stores a fraction into it.
     return {};
   }
 
@@ -6098,7 +6108,7 @@ export class Structured {
     for (const [v, first] of [[h.size, 0], [h.mask, HASH_START - 1], [h.used, 0], [h.dead, 0], [h.walking, 0]] as const) this.emit({ kind: "declare", decl: v, init: num(first), at: atIr, label }, at);
     // What it starts with: worked out whole when nothing of the program is in it, else the pairs as they are written.
     const whole = this.evaluate(init)?.value;
-    const constant = (v: unknown): NumExpr | BoolExpr | null => (h.values?.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : (() => { const n = this.asInteger({ value: v }, init); return n === null ? null : num(n); })());
+    const constant = (v: unknown): NumExpr | BoolExpr | null => (h.values?.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : this.constOf({ value: v }, init));
     if (unitKeys && (whole instanceof Map || whole instanceof Set) && whole.size > 0) { this.c.error(init, `${name}'s keys are units of the game, which the script has none of: it starts empty.`); return null; }
     if (whole instanceof Map || whole instanceof Set) {
       for (const [k, v] of whole instanceof Map ? whole.entries() : [...whole.values()].map((x) => [x, true] as const)) {
@@ -7051,6 +7061,7 @@ export class Structured {
     if (value === null || value === undefined) return this.kindOf(this.c.checker.getTypeAtLocation(parameter.name)) === "unit" ? { init: NO_UNIT, label } : null;
     if (typeof value === "boolean") return { init: value ? TRUE : FALSE, label };
     if (typeof value === "number" && Number.isInteger(value) && value >= I32_MIN && value <= U32_MAX) return { init: num(value), label };
+    if (typeof value === "number" && Number.isFinite(value) && !Number.isInteger(value) && value >= FIXED_MIN && value <= FIXED_MAX) return { init: { kind: "const", value: fixedRaw(value), fixed: true }, label };
     if (typeof value === "string" && this.isTextType(this.c.checker.getTypeAtLocation(parameter.name))) return { init: this.literalText(value, parameter), label };
     return null;
   }
@@ -7264,9 +7275,31 @@ export class Structured {
     const v = h.value;
     if (typeof v === "boolean") return v ? 1 : 0;
     if (typeof v !== "number" || !Number.isFinite(v)) { this.c.error(at, `Expected a number, got ${describe(v)}.`); return null; }
-    if (!Number.isInteger(v)) { this.c.error(at, `Only whole numbers exist in the game (got ${v}).`); return null; }
+    if (!Number.isInteger(v)) { this.c.error(at, `Only a whole number goes here (got ${v}): Math.floor(x), Math.round(x) or Math.trunc(x) says how to round it.`); return null; }
     if (v < I32_MIN || v > U32_MAX) { this.c.error(at, `A number of the game has 32 bits: −2 147 483 648 to 2 147 483 647, or up to 4 294 967 295 as a u32 (got ${v}).`); return null; }
     return v;
+  }
+
+  /**
+   * A number known when the script is built, as a constant of the program: a whole number as it is, one with a fraction
+   * a fixed number (16.16, `numbers.ts`), which is what makes `0.5`, `Math.PI` and `Math.cos(1)` mean what they say.
+   */
+  private constOf(h: { value: unknown }, at: TS.Node): NumExpr | null {
+    const v = h.value;
+    if (typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v)) return this.fixedConst(v, at);
+    const n = this.asInteger(h, at);
+    return n === null ? null : num(n);
+  }
+
+  private fixedConst(v: number, at: TS.Node): NumExpr | null {
+    if (v < FIXED_MIN || v > FIXED_MAX) { this.c.error(at, `${v} has a fraction, which makes it a fixed number, and a fixed number holds −32 768 … 32 767.99998.`); return null; }
+    return { kind: "const", value: fixedRaw(v), fixed: true };
+  }
+
+  /** A list's numbers as cells: whole as they are, or every one a fixed number's cell when any has a fraction. */
+  private listCells(list: readonly number[]): { values: number[]; fixed?: boolean } {
+    if (list.every((v) => Number.isInteger(v))) return { values: [...list] };
+    return { values: list.map(fixedRaw), fixed: true };
   }
 
   /** `num` without diagnostics, for a probe that may fail. */
@@ -7294,8 +7327,7 @@ export class Structured {
       if (isInput(h.value)) return this.inputValue(h.value, e);
       if (isMouse(h.value)) { this.c.error(e, "mouse() is a place on the map: read its x or its y."); return null; }
       if (isChat(h.value)) { this.c.error(e, "chatted() is what a player typed: test it in an if, or read one of the values its pattern names."); return null; }
-      const n = this.asInteger(h, e);
-      return n === null ? null : num(n);
+      return this.constOf(h, e);
     }
     if (ts.isPropertyAccessExpression(e)) {
       const member = this.unitMember(e);
@@ -7533,8 +7565,49 @@ export class Structured {
       return call?.result ? this.mark<NumExpr>({ kind: "call", call }, e) : null;
     }
     if (callee === Math.floor || callee === Math.trunc || callee === Math.round || callee === Math.ceil) {
-      const a = args(1, "Math rounding");
-      return a ? a[0] : null; // Whole numbers already.
+      // Of a whole number nothing at all; of a fixed one, what numbers.ts makes of it.
+      const name = callee === Math.floor ? "floor" : callee === Math.trunc ? "trunc" : callee === Math.round ? "round" : "ceil";
+      const a = args(1, `Math.${name}()`);
+      return a ? this.mark<NumExpr>({ kind: "intrinsic", name, args: a, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    if (this.isLibraryCall(e, "fixed")) {
+      // A whole number as a fixed one: 3 is 3.0, so that 3 / fixed(2) is 1.5.
+      const a = args(1, "fixed()");
+      return a ? this.mark<NumExpr>({ kind: "cast", to: "fixed", expr: a[0], at: this.at(e) }, e) : null;
+    }
+    if (callee === Math.sqrt || callee === Math.sin || callee === Math.cos) {
+      const name = callee === Math.sqrt ? "sqrt" : callee === Math.sin ? "sin" : "cos";
+      const a = args(1, `Math.${name}()`);
+      return a ? this.mark<NumExpr>({ kind: "intrinsic", name, args: a, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    if (callee === Math.tan) {
+      // sin over cos, of the angle once.
+      const a = args(1, "Math.tan()");
+      if (!a) return null;
+      const x = this.temp(a[0], e);
+      const at = this.at(e), label = this.label(e);
+      const sin: NumExpr = { kind: "intrinsic", name: "sin", args: [x], at, label };
+      const cos: NumExpr = { kind: "intrinsic", name: "cos", args: [x], at, label };
+      return this.mark<NumExpr>({ kind: "binary", op: "/", left: sin, right: cos, at, label }, e);
+    }
+    if (callee === Math.atan2 || callee === Math.atan) {
+      const a = callee === Math.atan2 ? args(2, "Math.atan2()") : args(1, "Math.atan()");
+      if (!a) return null;
+      return this.mark<NumExpr>({ kind: "intrinsic", name: "atan2", args: callee === Math.atan2 ? a : [a[0], num(1)], at: this.at(e), label: this.label(e) }, e);
+    }
+    if (callee === Math.hypot) {
+      // The square root of the sum of the squares, each side once.
+      if (e.arguments.length < 1) { this.c.error(e, "Math.hypot() takes at least one argument."); return null; }
+      const at = this.at(e), label = this.label(e);
+      let sum: NumExpr | null = null;
+      for (const arg of e.arguments) {
+        const v = this.num(arg);
+        if (!v) return null;
+        const x = this.temp(v, arg);
+        const sq: NumExpr = { kind: "binary", op: "*", left: x, right: x, at, label };
+        sum = sum ? { kind: "binary", op: "+", left: sum, right: sq, at, label } : sq;
+      }
+      return this.mark<NumExpr>({ kind: "intrinsic", name: "sqrt", args: [sum!], at, label }, e);
     }
     if (callee === Math.abs) {
       const a = args(1, "Math.abs()");

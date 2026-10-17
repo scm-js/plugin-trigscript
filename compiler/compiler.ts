@@ -89,15 +89,18 @@ export interface VariableInfo {
   bits?: number;
   /** A `u32`; unset, a number is signed. */
   unsigned?: boolean;
+  /** A `fixed`: a number with a fraction (16.16). */
+  fixed?: boolean;
 }
 
 /** What a program's variable holds, as the editor's hover says it: the kind, and for a number its range and what happens at the ends. */
-export function describeVariable(v: Pick<VariableInfo, "kind" | "bits" | "unsigned">, t: Translate = english): string {
+export function describeVariable(v: Pick<VariableInfo, "kind" | "bits" | "unsigned" | "fixed">, t: Translate = english): string {
   if (v.kind === "unit") return t("a unit of the game, or none — checked before every use: once the unit is gone it reads 0 and takes no write");
   if (v.kind === "boolean") return t("a boolean");
   if (v.kind === "text") return t("a text — `length`, `s[i]` and `slice` count characters (code points), and a made text holds 1 023 bytes");
   if (v.bits) return t("a u{bits} number (0 … {max}, stopping at either end)", { bits: v.bits, max: 2 ** v.bits - 1 });
   if (v.unsigned) return t("a u32 number (0 … 4 294 967 295, wrapping at either end as `x >>> 0` does)");
+  if (v.fixed) return t("a fixed number (−32 768 … 32 767.99998, in steps of 1/65 536): a number with a fraction");
   return t("a number (−2 147 483 648 … 2 147 483 647, whole, wrapping at either end as `x | 0` does)");
 }
 
@@ -431,7 +434,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const index = programs.length;
     ir.push(emitted.program);
     programs.push({ ...(emitted.program.name ? { name: emitted.program.name } : {}), owner, owners, perPlayer: entry.options.perPlayer, source: at });
-    for (const d of programDeclarations(emitted.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}) });
+    for (const d of programDeclarations(emitted.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}), ...(d.fixed ? { fixed: true } : {}) });
     // What would freeze the game or cannot be built is a fault of the script, said where it is.
     const check = checkProgram(emitted.program);
     // Checked as the script wrote it; only then is a function that calls itself taken apart into what a backend can re-enter.
