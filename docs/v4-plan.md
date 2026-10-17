@@ -1130,6 +1130,13 @@ wait.
   per-cell cost (~600 actions: the colour byte and the glyph are copied in; a cell could be one
   dword), the editor's workspace knowing `.tsx`, guide and README (wait for 4.0).
 
+**Held keys, played 2026-10-16** (`probes/key-held.tsx`, Remastered): a key held down reaches
+the game on every frame it is down — the strip stays solid — and a tap is two or three frames
+of it, counted as one press by `keyPressed` (MSQC's KeyDown since `b09f04d`). So `keyHeld()`
+(MSQC's KeyPress, sent each frame) works today, for every player, through the same path as a
+press: S3's movement needs no `Local<T>` and no `sync()`. Magenta probe 7's "one event a press,
+no key-up" was its own setup; R0's `GetKeyState` reading agrees with what was played.
+
 ### S3. A hero moved with the keys
 
 W A S D move a hero, the mouse aims, a key casts. The map plays as an action game.
