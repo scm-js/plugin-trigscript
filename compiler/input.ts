@@ -201,7 +201,7 @@ export const QC_UNIT = 58;
 export const QC_PLAYER = 11;
 const MOUSE_SLOTS = 8;
 /** Input's locations come from the first 63: every map's location table has those. */
-const LAST_SLOT = 62;
+export const LAST_SLOT = 62;
 
 /** Every input a program reads, in the order met, and where the first is. */
 export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: boolean; at: At | null } {
@@ -253,7 +253,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "unitWrite": unit(s.unit); expr(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
       case "tableWrite": any(s.value); break;
-      case "centerLocation": expr(s.x); expr(s.y); break;
+      case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
       case "if": expr(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) expr(s.cond); s.body.forEach(stmt); break;
       case "do": s.body.forEach(stmt); expr(s.cond); break;
@@ -280,7 +280,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
  * table, to keep clear of the slots it uses. Throws an Error worded for the author when the map
  * has no room.
  */
-export function inputPlan(programs: Program[], locations: NameTable, units: NameTable): InputPlan | null {
+export function inputPlan(programs: Program[], locations: NameTable, units: NameTable, reserved: readonly number[] = []): InputPlan | null {
   const { sources, mouse } = inputsOf(programs);
   if (sources.length === 0 && !mouse) return null;
   const keys: string[] = [];
@@ -294,7 +294,8 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
     else if (s.source === "chat" && !chats.some((c) => c.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
   }
   // The highest free slots among the first 63, so the low numbers a map maker reaches for first stay free.
-  const used = new Set(locations.entries.map((e) => e.value - 1));
+  // (And those a library took with reserveLocation() when the script was built.)
+  const used = new Set([...locations.entries.map((e) => e.value - 1), ...reserved.map((n) => n - 1)]);
   const free = (slot: number) => slot >= 0 && slot <= LAST_SLOT && !used.has(slot);
   let qcLocation = -1;
   for (let slot = LAST_SLOT; slot >= 0; slot--) if (free(slot)) { qcLocation = slot; break; }

@@ -1153,7 +1153,12 @@ class ProgramRun {
         this.sim.buffers.set(s.buffer, text);
         return "next";
       }
-      case "centerLocation": { const x = yield* this.amount(s.x); const y = yield* this.amount(s.y); this.sim.centre(s.location, x, y); return "next"; }
+      case "centerLocation": {
+        const x = yield* this.amount(s.x); const y = yield* this.amount(s.y);
+        const size = s.size ? { width: yield* this.amount(s.size.width), height: yield* this.amount(s.size.height) } : undefined;
+        this.sim.centre(s.location, x, y, size);
+        return "next";
+      }
       case "start": {
         const pool = this.pools.find((p) => p.start === s);
         if (!pool) throw new Error(`The start of task ${s.task} is not one of the program's (line ${s.at.line}).`);
@@ -1487,7 +1492,7 @@ export class ProgramSimulation {
   }
 
   /** A location centred on a point, its size kept. */
-  centre(location: number, x: number, y: number): void { this.game.centre(location, x, y); }
+  centre(location: number, x: number, y: number, size?: { width: number; height: number }): void { this.game.centre(location, x, y, size); }
 
   private cellKey(c: TableCell): string {
     return `${c.name}:${c.player ? this.slotOf(c.index) : c.index}${c.key !== undefined ? `:${c.key}` : ""}`;
@@ -1495,6 +1500,8 @@ export class ProgramSimulation {
 
   /** A cell of the game's tables, in the script's units: what a program wrote, else the caller's answer, else 0. */
   tableRead(c: TableCell): number {
+    // The game's own count of frames, which a program can read and never write (memory.ts).
+    if (c.name === "memory.game.frame") return this.frame;
     const stored = this.tables.get(this.cellKey(c));
     if (typeof stored === "number") return Math.floor(stored / (c.scale ?? 1));
     const given = this.tableOf?.(c);

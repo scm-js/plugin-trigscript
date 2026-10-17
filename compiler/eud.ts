@@ -91,7 +91,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
-      case "centerLocation": expr(s.x); expr(s.y); break;
+      case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
       case "print": case "buildText": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
@@ -445,7 +445,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
       case "return": return s.value ? { ...s, value: any(s.value) } : s;
       case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}), ...(s.text ? { text: text(s.text) } : {}) };
-      case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y) };
+      case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y), ...(s.size ? { size: { width: expr(s.size.width), height: expr(s.size.height) } } : {}) };
       case "print": case "buildText": return { ...s, parts: mapTextParts(s.parts, copies) };
       case "call": return { ...s, call: call(s.call) };
       case "block": return { ...s, body: s.body.map(stmt) };

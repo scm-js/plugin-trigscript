@@ -46,6 +46,10 @@ export function resolveModule(files: ReadonlySet<string>, from: string, spec: st
 
 const SOURCE_URL_PREFIX = "trigscript://";
 
+/** Where the standard library's modules sit among a script's files: "trigscript/fog" is `__trigscript__/fog.ts` (`stdlib.ts`). */
+export const STDLIB_DIR = "__trigscript__";
+export const stdlibFile = (name: string) => `${STDLIB_DIR}/${name}.ts`;
+
 /**
  * Run the entry module with the library in scope. Resolves to null when the script ran
  * to the end, else to the error it threw, located when possible.
@@ -63,11 +67,13 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
     cache.set(file, module);
     const require = (spec: string): unknown => {
       if (spec === moduleName) return library;
+      // The standard library: a module of TrigScript that ships with the compiler, among the files when imported.
+      if (spec.startsWith(`${moduleName}/`) && names.has(stdlibFile(spec.slice(moduleName.length + 1)))) return load(stdlibFile(spec.slice(moduleName.length + 1)));
       const target = resolveModule(names, file, spec);
       if (!target) {
         throw new Error(spec.startsWith(".")
           ? `Cannot find "${spec}" from ${file}: the script's files are ${[...names].join(", ")}.`
-          : `Cannot import "${spec}": a script imports its own files (./name) and "${moduleName}" only.`);
+          : `Cannot import "${spec}": a script imports its own files (./name), "${moduleName}" and the standard library ("${moduleName}/fog").`);
       }
       return load(target);
     };

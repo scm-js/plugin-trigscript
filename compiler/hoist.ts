@@ -120,7 +120,7 @@ export const ON_EVENTS = ["created", "died", "killed", "order", "morphed", "chat
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
+const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -131,6 +131,8 @@ const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once",
  */
 const READ_CALLS = new Set<string>([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
 const isReadCall = (lib: string | null, args: number) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
+/** The library objects whose fields are cells of the game (`memory.vision.countdown`): a field is a value, but nothing around it is the script's. */
+const GAME_CELL_ROOTS = new Set(["memory"]);
 /**
  * The methods that take a function — `xs.map((x) => x * 2)`, `unitsOf(P1).forEach((u) => u.kill())`. Where such a call
  * is the program's, the function written in it is part of the program as a function declared in the body is: its
@@ -358,6 +360,14 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   };
   const memo = new Map<TS.Node, boolean>();
   const isGameDecl = (decl: TS.Declaration) => plan.game.has(owningDeclaration(ts, decl));
+  /** `memory.vision.countdown` — a field of one of GAME_CELL_ROOTS, two names down. */
+  const isGameCell = (n: TS.Node): boolean => {
+    if (!ts.isPropertyAccessExpression(n) || !ts.isPropertyAccessExpression(n.expression)) return false;
+    const root = n.expression.expression;
+    if (!ts.isIdentifier(root)) return false;
+    const lib = libraryName(ts, checker, root);
+    return !!lib && GAME_CELL_ROOTS.has(lib);
+  };
   const hoistable = (e: TS.Node): boolean => {
     const hit = memo.get(e);
     if (hit !== undefined) return hit;
@@ -388,6 +398,8 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     };
     const check = (n: TS.Node): void => {
       if (!ok) return;
+      // The cell itself is a value (its handle); an expression around it — `memory.game.frame * 2` — is the program's.
+      if (n !== e && isGameCell(n)) { ok = false; return; }
       // `waves.forEach((w) => createUnit(P2, w.unit, w.count, at))`: nothing of the program is named, but forEach is there for
       // what its function does, and what this one does is the game's. Run when the script is built it would make actions
       // nobody receives, and the line would silently do nothing; it is the program's loop, unrolled.
@@ -542,7 +554,10 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       if (isConst && plan.game.has(d)) { value(d.initializer, items); continue; }
       if (isConst) {
         if (!d.initializer) { error(d, "A constant needs a value."); continue; }
-        if (hoistable(d.initializer)) { plan.consts.set(d, plan.constList.length); plan.constList.push(d); items.push({ kind: "const", decl: d }); continue; }
+        // (`const w = memory.map.width` reads the game: a const of the program's, like one computed from its variables.)
+        let init: TS.Expression = d.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        if (hoistable(d.initializer) && !isGameCell(init)) { plan.consts.set(d, plan.constList.length); plan.constList.push(d); items.push({ kind: "const", decl: d }); continue; }
         if (isFunctionValue(d.initializer)) { error(d, `${ts.isIdentifier(d.name) ? d.name.text : "This constant"} is a function that uses the program's variables; declare it with function so it is inlined at each call.`); continue; }
         // A const computed from the program's variables lives in the game like a let; the checker keeps it from being reassigned.
         plan.game.add(d);

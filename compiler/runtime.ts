@@ -22,10 +22,11 @@ import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
 import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import type { RaceId, ReadSource, TableCell, TextPart, UnitFilter } from "./ir";
-import { DEAF_KEYS, keyName, KEY_NAMES, MOUSE_BUTTONS, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
+import { DEAF_KEYS, keyName, KEY_NAMES, LAST_SLOT, MOUSE_BUTTONS, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
 import type { HoistedThunks } from "./hoist";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
+import { MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -205,6 +206,8 @@ export class Collector {
   readonly strings: ScriptString[] = [];
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
+  /** Locations a library took with reserveLocation(), by the reason it gave: the location's number. */
+  readonly reserved = new Map<string, number>();
   /**
    * The script's own statements are running — as opposed to a program's build-time parts, which the
    * compiler asks for afterwards. What a player does has no meaning there, and `if (keyPressed(…))`
@@ -432,6 +435,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   // The word from before 3.0, when a program's clock was the trigger cycle; a program's clock is the frame now.
   rt.cycles = (n: unknown): DurationValue => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
   rt.sleep = () => { throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement — sleep(seconds(2))."); };
+  rt.nextFrame = () => { throw new ScriptError("nextFrame() waits for the next frame: use it inside program(), as a statement — await nextFrame();"); };
   rt.start = () => { throw new ScriptError("start() starts a task inside a program: start(wave(3)), inside program(async () => { … })."); };
   rt.until = () => { throw new ScriptError("until() waits inside a program: await until(() => …), inside program(async () => { … })."); };
   rt.rose = () => { throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if."); };
@@ -582,6 +586,18 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     parsed.captures.forEach((c, i) => { values[c.name] = inputValue(`chatted(…).${c.name}`, { source: "chat", pattern, capture: i, player: who }, false); });
     return Object.freeze({ __trigscript: "chat" as const, pattern: parsed, matched: inputValue("chatted(…)", { source: "chat", pattern, capture: null, player: who }, true), values: Object.freeze(values) });
   };
+  /**
+   * For a library: a location of the map's first 63 that the map does not use, the highest free one — the one a map
+   * maker reaches for last. Asked again with the same reason, the same location. Input's own (`input.ts`) keeps clear.
+   */
+  rt.reserveLocation = (why: unknown): number => {
+    if (typeof why !== "string" || !why.trim()) throw new ScriptError(`reserveLocation() takes the reason, which the map's requirements show: reserveLocation("fog: where each brush is made").`);
+    const had = collector.reserved.get(why);
+    if (had !== undefined) return had;
+    const used = new Set([...names.locations.entries.map((e) => e.value), ...collector.reserved.values()]);
+    for (let n = LAST_SLOT + 1; n >= 1; n--) if (!used.has(n)) { collector.reserved.set(why, n); return n; }
+    throw new ScriptError(`reserveLocation("${why}"): the map uses every one of its first 63 locations; free one for it.`);
+  };
   rt.centerLocation = () => { throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement — centerLocation(locations.Cursor, x, y)."); };
 
   /* ── The game's tables ── */
@@ -609,6 +625,17 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     }
     return Object.freeze(out);
   };
+  /** `memory`: each field a table cell with no index (`memory.ts`), named by its path. */
+  // On the trigger level's memory(address, …) condition, which keeps its name: memory.vision.countdown.
+  Object.assign(rt.memory as object, Object.fromEntries(Object.keys(MEMORY_GROUPS).map((group) => [group, Object.freeze(Object.fromEntries(
+    MEMORY_FIELDS.filter((f) => f.path[0] === group).map((f) => {
+      const field = memoryTableField(f);
+      const ident = `memory.${field.name}`;
+      const fail = (): never => { throw new ScriptError(`${ident} is a value the game holds: it has no value when the script is built. Inside program(), assign to it, assign it to a let, or use it in the program's own arithmetic and comparisons.`); };
+      const cell: TableCell = { name: ident, base: field.base, stride: 0, index: 0, width: field.width };
+      return [f.path[1], { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail } as TableValue];
+    }),
+  ))])));
   const tableNames: Record<TableKind, ScriptNames[keyof ScriptNames]> = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
   const entryName = (kind: TableKind, value: number): string => {
     const t = tableNames[kind];
@@ -728,9 +755,9 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
-  out.push("seconds", "minutes", "frames", "cycles", "sleep", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32");
+  out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
-  out.push("textColors", "ui", "on", "__jsx", "__fragment", "__class", "__listen");
+  out.push("textColors", "ui", "on", "reserveLocation", "__jsx", "__fragment", "__class", "__listen");
   return out;
 }

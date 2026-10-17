@@ -13,6 +13,7 @@
 import { verdictOf, type Allowlist, type Verdict } from "./allowlist";
 import type { CostLines } from "./gameCost";
 import { TABLE_FIELDS, type TableKind } from "./tables";
+import { MEMORY_FIELDS } from "./memory";
 
 /** The address an error code names, or null when the text holds no code. Takes "EUD ERROR: 0xFFA632E3", "0xFFA632E3" or "FFA632E3". */
 export function addressOfEudError(text: string): number | null {
@@ -98,6 +99,8 @@ export function placeOfAddress(address: number, list?: Allowlist): string {
     const i = Math.floor(off / t.stride), within = off % t.stride;
     return `${t.name}${t.row ? `, ${t.row(i)}` : ""}${t.stride > 4 && within ? ` (+${within})` : ""}`;
   }
+  const cell = MEMORY_FIELDS.find((f) => address >= f.base && address < f.base + f.width);
+  if (cell) return `memory.${cell.path.join(".")}`;
   for (const [kind, fields] of Object.entries(TABLE_FIELDS) as [TableKind, (typeof TABLE_FIELDS)[TableKind]][]) {
     for (const f of fields) {
       const width = f.width === "bit" ? 4 : f.width, off = address - f.base;

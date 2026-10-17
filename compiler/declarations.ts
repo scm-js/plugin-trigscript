@@ -18,6 +18,7 @@ import { ACTION_IDENTS, argType, CHOICE_TYPES, choiceWords, CONDITION_IDENTS, MO
 import type { ActionDef, ArgKind, ConditionDef } from "../vendor/triggerDefs";
 import { allTables, defaultScriptNames, type NameTable, type ScriptNames } from "./names";
 import { PLAYER_COLORS, TABLE_FIELDS, type TableKind } from "./tables";
+import { MEMORY_FIELDS, MEMORY_GROUPS } from "./memory";
 import { PLAYER_SLOTS } from "./lower";
 import { KEY_NAMES } from "./input";
 import { TEXT_COLORS } from "./jsx";
@@ -262,6 +263,11 @@ ${kw}function cycles(n: number): Duration;
  */
 ${kw}function sleep(duration: Duration): Promise<void>;
 /**
+ * Wait for the next frame — the same as sleep(frames(1)), as a frame loop reads:
+ * \`while (true) { …draw…; await nextFrame(); }\`. Inside program() only.
+ */
+${kw}function nextFrame(): Promise<void>;
+/**
  * Wait until a condition holds, inside an async program only: \`await until(() => countUnits(P8, units.ZergZergling) === 0)\`.
  * The function is asked once now and then once every frame; the program goes on in the frame it answers true.
  * A condition on its own is asked again the same way: \`await until(bring(P1, units.AnyUnit, locations.Exit, ">=", 1))\`.
@@ -391,6 +397,12 @@ ${kw}function stats(weapon: Weapon): WeaponStats;
 ${kw}function stats(upgrade: Upgrade): UpgradeStats;
 ${kw}function stats(tech: Tech): TechStats;
 ${kw}function stats(player: Player): PlayerStats;
+/**
+ * For a library: a location of the map's first 63 that the map does not use, taken when the script is
+ * built, so the library's users never have to give it one. The same reason gives the same location; the
+ * reason is what the map's requirements show. \`const spot = reserveLocation("fog: where each brush is made");\`
+ */
+${kw}function reserveLocation(why: string): Location;
 /** The player colours stats(player).color takes. */
 ${kw}const colors: { __COLOR_TABLE__ };
 /**
@@ -536,6 +548,11 @@ ${kw}function underMouse(player: Player, filter?: UnitFilter & { within?: number
 ${kw}function chatted<const P extends string>(player: Player, pattern: P): ChatValues<P> | null;
 /** Centre a location on a point of the map, in pixels, its size kept; inside program() only. With mouse(): \`centerLocation(locations.Cursor, at.x, at.y)\`, then createUnit() there. */
 ${kw}function centerLocation(location: Location, x: number, y: number): void;
+/**
+ * Centre a location on a point of the map and give it a size, all in pixels; inside program() only. Nothing of its
+ * old size is read, so it costs less than keeping the size: \`centerLocation(spot, x, y, 32, 32)\`.
+ */
+${kw}function centerLocation(location: Location, x: number, y: number, width: number, height: number): void;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -601,6 +618,38 @@ function statsTypes(kw: string): string {
   }).join("\n");
 }
 
+/** The interfaces of `memory`, from its one list of fields (`memory.ts`): each field's doc and Remastered's verdict on it. */
+function memoryTypes(kw: string): string {
+  const groups = Object.entries(MEMORY_GROUPS).map(([group, [name, doc]]) => {
+    const lines = [`/** ${doc} */`, `${kw}interface ${name} {`];
+    for (const f of MEMORY_FIELDS.filter((x) => x.path[0] === group)) {
+      lines.push(`  /**\n   * ${f.doc}\n   *\n   * ${f.remastered}\n   * @address 0x${f.base.toString(16).toUpperCase()}, ${f.width * 8} bits\n   */`);
+      lines.push(`  ${f.readonly ? "readonly " : ""}${f.path[1]}: number;`);
+    }
+    lines.push("}");
+    return lines.join("\n");
+  });
+  return groups.join("\n");
+}
+
+/**
+ * `memory.vision.countdown`: the groups as a namespace merged with the trigger level's \`memory(address, …)\`
+ * condition, which keeps its name.
+ */
+function memoryNamespace(kw: string): string {
+  const lines = [
+    `/**`,
+    ` * Cells of the game's memory that have no other word in the language, inside program() only:`,
+    ` * \\\`memory.vision.countdown = 1;\\\` \\\`if (memory.game.frame % 24 == 0) …\\\`. Each field's hover says what`,
+    ` * StarCraft: Remastered does with it; one the game keeps for itself is readonly.`,
+    ` */`,
+    `${kw}namespace memory {`,
+  ];
+  for (const [group, [name, doc]] of Object.entries(MEMORY_GROUPS)) lines.push(`  /** ${doc} */`, `  export const ${group}: ${name};`);
+  lines.push("}");
+  return lines.join("\n");
+}
+
 function playerAliases(kw: string, names: ScriptNames): string {
   const lines: string[] = [];
   for (const e of names.players.entries) {
@@ -628,9 +677,10 @@ function tables(kw: string, names: ScriptNames, compact: boolean): string {
 
 function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean): string {
   return [
-    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", statsTypes(typeKw)),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", `${statsTypes(typeKw)}\n${memoryTypes(typeKw)}`),
     choiceTypes(typeKw),
     functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE).replace("__TEXT_COLORS__", TEXT_COLOR_TABLE),
+    memoryNamespace(kw),
     "// ── Conditions ──",
     ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
     "",
