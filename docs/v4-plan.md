@@ -1116,11 +1116,16 @@ wait.
   and sets the flag after every statement anywhere in the program that writes it. A view that
   reads the game is built every frame. It gives back the Task (`board.cancel()`).
 - **Measured in the lifted game:** a static 10×10 board costs ~360 actions a frame when nothing
-  changed, ~63k on a frame it is built and printed. Tetris (`probes/tetris.tsx`): ~80k on a frame
-  the board changed; a headless run reads the keys as held, so every frame changed there. Nothing
-  Remastered refuses.
+  changed, ~63k on a frame it is built and printed. Nothing Remastered refuses.
 - **Found on the way:** the freeze check called `while (move(0, 1, 0)) {}` endless: a call in a
-  loop's condition that writes what is outside it now counts as changing it.
+  loop's condition that writes what is outside it now counts as changing it. And, played
+  (the user held D and the piece "moved in place"): **the Python lowering did not
+  short-circuit `&&` / `||`** — every item's code ran before any was tested, so
+  `keyPressed(P1, "W") && !move(0, 0, 1)` turned the piece every frame in the game and never
+  in the simulator. Fixed (an item after the first that calls, pops or draws a random number is
+  worked out inside the test of those before it); `probes/game-short-circuit.ts` fails on the
+  old lowering in the lifted game and passes now. With it fixed, Tetris costs ~645 actions on
+  a frame nothing moves, ~77k on one the board changes, 7.5k a frame on average.
 - **Not yet:** components (`<Row />`: call a function in braces instead), `Array.from`, the
   per-cell cost (~600 actions: the colour byte and the glyph are copied in; a cell could be one
   dword), the editor's workspace knowing `.tsx`, guide and README (wait for 4.0).

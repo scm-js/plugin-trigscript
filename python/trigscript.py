@@ -1538,10 +1538,15 @@ class Lowering:
             # One comparison, built once: a comparison between variables writes into its own
             # condition, and one that is built and dropped is an orphan eudplib refuses.
             return self.ordered(a, op, b, unsigned)
-        if k == "and":
-            return EUDAnd(*[self.cond(c) for c in e["items"]])
-        if k == "or":
-            return EUDOr(*[self.cond(c) for c in e["items"]])
+        if k in ("and", "or"):
+            items = e["items"]
+            # JavaScript stops at the first item that settles it: an item after it that runs something — a call, a
+            # pop, a random number — must not run. Each such item is worked out inside the test of the ones before.
+            if any(has_effect(c) for c in items[1:]):
+                t = fresh(0)
+                self.short_circuit(items, k == "and", t)
+                return t >= 1
+            return (EUDAnd if k == "and" else EUDOr)(*[self.cond(c) for c in items])
         if k == "not":
             return EUDNot(self.cond(e["expr"]))
         if k == "random":
@@ -1565,6 +1570,23 @@ class Lowering:
         if k in ("textCompare", "textTest"):
             return as_var(self.text_truth(e)) >= 1
         raise Fail("trigscript: unknown condition %r%s" % (k, where(e)))
+
+    def short_circuit(self, items, conj, t):
+        """`a && b && …` (conj) or `a || b || …` into t, each item worked out only when those before it did not settle it."""
+        if not items:
+            if conj:
+                t << 1
+            return
+        if conj:
+            if EUDIf()(self.cond(items[0])):
+                self.short_circuit(items[1:], conj, t)
+            EUDEndIf()
+        else:
+            if EUDIf()(self.cond(items[0])):
+                t << 1
+            if EUDElse()():
+                self.short_circuit(items[1:], conj, t)
+            EUDEndIf()
 
     def truth(self, e):
         """A boolean expression as 0 / 1."""
@@ -3209,6 +3231,17 @@ def each_start(node, visit):
     for v in node.values():
         if isinstance(v, (dict, list)):
             each_start(v, visit)
+
+
+def has_effect(node):
+    """Whether working out a piece of the IR does something beyond reading: a call, a pop, a random number."""
+    if isinstance(node, list):
+        return any(has_effect(x) for x in node)
+    if not isinstance(node, dict):
+        return False
+    if node.get("kind") in ("pop", "random", "randomInt") or (node.get("kind") in ("call", "textCall") and isinstance(node.get("call"), dict)):
+        return True
+    return any(has_effect(v) for v in node.values() if isinstance(v, (dict, list)))
 
 
 def has_call(node):
