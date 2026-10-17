@@ -334,11 +334,19 @@ export class GameSim implements TestWorldLike {
   kill(unit: SimUnit, by?: number): this {
     if (!unit.alive) return this;
     this.game.call(COUNT_DEATH, { edi: UNITS + UNIT_BYTES * unit.slot, edx: by ?? unit.owner, ecx: 0 });
+    // A killer named is a death in a fight, as the game leaves one behind: no hit points, and the killer the last player
+    // whose attack hurt the unit (+0x90), which is what on.killed() reads.
+    if (by !== undefined) {
+      const at = UNITS + UNIT_BYTES * unit.slot;
+      this.game.m.setInt32(at + 0x08, 0, true); this.game.u8[at + 0x90] = by;
+      this.game.wrote?.(at + 0x08, 4); this.game.wrote?.(at + 0x90, 1);
+    }
     return this.onOne(unit, (loc) => this.act(this.record(ActionType.KillUnitAt, { location: loc, player: unit.owner, unit: unit.type, count: 1 }), unit.owner));
   }
   remove(unit: SimUnit): this {
     return this.onOne(unit, (loc) => this.act(this.record(ActionType.RemoveUnitAt, { location: loc, player: unit.owner, unit: unit.type, count: 1 }), unit.owner));
   }
+  morph(): this { throw new ExpectError("morph: the lifted game turns a unit into another type only through a player's command, which a test cannot give yet; test on.morphed() in the simulator."); }
   give(unit: SimUnit, to: number): this {
     return this.onOne(unit, (loc) => this.act(this.record(ActionType.GiveUnits, { location: loc, player: unit.owner, number: to, unit: unit.type, count: 1 }), unit.owner));
   }

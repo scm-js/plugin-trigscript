@@ -157,6 +157,8 @@ function scans(program: Program, out: LineHint[]) {
   for (const body of bodiesOf(program)) statements(body, (s) => { if (s.kind === "for" && s.sorts) hint(s.at, "sorts in the frame", `${s.sorts} is sorted where it stands, within the frame: each item is taken in hand and the ones that go after it moved up. Nearly in order already, that is a pass over the list; in no order it is the length squared — a few dozen items are nothing, a few hundred every frame will be felt.`); });
   // A call that stands in an expression (`unitsOf(P1).some(…)` in an if) has statements of its own, which the walk over statements does not reach.
   const everywhere = (body: Stmt[], visit: (s: Stmt) => void) => { statements(body, visit); expressions(body, (e) => { if (e.kind === "call") statements(e.call.body, visit); }); };
+  // on.order() / on.morphed(): the frame's events pass looks at every unit on the map, for as long as the game runs.
+  for (const body of bodiesOf(program)) everywhere(body, (s) => { if (s.kind === "unitLoop" && (s.source === "ordered" || s.source === "morphed")) hint(s.at, "watches every unit", `Every frame, for the rest of the game, each unit on the map has its ${s.source === "ordered" ? "order" : "type"} looked at: about 100 conditions and actions a unit (on.order() and on.morphed() together, about 140), so 200 units cost about 20,000 a frame of Remastered's 500,000. Paid once however many listeners there are.`); });
   for (const body of bodiesOf(program)) everywhere(body, (s) => { if (s.kind === "unitLoop" && !s.source) hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
   for (const body of bodiesOf(program)) expressions(body, () => {}, (u) => hint(u.at, u.by === "random" ? "scans units ×2" : "scans units", u.by === "random"
     ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.`
@@ -228,7 +230,7 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
       case "store": case "declareArray": case "push": case "pop": case "setLength": into.add(whole(s.array)); break;
       case "storeText": into.add(whole(s.addr)); break;
       case "releaseText": into.add(whole(s.block)); break;
-      case "unitLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
+      case "unitLoop": into.add(s.decl.id); if (s.was) into.add(s.was.id); s.body.forEach(stmt); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": case "for": s.body.forEach(stmt); if (s.kind === "for") s.update.forEach(stmt); break;
       case "do": s.body.forEach(stmt); break;

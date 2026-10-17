@@ -627,13 +627,22 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.ui = Object.freeze({
     lines: () => { throw new ScriptError("ui.lines() shows a text in a program's lines, inside program(async () => { … }): ui.lines(P1, () => <line>…</line>)."); },
   });
-  const listens = (what: string, example: string) => () => { throw new ScriptError(`on.${what}() listens while the game runs, inside program(async () => { … }): ${example}.`); };
+  const listens = (what: string, example: string) => () => { throw new ScriptError(`on.${what}() listens while the game runs: at the top of a script, or inside program(async () => { … }): ${example}.`); };
   rt.on = Object.freeze({
     created: listens("created", "on.created(units.ZergZergling, (u) => { … })"),
     died: listens("died", "on.died({ owner: P8 }, (u) => { … })"),
+    killed: listens("killed", "on.killed({ owner: P8 }, (u, by) => { … })"),
+    order: listens("order", "on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, (u) => { … })"),
+    morphed: listens("morphed", "on.morphed(units.TerranSiegeTankSiegeMode, (u, was) => { … })"),
     chat: listens("chat", "on.chat(\"-give {n}\", (p, { n }) => { … })"),
     key: listens("key", "on.key(\"F7\", (p) => { … })"),
   });
+  // `on.died(…)` at the top of a script: the transformer hands the call here as a program of its own, which listens from
+  // the start of the game (hoist.ts#transformer).
+  rt.__listen = (body: unknown, at?: unknown) => {
+    if (!isProgramDescriptor(body)) throw new ScriptError("on.…() at the top of a script is written directly, as a statement of its own.");
+    collector.entries.push({ kind: "program", descriptor: body, options: { owners: [0], perPlayer: false }, at: isAt(at) ? at : null });
+  };
 
   /* ── Text a program fills in ── */
   rt.name = (player: unknown) => textMark("n", onePlayer(player, "name: player", 12));
@@ -722,6 +731,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
-  out.push("textColors", "ui", "on", "__jsx", "__fragment", "__class");
+  out.push("textColors", "ui", "on", "__jsx", "__fragment", "__class", "__listen");
   return out;
 }

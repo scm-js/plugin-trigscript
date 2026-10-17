@@ -37,6 +37,8 @@ export interface SimUnit {
   slot: number;
   /** The place's uniqueness byte while this unit is in it. */
   uid: number;
+  /** Once it has died in a fight: the player whose attack killed it (on.killed()). */
+  killedBy?: number;
 }
 export type SimUnitInit = Partial<Omit<SimUnit, "alive" | "slot" | "uid">> & { type: number; owner: number };
 export interface SimBounds { left: number; top: number; right: number; bottom: number }
@@ -192,6 +194,7 @@ export class World {
     unit.alive = false;
     if (this.table[unit.slot] === unit) this.table[unit.slot] = null;
     if (!killed || !fought) return;
+    if (by !== undefined) unit.killedBy = by;
     this.onDeath(unit);
     if (by !== undefined) this.killed.set(unit.type * 4096 + by, (this.killed.get(unit.type * 4096 + by) ?? 0) + 1);
   }

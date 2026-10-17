@@ -60,7 +60,8 @@ import type * as TS from "typescript";
 import { ActionType, PlayerGroup } from "../vendor/triggers";
 import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
-import { declarationOf, isOnCall, isScriptClass, libraryCallName } from "./hoist";
+import { declarationOf, isOnCall, isScriptClass, libraryCallName, ON_EVENTS } from "./hoist";
+import { ORDER_NAMES } from "./orders";
 import { DEAF_KEYS, KEY_NAMES, keyName, parseChatPattern, type ChatPattern, type InputSource } from "./input";
 import { scriptParams } from "./api";
 import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
@@ -69,10 +70,12 @@ import { markViewWrites, type View } from "./views";
 import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
 import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
-import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
+/** What an on.…() of units looks for, known when the script is built: the units, and on.order()'s order or on.killed()'s killer. */
+interface EventFilter { type?: number; owner?: number; at?: number; order?: number; by?: number }
 
 /** A body the walker can be in: a program's, or a `game()` function's from any file. */
 export interface Body {
@@ -4264,7 +4267,8 @@ export class Structured {
   private inAsync(node: TS.Node): boolean {
     const { ts } = this;
     for (let n = node.parent; n; n = n.parent) if (ts.isFunctionLike(n)) return !!ts.getModifiers(n as TS.FunctionLikeDeclaration)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
-    return false;
+    // A listener at the top of a file is a program of its own, and an async one.
+    return ts.isExpressionStatement(this.body.plan.root);
   }
 
   /** A promise as a statement on its own: in a program, what is not awaited never runs beside it. */
@@ -5685,23 +5689,32 @@ export class Structured {
    */
   private onEvent(call: TS.CallExpression, handle?: VarDecl) {
     const { ts } = this;
-    const what = (call.expression as TS.PropertyAccessExpression).name.text as "created" | "died" | "chat" | "key";
+    const what = (call.expression as TS.PropertyAccessExpression).name.text as (typeof ON_EVENTS)[number];
     const at = this.at(call), label = this.label(call);
     const named = `on.${what}()`;
-    if (!this.inAsync(call)) { this.c.error(call, `${named} listens beside the program as a task: inside program(async () => { … }).`); return; }
+    if (!this.inAsync(call)) { this.c.error(call, `${named} listens beside the program as a task: at the top of a script, or inside program(async () => { … }).`); return; }
     const args = [...call.arguments];
     const isFn = (a: TS.Expression) => { const u = this.unwrap(a); return ts.isArrowFunction(u) || ts.isFunctionExpression(u); };
-    let filter: { type?: number; owner?: number; at?: number } = {};
+    const ofUnits = what !== "chat" && what !== "key";
+    let filter: EventFilter = {};
     let fnArg: TS.Expression | undefined, optArg: TS.Expression | undefined, word = "";
-    if (what === "created" || what === "died") {
+    if (ofUnits) {
       const f = args.findIndex(isFn);
-      if (f !== 0 && f !== 1) { this.c.error(call, `${named} takes what to look for, if you like, and a function written where it is used: on.${what}(units.ZergZergling, (u) => { … }).`); return; }
-      if (f === 1) { const got = this.eventFilter(args[0], named); if (!got) return; filter = got; }
+      const example = what === "order" ? "on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, (u) => { … })" : `on.${what}(units.ZergZergling, (u) => { … })`;
+      if (f < 0 || f > (what === "order" ? 2 : 1)) { this.c.error(call, `${named} takes what to look for, if you like, and a function written where it is used: ${example}.`); return; }
+      if (f >= 1) { const got = this.eventFilter(args[0], named, what); if (!got) return; filter = got; }
+      // on.order(filter, order, handler): the order as the second argument.
+      if (f === 2) {
+        const o = this.evaluate(args[1]);
+        if (!o || typeof o.value !== "number" || !Number.isInteger(o.value) || o.value < 0 || o.value >= ORDER_NAMES.length) { this.c.error(args[1], `on.order() takes the order after the filter: orders.CastPsionicStorm.`); return; }
+        if (filter.order !== undefined) { this.c.error(args[1], "The filter already names the order."); return; }
+        filter.order = o.value;
+      }
       fnArg = args[f]; optArg = args[f + 1];
       if (args.length > f + 2) { this.c.error(args[f + 2], `${named} takes the filter, the function and the options.`); return; }
     } else {
       const h = args[0] && this.evaluate(args[0]);
-      if (!h || typeof h.value !== "string") { this.c.error(args[0] ?? call, what === "chat" ? `on.chat() takes the pattern first, as chatted() does: on.chat("-give {n}", (p, { n }) => { … }).` : `on.key() takes the key first, as keyPressed() does: on.key("F2", (p) => { … }).`); return; }
+      if (!h || typeof h.value !== "string") { this.c.error(args[0] ?? call, what === "chat" ? `on.chat() takes the pattern first, as chatted() does: on.chat("-give {n}", (p, { n }) => { … }).` : `on.key() takes the key first, as keyPressed() does: on.key("F7", (p) => { … }).`); return; }
       word = h.value;
       fnArg = args[1]; optArg = args[2];
       if (!fnArg || !isFn(fnArg)) { this.c.error(args[1] ?? call, `${named} takes a function written where it is used, after the ${what === "chat" ? "pattern" : "key"}.`); return; }
@@ -5719,10 +5732,10 @@ export class Structured {
         if (k === "max") {
           if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > 255) { this.c.error(optArg, `${named}'s max is how many of its handlers can be waiting at once: a whole number from 1 to 255.`); return; }
           max = v;
-        } else if (k === "from" && (what === "chat" || what === "key")) {
+        } else if (k === "from" && !ofUnits) {
           if (typeof v !== "number" || !Number.isInteger(v) || ((v < 0 || v > 7) && v !== CURRENT_PLAYER)) { this.c.error(optArg, `${named}'s from is one player who can type and press keys: P1 … P8, or CurrentPlayer.`); return; }
           from = v;
-        } else { this.c.error(optArg, `${named} has no option "${k}"; it has max${what === "chat" || what === "key" ? " and from" : ""}.`); return; }
+        } else { this.c.error(optArg, `${named} has no option "${k}"; it has max${ofUnits ? "" : " and from"}.`); return; }
       }
     }
     const fn = this.unwrap(fnArg) as TS.ArrowFunction | TS.FunctionExpression;
@@ -5754,33 +5767,61 @@ export class Structured {
       this.claimTask(c, inner);
       this.emit({ kind: "start", task: inner, max, call: c, at, label }, call);
     };
+    const source: EventSource | undefined = what === "order" ? "ordered" : ofUnits ? what as EventSource : undefined;
     const body = this.collect(() => {
       const loop = this.collect(() => {
         // What happened since the frame before: the first frame of the task, the frame it was started in, looks at nothing.
         this.emit({ kind: "sleep", cycles: 1, at, label }, call);
-        if (what === "created") {
-          const v = this.newVar(name(0, "(unit)"), "unit", at, { temp: true });
-          const turn = this.collect(() => run([{ kind: "var", v }]));
-          this.emit({ kind: "unitLoop", decl: v, filter: { ...filter }, source: "created", body: turn, at, label }, call);
-        } else if (what === "died") {
-          const v = this.newVar("(dead unit)", "unit", at, { temp: true });
+        if (source) {
+          const { order, by, ...units } = filter;
+          const event = { ...(order !== undefined ? { order } : {}), ...(by !== undefined ? { by } : {}) };
+          const dead = source === "died" || source === "killed";
+          const v = this.newVar(dead ? "(dead unit)" : name(0, "(unit)"), "unit", at, { temp: true });
+          // The second value the handler is handed, when the filter does not say it for certain: the killer, or what the
+          // unit was doing or was. Only kept when the handler takes it.
+          const wasAt = source === "ordered" ? 2 : 1;
+          const known = source === "killed" ? by : undefined;
+          const was = source !== "created" && source !== "died" && fn.parameters.length > wasAt && known === undefined ? this.newVar(name(wasAt, "(was)"), "number", at, { temp: true }) : undefined;
           const turn = this.collect(() => {
-            // What it was and where, taken as it died; what the filter says for certain is known when the script is built.
-            const fields = new Map<string, Binding>();
-            const known: Record<string, number | undefined> = { type: filter.type !== undefined && filter.type < 228 ? filter.type : undefined, owner: filter.owner !== undefined && filter.owner !== CURRENT_PLAYER ? filter.owner : undefined };
-            // Only what the handler reads is read from the dead unit: each field is a read of the game.
-            const wanted = this.fieldsRead(fn, 0);
-            for (const f of ["type", "owner", "x", "y"] as const) {
-              const k = known[f];
-              if (k !== undefined) { fields.set(f, { kind: "value", value: k }); continue; }
-              if (wanted && !wanted.has(f)) { fields.set(f, { kind: "value", value: 0 }); continue; }
-              const fv = this.newVar(`${name(0, "(dead unit)")}.${f}`, "number", at, { temp: true });
-              this.emit({ kind: "declare", decl: fv, init: { kind: "unitField", unit: unitRef(v), field: f, at, label }, at, label }, call);
-              fields.set(f, { kind: "var", v: fv });
+            const bound: Binding[] = [];
+            if (dead) {
+              // What it was and where, taken as it died; what the filter says for certain is known when the script is built.
+              const fields = new Map<string, Binding>();
+              const sure: Record<string, number | undefined> = { type: units.type !== undefined && units.type < 228 ? units.type : undefined, owner: units.owner !== undefined && units.owner !== CURRENT_PLAYER ? units.owner : undefined };
+              // Only what the handler reads is read from the dead unit: each field is a read of the game.
+              const wanted = this.fieldsRead(fn, 0);
+              for (const f of ["type", "owner", "x", "y"] as const) {
+                const k = sure[f];
+                if (k !== undefined) { fields.set(f, { kind: "value", value: k }); continue; }
+                if (wanted && !wanted.has(f)) { fields.set(f, { kind: "value", value: 0 }); continue; }
+                const fv = this.newVar(`${name(0, "(dead unit)")}.${f}`, "number", at, { temp: true });
+                this.emit({ kind: "declare", decl: fv, init: { kind: "unitField", unit: unitRef(v), field: f, at, label }, at, label }, call);
+                fields.set(f, { kind: "var", v: fv });
+              }
+              bound.push({ kind: "record", fields });
+            } else bound.push({ kind: "var", v });
+            if (source === "ordered" && fn.parameters.length > 1) {
+              // The order it took up: known when the filter names it, else read from the unit as it is now.
+              if (order !== undefined) bound.push({ kind: "value", value: order });
+              else {
+                const ov = this.newVar(name(1, "(order)"), "number", at, { temp: true });
+                this.emit({ kind: "declare", decl: ov, init: { kind: "unitField", unit: unitRef(v), field: "orderId", at, label }, at, label }, call);
+                bound.push({ kind: "var", v: ov });
+              }
             }
-            run([{ kind: "record", fields }]);
+            if (source === "killed" && known !== undefined) bound.push({ kind: "value", value: known });
+            else if (source === "killed" && was) {
+              // The killer is one of eight players: a copy of the handler for each, so that it is known when the script
+              // is built there and an action can be for them (on.chat's player is the same).
+              for (let p = 0; p < 8; p++) {
+                const then = this.collect(() => run([...bound, { kind: "value", value: p }]));
+                this.emit({ kind: "if", cond: { kind: "compare", op: "==", left: varRef(was), right: num(p), at, label }, then, at, label }, call);
+              }
+              return;
+            } else if (was) bound.push({ kind: "var", v: was });
+            run(bound);
           });
-          this.emit({ kind: "unitLoop", decl: v, filter: { ...filter }, source: "died", body: turn, at, label }, call);
+          this.emit({ kind: "unitLoop", decl: v, filter: units, source, ...(was ? { was } : {}), ...(Object.keys(event).length ? { event } : {}), body: turn, at, label }, call);
         } else {
           const players = from !== undefined ? [from] : this.c.perPlayer ? [CURRENT_PLAYER] : [0, 1, 2, 3, 4, 5, 6, 7];
           let parsed: ChatPattern | undefined;
@@ -5819,7 +5860,7 @@ export class Structured {
     });
     const listener: Call = this.mark({ name: named, at, label, params: [], body }, call);
     this.claimTask(listener, task);
-    this.emit({ kind: "start", task, max: 1, call: listener, ...(handle ? { handle: handle.id } : {}), listen: what === "created" || what === "died" ? { source: what } : { inputs: heard }, at, label }, call);
+    this.emit({ kind: "start", task, max: 1, call: listener, ...(handle ? { handle: handle.id } : {}), listen: source ? { source } : { inputs: heard }, at, label }, call);
   }
 
   /**
@@ -5866,19 +5907,23 @@ export class Structured {
     return varRef(t);
   }
 
-  /** What on.created() / on.died() looks for: a unit type, or a filter as unitsOf() takes one; known when the script is built. */
-  private eventFilter(arg: TS.Expression, named: string): { type?: number; owner?: number; at?: number } | null {
+  /**
+   * What an on.…() of units looks for: a unit type, or a filter as unitsOf() takes one — with the order for on.order() and
+   * the killer for on.killed(); known when the script is built.
+   */
+  private eventFilter(arg: TS.Expression, named: string, what: string): EventFilter | null {
     const h = this.evaluate(arg);
     if (!h) { this.notConstant(arg, `What ${named} looks for`); return null; }
     const v = h.value;
-    const out: { type?: number; owner?: number; at?: number } = {};
-    const fail = () => { this.c.error(arg, `${named} looks for a unit type — units.ZergZergling — or a filter such as { type: units.TerranMarine, owner: P1, at: locations.Base }.`); return null; };
+    const out: EventFilter = {};
+    const extra = what === "order" ? "order" : what === "killed" ? "by" : null;
+    const fail = () => { this.c.error(arg, `${named} looks for a unit type — units.ZergZergling — or a filter such as { type: units.TerranMarine, owner: P1, at: locations.Base${extra === "order" ? ", order: orders.Move" : extra === "by" ? ", by: P2" : ""} }.`); return null; };
     if (typeof v === "number") out.type = v;
     else if (v && typeof v === "object" && !Array.isArray(v) && !isGameValue(v)) {
       for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
         if (x === undefined || x === null) continue;
-        if ((k !== "type" && k !== "owner" && k !== "at") || typeof x !== "number" || !Number.isInteger(x)) return fail();
-        out[k] = x;
+        if ((k !== "type" && k !== "owner" && k !== "at" && k !== extra) || typeof x !== "number" || !Number.isInteger(x)) return fail();
+        out[k as keyof EventFilter] = x;
       }
     } else return fail();
     if (out.type === 229) delete out.type;
@@ -5886,6 +5931,9 @@ export class Structured {
     if (out.owner !== undefined && (out.owner < 0 || (out.owner > 11 && out.owner !== CURRENT_PLAYER))) { this.c.error(arg, `${named}'s owner is one player: P1 … P12, or CurrentPlayer.`); return null; }
     if (out.at !== undefined && (out.at === 0 || out.at === 64)) delete out.at;
     if (out.at !== undefined && (out.at < 0 || out.at > 255)) return fail();
+    if (out.order !== undefined && (out.order < 0 || out.order >= ORDER_NAMES.length)) { this.c.error(arg, `${named}'s order is one of orders.*: orders.Move, orders.CastPsionicStorm …`); return null; }
+    // A killer is one of the eight players who can fight (a neutral player's units do not attack), or CurrentPlayer.
+    if (out.by !== undefined && (out.by < 0 || (out.by > 7 && out.by !== CURRENT_PLAYER))) { this.c.error(arg, `${named}'s by is the player who killed the unit: P1 … P8, or CurrentPlayer.`); return null; }
     return out;
   }
 

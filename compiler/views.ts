@@ -59,7 +59,8 @@ function writes(s: Stmt, arrays: Map<string, ArrayDecl>): string[] {
     case "store": case "push": case "pop": case "setLength": case "declareArray": return [array(s.array)];
     case "storeText": return [array(s.addr), array(s.block), array(s.chars)];
     case "releaseText": return [array(s.block)];
-    case "textLoop": case "unitLoop": return [s.decl.id];
+    case "textLoop": return [s.decl.id];
+    case "unitLoop": return s.was ? [s.decl.id, s.was.id] : [s.decl.id];
     default: return [];
   }
 }

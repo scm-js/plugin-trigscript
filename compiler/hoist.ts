@@ -115,7 +115,7 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 }
 
 /** What `on.…` listens for (TrigScript 4, B2): `on.created(filter, handler)` and the rest. */
-export const ON_EVENTS = ["created", "died", "chat", "key"] as const;
+export const ON_EVENTS = ["created", "died", "killed", "order", "morphed", "chat", "key"] as const;
 
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
@@ -198,13 +198,38 @@ export function planClass(ts: typeof TS, checker: TS.TypeChecker, cls: TS.ClassD
   }
 }
 
+/**
+ * `on.died(…)` written as a statement at the top of a script's file (TrigScript 4, B2): it listens from the start of the
+ * game, as a program of its own whose body is that one statement.
+ */
+export function isTopListener(ts: typeof TS, checker: TS.TypeChecker, node: TS.Node): node is TS.ExpressionStatement {
+  return ts.isExpressionStatement(node) && ts.isSourceFile(node.parent) && !node.parent.isDeclarationFile && ts.isCallExpression(node.expression) && isOnCall(ts, checker, node.expression);
+}
+
+/** The plan for a listener at the top of a file (`isTopListener`), made as a program's is. */
+export function planListener(ts: typeof TS, checker: TS.TypeChecker, stmt: TS.ExpressionStatement): ProgramPlan {
+  const forced = new Set<TS.Node>();
+  for (;;) {
+    const before = forced.size;
+    const plan = planOnce(ts, checker, stmt, {}, forced);
+    if (forced.size === before) return plan;
+  }
+}
+
 /** Whether a class is one of the script's own, declared at the top of one of its files: a program may make instances of it. */
 export function isScriptClass(ts: typeof TS, decl: TS.Node): decl is TS.ClassDeclaration {
   return ts.isClassDeclaration(decl) && !!decl.name && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
 }
 
-function planOnce(ts: typeof TS, checker: TS.TypeChecker, of: TS.ArrowFunction | TS.FunctionExpression | TS.ClassDeclaration, options: PlanOptions, forced: Set<TS.Node>): ProgramPlan {
+function planOnce(ts: typeof TS, checker: TS.TypeChecker, of: TS.ArrowFunction | TS.FunctionExpression | TS.ClassDeclaration | TS.ExpressionStatement, options: PlanOptions, forced: Set<TS.Node>): ProgramPlan {
   if (ts.isClassDeclaration(of)) return planClassOnce(ts, checker, of, forced);
+  if (ts.isExpressionStatement(of)) {
+    // A block that holds the statement where it stands: its range the statement's, so that it has a place in the file.
+    const body = ts.setTextRange(ts.factory.createBlock([of]), of);
+    (body as { parent: TS.Node }).parent = of.parent;
+    const plan: ProgramPlan = { root: of, body, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [], grows: new Set() };
+    return planWithin(ts, checker, plan, undefined, options, forced);
+  }
   const arrow = of;
   const plan: ProgramPlan = { arrow, root: arrow.body, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [], grows: new Set() };
   return planWithin(ts, checker, plan, arrow, options, forced);
@@ -651,6 +676,8 @@ export interface TransformContext {
   planFor: (arrow: TS.ArrowFunction | TS.FunctionExpression) => ProgramPlan | undefined;
   /** The plan for a class of the script's own (`planClass`), made before the transform. */
   planForClass?: (cls: TS.ClassDeclaration) => ProgramPlan | undefined;
+  /** The plan for a listener at the top of a file (`planListener`), made before the transform. */
+  planForListener?: (stmt: TS.ExpressionStatement) => ProgramPlan | undefined;
 }
 
 /**
@@ -688,6 +715,20 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
             const rest = lib === "program" ? pad(node.arguments.slice(1).map((a) => ts.visitNode(a, visit) as TS.Expression), 1) : [];
             return f.updateCallExpression(node, node.expression, node.typeArguments, [descriptor, ...rest, at(node)]);
           }
+        }
+      }
+      // `on.died(…)` at the top of a file: handed to the run as a program of its own (`__listen`), which listens from the
+      // start of the game.
+      if (isTopListener(ts, checker, node)) {
+        const plan = ctx.planForListener?.(node);
+        if (plan) {
+          const descriptor = f.createObjectLiteralExpression([
+            f.createPropertyAssignment("__trigscript", f.createStringLiteral("program")),
+            f.createPropertyAssignment("at", at(node)),
+            f.createPropertyAssignment("pos", f.createNumericLiteral(node.getStart(sf))),
+            f.createPropertyAssignment("hoisted", hoistedFunction(ts, checker, plan, context)),
+          ], true);
+          return f.createExpressionStatement(f.createCallExpression(f.createIdentifier("__listen"), undefined, [descriptor, at(node)]));
         }
       }
       // `class Squad { … }` at the top of a file: the class as it is, and after it what its bodies compute when the script is

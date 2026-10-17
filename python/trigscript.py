@@ -68,7 +68,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 18
+IR_VERSION = 19
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -100,6 +100,9 @@ MINIMAP_COLOR_OFFSET = 0x581DD6 - 0x581D76
 VISIBLE_HEAD, DYING_HEAD = 0x628430, 0x62842C
 # How many units one frame's events pass hands on of each kind; past that the rest are handed on in the next frame.
 EVENT_CAP = 512
+# A unit's hit points (+0x08), and the last player whose attack hurt it (+0x90, a byte; 8 when none has): a unit that died
+# with no hit points and a player there died in a fight, and that player killed it (on.killed).
+OFF_HP, OFF_LAST_ATTACKER = 0x08 // 4, 0x90 // 4
 # The location table, and the one an order borrows for the length of one action (put back after).
 MRGN = 0x58DC60
 SCRATCH_LOCATION = 255
@@ -1203,9 +1206,17 @@ class Events:
     links a dying unit in behind the other end, which no map can read), so only a walk both ways sees every record in
     both. A record stays on it only until its sprite is gone. Nothing of the game is written."""
 
-    def __init__(self, created, died):
-        self.created, self.died = created, died
+    def __init__(self, created, died, ordered=False, morphed=False):
+        self.created, self.died, self.ordered, self.morphed = created, died, ordered, morphed
         self.seen = SlotTable()
+        # on.order / on.morphed: each slot's order (masked 0xFF00, as it sits in its dword) and type as the pass before found
+        # them, and this frame's units that changed, each with what it was.
+        self.orders = SlotTable() if ordered else None
+        self.types = SlotTable() if morphed else None
+        self.turned, self.turned_was = (EUDArray(EVENT_CAP), EUDArray(EVENT_CAP)) if ordered else (None, None)
+        self.turned_n = EUDVariable(0)  # initial: the pass's own state, set at its start
+        self.changed, self.changed_was = (EUDArray(EVENT_CAP), EUDArray(EVENT_CAP)) if morphed else (None, None)
+        self.changed_n = EUDVariable(0)  # initial: the pass's own state, set at its start
         # Each a unit's pointer, which f_cunitepdread_epd reads back cheaply with its EPD: within the frame a slot is not
         # given to another unit (that takes a dying pass), so its uniqueness byte need not be kept.
         self.made = EUDArray(EVENT_CAP) if created else None
@@ -1216,8 +1227,8 @@ class Events:
         # head (pointer, EPD). Nothing is linked in but behind the head, so with both the same nothing came in since.
         self.bounds = {VISIBLE_HEAD: [EUDVariable(0) for _ in range(5)]}  # initial: no pass before
 
-    def cell(self, epd):
-        return epd + (EPD(self.seen) - EPD(UNIT_TABLE))
+    def cell(self, epd, table=None):
+        return epd + (EPD(table or self.seen) - EPD(UNIT_TABLE))
 
     def walk(self, head, step):
         """`step(ptr, epd, uid, cell, stop)` for each record from the head to the one behind the head at the pass before."""
@@ -1282,9 +1293,40 @@ class Events:
         EUDJump(top)
         stop << NextTrigger()
 
+    def watch(self):
+        """on.order / on.morphed: every unit on the map, its order and its type against what the pass before found. A unit
+        not seen before (it comes on in this pass) only has them kept; the units that came on are taken after this. The
+        type is read as its low byte (there are 228). Whether the unit was seen is asked only when something changed."""
+        top, done = Forward(), Forward()
+        ptr, epd = f_cunitepdread_epd(EPD(VISIBLE_HEAD))
+        top << NextTrigger()
+        EUDJumpIf(ptr == 0, done)
+        for table, buf, was, n, off, mask in ((self.orders, self.turned, self.turned_was, self.turned_n, OFF_OWNER_ORDER, 0xFF00),
+                                              (self.types, self.changed, self.changed_was, self.changed_n, OFF_TYPE, 0xFF)):
+            if table is None:
+                continue
+            now = f_maskread_epd(epd + off, mask)
+            cell = self.cell(epd, table)
+            if EUDIfNot()(MemoryEPD(cell, Exactly, now)):
+                if EUDIf()([MemoryXEPD(epd + OFF_UID, Exactly, f_dwread_epd(self.cell(epd)), 0xFF00), n < EVENT_CAP]):
+                    buf[n] = ptr
+                    old = f_dwread_epd(cell)
+                    was[n] = f_bitrshift(old, 8) if mask == 0xFF00 else old
+                    n += 1
+                EUDEndIf()
+                f_dwwrite_epd(cell, now)
+            EUDEndIf()
+        f_cunitepdread_epd(epd + 1, ret=[ptr, epd])
+        EUDJump(top)
+        done << NextTrigger()
+
     def run(self):
         self.made_n << 0
         self.gone_n << 0
+        self.turned_n << 0
+        self.changed_n << 0
+        if self.ordered or self.morphed:
+            self.watch()
 
         def came(ptr, epd, uid, cell, stop):
             if EUDIfNot()(MemoryEPD(cell, Exactly, uid)):
@@ -2025,16 +2067,27 @@ class Lowering:
         it died (its slot is not given to another unit before the next frame's dying pass)."""
         if EVENTS is None:
             raise Fail("trigscript: a loop over the events pass's units, and no pass%s" % where(node))
-        cells, count = (EVENTS.made, EVENTS.made_n) if source == "created" else (EVENTS.gone, EVENTS.gone_n)
+        cells, was, count = {"created": (EVENTS.made, None, EVENTS.made_n), "died": (EVENTS.gone, None, EVENTS.gone_n),
+                             "killed": (EVENTS.gone, None, EVENTS.gone_n), "ordered": (EVENTS.turned, EVENTS.turned_was, EVENTS.turned_n),
+                             "morphed": (EVENTS.changed, EVENTS.changed_was, EVENTS.changed_n)}[source]
+        event = node.get("event") or {}
         i = fresh(0)
         head, next_, exit_ = Forward(), Forward(), Forward()
         head << NextTrigger()
         EUDJumpIf(i >= count, exit_)
         ptr, epd = f_cunitepdread_epd(EPD(cells) + i)
-        if source == "created":
+        if source in ("created", "ordered", "morphed"):
             # Gone since the pass: killed or removed by a program before this turn (its slot is still its own).
             EUDJumpIfNot([MemoryEPD(epd + OFF_SPRITE, AtLeast, 1), MemoryXEPD(epd + OFF_OWNER_ORDER, AtLeast, 0x100, 0xFF00)], next_)
         match = []
+        if source == "killed":
+            # Died in a fight: no hit points, and one of the eight players the last whose attack hurt it.
+            match += [MemoryEPD(epd + OFF_HP, Exactly, 0), MemoryXEPD(epd + OFF_LAST_ATTACKER, AtMost, 7, 0xFF)]
+            by = event.get("by")
+            if by is not None:
+                match.append(MemoryXEPD(epd + OFF_LAST_ATTACKER, Exactly, self.current() if by == CURRENT_PLAYER else int(by), 0xFF))
+        if event.get("order") is not None:
+            match.append(MemoryXEPD(epd + OFF_OWNER_ORDER, Exactly, int(event["order"]) << 8, 0xFF00))
         owner = flt.get("owner")
         if owner is not None:
             who = self.current() if owner == CURRENT_PLAYER else int(owner)
@@ -2057,6 +2110,9 @@ class Lowering:
         if kind in GROUP_BITS:
             group = fresh(f_bread(UNITS_GROUP + f_maskread_epd(epd + OFF_TYPE, 0xFFFF)))
             EUDJumpIf((group & GROUP_BITS[kind]) == 0, next_)
+        if node.get("was"):
+            # What the unit was: the killer, or the order or the type the pass before found.
+            self.declare(node["was"]).set(f_maskread_epd(epd + OFF_LAST_ATTACKER, 0xFF) if source == "killed" else was[i])
         body(UnitRef(ptr, epd, None), next_, exit_)
         next_ << NextTrigger()
         i += 1
@@ -3281,7 +3337,7 @@ class Lowering:
         """Whether a listener has anything to hand on this frame: units the events pass found, or one of its inputs."""
         source = listen.get("source")
         if source is not None:
-            return (EVENTS.made_n if source == "created" else EVENTS.gone_n) >= 1
+            return {"created": EVENTS.made_n, "died": EVENTS.gone_n, "killed": EVENTS.gone_n, "ordered": EVENTS.turned_n, "morphed": EVENTS.changed_n}[source] >= 1
         found = fresh(0)
         for inp in listen.get("inputs", []):
             if EUDIf()(as_var(INPUT.read(inp, self, listen)) >= 1):
@@ -4023,8 +4079,8 @@ if settings.get("variableMap"):
 
 
 INPUT = Input(IR.get("input"))
-_DIED = uses_source(IR.get("programs", []), "died")
-EVENTS = Events(uses_source(IR.get("programs", []), "created"), _DIED) if _DIED or uses_source(IR.get("programs", []), "created") else None
+_SOURCES = {s: uses_source(IR.get("programs", []), s) for s in ("created", "died", "killed", "ordered", "morphed")}
+EVENTS = Events(_SOURCES["created"], _SOURCES["died"] or _SOURCES["killed"], _SOURCES["ordered"], _SOURCES["morphed"]) if any(_SOURCES.values()) else None
 PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
 
 

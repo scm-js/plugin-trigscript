@@ -20,7 +20,7 @@ import type { TriggerRecord } from "../vendor/triggers";
 import { MODULE_NAME } from "./api";
 import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type TestReport, type TestRunOptions } from "./testing";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
-import { isScriptClass, libraryCallName, libraryName, planClass, planProgram, transformer, type ProgramPlan } from "./hoist";
+import { isScriptClass, isTopListener, libraryCallName, libraryName, planClass, planListener, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { locate, resolveModule, runModules, type LinkedFile } from "./link";
 import { checkProgram } from "./eud";
 import { typeNumbers } from "./numbers";
@@ -289,6 +289,15 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
         classPlans.set(node, plan);
         byPosition.set(`${fileIndex(sf)}:${node.getStart(sf)}`, { plan, sf, name: node.name!.text });
       }
+      // `on.died(…)` at the top of a file: a program of its own, its body the statement.
+      if (isTopListener(ts, checker, node) && !isTestFile(name)) {
+        const plan = planListener(ts, checker, node);
+        plans.set(node, plan);
+        byPosition.set(`${fileIndex(sf)}:${node.getStart(sf)}`, { plan, sf });
+        for (const e of plan.errors) nodeError(e.node, e.message);
+        for (const e of plan.hoisted) buildTime.push({ file: name, ...position(sf, e.getStart(sf), e.getEnd()) });
+        return;
+      }
       if (ts.isCallExpression(node)) {
         const lib = libraryCallName(ts, checker, node);
         const arrow = node.arguments[0];
@@ -322,7 +331,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   for (const d of diagnostics) planned.add(`${d.file}:${d.line}`);
 
   /* ── Emit ── */
-  const emitted = program.emit(undefined, undefined, undefined, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow), planForClass: (cls) => classPlans.get(cls) })] });
+  const emitted = program.emit(undefined, undefined, undefined, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow), planForClass: (cls) => classPlans.get(cls), planForListener: (stmt) => plans.get(stmt) })] });
   for (const d of emitted.diagnostics) {
     if (d.category === ts.DiagnosticCategory.Error) diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
   }

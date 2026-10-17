@@ -16,6 +16,7 @@ import { PlayerGroup, SWITCH_COUNT } from "../vendor/triggers";
 import { AI_SCRIPT_CHOICES, aiScriptCode, PLAYER_GROUP_CHOICES, UNIT_CLASS_CHOICES } from "../vendor/triggerDefs";
 import { UNIT_NAMES } from "../vendor/units";
 import { TECH_NAMES, UPGRADE_NAMES, WEAPON_NAMES } from "../vendor/gameNames";
+import { ORDER_NAMES } from "./orders";
 
 /** The location slot the game calls Anywhere (0-based); a script names it `locations.Anywhere`, value 64. */
 export const ANYWHERE_INDEX = 63;
@@ -45,10 +46,12 @@ export interface ScriptNames {
   weapons: NameTable;
   upgrades: NameTable;
   techs: NameTable;
+  /** orders.dat ids: what a unit is doing (`u.orderId`) and what `on.order()` listens for. */
+  orders: NameTable;
 }
 
 /** Every table, in the order the declarations list them. */
-export const allTables = (n: ScriptNames): NameTable[] => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs];
+export const allTables = (n: ScriptNames): NameTable[] => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs, n.orders];
 
 /** What a map contributes to the tables; every part is optional (the fixed lists stand without a map). */
 export interface NameSources {
@@ -151,6 +154,7 @@ export function scriptNames(src: NameSources = {}): ScriptNames {
     weapons: table("weapons", "Weapon", "Weapons, for stats() and a unit type's groundWeapon / airWeapon.", [...WEAPON_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) })), { value: WEAPON_NAMES.length, keys: ["None"] }]),
     upgrades: table("upgrades", "Upgrade", "Upgrades, for stats().", UPGRADE_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
     techs: table("techs", "Tech", "Technologies, for stats().", TECH_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
+    orders: table("orders", "Order", "Orders, what a unit is doing: u.orderId, and what on.order() listens for.", ORDER_NAMES.map((name, id) => ({ value: id, keys: [name] }))),
   };
 }
 
