@@ -24,6 +24,7 @@ import { readTriggerMap, readVariableMap } from "../compiler/gameVariables";
 import { resolveStrings } from "../script";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
+import { scriptFiles } from "./script-files.mts";
 
 const [scriptPath, outPath, mapArg, eudplibArg] = process.argv.slice(2);
 if (!scriptPath || !outPath) { console.error("usage: build-fixture <script.ts> <out.scx> [map.scx] [plugin-eudplib dir]"); process.exit(2); }
@@ -33,7 +34,7 @@ const eudplib = resolve(eudplibArg ?? process.env.EUDPLIB_DIR ?? join(root, ".."
 if (!existsSync(map)) { console.error(`no map at ${map}`); process.exit(2); }
 if (!existsSync(join(eudplib, "scripts", "build-map.mts"))) { console.error(`no plugin-eudplib checkout at ${eudplib}`); process.exit(2); }
 
-const r = compileScript(ts, { "main.ts": readFileSync(scriptPath, "utf8") }, defaultScriptNames(), { lib: defaultLib() });
+const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib() });
 if (r.diagnostics.length) { for (const d of r.diagnostics) console.error(`${d.file}:${d.line}:${d.column} ${d.message}`); process.exit(1); }
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));
@@ -48,6 +49,10 @@ patchPlayer(scn, 0, { type: 6, race: 1, force: 0 });
 patchPlayer(scn, 1, { type: 5, race: 0, force: 1 });
 // PEOPLE=0,1: those slots open to a person each (Terran), for a test of several players (scripts/test-game.mts).
 for (const slot of (process.env.PEOPLE ?? "").split(",").filter(Boolean).map(Number)) patchPlayer(scn, slot, { type: 6, race: 1, force: slot === 0 ? 0 : 1 });
+// A probe that needs its players set otherwise says so in a line of its own: `// probe-players: {"1":{"type":0,"rgb":[0,255,255]}}`,
+// by 0-based slot — a slot type (0 inactive, 5 computer, 6 human) and a Remastered colour of its own.
+const playersLine = /^\/\/ probe-players: (.+)$/m.exec(readFileSync(scriptPath, "utf8"));
+if (playersLine) for (const [slot, patch] of Object.entries(JSON.parse(playersLine[1]) as Record<string, { type?: number; rgb?: [number, number, number] }>)) patchPlayer(scn, Number(slot), patch);
 // The base map is a melee map: its stock triggers defeat whoever commands no buildings, and in
 // Use Map Settings nobody is handed melee units — both players lose at once and the game
 // ends in a draw a second in. The probe's own script is the only source of triggers it should have,
@@ -79,6 +84,11 @@ if (home && scn.locations?.[0] && !scn.locations[0].nameIndex && scn.locations[0
   if (scn.locations[1] && !scn.locations[1].nameIndex && scn.locations[1].right === 0) {
     const awayLeft = left + 384 + 256 + 128 <= w ? left + 384 + 256 : Math.max(0, left - 256 - 128);
     scn.locations[1] = { ...scn.locations[1], left: awayLeft, top, right: awayLeft + 128, bottom: top + 192, nameIndex: internString(scn, "Away") };
+  }
+  // Location 3, "Pixel": 64 × 64 — one cell of a board drawn with units, room for a 2 × 2 building, which Create Unit puts
+  // inside the location or not at all — for a probe to centre on a point and make or take away a unit there.
+  if (scn.locations[2] && !scn.locations[2].nameIndex && scn.locations[2].right === 0) {
+    scn.locations[2] = { ...scn.locations[2], left: 0, top: 0, right: 64, bottom: 64, nameIndex: internString(scn, "Pixel") };
   }
   markDirty(scn, "MRGN");
 }

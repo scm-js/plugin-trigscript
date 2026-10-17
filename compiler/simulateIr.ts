@@ -36,7 +36,7 @@
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
-import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
+import { BUILD_BYTES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
 import type { TextExpr, ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
@@ -50,6 +50,8 @@ export const FRAMES_PER_SECOND = 24;
 /** What Elapsed Time and the countdown count: a game second is sixteen frames (the slice 2 probe: 21 after 336 frames), not the twenty-four of a second at Fastest. */
 export const FRAMES_PER_GAME_SECOND = 16;
 const U32 = 0x1_0000_0000;
+/** Frames with no message before a held key counts as let go; python/trigscript.py has the same number (Input.HELD_GRACE). */
+const HELD_GRACE = 2;
 
 export interface ProgramEvent {
   /** 0-based run of the programs. */
@@ -622,6 +624,8 @@ class ProgramRun {
     let out = "";
     for (const p of parts) {
       if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      // A colour code is a control character in the game; the log keeps the words, as it does for a player's colour.
+      else if (p.kind === "char") yield* this.num(p.expr);
       else if (p.kind === "value") { const v = yield* this.text(p.text); used.push(v); out += v.s; }
       else out += this.sim.partText(p);
     }
@@ -684,6 +688,7 @@ class ProgramRun {
         this.used(of);
         return out;
       }
+      case "built": return { s: this.sim.buffers.get(e.buffer) ?? "", room: 0, taken: false };
       case "textCall": {
         yield* this.call(e.call);
         const held = e.call.result ? this.textVars.get(e.call.result.decl.id) : undefined;
@@ -1123,6 +1128,20 @@ class ProgramRun {
         this.sim.print(this, text, s.to, s.at);
         return "next";
       }
+      case "buildText": {
+        const used: TextValue[] = [];
+        const more = yield* this.parts(s.parts, used);
+        this.used(...used);
+        const was = s.reset ? "" : this.sim.buffers.get(s.buffer) ?? "";
+        let text = was + more;
+        // Past what a buffer holds the text is cut, as it is in the game, and said once a buffer.
+        if (bytesOf(text) > BUILD_BYTES) {
+          if (bytesOf(was) <= BUILD_BYTES) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `This text came to more than the ${BUILD_BYTES.toLocaleString("en-US")} bytes a text put together piece by piece holds: it is cut off there, as it is in the game.` });
+          text = cutTo(text, BUILD_BYTES);
+        }
+        this.sim.buffers.set(s.buffer, text);
+        return "next";
+      }
       case "centerLocation": { const x = yield* this.amount(s.x); const y = yield* this.amount(s.y); this.sim.centre(s.location, x, y); return "next"; }
       case "start": {
         const pool = this.pools.find((p) => p.start === s);
@@ -1235,6 +1254,8 @@ export class ProgramSimulation {
   /** The arrays that grow inside others, by the number their handle's cell holds. */
   readonly inner = new Map<number, Held>();
   lastInner = 0;
+  /** What each buffer of `buildText` holds: one for the whole game, as in the game. */
+  readonly buffers = new Map<string, string>();
   readonly heap = {
     cells: HEAP_CELLS,
     top: 1,
@@ -1269,6 +1290,12 @@ export class ProgramSimulation {
   /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
   private queued: { events: Set<string>; lines: Map<number, { pattern: string; values: number[] }> } = { events: new Set(), lines: new Map() };
   private current = this.queued;
+  /** The keys and buttons down on the last frame, and on this one (what keyHeld() finds). */
+  private down = new Set<string>();
+  private downNow = new Set<string>();
+  private readonly lastDown = new Map<string, number>();
+  /** Whether a program reads a held key: then a press is worked out from the held keys, as the game does. */
+  private heldKeys = false;
   /** Where each player's mouse is, in map pixels. */
   readonly mice = new Map<number, { x: number; y: number }>();
   cycle = 0;
@@ -1309,6 +1336,7 @@ export class ProgramSimulation {
     };
     this.unitByName = options.unitByName ?? (() => undefined);
     for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c) => c.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
+    this.heldKeys = inputsOf(programs).sources.some((s) => s.source === "key" && s.held);
     this.current = { events: new Set(), lines: new Map() };
     // A program runs once a frame for each of its owners who is in the game, each run with its own variables; one that
     // is not per player runs as the first of them. Without the map's player settings there is the one player and one run.
@@ -1413,7 +1441,7 @@ export class ProgramSimulation {
   input(i: InputSource): number {
     const p = this.slotOf(i.player);
     switch (i.source) {
-      case "key": return this.current.events.has(`key:${p}:${i.key}`) ? 1 : 0;
+      case "key": return (i.held ? this.downNow : this.current.events).has(`key:${p}:${i.key}`) ? 1 : 0;
       case "click": return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
       case "mouse": return this.mice.get(p)?.[i.axis] ?? 0;
       case "chat": {
@@ -1475,7 +1503,7 @@ export class ProgramSimulation {
     this.events.push({ cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
 
-  partText(p: Exclude<TextPart, { kind: "number" | "value" }>): string {
+  partText(p: Exclude<TextPart, { kind: "number" | "value" | "char" }>): string {
     // A colour is a control character in the game; the log keeps the words.
     return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
   }
@@ -1530,6 +1558,18 @@ export class ProgramSimulation {
     // What was done since the last frame is what this one finds, and only this one.
     this.current = this.queued;
     this.queued = { events: new Set(), lines: new Map() };
+    // A key or a button down on this frame and the last is held, not pressed again: the game reports the frame it goes
+    // down (MSQC's KeyDown / MouseDown), however many frames a tap lasts.
+    const down = new Set([...this.current.events].filter((e) => e.startsWith("key:") || e.startsWith("click:")));
+    for (const e of down) if (this.down.has(e)) this.current.events.delete(e);
+    this.down = down;
+    // keyHeld(): down now, or let go no more than HELD_GRACE frames ago — as the game's lowering has it, which covers a
+    // message that went missing on its way between the players' computers.
+    for (const e of down) this.lastDown.set(e, this.frame);
+    const was = this.downNow;
+    this.downNow = new Set([...this.lastDown].filter(([, f]) => this.frame - f <= HELD_GRACE).map(([e]) => e));
+    // With a held key in the game every key goes as held, and a press is held now and not before (compiler/input.ts).
+    if (this.heldKeys) for (const e of [...this.current.events]) if (e.startsWith("key:") && (!this.downNow.has(e) || was.has(e))) this.current.events.delete(e);
     for (const run of this.runs) {
       this.world.current = run.player;
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }

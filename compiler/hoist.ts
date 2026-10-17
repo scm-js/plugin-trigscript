@@ -42,7 +42,10 @@ export type PlanItem =
   | { kind: "block"; items: PlanItem[] };
 
 export interface ProgramPlan {
-  arrow: TS.ArrowFunction | TS.FunctionExpression;
+  /** The program's or the game function's arrow; unset for a class's plan (`planClass`). */
+  arrow?: TS.ArrowFunction | TS.FunctionExpression;
+  /** What the plan covers: the arrow's body, or the class. */
+  root: TS.Node;
   body: TS.Block;
   /** A `game()` function with an expression body (`game((a: number) => a + 1)`): what it returns. */
   expression?: TS.Expression;
@@ -108,7 +111,7 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared"]);
+const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared", "lines", "centerLocation"]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -150,7 +153,13 @@ export function isTaskFunction(ts: typeof TS, checker: TS.TypeChecker, node: TS.
   if (!call.arguments.includes(at as TS.Expression)) return false;
   if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "then") return true;
   const lib = libraryCallName(ts, checker, call);
-  return lib === "until" || (lib === "start" && call.arguments[0] === at);
+  return lib === "until" || (lib === "start" && call.arguments[0] === at) || (lib === "lines" && call.arguments[1] === at);
+}
+
+/** Whether a node is JSX or has JSX inside it: a text the program puts together, never one worked out when the script is built. */
+export function hasJsx(ts: typeof TS, node: TS.Node): boolean {
+  if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxFragment(node)) return true;
+  return !!ts.forEachChild(node, (c) => hasJsx(ts, c) || undefined);
 }
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {
@@ -164,11 +173,42 @@ export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.Ar
   }
 }
 
-function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions, forced: Set<TS.Node>): ProgramPlan {
-  const plan: ProgramPlan = { arrow, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [], grows: new Set() };
+/**
+ * A class declared at the top of a script's file, planned as a game function is: it is ordinary JavaScript when the script
+ * is built, and the program's own wherever a program makes an instance of it — its parameters and its variables the
+ * game's, what its fields' first values and its bodies compute when the script is built hoisted. Its errors are reported
+ * only where a program uses it.
+ */
+export function planClass(ts: typeof TS, checker: TS.TypeChecker, cls: TS.ClassDeclaration): ProgramPlan {
+  const forced = new Set<TS.Node>();
+  for (;;) {
+    const before = forced.size;
+    const plan = planOnce(ts, checker, cls, { parameters: true }, forced);
+    if (forced.size === before) return plan;
+  }
+}
+
+/** Whether a class is one of the script's own, declared at the top of one of its files: a program may make instances of it. */
+export function isScriptClass(ts: typeof TS, decl: TS.Node): decl is TS.ClassDeclaration {
+  return ts.isClassDeclaration(decl) && !!decl.name && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
+}
+
+function planOnce(ts: typeof TS, checker: TS.TypeChecker, of: TS.ArrowFunction | TS.FunctionExpression | TS.ClassDeclaration, options: PlanOptions, forced: Set<TS.Node>): ProgramPlan {
+  if (ts.isClassDeclaration(of)) return planClassOnce(ts, checker, of, forced);
+  const arrow = of;
+  const plan: ProgramPlan = { arrow, root: arrow.body, body: ts.isBlock(arrow.body) ? arrow.body : undefined as unknown as TS.Block, hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [], grows: new Set() };
+  return planWithin(ts, checker, plan, arrow, options, forced);
+}
+
+function planClassOnce(ts: typeof TS, checker: TS.TypeChecker, cls: TS.ClassDeclaration, forced: Set<TS.Node>): ProgramPlan {
+  const plan: ProgramPlan = { root: cls, body: ts.factory.createBlock([]), hoisted: [], index: new Map(), game: new Set(), consts: new Map(), constList: [], tree: [], errors: [], grows: new Set() };
+  return planWithin(ts, checker, plan, undefined, { parameters: true }, forced);
+}
+
+function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, arrow: TS.ArrowFunction | TS.FunctionExpression | undefined, options: PlanOptions, forced: Set<TS.Node>): ProgramPlan {
   const error = (node: TS.Node, message: string) => plan.errors.push({ node, message });
   const what = options.parameters ? "game()" : "program()";
-  if (!ts.isBlock(arrow.body)) {
+  if (arrow && !ts.isBlock(arrow.body)) {
     if (!options.parameters) {
       error(arrow.body, "program() takes an arrow with a block body: program(() => { … }).");
       plan.body = ts.factory.createBlock([]);
@@ -177,12 +217,12 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     plan.expression = arrow.body;
     plan.body = ts.factory.createBlock([]);
   }
-  if (arrow.parameters.length && !options.parameters) error(arrow.parameters[0], "The program's arrow takes no parameters.");
-  if (arrow.asteriskToken) error(arrow, `A ${what} body cannot be a generator.`);
+  if (arrow && arrow.parameters.length && !options.parameters) error(arrow.parameters[0], "The program's arrow takes no parameters.");
+  if (arrow?.asteriskToken) error(arrow, `A ${what} body cannot be a generator.`);
 
   /* ── Bindings ── */
   const declare = (node: TS.Node) => plan.game.add(node);
-  for (const p of arrow.parameters) {
+  for (const p of arrow?.parameters ?? []) {
     if (!options.parameters) break;
     if (!ts.isIdentifier(p.name)) error(p, "Destructured parameters are not supported in a game function.");
     else if (p.dotDotDotToken) error(p, "Rest parameters are not supported in a game function.");
@@ -212,7 +252,7 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     }
     ts.forEachChild(node, collect);
   };
-  collect(arrow.body);
+  collect(plan.root);
   // A `const` list the body stores into — `const hp = [0, 0, 0]; hp[i] = 5`, which TypeScript allows — is an array of the
   // program like a `let` one; a list that is only read stays a value of the script, which a program may still look up in.
   const ARRAY_WRITERS = new Set(["push", "pop", "fill"]);
@@ -259,8 +299,8 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
       }
     }
   };
-  const inside = (decl: TS.Node) => { for (let n: TS.Node | undefined = decl; n; n = n.parent) if (n === arrow.body) return true; return false; };
-  written(arrow.body);
+  const inside = (decl: TS.Node) => { for (let n: TS.Node | undefined = decl; n; n = n.parent) if (n === plan.root) return true; return false; };
+  written(plan.root);
   for (const decl of forced) declare(decl);
 
   /* ── Hoistability ── */
@@ -287,6 +327,8 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     const hit = memo.get(e);
     if (hit !== undefined) return hit;
     let ok = true;
+    // JSX is the program's own text, put together in the game (`structured.ts#jsx`), whatever is in it.
+    if (hasJsx(ts, e)) { memo.set(e, false); return false; }
     // Inside a function value the syntax is the function's own business; only what it refers to matters.
     const scan = (n: TS.Node): void => {
       if (!ok) return;
@@ -304,6 +346,8 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
       if (property) return;
       const decl = declarationOf(ts, checker, n);
       if (decl && isGameDecl(decl)) { ok = false; return; }
+      // A class of the script's own: inside a program, `new C()` is an instance of the program's, whatever its arguments.
+      if (decl && isScriptClass(ts, decl)) { ok = false; return; }
       // A generator is walked by the program's for…of, a copy of its body at each loop: never run when the script is built.
       if (decl && (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl)) && decl.asteriskToken) { ok = false; return; }
     };
@@ -378,6 +422,19 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e) || ts.isTypeAssertionExpression(e) || ts.isSpreadElement(e) || ts.isAwaitExpression(e) || ts.isTypeOfExpression(e) || ts.isVoidExpression(e) || ts.isDeleteExpression(e)) { value(e.expression, items); return; }
     if (ts.isConditionalExpression(e)) { value(e.condition, items); value(e.whenTrue, items); value(e.whenFalse, items); return; }
     if (ts.isTemplateExpression(e)) { for (const s of e.templateSpans) value(s.expression, items); return; }
+    // JSX: what is inside its braces, in attributes and among the children, is a value like any other.
+    if (ts.isJsxElement(e) || ts.isJsxSelfClosingElement(e) || ts.isJsxFragment(e)) {
+      const attributes = ts.isJsxElement(e) ? e.openingElement.attributes : ts.isJsxSelfClosingElement(e) ? e.attributes : undefined;
+      for (const a of attributes?.properties ?? []) {
+        if (ts.isJsxAttribute(a) && a.initializer && ts.isJsxExpression(a.initializer)) value(a.initializer.expression, items);
+        else if (ts.isJsxSpreadAttribute(a)) value(a.expression, items);
+      }
+      for (const c of ts.isJsxSelfClosingElement(e) ? [] : e.children) {
+        if (ts.isJsxExpression(c)) value(c.expression, items);
+        else if (!ts.isJsxText(c)) descend(c, items);
+      }
+      return;
+    }
     if (ts.isArrayLiteralExpression(e)) { for (const el of e.elements) value(el, items); return; }
     if (ts.isObjectLiteralExpression(e)) {
       for (const p of e.properties) {
@@ -469,6 +526,7 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     return items;
   };
   if (plan.expression) { const items: PlanItem[] = []; value(plan.expression, items); plan.tree = items; return plan; }
+  if (ts.isClassDeclaration(plan.root)) { plan.tree = classItems(plan.root); return plan; }
   plan.tree = block(plan.body.statements);
   return plan;
 }
@@ -581,6 +639,8 @@ export interface TransformContext {
   fileIndex: (sf: TS.SourceFile) => number;
   /** The plan for a program's arrow, made before the transform. */
   planFor: (arrow: TS.ArrowFunction | TS.FunctionExpression) => ProgramPlan | undefined;
+  /** The plan for a class of the script's own (`planClass`), made before the transform. */
+  planForClass?: (cls: TS.ClassDeclaration) => ProgramPlan | undefined;
 }
 
 /**
@@ -598,7 +658,7 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
       while (out.length < upTo) out.push(f.createIdentifier("undefined"));
       return out;
     };
-    const visit = (node: TS.Node): TS.Node => {
+    const visit = (node: TS.Node): TS.VisitResult<TS.Node> => {
       if (ts.isCallExpression(node)) {
         const lib = libraryCallName(ts, checker, node);
         if (lib === "trigger" && node.arguments.length >= 3 && node.arguments.length <= 4) {
@@ -619,6 +679,20 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
             return f.updateCallExpression(node, node.expression, node.typeArguments, [descriptor, ...rest, at(node)]);
           }
         }
+      }
+      // `class Squad { … }` at the top of a file: the class as it is, and after it what its bodies compute when the script is
+      // built, handed to the run (`__class`), for a program that makes an instance of it.
+      if (ts.isClassDeclaration(node) && node.name && ts.isSourceFile(node.parent)) {
+        const plan = ctx.planForClass?.(node);
+        const visited = ts.visitEachChild(node, visit, context);
+        if (!plan) return visited;
+        const descriptor = f.createObjectLiteralExpression([
+          f.createPropertyAssignment("__trigscript", f.createStringLiteral("class")),
+          f.createPropertyAssignment("at", at(node)),
+          f.createPropertyAssignment("pos", f.createNumericLiteral(node.getStart(sf))),
+          f.createPropertyAssignment("hoisted", hoistedFunction(ts, checker, plan, context)),
+        ], true);
+        return [visited, f.createExpressionStatement(f.createCallExpression(f.createIdentifier("__class"), undefined, [f.createIdentifier(node.name.text), descriptor]))];
       }
       return ts.visitEachChild(node, visit, context);
     };

@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 16** (15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 17** (16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -184,6 +184,7 @@ frame's `saves`, and a `slice` is never declared.
 | `parallel` | `mode`, `branches` | `await Promise.all([…])` (`all`) or `await Promise.race([…])` / `Promise.any` (`race`). Each branch is a coroutine of its own with its own place to go on from and its own wait: started here, in order, in this frame; then, every frame the program is at this statement, each branch that has not ended goes on, in order. The program goes on past it in the frame the last branch ends (`all`) or the first (`race`, which leaves the others where they are: they never run again). A branch is never left by `break`, `continue` or `return`. Not inside a called function, a `unitLoop` or a `textLoop`. Since version 15. |
 | `start` | `task`, `max`, `call`, `handle?` | `start(wave(n))`, `void wave(n)`: a task that runs beside what started it (*Tasks*, below). `call` is the async function's body inlined, its `params` copies of this start's arguments, worked out here; the body runs in the task. `handle` takes the task's number, or 0 when every slot was running. Since version 16. |
 | `cancel` | `task` (a number) | `t.cancel()`: the task stops where it is; nothing happens for a number that is no running task's. Since version 16. |
+| `buildText` | `buffer`, `parts`, `reset?` | The parts written onto the end of buffer `buffer` — emptied first when `reset` — which a `built` reads back (*Texts put together a piece at a time*, below). Since version 17. |
 | `print` | `parts`, `to`, `position` | Text with values in it. `parts` are `{ kind: "text", text }`, `{ kind: "number", expr, unsigned? }` (its digits, with a minus sign when it is below zero and not `unsigned`), `{ kind: "name", player }` and `{ kind: "color", player }` (the colour code of the player's colour), a player being a slot or 13 for the current player. `to` is who sees it: a slot, 13, All Players (17) or a force (18–21). `position` is `chat` or `center`, the line the game's own errors use. Every number is evaluated before anything is shown. |
 | `action` | `record`, `variables?` | A trigger action. Each of `variables` names a field of the record that takes an expression's value: `{ field, bits: 8, 16 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, a unit type a 16-bit one (the lowering stops it at 228), an amount with a modifier a 32-bit one. Version 4 had one, as `variable`. |
 | `centerLocation` | `location`, `x`, `y` | Centre a location (1-based) on a point of the map in pixels, its size kept. |
@@ -405,6 +406,7 @@ TextExpr =
   | { kind: "textPad", of, side: "start" | "end", width, with, at, label }
   | { kind: "textRepeat", of, count, at, label }
   | { kind: "textCall", call }                          a call whose result is a text
+  | { kind: "built", buffer }                           what a buffer of buildText holds (version 17)
 ```
 
 The first three, and a `textTernary` between such, *have an id* whatever happens in the
@@ -463,6 +465,30 @@ lets a made text into those actions only. A `tableWrite` of a unit type's name t
 `TextExpr`: an id is written as it is, a made text goes over a string kept for that unit
 type, on every computer. The places a `textSlice` is given are inside 0 … the length
 already: the front end counts from the end and clamps.
+
+### Texts put together a piece at a time
+
+Version 17, for JSX (TrigScript 4, S2). A JSX text has conditions and loops in it, so it
+cannot be one `template`; made as templates joined with `+` it would be copied whole at every
+piece. Instead it has a **buffer** of its own, named by `buffer` (`jsx L<line>#<n>`): `BUILD_BYTES`
+(2 047) bytes and where the writing has got to, one for the whole game. A `buildText` with
+`reset` starts it empty; every other `buildText` writes its parts at the end; `built` is the
+text there, only looked at — whatever keeps it takes a copy, since the buffer is built again
+the next time the same JSX runs. A buffer is used up within the frame it is built in: the
+front end never lets an `await` come between a JSX text's first `buildText` and its use. Past
+`BUILD_BYTES` the text is cut, never inside a character, and the game says so once in red
+where Simulate records a fault.
+
+Parts gain `{ kind: "char", expr }`: one byte, the number's low eight bits — a colour code
+the program chooses (`<cell color={board[i]} />`). 0 writes nothing. Simulate's log drops it,
+as it drops a player's colour.
+
+`ui.lines(player, view)` is a `start` whose body loops: when a flag of the program says the
+view is stale, or 24 frames after it was last shown, it builds the view and prints `built`.
+The flag is a variable declared first in the program body, set; after every statement anywhere
+in the program (its tasks and its functions too) that writes a variable or an array the view
+reads, the front end adds `flag = 1` (`views.ts`). A view that reads the game — units, input,
+`random`, the game's tables, a function that is called — is built every frame.
 
 ## Units
 
@@ -571,7 +597,7 @@ The build's plugin sections, in the order they run (`buildPlugins`): **chatEvent
 messages of its own — it only finds the line the local player typed and leaves its address
 and length; **trigscript**, which before the triggers matches that line against the patterns
 on the computer it was typed on, into a number for the pattern and up to three values;
-**MSQC**, which sends those, the keys (`KeyPress(K); NotTyping`) and the clicks
+**MSQC**, which sends those, the keys (`KeyDown(K); NotTyping`: the frame a key goes down; `KeyPress` is every frame it is down, and a tap is two or three) and the clicks
 (`MouseDown(B)`) to every computer as the player they came from, and keeps each human's
 mouse in a location; **eudTurbo**. Every cell is an `EUDArray(12)` or an `EUDVariable` the
 lowering registers by name (`tsin_key0`, `tsin_chat_in`, …), which is how the other two

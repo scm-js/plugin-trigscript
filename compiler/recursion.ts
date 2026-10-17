@@ -333,8 +333,8 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             break;
           }
           case "centerLocation": [s.x, s.y] = operands([{ e: s.x, kind: "number" }, { e: s.y, kind: "number" }], pre, w) as NumExpr[]; break;
-          case "print": {
-            const numbers = s.parts.filter((p) => p.kind === "number");
+          case "print": case "buildText": {
+            const numbers = s.parts.filter((p) => p.kind === "number" || p.kind === "char");
             const done = operands(numbers.map((p) => ({ e: p.expr, kind: "number" as const })), pre, w) as NumExpr[];
             numbers.forEach((p, i) => { p.expr = done[i]; });
             for (const p of s.parts) if (p.kind === "value") p.text = rewriteText(p.text, pre, w);

@@ -68,7 +68,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 16
+IR_VERSION = 17
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -567,6 +567,7 @@ class InnerListStorage(ListStorage):
 # ── texts ──
 TEXT_BYTES = 1023  # the most a made text holds; compiler/ir.ts has the same number
 TEXT_FIELD_BYTES = 255  # the room of a string kept for an action's field or a unit type's name
+BUILD_BYTES = 2047  # the most a buffer of buildText holds; compiler/ir.ts has the same number
 UNIT_MAP_STRING = 0x660260  # units.dat: the id of the name a map gives a unit type, a word each
 _TEXT = {}
 _SLOTS = {}
@@ -893,6 +894,60 @@ for _t in (17, 18, 19, 20, 21, 33, 34, 35, 36, 37, 40):
 def text_id(text):
     """The id of a text written in the script; 0 for the empty one, which the table does not hold."""
     return EncodeString(text) if text else 0
+
+
+_BUFFERS = {}
+
+
+def buffer(name):
+    """A buffer of buildText: its bytes and where the writing has got to. One for the whole game, used up within the
+    frame it is built in. It may run a part past its most before it is cut, and a part is at most a text's room."""
+    if name not in _BUFFERS:
+        _BUFFERS[name] = (Db(BUILD_BYTES + 1 + TEXT_BYTES + 1 + 8), EUDVariable())
+    return _BUFFERS[name]
+
+
+_BUILD = {}
+
+
+def builds():
+    """What every buffer shares: copying a text onto the end of one, and cutting one that ran past its room."""
+    if _BUILD:
+        return _BUILD
+    said_cut = EUDVariable(0)  # initial: said once a game
+
+    @EUDFunc
+    def append(pos, src, last):
+        """The text at src written at pos, ended by a 0; where that 0 is. Never past `last`."""
+        br1.seekoffset(src)
+        bw1.seekoffset(pos)
+        if EUDWhile()(pos <= last):
+            b = br1.readbyte()
+            EUDBreakIf(b == 0)
+            bw1.writebyte(b)
+            pos += 1
+        EUDEndWhile()
+        bw1.writebyte(0)
+        EUDReturn(pos)
+
+    @EUDFunc
+    def cut(pos, end):
+        """A buffer whose writing got to `pos`, cut at `end` (never inside a character) when it went past it."""
+        if EUDIf()(pos > end):
+            pos << end
+            if EUDWhile()(f_bread(pos).ExactlyX(0x80, 0xC0)):
+                pos -= 1
+            EUDEndWhile()
+            f_bwrite(pos, 0)
+            if EUDIf()(said_cut == 0):
+                said_cut << 1
+                GetGlobalStringBuffer().print("\x06TrigScript: a text was cut off - one put together piece by piece holds %d bytes." % BUILD_BYTES)
+            EUDEndIf()
+        EUDEndIf()
+        EUDReturn(pos)
+
+    _BUILD.update(append=append, cut=cut)
+    return _BUILD
 
 
 class TextVal:
@@ -1483,10 +1538,15 @@ class Lowering:
             # One comparison, built once: a comparison between variables writes into its own
             # condition, and one that is built and dropped is an orphan eudplib refuses.
             return self.ordered(a, op, b, unsigned)
-        if k == "and":
-            return EUDAnd(*[self.cond(c) for c in e["items"]])
-        if k == "or":
-            return EUDOr(*[self.cond(c) for c in e["items"]])
+        if k in ("and", "or"):
+            items = e["items"]
+            # JavaScript stops at the first item that settles it: an item after it that runs something — a call, a
+            # pop, a random number — must not run. Each such item is worked out inside the test of the ones before.
+            if any(has_effect(c) for c in items[1:]):
+                t = fresh(0)
+                self.short_circuit(items, k == "and", t)
+                return t >= 1
+            return (EUDAnd if k == "and" else EUDOr)(*[self.cond(c) for c in items])
         if k == "not":
             return EUDNot(self.cond(e["expr"]))
         if k == "random":
@@ -1510,6 +1570,23 @@ class Lowering:
         if k in ("textCompare", "textTest"):
             return as_var(self.text_truth(e)) >= 1
         raise Fail("trigscript: unknown condition %r%s" % (k, where(e)))
+
+    def short_circuit(self, items, conj, t):
+        """`a && b && …` (conj) or `a || b || …` into t, each item worked out only when those before it did not settle it."""
+        if not items:
+            if conj:
+                t << 1
+            return
+        if conj:
+            if EUDIf()(self.cond(items[0])):
+                self.short_circuit(items[1:], conj, t)
+            EUDEndIf()
+        else:
+            if EUDIf()(self.cond(items[0])):
+                t << 1
+            if EUDElse()():
+                self.short_circuit(items[1:], conj, t)
+            EUDEndIf()
 
     def truth(self, e):
         """A boolean expression as 0 / 1."""
@@ -2127,6 +2204,8 @@ class Lowering:
             self.action(st)
         elif k == "print":
             self.print_(st)
+        elif k == "buildText":
+            self.build_text(st)
         elif k == "centerLocation":
             self.center_location(st)
         elif k == "call":
@@ -2333,6 +2412,8 @@ class Lowering:
                 args.append(PName(self.one_player(part["player"], st)))
             elif k == "color":
                 args.append(PColor(self.one_player(part["player"], st)))
+            elif k == "char":
+                args.append(self.char(part["expr"]))
             else:
                 raise Fail("trigscript: unknown text part %r%s" % (k, where(st)))
         if not args:
@@ -2430,11 +2511,42 @@ class Lowering:
         texts()["release"](storage.cell(storage.block))
         storage.write(addr, block, length)
 
+    def char(self, e):
+        """One byte from a number, as something to print: a colour code chosen when the map is played; 0 is nothing."""
+        v = self.num(e)
+        if isinstance(v, int):
+            return chr(v & 0xFF) if v & 0xFF else ""
+        one = Db(4)
+        f_bwrite(one, v & 0xFF)
+        return ptr2s(one)
+
     def written(self, parts, st):
         """The parts of a text in the scratch, and where it ends. Every value is worked out first, since working one
         out may use the scratch itself; then the parts are written a group at a time, a group being what cannot
         come to more than a text holds, so that checking where the writing has got to between groups keeps it inside."""
         T = texts()
+        items, temps = self.items(parts, st)
+        pos = fresh(T["scratch"])
+        f_bwrite(pos, 0)
+        self.write_items(items, pos, T["scratch"] + TEXT_BYTES, lambda at, value: T["append"](at, value.addr), True)
+        return pos, temps
+
+    def build_text(self, st):
+        """Parts written onto the end of a buffer (emptied first on `reset`): a text put together a piece at a time."""
+        data, pos = buffer(st["buffer"])
+        B = builds()
+        items, temps = self.items(st["parts"], st)
+        if st.get("reset"):
+            pos << data
+            f_bwrite(data, 0)
+        last = data + BUILD_BYTES + TEXT_BYTES
+        self.write_items(items, pos, data + BUILD_BYTES, lambda at, value: B["append"](at, value.addr, last), False)
+        pos << B["cut"](pos, data + BUILD_BYTES)
+        self.used(*temps)
+
+    def items(self, parts, st):
+        """The parts of a text as what f_dbstr_print takes, each with the most bytes it can come to; a value of the
+        program as itself, to be copied in. Every value is worked out here, before anything is written."""
         items, temps = [], []
         for part in parts:
             k = part["kind"]
@@ -2465,11 +2577,19 @@ class Lowering:
                     v = self.own(v)
                 temps.append(v)
                 items.append((None, TEXT_BYTES, v))
+            elif k == "char":
+                c = self.char(part["expr"])
+                if c != "":
+                    items.append(([c], 1, None))
             else:
                 raise Fail("trigscript: unknown text part %r%s" % (k, where(st)))
-        pos = fresh(T["scratch"])
-        f_bwrite(pos, 0)
-        group, room, first = [], 0, [True]
+        return items, temps
+
+    def write_items(self, items, pos, end, append, first_free):
+        """Items written at pos, which moves to where the text ends: a group at a time, a group being what cannot come
+        to more than a text holds, so that checking pos against `end` between groups keeps the writing inside the room
+        behind it. `first_free`: pos starts at the beginning, so the first group needs no check."""
+        group, room, first = [], 0, [first_free]
 
         def flush():
             if not group:
@@ -2477,7 +2597,7 @@ class Lowering:
             if first[0]:
                 pos << f_dbstr_print(pos, *group)
             else:
-                if EUDIf()(pos <= T["scratch"] + TEXT_BYTES):
+                if EUDIf()(pos <= end):
                     pos << f_dbstr_print(pos, *group)
                 EUDEndIf()
             first[0] = False
@@ -2488,10 +2608,10 @@ class Lowering:
                 flush()
                 room = 0
                 if first[0]:
-                    pos << T["append"](pos, value.addr)
+                    pos << append(pos, value)
                 else:
-                    if EUDIf()(pos <= T["scratch"] + TEXT_BYTES):
-                        pos << T["append"](pos, value.addr)
+                    if EUDIf()(pos <= end):
+                        pos << append(pos, value)
                     EUDEndIf()
                 first[0] = False
                 continue
@@ -2501,7 +2621,6 @@ class Lowering:
             group.extend(args)
             room += size
         flush()
-        return pos, temps
 
     def text(self, e):
         """A text: where it is, its block, its length (TextVal)."""
@@ -2521,6 +2640,9 @@ class Lowering:
             return TextVal(addr, fresh(self.array(e["block"], e).get(i)), fresh(self.array(e["chars"], e).get(i)), False)
         if self.has_id(e):
             return TextVal(T["address"](as_var(self.text_id_of(e))), 0, None, True)
+        if k == "built":
+            # Only looked at: what keeps it takes a copy, since the buffer is built again next time.
+            return TextVal(fresh(buffer(e["buffer"])[0]), 0, None, False)
         if k == "template":
             pos, temps = self.written(e["parts"], e)
             addr, block, length = T["make"](pos)
@@ -3111,6 +3233,17 @@ def each_start(node, visit):
             each_start(v, visit)
 
 
+def has_effect(node):
+    """Whether working out a piece of the IR does something beyond reading: a call, a pop, a random number."""
+    if isinstance(node, list):
+        return any(has_effect(x) for x in node)
+    if not isinstance(node, dict):
+        return False
+    if node.get("kind") in ("pop", "random", "randomInt") or (node.get("kind") in ("call", "textCall") and isinstance(node.get("call"), dict)):
+        return True
+    return any(has_effect(v) for v in node.values() if isinstance(v, (dict, list)))
+
+
 def has_call(node):
     """Whether a call is anywhere in a piece of the IR."""
     if isinstance(node, list):
@@ -3240,6 +3373,7 @@ class Input:
     def __init__(self, plan):
         self.plan = plan or {}
         self.keys = list(self.plan.get("keys", []))
+        self.held = list(self.plan.get("held", []))
         self.buttons = list(self.plan.get("buttons", []))
         self.chats = list(self.plan.get("chats", []))
         self.mouse_base = self.plan.get("mouseBase")
@@ -3248,6 +3382,17 @@ class Input:
         if plan and not self.humans:
             raise Fail("trigscript: a program reads keys, clicks, the mouse or chat, and the map has no human player to give any")
         self.key_cells = [self.register("tsin_key%d" % i, EUDArray(12)) for i in range(len(self.keys))]
+        self.held_cells = [self.register("tsin_held%d" % i, EUDArray(12)) for i in range(len(self.held))]
+        # A held key is a message each frame it is down, but a multiplayer game carries commands in turns: two frames'
+        # messages may arrive on one frame and none on the next. What arrives is banked and paid out a frame at a time,
+        # so keyHeld() is true on as many frames as the key was down, however the turns grouped them.
+        self.held_bank = [EUDArray(12) for _ in self.held]
+        self.held_now = [EUDArray(12) for _ in self.held]
+        # And a message can go missing for a frame (seen in the lifted game, the second frame of every hold): a key is
+        # still held until HELD_GRACE frames have passed with no message, which delays a release by as much.
+        self.held_quiet = [EUDArray(12) for _ in self.held]
+        # With held keys every key is sent as held (compiler/input.ts#inputPlan): a press is held now and not before.
+        self.held_pressed = [EUDArray(12) for _ in self.held]
         self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
         self.captures = max([len(c["captures"]) for c in self.chats] or [0])
         if self.chats:
@@ -3263,6 +3408,39 @@ class Input:
             self.capture_in = [self.register("tsin_capture%d_in" % i, EUDArray(12)) for i in range(self.captures)]
             self.unit_table = None
 
+    HELD_BANK_MOST = 8  # a burst after a lag spike pays out at most this many frames
+    HELD_GRACE = 2  # frames with no message before a held key counts as let go
+
+    def frame(self):
+        """Once a frame, before the programs: this frame's held messages banked, one frame of each paid out, and a key
+        with nothing left to pay still held for HELD_GRACE quiet frames."""
+        for cells, bank, now, quiet, pressed in zip(self.held_cells, self.held_bank, self.held_now, self.held_quiet, self.held_pressed):
+            for p in self.humans:
+                was = fresh(now[p])
+                b = fresh(bank[p] + cells[p])
+                if EUDIf()(b >= self.HELD_BANK_MOST + 1):
+                    b << self.HELD_BANK_MOST
+                EUDEndIf()
+                if EUDIf()(b >= 1):
+                    now[p] = 1
+                    bank[p] = b - 1
+                    quiet[p] = 0
+                if EUDElse()():
+                    bank[p] = 0
+                    q = fresh(quiet[p] + 1)
+                    quiet[p] = q
+                    if EUDIf()([now[p] >= 1, q <= self.HELD_GRACE]):
+                        now[p] = 1
+                    if EUDElse()():
+                        now[p] = 0
+                    EUDEndIf()
+                EUDEndIf()
+                if EUDIf()([now[p] >= 1, was == 0]):
+                    pressed[p] = 1
+                if EUDElse()():
+                    pressed[p] = 0
+                EUDEndIf()
+
     @staticmethod
     def register(name, cell):
         EUDRegisterObjectToNamespace(name, cell)
@@ -3272,6 +3450,10 @@ class Input:
     def read(self, i, low, node):
         source = i.get("source")
         p = low.one_player(i["player"], node)
+        if source == "key" and i.get("held"):
+            return self.cell(self.held_now, self.held, i["key"], node)[p]
+        if source == "key" and self.held:
+            return self.cell(self.held_pressed, self.held, i["key"], node)[p]
         if source == "key":
             return self.cell(self.key_cells, self.keys, i["key"], node)[p]
         if source == "click":
@@ -3632,5 +3814,7 @@ def beforeTriggerExec():
 
 
 def afterTriggerExec():
+    if INPUT.held:
+        INPUT.frame()
     for prog in PROGRAMS:
         prog.run()

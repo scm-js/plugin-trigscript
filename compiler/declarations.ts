@@ -20,6 +20,7 @@ import { allTables, defaultScriptNames, type NameTable, type ScriptNames } from 
 import { PLAYER_COLORS, TABLE_FIELDS, type TableKind } from "./tables";
 import { PLAYER_SLOTS } from "./lower";
 import { KEY_NAMES } from "./input";
+import { TEXT_COLORS } from "./jsx";
 
 export const DECLARATIONS_FILE = "trigscript.d.ts";
 
@@ -187,6 +188,7 @@ ${kw}interface ProgramOptions {
 }
 
 const COLOR_NAMES = Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(" | ");
+const TEXT_COLOR_TABLE = Object.entries(TEXT_COLORS).map(([w, n]) => `readonly ${w}: ${n}`).join("; ");
 const COLOR_TABLE = Object.entries(PLAYER_COLORS).map(([w, n]) => `readonly ${w}: PlayerColor<${n}>`).join("; ");
 
 function choiceTypes(kw: string): string {
@@ -403,6 +405,31 @@ ${kw}function color(player: Player): string;
  */
 ${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
 /**
+ * The colours a text in the game takes, as their colour codes: for an array that holds a colour a cell,
+ * \`board[i] = textColors.orange\`, and \`<cell color={board[i]} />\` shows it (0 is an empty cell).
+ * grey ends what colour a line can change: everything after it on its line stays grey.
+ */
+${kw}const textColors: { __TEXT_COLORS__ };
+/** A colour of a text: one of textColors' names, or a colour code (0 for none). */
+${kw}type TextColor = keyof typeof textColors | number;
+/** What a program shows on the screen, redrawn by the game as the program's variables change. */
+${kw}const ui: {
+  /**
+   * Show a text in the player's text lines, top left, and keep it there: the function is worked out again every
+   * frame from the program's variables, and shown when it changed. Inside an async program only, as a task: it keeps
+   * going after the program moves on, and the Task it gives back stops it (\`board.cancel()\`). Eleven lines: one
+   * player's text lines are this text's only, so give a player one ui.lines at a time.
+   *
+   *   ui.lines(P1, () => (
+   *     <>
+   *       <line color="yellow">Score {score}</line>
+   *       {rows.map((r) => <line>{r.map((c) => <cell color={c} />)}</line>)}
+   *     </>
+   *   ));
+   */
+  lines(player: Player, view: () => string): Task;
+};
+/**
  * What the players do, inside program() only. A key, a click and a typed line are true on the one
  * frame they arrive, so look for them in a loop that runs every frame:
  * \`while (true) { if (keyPressed(CurrentPlayer, "F2")) …; sleep(frames(1)); }\`. They reach every
@@ -413,6 +440,11 @@ ${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "
  */
 /** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
 ${kw}function keyPressed(player: Player, key: Key): boolean;
+/**
+ * True on every frame a key is down — for moving while it is held. It reaches every player's computer
+ * in step, a few frames after it happens, as a press does. Not while the player is typing a message.
+ */
+${kw}function keyHeld(player: Player, key: Key): boolean;
 /** True on the frame a player's press of a mouse button arrives ("left" when none is named). */
 ${kw}function clicked(player: Player, button?: "left" | "right" | "middle"): boolean;
 /** Where a player's mouse is on the map, in pixels (32 to a tile): \`const at = mouse(CurrentPlayer);\` keeps the place as it is now. */
@@ -525,7 +557,7 @@ function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean):
   return [
     types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", statsTypes(typeKw)),
     choiceTypes(typeKw),
-    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
+    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE).replace("__TEXT_COLORS__", TEXT_COLOR_TABLE),
     "// ── Conditions ──",
     ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
     "",
@@ -544,6 +576,25 @@ function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean):
  * array of numbers unless it says otherwise (`new Array<boolean>(12).fill(false)`), as a number is what everything is.
  */
 const ARRAYS = `
+/** JSX is a text the game shows: \`<line color="yellow">Score {score}</line>\` is a string. */
+declare namespace JSX {
+  type Element = string;
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    /** A line of its own, in its colour (white unless it says). The lines of a text are put one under another. */
+    line: { color?: TextColor; children?: unknown };
+    /** What is inside it in its colour; the colour around it comes back after it. */
+    span: { color?: TextColor; children?: unknown };
+    /** One square: filled in its colour, or empty (lavender) when it has none or 0. A board's cell. */
+    cell: { color?: TextColor };
+    /** \`width\` squares (10 unless it says), as many of them filled as value is of max. */
+    bar: { value: number; max: number; width?: number; color?: TextColor };
+  }
+}
+declare function __jsx(tag: string, props: object | null, ...children: unknown[]): string;
+/** What the build adds after each class at the top of a file, for a program that makes an instance of it. Not for scripts. */
+declare function __class(cls: unknown, descriptor: unknown): void;
+declare const __fragment: string;
 interface ArrayConstructor {
   new <T = number>(arrayLength: number): T[];
   <T = number>(arrayLength: number): T[];

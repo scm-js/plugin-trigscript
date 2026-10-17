@@ -185,6 +185,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   const shown = (parts: TextPart[]) => {
     for (const p of parts) {
       if (p.kind === "value") text(p.text);
+      if (p.kind === "char") { p.expr = num(p.expr)[0]; continue; }
       if (p.kind !== "number") continue;
       const [value, t] = num(p.expr);
       p.expr = value;
@@ -286,7 +287,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "return": if (s.value && result) s.value = valueFor(result, s.value, s.at); break;
       case "action": for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at); if (s.text) s.text = text(s.text); break;
       case "centerLocation": s.x = floor(s.x, s.at); s.y = floor(s.y, s.at); break;
-      case "print": shown(s.parts); break;
+      case "print": case "buildText": shown(s.parts); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;

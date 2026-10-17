@@ -843,6 +843,29 @@ known when the script is built, so its place and its wait are two cells, like a 
   `probes/game-generators.ts` (3) pass in the lifted game and in the simulator at the
   same frames. Every older game probe still passes.
 
+### Classes from any file (built 2026-10-16, between B1 and B2)
+
+Asked for while S2's Tetris grew a library (`probes/lib/unit-screen.ts`): a class declared at
+the top of any of the script's files is the program's wherever a program makes an instance of
+it, with no `game()` around it, and stays an ordinary class when the script is built
+(`const AT_BUILD = new V(21).double()` beside `new V(n)` in a program).
+
+- **Planned as a game function is** (`hoist.ts#planClass`): its parameters and variables are
+  the game's, and what its field values and bodies compute when the script is built is
+  hoisted. The emitter adds `__class(C, { at, pos, hoisted })` after each such class, so the
+  run hands its own file's values — its imports, its constants — to the lowering.
+- **In a program**, a script class is never hoisted (`new C(1)` is an instance, whatever its
+  arguments). Before the program's first statement the lowering declares every script class
+  the program names, the ones they name and extend, and those of the `game()` functions it
+  calls — their static fields — then walks their bodies in their own files.
+- **Errors wait for use:** a class only ever used when the script is built reports nothing.
+- **The rules of a program's class still hold:** an array field has its first value where it
+  is declared, a field holds no build-time object, and an action's player and location are
+  known when the script is built — so the unit screen takes them with each `draw(board, look)`.
+- Checked: same file, another file with its own imports, `extends` across files with a static
+  field, a class used at build time and in a program, errors only where used; Tetris's
+  `UnitScreen` follows the board in the lifted game as the function did.
+
 ### B2. Events (4.4.0)
 
 ```ts
@@ -1041,6 +1064,117 @@ ui.objectives(P1, () => (
   and the made-text field writes (built). No new address.
 - **Probe:** one, for how many characters and colour codes a panel holds before the game
   cuts it, and whether a rewrite every frame flickers.
+- **Where it draws, first** (2026-10-16, started on S2 with a Tetris map as its target):
+  the objectives panel is read again on every draw, but it is a dialog the player opens,
+  and in a single-player game opening it may pause the game. A board the player watches
+  while playing may belong in the text lines instead, which Remastered's emulator lets a
+  map write (`0x640B60`, 13 lines of 218 bytes; the line pointer at `0x640B58` is kept
+  beside the game). So the probe asks where before it asks how much:
+  `probes/ui-spike.py` (hand-written eudplib, built beside `probes/ui-spike.ts`), steps
+  A–I: how many text lines stay up, which cell characters line up (■ □ █ ▀ ▄ ░ ▓ ㅁ, a
+  full-width space and more), which colour codes colour a cell, how many cells fit on a
+  line, whether a line break in one Display Text makes several lines, a board redrawn every
+  frame and every fourth frame, twenty rows in ten lines with half blocks, the lines'
+  memory written with no action, a 22-row board in the open objectives with a clock in the
+  leaderboard's label, and how much of that label shows. Run in the lifted game first: no
+  address Remastered ends the game on, about 2.4k actions a frame on average and 82k at
+  most (eudplib's start at frame 2). Copied to
+  `Maps/TrigScript/trigscript-s2-ui-spike.scx`.
+
+  **Played 2026-10-16** (A–G single player, H again hosted as multiplayer; Remastered at
+  2560×1440, the bars measured in the screenshots):
+  - **The board goes in the text lines.** 11 stay up (a header and ten rows). One Display
+    Text with line breaks makes as many lines (E), so a board is one action. Redrawn every
+    frame it neither flickers nor tears, and every fourth frame looks the same (F1, F2).
+    Sixty cells still fit on one line (D).
+  - **The lines are drawn from their memory, live** (G): text written into `0x640B60` with
+    no action appeared and counted. But each line still fades on its own timer; a write
+    changes the words, not how long the line stays. A Display Text restarts a line's timer.
+  - **The objectives panel is out for anything live** (H): it pauses a single-player game,
+    and in multiplayer the open panel is a picture taken when it opened (it said second 128
+    at 137 and 146). It shows nine lines; past them the line breaks are lost and the rest
+    runs together on one line. It is fine for a static text.
+  - **The leaderboard's label** shows about 23 characters, then "..." (I). Live, as the
+    strings spike found: a score or a level, not a board.
+  - **Cells:** ■ □ ● are one width; ㅁ, the full-width space, Ｏ and ▒ are another (wider).
+    █ ▀ ▄ ░ ▓ ▌ ▐ Ⅰ are not in the font and come out as narrow boxes, so half blocks are
+    dead. Colour codes take no width.
+  - **Colours:** 02 03 04 07 08 0E 0F 10 11 15 18 19 1B 1C 1D 1E 1F each draw a colour of
+    their own (16 is 04's white; 01 takes the line's colour). **Grey sticks:** after 05,
+    every later code on the line is ignored and the rest stays grey, so empty cells must not
+    be grey. 06 was only seen after 05; a second round tests each code on a line of its own.
+
+  **Second round played 2026-10-16** (`probes/ui-spike-2.*`): **only 05 sticks**; every
+  other code lets later codes through, and 06 is red (as 08). A board made in the game and
+  shown by one Display Text a frame draws right: orange piece, coloured stack. Empty cells:
+  15 (brown) nearly vanishes over dirt, 18 (dark green) and 0E (blue) read on black, **1E
+  (lavender) reads on black and over terrain and is no piece's colour**, so it is the
+  default for an empty cell. How long a line lasts was not caught (under six seconds, from
+  G), so a view that has not changed is still shown again once a second.
+
+  So S2's first surface is `ui.lines(player, () => <…/>)`: the text lines, one Display
+  Text a frame when the view's inputs changed (and again before the lines fade), ten rows
+  under a header. The objectives and the label stay as plain made texts.
+
+**As built (2026-10-16, IR 17).** JSX in a `.tsx` file (the entry may be `main.tsx`): the
+compiler options say `jsx: react` with the factory `__jsx`, so TypeScript type-checks every
+element against `JSX.IntrinsicElements` and a JSX expression is a `string`. The elements are
+`<line color>` (a line of its own; a line break goes before each one but the first thing
+written), `<span color>` (its colour comes back after it, lazily: the parent's next piece says
+it again), `<cell color>` (■ in its colour; 0 or none is □ in lavender — a board's cell) and
+`<bar value max width color>`. A colour is one of `textColors`' names (the codes the spike
+measured) or a number of the program's. `{…}` is the program's value; `cond && …`, `?:` and
+`.map((x, i) => …)` are its if and its loop — unrolled over a list the script has, so a board
+drawn over `[...Array(10).keys()]` reads its cells at constant indices. Nothing in a text can
+wait.
+
+- **Lowering:** a JSX text is not a template. It has a buffer of its own (`buildText` writes
+  parts at its end, `reset` empties it; `built` reads it), so a 100-cell board is written in
+  place, never copied whole per piece. Parts gain `char`, a byte from a number. JSX is never
+  hoisted (`hoist.ts#hasJsx`); outside a program `__jsx` makes the same text at build time
+  (`compiler/jsx.ts`).
+- **`ui.lines(player, () => …)`** is a task (`start`, one slot) that loops: built and printed
+  when a flag says the view is stale or 24 frames after it was shown (the lines fade in under
+  six seconds). `views.ts` declares the flag first in the program, finds what the view reads
+  and sets the flag after every statement anywhere in the program that writes it. A view that
+  reads the game is built every frame. It gives back the Task (`board.cancel()`).
+- **Measured in the lifted game:** a static 10×10 board costs ~360 actions a frame when nothing
+  changed, ~63k on a frame it is built and printed. Nothing Remastered refuses.
+- **Found on the way:** the freeze check called `while (move(0, 1, 0)) {}` endless: a call in a
+  loop's condition that writes what is outside it now counts as changing it. And, played
+  (the user held D and the piece "moved in place"): **the Python lowering did not
+  short-circuit `&&` / `||`** — every item's code ran before any was tested, so
+  `keyPressed(P1, "W") && !move(0, 0, 1)` turned the piece every frame in the game and never
+  in the simulator. Fixed (an item after the first that calls, pops or draws a random number is
+  worked out inside the test of those before it); `probes/game-short-circuit.ts` fails on the
+  old lowering in the lifted game and passes now. With it fixed, Tetris costs ~645 actions on
+  a frame nothing moves, ~77k on one the board changes, 7.5k a frame on average.
+- **Not yet:** components (`<Row />`: call a function in braces instead), `Array.from`, the
+  per-cell cost (~600 actions: the colour byte and the glyph are copied in; a cell could be one
+  dword), the editor's workspace knowing `.tsx`, guide and README (wait for 4.0).
+
+**Held keys, played 2026-10-16** (`probes/key-held.tsx`, Remastered): a key held down reaches
+the game on every frame it is down — the strip stays solid — and a tap is two or three frames
+of it, counted as one press by `keyPressed` (MSQC's KeyDown since `b09f04d`). So `keyHeld()`
+(MSQC's KeyPress, sent each frame) works today, for every player, through the same path as a
+press: S3's movement needs no `Local<T>` and no `sync()`. Magenta probe 7's "one event a press,
+no key-up" was its own setup; R0's `GetKeyState` reading agrees with what was played.
+
+**Pixels made of units, played 2026-10-16** (`probes/unit-pixels.ts`, steps A–D; E not yet
+reported). A board can be drawn with units on the map and the minimap:
+- **Colours:** nine Overlords, P1 … P8 and P12, show nine colours on the minimap once the board
+  is in sight (your own units are green there). Player 2 is a computer and its AI moved its
+  Overlord a cell, so a board's owners are P1 and the empty slots P3 … P8 (P12 too: Remastered
+  made it, the lifted game did not).
+- **Vision:** Map Revealers of Player 1's lift the fog over the board. The lifted game never
+  makes a Map Revealer — a gap in scm-sim, not the game.
+- **The minimap merges neighbours:** units 64 pixels apart and of one owner join into one block,
+  so a piece reads as a solid shape.
+- **Overlords** sit on their cells on any ground. Science Vessels are wider than a cell and
+  zigzag; Pylons, Flags and small items miss cells where the ground will not take them, and
+  **Remastered prints "WARNING: Unit unplaceable! (Protoss Pylon) (1024,2304)" in the text lines
+  for every Create Unit that fails** — so a unit board must never ask for a cell it cannot have,
+  or it scribbles over a text board beside it.
 
 ### S3. A hero moved with the keys
 

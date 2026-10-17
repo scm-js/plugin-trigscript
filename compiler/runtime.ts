@@ -23,6 +23,8 @@ import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import type { RaceId, ReadSource, TableCell, TextPart, UnitFilter } from "./ir";
 import { DEAF_KEYS, keyName, KEY_NAMES, MOUSE_BUTTONS, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
+import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
+import type { HoistedThunks } from "./hoist";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
@@ -147,7 +149,7 @@ export const READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kill
 /** The library's functions about units on the map and the game's tables: the game's too, never computed when the script is built. */
 export const UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "underMouse", "stats"] as const;
 /** The library's functions about what the players do, and the one that moves a location to a point: the game's as well. */
-export const INPUT_CALL_NAMES = ["keyPressed", "clicked", "mouse", "chatted", "centerLocation"] as const;
+export const INPUT_CALL_NAMES = ["keyPressed", "keyHeld", "clicked", "mouse", "chatted", "centerLocation"] as const;
 
 /**
  * What the transformer turns `program(() => { … })` — and the arrow of `game(…)` — into:
@@ -198,6 +200,8 @@ export class ScriptError extends Error {
 /** What a run of the script produces, in execution order. */
 export class Collector {
   readonly entries: Entry[] = [];
+  /** The classes at the top of the script's files, by where each is (`file:position`): what their bodies compute when the script is built. */
+  readonly classes = new Map<string, { hoisted: () => HoistedThunks }>();
   readonly strings: ScriptString[] = [];
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
@@ -280,6 +284,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   const argValue = (kind: ArgKind, v: unknown, what: string): number => {
     switch (kind) {
       case "text": case "wav":
+        if (builtText(v) !== undefined) v = builtText(v);
         if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
         if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
         throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
@@ -550,13 +555,15 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     if (collector.running) throw new ScriptError(`${what.split(":")[0]}() asks what a player does while the game runs: use it inside program().`);
     return onePlayer(v, what, 8);
   };
-  rt.keyPressed = (player: unknown, key: unknown) => {
+  const keyRead = (what: "keyPressed" | "keyHeld") => (player: unknown, key: unknown) => {
     const name = typeof key === "string" ? keyName(key) : null;
     const deaf = typeof key === "string" ? DEAF_KEYS[key.trim().toUpperCase()] : undefined;
-    if (deaf) throw new ScriptError(`keyPressed: ${deaf}.`);
-    if (!name) throw new ScriptError(`keyPressed: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} … "F1" … "Space", "Enter", "Escape", "Left" …; got ${describe(key)}.`);
-    return inputValue(`keyPressed(…, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, "keyPressed: player") }, true);
+    if (deaf) throw new ScriptError(`${what}: ${deaf}.`);
+    if (!name) throw new ScriptError(`${what}: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} … "F1" … "Space", "Enter", "Escape", "Left" …; got ${describe(key)}.`);
+    return inputValue(`${what}(…, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, `${what}: player`), ...(what === "keyHeld" ? { held: true } : {}) }, true);
   };
+  rt.keyPressed = keyRead("keyPressed");
+  rt.keyHeld = keyRead("keyHeld");
   rt.clicked = (player: unknown, button: unknown = "left") => {
     const b = typeof button === "string" ? button.trim().toLowerCase() : "";
     if (!(MOUSE_BUTTONS as readonly string[]).includes(b)) throw new ScriptError(`clicked: the button is "left", "right" or "middle", got ${describe(button)}.`);
@@ -610,10 +617,22 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   };
   rt.colors = Object.freeze({ ...PLAYER_COLORS });
 
+  /* ── JSX: a text as elements ── */
+  // After each class at the top of a file (hoist.ts#transformer): what its bodies compute when the script is built, for a
+  // program that makes an instance of it.
+  rt.__class = (_cls: unknown, d: { at: [number, number]; pos: number; hoisted: () => HoistedThunks }) => { collector.classes.set(`${d.at[0]}:${d.pos}`, { hoisted: d.hoisted }); };
+  rt.textColors = TEXT_COLORS;
+  rt.__jsx = jsxAtBuild;
+  rt.__fragment = JSX_FRAGMENT;
+  rt.ui = Object.freeze({
+    lines: () => { throw new ScriptError("ui.lines() shows a text in a program's lines, inside program(async () => { … }): ui.lines(P1, () => <line>…</line>)."); },
+  });
+
   /* ── Text a program fills in ── */
   rt.name = (player: unknown) => textMark("n", onePlayer(player, "name: player", 12));
   rt.color = (player: unknown) => textMark("c", onePlayer(player, "color: player", 12));
   rt.print = (text: unknown, options?: unknown): PrintValue => {
+    if (builtText(text) !== undefined) text = builtText(text);
     if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
     let to: number = PlayerGroup.CurrentPlayer;
     let position: PrintValue["position"] = "chat";
@@ -696,5 +715,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
+  out.push("textColors", "ui", "__jsx", "__fragment", "__class");
   return out;
 }

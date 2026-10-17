@@ -40,7 +40,7 @@ export function resolvePath(from: string, spec: string): string {
 export function resolveModule(files: ReadonlySet<string>, from: string, spec: string): string | null {
   if (!spec.startsWith("./") && !spec.startsWith("../")) return null;
   const path = resolvePath(from, spec);
-  for (const candidate of [path, `${path}.ts`, path.replace(/\.js$/, ".ts"), `${path}/index.ts`]) if (files.has(candidate)) return candidate;
+  for (const candidate of [path, `${path}.ts`, `${path}.tsx`, path.replace(/\.js$/, ".ts"), path.replace(/\.js$/, ".tsx"), `${path}/index.ts`, `${path}/index.tsx`]) if (files.has(candidate)) return candidate;
   return null;
 }
 

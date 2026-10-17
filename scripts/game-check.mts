@@ -28,8 +28,8 @@ const list = JSON.parse(readFileSync(flag("allowlist") ?? join(root, "data", "al
 const dir = mkdtempSync(join(tmpdir(), "trigscript-game-"));
 try {
   let map = resolve(input);
-  if (/\.ts$/.test(input)) {
-    map = join(dir, basename(input, ".ts") + ".scx");
+  if (/\.tsx?$/.test(input)) {
+    map = join(dir, basename(input).replace(/\.tsx?$/, "") + ".scx");
     const built = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), resolve(input), map, ...(baseMap ? [resolve(baseMap)] : [])], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, TRIGGER_MAP: "1" } });
     if (built.status !== 0) { console.error(built.stdout.split("\n").slice(-20).join("\n"), built.stderr); process.exit(1); }
   }

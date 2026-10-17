@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 17: texts built a piece at a time — `buildText` writes parts into a buffer (`reset` starts it empty) and `built` is what the buffer holds, which is how a JSX text is put together without copying it at every piece; `char` among the parts, one byte from a number (a colour code).
  * 16: tasks — `start`: a task that runs beside what started it, a copy of an async function's body with the arguments it was started with; `cancel` and `running` on what `start()` gives back. A task's variables and arrays (`VarDecl.task`, `ArrayDecl.task`) are a row a task, as many rows as tasks of it can run at once.
  * 15: `parallel` — `await Promise.all([…])` / `Promise.race([…])`: branches that run side by side, each a coroutine of its own inside the program's frame.
  * 14: a text in the cells of three arrays — `textAt`, `storeText`, `releaseText` — which is what lets a row of an array of records hold one.
@@ -26,7 +27,10 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 16;
+export const IR_VERSION = 17;
+
+/** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
+export const BUILD_BYTES = 2047;
 
 /** Where a node came from; `column` is 1-based like `line`. */
 export interface At { file: string; line: number; column: number }
@@ -299,9 +303,11 @@ export type TextExpr =
   /** `s.repeat(n)`; nothing when n is below 1. */
   | { kind: "textRepeat"; of: TextExpr; count: NumExpr; at: At; label: string }
   /** A call inlined here whose result is a text: the value is taken out of the call's result, which then holds none. */
-  | { kind: "textCall"; call: Call };
+  | { kind: "textCall"; call: Call }
+  /** What buffer `buffer` holds, as the `buildText` statements before it left it: looked at where it is, never owned. */
+  | { kind: "built"; buffer: string };
 
-const TEXT_KINDS: ReadonlySet<string> = new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall"]);
+const TEXT_KINDS: ReadonlySet<string> = new Set(["text", "textVar", "textOf", "textAt", "template", "textTernary", "textSlice", "textPad", "textRepeat", "textCall", "built"]);
 export const isTextExpr = (e: { kind: string }): e is TextExpr => TEXT_KINDS.has(e.kind);
 
 /** What a pass that walks or rewrites every expression does with the numbers, the conditions and the calls inside a text; the texts inside it are walked here. */
@@ -310,7 +316,7 @@ export interface TextMap { num: (e: NumExpr) => NumExpr; bool: (e: BoolExpr) => 
 const innerText = (t: TextExpr, f: TextMap): TextExpr => (f.text ? f.text(t) : mapText(t, f));
 
 export function mapTextParts(parts: TextPart[], f: TextMap): TextPart[] {
-  return parts.map((p) => (p.kind === "number" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p));
+  return parts.map((p) => (p.kind === "number" || p.kind === "char" ? { ...p, expr: f.num(p.expr) } : p.kind === "value" ? { ...p, text: innerText(p.text, f) } : p));
 }
 
 /** A text with everything it is worked out from handed to `f` — a copy; a pass that only looks gives back what it was handed. */
@@ -397,7 +403,9 @@ export type TextPart =
   | { kind: "name"; player: number }
   | { kind: "color"; player: number }
   /** A text of the program: a variable's, a function's result. */
-  | { kind: "value"; text: TextExpr };
+  | { kind: "value"; text: TextExpr }
+  /** One byte, the number's low eight bits: a colour code chosen when the map is played. 0 writes nothing. */
+  | { kind: "char"; expr: NumExpr };
 
 /** A field of an action filled in by the program: `bits` 8 is a unit count (done once per unit), 16 a unit type, 32 an amount. */
 export interface ActionVariable { field: keyof ActionRecord; bits: 8 | 16 | 32; name: string; expr: NumExpr }
@@ -534,6 +542,11 @@ export type Stmt =
    * force — in the chat area or on the line in the middle of the screen the game's own errors use.
    */
   | { kind: "print"; parts: TextPart[]; to: number; position: "chat" | "center"; at: At; label: string }
+  /**
+   * The parts written at the end of buffer `buffer` (`reset`: the buffer emptied first): a text put together a piece at a
+   * time, read back with `built`. A buffer is one place for the whole game, used up within the frame it is built in.
+   */
+  | { kind: "buildText"; buffer: string; parts: TextPart[]; reset?: boolean; at: At; label: string }
   | { kind: "call"; call: Call; at: At; label: string }
   /** A block only for scoping; nothing of its own. */
   | { kind: "block"; body: Stmt[]; at: At }
@@ -638,7 +651,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "return": if (s.value) init(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
       case "centerLocation": expr(s.x); expr(s.y); break;
-      case "print": parts(s.parts); break;
+      case "print": case "buildText": parts(s.parts); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
@@ -651,7 +664,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
     c.body.forEach(stmt);
   };
   const init = (e: NumExpr | BoolExpr | UnitExpr | TextExpr) => (isTextExpr(e) ? text(e) : isUnitExpr(e) ? unit(e) : isNumExpr(e) ? expr(e) : bool(e));
-  const parts = (ps: TextPart[]) => { for (const p of ps) { if (p.kind === "number") expr(p.expr); else if (p.kind === "value") text(p.text); } };
+  const parts = (ps: TextPart[]) => { for (const p of ps) { if (p.kind === "number" || p.kind === "char") expr(p.expr); else if (p.kind === "value") text(p.text); } };
   const text = (t: TextExpr) => {
     switch (t.kind) {
       case "textOf": case "textAt": expr(t.index); break;
