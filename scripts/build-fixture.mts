@@ -33,7 +33,7 @@ const eudplib = resolve(eudplibArg ?? process.env.EUDPLIB_DIR ?? join(root, ".."
 if (!existsSync(map)) { console.error(`no map at ${map}`); process.exit(2); }
 if (!existsSync(join(eudplib, "scripts", "build-map.mts"))) { console.error(`no plugin-eudplib checkout at ${eudplib}`); process.exit(2); }
 
-const r = compileScript(ts, { "main.ts": readFileSync(scriptPath, "utf8") }, defaultScriptNames(), { lib: defaultLib() });
+const r = compileScript(ts, { [scriptPath.endsWith(".tsx") ? "main.tsx" : "main.ts"]: readFileSync(scriptPath, "utf8") }, defaultScriptNames(), { lib: defaultLib() });
 if (r.diagnostics.length) { for (const d of r.diagnostics) console.error(`${d.file}:${d.line}:${d.column} ${d.message}`); process.exit(1); }
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));

@@ -108,7 +108,7 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared"]);
+const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared", "lines"]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -150,7 +150,13 @@ export function isTaskFunction(ts: typeof TS, checker: TS.TypeChecker, node: TS.
   if (!call.arguments.includes(at as TS.Expression)) return false;
   if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "then") return true;
   const lib = libraryCallName(ts, checker, call);
-  return lib === "until" || (lib === "start" && call.arguments[0] === at);
+  return lib === "until" || (lib === "start" && call.arguments[0] === at) || (lib === "lines" && call.arguments[1] === at);
+}
+
+/** Whether a node is JSX or has JSX inside it: a text the program puts together, never one worked out when the script is built. */
+export function hasJsx(ts: typeof TS, node: TS.Node): boolean {
+  if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxFragment(node)) return true;
+  return !!ts.forEachChild(node, (c) => hasJsx(ts, c) || undefined);
 }
 
 export function planProgram(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunction | TS.FunctionExpression, options: PlanOptions = {}): ProgramPlan {
@@ -287,6 +293,8 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     const hit = memo.get(e);
     if (hit !== undefined) return hit;
     let ok = true;
+    // JSX is the program's own text, put together in the game (`structured.ts#jsx`), whatever is in it.
+    if (hasJsx(ts, e)) { memo.set(e, false); return false; }
     // Inside a function value the syntax is the function's own business; only what it refers to matters.
     const scan = (n: TS.Node): void => {
       if (!ok) return;
@@ -378,6 +386,19 @@ function planOnce(ts: typeof TS, checker: TS.TypeChecker, arrow: TS.ArrowFunctio
     if (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e) || ts.isTypeAssertionExpression(e) || ts.isSpreadElement(e) || ts.isAwaitExpression(e) || ts.isTypeOfExpression(e) || ts.isVoidExpression(e) || ts.isDeleteExpression(e)) { value(e.expression, items); return; }
     if (ts.isConditionalExpression(e)) { value(e.condition, items); value(e.whenTrue, items); value(e.whenFalse, items); return; }
     if (ts.isTemplateExpression(e)) { for (const s of e.templateSpans) value(s.expression, items); return; }
+    // JSX: what is inside its braces, in attributes and among the children, is a value like any other.
+    if (ts.isJsxElement(e) || ts.isJsxSelfClosingElement(e) || ts.isJsxFragment(e)) {
+      const attributes = ts.isJsxElement(e) ? e.openingElement.attributes : ts.isJsxSelfClosingElement(e) ? e.attributes : undefined;
+      for (const a of attributes?.properties ?? []) {
+        if (ts.isJsxAttribute(a) && a.initializer && ts.isJsxExpression(a.initializer)) value(a.initializer.expression, items);
+        else if (ts.isJsxSpreadAttribute(a)) value(a.expression, items);
+      }
+      for (const c of ts.isJsxSelfClosingElement(e) ? [] : e.children) {
+        if (ts.isJsxExpression(c)) value(c.expression, items);
+        else if (!ts.isJsxText(c)) descend(c, items);
+      }
+      return;
+    }
     if (ts.isArrayLiteralExpression(e)) { for (const el of e.elements) value(el, items); return; }
     if (ts.isObjectLiteralExpression(e)) {
       for (const p of e.properties) {

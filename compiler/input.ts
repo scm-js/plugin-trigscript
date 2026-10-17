@@ -258,7 +258,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
-      case "print": mapTextParts(s.parts, looks); break;
+      case "print": case "buildText": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;

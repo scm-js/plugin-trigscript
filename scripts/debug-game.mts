@@ -52,7 +52,7 @@ try {
   const payloadEnd = 0x191943c8 + strings.bytes;
   const handle = testGame(run.engine, run.lifted, [{ from: strings.gameTable, to: payloadEnd }], { cost: installCost(run.lifted), payloadEnd, eud }) as DebugHost;
 
-  const source = { "main.ts": readFileSync(script, "utf8") };
+  const source = { [script.endsWith(".tsx") ? "main.tsx" : "main.ts"]: readFileSync(script, "utf8") };
   const names = defaultScriptNames();
   const locations = readLocations(handle);
   const compiled = compileScript(ts, source, names, { lib: defaultLib(), tests: {} });

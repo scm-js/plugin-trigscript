@@ -36,8 +36,11 @@ import { english, type Translate } from "../i18n";
 export type { ScriptString } from "./runtime";
 export { DEATHS_TABLE_ADDRESS } from "./runtime";
 
-/** The file a script starts from. */
+/** The file a script starts from: main.ts, or main.tsx for a script that writes JSX in it. */
 export const ENTRY_FILE = "main.ts";
+export const ENTRY_TSX = "main.tsx";
+/** The entry of a script's files: main.tsx when there is one, else main.ts. */
+export const entryOf = (files: Iterable<string>): string => ([...files].includes(ENTRY_TSX) ? ENTRY_TSX : ENTRY_FILE);
 const LIB_FILE = "lib.d.ts";
 
 /** The script's files by path (`main.ts`, `bases.ts`, `ai/waves.ts`). */
@@ -191,7 +194,8 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const refs: MapReference[] = [];
   const scripts = new Map<string, string>();
   for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
-  if (!scripts.has(ENTRY_FILE)) {
+  const entry = entryOf(scripts.keys());
+  if (!scripts.has(entry)) {
     diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: `The script has no ${ENTRY_FILE}; that is the file a build starts from.`, source: "compiler" });
     return result();
   }
@@ -202,12 +206,14 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const compilerOptions: TS.CompilerOptions = {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, moduleResolution: ts.ModuleResolutionKind.Bundler,
     strict: true, types: [], sourceMap: true, noLib: false,
+    // JSX (in a .tsx file) is a text the game shows: elements are calls of __jsx, which the structured compiler lowers in a program.
+    jsx: ts.JsxEmit.React, jsxFactory: "__jsx", jsxFragmentFactory: "__fragment",
   };
   const outputs = new Map<string, string>();
   const host: TS.CompilerHost = {
     getSourceFile: (name) => {
       const text = texts.get(name);
-      return text === undefined ? undefined : ts.createSourceFile(name, text, ts.ScriptTarget.ES2022, true);
+      return text === undefined ? undefined : ts.createSourceFile(name, text, ts.ScriptTarget.ES2022, true, name.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     },
     getDefaultLibFileName: () => LIB_FILE,
     writeFile: (name, text) => { outputs.set(name, text); },
@@ -314,7 +320,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   if (diagnostics.length > planned.size) return result();
   const linked = new Map<string, LinkedFile>();
   for (const name of fileNames) {
-    const base = name.replace(/\.ts$/, "");
+    const base = name.replace(/\.tsx?$/, "");
     const js = outputs.get(`${base}.js`);
     if (js === undefined) { diagnostics.push({ file: name, line: 1, column: 1, endLine: 1, endColumn: 1, message: "The file produced no JavaScript.", source: "compiler" }); continue; }
     linked.set(name, { js, map: outputs.get(`${base}.js.map`) });
@@ -329,7 +335,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const runtime = { ...createRuntime(names, collector), ...registry.library() };
   collector.running = true;
   // The entry first, so the programs are there; then the test files, which nothing imports.
-  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort() });
+  const failure = runModules(linked, entry, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort() });
   collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;

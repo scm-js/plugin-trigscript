@@ -36,7 +36,7 @@
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
-import { HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
+import { BUILD_BYTES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
 import type { TextExpr, ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
@@ -622,6 +622,8 @@ class ProgramRun {
     let out = "";
     for (const p of parts) {
       if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      // A colour code is a control character in the game; the log keeps the words, as it does for a player's colour.
+      else if (p.kind === "char") yield* this.num(p.expr);
       else if (p.kind === "value") { const v = yield* this.text(p.text); used.push(v); out += v.s; }
       else out += this.sim.partText(p);
     }
@@ -684,6 +686,7 @@ class ProgramRun {
         this.used(of);
         return out;
       }
+      case "built": return { s: this.sim.buffers.get(e.buffer) ?? "", room: 0, taken: false };
       case "textCall": {
         yield* this.call(e.call);
         const held = e.call.result ? this.textVars.get(e.call.result.decl.id) : undefined;
@@ -1123,6 +1126,20 @@ class ProgramRun {
         this.sim.print(this, text, s.to, s.at);
         return "next";
       }
+      case "buildText": {
+        const used: TextValue[] = [];
+        const more = yield* this.parts(s.parts, used);
+        this.used(...used);
+        const was = s.reset ? "" : this.sim.buffers.get(s.buffer) ?? "";
+        let text = was + more;
+        // Past what a buffer holds the text is cut, as it is in the game, and said once a buffer.
+        if (bytesOf(text) > BUILD_BYTES) {
+          if (bytesOf(was) <= BUILD_BYTES) this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: s.at, message: `This text came to more than the ${BUILD_BYTES.toLocaleString("en-US")} bytes a text put together piece by piece holds: it is cut off there, as it is in the game.` });
+          text = cutTo(text, BUILD_BYTES);
+        }
+        this.sim.buffers.set(s.buffer, text);
+        return "next";
+      }
       case "centerLocation": { const x = yield* this.amount(s.x); const y = yield* this.amount(s.y); this.sim.centre(s.location, x, y); return "next"; }
       case "start": {
         const pool = this.pools.find((p) => p.start === s);
@@ -1235,6 +1252,8 @@ export class ProgramSimulation {
   /** The arrays that grow inside others, by the number their handle's cell holds. */
   readonly inner = new Map<number, Held>();
   lastInner = 0;
+  /** What each buffer of `buildText` holds: one for the whole game, as in the game. */
+  readonly buffers = new Map<string, string>();
   readonly heap = {
     cells: HEAP_CELLS,
     top: 1,
@@ -1475,7 +1494,7 @@ export class ProgramSimulation {
     this.events.push({ cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: { ...emptyAction(), type, player: u.owner, unitId: u.type, ...(extra.location ? { location: extra.location } : {}) }, text: extra.text ? `${extra.text}: ${what}` : what });
   }
 
-  partText(p: Exclude<TextPart, { kind: "number" | "value" }>): string {
+  partText(p: Exclude<TextPart, { kind: "number" | "value" | "char" }>): string {
     // A colour is a control character in the game; the log keeps the words.
     return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
   }

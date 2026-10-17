@@ -64,6 +64,8 @@ import { declarationOf, libraryCallName } from "./hoist";
 import { scriptParams } from "./api";
 import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
 import { cellMax } from "./tables";
+import { markViewWrites, type View } from "./views";
+import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
 import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
@@ -157,6 +159,27 @@ function describe(v: unknown): string {
 
 /** The player a trigger is running for, as a player number. */
 const CURRENT_PLAYER = 13;
+/** A view of ui.lines nothing changed is shown again after this many frames: the game's lines fade in less than six seconds. */
+const REFRESH_FRAMES = 24;
+
+/** JSX that is a text: an element, one that closes itself, or a fragment. */
+type JsxNode = TS.JsxElement | TS.JsxSelfClosingElement | TS.JsxFragment;
+/** A colour a piece of JSX is written in: `key` tells two apart when the script is built, `part` says it in the text. */
+interface JsxColor { key: string; part: TextPart; v?: VarDecl }
+/** A JSX text being lowered: its buffer, the parts not yet written, whether something was written (in the game: `started`), the colour showing. */
+interface JsxBuild { buffer: string; pending: TextPart[]; written: "no" | "yes" | "maybe"; started?: VarDecl; shown: string | null; at: At; label: string }
+
+/** JSX text between elements as React reads it: a line break and the spaces around it go, and lines with nothing else join with a space. */
+function jsxWhitespace(raw: string): string {
+  const lines = raw.split(/\r\n|\n|\r/);
+  if (lines.length === 1) return raw;
+  return lines.map((l, i) => {
+    let t = l.replace(/\t/g, " ");
+    if (i > 0) t = t.trimStart();
+    if (i < lines.length - 1) t = t.trimEnd();
+    return t;
+  }).filter((t) => t.length).join(" ");
+}
 
 /** Neighbouring pieces of written text as one. */
 function mergeText(parts: TextPart[]): TextPart[] {
@@ -274,6 +297,8 @@ export class Structured {
   private yields: ((y: TS.YieldExpression) => void)[] = [];
   /** The `start` statements so far: the next one's number is one more. */
   private taskCount = 0;
+  /** The views of `ui.lines` in the program: their flags, and what puts each text together. */
+  private readonly views: View[] = [];
   /** The inline depth at which the next call is a task's (`start(wave(n))`): its parameters are copies of the arguments, never the caller's variables. */
   private copyArgsAt = -1;
   private scope: Scope = new Scope(null);
@@ -315,6 +340,7 @@ export class Structured {
     }
     this.settleFunctions(program);
     this.checkTasks(program);
+    markViewWrites(program, this.views);
     return { program, nodeOf: (node) => this.nodes.get(node) };
   }
 
@@ -3927,6 +3953,7 @@ export class Structured {
   private text(expr: TS.Expression): TextExpr | null {
     const { ts } = this;
     const e = this.unwrap(expr);
+    if (ts.isJsxElement(e) || ts.isJsxSelfClosingElement(e) || ts.isJsxFragment(e)) return this.jsx(e);
     const h = this.evaluate(expr);
     if (h && !isGameValue(h.value)) {
       const v = h.value;
@@ -4573,6 +4600,7 @@ export class Structured {
     // `void wave(3)`: started, and nothing waits for it — what JavaScript does with a promise nobody keeps.
     if (ts.isVoidExpression(bare) && this.isPromise(bare.expression)) { this.startTask(bare.expression, bare, TASK_MAX); return; }
     if (ts.isCallExpression(bare) && this.isLibraryCall(bare, "start")) { this.startCall(bare); return; }
+    if (ts.isCallExpression(bare) && this.isLibraryCall(bare, "lines")) { this.uiLines(bare); return; }
     if (ts.isCallExpression(bare) && ts.isPropertyAccessExpression(bare.expression) && bare.expression.name.text === "cancel" && this.isTaskType(this.c.checker.getTypeAtLocation(bare.expression.expression))) { this.cancelTask(bare, bare.expression.expression); return; }
     // A promise nothing waits for. sleep() in a function that is not async is the language before 4: it pauses there.
     if (!awaited && ts.isCallExpression(bare) && this.isPromise(bare) && !(this.isLibraryCall(bare, "sleep") && !this.inAsync(bare))) { this.notAwaited(bare); return; }
@@ -5296,6 +5324,349 @@ export class Structured {
       ],
     };
     return this.mark<NumExpr | BoolExpr>({ kind: "call", call }, e);
+  }
+
+  /* ── JSX: a text as elements, put together a piece at a time ── */
+
+  /**
+   * `<line>…</line>`, `<>…</>`: the text put together where the expression stands, into a buffer of its own
+   * (`buildText`), and read where it is used (`built`) — never copied on the way, however many pieces it has.
+   * A line break goes before every `<line>` but the first thing written; `{…}` is the program's value; `cond && …`,
+   * `cond ? … : …` and `xs.map((x) => …)` are the program's if and loop. A colour is put back lazily: an element
+   * that changed it leaves the next piece of its parent to say the parent's again.
+   */
+  private jsx(e: JsxNode): TextExpr | null {
+    const { ts } = this;
+    // The buffer is used up within the frame: nothing in the text may wait.
+    const waits = (n: TS.Node): TS.Node | undefined => (ts.isAwaitExpression(n) || ts.isYieldExpression(n) ? n : ts.isFunctionLike(n) ? undefined : ts.forEachChild(n, waits));
+    const waiting = waits(e);
+    if (waiting) { this.c.error(waiting, "A text is put together within the frame it is shown in: nothing inside it can wait. Await before it, into a variable, and write the variable."); return null; }
+    const at = this.at(e), label = this.label(e);
+    const buffer = `jsx L${this.line(e)}#${this.nextId++}`;
+    const b: JsxBuild = { buffer, pending: [], written: "no", shown: null, at, label };
+    if (this.jsxFlowsLines(e)) {
+      b.started = this.newVar("(something written)", "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: b.started, init: num(0), at, label }, e);
+    }
+    this.emit({ kind: "buildText", buffer, parts: [], reset: true, at, label }, e);
+    this.jsxNode(e, b, { key: `c${DEFAULT_COLOR}`, part: { kind: "text", text: String.fromCharCode(DEFAULT_COLOR) } });
+    this.jsxFlush(b, e);
+    return this.mark<TextExpr>({ kind: "built", buffer }, e);
+  }
+
+  /** Whether a JSX text writes something inside a `{…}` — a condition or a loop — so whether a line break is due is known only in the game. */
+  private jsxFlowsLines(e: TS.Node): boolean {
+    const { ts } = this;
+    const inside = (n: TS.Node): boolean => (ts.isJsxExpression(n) && !!n.expression && !ts.isJsxAttribute(n.parent)) || !!ts.forEachChild(n, (c) => inside(c) || undefined);
+    return inside(e);
+  }
+
+  /** The pieces waiting, written as one `buildText`. */
+  private jsxFlush(b: JsxBuild, node: TS.Node) {
+    if (!b.pending.length) return;
+    this.emit({ kind: "buildText", buffer: b.buffer, parts: b.pending, at: b.at, label: b.label }, node);
+    b.pending = [];
+  }
+
+  /** Something visible is written: a line break first when the element is a line and something was written before it. */
+  private jsxWrites(b: JsxBuild, node: TS.Node, line: boolean) {
+    const { at, label } = b;
+    if (line && b.written === "yes") b.pending.push({ kind: "text", text: "\n" });
+    if (line && b.written === "maybe" && b.started) {
+      this.jsxFlush(b, node);
+      this.emit({ kind: "if", cond: { kind: "test", expr: varRef(b.started), at, label }, then: [{ kind: "buildText", buffer: b.buffer, parts: [{ kind: "text", text: "\n" }], at, label }], at, label }, node);
+    }
+    if (b.started && b.written !== "yes") this.emit({ kind: "assign", target: b.started.id, value: num(1), at, label }, node);
+    b.written = "yes";
+  }
+
+  /** The colour of the element a piece is in, said unless it is the one showing. */
+  private jsxColor(b: JsxBuild, color: JsxColor) {
+    if (b.shown === color.key) return;
+    b.pending.push(structuredClone(color.part));
+    b.shown = color.key;
+  }
+
+  /** A colour attribute: known when the script is built (a name or a code), or the program's number. Null with a diagnostic. */
+  private jsxColorOf(value: TS.Expression | TS.StringLiteral, tag: string): JsxColor | { dynamic: NumExpr } | null {
+    const h = this.evaluate(value as TS.Expression);
+    if (h && !isGameValue(h.value)) {
+      const c = colorCode(h.value);
+      if (c === null) { this.c.error(value, `<${tag}>'s color is one of ${Object.keys(TEXT_COLORS).join(", ")}, or a colour code from 0 to 255; got ${describe(h.value)}.`); return null; }
+      return { key: `c${c}`, part: { kind: "text", text: c ? String.fromCharCode(c) : "" } };
+    }
+    const n = this.num(value as TS.Expression);
+    return n ? { dynamic: n } : null;
+  }
+
+  /** A colour of the program's held in a variable of its own, so that saying it again reads the same number. */
+  private jsxHeldColor(n: NumExpr, node: TS.Node): JsxColor {
+    const at = this.at(node), label = this.label(node);
+    const v = this.newVar("(colour)", "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: v, init: n, at, label }, node);
+    return { key: `v${v.id}`, part: { kind: "char", expr: varRef(v) }, v };
+  }
+
+  /** An element's attributes by name: a string's text, or the expression in braces. Null with a diagnostic. */
+  private jsxAttributes(e: TS.JsxElement | TS.JsxSelfClosingElement, tag: string): Map<string, TS.Expression | TS.StringLiteral> | null {
+    const { ts } = this;
+    const attributes = ts.isJsxElement(e) ? e.openingElement.attributes : e.attributes;
+    const out = new Map<string, TS.Expression | TS.StringLiteral>();
+    for (const a of attributes.properties) {
+      if (!ts.isJsxAttribute(a) || !ts.isIdentifier(a.name)) { this.c.error(a, `<${tag}> takes its attributes one by one: ${JSX_ELEMENTS[tag].join(", ")}.`); return null; }
+      const name = a.name.text;
+      if (!JSX_ELEMENTS[tag].includes(name)) { this.c.error(a, JSX_ELEMENTS[tag].length ? `<${tag}> takes ${JSX_ELEMENTS[tag].join(", ")}; not ${name}.` : `<${tag}> takes no attributes.`); return null; }
+      const init = a.initializer;
+      if (!init) { this.c.error(a, `${name} needs a value: ${name}={…}.`); return null; }
+      if (ts.isStringLiteral(init)) out.set(name, init);
+      else if (ts.isJsxExpression(init) && init.expression) out.set(name, init.expression);
+      else { this.c.error(a, `${name} needs a value: ${name}={…}.`); return null; }
+    }
+    return out;
+  }
+
+  /** An element, a fragment, or text between them, written in colour `color` (its parent's). */
+  private jsxNode(e: TS.JsxChild | JsxNode, b: JsxBuild, color: JsxColor) {
+    const { ts } = this;
+    if (ts.isJsxText(e)) {
+      const text = jsxWhitespace(e.text);
+      if (!text) return;
+      this.jsxWrites(b, e, false);
+      this.jsxColor(b, color);
+      b.pending.push({ kind: "text", text });
+      return;
+    }
+    if (ts.isJsxExpression(e)) { if (e.expression) this.jsxChild(e.expression, b, color); return; }
+    if (ts.isJsxFragment(e)) { for (const c of e.children) this.jsxNode(c, b, color); return; }
+    const opening = ts.isJsxElement(e) ? e.openingElement : e;
+    const tag = opening.tagName.getText(this.body.sf);
+    if (!Object.hasOwn(JSX_ELEMENTS, tag)) {
+      this.c.error(opening.tagName, /^[A-Z]/.test(tag)
+        ? `<${tag}>: a function of your own is called in braces in a text — {${tag[0].toLowerCase()}${tag.slice(1)}(…)} — and gives back a text. Elements are ${Object.keys(JSX_ELEMENTS).map((t) => `<${t}>`).join(", ")}.`
+        : `<${tag}> is not an element of a text: they are ${Object.keys(JSX_ELEMENTS).map((t) => `<${t}>`).join(", ")}.`);
+      return;
+    }
+    const attrs = this.jsxAttributes(e as TS.JsxElement | TS.JsxSelfClosingElement, tag);
+    if (!attrs) return;
+    const children: readonly TS.JsxChild[] = ts.isJsxElement(e) ? e.children : [];
+    const own = (fallback: JsxColor | null): JsxColor | null | undefined => {
+      const v = attrs.get("color");
+      if (!v) return fallback;
+      const c = this.jsxColorOf(v, tag);
+      if (!c) return undefined;
+      return "dynamic" in c ? this.jsxHeldColor(c.dynamic, e) : c;
+    };
+    switch (tag) {
+      case "line": {
+        const c = own({ key: `c${DEFAULT_COLOR}`, part: { kind: "text", text: String.fromCharCode(DEFAULT_COLOR) } });
+        if (!c) return;
+        this.jsxWrites(b, e, true);
+        // A line says its colour at its start, whatever was showing at the end of the one before.
+        b.shown = null;
+        this.jsxColor(b, c);
+        for (const child of children) this.jsxNode(child, b, c);
+        return;
+      }
+      case "span": {
+        const c = own(color);
+        if (!c) return;
+        for (const child of children) this.jsxNode(child, b, c);
+        return;
+      }
+      case "cell": {
+        if (children.length) { this.c.error(e, "<cell> is one square and holds nothing: <cell color={c} />."); return; }
+        this.jsxWrites(b, e, false);
+        const v = attrs.get("color");
+        const c = v ? this.jsxColorOf(v, tag) : { key: "c0", part: { kind: "text" as const, text: "" } };
+        if (!c) return;
+        if (!("dynamic" in c)) {
+          // Known when the script is built: filled in its colour, or empty.
+          const filled = c.key !== "c0";
+          this.jsxColor(b, filled ? c : { key: `c${EMPTY_COLOR}`, part: { kind: "text", text: String.fromCharCode(EMPTY_COLOR) } });
+          b.pending.push({ kind: "text", text: filled ? FILLED_CELL : EMPTY_CELL });
+          return;
+        }
+        // The program's colour: 0 is an empty square in the empty colour, anything else a filled one in it.
+        const held = this.jsxHeldColor(c.dynamic, e);
+        const at = this.at(e), label = this.label(e);
+        const empty: BoolExpr = { kind: "compare", op: "==", left: varRef(held.v!), right: num(0), at, label };
+        b.pending.push({ kind: "char", expr: { kind: "ternary", cond: empty, whenTrue: num(EMPTY_COLOR), whenFalse: varRef(held.v!), at, label } });
+        b.pending.push({ kind: "value", text: { kind: "textTernary", cond: structuredClone(empty), whenTrue: { kind: "text", text: EMPTY_CELL }, whenFalse: { kind: "text", text: FILLED_CELL }, at, label } });
+        b.shown = null;
+        return;
+      }
+      case "bar": {
+        if (children.length) { this.c.error(e, "<bar> holds nothing: <bar value={hp} max={100} />."); return; }
+        const at = this.at(e), label = this.label(e);
+        const value = attrs.get("value"), max = attrs.get("max");
+        if (!value || !max) { this.c.error(e, "<bar> takes value and max: <bar value={hp} max={100} width={20} />."); return; }
+        const w = attrs.get("width");
+        const width = w ? this.evaluate(w as TS.Expression)?.value : 10;
+        if (typeof width !== "number" || !Number.isInteger(width) || width < 1 || width > 60) { this.c.error(w ?? e, "<bar>'s width is known when the script is built: a whole number from 1 to 60."); return; }
+        const c = own({ key: `c${TEXT_COLORS.green}`, part: { kind: "text", text: String.fromCharCode(TEXT_COLORS.green) } });
+        const v = this.num(value as TS.Expression), m = this.num(max as TS.Expression);
+        if (!c || !v || !m) return;
+        this.jsxWrites(b, e, false);
+        // How many are filled: value × width / max, from 0 to width; none when max is 0 or less.
+        const top = this.newVar("(bar's max)", "number", at, { temp: true });
+        const n = this.newVar("(filled)", "number", at, { temp: true });
+        this.emit({ kind: "declare", decl: top, init: m, at, label }, e);
+        const share: NumExpr = { kind: "binary", op: "/", left: { kind: "binary", op: "*", left: v, right: num(width), at, label }, right: varRef(top), at, label };
+        this.emit({ kind: "declare", decl: n, init: { kind: "ternary", cond: { kind: "compare", op: "<=", left: varRef(top), right: num(0), at, label }, whenTrue: num(0), whenFalse: share, at, label }, at, label }, e);
+        this.emit({ kind: "if", cond: { kind: "compare", op: ">", left: varRef(n), right: num(width), at, label }, then: [{ kind: "assign", target: n.id, value: num(width), at, label }], at, label }, e);
+        this.emit({ kind: "if", cond: { kind: "compare", op: "<", left: varRef(n), right: num(0), at, label }, then: [{ kind: "assign", target: n.id, value: num(0), at, label }], at, label }, e);
+        b.shown = null;
+        this.jsxColor(b, c);
+        b.pending.push({ kind: "value", text: { kind: "textRepeat", of: { kind: "text", text: FILLED_CELL }, count: varRef(n), at, label } });
+        b.pending.push({ kind: "text", text: String.fromCharCode(EMPTY_COLOR) });
+        b.pending.push({ kind: "value", text: { kind: "textRepeat", of: { kind: "text", text: EMPTY_CELL }, count: { kind: "binary", op: "-", left: num(width), right: varRef(n), at, label }, at, label } });
+        b.shown = `c${EMPTY_COLOR}`;
+        return;
+      }
+    }
+  }
+
+  /** What is inside braces among the children: an element, a condition, a loop, or a value of the program written as text. */
+  private jsxChild(expr: TS.Expression, b: JsxBuild, color: JsxColor) {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (ts.isJsxElement(e) || ts.isJsxSelfClosingElement(e) || ts.isJsxFragment(e)) { this.jsxNode(e, b, color); return; }
+    const at = this.at(e), label = this.label(e);
+    const h = this.evaluate(e);
+    // React's rule: nothing is written for true, false, null and undefined.
+    if (h && (h.value === null || h.value === undefined || typeof h.value === "boolean")) return;
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+      const known = this.knownCondition(e.left);
+      if (known !== undefined) { if (known) this.jsxChild(e.right, b, color); return; }
+      this.jsxBranches(e, b, this.bool(e.left), [() => this.jsxChild(e.right, b, color)], at, label);
+      return;
+    }
+    if (ts.isConditionalExpression(e)) {
+      const known = this.knownCondition(e.condition);
+      if (known !== undefined) { this.jsxChild(known ? e.whenTrue : e.whenFalse, b, color); return; }
+      this.jsxBranches(e, b, this.bool(e.condition), [() => this.jsxChild(e.whenTrue, b, color), () => this.jsxChild(e.whenFalse, b, color)], at, label);
+      return;
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "map" && this.jsxMap(e, b, color)) return;
+    // A value: its digits, its text. Anything its working out runs comes before what is waiting is written.
+    const mark = this.out.length;
+    const parts = this.textOf(e);
+    if (!parts) return;
+    if (this.out.length > mark && b.pending.length) {
+      this.out.splice(mark, 0, this.mark<Stmt>({ kind: "buildText", buffer: b.buffer, parts: b.pending, at: b.at, label: b.label }, e));
+      b.pending = [];
+    }
+    this.jsxWrites(b, e, false);
+    this.jsxColor(b, color);
+    b.pending.push(...parts);
+  }
+
+  /** `cond && <…/>`, `cond ? <…/> : <…/>`: an if, each side written into the same buffer. */
+  private jsxBranches(e: TS.Node, b: JsxBuild, cond: BoolExpr, sides: (() => void)[], at: At, label: string) {
+    this.jsxFlush(b, e);
+    const before = { written: b.written, shown: b.shown };
+    const after: JsxBuild["written"][] = [];
+    const bodies = sides.map((side) => this.collect(() => {
+      b.written = before.written;
+      b.shown = before.shown;
+      side();
+      this.jsxFlush(b, e);
+      after.push(b.written);
+    }));
+    if (sides.length === 1) after.push(before.written);
+    b.written = after.every((w) => w === "yes") ? "yes" : after.every((w) => w === "no") ? "no" : "maybe";
+    b.shown = null;
+    this.emit({ kind: "if", cond, then: bodies[0], ...(bodies[1] ? { else: bodies[1] } : {}), at, label }, e);
+  }
+
+  /** `{xs.map((x, i) => <…/>)}`: the program's loop over the list, the function's element written at each turn. False when it is not a list this can loop over. */
+  private jsxMap(e: TS.CallExpression, b: JsxBuild, color: JsxColor): boolean {
+    const { ts } = this;
+    const over = this.overOf((e.expression as TS.PropertyAccessExpression).expression);
+    if (!over) return false;
+    const fn = this.functionOf(e.arguments[0], "map", e);
+    if (!fn) return true;
+    let body: TS.Expression | undefined = ts.isBlock(fn.body) ? undefined : fn.body;
+    if (ts.isBlock(fn.body) && fn.body.statements.length === 1 && ts.isReturnStatement(fn.body.statements[0])) body = fn.body.statements[0].expression;
+    if (!body) { this.c.error(fn.body, "In a text, the function given to map gives back what is written for each item, and does nothing else: (x) => <cell color={x} />."); return true; }
+    for (const p of fn.parameters) if (!ts.isIdentifier(p.name)) { this.c.error(p, "In a text, map's function takes the item and its place by name: (x, i) => …."); return true; }
+    // A list the script has is unrolled, its turns one after another; the program's list is a loop, run any number of times.
+    const unrolled = over.kind === "values";
+    if (!unrolled) {
+      this.jsxFlush(b, e);
+      if (b.written === "no") b.written = "maybe";
+      b.shown = null;
+    }
+    this.loopOver(over, e, (item, index) => {
+      const scope = new Scope(fn.closure);
+      const handed = this.handed(over, item, index);
+      fn.parameters.forEach((p, i) => { if (handed[i]) scope.bind(p, handed[i]); });
+      const outer = this.scope;
+      this.scope = scope;
+      try {
+        this.jsxChild(body, b, color);
+        if (!unrolled) { this.jsxFlush(b, e); b.shown = null; }
+      } finally { this.scope = outer; }
+    });
+    return true;
+  }
+
+  /** `ui.lines(P1, () => <…/>)`: a task that shows the function's text in the player's lines, again every frame. */
+  private uiLines(call: TS.CallExpression, handle?: VarDecl) {
+    const { ts } = this;
+    const at = this.at(call), label = this.label(call);
+    if (call.arguments.length !== 2) { this.c.error(call, "ui.lines() takes the player and a function that gives the text: ui.lines(P1, () => <line>…</line>)."); return; }
+    if (!this.inAsync(call)) { this.c.error(call, "ui.lines() runs beside the program as a task: inside program(async () => { … })."); return; }
+    const h = this.evaluate(call.arguments[0]);
+    const to = h && typeof h.value === "number" ? h.value : undefined;
+    const groups: number[] = [CURRENT_PLAYER, PlayerGroup.AllPlayers, PlayerGroup.Force1, PlayerGroup.Force2, PlayerGroup.Force3, PlayerGroup.Force4];
+    if (to === undefined || !Number.isInteger(to) || ((to < 0 || to > 7) && !groups.includes(to))) { this.c.error(call.arguments[0], "ui.lines()'s player is known when the script is built: P1 … P8, CurrentPlayer, AllPlayers or a force."); return; }
+    const fn = this.unwrap(call.arguments[1]);
+    if (!ts.isArrowFunction(fn) && !ts.isFunctionExpression(fn)) { this.c.error(fn, "ui.lines() takes a function written where it is used: ui.lines(P1, () => <line>…</line>)."); return; }
+    if (fn.parameters.length) { this.c.error(fn, "ui.lines()'s function takes nothing: () => <line>…</line>."); return; }
+    if (fn.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) { this.c.error(fn, "ui.lines()'s function gives its text at once, every frame: it is not async."); return; }
+    let view: TS.Expression | undefined = ts.isBlock(fn.body) ? undefined : fn.body;
+    if (ts.isBlock(fn.body) && fn.body.statements.length === 1 && ts.isReturnStatement(fn.body.statements[0])) view = fn.body.statements[0].expression;
+    if (!view) { this.c.error(fn.body, "ui.lines()'s function gives back the text and does nothing else: () => <>…</>."); return; }
+    const caught = this.loopCapture(fn, call);
+    if (caught) { this.c.error(caught, `This text reads ${caught.text}, which the loop around ui.lines() changes; the task would find it as it is when it reads it. Keep it in a variable the program changes instead.`); return; }
+    const task = ++this.taskCount;
+    const shown = view;
+    // Put together again when something it reads was written (`views.ts` sets the flag after every such write), and shown
+    // again once a second whatever happens, before the game's lines fade — put together then too, in case.
+    // Declared at the top of the program (`views.ts`): a write before this line already sets it.
+    const dirty = this.newVar("(redraw)", "number", at, { temp: true });
+    let text: TextExpr | null = null;
+    const build = this.collect(() => { text = this.text(shown); });
+    if (!text) return;
+    const body = this.collect(() => {
+      const age = this.newVar("(frames since shown)", "number", at, { temp: true });
+      this.emit({ kind: "declare", decl: age, init: num(REFRESH_FRAMES), at, label }, call);
+      const loop = this.collect(() => {
+        const due: BoolExpr = { kind: "or", items: [{ kind: "test", expr: varRef(dirty), at, label }, { kind: "compare", op: ">=", left: varRef(age), right: num(REFRESH_FRAMES - 1), at, label }] };
+        this.emit({ kind: "if", cond: due, then: [
+          { kind: "assign", target: dirty.id, value: num(0), at, label },
+          { kind: "block", body: build, at },
+          { kind: "print", parts: [{ kind: "value", text: text! }], to, position: "chat", at, label },
+          { kind: "assign", target: age.id, value: num(0), at, label },
+        ], else: [{ kind: "assign", target: age.id, value: { kind: "binary", op: "+", left: varRef(age), right: num(1), at, label }, at, label }], at, label }, call);
+        this.emit({ kind: "sleep", cycles: 1, at, label }, call);
+      });
+      this.emit({ kind: "while", body: loop, at, label }, call);
+    });
+    this.views.push({ dirty: dirty.id, declare: this.mark<Stmt>({ kind: "declare", decl: dirty, init: num(1), at, label }, call), build });
+    const run: Call = this.mark({ name: "ui.lines", at, label, params: [], body }, call);
+    for (const d of declarations(body)) d.task ??= task;
+    this.emit({ kind: "start", task, max: 1, call: run, ...(handle ? { handle: handle.id } : {}), at, label }, call);
+  }
+
+  /** `const board = ui.lines(…)`: its task's number, to stop it with. */
+  private uiLinesValue(e: TS.CallExpression): NumExpr {
+    const at = this.at(e), label = this.label(e);
+    const t = this.newVar("(task)", "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: t, init: num(0), at, label }, e);
+    this.uiLines(e, t);
+    return varRef(t);
   }
 
   /** `names.join(", ")`: the texts one after another with the separator between, made where the call stands. */
@@ -6691,6 +7062,7 @@ export class Structured {
     if (ofText !== undefined) return ofText;
     if (this.promiseCall(e)) return this.raceValue(e, "number") as NumExpr | null;
     if (this.isLibraryCall(e, "start")) return this.startValue(e);
+    if (this.isLibraryCall(e, "lines")) return this.uiLinesValue(e);
     const method = this.methodCall(e);
     if (method !== undefined) return this.numberOf(method, e);
     if (ts.isIdentifier(e.expression) && (e.expression.text === "parseInt" || e.expression.text === "Number" || e.expression.text === "parseFloat") && !this.gameDeclaration(e.expression)) {

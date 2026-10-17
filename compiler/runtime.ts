@@ -23,6 +23,7 @@ import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import type { RaceId, ReadSource, TableCell, TextPart, UnitFilter } from "./ir";
 import { DEAF_KEYS, keyName, KEY_NAMES, MOUSE_BUTTONS, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
+import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
@@ -280,6 +281,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   const argValue = (kind: ArgKind, v: unknown, what: string): number => {
     switch (kind) {
       case "text": case "wav":
+        if (builtText(v) !== undefined) v = builtText(v);
         if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
         if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
         throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
@@ -610,10 +612,19 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   };
   rt.colors = Object.freeze({ ...PLAYER_COLORS });
 
+  /* ── JSX: a text as elements ── */
+  rt.textColors = TEXT_COLORS;
+  rt.__jsx = jsxAtBuild;
+  rt.__fragment = JSX_FRAGMENT;
+  rt.ui = Object.freeze({
+    lines: () => { throw new ScriptError("ui.lines() shows a text in a program's lines, inside program(async () => { … }): ui.lines(P1, () => <line>…</line>)."); },
+  });
+
   /* ── Text a program fills in ── */
   rt.name = (player: unknown) => textMark("n", onePlayer(player, "name: player", 12));
   rt.color = (player: unknown) => textMark("c", onePlayer(player, "color: player", 12));
   rt.print = (text: unknown, options?: unknown): PrintValue => {
+    if (builtText(text) !== undefined) text = builtText(text);
     if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
     let to: number = PlayerGroup.CurrentPlayer;
     let position: PrintValue["position"] = "chat";
@@ -696,5 +707,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
+  out.push("textColors", "ui", "__jsx", "__fragment");
   return out;
 }

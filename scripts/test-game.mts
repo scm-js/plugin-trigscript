@@ -57,7 +57,7 @@ try {
 
   // The tests in the simulator over the map's own world, as the editor runs them; then in the game, the way a host
   // of the game runs them: the compile's JavaScript handed to dist/gametest.js, loaded from its text.
-  const source = { "main.ts": readFileSync(script, "utf8") };
+  const source = { [script.endsWith(".tsx") ? "main.tsx" : "main.ts"]: readFileSync(script, "utf8") };
   const names = defaultScriptNames();
   // (The locations from the game once eudplib has put them right: in the built map they are scrambled.)
   const locations = readLocations(handle);

@@ -9,7 +9,7 @@
  * condition does not mention a variable the body assigns, is an error naming the loop.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { HEAP_CELLS, STACK_DEPTH, bodiesOf, heapCells, stackDepth, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
+import { HEAP_CELLS, STACK_DEPTH, bodiesOf, declarations, eachCall, heapCells, stackDepth, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
 import type { LineHint, ScriptString } from "./compiler";
 import type { InputPlan } from "./input";
 
@@ -92,7 +92,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
       case "centerLocation": expr(s.x); expr(s.y); break;
-      case "print": mapTextParts(s.parts, looks); break;
+      case "print": case "buildText": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
@@ -341,7 +341,15 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
   const stmt = (s: Stmt) => {
     switch (s.kind) {
       case "while": case "for": case "do": {
-        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body, functions).has(id)) : false;
+        let moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body, functions).has(id)) : false;
+        // A call in the condition that changes what is outside it may change what the condition finds: `while (move(0, 1, 0)) {}`.
+        if (s.cond && !moves) eachCall(s.cond, (c) => {
+          const fn = c.fn ? functions.get(c.fn) : undefined;
+          const own = new Set([...declarations(fn ? fn.body : c.body), ...(fn ? fn.params : c.params.map((p) => p.decl))].map((d) => d.id));
+          if (c.result) own.add(c.result.decl.id);
+          if (fn?.result) own.add(fn.result.decl.id);
+          if ([...assigned([{ kind: "call", call: c, at: s.at, label: s.label }], functions)].some((id) => !own.has(id))) moves = true;
+        });
         if (!moves && !sleepsOnEveryPath(s.body) && !leaves(s.body) && !(s.kind === "do" && s.cond.kind === "const" && s.cond.value === false)) out.push({ at: s.at, message: s.cond
           ? "This loop's condition never changes inside it, and no path around it sleeps. A program runs until it sleeps or ends, all within one frame of the game, so this loop would never give the frame back and the game would freeze. Add sleep(frames(1)) inside it, or change what it tests."
           : "A loop without an end needs a sleep() on every path around it. A program runs until it sleeps or ends, all within one frame of the game, so this loop would freeze the game. Add sleep(frames(1)) at the end of its body." });
@@ -436,7 +444,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "return": return s.value ? { ...s, value: any(s.value) } : s;
       case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}), ...(s.text ? { text: text(s.text) } : {}) };
       case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y) };
-      case "print": return { ...s, parts: mapTextParts(s.parts, copies) };
+      case "print": case "buildText": return { ...s, parts: mapTextParts(s.parts, copies) };
       case "call": return { ...s, call: call(s.call) };
       case "block": return { ...s, body: s.body.map(stmt) };
       default: return s;
