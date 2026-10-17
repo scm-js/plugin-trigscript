@@ -101,8 +101,8 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
   body.forEach(stmt);
 }
 
-/** Every statement of a list, nested ones and calls' bodies (as statements) included. */
-function statements(body: Stmt[], visit: (s: Stmt) => void) {
+/** Every statement of a list, nested ones and calls' bodies (as statements) included; a started task's body unless `tasks` is false. */
+function statements(body: Stmt[], visit: (s: Stmt) => void, tasks = true) {
   const stmt = (s: Stmt) => {
     visit(s);
     switch (s.kind) {
@@ -111,7 +111,7 @@ function statements(body: Stmt[], visit: (s: Stmt) => void) {
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
-      case "start": s.call.body.forEach(stmt); break;
+      case "start": if (tasks) s.call.body.forEach(stmt); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -128,7 +128,7 @@ function checkUnitLoops(body: Stmt[], out: ProgramDiagnostic[]) {
     statements(s.body, (inner) => {
       if (inner.kind === "parallel") out.push({ at: inner.at, message: "await inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. Collect the units into an array first, and await in a loop over that array." });
       if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. To do something to one unit at a time, find it again after each sleep: while (true) { const u = first(…); if (!u) break; u.kill(); sleep(seconds(1)); }" });
-    });
+    }, false);
   });
 }
 
@@ -139,7 +139,7 @@ function checkTextLoops(body: Stmt[], out: ProgramDiagnostic[]) {
     statements(s.body, (inner) => {
       if (inner.kind === "parallel") out.push({ at: inner.at, message: "await inside a for…of over a text: the loop walks the text once, within the frame. A loop over its places can wait between turns: for (let i = 0; i < s.length; i++) { … }" });
       if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a for…of over a text: the loop walks the text once, within the frame. A loop over its places can sleep between turns: for (let i = 0; i < s.length; i++) { const ch = s[i]; … sleep(frames(2)); }" });
-    });
+    }, false);
   });
 }
 
@@ -157,7 +157,7 @@ function scans(program: Program, out: LineHint[]) {
   for (const body of bodiesOf(program)) statements(body, (s) => { if (s.kind === "for" && s.sorts) hint(s.at, "sorts in the frame", `${s.sorts} is sorted where it stands, within the frame: each item is taken in hand and the ones that go after it moved up. Nearly in order already, that is a pass over the list; in no order it is the length squared — a few dozen items are nothing, a few hundred every frame will be felt.`); });
   // A call that stands in an expression (`unitsOf(P1).some(…)` in an if) has statements of its own, which the walk over statements does not reach.
   const everywhere = (body: Stmt[], visit: (s: Stmt) => void) => { statements(body, visit); expressions(body, (e) => { if (e.kind === "call") statements(e.call.body, visit); }); };
-  for (const body of bodiesOf(program)) everywhere(body, (s) => { if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
+  for (const body of bodiesOf(program)) everywhere(body, (s) => { if (s.kind === "unitLoop" && !s.source) hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
   for (const body of bodiesOf(program)) expressions(body, () => {}, (u) => hint(u.at, u.by === "random" ? "scans units ×2" : "scans units", u.by === "random"
     ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.`
     : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));

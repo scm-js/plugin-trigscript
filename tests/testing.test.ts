@@ -178,7 +178,7 @@ describe("sim", () => {
 program(() => {
   let pos = { x: 1, y: 2 }; let seen = [0, 0, 0]; let label = "none"; let gold = 0;
   while (true) {
-    if (keyPressed(CurrentPlayer, "F2")) { pos.x += 10; seen[1] = 7; label = \`pressed \${pos.x}\`; }
+    if (keyPressed(CurrentPlayer, "F7")) { pos.x += 10; seen[1] = 7; label = \`pressed \${pos.x}\`; }
     const give = chatted(CurrentPlayer, "-give {n}");
     if (give) { setResources(CurrentPlayer, "add", give.n, "ore"); }
     gold = minerals(CurrentPlayer);
@@ -186,7 +186,7 @@ program(() => {
   }
 }, { owner: [P1, P2], name: "input" });
 test("as the first player", (sim) => {
-  sim.press("F2").frames(2);
+  sim.press("F7").frames(2);
   expect(sim.program("input").pos).toEqual({ x: 11, y: 2 });
   expect(sim.program("input").seen).toEqual([0, 7, 0]);
   expect(sim.program("input").label).toBe("pressed 11");

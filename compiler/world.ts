@@ -221,7 +221,12 @@ export class World {
 
   /** The living units of these owners (any, when undefined), of a type or a class, inside a location — in table order. */
   matching(owners: readonly number[] | undefined, type?: number, location?: number): SimUnit[] {
-    return this.living().filter((u) => (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location));
+    return this.living().filter((u) => this.fits(u, owners, type, location));
+  }
+
+  /** Whether a unit, living or as it died, is of these owners (any, when undefined), of a type or a class, inside a location. */
+  fits(u: SimUnit, owners: readonly number[] | undefined, type?: number, location?: number): boolean {
+    return (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location);
   }
 
   centreOf(location: number): { x: number; y: number } {

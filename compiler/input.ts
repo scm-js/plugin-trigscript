@@ -33,9 +33,14 @@ const DIGITS = "0123456789".split("");
 /**
  * Keys the game never reports a press of, with why: the slice 4 probe pressed F6 in two builds — once
  * first in MSQC's settings, once third — and nothing arrived either time, while F7, F8, a digit and
- * the letters beside it did. Left out of the list, so writing one is an error and not a silent key.
+ * the letters beside it did. The B2 keys probe (2026-10-17) found F2 to F5 the same, through on.key and
+ * keyPressed alike, while Q, F7 and F9 answered: F2–F4 are the game's camera keys. Left out of the list,
+ * so writing one is an error and not a silent key. F1, F10, F11 and F12 have not been played.
  */
-export const DEAF_KEYS: Readonly<Record<string, string>> = { F6: "StarCraft: Remastered keeps F6 to itself and reports no press of it (played and seen); F7 and F8 work" };
+const kept = (key: string, what: string) => `StarCraft: Remastered keeps ${key} to itself${what} and reports no press of it (played and seen); F7, F8 and F9 work`;
+export const DEAF_KEYS: Readonly<Record<string, string>> = {
+  F2: kept("F2", " (a camera key)"), F3: kept("F3", " (a camera key)"), F4: kept("F4", " (a camera key)"), F5: kept("F5", ""), F6: kept("F6", ""),
+};
 /** Every key name, as the declarations list them. */
 export const KEY_NAMES: readonly string[] = [
   ...LETTERS, ...DIGITS, ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`).filter((k) => !(k in DEAF_KEYS)), ...Object.keys(NAMED_KEYS), ...DIGITS.map((d) => `Numpad${d}`),

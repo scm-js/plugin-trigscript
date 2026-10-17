@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 18: events — `unitLoop.source`: the units that came onto the map (`created`) or died (`died`) since the frame before, as the frame's events pass found them, where a loop without one goes through the unit table.
  * 17: texts built a piece at a time — `buildText` writes parts into a buffer (`reset` starts it empty) and `built` is what the buffer holds, which is how a JSX text is put together without copying it at every piece; `char` among the parts, one byte from a number (a colour code).
  * 16: tasks — `start`: a task that runs beside what started it, a copy of an async function's body with the arguments it was started with; `cancel` and `running` on what `start()` gives back. A task's variables and arrays (`VarDecl.task`, `ArrayDecl.task`) are a row a task, as many rows as tasks of it can run at once.
  * 15: `parallel` — `await Promise.all([…])` / `Promise.race([…])`: branches that run side by side, each a coroutine of its own inside the program's frame.
@@ -27,7 +28,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 17;
+export const IR_VERSION = 18;
 
 /** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
@@ -483,8 +484,12 @@ export type Stmt =
   /**
    * `for (const u of unitsAt(…))`: the body once for every unit the filter matches, in the order of
    * the game's unit table, all within the frame — no `sleep` inside. `decl` is the unit of the turn.
+   * `source` (`on.created` / `on.died`): instead of the table, the units of this frame's events pass — the ones that
+   * came onto the map since the pass of the frame before (`created`; one that has gone since is passed over), or that
+   * died or were removed since then (`died`; the unit of the turn is the dead one, its fields read as it died, and
+   * nothing done to it does anything).
    */
-  | { kind: "unitLoop"; decl: VarDecl; filter: UnitFilter; body: Stmt[]; at: At; label: string }
+  | { kind: "unitLoop"; decl: VarDecl; filter: UnitFilter; source?: "created" | "died"; body: Stmt[]; at: At; label: string }
   /** `u.hp = 40`, `u.invincible = true`: nothing happens when the unit is none or gone. */
   | { kind: "unitWrite"; unit: UnitExpr; field: UnitNumField | UnitFlag; value: NumExpr | BoolExpr; at: At; label: string }
   /** `u.kill()`, `u.order("move", there)`: nothing happens when the unit is none or gone. */
@@ -524,7 +529,12 @@ export type Stmt =
    * the variable that takes a number for the task — `slot | task << 8 | generation << 16`, the generation one more at
    * every start in the slot — or 0 when nothing started.
    */
-  | { kind: "start"; task: number; max: number; call: Call; handle?: string; at: At; label: string }
+  /**
+   * `listen` (on.created, on.died, on.chat, on.key): the task is a listener, whose body waits a frame at the top of a loop
+   * that hands on what happened, so a turn when nothing did does nothing. Once it has begun, it is given a turn only in
+   * a frame the events pass found units of `source`, or one of `inputs` arrived. A lowering may also give it every turn.
+   */
+  | { kind: "start"; task: number; max: number; call: Call; handle?: string; listen?: { source?: "created" | "died"; inputs?: InputSource[] }; at: At; label: string }
   /** `t.cancel()`: the task stops where it is. Nothing happens when it has ended, or the number is no task's. */
   | { kind: "cancel"; task: NumExpr; at: At; label: string }
   /** A trigger action; each of `variables` names a field that takes an expression's value instead of the record's. */

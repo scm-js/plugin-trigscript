@@ -176,7 +176,7 @@ const FIXTURES: Record<string, string> = {
   input: `program(() => {
     let gold = 0;
     while (true) {
-      if (keyPressed(CurrentPlayer, "F2") || keyPressed(CurrentPlayer, "Space")) gold += 1;
+      if (keyPressed(CurrentPlayer, "F7") || keyPressed(CurrentPlayer, "Space")) gold += 1;
       if (clicked(CurrentPlayer) || clicked(CurrentPlayer, "right")) { const at = mouse(CurrentPlayer); centerLocation(1, at.x + 8, at.y); createUnit(CurrentPlayer, units.TerranMarine, 1, 1); }
       const m = chatted(CurrentPlayer, "-spawn {n} {unit:unit}");
       if (m) createUnit(CurrentPlayer, m.unit, m.n, 1);
@@ -325,6 +325,22 @@ const FIXTURES: Record<string, string> = {
     f.cancel();
     victory();
   });`,
+  events: `program(async () => {
+    let made = 0;
+    on.created(units.ZergZergling, (u) => { u.energy = 50; made++; });
+    on.created({ owner: P1, at: locations.Anywhere }, async (u) => { await sleep(frames(2)); u.heal(5); }, { max: 4 });
+    const deaths = on.died({ owner: P8 }, async (u) => { await sleep(seconds(2)); createUnit(P8, u.type, 1, locations.Anywhere); print(\`back at \${u.x}, \${u.y}\`); });
+    on.died(units.Men, (u) => { if (u.owner == 0) setResources(P1, "add", 1, "ore"); });
+    on.chat("-give {n}", (p, { n }) => { setResources(p, "add", n, "ore"); });
+    on.key("F7", (p) => print("help", { to: p }), { from: P1 });
+    await until(() => made >= 10);
+    deaths.cancel();
+  });`,
+  eventsPerPlayer: `program(async () => {
+    let mine = 0;
+    on.created({ owner: CurrentPlayer }, () => { mine++; });
+    on.chat("-me", () => { print(\`\${mine}\`); });
+  }, { owner: AllPlayers });`,
   startedPerPlayer: `program(async () => {
     let mine = 0;
     async function add(k: number) { await sleep(frames(k)); mine += k; }
@@ -583,6 +599,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(17);
+    expect(ir.version).toBe(18);
   });
 });
