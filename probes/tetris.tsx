@@ -1,14 +1,17 @@
 // Tetris in StarCraft's text lines and on its minimap (TrigScript 4, S2's showpiece). The game writes one board; two
 // screens show it. The text lines are JSX: ui.lines() shows them to Player 1, redrawn when the board changes. The other
-// is a board of Overlords on the map beside your base, one a cell in its piece's colour, which the minimap shows as solid
-// blocks: probes/lib/unit-screen.ts, a function that knows nothing of Tetris. A D move (hold to slide), W turns, S drops (hold to keep
+// is a board of Overlords in the top left corner of the map, one a cell in its piece's colour, which the minimap shows as
+// solid blocks: probes/lib/unit-screen.ts, a function that knows nothing of Tetris. Players 2 to 8 own the Overlords, a
+// player a piece, each given its piece's colour as the text lines draw it (measured from screenshots); Player 2 is no
+// computer here, so nothing moves them. A D move (hold to slide), W turns, S drops (hold to keep
 // dropping), Space drops all the way.
 // The pieces and their four turns are worked out when the script is built, in ordinary JavaScript.
 // Host it as a multiplayer game, alone: the keys reach the game the way typed lines do.
+// probe-players: {"1":{"type":0,"rgb":[0,255,255]},"2":{"rgb":[255,255,73]},"3":{"rgb":[165,77,189]},"4":{"rgb":[19,255,29]},"5":{"rgb":[255,5,5]},"6":{"rgb":[15,87,247]},"7":{"rgb":[255,169,24]}}
 // Built with
 //   npx tsx scripts/build-fixture.mts probes/tetris.tsx fixtures/eud/tetris.scx
-import { program, P1, keyPressed, keyHeld, random, sleep, frames, ui, textColors, createUnit, centerLocation, centerView, units, type Location } from "trigscript";
-import { drawUnits, OWNERS } from "./lib/unit-screen";
+import { program, P1, P2, P3, P4, P5, P6, P7, P8, keyPressed, keyHeld, random, sleep, frames, ui, textColors, createUnit, centerLocation, units, type Location } from "trigscript";
+import { drawUnits } from "./lib/unit-screen";
 
 const W = 10;
 const H = 10;
@@ -24,6 +27,8 @@ const PIECES: [number, number][][] = [
   [[2, 0], [0, 1], [1, 1], [2, 1]], // L
 ];
 const COLORS = [textColors.cyan, textColors.yellow, textColors.purple, textColors.green, textColors.red, textColors.blue, textColors.orange];
+/** Whose Overlords show each piece's colour: the player given that colour (probe-players above). */
+const OWNERS = [P2, P3, P4, P5, P6, P7, P8];
 const BOX = [4, 4, 3, 3, 3, 3, 3];
 
 /** The cells of piece p turned r times, one after another as x, y: eight numbers a turn, thirty-two a piece. */
@@ -43,8 +48,9 @@ const DELAY = 8;
 const SLIDE = 2;
 const DROP = 2;
 const ROWS = [...Array(H).keys()];
-/** The board of Overlords: its corner on the map, beside Player 1's base on (2)Binary Burghs, a cell 64 pixels. */
-const MAP_X = 672, MAP_Y = 2144, CELL = 64;
+/** The board of Overlords: its corner on the map, the top left of (2)Binary Burghs — away from the camera, which stays at
+ * the base, so the minimap's view box is never over it — and a cell, 64 pixels. */
+const MAP_X = 128, MAP_Y = 128, CELL = 64;
 const PIXEL = 3 as Location;
 const ON_MAP = { x: MAP_X, y: MAP_Y, width: W, cell: CELL, at: PIXEL };
 const COLS = [...Array(W).keys()];
@@ -55,10 +61,8 @@ program(async () => {
   let shown: number[] = new Array(W * H).fill(0);
   /** Whether the board was written since the Overlords were last drawn. */
   let changed = true;
-  // Sight over the board, for the minimap; and the camera on it, the text lines beside.
+  // Sight over the board, for the minimap.
   for (let y = 1; y < H; y += 3) for (let x = 1; x < W; x += 3) { centerLocation(PIXEL, MAP_X + x * CELL, MAP_Y + y * CELL); createUnit(P1, units.MapRevealer, 1, PIXEL); }
-  centerLocation(PIXEL, MAP_X + (W * CELL) / 2, MAP_Y + (H * CELL) / 2);
-  centerView(PIXEL);
   let piece = random(7), next = random(7), turn = 0, px = 3, py = 0;
   let score = 0, lines = 0, level = 0, over = false, best = 0;
 

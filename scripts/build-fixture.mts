@@ -49,6 +49,10 @@ patchPlayer(scn, 0, { type: 6, race: 1, force: 0 });
 patchPlayer(scn, 1, { type: 5, race: 0, force: 1 });
 // PEOPLE=0,1: those slots open to a person each (Terran), for a test of several players (scripts/test-game.mts).
 for (const slot of (process.env.PEOPLE ?? "").split(",").filter(Boolean).map(Number)) patchPlayer(scn, slot, { type: 6, race: 1, force: slot === 0 ? 0 : 1 });
+// A probe that needs its players set otherwise says so in a line of its own: `// probe-players: {"1":{"type":0,"rgb":[0,255,255]}}`,
+// by 0-based slot — a slot type (0 inactive, 5 computer, 6 human) and a Remastered colour of its own.
+const playersLine = /^\/\/ probe-players: (.+)$/m.exec(readFileSync(scriptPath, "utf8"));
+if (playersLine) for (const [slot, patch] of Object.entries(JSON.parse(playersLine[1]) as Record<string, { type?: number; rgb?: [number, number, number] }>)) patchPlayer(scn, Number(slot), patch);
 // The base map is a melee map: its stock triggers defeat whoever commands no buildings, and in
 // Use Map Settings nobody is handed melee units — both players lose at once and the game
 // ends in a draw a second in. The probe's own script is the only source of triggers it should have,
