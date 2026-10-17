@@ -36,8 +36,9 @@
  */
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
+import { ORDER_OF_VERB } from "./orders";
 import { BUILD_BYTES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
-import type { TextExpr, ArrayDecl, At, BoolExpr, Call, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
+import type { TextExpr, ArrayDecl, At, BoolExpr, Call, EventSource, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
@@ -512,7 +513,8 @@ class ProgramRun {
     switch (verb.do) {
       case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill", undefined, false); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
       case "give": { const to = this.sim.slotOf(verb.to); if (to < 12) u.owner = to; break; }
-      case "order": this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
+      // (The unit takes up the order and keeps it here: the simulator moves nothing, so it never arrives.)
+      case "order": u.orderId = ORDER_OF_VERB[verb.order]; this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
       case "locate": this.sim.centre(verb.location, u.x, u.y); break;
       case "damage": case "heal": {
         // In the game's own units, 256 to a point, as the lowering computes it.
@@ -951,11 +953,13 @@ class ProgramRun {
         this.declare(s.decl);
         // The units as they are when the loop starts, in table order; one that dies on the way is passed over. Those of
         // the frame's events pass (`on.created` / `on.died`): the ones that came on, and the ones that died, read as they died.
-        const dead = s.source === "died";
+        const dead = s.source === "died" || s.source === "killed";
         if (dead) this.asDied.add(s.decl.id);
-        for (const u of s.source ? this.sim.eventUnits(s.source, s.filter) : this.sim.matching(s.filter)) {
+        if (s.was) this.declare(s.was);
+        for (const { u, was } of s.source ? this.sim.eventUnits(s.source, s.filter, s.event) : this.sim.matching(s.filter).map((u) => ({ u, was: 0 }))) {
           if (!dead && !u.alive) continue;
           this.unitVars.set(s.decl.id, u);
+          if (s.was) this.store(s.was.id, was);
           const flow = yield* this.block(s.body, ctx);
           if (flow === "break") break;
           if (flow === "return") return flow;
@@ -1566,20 +1570,39 @@ export class ProgramSimulation {
    * passes is neither. Each list is the latest first, as the game's lists keep them.
    */
   private eventsFrom = 0;
-  private readonly seen = new Set<SimUnit>();
-  private events_: { created: SimUnit[]; died: SimUnit[] } = { created: [], died: [] };
+  /** Each unit seen on the map, with its order and type as the pass before found them (on.order / on.morphed). */
+  private readonly seen = new Map<SimUnit, { order: number; type: number }>();
+  private events_: Record<EventSource, { u: SimUnit; was: number }[]> = { created: [], died: [], killed: [], ordered: [], morphed: [] };
   private eventsPass(): void {
-    const created: SimUnit[] = [], died: SimUnit[] = [];
-    for (const u of this.seen) if (!u.alive) { died.push(u); this.seen.delete(u); }
+    const out: Record<EventSource, { u: SimUnit; was: number }[]> = { created: [], died: [], killed: [], ordered: [], morphed: [] };
+    // Latest first, as the game's lists keep them: what was seen before this pass, then what came on since.
+    for (const [u, last] of [...this.seen].reverse()) {
+      if (!u.alive) {
+        out.died.push({ u, was: 0 });
+        if (u.killedBy !== undefined) out.killed.push({ u, was: u.killedBy });
+        this.seen.delete(u);
+        continue;
+      }
+      if (u.orderId !== last.order) { out.ordered.push({ u, was: last.order }); last.order = u.orderId; }
+      if (u.type !== last.type) { out.morphed.push({ u, was: last.type }); last.type = u.type; }
+    }
     const all = this.game.units;
-    for (; this.eventsFrom < all.length; this.eventsFrom++) { const u = all[this.eventsFrom]; if (u.alive) { created.push(u); this.seen.add(u); } }
-    this.events_ = { created: created.reverse(), died: died.reverse() };
+    for (; this.eventsFrom < all.length; this.eventsFrom++) { const u = all[this.eventsFrom]; if (u.alive) { out.created.push({ u, was: 0 }); this.seen.set(u, { order: u.orderId, type: u.type }); } }
+    out.created.reverse();
+    this.events_ = out;
   }
 
-  /** What this frame's events pass found that a filter matches: the units that came on and are still here, or the ones that died, as they died. */
-  eventUnits(source: "created" | "died", f: UnitFilter): SimUnit[] {
+  /**
+   * What this frame's events pass found that a filter matches, each with what the unit was (the killer, the order it had,
+   * the type it was): the units that came on, took up an order or turned into another type and are still here, or the
+   * ones that died, as they died.
+   */
+  eventUnits(source: EventSource, f: UnitFilter, event: { order?: number; by?: number } = {}): { u: SimUnit; was: number }[] {
     const owners = f.owner === undefined ? undefined : this.slotsOf(f.owner);
-    return this.events_[source].filter((u) => (source === "died" || u.alive) && this.game.fits(u, owners, f.type, f.at));
+    const by = event.by === undefined ? undefined : this.slotsOf(event.by);
+    const dead = source === "died" || source === "killed";
+    return this.events_[source].filter(({ u, was }) => (dead || u.alive) && this.game.fits(u, owners, f.type, f.at)
+      && (event.order === undefined || u.orderId === event.order) && (!by || by.includes(was)));
   }
 
   /** One frame: every program in order, from where it left off. */

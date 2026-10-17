@@ -249,6 +249,7 @@ export interface TestWorldLike {
   kill(unit: SimUnit, by?: number): this;
   remove(unit: SimUnit): this;
   give(unit: SimUnit, to: number): this;
+  morph(unit: SimUnit, type: number): this;
   move(unit: SimUnit, to: number | { x: number; y: number }): this;
   press(key: string, player?: number): this;
   click(button?: "left" | "right" | "middle", player?: number): this;
@@ -409,6 +410,16 @@ export class TestSim implements TestWorldLike {
   kill(unit: SimUnit, by?: number): this { this.world.game.gone(unit, true, by); return this; }
   remove(unit: SimUnit): this { this.world.game.gone(unit, false); return this; }
   give(unit: SimUnit, to: number): this { if (unit.alive) unit.owner = to; return this; }
+  /** A unit turns into another type and stays the same unit: the new type's hit points and shields, in the same part of them. */
+  morph(unit: SimUnit, type: number): this {
+    if (!unit.alive) return this;
+    const s = this.world.game.stats(type) ?? {};
+    const maxHp = Math.max(1, s.hp ?? unit.maxHp), maxShields = Math.max(0, s.shields ?? 0);
+    unit.hp = Math.max(1, Math.round((unit.hp * maxHp) / Math.max(1, unit.maxHp)));
+    unit.shields = unit.maxShields ? Math.round((unit.shields * maxShields) / unit.maxShields) : maxShields;
+    Object.assign(unit, { type, maxHp, maxShields });
+    return this;
+  }
   /** A unit to a location's centre, or to a point. */
   move(unit: SimUnit, to: number | { x: number; y: number }): this {
     const p = typeof to === "number" ? this.world.game.centreOf(to) : to;

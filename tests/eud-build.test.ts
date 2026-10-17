@@ -336,6 +336,17 @@ const FIXTURES: Record<string, string> = {
     await until(() => made >= 10);
     deaths.cancel();
   });`,
+  eventsMore: `program(async () => {
+    let storms = 0, sieged = 0;
+    on.killed((u, by) => { setResources(by, "add", 25, "ore"); print(\`\${u.type} at \${u.x}\`); });
+    on.killed({ owner: P8, by: P1 }, async (u) => { await sleep(frames(4)); createUnit(P8, u.type, 1, locations.Anywhere); });
+    on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, (u) => { storms++; });
+    on.order({ owner: P1 }, (u, order, was) => { if (was == orders.PlayerGuard && order == orders.Move) u.heal(1); });
+    on.morphed(units.TerranSiegeTankSiegeMode, (u, was) => { sieged++; print(\`from \${was}\`); });
+    await until(() => storms + sieged >= 10);
+  });
+  on.died(units.TerranMarine, (u) => print(\`marine down at \${u.x}\`));
+  on.chat("-hi", (p) => print("hello", { to: p }));`,
   eventsPerPlayer: `program(async () => {
     let mine = 0;
     on.created({ owner: CurrentPlayer }, () => { mine++; });
@@ -367,7 +378,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { [name.endsWith("Tsx") ? "main.tsx" : "main.ts"]: src, ...(FIXTURE_FILES[name] ?? {}) }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" ? 2 : name === "leftoversProbe" ? 1 : name === "recursionProbe" ? 3 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" ? 2 : name === "leftoversProbe" ? 1 : name === "recursionProbe" || name === "eventsMore" ? 3 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -599,6 +610,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(18);
+    expect(ir.version).toBe(19);
   });
 });

@@ -1,5 +1,5 @@
 /**
- * TrigScript 4, slice B2: events. `on.created`, `on.died`, `on.chat` and `on.key` are each a task that, from the next
+ * TrigScript 4, slice B2: events. `on.created`, `on.died`, `on.killed`, `on.order`, `on.morphed`, `on.chat` and `on.key` are each a task that, from the next
  * frame on, runs its handler for every time the thing happens: the units come from the frame's events pass (a loop with
  * a `source` in the IR), the lines and keys from what chatted() and keyPressed() read. The interpreter here;
  * `eud-build.test.ts` builds the same through eudplib, and `probes/game-events.ts` runs it in the game.
@@ -38,7 +38,7 @@ describe("events: the front end", () => {
 
   it("what is wrong is said", () => {
     expect(messages(`on.created((u) => {});`)).toEqual([]);
-    expect(raw(`});\nprogram(() => { on.died((u) => {}); `).diagnostics.map((d) => d.message)).toContain("on.died() listens beside the program as a task: inside program(async () => { … }).");
+    expect(raw(`});\nprogram(() => { on.died((u) => {}); `).diagnostics.map((d) => d.message)).toContain("on.died() listens beside the program as a task: at the top of a script, or inside program(async () => { … }).");
     expect(messages(`on.created(units.ZergZergling);`)[0]).toContain("is not assignable");
     expect(messages(`on.key("F6", (p) => {});`)[0]).toContain("F6");
     expect(messages(`on.created((u) => {}, { max: 4 });`)[0]).toContain("max is for an async handler");
@@ -101,5 +101,73 @@ describe("events: in the simulator", () => {
     s.run(2).type("-give 25", 1).press("F7", 1).press("F7", 0).run(1);
     expect(printed(s)).toEqual(["2:gave 25", "2:help"]);
     expect(s.events.filter((e) => e.action.type === ActionType.SetResources).map((e) => e.action.player)).toEqual([1]);
+  });
+});
+
+describe("events, second part: killed, order, morphed, at the top of a script", () => {
+  it("on.killed hands a death in a fight, with its killer; a trigger's kill and a removal are not handed on", () => {
+    const r = compile(`
+      on.killed((u, by) => { print(\`killed \${u.type} by \${by}\`); });
+      on.killed({ by: P2 }, (u) => { print(\`P2 got \${u.owner}\`); });
+      on.died((u) => { print(\`died \${u.type}\`); });
+      await sleep(frames(1));
+      for (const u of unitsOf(P1)) u.kill();`);
+    const s = sim(r).run(1);
+    // Between frames 0 and 1 the zergling dies in a fight, P2's kill (the test's kill(unit, by)); in frame 1 the program
+    // kills the marine, which the pass of frame 2 finds.
+    s.game.gone(s.game.living().find((u) => u.type === ZERGLING)!, true, 1);
+    s.run(3);
+    expect(printed(s)).toEqual([`1:killed ${ZERGLING} by 1`, "1:P2 got 7", `1:died ${ZERGLING}`, `2:died ${MARINE}`]);
+  });
+
+  it("a unit killed by its own player has no killer, as the game keeps none", () => {
+    const r = compile(`on.killed((u, by) => print(\`killed by \${by}\`)); on.died(() => print("died"));`);
+    const s = sim(r).run(1);
+    s.game.gone(s.game.living().find((u) => u.type === ZERGLING)!, true, 7);
+    s.run(2);
+    expect(printed(s)).toEqual(["1:died"]);
+  });
+
+  it("on.order hands the unit, the order it took up and the one it had; a filter on the order", () => {
+    const r = compile(`
+      on.order((u, order, was) => { print(\`\${u.type} \${was} -> \${order}\`); });
+      on.order(units.TerranMarine, orders.Patrol, (u) => { print("patrol"); });
+      on.order({ order: orders.Move }, (u, order) => { print(\`moving \${order}\`); });
+      await sleep(frames(1));
+      for (const u of unitsOf(P1)) u.order("move", HOME);
+      await sleep(frames(2));
+      for (const u of unitsOf(P1)) u.order("patrol", HOME);`);
+    expect(printed(sim(r).run(6))).toEqual([`2:${MARINE} 3 -> 6`, "2:moving 6", `4:${MARINE} 6 -> 152`, "4:patrol"]);
+  });
+
+  it("on.morphed hands the unit as it is now and the type it was; the filter is of the new type", () => {
+    const r = compile(`
+      on.morphed((u, was) => { print(\`\${was} -> \${u.type}\`); });
+      on.morphed(units.TerranSiegeTankSiegeMode, (u) => { print("sieged"); });`);
+    const s = sim(r).run(2);
+    s.game.living().find((u) => u.type === MARINE)!.type = 30;
+    s.run(1);
+    expect(printed(s)).toEqual([`2:${MARINE} -> 30`, "2:sieged"]);
+  });
+
+  it("a listener at the top of a script listens from the start, as a program of its own", () => {
+    const r = compileScript(ts, { "main.ts": `const HOME = 1 as Location;
+on.created(units.ZergZergling, (u) => { print(\`made \${u.owner}\`); });
+on.chat("-hi", (p) => print("hello", { to: p }));
+program(async () => { await sleep(frames(2)); createUnit(P8, units.ZergZergling, 1, HOME); });` }, NAMES, { lib: LIB });
+    expect(r.diagnostics.map((d) => d.message)).toEqual([]);
+    expect(r.ir).toHaveLength(3);
+    const s = sim(r).run(2);
+    s.type("-hi", 0).run(2);
+    expect(printed(s)).toEqual(["2:hello", "3:made 7"]);
+  });
+
+  it("what is wrong is said", () => {
+    expect(messages(`on.order(units.TerranMarine, 999, (u) => {});`)[0]).toContain("on.order() takes the order after the filter");
+    expect(messages(`on.killed({ by: P9 }, (u) => {});`)[0]).toContain("by is the player who killed the unit");
+    // (TypeScript says it first: 'by' does not exist in type 'UnitFilter'.)
+    expect(messages(`on.died({ by: P2 }, (u) => {});`).join("\n")).toContain("'by' does not exist");
+    expect(messages(`on.morphed({ order: orders.Move }, (u) => {});`).join("\n")).toContain("'order' does not exist");
+    expect(messages(`on.order({ order: orders.Move }, orders.Patrol, (u) => {});`).join("\n")).toContain("'order' does not exist");
   });
 });

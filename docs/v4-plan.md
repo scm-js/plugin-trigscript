@@ -957,10 +957,65 @@ on.key("F2", (p) => print("Help", { to: p }), { from: P1 });
   F2 moved the camera (the game's own key) and said nothing; a second probe (Q, F2–F5, F7, F9, each through
   `on.key`, and F2 through `keyPressed`) heard only Q, F7 and F9. So F2–F5 join F6 as keys Remastered keeps: they
   are not a `Key`, and the examples use F7. F1, F10–F12 not played.
-- **Not yet:** `on.order` (each unit's order against the last frame's: a scan, or a pass over the visible list),
-  `u.killedBy` (the killer's kill count rises a frame before; or the unit's +0x90, last attacking player, from the
-  dying record — both to check), a `removed` flag on a DeadUnit, a morph event, listeners at the top of a script
-  without a program around them.
+**As built, second part (2026-10-17, branch `b2-events-2`).** `on.killed`, `on.order`, `on.morphed`, and a listener
+at the top of a script; IR 19.
+
+```ts
+on.killed({ owner: P8 }, (u, by) => setResources(by, "add", 25, "ore"));   // the killer, a player the action can be for
+on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, (u) => print("Storm!"));
+on.morphed(units.TerranSiegeTankSiegeMode, (u, was) => print(`sieged from ${was}`));
+on.died(units.TerranMarine, (u) => print("Marine down"));                 // at the top of the file: listens from the start
+```
+
+- **Who killed a unit: the dying record says.** Measured in the lifted game first (a fight, Kill Unit, Remove Unit,
+  marines inside a dropship killed by trigger, a marine hurt and later killed by trigger): a death in a fight leaves
+  hit points 0 and the killer's player at +0x90 (lastAttackingPlayer, as BWAPI and scm-sim name it); Kill Unit leaves
+  the hit points and +0x90 as they were (8 when nobody ever hurt the unit); Remove Unit the same with the sprite gone.
+  So `on.killed` is the `died` turns with hp 0 and +0x90 below 8, the killer read from +0x90. The plan's other way
+  (the killer's kill count rising a frame before) is not needed. A unit a program damages to death (`u.damage`)
+  with an earlier attacker would count for that attacker: not seen yet, said here.
+- **`removed` is not built: the game does not tell.** A Remove Unit and a unit killed inside a transport leave the
+  same record — no sprite, hit points as they were, +0x90 untouched; 336 bytes compared, nothing else differs but
+  timers. A flag that is wrong for a hero dying in a dropship is worse than none, so `on.killed` takes its place:
+  "died in a fight" is what a map maker asking "was it removed?" usually wants. An Archon's partner leaves the same
+  way (one High Templar turns into the Archon in its own slot, the other goes without a sprite).
+- **The killer as a value of the script.** `setResources(by, …)` needs its player when the map is built, so a handler
+  that takes `by` is copied for each of the eight killers (`if (was == p)`), as `on.chat` is for each typer; with
+  `{ by: P1 }` in the filter it is known and not copied. First found when the eudplib fixture refused `setResources(by,
+  …)`: the obvious way to reward a killer did not compile.
+- **Orders and morphs: one walk of the visible list.** A unit's order byte and type are compared every frame with a
+  table of the events pass's own (a cell a slot, as the uniqueness cells). The type is the same unit changing in
+  place, measured in the lifted game: a Siege Tank goes 5 → 30 in its slot at the frame it finishes turning (order 98,
+  Sieging, the frame before); one High Templar of two becomes the Archon in its slot. `on.order` hands the unit, the
+  order it took up and the one it had (`{ order }` in the filter, or the plan's three-argument form); `on.morphed` the
+  unit and the type it was, its filter on the new type. Each verb's order, from the lifted game: `move` 6 (Move),
+  `patrol` 152, `attack` 14 (AttackMove); the simulator sets them. New units take up Guard (2) then PlayerGuard (3)
+  in the game, which `on.order` hears; their first order is not a change.
+- **What the walk costs** (lifted game, about 115 units, idle): 178 conditions and actions a frame without it; one
+  of `on.order` / `on.morphed` about 11,000 (≈ 95 a unit), both about 16,000 (≈ 140). First built at 16,000 / 21,000:
+  reading the uniqueness byte only when something changed, and the type as its low byte, took a third off. The
+  pointer chase is about half of what is left. A hint on the line says it.
+- **Listeners at the top of a script.** `on.…(…)` as a statement at the top of a file is planned as a program whose
+  body is that statement (a block made around it, `hoist.ts#planListener`), and the transformer replaces it with
+  `__listen(descriptor)`: a program of its own, owner Player 1, listening from the start.
+- **Handlers return what they like.** The declarations had `=> void | Promise<void>`, which refuses `(p) =>
+  setResources(…)` (an expression body that gives an action) — the examples in the declarations were written that
+  way. Now `=> void`, which an async function also is.
+- **`orders`**: a name table (`orders.Move`, `orders.CastPsionicStorm`; the community's names, as BWAPI and scm-sim
+  have them), the `Order` brand, and `u.orderId` an `Order`. Typed chat patterns (`{n}` a number, `{u:unit}` a unit
+  type, `{k:ore|gas}` the word's place) were already in part 1, from `chatted()`.
+- **Tests:** `sim.morph(unit, type)` for the simulator (the lifted game turns a unit into another type only through
+  a player's command, which a test cannot give yet: `GameSim.morph` says so); `GameSim.kill(unit, by)` now leaves the
+  record a fight does (hp 0, +0x90 = by), so `on.killed` hears it in both.
+- **Checked.** `tests/events.test.ts` (12), eudplib fixture `eventsMore` (three programs, two at the top of the
+  file), `probes/game-events-2.ts` (3) in the lifted game and the simulator at the same frames, every older game
+  probe; `game-check` of the Remastered probe: 0 accesses that end the game. **Probe for Remastered:**
+  `Maps/TrigScript/trigscript-b2-events-2.scx` with its answer sheet — a fight (killer both ways), a program's kill,
+  Psionic Storm (order and kills), an Archon, a Siege Tank both ways, a Drone into a Hatchery and a Larva into an
+  egg into a Drone, a move order, 300 Overlords with the walk on. **Played in Remastered, 2026-10-17, A and B:** the fight said "killed 37 by P1" for each of the four Zerglings and gave 25 minerals each (75 after three, 100 after four), and for the one Marine that fell "killed 0 by P2" and the top-of-file listener's "top: Marine down"; the program's two Firebat kills said "died 32" twice and no "killed". So Remastered's dying record has hit points 0 and the killer at +0x90 after a fight, as 1.16.1's does. C and D (same day): "Storm!" when a Templar began casting (on.order, CastPsionicStorm); merging the Archon said "died 67" and "morphed 67 -> 68" while it was still summoning — the type changes when the merge starts; the tank said "morphed 5 -> 30" sieging and "morphed 30 -> 5" unsieging. The storm, played again on Zerglings of the player's own (the computer's had been made out of sight): every unit it killed — eight Zerglings, two Marines, both Templar — was handed to `on.died` and none to `on.killed`, minerals unchanged. **Friendly fire leaves no killer:** the lifted game with a storm cast through player commands gives the computer's Zerglings hp 0 and +0x90 = P1, the player's own hp 0 and +0x90 = 8 (one bitten first by a computer Zergling: 1). The game keeps no attacker for a unit its own player hurts, as it counts no kill for it (scm-sim's T-30). So `on.killed` hears a unit killed by another player; the simulator's `kill(u, owner)` and `GameSim.kill(u, owner)` now leave no killer either, and the declarations say so. E, first half (first build): `-zerg` made the two Drones, and a Drone told to mutate into a Hatchery said "morphed 41 -> 131" as it began. On the first build `-storm`'s computer Zerglings went to Away, past the edge of what the player could see (they are made there in the lifted game; not looked for in Remastered); the second build's Player 12 Zerglings at Home were not seen, whether made or not unknown. Rest of E, F, G (same day): a Larva into a Drone said "morphed 35 -> 36" when it became an egg and "morphed 36 -> 41" when it hatched (an Overlord egg "36 -> 42"); a Marine told to move said "move from 3". G: no lag, but `-many` made only about 23 of its 300 Overlords — Remastered said "WARNING: Unit unplaceable! (Zerg Overlord)" for the rest, as the lifted game does not (it put 168 in a 64-pixel box): Remastered keeps a created air unit inside the location, and Home was full. So the walk with ~60 units on the map; 300 not played. **Every event of the second part works in Remastered** but the storm on an enemy, which the lifted game covers.
+- **Not yet:** a morph in a test in the lifted game (scm-sim's test handle would take a player's command); `on.order`
+  only for units of the filter's types (skip the order read for the rest: cheaper, but a unit that morphs into a
+  watched type would bring a stale order once); whether a program's `u.damage()` to 0 credits an earlier attacker.
 
 ### B3. Function values (4.5.0)
 
@@ -1284,7 +1339,7 @@ passes near them.
 | Idea | Built from | Where |
 | --- | --- | --- |
 | EUD error code to line: Remastered's "EUD ERROR: 0x…" is the refused address inverted (R0); the editor reads the code and points at the line that touches that address | the trigger map and trace (A1), R0 | now: a day |
-| Typed chat patterns: `on.chat("-give {n}", (p, { n }) => …)` with `n: number` worked out by template literal types | B2 | B2 |
+| Typed chat patterns: `on.chat("-give {n}", (p, { n }) => …)` with `n: number` worked out by template literal types | B2 | built: `chatted()`'s patterns, which `on.chat` took over in B2 |
 | A line's values over time beside it, as a small graph, from the debugger's recording | A5 | after A5's open items |
 | Changes kept while the game runs: edit the script, rebuild, carry the variables over by name into a snapshot and go on | A2's variable map, scm-sim snapshots | after B1 (a task's place has to carry over too) |
 | Fuzzing: random inputs on every seat at the lifted game's speed, looking for desyncs, games that end and failed expectations, then the smallest input that still fails | A2, A3 | after B5 |

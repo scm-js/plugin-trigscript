@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 19: more events — `unitLoop.source` also `killed` (a death in a fight, the killer in `was`), `ordered` (a unit that took up a new order, the one it had in `was`) and `morphed` (a unit that turned into another type, the type it was in `was`); `unitLoop.event` filters them by the new order or the killer.
  * 18: events — `unitLoop.source`: the units that came onto the map (`created`) or died (`died`) since the frame before, as the frame's events pass found them, where a loop without one goes through the unit table.
  * 17: texts built a piece at a time — `buildText` writes parts into a buffer (`reset` starts it empty) and `built` is what the buffer holds, which is how a JSX text is put together without copying it at every piece; `char` among the parts, one byte from a number (a colour code).
  * 16: tasks — `start`: a task that runs beside what started it, a copy of an async function's body with the arguments it was started with; `cancel` and `running` on what `start()` gives back. A task's variables and arrays (`VarDecl.task`, `ArrayDecl.task`) are a row a task, as many rows as tasks of it can run at once.
@@ -28,7 +29,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 18;
+export const IR_VERSION = 19;
 
 /** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
@@ -162,6 +163,12 @@ export type ReadSource =
  * current player) and a location the unit's centre is inside (1-based). An absent part matches all.
  */
 export interface UnitFilter { type?: number; owner?: number; at?: number }
+
+/**
+ * Where the units of an events pass loop come from (`unitLoop.source`): the ones that came onto the map, died, died in a
+ * fight, took up a new order, or turned into another type since the pass of the frame before.
+ */
+export type EventSource = "created" | "died" | "killed" | "ordered" | "morphed";
 
 /** A number of a unit on the map. Hit points, shields and energy are whole points; the timers and the cooldown frames. */
 export type UnitNumField = "hp" | "maxHp" | "shields" | "maxShields" | "energy" | "owner" | "type" | "x" | "y" | "kills" | "orderId" | "cooldown" | "resources"
@@ -487,9 +494,13 @@ export type Stmt =
    * `source` (`on.created` / `on.died`): instead of the table, the units of this frame's events pass — the ones that
    * came onto the map since the pass of the frame before (`created`; one that has gone since is passed over), or that
    * died or were removed since then (`died`; the unit of the turn is the dead one, its fields read as it died, and
-   * nothing done to it does anything).
+   * nothing done to it does anything); `killed` (those of `died` that died in a fight: their hit points 0, a player's
+   * attack the last that hurt them); `ordered` (living units whose order is not the one the pass before found); `morphed`
+   * (living units whose type is not the one the pass before found). `was`, when there: set at each turn to the killer,
+   * the order the unit had, or the type it was. `event`: `ordered` only the units whose new order is `order`; `killed`
+   * only the units `by` killed.
    */
-  | { kind: "unitLoop"; decl: VarDecl; filter: UnitFilter; source?: "created" | "died"; body: Stmt[]; at: At; label: string }
+  | { kind: "unitLoop"; decl: VarDecl; filter: UnitFilter; source?: EventSource; was?: VarDecl; event?: { order?: number; by?: number }; body: Stmt[]; at: At; label: string }
   /** `u.hp = 40`, `u.invincible = true`: nothing happens when the unit is none or gone. */
   | { kind: "unitWrite"; unit: UnitExpr; field: UnitNumField | UnitFlag; value: NumExpr | BoolExpr; at: At; label: string }
   /** `u.kill()`, `u.order("move", there)`: nothing happens when the unit is none or gone. */
@@ -534,7 +545,7 @@ export type Stmt =
    * that hands on what happened, so a turn when nothing did does nothing. Once it has begun, it is given a turn only in
    * a frame the events pass found units of `source`, or one of `inputs` arrived. A lowering may also give it every turn.
    */
-  | { kind: "start"; task: number; max: number; call: Call; handle?: string; listen?: { source?: "created" | "died"; inputs?: InputSource[] }; at: At; label: string }
+  | { kind: "start"; task: number; max: number; call: Call; handle?: string; listen?: { source?: EventSource; inputs?: InputSource[] }; at: At; label: string }
   /** `t.cancel()`: the task stops where it is. Nothing happens when it has ended, or the number is no task's. */
   | { kind: "cancel"; task: NumExpr; at: At; label: string }
   /** A trigger action; each of `variables` names a field that takes an expression's value instead of the record's. */
@@ -645,7 +656,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "storeText": expr(s.index); text(s.value); break;
       case "releaseText": expr(s.index); break;
       case "textLoop": text(s.of); out.push(s.decl); s.body.forEach(stmt); break;
-      case "unitLoop": out.push(s.decl); s.body.forEach(stmt); break;
+      case "unitLoop": out.push(s.decl); if (s.was) out.push(s.was); s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); init(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
       case "tableWrite": init(s.value); break;
