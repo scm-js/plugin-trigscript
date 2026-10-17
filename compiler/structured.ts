@@ -225,6 +225,12 @@ type Instance = Extract<Binding, { kind: "record" }>;
 
 /** The most cells an array of a program has: each is four bytes of the built map, twelve times over in a per-player program. */
 const MAX_ARRAY = 4096;
+/**
+ * A list the script worked out when it was built and a program only reads (a table: `price[level]`, a video's brushes):
+ * in the map as it loads, four bytes an entry, and never initialised by a trigger, so it may be far longer than an
+ * array of the program. What bounds it is the build's data (the IR is packed for it, `eud.ts#serializeIr`).
+ */
+const MAX_TABLE = 1 << 20;
 const TRUE: BoolExpr = { kind: "const", value: true };
 const FALSE: BoolExpr = { kind: "const", value: false };
 const num = (value: number): NumExpr => ({ kind: "const", value });
@@ -2589,7 +2595,7 @@ export class Structured {
   }
 
   private isPlainList(v: unknown): v is (number | boolean)[] {
-    return Array.isArray(v) && v.length > 0 && v.length <= MAX_ARRAY && (v.every((x) => typeof x === "number" && Number.isInteger(x)) || v.every((x) => typeof x === "boolean"));
+    return Array.isArray(v) && v.length > 0 && v.length <= MAX_TABLE && (v.every((x) => typeof x === "number" && Number.isInteger(x)) || v.every((x) => typeof x === "boolean"));
   }
 
   /** A list the script has, as the array nothing writes that a program reads it through: once a list. */
@@ -3535,7 +3541,7 @@ export class Structured {
           if (n === null) return null;
           values.push(n);
         }
-        if (values.length < 1 || values.length > MAX_ARRAY) { this.c.error(e.expression, `A list a program looks a value up in has 1 to ${MAX_ARRAY} entries (got ${values.length}).`); return null; }
+        if (values.length < 1 || values.length > MAX_TABLE) { this.c.error(e.expression, `A list a program looks a value up in has 1 to ${MAX_TABLE.toLocaleString("en-US")} entries (got ${values.length.toLocaleString("en-US")}).`); return null; }
         const name = e.expression.getText(this.body.sf).replace(/\s+/g, " ");
         a = this.newArray(name, booleans ? "boolean" : "number", values.length, this.at(e.expression), { shared: true, values, ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
         this.tables.set(list, a);
@@ -4903,7 +4909,7 @@ export class Structured {
 
   /** A condition known when the script is built (a hoisted boolean, number or text): true, false, or undefined when it must be tested in the game. */
   private knownCondition(expr: TS.Expression): boolean | undefined {
-    const narrowed = this.knownTypeof(expr);
+    const narrowed = this.knownTypeof(expr) ?? this.knownIn(expr);
     if (narrowed !== undefined) return narrowed;
     const h = this.evaluate(expr);
     if (!h) return undefined;
@@ -4932,6 +4938,21 @@ export class Structured {
     if (!of) return undefined;
     const kind = this.typeofOf(of.expression);
     return kind === undefined ? undefined : (kind === word) === equal;
+  }
+
+  /**
+   * `"brushes" in shape`: known when the script is built when `shape` is a value known then — the other way TypeScript
+   * narrows a union of objects (a picture or a video). A variable of the program has no fields to ask about.
+   */
+  private knownIn(expr: TS.Expression): boolean | undefined {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.InKeyword) return undefined;
+    const key = this.unwrap(e.left);
+    if (!ts.isStringLiteralLike(key)) return undefined;
+    const b = this.bindingOf(e.right);
+    const v = b?.kind === "value" ? b.value : b ? undefined : this.evaluate(e.right)?.value;
+    return typeof v === "object" && v !== null && !isGameValue(v) ? key.text in v : undefined;
   }
 
   /** What `typeof` would say of an expression, when the compiler knows: a value known when the script is built, or a binding of the program. */

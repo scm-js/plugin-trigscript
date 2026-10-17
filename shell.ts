@@ -27,6 +27,8 @@ const ICONS = {
   ellipsis: "ea7c",
   "new-file": "ea7f",
   "new-folder": "ea80",
+  "device-camera-video": "ead9",
+  "debug-pause": "ead1",
   folder: "ea83",
   "folder-opened": "eaf7",
   edit: "ea73",

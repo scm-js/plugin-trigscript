@@ -29,7 +29,7 @@
  * Coordinates are tiles, (0, 0) the map's top left. About 800 brushes a frame is the most the game makes: it keeps a
  * removed unit's place until the next frame.
  */
-import { game, program, sleep, frames, stats, units, createUnit, removeUnit, centerLocation, reserveLocation, memory, type Player, type UnitType } from "trigscript";
+import { game, program, sleep, frames, stats, units, createUnit, removeUnit, centerLocation, reserveLocation, memory, cover, nextFrame, type Player, type UnitType, type Video } from "trigscript";
 
 /**
  * Each brush's shape, sizes 1 to 11: the tiles a flying unit of that sight range reveals, read out of the game.
@@ -127,61 +127,79 @@ export interface Picture {
 export function picture(rows: readonly string[], options: { readonly ink?: "light" | "dark" } = {}): Picture {
   const height = rows.length;
   const width = Math.max(0, ...rows.map((r) => r.length));
-  const dark = options.ink === "dark";
-  const on = (x: number, y: number) => y >= 0 && y < height && x >= 0 && x < width && ((rows[y][x] ?? ".") === "#") !== dark;
-  const offsets = SHAPES.map((shape) => {
-    const cy = shape.findIndex((r) => r.includes("@")), cx = shape[cy].indexOf("@");
-    const out: [number, number][] = [];
-    shape.forEach((r, y) => { for (let x = 0; x < r.length; x++) if (r[x] !== ".") out.push([x - cx, y - cy]); });
-    return out;
-  });
-  const covered = new Set<number>();
-  const key = (x: number, y: number) => y * 4096 + x;
-  let left = 0;
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (on(x, y)) left++;
-  // Every brush that lights only lit tiles, largest first; then the one that lights the most not yet lit, again and again.
-  const fits: { x: number; y: number; size: number; tiles: number[] }[] = [];
-  offsets.forEach((shape, i) => {
-    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-      if (shape.every(([dx, dy]) => on(x + dx, y + dy))) fits.push({ x, y, size: i + 1, tiles: shape.map(([dx, dy]) => key(x + dx, y + dy)) });
-    }
-  });
-  const brushes: { x: number; y: number; size: number }[] = [];
-  while (left > 0 && fits.length) {
-    let best = -1, gain = 0;
-    fits.forEach((f, i) => { const g = f.tiles.filter((t) => !covered.has(t)).length; if (g > gain) { gain = g; best = i; } });
-    if (best < 0) break;
-    const f = fits[best];
-    brushes.push({ x: f.x, y: f.y, size: f.size });
-    for (const t of f.tiles) if (!covered.has(t)) { covered.add(t); left--; }
-  }
-  // A lit line thinner than three tiles: a size-1 brush on each tile still dark, lighting a dark tile or two beside it.
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    if (!on(x, y) || covered.has(key(x, y))) continue;
-    brushes.push({ x, y, size: 1 });
-    for (const [dx, dy] of offsets[0]) covered.add(key(x + dx, y + dy));
-  }
-  return Object.freeze({ width, height, brushes: Object.freeze(brushes.sort((a, b) => a.size - b.size)) });
+  // Dark ink: the picture's rectangle lit but for the # tiles, so what is covered is the rest.
+  const ink = options.ink === "dark" ? Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => (rows[y][x] === "#" ? "." : "#")).join("")) : rows;
+  const brushes = cover(ink, SHAPES).map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }));
+  return Object.freeze({ width, height, brushes: Object.freeze(brushes) });
 }
 
 /**
- * Light the fog for this frame: a disc or a picture. Tiles count from the map's top left, (0, 0).
+ * A video's frames as brushes, worked out when the script is built: a word a brush (x | y << 8 | size << 16), the
+ * frames one after another, and where each one starts — the tables the game reads a frame from. Once a build.
+ */
+interface Film { readonly words: readonly number[]; readonly starts: readonly number[] }
+const films = new Map<Video, Film>();
+function film(video: Video): Film {
+  const had = films.get(video);
+  if (had) return had;
+  const words: number[] = [], starts: number[] = [0];
+  for (const brushes of cover(video, SHAPES)) {
+    for (const b of brushes) words.push(b.x | (b.y << 8) | ((b.shape + 1) << 16));
+    starts.push(words.length);
+  }
+  const made = { words, starts };
+  films.set(video, made);
+  return made;
+}
+
+/**
+ * Light the fog for this frame: a disc, a picture or a frame of a video. Tiles count from the map's top left, (0, 0).
  *
- *   fog.light(P1, 30, 20, 5);        // a disc of size 5 centred on tile (30, 20)
- *   fog.light(P1, 60, 40, heart);    // a picture (fog.picture), its top left on tile (60, 40)
+ *   fog.light(P1, 30, 20, 5);              // a disc of size 5 centred on tile (30, 20)
+ *   fog.light(P1, 60, 40, heart);          // a picture (fog.picture), its top left on tile (60, 40)
+ *   fog.light(P1, 0, 0, badApple, f);      // frame f of a video the script imports, its top left on tile (0, 0)
  *
  * @param player Whose fog: P1 … P8, known when the script is built.
  * @param x The tile's column: a disc's centre, a picture's left edge.
  * @param y The tile's row: a disc's centre, a picture's top edge.
- * @param shape A size, 1 (3 tiles wide) to 11 (23 wide) — it may change while the game runs — or a picture.
+ * @param shape A size, 1 (3 tiles wide) to 11 (23 wide) — it may change while the game runs — a picture, or a video.
+ * @param frame Of a video, which frame, from 0: it may change while the game runs. Past the end, nothing is lit.
  */
-export const light = game((player: Player, x: number, y: number, shape: number | Picture) => {
+export const light = game((player: Player, x: number, y: number, shape: number | Picture | Video, frame: number = 0) => {
   if (typeof shape === "number") disc(player, x, y, shape);
-  else for (const b of shape.brushes) disc(player, x + b.x, y + b.y, b.size);
+  else if ("brushes" in shape) for (const b of shape.brushes) disc(player, x + b.x, y + b.y, b.size);
+  else {
+    const { words, starts } = film(shape);
+    const end = starts[frame + 1];
+    for (let i = starts[frame]; i < end; i++) {
+      const w = words[i];
+      disc(player, x + (w & 255), y + ((w >> 8) & 255), w >> 16);
+    }
+  }
+});
+
+/**
+ * Play a video in the fog, a frame of it every frame of the game, from its first to its last; resolves when it ends.
+ * Inside an async program: `await fog.play(P1, badApple)`. On Fastest a game frame is 42 ms, which is what Import
+ * Video makes a video's frames by default; the game runs a little slower when a frame is heavy, and so does the video.
+ *
+ * @param player Whose fog: P1 … P8, known when the script is built.
+ * @param video A video the script imports.
+ * @param x The column of its left edge, 0 by default.
+ * @param y The row of its top edge, 0 by default.
+ */
+export const play = game(async (player: Player, video: Video, x: number = 0, y: number = 0) => {
+  // (A while: a for over a length known when the script is built would be unrolled, a copy of the body a frame.)
+  let f = 0;
+  while (f < video.length) {
+    light(player, x, y, video, f);
+    await nextFrame();
+    f++;
+  }
 });
 
 /** Everything above as one name: import { fog } from "trigscript/fog"; fog.light(P1, x, y, 3). */
-export const fog = { light, reveal, picture, SHAPES };
+export const fog = { light, play, reveal, picture, SHAPES };
 
 // The canvas: every brush's sight set, every frame, and the board wiped on the next — for as long as the game runs.
 program(() => {

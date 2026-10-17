@@ -21,6 +21,7 @@ import { MODULE_NAME } from "./compiler/api";
 import { STDLIB } from "./compiler/stdlib";
 import type { LineHint, ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
 import { describeVariable, normalizePath } from "./compiler/compiler";
+import { isMediaFile } from "./compiler/media";
 import { findReferences } from "./refs";
 import { english, type Translate } from "./i18n";
 
@@ -445,7 +446,13 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     subs.set(path, model.onDidChangeContent(() => onChange(path, model.getValue())));
     return model;
   };
-  for (const [path, text] of Object.entries(files)) make(normalizePath(path), text);
+  // A video (`compiler/media.ts`) is a file of the script but no text to edit: kept beside the models, never one —
+  // Monaco's TypeScript would read every model as TypeScript.
+  const media = new Map<string, string>();
+  for (const [path, text] of Object.entries(files)) {
+    if (isMediaFile(path)) media.set(normalizePath(path), text);
+    else make(normalizePath(path), text);
+  }
   let current = normalizePath(active);
   if (!models.has(current)) current = [...models.keys()][0];
   const editor = monaco.editor.create(host, {
@@ -492,16 +499,18 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     editor,
     active: () => current,
     show,
-    files: () => Object.fromEntries([...models].map(([p, m]) => [p, m.getValue()])),
+    files: () => ({ ...Object.fromEntries(media), ...Object.fromEntries([...models].map(([p, m]) => [p, m.getValue()])) }),
     add(path, text) {
       const p = normalizePath(path);
-      if (models.has(p)) return;
+      if (models.has(p) || media.has(p)) return;
+      if (isMediaFile(p)) { media.set(p, text); onChange(p, text); return; }
       make(p, text);
       onChange(p, text);
       show(p);
     },
     remove(path) {
       const p = normalizePath(path);
+      if (media.delete(p)) return;
       const model = models.get(p);
       if (!model) return;
       if (p === current) { const other = [...models.keys()].find((k) => k !== p); if (other) show(other); }
@@ -517,6 +526,8 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
     rename(from, to) {
       const a = normalizePath(from);
       const b = normalizePath(to);
+      const moving = media.get(a);
+      if (moving !== undefined) { if (!media.has(b) && !models.has(b)) { media.delete(a); media.set(b, moving); } return; }
       const model = models.get(a);
       if (!model || models.has(b)) return;
       const text = model.getValue();
@@ -536,6 +547,7 @@ export function createScriptEditor(monaco: MonacoApi, host: HTMLElement, files: 
       if (wasCurrent) { current = b; editor.setModel(next); if (view) editor.restoreViewState(view); }
     },
     set(path, text) {
+      if (media.has(normalizePath(path))) { media.set(normalizePath(path), text); return; }
       const model = models.get(normalizePath(path));
       if (model && model.getValue() !== text) model.setValue(text);
     },

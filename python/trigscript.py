@@ -62,6 +62,7 @@ its new value is worked out. compiler/simulateIr.ts takes and gives blocks in th
 the same text. A made text in an action's field goes over a string the build keeps for that kind of field, on the
 computer of the player the action is for and nowhere else: the game reads such a string again whenever it draws.
 """
+import base64
 import json
 
 from eudplib import *
@@ -195,6 +196,19 @@ class Storage:
             self.store << value
 
 
+def unpack_table(table, length):
+    """A table the IR carries packed (`compiler/eud.ts#packTable`): `bytes` a value, little-endian, in base64 - as a
+    dword a value, the cells of the map."""
+    width = int(table["bytes"])
+    raw = base64.b64decode(table["data"])
+    if len(raw) != width * length:
+        raise RuntimeError("a packed table is %d bytes, not %d values of %d" % (len(raw), length, width))
+    out = bytearray(4 * length)
+    for b in range(width):
+        out[b::4] = raw[b::width]
+    return bytes(out)
+
+
 class ArrayStorage:
     """An array's cells: `length` of them, twelve rows of that in a per-player program, or - `values` - a list
     the script computed when it was built, which is in the map as it loads and which nothing writes. An index
@@ -205,12 +219,18 @@ class ArrayStorage:
         self.length = int(decl["length"])
         self.bits = decl.get("bits")
         values = decl.get("values")
-        self.rowed = rows is not None and values is None
+        table = decl.get("packed")
+        self.rowed = rows is not None and values is None and table is None
         self.player_of = rows
         if decl.get("texts") is not None:
             # A list of texts the script has: a cell is the text's id in the built map's table.
             values = [text_id(t) for t in decl["texts"]]
-        self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (rows.count if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
+        if table is not None:
+            # A long table (a video's brushes): its bytes straight into the map, no list of a value at a time.
+            # (An EUDArray is its cells' EPD, so that is what it is made from.)
+            self.store = EUDArray(_from=EPD(Db(unpack_table(table, self.length))))
+        else:
+            self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (rows.count if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
 
     def at(self, index):
         """The cell's place among the store's: the row first (the player's, the task's)."""
