@@ -1152,6 +1152,22 @@ from text → B8's imports (an image, then a video, decoded in the editor where 
 built; the plugin's 4 MB limit on data files is planned for) → Bad Apple written as above,
 then its lyrics with S2's JSX and the never-seen opening.
 
+**As built, first part (2026-10-17).** `memory` (`compiler/memory.ts`: vision.countdown,
+game.frame, map.width/height, each with Remastered's verdict in its hover; a namespace merged
+with the trigger level's `memory()` condition) and **the standard library**: modules of
+TrigScript shipped with the compiler, `stdlib/<name>.ts`, embedded by `npm run embed`, joining
+a script's files only when imported as `"trigscript/<name>"` (the compiler maps the path, the
+linker runs it, Monaco reads it). `trigscript/fog` is the first: `light`, `draw`, `picture`,
+`reveal` and a canvas program of its own. What it needed of the language, each general:
+`reserveLocation(why)`, `nextFrame()`, `centerLocation(…, width, height)`, a `const` of a game
+cell kept in the program, an `if` on two constants compiled to its live side. In the lifted
+game every size lights its mask exactly, a picture and a disc draw where asked, `reveal`
+explores every tile, ~280 conditions and actions a frame for the probe (`probes/fog-lib.ts`).
+Found: Arcturus Mengsk's and Gerard DuGalle's Battlecruisers and Raszagal cannot be made by
+a trigger; the brushes are Kukulza ×2, Yggdrasill, Magellan, Gantrithor, Hyperion, Norad II,
+Tom Kazansky, Danimoth, Mojo and Artanis. Not yet: played in Remastered with the heroes; an
+error when a map places one of them; `import` of a video (B8).
+
 ### B8. Built from the game (4.9.0)
 
 Tables a map could not afford to compute while it runs, computed by running the lifted
