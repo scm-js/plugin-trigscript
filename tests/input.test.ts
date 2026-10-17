@@ -107,6 +107,12 @@ describe("input: the front end", () => {
     expect(action).toContain(`"field":"modifier","bits":8`);
   });
 
+  it("centerLocation with every argument known when the script is built is still the program's, in a function too", () => {
+    const r = compileFile(`program(() => { function at(x: number, y: number) { centerLocation(3 as Location, x * 64, y * 64); } centerLocation(3 as Location, 4, 5); at(1, 2); });`);
+    expect(r.diagnostics).toEqual([]);
+    expect(serializeIr(r.ir, r.strings, r.input).match(/"kind":"centerLocation"/g)).toHaveLength(2);
+  });
+
   it("says what is wrong", () => {
     expect(errors(`keyPressed(P1, "F2");`)[0]).toMatch(/does nothing on its own/);
     expect(errors(`if (keyPressed(players.Force1, "F2")) displayText("x");`)[0]).toMatch(/expected one player/);

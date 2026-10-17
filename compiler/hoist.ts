@@ -108,7 +108,7 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared", "lines"]);
+const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared", "lines", "centerLocation"]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a

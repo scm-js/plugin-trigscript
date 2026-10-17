@@ -1,10 +1,11 @@
 // Tetris in StarCraft's text lines (TrigScript 4, S2's showpiece). The screen is JSX: ui.lines() shows it to Player 1
-// every frame, redrawn from the program's variables. A D move, W turns, S drops a row, Space drops all the way.
+// every frame, redrawn from the program's variables. A D move (hold to slide), W turns, S drops (hold to keep
+// dropping), Space drops all the way.
 // The pieces and their four turns are worked out when the script is built, in ordinary JavaScript.
 // Host it as a multiplayer game, alone: the keys reach the game the way typed lines do.
 // Built with
 //   npx tsx scripts/build-fixture.mts probes/tetris.tsx fixtures/eud/tetris.scx
-import { program, P1, keyPressed, random, sleep, frames, ui, textColors } from "trigscript";
+import { program, P1, keyPressed, keyHeld, random, sleep, frames, ui, textColors } from "trigscript";
 
 const W = 10;
 const H = 10;
@@ -34,6 +35,10 @@ const SHAPES: number[] = PIECES.flatMap((cells, p) =>
 /** Each piece as it first appears, two rows of four: 1 where it has a cell. For the "next" box. */
 const PREVIEW: number[] = PIECES.flatMap((cells) => [0, 1].flatMap((y) => [0, 1, 2, 3].map((x) => (cells.some(([cx, cy]) => cx === x && cy === y) ? 1 : 0))));
 const POINTS = [0, 40, 100, 300, 1200];
+/** Held, A or D slides after this many frames, then a column every SLIDE frames; S held drops a row every DROP frames. */
+const DELAY = 8;
+const SLIDE = 2;
+const DROP = 2;
 const ROWS = [...Array(H).keys()];
 const COLS = [...Array(W).keys()];
 
@@ -54,8 +59,8 @@ program(async () => {
           {y === 1 && <span color="white"> next</span>}
           {(y === 2 || y === 3) && [0, 1, 2, 3].map((x) => <cell color={PREVIEW[(next * 2 + y - 2) * 4 + x] ? COLORS[next] : 0} />)}
           {y === 5 && <span color="white"> best {best}</span>}
-          {y === 7 && <span color="sage"> A D move, W turn</span>}
-          {y === 8 && <span color="sage"> S down, Space drop</span>}
+          {y === 7 && <span color="sage"> A D move (hold), W turn</span>}
+          {y === 8 && <span color="sage"> S down (hold), Space drop</span>}
         </line>
       ))}
     </>
@@ -130,6 +135,8 @@ program(async () => {
 
   spawn();
   let wait = 0;
+  // How long A, D and S have been held, in frames.
+  let left = 0, right = 0, down = 0;
   while (true) {
     if (over) {
       if (keyPressed(P1, "Space")) {
@@ -138,13 +145,17 @@ program(async () => {
         spawn();
       }
     } else {
-      if (keyPressed(P1, "A")) move(-1, 0, 0);
-      if (keyPressed(P1, "D")) move(1, 0, 0);
+      // A press moves at once; held, the piece slides after a moment, as Tetris does.
+      left = keyHeld(P1, "A") ? left + 1 : 0;
+      right = keyHeld(P1, "D") ? right + 1 : 0;
+      down = keyHeld(P1, "S") ? down + 1 : 0;
+      if (keyPressed(P1, "A") || (left > DELAY && left % SLIDE === 0)) move(-1, 0, 0);
+      if (keyPressed(P1, "D") || (right > DELAY && right % SLIDE === 0)) move(1, 0, 0);
       // A turn against a wall tries one step in, each way.
       if (keyPressed(P1, "W") && !move(0, 0, 1) && !move(-1, 0, 1)) move(1, 0, 1);
       if (keyPressed(P1, "Space")) { while (move(0, 1, 0)) { /* down to the floor */ } land(); wait = 0; }
       wait++;
-      if (keyPressed(P1, "S") || wait >= 24 - level * 2) {
+      if (keyPressed(P1, "S") || (down > 0 && down % DROP === 0) || wait >= 24 - level * 2) {
         wait = 0;
         if (!move(0, 1, 0)) land();
       }

@@ -80,6 +80,11 @@ if (home && scn.locations?.[0] && !scn.locations[0].nameIndex && scn.locations[0
     const awayLeft = left + 384 + 256 + 128 <= w ? left + 384 + 256 : Math.max(0, left - 256 - 128);
     scn.locations[1] = { ...scn.locations[1], left: awayLeft, top, right: awayLeft + 128, bottom: top + 192, nameIndex: internString(scn, "Away") };
   }
+  // Location 3, "Pixel": 64 × 64 — one cell of a board drawn with units, room for a 2 × 2 building, which Create Unit puts
+  // inside the location or not at all — for a probe to centre on a point and make or take away a unit there.
+  if (scn.locations[2] && !scn.locations[2].nameIndex && scn.locations[2].right === 0) {
+    scn.locations[2] = { ...scn.locations[2], left: 0, top: 0, right: 64, bottom: 64, nameIndex: internString(scn, "Pixel") };
+  }
   markDirty(scn, "MRGN");
 }
 markDirty(scn, "TRIG", "UNIT");
