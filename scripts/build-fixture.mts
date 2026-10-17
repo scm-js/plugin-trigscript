@@ -119,6 +119,10 @@ if (process.env.VARIABLE_MAP) (sections.trigscript as Record<string, string>).va
 const { eudTurbo, ...before } = sections;
 writeFileSync(pluginsPath, JSON.stringify(extraName ? { ...before, [extraName]: {}, eudTurbo } : sections));
 const extraArgs = extra && extraName ? [`${extraName}=${resolve(extra.slice(extraName.length + 1))}`] : [];
+// EXTRA_FILE=name=path: a text file the spike reads as /work/files/<name> — data too big for a plugin's source (512 KB
+// at most; files may hold 4 MB in all), such as probes/bad-apple's table of brushes.
+const extraFile = process.env.EXTRA_FILE;
+if (extraFile) { const at = extraFile.indexOf("="); extraArgs.push(`file=${extraFile.slice(0, at)}=${resolve(extraFile.slice(at + 1))}`); }
 const logPath = join(dir, "eudplib.log");
 const res = spawnSync("npx", ["tsx", join(eudplib, "scripts", "build-map.mts"), mapPath, resolve(outPath), pluginsPath, `trigscript=${join(root, "python", "trigscript.py")}`, `file=trigscript.json=${irPath}`, ...extraArgs], { cwd: eudplib, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, EUDPLIB_LOG: "1", EUDPLIB_LOG_FILE: logPath } });
 // (The log whole, from the file: the copy on stdout can be cut short when it runs to megabytes.)

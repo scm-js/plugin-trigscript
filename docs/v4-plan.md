@@ -3,7 +3,8 @@
 Written 2026-10-15. Status: Part A built (A0–A5, each with its *As built*), and Remastered's
 emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece maps
 (*Showpieces*, 2026-10-16), B1 and B2 built (2026-10-16/17), and an EUD error code taken back to its line
-(*EUD error code to line*, 2026-10-17). The question it answers: now that there is a
+(*EUD error code to line*, 2026-10-17); a fourth showpiece, Bad Apple, with fog of war found to work as a
+framebuffer in the lifted game (*S4*, 2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1115,6 +1116,7 @@ already says so.
 | Idea | What it needs | Known |
 | --- | --- | --- |
 | Terrain as a framebuffer | tile buffer writes | **No.** Magenta 10: Remastered does not draw them. Dropped. (My first answer on 2026-10-15 proposed it; that was wrong.) |
+| Fog of war as a framebuffer | the vision countdown `0x51CE98`, sight writes, Map Revealers made and removed in one pass | **Yes in the lifted game** (S4, 2026-10-17); Remastered's drawing of it is the probe |
 | Units moved freely every frame (bullet hell, orbits) | location + Move Unit, B6 for the paths | position writes end the game (Magenta 6); moving by action is ordinary, so the probe is how many a frame before it lags (A4's dial) |
 | Panels of text: objectives, leaderboard label, unit names as live UI | made texts in those fields | **Yes**, the strings spike (2026-09-19): re-read every draw, written only on the target's machine |
 | Custom command buttons | button set data in memory | unknown: probe |
@@ -1331,6 +1333,283 @@ const aim = await sync(localMouse());          // Local<Point> → Point, the sa
 - **Probe:** the first, before B5 is built: hold a key and read the keyboard region every
   frame in Remastered; then the same in a two-person game, to see each machine reads only
   its own.
+
+### S4. Bad Apple
+
+Added 2026-10-17. The shadow-play music video drawn by the game while the song plays, as the
+renderer showpiece before a raycaster. It asks the questions a renderer has to answer —
+where the game can draw, how fine, how much a frame costs — on a video that is mostly the
+same from one frame to the next. A raycaster is the opposite (every column changes when the
+player turns), so whatever S4 builds has to be cheap for a whole new frame too, and S4's
+scene cuts are where that is measured.
+
+**Where it draws.** Three surfaces, best first:
+
+| Surface | Resolution | Known |
+| --- | --- | --- |
+| Fog of war, on the minimap | 128 × 96 on a 128 × 96 map, one tile a minimap pixel | works in the lifted game (below); Remastered's drawing of it is the probe |
+| Units as pixels, on the minimap | ~40 × 30 filled (the 1,700-unit limit) | S2's unit-pixel probe; grey levels if Remastered's minimap takes custom colours (unknown) |
+| Glyphs in the text lines | 11 rows × ~60 cells | S2, played; which glyphs exist is read from Remastered's font (below) |
+
+#### Fog of war as a framebuffer
+
+Found 2026-10-17 in the 1.16.1 decompile, OpenBW and the lifted game:
+
+- **How the game keeps fog.** Each tile has a byte of "visible" bits and a byte of
+  "explored" bits, a bit a player. A unit reveals at once when it is made or moves
+  (`refresh_unit_vision`), and revealing only ever adds: nothing turns a tile dark again
+  except a wipe. The wipe is in the frame step (`0x4D94B0`): a countdown at **`0x51CE98`**
+  goes 100 → 0, and at 0 every tile's visible bits are cleared (`0x480880`) and every unit
+  reveals again. Optical Flare sets the countdown to 1, so the game itself already
+  asks for a wipe on the next frame.
+- **Remastered's emulator allows `0x51CE98` both ways** (`data/remastered.json`, from R0),
+  and units.dat's sight range (`0x663238`) both ways too; `stats(t).sight` is already in
+  the language, played by Magenta.
+- **The order of a frame** (`0x4D9670`): the frame step (countdown, wipe, units reveal)
+  runs before the triggers, and the screen is drawn after both.
+
+So a frame of video is painted like this, in one trigger pass:
+
+1. for each brush: set the revealer's sight, centre a location on the brush, Create Unit a
+   Map Revealer there (it reveals at once), Remove Unit it;
+2. write 1 to the countdown.
+
+The revealed tiles stay visible through the draw with no unit left on the map. The next
+frame's step wipes them before the triggers paint the next picture, so nothing ghosts.
+Tiles revealed once stay *explored*, so the picture is three-toned: never seen (black),
+fog (dark) and visible (bright). The video opens on black, which is the never-seen board.
+
+**Run in the lifted game** (`fog-spike`, scratch harness, 2026-10-17): the countdown is
+seen at 99 … 0 every 100 frames untouched; written to 1, the next frame wipes. With two
+brushes a frame (sight 2 and 4, the sight byte changed between the two Create Units) and
+the positions alternating, every frame shows exactly that frame's two brushes visible and
+the last frame's as fog. No ghost, no unit left alive.
+
+**The brushes are the game's sight masks.** A Map Revealer is a flyer (units.dat flag
+`0x4`), and air sight takes a path of its own (`reveal_sight_at`, in the air branch): it
+leaves out the 3 × 3 core, so **sight 0 reveals nothing**, and every mask is a little
+lopsided (one row more above the centre than below). Measured, in tiles: sight 1 = 3 × 4
+(12), 2 = 28, 3 = 52, … 11 = 480. A ground unit's sight 0 is a plain 3 × 3, but ground
+sight is cut by higher ground, and a revealer made ground (its flyer flag cleared before it
+is made; `0x664080` is allowed) is untried.
+
+**What a frame costs, worked out on test pictures** (128 × 96, greedy cover of the visible
+pixels with masks that never touch a dark one):
+
+| Picture | Brushes | Missed |
+| --- | --- | --- |
+| A dancer, black on white | 140 | 0.3% |
+| An apple, black on white | 83 | 0.5% |
+| "Bad Apple" in type | 143 | 0.5% |
+| The dancer, white on black | 88 | 10% |
+
+With five sight values (1, 2, 4, 8, 11) instead of all eleven it takes about 5% more
+brushes. Thin *dark* detail is kept (fog fills the gaps between brushes: fingers 3 pixels
+wide came out), thin *bright* detail under three tiles is lost. Bad Apple is mostly dark
+figures on white, the case this surface draws best. For the white-on-dark scenes the
+encoder may cover a few dark pixels next to a thin bright line, so it is drawn a pixel
+too thick rather than not at all.
+
+Every frame is drawn whole, so there is no diff to keep and a scene cut costs what any
+frame costs. At ~150 brushes and some ten actions each (location, create, remove, a sight
+write when the size changes), a frame is a few thousand actions against A4's budget of
+500k. The data is ~3 bytes a brush (x, y, size): at most ~2.4 MB for 3:39 at 23.8 frames
+a second before using what frames share. How big a map Remastered loads is not known.
+
+**Read in Remastered's own code** (the Ghidra project `scr12310-full` and the R0 emulator,
+2026-10-17; offsets from the image base):
+- **The countdown write reaches the game.** The emulator's region for `0x51CE98` is backed
+  by a real variable at `+0x1067C0C` (it held 20 in the dump), and Remastered's frame step
+  (`+0x31C610`) is 1.16.1's line for line: 100 → 0, the flag, the wipe (`+0x3606C0`, the
+  same OR of 0xFF into every tile). Optical Flare's routine still sets it to 1. The sight
+  table is backed at `+0xE5A860` (Marine 7, Ghost 9, Vulture 8, Goliath 8).
+- **The minimap draws fog a tile at a time, at once** (`+0x361980`): each tile's visible
+  and explored bits against the local player's masks pick one of the remap tables at
+  `+0xAD0200` (never seen, fog, visible), and the terrain's minimap colours go through it
+  into the picture. No blur, no fading: the minimap shows the bits as they are when it is
+  drawn.
+- **Fog is in the multiplayer checksum** (`+0x3A0FF0` hashes one row of the tile array a
+  frame). Painting is the same on every machine, so this is safe; a fog write made on one
+  machine only would desync.
+- Not found: the code that builds the main view's fog. The shaders have no fog shader;
+  `mask.glsl` (black, alpha from a texture's red) and `blur.glsl` (a five-tap Gaussian) are
+  the likely pair, which would give the soft edges, but whether it fades over time is the
+  probe's to see.
+
+**Open, for a probe in Remastered:**
+- how the main view draws fog that changes every frame: at once or faded (fading would blur
+  motion), and how soft the edges are;
+- how often the minimap is redrawn, and how the three tones look on snow (Ice) against dark
+  ground;
+- whether a created Map Revealer lands on the location's centre (Remastered makes them;
+  1.16.1 refuses: `lifted-create-unit-findings`), and whether a sight write between two
+  Create Units in one pass holds as in the lifted game;
+- how many brushes a frame before the game stutters (the unit-pixel probe made 80 a frame
+  with no slowdown);
+- a revealer made as a ground unit, for the 3 × 3 brush.
+
+**The probe, built 2026-10-17** (`probes/fog-probe.ts` + `probes/fog-probe.py`, made by
+`probes/lib/fog-gen.mts` on a 128 × 96 snow map from `probes/lib/fog-base-map.mts`; copied
+to `Maps/TrigScript/trigscript-s4-fog-probe.scx` with an answers sheet). Steps A–H: a brush
+jumping with the countdown written (A) and not (B), the eleven sizes (C), a brush sliding a
+tile a frame (D), four pictures (E), a 72-frame animation (F), the dancer painted 1, 2, 4
+and 8 times a frame (G), ground revealers beside air ones (H).
+
+Run first in the lifted game with Overlords for the revealers (1.16.1 keeps no Map Revealer
+a trigger makes), the tile array read every frame against the encoder's own picture:
+**0 tiles differ** in every picture, every animation frame and at 8 paints a frame. A brush
+centred on the last two rows or columns is moved inward to fit the map, so the encoder keeps
+centres two tiles from the edge (the dancer then misses 58 tiles instead of 27). Ground at
+sight 0 is a 3 × 3 (9 tiles), at sight 1 21 tiles.
+
+Cost (A4's tap, conditions + actions a frame): a picture of 84–143 brushes 25k–42k; the
+animation 41k on average, 48k at most; 8 paints a frame (~1,100 brushes) 322k, still under
+the 500k budget. About 300 a brush read from the table, most of it `f_dwbreak` unpacking
+x, y and size from one dword: a table of pixel positions laid out ready to copy is the first
+thing to make cheaper. `game-check`: 0 accesses Remastered ends the game on, 0 ignored, 0
+never seen.
+
+**Played 2026-10-17** (Remastered, hosted as multiplayer alone, recorded at 2560 × 1440;
+frames taken out of the recording and set beside the encoder's pictures):
+- **The countdown write works.** A: the brush's old place drops to fog the frame it jumps;
+  B, with the write left out, both places stay lit until the game's own wipe.
+- **A sight write reaches the game a frame late.** Every brush of a pass came out at the
+  size written last in the pass before: the sizes row (C) was eleven blobs of sight 11, and
+  the dancer (E) lost her arms and legs to brushes of the largest size. A and D, one size a
+  frame, were right. So the size can't change within a pass: round 2 gives each size a unit
+  type of its own (eleven flyers, none with a sight upgrade), each type's sight written to
+  the same value every frame.
+- **The minimap is blurred** in Remastered graphics: soft round blobs, not tiles. The
+  routine read in the code (`+0x361980`, 2 × 2 pixels a tile) is likely the Classic path;
+  round 2 is played in both.
+- **On the screen** fog over snow is a soft, only slightly darker grey; the strong contrast
+  is never-seen black against lit snow, which can be had only once per tile.
+- **"Cannot create more units."** at 8 paints a frame (~1,100 made and removed): a removed
+  unit keeps its slot until the next frame. The lifted game agrees (round 2: from 959 a
+  frame, not at 822). A picture needs 84–160.
+- **No slowdown** at any step: the step texts stay on the same offset from game time.
+
+**Round 2** (`probes/fog-probe-2.*`, `probes/lib/fog-gen-2.mts`, copied to
+`Maps/TrigScript/trigscript-s4-fog-probe-2.scx` with an answers sheet): A again, the sizes
+as eleven types (C), the pictures (E), the animation (F), ground Map Revealers at sight 0
+in steps of their own (H), and 3 to 10 paints a frame for the unit cap (I). In the lifted
+game: 0 tiles differ in C, E and F; the dancer costs 32k a frame (41k with the sight byte
+written per brush); `game-check` clean.
+
+**Round 2 played 2026-10-17**, once in each graphics mode (both recorded, minimaps set side
+by side frame for frame):
+- **One unit type per size works.** The sizes row grows left to right in both modes, and the
+  pictures keep their thin parts: the dancer has her hair, both arms, the fingers and both
+  legs; "Bad Apple" reads as type.
+- **Classic graphics draws the minimap a tile a pixel, sharp** (the `+0x361980` routine);
+  Remastered graphics blurs the same picture by a few tiles. Classic is the one that makes
+  the video. A map cannot choose the mode, so the map says so when it starts.
+- **Ground revealers work in Remastered:** the Map Revealer with its flyer flag cleared, at
+  sight 0, drew 3 × 3 squares beside the air brushes' 3 × 4. (The flag write took effect
+  within the pass, unlike the sight write.) A twelfth, finer brush.
+- **"Cannot create more units."** from 7 paints a frame (959 made and removed), not at 6
+  (822) — Remastered and the lifted game agree to the step. A picture needs 84–160.
+- **Never-seen black is a third tone that runs out.** The first picture over a board that
+  earlier steps had partly lit came out a patchwork: black where nothing had been lit yet,
+  fog grey where something had. A video has to light the whole board once first (or use
+  the black on purpose, once), so every figure is the same fog grey.
+- **The camera's box is drawn on the minimap**, over the picture. The video's map needs room
+  off the board to park the camera: a 128 × 128 map with the board in the top 96 rows keeps
+  the minimap at a tile a pixel and puts the box below the picture.
+- On the main view, fog over snow is a slightly darker grey in both modes, soft-edged in
+  Remastered. The main view is not where the picture is.
+
+So the renderer is settled: twelve brushes (a ground 3 × 3 and eleven flyer sizes, each its
+own unit type, sights set every frame), made and removed in one pass, the countdown written
+after it, the board lit once before the first picture, watched in Classic graphics.
+
+**The video, built 2026-10-17** (the user: fetch one, put the song in the map). The PV
+(YouTube FtutLA63Cp8, 480 × 360, 219.1 s) taken to 5,216 frames at the game's own rate
+(`fps=1000/42`, area-averaged to 128 × 96, threshold at half); `probes/lib/bad-apple-encode.mts`
+(a binary heap over every placement of twelve brushes — the ground 3 × 3 and the eleven air
+shapes — then a 3 × 3 on every light tile still dark, so a thin light line is drawn a tile
+thick rather than lost): 166 s on 20 processes, **117 brushes a frame on average, 386 at
+most**, 0.74% of tiles off from the threshold picture, a table of 2.45 MB (1.34 MB gzipped;
+only 19% of brushes carry over from the frame before as they are). `bad-apple-map.mts`
+(128 × 128 snow, the song in the archive), `bad-apple-gen.mts` (the eudplib: the board lit once
+at frame 2, ten seconds to switch to Classic, the song and the video from frame 240). The
+table goes in as a data file (`EXTRA_FILE` in `build-fixture.mts`): a plugin's source may hold
+512 KB, data files 4 MB in all — a limit a built-in video import has to plan around.
+
+In the lifted game: **all 5,216 frames on the board exactly as encoded**, nothing lit below
+it; 27.7k actions a frame on average, 90k at most; `game-check` clean (618,861 accesses, none
+Remastered refuses). Maps: OGG song 4.4 MB, an 8-bit WAV fallback 6.3 MB. Not known until
+played: whether Remastered loads a map this size, plays OGG from a map, and keeps the song in
+time with the frames.
+
+**Played 2026-10-17: it works.** The OGG map loads, the song plays, and the video runs on
+the Classic minimap from start to end (the user's recording, 2560 × 1440). Measured by
+correlating the board's brightness in the recording with the source frames, and the
+recording's sound with the source song, over the whole run and in 25-second windows:
+the picture follows the source with a correlation of 0.998; **the picture leads the sound
+by 23 ms**, the same in every window to within one recorded frame — no drift over 3½
+minutes, no stutter. Left as it is (half a game frame, below notice).
+
+The weak point is contrast: fog over snow against lit snow is about 100 against 140 on the
+minimap. The minimap's fog colours come from a remap table (1.16.1 `0x59C2C0`, four 256-byte
+tables by visible / explored state, read by `0x4A3A40`; Remastered `+0xAD0200`), but the table
+lies outside every region Remastered's emulator maps (a read ends the game). So contrast comes
+from the terrain: the tile whose lit and fogged minimap colours lie furthest apart.
+
+#### Glyphs in the text lines
+
+Read from the install through kascade (2026-10-17). The text lines' shapes come from
+`font/bl.ttf` ("BlizzardGlobal", TrueType, 512 units an em), the only font in the install
+that fits every played fact (■ □ ● one width, ㅁ U+3000 Ｏ ▒ another, █ ▀ ▄ ░ ▓ ▌ ▐ Ⅰ
+missing). The game's font sets (`+0x3484A0`, `+0x3466E0`) chain a Latin font first, then
+bl.ttf; a Korean, Japanese or Chinese client puts Kostar, UDTypos or arud first instead.
+
+| Advance | Glyphs |
+| --- | --- |
+| 427 | ■ □ ▣ ▤ ▥ ▦ ▧ ▨ ▩ ▼ ○ ● ◐ ◑ |
+| 358 | ▲ △ ◆ ◈ |
+| 393 | ▶ ▷ ◀ ◁ |
+| 512 | ▽ ◇ ◎ ▒, box drawing U+2500–254B, arrows, U+3000, full-width forms, kana, CJK, Hangul jamo, 〓 ☆ |
+| 461 | Hangul syllables |
+
+- **No Braille** and no half or quarter blocks: ▒ is the only one of U+2580–259F.
+- **A grey ramp at one width** (427, ink measured in the outlines): ○ 11%, □ 13%, ◐/◑ 18%,
+  ▤ 19.5%, ▣ 20.5%, ▧ 22%, ▦ 24%, ● 25%, ▩ 27%, ■ 33%. Four levels: □ ▤ ▩ ■. ◐ ◑ split a cell
+  left and right; nothing splits it top and bottom.
+- The 427 shapes are small squares with a gap between them; ▒ and the box-drawing glyphs
+  fill their whole 512 cell and join edge to edge.
+- Six 427 cells (2,562) line up with five 512 cells (2,560).
+- **A Korean client breaks the board:** Kostar draws the shapes and Hangul all at one width
+  (900 of 1,000), so ■ and ㅁ come out the same width there.
+- Not checked: which size the text lines use (font10 is the likely one), and how the
+  widths round to pixels in the game. A probe line of ■▣■▣ over □□□□ answers both.
+
+So the text lines can carry a four-level picture, but only 11 rows of it: the fog is the
+picture, and the text lines are for lyrics and a small second copy.
+
+
+#### Everything else that makes it look good
+
+- **The sound.** 23.8 frames a second on Fastest against the video's 30: frames are chosen
+  by time. Open: whether Remastered plays a 3:39 sound from a map (OGG or WAV) and how
+  large; whether the frames keep time against it (under 500k actions they should); chunks
+  restarted every few seconds as the fallback.
+- **Every surface at once:** the video in fog on the minimap; the main view centred on the
+  board, where the same fog is drawn with Remastered's soft edges; the lyrics in the
+  transmission line, coloured word by word with S2's JSX; the time in the leaderboard
+  label.
+- **The encoding is most of the look:** frames blended before thresholding at 23.8 fps,
+  the error spent on outlines (the silhouette's edge is what people recognise), brushes
+  kept from one frame to the next where they still fit.
+- **The music and the video are not ours.** The song is Alstroemeria Records', the video
+  is Anira's. Fan remakes are a long tradition, but whether a map with the song in it goes
+  on scmjs.dev or the registry is the user's decision; the video alone with the song
+  played beside it is the safe form.
+
+**Needs from the language:** a video imported at build time (`import video from
+"./bad-apple.webm"` → a table of brushes, B8's machinery), typed memory for the countdown
+(B7: `memory.vision.countdown`, allowed both ways by R0), and the lifted game's test of the
+whole video read back from the tile array and held against the source frames (A2).
 
 ### Smaller things that show well
 
