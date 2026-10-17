@@ -204,19 +204,22 @@ nothing it listens for happened (`listen.source`: the pass found none of those; 
 arrived), since such a turn does nothing; the simulator gives it every turn.
 
 The **events pass** runs once a frame before the programs, when the IR has a `unitLoop` with a `source`. It
-walks two of the game's lists from their heads along "next" (1.16.1's addresses: the visible units at
-0x628430 and the dying ones at 0x62842C; each links a record in just behind its head, so the records linked
-in since the pass before lie between the head and the record that was behind it then). A cell for each unit
+walks two of the game's lists (1.16.1's addresses: the visible units at 0x628430 and the dying ones at
+0x62842C). The visible list is walked from its head along "next": it links a record in just behind its head,
+so the records linked in since the pass before lie between the head and the record that was behind it then.
+The dying list is walked whole, along "next" and then "previous" from the record its address gives, since
+Remastered's EUD layer gives the list's other end there. A cell for each unit
 slot holds the uniqueness byte of the unit last seen in it, and once that unit's death has been handed on,
 one more: a unit on the visible list whose cell is not its byte came on (`created`); a unit on the dying
 list whose cell is its byte has died or been removed (`died`), and is handed on once. A unit made and gone
 between two passes, a turret, a scanner sweep and a unit that never left its transport are neither. When the
-head and the record behind it are both as the pass before left them, a walk is passed by; when that record
-has left the list, the walk goes to the end. At most 512 of each a frame; the rest come in the next.
+head and the record behind it are both as the pass before left them, the visible walk is passed by; when that
+record has left the list, the walk goes to the end. At most 512 of each a frame; the rest come in the next.
 
 A `created` turn is a unit still on the map (one gone since the pass is passed over); a `died` turn is the
 dying record, whose fields read as the unit was when it died — its slot is not given to another unit before
-the next frame's dying pass — and the front end only reads its fields. Each list is the latest first.
+the next frame's dying pass — and the front end only reads its fields. The visible list is the latest first;
+the order of a frame's deaths is the dying list's, which is not the same in the two games.
 
 ### Tasks
 

@@ -1,7 +1,8 @@
 // The events probe (TrigScript 4, B2): does Remastered hand on what on.created / on.died / on.chat / on.key listen for?
-// The events pass walks two of the game's lists of units from their heads — the visible units (0x628430) and the dying
-// ones (0x62842C) — and reads each record's links and uniqueness byte; R0's dump says all of it reads, and eudplib's own
-// EUDLoopNewUnit walks the first, but nobody has walked the dying list in Remastered. The lifted game passes every step.
+// The events pass walks two of the game's lists of units — the visible units (0x628430) from their head, and the dying
+// ones (0x62842C) whole, both ways — and reads each record's links and uniqueness byte. Ghidra (2026-10-17): Remastered
+// links its dying list the other way round and hands a map that list's far end at 0x62842C, so a walk along "next" alone
+// would see one death a frame there. This checks every death arrives. The lifted game passes every step.
 //
 // What to look for, by the second (each step says so in the middle of the screen too):
 //   A   3  three Marines made by the program beside your base: "made 0" three times (0 is the Marine's number).

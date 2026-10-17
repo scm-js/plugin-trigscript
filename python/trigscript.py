@@ -1196,9 +1196,12 @@ class Events:
     the pass before, and the ones that died. A slot's cell of `seen` holds the uniqueness byte of the unit seen in it (as
     it sits in its dword, masked 0xFF00) and, once that unit's death has been handed on, one more: so a unit is new when
     its slot's cell is not its byte, and a death is handed on once, and only for a unit that was seen on the map. Each
-    list is walked from its head to the record that was behind the head at the pass before, the units linked in since
-    lying in between; when that record has left the list the walk goes to the end, which costs more and misses nothing.
-    Nothing of the game is written."""
+    list on the map is walked from its head to the record that was behind the head at the pass before, the units linked
+    in since lying in between; when that record has left the list the walk goes to the end, which costs more and misses
+    nothing. The dying list is walked whole, both ways from the record its address gives: in 1.16.1 that is the list's
+    head, but Remastered links its dying list the other way round and hands an EUD map its tail there (its own code
+    links a dying unit in behind the other end, which no map can read), so only a walk both ways sees every record in
+    both. A record stays on it only until its sprite is gone. Nothing of the game is written."""
 
     def __init__(self, created, died):
         self.created, self.died = created, died
@@ -1211,7 +1214,7 @@ class Events:
         self.gone_n = EUDVariable(0)  # initial: the pass's own state, set at its start
         # For each list, as the pass before left it: the record behind the head (pointer, EPD, uniqueness byte) and the
         # head (pointer, EPD). Nothing is linked in but behind the head, so with both the same nothing came in since.
-        self.bounds = {h: [EUDVariable(0) for _ in range(5)] for h in (VISIBLE_HEAD, DYING_HEAD)}  # initial: no pass before
+        self.bounds = {VISIBLE_HEAD: [EUDVariable(0) for _ in range(5)]}  # initial: no pass before
 
     def cell(self, epd):
         return epd + (EPD(self.seen) - EPD(UNIT_TABLE))
@@ -1252,6 +1255,33 @@ class Events:
         EUDEndIf()
         stop << NextTrigger()
 
+    def walk_all(self, head, step):
+        """`step(ptr, epd, uid, cell, stop)` for every record of a list: the one at its address, those after it (+4), then
+        those before it (+0)."""
+        top, done, stop = Forward(), Forward(), Forward()
+        EUDJumpIf(Memory(head, Exactly, 0), stop)
+        ptr, epd = f_cunitepdread_epd(EPD(head))
+        sepd = EUDVariable()
+        sepd << epd
+        link = fresh(1)
+        top << NextTrigger()
+        EUDJumpIf(ptr == 0, done)
+        uid = f_maskread_epd(epd + OFF_UID, 0xFF00)
+        step(ptr, epd, uid, self.cell(epd), stop)
+        if EUDIf()(link == 1):
+            f_cunitepdread_epd(epd + 1, ret=[ptr, epd])
+        if EUDElse()():
+            f_cunitepdread_epd(epd, ret=[ptr, epd])
+        EUDEndIf()
+        EUDJump(top)
+        done << NextTrigger()
+        # The way after it is done: now the way before it, from the record before the first.
+        EUDJumpIf(link == 0, stop)
+        link << 0
+        f_cunitepdread_epd(sepd, ret=[ptr, epd])
+        EUDJump(top)
+        stop << NextTrigger()
+
     def run(self):
         self.made_n << 0
         self.gone_n << 0
@@ -1273,7 +1303,7 @@ class Events:
                     self.gone[self.gone_n] = ptr
                     self.gone_n += 1
                 EUDEndIf()
-            self.walk(DYING_HEAD, went)
+            self.walk_all(DYING_HEAD, went)
 
 
 def uses_source(node, which):

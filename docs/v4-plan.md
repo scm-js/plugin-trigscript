@@ -907,6 +907,19 @@ on.key("F2", (p) => print("Help", { to: p }), { from: P1 });
   what happened, and a frame where nothing did costs three conditions a list. A table of a cell for each unit slot,
   336 bytes apart as the slots are (eudplib's EUDLoopNewUnit keeps its marks that way), holds the uniqueness byte of
   the unit seen in the slot, and one more once its death has been handed on. Nothing of the game is written.
+- **Remastered's dying list runs the other way (Ghidra, 2026-10-17).** Its kill routine unlinks the unit from the
+  visible list (img+0xe77fc8 head, +0xe78078 tail) and links it into the dying list with the same link-in routine
+  (img+0x1956a0: the record goes behind the first pointer it is given), passing img+0xe78080 as the end it links
+  behind and img+0xe77fd0 as the other; the free step unlinks it the same way round. The EUD emulator maps 1.16.1's
+  0x62842C to img+0xe77fd0 (traced under Unicorn: the region handler 0x2e1e50 reads that global), so a map reading
+  the dying list's "head" gets Remastered's far end, whose "next" is 0, and 1.16.1's 0x59CC98 (where Remastered's
+  linking end would be) is not readable. A walk along "next" from 0x62842C would see one death a frame. The visible
+  list maps the right way (0x628430 → img+0xe77fc8, linked behind it); unit +0x00 / +0x04 map to Remastered's
+  +0x00 / +0x08, previous and next, the same as 1.16.1. (The hidden and sweep lists are mapped the other way round
+  too: 0x628428 and 0x628434, tails in 1.16.1, give Remastered's linking ends.) So the dying list is walked whole,
+  both ways from the record at 0x62842C, every frame it is not empty; the cell says which records are new deaths.
+  A record stays on it until its sprite is gone: 14 frames for a Zergling, and 200 of them cost about 21k a frame
+  for those frames. The order a frame's deaths are handed on in is the list's, so it differs between the games.
 - **What counts.** A unit that comes onto the visible list for the first time is made: made by an action or a
   program, trained (when it comes out, not when it is queued), placed by a test; a unit in a transport is made when
   it first comes out, and unloading it again is nothing new. A unit on the dying list that was seen is dead,
@@ -924,7 +937,8 @@ on.key("F2", (p) => print("Help", { to: p }), { from: P1 });
   the pass and a listener, 2 more for each other listener; about 100 for each unit made and 80 for each death. Two
   things made it so: the task runner passes a listener's whole start by when it has nothing to hand on and no task
   that has not had its first turn (`start.listen` in IR 18; a skipped turn would have done nothing), and the pass
-  passes a walk by when the list's head and the record behind it are as it left them. Before either, two idle
+  passes the visible list's walk by when its head and the record behind it are as it left them (the dying list costs
+  three conditions when empty, about 100 a record otherwise). Before either, two idle
   listeners cost about 1,240 a frame. `on.chat` and `on.key` for all eight players idle at about 1,290, where the
   same polled with `chatted()` / `keyPressed()` in a loop costs about 1,730.
 - **Simulator.** The same pass over its world's units: a unit is seen at the first pass it is alive at, its death
@@ -935,8 +949,7 @@ on.key("F2", (p) => print("Help", { to: p }), { from: P1 });
 - **Checked.** `tests/events.test.ts` (7), eudplib fixtures `events` and `eventsPerPlayer`, `probes/game-events.ts`
   (4) and `probes/events.ts` (3) in the lifted game and the simulator, at the same frames; every older game probe
   still passes. **Probe for Remastered:** `Maps/TrigScript/trigscript-b2-events.scx` with its answer sheet: whether
-  Remastered's emulator gives the dying list as 1.16.1 has it (R0 says 0x62842C reads; nobody has walked it), a
-  trained SCV, unloading, 200 made and killed in a frame, and chat and a key in a multiplayer game. Not played yet.
+  every death reaches `on.died` in Remastered (rebuilt 2026-10-17 with the walk both ways), a trained SCV, unloading, 200 made and killed in a frame, and chat and a key in a multiplayer game. Not played yet.
 - **Not yet:** `on.order` (each unit's order against the last frame's: a scan, or a pass over the visible list),
   `u.killedBy` (the killer's kill count rises a frame before; or the unit's +0x90, last attacking player, from the
   dying record — both to check), a `removed` flag on a DeadUnit, a morph event, listeners at the top of a script
