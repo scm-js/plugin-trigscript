@@ -4,6 +4,12 @@
 //
 //   npx tsx probes/lib/bad-apple-map.mts <out.scx> <song file> <name in the archive, e.g. staredit\wav\badapple.ogg>
 //
+// BA_ERA=<0-7> BA_TILE=<tile id>: the board is that one tile repeated, laid as the game reads it (no ISOM; the
+// editor would see raw tiles). The contrast comes from the tile: the minimap's fog colours are the game's own tables
+// (1.16.1 0x59C2C0, out of Remastered's reach), so the board is the tile whose lit and fogged minimap colours lie
+// furthest apart. Measured 2026-10-17 over every megatile of every tileset in the lifted game: Badlands tile 23778
+// (group 1486) is white lit (255), grey in fog (104), black never seen (4) — against Ice snow's 156 / 96. It is not
+// ground a unit can stand on, so the video is encoded with the air brushes only (BA_AIR_ONLY=1).
 // Needs a scm-js checkout beside this one with its tileset data (npm run extract). The song is never committed: it
 // is not ours.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -19,12 +25,16 @@ const { baseTerrain, flatTerrain } = await import(join(E, "src/formats/tileset/t
 
 const [out, song, songName] = process.argv.slice(2);
 if (!out || !song || !songName) { console.error("usage: bad-apple-map.mts <out.scx> <song file> <name in the archive>"); process.exit(2); }
-const ERA = 6, W = 128, H = 128;
+const ERA = Number(process.env.BA_ERA ?? 6), TILE = process.env.BA_TILE ? Number(process.env.BA_TILE) : null, W = 128, H = 128;
 const part = (ext: string) => new Uint8Array(readFileSync(join(E, "public/tileset", `${TILESET_FILENAMES[ERA]}.${ext}`)));
 const ts = loadTileset({ cv5: part("cv5"), vf4: part("vf4"), vr4: part("vr4"), vx4: part("vx4"), wpe: part("wpe") });
 let seed = 1;
 const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x80000000);
-const { tiles, isom } = flatTerrain(W, H, baseTerrain(ts, 2), ts, rnd, ERA); // Snow
+const flat = flatTerrain(W, H, baseTerrain(ts, 2), ts, rnd, ERA); // Snow on Ice; the tileset's first flat ground elsewhere
+// A named tile covers the board only: the strip below keeps ground the start locations can stand on.
+const tiles = flat.tiles;
+if (TILE !== null) tiles.fill(TILE, 0, W * 96);
+const isom = flat.isom;
 const scn = createScenario({
   width: W, height: H, era: ERA, tiles, isom,
   name: "Bad Apple!! in the fog of war",

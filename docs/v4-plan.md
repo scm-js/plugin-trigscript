@@ -1556,6 +1556,19 @@ tables by visible / explored state, read by `0x4A3A40`; Remastered `+0xAD0200`),
 lies outside every region Remastered's emulator maps (a read ends the game). So contrast comes
 from the terrain: the tile whose lit and fogged minimap colours lie furthest apart.
 
+**The terrain survey (2026-10-17).** For each tileset a map whose tiles are every distinct
+megatile once (1,346–4,668 of them), loaded in the lifted game; each tile's minimap colour
+read from the buffer at `0x59C190`, its colour in each state through the tables at
+`0x59C2C0` (state = visible × 2 + explored), and the tileset's palette. Our snow: lit 156,
+fog 96 (the recording agreed). The best: **Badlands tile 23778** (and the same white in
+Jungle and Twilight) — **lit 255, fog 104, never seen 4**, 2.5 times the difference. A board
+can be one tile repeated: the game draws the tile ids the map holds. The whitest tiles are
+not ground a unit stands on, so that board is drawn with the air brushes only
+(`BA_AIR_ONLY=1`): 119 brushes a frame, 1.17% of tiles off instead of 0.74% (thin lines a
+little thicker). Fully walkable tiles top out at a difference of 95. Built as
+`trigscript-s4-bad-apple-white.scx`; in the lifted game all 5,216 frames exact, `game-check`
+clean. Not yet played.
+
 #### Glyphs in the text lines
 
 Read from the install through kascade (2026-10-17). The text lines' shapes come from

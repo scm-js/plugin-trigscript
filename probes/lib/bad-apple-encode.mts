@@ -15,6 +15,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 
 export const W = 128, H = 96, MARGIN = 2;
+/** BA_AIR_ONLY=1: no ground 3 × 3 — for a board on ground a unit cannot stand on (the whitest minimap tiles). */
+const AIR_ONLY = !!process.env.BA_AIR_ONLY;
 const air: Record<string, [number, number][]> = JSON.parse(readFileSync(new URL("./fog-masks.json", import.meta.url), "utf8"));
 const GROUND: [number, number][] = [];
 for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) GROUND.push([dx, dy]);
@@ -54,7 +56,7 @@ export function encodeFrame(white: Uint8Array): number[] {
     const down = (i: number) => { for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < n && gains[l] > gains[m]) m = l; if (r < n && gains[r] > gains[m]) m = r; if (m === i) break; swap(m, i); i = m; } };
     const push = (g: number, w: number) => { gains[n] = g; words[n] = w; up(n++); };
     const pop = () => { n--; swap(0, n); down(0); };
-    for (let size = 0; size < MASKS.length; size++) for (let y = MARGIN; y < H - MARGIN; y++) for (let x = MARGIN; x < W - MARGIN; x++)
+    for (let size = AIR_ONLY ? 1 : 0; size < MASKS.length; size++) for (let y = MARGIN; y < H - MARGIN; y++) for (let x = MARGIN; x < W - MARGIN; x++)
       if (fits(white, size, x, y)) { const g = gain(covered, size, x, y); if (g) push(g, x | (y << 8) | (size << 16)); }
     while (n && left) {
       const w = words[0], x = w & 0xff, y = (w >> 8) & 0xff, size = w >> 16;
@@ -70,9 +72,11 @@ export function encodeFrame(white: Uint8Array): number[] {
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const i = y * W + x;
     if (!white[i] || covered[i]) continue;
+    // (The air size 1 is 3 wide and reaches two rows up and one down, so its centre may sit on the tile itself.)
     const cx = Math.min(W - 1 - MARGIN, Math.max(MARGIN, x)), cy = Math.min(H - 2, Math.max(MARGIN, y));
-    chosen.push(cx | (cy << 8));
-    for (const [dx, dy] of GROUND) { const X = cx + dx, Y = cy + dy; if (X >= 0 && X < W && Y >= 0 && Y < H) covered[Y * W + X] = 1; }
+    const size = AIR_ONLY ? 1 : 0;
+    chosen.push(cx | (cy << 8) | (size << 16));
+    for (const [dx, dy] of MASKS[size]) { const X = cx + dx, Y = cy + dy; if (X >= 0 && X < W && Y >= 0 && Y < H) covered[Y * W + X] = 1; }
   }
   // Grouped by size: one EUDSwitch case after another in the game, and the table reads in order.
   return chosen.sort((a, b) => (a >> 16) - (b >> 16));
