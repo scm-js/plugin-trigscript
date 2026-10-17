@@ -1,16 +1,17 @@
 // Tetris in StarCraft's text lines and on its minimap (TrigScript 4, S2's showpiece). The game writes one board; two
 // screens show it. The text lines are JSX: ui.lines() shows them to Player 1, redrawn when the board changes. The other
 // is a board of Overlords in the top left corner of the map, one a cell in its piece's colour, which the minimap shows as
-// solid blocks: probes/lib/unit-screen.ts, a function that knows nothing of Tetris. Players 2 to 8 own the Overlords, a
-// player a piece, each given its piece's colour as the text lines draw it (measured from screenshots); Player 2 is no
-// computer here, so nothing moves them. A D move (hold to slide), W turns, S drops (hold to keep
+// solid blocks: probes/lib/unit-screen.ts, a function that knows nothing of Tetris. A player a piece owns the Overlords,
+// each given its piece's colour as the text lines draw it (measured from screenshots). Remastered will not start a game
+// without a computer, and a computer moves its own units and sends them to fight, so Player 2 stays a computer and owns
+// none: the S piece is yours — your units are green on the minimap anyway — and P3 … P8 have the other six. A D move (hold to slide), W turns, S drops (hold to keep
 // dropping), Space drops all the way.
 // The pieces and their four turns are worked out when the script is built, in ordinary JavaScript.
 // Host it as a multiplayer game, alone: the keys reach the game the way typed lines do.
-// probe-players: {"1":{"type":0,"rgb":[0,255,255]},"2":{"rgb":[255,255,73]},"3":{"rgb":[165,77,189]},"4":{"rgb":[19,255,29]},"5":{"rgb":[255,5,5]},"6":{"rgb":[15,87,247]},"7":{"rgb":[255,169,24]}}
+// probe-players: {"0":{"rgb":[19,255,29]},"2":{"rgb":[0,255,255]},"3":{"rgb":[255,255,73]},"4":{"rgb":[165,77,189]},"5":{"rgb":[255,5,5]},"6":{"rgb":[15,87,247]},"7":{"rgb":[255,169,24]}}
 // Built with
 //   npx tsx scripts/build-fixture.mts probes/tetris.tsx fixtures/eud/tetris.scx
-import { program, P1, P2, P3, P4, P5, P6, P7, P8, keyPressed, keyHeld, random, sleep, frames, ui, textColors, createUnit, centerLocation, units, type Location } from "trigscript";
+import { program, P1, P3, P4, P5, P6, P7, P8, keyPressed, keyHeld, random, sleep, frames, ui, textColors, createUnit, centerLocation, units, type Location } from "trigscript";
 import { drawUnits } from "./lib/unit-screen";
 
 const W = 10;
@@ -28,7 +29,7 @@ const PIECES: [number, number][][] = [
 ];
 const COLORS = [textColors.cyan, textColors.yellow, textColors.purple, textColors.green, textColors.red, textColors.blue, textColors.orange];
 /** Whose Overlords show each piece's colour: the player given that colour (probe-players above). */
-const OWNERS = [P2, P3, P4, P5, P6, P7, P8];
+const OWNERS = [P3, P4, P5, P1, P6, P7, P8];
 const BOX = [4, 4, 3, 3, 3, 3, 3];
 
 /** The cells of piece p turned r times, one after another as x, y: eight numbers a turn, thirty-two a piece. */
