@@ -1249,7 +1249,11 @@ S4's white board): all 5,176 frames from the first with ink equal their cover, n
 tiles off the video (S4's hand-written map: 1.17%); 54k conditions and actions a frame on average, 151k at most — about
 twice the hand-written eudplib, within the 500k budget. **In the editor** (headless Chromium, the local build):
 Import Video… on the real file, the script's "Cannot find ./bad-apple.video" gone after it, 0 problems, the viewer.
-**Not yet:** played in Remastered (`Maps/TrigScript/trigscript-b8-bad-apple.scx`); grey levels and colour (a
+**Played in Remastered (2026-10-17): it works**, and felt in time to the player. `trigscript-b8-bad-apple.scx`,
+Classic graphics: the countdown lines 24 frames (1.008 s) apart, the picture on time after it, matching the source at
+0.998 with no drift over 3:39. The recording put the song 0.7 s ahead of the picture throughout; the map plays both on
+frame 241 (the simulator and the lifted game agree), and that recording's audio track is 0.86 s shorter than its
+video, both said to start at 0 — the recorder's, not the map's. **Not yet:** grey levels and colour (a
 renderer that needs them — the raycaster's textures — will say which); the game's own tables (`ground.distance`,
 `atBuild`), the rest of B8.
 
