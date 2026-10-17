@@ -2,7 +2,8 @@
 
 Written 2026-10-15. Status: Part A built (A0–A5, each with its *As built*), and Remastered's
 emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece maps
-(*Showpieces*, 2026-10-16), B1 built (both parts, 2026-10-16). The question it answers: now that there is a
+(*Showpieces*, 2026-10-16), B1 and B2 built (2026-10-16/17), and an EUD error code taken back to its line
+(*EUD error code to line*, 2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1338,12 +1339,55 @@ passes near them.
 
 | Idea | Built from | Where |
 | --- | --- | --- |
-| EUD error code to line: Remastered's "EUD ERROR: 0x…" is the refused address inverted (R0); the editor reads the code and points at the line that touches that address | the trigger map and trace (A1), R0 | now: a day |
+| EUD error code to line: Remastered's "EUD ERROR: 0x…" is the refused address inverted (R0); the editor reads the code and points at the line that touches that address | the trigger map and trace (A1), R0 | built 2026-10-17, below |
 | Typed chat patterns: `on.chat("-give {n}", (p, { n }) => …)` with `n: number` worked out by template literal types | B2 | built: `chatted()`'s patterns, which `on.chat` took over in B2 |
 | A line's values over time beside it, as a small graph, from the debugger's recording | A5 | after A5's open items |
 | Changes kept while the game runs: edit the script, rebuild, carry the variables over by name into a snapshot and go on | A2's variable map, scm-sim snapshots | after B1 (a task's place has to carry over too) |
 | Fuzzing: random inputs on every seat at the lifted game's speed, looking for desyncs, games that end and failed expectations, then the smallest input that still fails | A2, A3 | after B5 |
 | A memory field's hover says what Remastered does with it ("read: fine, from the dump; write: ends the game, probe 6") | R0, Ghidra structs (the analysis has to be run again) | B7 |
+
+#### EUD error code to line (built 2026-10-17)
+
+**Find an EUD Error…** (the palette and the More menu) asks for the code Remastered showed and answers with the
+lines. In the editor it goes:
+
+1. **The code is read.** "EUD ERROR: 0xFFA632E3", "0xFFA632E3" or "FFA632E3"; the address is the code's bits inverted
+   (R0, the dump probe's step D: 0xFFA632E3 is 0x59CD1C).
+2. **The address is named.** `compiler/eudError.ts` knows 1.16.1's unit table field by field (CUnit, slot and offset:
+   "the unit table: slot 0 of 1,700, order queue head (+0x74)"), the deaths and kills tables by player and unit type,
+   resources, switches, locations, the text lines, the local machine's keys and mouse, the current player, every
+   `stats()` field, and else an allowlist entry's name. The allowlist's read and write verdicts and their evidence come
+   with it (`dist/allowlist.json`, a copy the build makes, fetched the first time a code is looked up).
+3. **The map is traced in the game.** Built as Save builds it, then `runGameTests` with two new payload fields:
+   `play` (3,000 frames with nobody at it, before the tests) and `trace`. `EudTracer` listens on the host's EUD tap
+   (scm-sim's `installEud`, which the page's test worker already gave the handle) and takes each access's line from
+   the cost tap's `trace`, which is told of each record before it runs, with eudplib's variables and functions under
+   the line that ran before them. So a unit field read inside `f_dwread_epd` is the line that called it. The rows come
+   back in the report (`trace`, or `traceError` saying why not). **No scm-sim change was needed.**
+4. **The lines are found.** Those that touched the very dword first. In the unit table, a unit sits in a different
+   slot from game to game, so lines that touched the same field of another unit are found too, marked so. Accesses
+   under no line (eudplib's start, its work at the top of a frame, the map's other triggers) are counted apart.
+5. **They are shown** as an inlay at the end of each line ("EUD ERROR 0xFFA632E3", with what the line did and what
+   Remastered does with it), in Problems (source "game"), in Output, and the cursor goes to the first. Like a line's
+   cost, they stay only while the file is the text that was traced.
+
+Under Node: `npx tsx scripts/test-game.mts <script.ts> --error=0x… [--frames=N]` runs the same path (the handle
+given the EUD tap, `runGameTests` with `trace` and `play`).
+
+**Checked:**
+- `tests/eud-error.test.ts` (11): the code both ways; the names; matching exact, by field, outside the unit table,
+  and a byte inside a dword; the allowlist's verdicts and `outside`; `EudTracer` over taps shaped like scm-sim's, with
+  CARRY; `runGameTests` playing frames for a script with no tests; `traceError` when the host or build cannot.
+- In the lifted game: `probes/units.ts --error=0xFFA62F5F` (slot 3's hit points) names lines 38 (`sum += u.hp`),
+  42 (`u.hp = …`), 105 (`u.hp < least`) and the other hit point lines, all as "the same field of another unit",
+  since no unit stood in slot 3. `probes/remastered-dump.ts --error=0xFFA632E3` names the place and the played
+  evidence and finds no line: step D's read is the probe's hand-written eudplib, not a line of the script.
+
+**Not checked:** the command in the editor itself, end to end (it needs the person's copy of the game on the
+engine's page). **Found on the way:** A1's Node trace (`exact-eud.ts --trace`) keys rows by the raw origin, so
+eudplib's functions are "fn:…", never a line; a unit field read through `f_dwread_epd` there looks like eudplib's
+own. The tap's CARRY is what puts it on its line, which is why `--error` lives in `test-game.mts` and not in
+`game-check.mts`. The same would sharpen A1's check (it currently reads those as eudplib's).
 
 ## Slices
 

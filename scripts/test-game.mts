@@ -4,7 +4,11 @@
  * and nothing drawn, and every `test()` handed a `GameSim` over it (compiler/gameSim.ts) — the game put back to
  * frame 0 before each. The same tests then run in the simulator over the map's own world, and each is said twice.
  *
- *   npx tsx scripts/test-game.mts <script.ts> [map.scx]
+ *   npx tsx scripts/test-game.mts <script.ts> [map.scx] [--error=CODE [--frames=N]]
+ *
+ * `--error=0xFFA632E3` (what Remastered said when it ended a game: "EUD ERROR: 0x…") runs the map as the editor's
+ * Find EUD Error does — N frames with nobody at it (3000), then the tests, every EUD access traced by line — and says
+ * which lines touched the address the code names, and what lies there.
  *
  * Needs a scm-sim checkout beside this repository (or SCM_SIM_DIR) with its lifted game generated.
  */
@@ -18,13 +22,20 @@ import { compileScript } from "../compiler/compiler";
 import { readLocations, readUnitStats, type GameHandle } from "../compiler/gameSim";
 import { mergeCopies } from "../compiler/gameCopies";
 import { defaultScriptNames } from "../compiler/names";
+import { addressOfEudError, findEudError } from "../compiler/eudError";
+import type { Allowlist } from "../compiler/allowlist";
+import type { GameTestReport } from "../compiler/gameTests";
 import type { TestReport, TestWorld } from "../compiler/testing";
 import { defaultLib } from "../bundle/lib.mjs";
 import { scriptFiles } from "./script-files.mts";
 
 const root = resolve(import.meta.dirname, "..");
-const [script, baseMap] = process.argv.slice(2);
-if (!script || !existsSync(script)) { console.error("usage: test-game.mts <script.ts> [map.scx]"); process.exit(2); }
+const args = process.argv.slice(2);
+const flag = (n: string) => args.find((a) => a.startsWith(`--${n}=`))?.slice(n.length + 3);
+const [script, baseMap] = args.filter((a) => !a.startsWith("--"));
+if (!script || !existsSync(script)) { console.error("usage: test-game.mts <script.ts> [map.scx] [--error=CODE [--frames=N]]"); process.exit(2); }
+const errorAddress = flag("error") === undefined ? null : addressOfEudError(flag("error")!);
+if (flag("error") !== undefined && errorAddress === null) { console.error(`--error=${flag("error")}: not a code (EUD ERROR: 0x… as Remastered shows it)`); process.exit(2); }
 const sim = resolve(process.env.SCM_SIM_DIR ?? join(root, "..", "scm-sim"));
 if (!existsSync(join(sim, "src", "exact", "testGame.ts"))) { console.error(`no scm-sim checkout with src/exact/testGame.ts at ${sim} (set SCM_SIM_DIR)`); process.exit(2); }
 const from = (p: string) => import(pathToFileURL(join(sim, p)).href);
@@ -32,7 +43,7 @@ const from = (p: string) => import(pathToFileURL(join(sim, p)).href);
 const dir = mkdtempSync(join(tmpdir(), "trigscript-tests-"));
 try {
   // The map, built as Save builds it.
-  const built = join(dir, basename(script, ".ts") + ".scx");
+  const built = join(dir, basename(script).replace(/\.tsx?$/, "") + ".scx");
   const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), resolve(script), built, ...(baseMap ? [resolve(baseMap)] : [])], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, VARIABLE_MAP: "1", TRIGGER_MAP: "1" } });
   if (b.status !== 0) { console.error(b.stdout.split("\n").slice(-20).join("\n"), b.stderr); process.exit(1); }
 
@@ -50,11 +61,11 @@ try {
   writeFileSync(chkPath, classic);
   const run = await startExactGame(chkPath, { game: "ums" });
   const strings = placeStrings(run.lifted, chk);
-  installEud(run.lifted, strings);
+  const eud = installEud(run.lifted, strings);
   // (eudplib's payload lies outside what the game's snapshot covers: the handle keeps it itself. What each frame of
   // the triggers ran is counted, A4.)
   const payloadEnd = 0x191943c8 + strings.bytes;
-  const handle = testGame(run.engine, run.lifted, [{ from: strings.gameTable, to: payloadEnd }], { cost: installCost(run.lifted), payloadEnd }) as GameHandle;
+  const handle = testGame(run.engine, run.lifted, [{ from: strings.gameTable, to: payloadEnd }], { cost: installCost(run.lifted), payloadEnd, ...(errorAddress !== null ? { eud } : {}) }) as GameHandle;
 
   // The tests in the simulator over the map's own world, as the editor runs them; then in the game, the way a host
   // of the game runs them: the compile's JavaScript handed to dist/gametest.js, loaded from its text.
@@ -65,13 +76,26 @@ try {
   const world = await mapWorld(classic, locations, readUnitStats(handle));
   const compiled = compileScript(ts, source, names, { lib: defaultLib(), tests: { world } });
   const simulated = compiled.tests;
-  if (!compiled.modules) { console.error(compiled.ok ? "the script has no tests" : compiled.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`).join("\n")); process.exit(1); }
+  if (!compiled.modules && !(errorAddress !== null && compiled.ok)) { console.error(compiled.ok ? "the script has no tests" : compiled.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`).join("\n")); process.exit(1); }
   const bundle = join(dir, "gametest.js");
   spawnSync("npx", ["esbuild", join(root, "compiler", "gameTestEntry.ts"), "--bundle", "--format=esm", "--target=es2022", "--platform=neutral", `--outfile=${bundle}`], { cwd: root });
   const host = await import(`data:text/javascript;base64,${Buffer.from(readFileSync(bundle)).toString("base64")}`) as typeof import("../compiler/gameTestEntry");
   // (Where the build put the programs' variables, for sim.program().)
   const variables = JSON.parse(readFileSync(built.replace(/\.scx$/, ".variables.json"), "utf8"));
   const triggerMap = JSON.parse(readFileSync(built.replace(/\.scx$/, ".triggers.json"), "utf8"));
+  if (errorAddress !== null) {
+    const frames = Number(flag("frames") ?? 3000);
+    const traced = host.runGameTests(handle, { modules: compiled.modules ?? [], names, locations, variables, triggers: triggerMap, trace: true, play: frames }) as GameTestReport;
+    if (traced.error || traced.traceError || !traced.trace) { console.error(`not traced: ${traced.error ?? traced.traceError ?? "no trace came back"}`); process.exit(1); }
+    const list = JSON.parse(readFileSync(join(root, "data", "allowlist.json"), "utf8")) as Allowlist;
+    const a = findEudError(errorAddress, traced.trace.rows, list);
+    console.log(`EUD ERROR ${a.code}: ${a.place}, at 0x${a.address.toString(16)}. Allowlist: read ${a.read}, write ${a.write}${a.evidence.length ? ` (${a.evidence.join("; ")})` : ""}`);
+    console.log(`traced: ${traced.trace.rows.length} distinct accesses over ${traced.trace.frames} frames (${frames} played, then ${traced.results.length} tests)`);
+    for (const l of a.lines) console.log(`  ${l.file}:${l.line}  ${l.read && l.write ? "reads and writes" : l.write ? "writes" : "reads"} ${l.match === "exact" ? "this address" : "the same field of another unit"}, ${l.times} times`);
+    if (a.unlined.exact + a.unlined.field) console.log(`  eudplib's own work, under no line: ${a.unlined.exact} times this address, ${a.unlined.field} the same field of another unit`);
+    if (!a.lines.length && !(a.unlined.exact + a.unlined.field)) console.log("  nothing in the run touched it");
+    process.exit(0);
+  }
   const inGame = host.runGameTests(handle, { modules: compiled.modules, names, locations, variables, triggers: triggerMap }) as TestReport & { error?: string };
   if (inGame.error) { console.error(`the script did not run beside the game: ${inGame.error}`); process.exit(1); }
   const bySim = new Map((simulated?.results ?? []).map((r) => [r.id, r]));
