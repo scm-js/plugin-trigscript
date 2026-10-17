@@ -1081,6 +1081,14 @@ ui.objectives(P1, () => (
     every later code on the line is ignored and the rest stays grey, so empty cells must not
     be grey. 06 was only seen after 05; a second round tests each code on a line of its own.
 
+  **Second round played 2026-10-16** (`probes/ui-spike-2.*`): **only 05 sticks**; every
+  other code lets later codes through, and 06 is red (as 08). A board made in the game and
+  shown by one Display Text a frame draws right: orange piece, coloured stack. Empty cells:
+  15 (brown) nearly vanishes over dirt, 18 (dark green) and 0E (blue) read on black, **1E
+  (lavender) reads on black and over terrain and is no piece's colour**, so it is the
+  default for an empty cell. How long a line lasts was not caught (under six seconds, from
+  G), so a view that has not changed is still shown again once a second.
+
   So S2's first surface is `ui.lines(player, () => <…/>)`: the text lines, one Display
   Text a frame when the view's inputs changed (and again before the lines fade), ten rows
   under a header. The objectives and the label stay as plain made texts.
