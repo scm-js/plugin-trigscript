@@ -3391,6 +3391,8 @@ class Input:
         # And a message can go missing for a frame (seen in the lifted game, the second frame of every hold): a key is
         # still held until HELD_GRACE frames have passed with no message, which delays a release by as much.
         self.held_quiet = [EUDArray(12) for _ in self.held]
+        # With held keys every key is sent as held (compiler/input.ts#inputPlan): a press is held now and not before.
+        self.held_pressed = [EUDArray(12) for _ in self.held]
         self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
         self.captures = max([len(c["captures"]) for c in self.chats] or [0])
         if self.chats:
@@ -3412,8 +3414,9 @@ class Input:
     def frame(self):
         """Once a frame, before the programs: this frame's held messages banked, one frame of each paid out, and a key
         with nothing left to pay still held for HELD_GRACE quiet frames."""
-        for cells, bank, now, quiet in zip(self.held_cells, self.held_bank, self.held_now, self.held_quiet):
+        for cells, bank, now, quiet, pressed in zip(self.held_cells, self.held_bank, self.held_now, self.held_quiet, self.held_pressed):
             for p in self.humans:
+                was = fresh(now[p])
                 b = fresh(bank[p] + cells[p])
                 if EUDIf()(b >= self.HELD_BANK_MOST + 1):
                     b << self.HELD_BANK_MOST
@@ -3432,6 +3435,11 @@ class Input:
                         now[p] = 0
                     EUDEndIf()
                 EUDEndIf()
+                if EUDIf()([now[p] >= 1, was == 0]):
+                    pressed[p] = 1
+                if EUDElse()():
+                    pressed[p] = 0
+                EUDEndIf()
 
     @staticmethod
     def register(name, cell):
@@ -3444,6 +3452,8 @@ class Input:
         p = low.one_player(i["player"], node)
         if source == "key" and i.get("held"):
             return self.cell(self.held_now, self.held, i["key"], node)[p]
+        if source == "key" and self.held:
+            return self.cell(self.held_pressed, self.held, i["key"], node)[p]
         if source == "key":
             return self.cell(self.key_cells, self.keys, i["key"], node)[p]
         if source == "click":

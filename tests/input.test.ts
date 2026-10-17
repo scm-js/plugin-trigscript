@@ -154,7 +154,12 @@ describe("input: the plan and the build's plugins", () => {
   it("keyHeld: MSQC's KeyPress, every frame the key is down, into cells of its own", () => {
     const r = compile(`while (true) { if (keyHeld(P1, "D") || keyPressed(P1, "D")) displayText("x"); sleep(frames(1)); }`);
     expect(r.input).toEqual({ keys: ["D"], held: ["D"], buttons: [], chats: [], qcLocation: 62, mouseBase: null });
-    expect(buildPlugins(r.input, "/ir.json").MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyDown(D); NotTyping": "tsin_key0, 1", "KeyPress(D); NotTyping": "tsin_held0, 1" });
+    // No KeyDown with a held key in the game: two frames' commands may arrive at once, the later replacing the earlier, and
+    // a press of its own would be lost; a press is worked out from the held key where it arrives.
+    expect(buildPlugins(r.input, "/ir.json").MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyPress(D); NotTyping": "tsin_held0, 1" });
+    const both = compile(`while (true) { if (keyHeld(P1, "D") || keyPressed(P1, "W")) displayText("x"); sleep(frames(1)); }`);
+    expect(both.input?.held).toEqual(["D", "W"]);
+    expect(Object.keys(buildPlugins(both.input, "/ir.json").MSQC)).toEqual(["QCUnit", "QCLoc", "QCPlayer", "QCDebug", "KeyPress(D); NotTyping", "KeyPress(W); NotTyping"]);
   });
 
   it("the mouse: eight locations in a row, clear of the map's own and of Anywhere", () => {
@@ -199,13 +204,13 @@ describe("input: the interpreter", () => {
     expect([sim.value("n"), sim.value("v")]).toEqual([2, 10]);
   });
 
-  it("a key down on frames in a row is one press, and held on each of them and two frames after", () => {
+  it("a key down on frames in a row is one press, and held on each of them and two frames after; a gap within those is no new press", () => {
     const sim = simulate(loop(`if (keyPressed(CurrentPlayer, "D")) n += 1; if (keyHeld(CurrentPlayer, "D")) v += 1;`));
     for (let i = 0; i < 4; i++) sim.press("D").step();
     sim.step();
     sim.press("D").step();
-    // Let go for one frame: still held (the grace covers a message lost on the way), and pressed again after it.
-    expect([sim.value("n"), sim.value("v")]).toEqual([2, 6]);
+    // Let go for one frame: still held (the grace covers a message lost on the way), so not pressed again either.
+    expect([sim.value("n"), sim.value("v")]).toEqual([1, 6]);
     for (let i = 0; i < 4; i++) sim.step();
     expect(sim.value("v")).toBe(8);
   });

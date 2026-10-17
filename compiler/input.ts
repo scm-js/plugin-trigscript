@@ -303,6 +303,10 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
     }
     if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
   }
+  // With a held key in the game, keys go every frame they are down, and a multiplayer game may bring two frames' commands
+  // at once — the later replaces the earlier, since MSQC's carrier has one order. A press of its own ("went down") would
+  // be lost that way, so every key is sent as held and a press is worked out where it arrives: held now, not before.
+  if (held.length) for (const k of keys) if (!held.includes(k)) held.push(k);
   const plan: InputPlan = { keys, ...(held.length ? { held } : {}), buttons, chats, qcLocation, mouseBase };
   if (chats.some((c) => c.captures.some((x) => x.kind === "unit"))) {
     const seen = new Set<string>();
@@ -338,8 +342,8 @@ export function inputPlugins(plan: InputPlan): { before: Record<string, Record<s
   const msqc: Record<string, string | number> = { QCUnit: QC_UNIT, QCLoc: plan.qcLocation, QCPlayer: QC_PLAYER, QCDebug: "false" };
   // KeyDown, not KeyPress: MSQC's KeyPress is true on every frame the key is down, and a tap is two or three frames —
   // one tap of W turned the Tetris piece two or three times (TrigScript 4, S2, played). KeyDown is the frame it goes down.
-  plan.keys.forEach((key, i) => { msqc[`KeyDown(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`; });
-  // keyHeld(): every frame the key is down on the player's computer, sent each such frame.
+  // Without a held key, a press is MSQC's KeyDown: one command a tap. With one, every key goes as held (see inputPlan).
+  if (!plan.held?.length) plan.keys.forEach((key, i) => { msqc[`KeyDown(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`; });
   plan.held?.forEach((key, i) => { msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.held(i)}, 1`; });
   plan.buttons.forEach((b, i) => { msqc[`MouseDown(${MSQC_BUTTON[b]})`] = `${INPUT_NAMES.button(i)}, 1`; });
   if (plan.mouseBase !== null) msqc.Mouse = plan.mouseBase;

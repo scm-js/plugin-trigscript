@@ -1294,6 +1294,8 @@ export class ProgramSimulation {
   private down = new Set<string>();
   private downNow = new Set<string>();
   private readonly lastDown = new Map<string, number>();
+  /** Whether a program reads a held key: then a press is worked out from the held keys, as the game does. */
+  private heldKeys = false;
   /** Where each player's mouse is, in map pixels. */
   readonly mice = new Map<number, { x: number; y: number }>();
   cycle = 0;
@@ -1334,6 +1336,7 @@ export class ProgramSimulation {
     };
     this.unitByName = options.unitByName ?? (() => undefined);
     for (const s of inputsOf(programs).sources) if (s.source === "chat" && !this.chats.some((c) => c.pattern === s.pattern)) this.chats.push(parseChatPattern(s.pattern));
+    this.heldKeys = inputsOf(programs).sources.some((s) => s.source === "key" && s.held);
     this.current = { events: new Set(), lines: new Map() };
     // A program runs once a frame for each of its owners who is in the game, each run with its own variables; one that
     // is not per player runs as the first of them. Without the map's player settings there is the one player and one run.
@@ -1563,7 +1566,10 @@ export class ProgramSimulation {
     // keyHeld(): down now, or let go no more than HELD_GRACE frames ago — as the game's lowering has it, which covers a
     // message that went missing on its way between the players' computers.
     for (const e of down) this.lastDown.set(e, this.frame);
+    const was = this.downNow;
     this.downNow = new Set([...this.lastDown].filter(([, f]) => this.frame - f <= HELD_GRACE).map(([e]) => e));
+    // With a held key in the game every key goes as held, and a press is held now and not before (compiler/input.ts).
+    if (this.heldKeys) for (const e of [...this.current.events]) if (e.startsWith("key:") && (!this.downNow.has(e) || was.has(e))) this.current.events.delete(e);
     for (const run of this.runs) {
       this.world.current = run.player;
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }
