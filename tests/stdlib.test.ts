@@ -217,6 +217,12 @@ describe("fog, as the simulator draws it", () => {
     expect(lit(fogAfter(once, 4))).toBe(0);
   });
 
+  it("fog.show(n) keeps a picture on the board n frames, then the board is wiped", () => {
+    const lit = (rows: string[]) => rows.join("").split("").filter((c) => c === "#").length;
+    const shown = `import { fog } from "trigscript/fog";\nprogram(async () => { await nextFrame(); fog.light(P1, 30, 20, 3); await fog.show(3); await nextFrame(); await nextFrame(); });`;
+    expect([2, 3, 4, 5].map((f) => lit(fogAfter(shown, f)))).toEqual([52, 52, 52, 0]);
+  });
+
   it("fog.rect is exact from 3 × 4 up", () => {
     const rows = fogAfter(`import { fog } from "trigscript/fog";\nprogram(async () => { let w = 7, h = 9; while (true) { fog.rect(P1, 10, 12, w, h); await nextFrame(); } });`, 3, 40, 40);
     for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) expect(rows[y][x] === "#", `${x},${y}`).toBe(x >= 10 && x < 17 && y >= 12 && y < 21);
@@ -247,11 +253,23 @@ program(async () => { const hs: number[] = new Array(24).fill(0); let i = 0; whi
 
   it("fog.columns with shading: a shaded column is hollow, lit a brush deep along its top and bottom edges", () => {
     const rows = fogAfter(`import { fog } from "trigscript/fog";
-const VIEW = { count: 2, height: 96, ink: "light" } as const;
+const VIEW = { count: 2, height: 96, ink: "light", shading: "hollow" } as const;
 program(async () => { const hs: number[] = [80, 80]; const sh: number[] = [0, 1]; while (true) { fog.columns(P1, 1, 0, VIEW, hs, sh); await nextFrame(); } });`, 3);
     const column = (x: number) => rows.map((r) => r[x]).join("");
     expect(column(2)).toBe(".".repeat(8) + "#".repeat(80) + ".".repeat(8));
     const want = ".".repeat(8) + "#".repeat(4) + ".".repeat(72) + "#".repeat(4) + ".".repeat(8);
     expect(column(5)).toBe(want);
+  });
+
+  it("fog.columns, panelled (the default): hollow, and lit a brush deep across each half's quarters", () => {
+    const rows = fogAfter(`import { fog } from "trigscript/fog";
+const VIEW = { count: 1, height: 96, ink: "light" } as const;
+program(async () => { const hs: number[] = [80]; const sh: number[] = [1]; while (true) { fog.columns(P1, 1, 0, VIEW, hs, sh); await nextFrame(); } });`, 3);
+    const column = rows.map((r) => r[2]).join("");
+    // Half its height is 40: the edges (rows 8–11, 84–87) and bands centred 10, 20 and 30 rows from the middle.
+    const lit = new Set<number>();
+    for (const r of [8, 9, 10, 11, 84, 85, 86, 87]) lit.add(r);
+    for (const at of [10, 20, 30]) for (let d = -2; d < 2; d++) { lit.add(48 - at + d); lit.add(48 + at + d); }
+    expect(column).toBe(Array.from({ length: 96 }, (_, y) => (lit.has(y) ? "#" : ".")).join(""));
   });
 });

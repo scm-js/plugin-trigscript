@@ -245,6 +245,15 @@ export interface ColumnLayout {
   readonly height: number;
   readonly width?: number;
   readonly ink?: "light" | "dark";
+  /**
+   * How a shaded column (fog.columns()'s `shaded`) is drawn: "lines" — dark lines a tile thick across it at its
+   * quarters, which run to the horizon as courses of bricks would (the finest, and two dozen brushes a column near the
+   * eye: for a view with room to spare); "line" — one across each half, at its middle; "hollow" — dark, lit only along
+   * its top and bottom edges, two brushes a column; "ribbed" — hollow, and lit across the middle of each half too, four;
+   * "panelled" — hollow and lit across its quarters, eight. The lit ones are a brush deep. "panelled" by default: of
+   * the ones a full view can afford every frame, it reads best (played, 2026-10-17).
+   */
+  readonly shading?: "lines" | "line" | "hollow" | "ribbed" | "panelled";
 }
 
 /**
@@ -315,15 +324,41 @@ const columnBar = game((player: Player, x: number, top: number, bottom: number, 
 });
 
 /**
- * A shaded column of fog.columns(), the other face of a raycaster's walls: hollow — lit along its top and bottom edges,
- * a brush deep, and dark between (light ink), or lit across its middle (dark ink). Two brushes a column, where lines at
- * its quarters took two dozen, and its edges still run to the horizon. `a` is half the column's height; one too short to
- * be hollow is lit whole.
+ * A shaded column of fog.columns() (ColumnLayout's `shading`): `a` is half its height, `lines` how many lines across
+ * each half — 0 hollow, 1 at its middle, 3 at its quarters. A line is a dark row through a lit column (light ink), or
+ * a lit band a brush deep through a dark one; a column too short for its lines is drawn plain.
  */
-const columnHollow = game((player: Player, cx: number, mid: number, a: number, dark: boolean) => {
-  if (dark) { if (a >= 6) columnBar(player, cx, mid - 4, mid, 4); return; }
-  if (a < 8) columnBar(player, cx, mid - a, mid, a);
-  else columnBar(player, cx, mid - a, mid + a - 4, 4);
+const columnShaded = game((player: Player, cx: number, mid: number, a: number, dark: boolean, lines: number) => {
+  if (lines <= 0) {
+    if (dark) { if (a >= 6) columnBar(player, cx, mid - 4, mid, 4); }
+    else if (a < 8) columnBar(player, cx, mid - a, mid, a);
+    else {
+      // Hollow: the edges. Ribbed (-1) and panelled (-3): bands across each half too, centred on its middle or
+      // quarters, where there is room for them between the edges.
+      columnBar(player, cx, mid - a, mid + a - 4, 4);
+      const ribs = -lines;
+      if (ribs > 0 && a >= 6 * (ribs + 1)) {
+        let k = 1;
+        while (k <= ribs) {
+          const at = (a * k) / (ribs + 1);
+          columnBar(player, cx, mid - at - 2, mid + at - 2, 4);
+          k++;
+        }
+      }
+    }
+  } else if (a < 5 * (lines + 1)) {
+    if (!dark) columnBar(player, cx, mid - a, mid, a);
+  } else {
+    // From the middle out: lit up to each line, the line's row dark (light ink); or a lit band on each line (dark ink).
+    let from = 0, k = 1;
+    while (k <= lines + 1) {
+      const to = k > lines ? a : (a * k) / (lines + 1);
+      if (dark) { if (k <= lines) columnBar(player, cx, mid - to - 2, mid + to - 2, 4); }
+      else columnBar(player, cx, mid - to, mid + from, to - from);
+      from = to + 1;
+      k++;
+    }
+  }
 });
 
 /**
@@ -347,6 +382,8 @@ const columnHollow = game((player: Player, cx: number, mid: number, a: number, d
 export const columns = game((player: Player, x: number, y: number, layout: ColumnLayout, heights: readonly number[], shaded?: readonly number[]) => {
   const { words, starts, half, group } = columnPlan(layout);
   const count = layout.count, width = layout.width ?? 3, dark = layout.ink === "dark";
+  // (Dark lines through a lit column count up; lit bands through a dark one, ribbed and panelled, down.)
+  const lines = layout.shading === "lines" ? 3 : layout.shading === "line" ? 1 : layout.shading === "ribbed" ? -1 : layout.shading === "hollow" ? 0 : -3;
   const span = half + 1;
   // Each column's depth from where its lit part starts: the middle row for light ink, the top and bottom for dark.
   // A shaded column of light ink is drawn on its own, after the rest: to the rest it is as if it were not there.
@@ -398,20 +435,38 @@ export const columns = game((player: Player, x: number, y: number, layout: Colum
   if (shaded !== undefined) {
     i = 0;
     while (i < count) {
-      if (shaded[i] != 0) columnHollow(player, x + i * width + 1, mid, Math.min(Math.max(heights[i] >> 1, 0), half), dark);
+      if (shaded[i] != 0) columnShaded(player, x + i * width + 1, mid, Math.min(Math.max(heights[i] >> 1, 0), half), dark, lines);
       i++;
     }
   }
 });
 
-/** Everything above as one name: import { fog } from "trigscript/fog"; fog.light(P1, x, y, 3). */
-export const fog = { light, rect, columns, play, reveal, picture, SHAPES };
+/**
+ * Keep what was lit this frame on the board for `n` frames, and wait them out: \`await fog.show(2)\` in place of
+ * \`await nextFrame()\` draws every other frame at half the cost. StarCraft: Remastered redraws the fog on the minimap
+ * every other frame (measured in two played recordings, 2026-10-17), so a picture drawn every other frame looks the
+ * same there as one drawn every frame. The board is wiped at the start of the frame after them, ready for the next.
+ *
+ * @param n How many frames, 1 to 24, known when the script is built.
+ */
+export const show = game(async (n: number) => {
+  memory.vision.countdown = n;
+  await sleep(frames(n));
+});
 
-// The canvas: every brush's sight set, every frame, and the board wiped on the next — for as long as the game runs.
+/** Everything above as one name: import { fog } from "trigscript/fog"; fog.light(P1, x, y, 3). */
+export const fog = { light, rect, columns, show, play, reveal, picture, SHAPES };
+
+/** The longest fog.show() keeps a picture: the countdown the game sets itself after a wipe is longer than this. */
+const SHOW_MOST = 24;
+
+// The canvas: every brush's sight set, every frame, and the board wiped on the next — for as long as the game runs —
+// unless a program asked for the picture to stay (fog.show), when the countdown is that program's to run down.
 program(() => {
   while (true) {
     for (let s = 1; s <= 11; s++) stats(BRUSHES[s - 1]).sight = s;
-    memory.vision.countdown = 1;
+    const left = memory.vision.countdown;
+    if (left == 0 || left > SHOW_MOST) memory.vision.countdown = 1;
     sleep(frames(1));
   }
 });

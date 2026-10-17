@@ -27,7 +27,11 @@ let seed = 1;
 const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x80000000);
 const flat = flatTerrain(W, H, baseTerrain(ts, 2), ts, rnd, ERA);
 const tiles = flat.tiles;
-tiles.fill(TILE, 0, W * 96);
+const ground = tiles.slice();
+// The board tile everywhere — the view, and the plan under it, need its contrast — but a corner at the bottom right,
+// ground the start locations stand on.
+tiles.fill(TILE);
+for (let y = 112; y < H; y++) for (let x = 104; x < W; x++) tiles[y * W + x] = ground[y * W + x];
 const scn = createScenario({
   width: W, height: H, era: ERA, tiles, isom: flat.isom,
   name: "TrigScript raycaster",
@@ -37,6 +41,6 @@ scn.playerTypes = scn.playerTypes.map((t: number, i: number) => (i === 0 ? 6 : i
 scn.editorPlayerTypes = [...scn.playerTypes];
 scn.playerRaces = scn.playerRaces.map((r: number, i: number) => (i === 0 ? 1 : i === 1 ? 0 : i < 8 ? 7 : r));
 const start = (owner: number, tx: number, ty: number, serial: number) => ({ classInstance: serial, x: tx * 32 + 16, y: ty * 32 + 16, unitId: 214, relationFlags: 0, validStates: 0, validProperties: 0, owner, hitPointsPercent: 100, shieldPercent: 100, energyPercent: 100, resourceAmount: 0, hangarUnits: 0, stateFlags: 0, unused: 0, relatedSerial: 0 });
-scn.units.push(start(0, 10, 118, 1), start(1, 116, 118, 2));
+scn.units.push(start(0, 110, 120, 1), start(1, 120, 120, 2));
 markDirty(scn, "OWNR", "IOWN", "SIDE", "UNIT", "MTXM", "TILE", "ISOM");
 writeFileSync(out, await saveMap(serializeScenario(scn), { extras: new Map(), compress: "pkware", listfile: true }));

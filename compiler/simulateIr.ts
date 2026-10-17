@@ -1514,6 +1514,8 @@ export class ProgramSimulation {
   tableRead(c: TableCell): number {
     // The game's own count of frames, which a program can read and never write (memory.ts).
     if (c.name === "memory.game.frame") return this.frame;
+    // The vision countdown, run down by the frames (visionStep) as much as written by the programs.
+    if (c.name === "memory.vision.countdown") return this.countdown;
     const stored = this.tables.get(this.cellKey(c));
     if (typeof stored === "number") return Math.floor(stored / (c.scale ?? 1));
     const given = this.tableOf?.(c);

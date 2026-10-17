@@ -1,7 +1,8 @@
 // TrigScript 4, S5: a raycaster in the fog of war. A maze seen in 3D on the minimap and walked with W A S D: the
 // textbook DDA raycaster (a ray a column, stepped from grid line to grid line until it meets a wall), written as it
 // would be in any TypeScript, with fixed numbers (B6) for the fractions and the fog library for the picture. Under the
-// view, the maze from above with you on it. Find the way out: the wall that flickers.
+// view, the maze from above with you on it. Walls facing one way are solid, the other way panelled, so corners show.
+// Find the way out: the wall that flickers.
 // Host it as a multiplayer game, alone, with Classic graphics (Options > Graphics) for a sharp minimap.
 //
 //   npx tsx probes/lib/raycaster-map.mts fixtures/eud/raycaster-base.scx
@@ -33,9 +34,11 @@ const CELLS = MAZE.join("").split("").map((c) => (c === "#" ? 1 : c === "E" ? 2 
 
 /** The view: 42 columns 3 tiles wide across the top 78 rows of the map. */
 const COLUMNS = 42, WIDTH = 3, HEIGHT = 78;
-const TURN = 0.08, STEP = 0.1, FOV = 0.66;
-const LIGHT = { count: COLUMNS, height: HEIGHT, width: WIDTH, ink: "light" } as const;
-const DARK = { count: COLUMNS, height: HEIGHT, width: WIDTH, ink: "dark" } as const;
+/** A frame of the view is two of the game's: turning and walking are per view frame. */
+const TURN = 0.16, STEP = 0.2, FOV = 0.66;
+const SHADING = "panelled";
+const LIGHT = { count: COLUMNS, height: HEIGHT, width: WIDTH, ink: "light", shading: SHADING } as const;
+const DARK = { count: COLUMNS, height: HEIGHT, width: WIDTH, ink: "dark", shading: SHADING } as const;
 
 /** The maze from above, three tiles a cell (a brush is 3 across), under the view and two tiles in from the map's edges. */
 const CELL = 3;
@@ -76,7 +79,7 @@ program(async () => {
       const nx = x + dirX * step, ny = y + dirY * step;
       if (cellAt(Math.floor(nx), Math.floor(ny)) == 2) {
         out = true;
-        displayText(`\x07You found the way out in ${Math.floor(frame / 24)} seconds.`);
+        displayText(`\x07You found the way out in ${Math.floor(frame / 12)} seconds.`);
       }
       if (cellAt(Math.floor(nx), Math.floor(y)) == 0) x = nx;
       if (cellAt(Math.floor(x), Math.floor(ny)) == 0) y = ny;
@@ -105,7 +108,7 @@ program(async () => {
       heights[col] = Math.min(HEIGHT, Math.floor(HEIGHT / distance));
       // One face of every wall drawn with lines across it, so that corners show; the way out flickers.
       shaded[col] = side;
-      if (hit == 2 && (frame & 4) != 0) heights[col] = 0;
+      if (hit == 2 && (frame & 2) != 0) heights[col] = 0;
       rayX += stepRayX;
       rayY += stepRayY;
       col++;
@@ -114,8 +117,9 @@ program(async () => {
     else fog.columns(P1, 1, 0, LIGHT, heights, shaded);
     // The plan, and you on it, blinking.
     fog.light(P1, PLAN_X, PLAN_Y, PLAN);
-    if ((frame & 8) != 0) fog.light(P1, PLAN_X + Math.floor(x * CELL), PLAN_Y + Math.floor(y * CELL), 1);
-    await nextFrame();
+    if ((frame & 4) != 0) fog.light(P1, PLAN_X + Math.floor(x * CELL), PLAN_Y + Math.floor(y * CELL), 1);
+    // A picture every other frame, kept on the board for both: what the minimap shows (it redraws every other frame).
+    await fog.show(2);
   }
 });
 
