@@ -3,35 +3,48 @@
 // takes away and makes only the cells that changed — a location centred on the cell, Remove Unit and Create Unit there.
 //
 // What the unit-pixel probe found, played in Remastered (2026-10-16): Overlords sit on their cells on any ground; a
-// computer's AI moves its own units, so the owners are the empty slots; neighbours of one owner join into one block on
-// the minimap; 80 made and taken away a frame did not slow the game; a Create Unit that fails prints a warning in the
-// text lines, which an Overlord never does. The map needs a 64 × 64 location for the cells (the probe maps' "Pixel").
+// computer moves its own units (its idle order), so the owners are you and the empty slots; neighbours of one owner join
+// into one block on the minimap; 80 made and taken away a frame did not slow the game; a Create Unit that fails prints
+// a warning in the text lines, which an Overlord never does. The map needs a 64 × 64 location for the cells (the probe
+// maps' "Pixel").
 //
-// A game() function, since a function from another file reaches a program that way; a class would read better, and a
-// class declared outside a program is not the program's yet.
-import { game, centerLocation, createUnit, removeUnitAt, units, players, P3, P4, P5, P6, P7, P8, type Location, type Player } from "trigscript";
-
-/** Where a board is drawn: its corner on the map, its width in cells, a cell's size, and the location moved to each cell. */
-export interface UnitBoard { x: number; y: number; width: number; cell: number; at: Location }
-/** What a board's cell holds — a colour each piece has — and the player whose Overlord shows each. */
-export interface Palette { colors: readonly number[]; owners: readonly Player[] }
-
-/** The empty slots and Player 12: units no computer moves. */
-export const OWNERS: readonly Player[] = [P3, P8, P4, P6, players.P12, P7, P5];
+// An ordinary class: declared outside any program, it is the program's wherever a program makes one (TrigScript 4).
+import { centerLocation, createUnit, removeUnitAt, units, type Location, type Player } from "trigscript";
 
 /**
- * The board on the map. `shown` is what each cell shows now — the board as it was the last time — and is brought up to
- * date: each cell that changed is taken away and made again in its colour (0 is an empty cell, nothing on the map).
+ * How the cells look, known when the script is built: each colour a cell can hold, the player whose Overlord shows it,
+ * and the location moved to each cell — an action's player and location are, so they come with each draw, not as fields.
  */
-export const drawUnits = game((board: number[], shown: number[], where: UnitBoard, palette: Palette) => {
-  for (let i = 0; i < shown.length; i++) {
-    const now = board[i];
-    const was = shown[i];
-    if (now !== was) {
-      centerLocation(where.at, where.x + (i % where.width) * where.cell + where.cell / 2, where.y + Math.floor(i / where.width) * where.cell + where.cell / 2);
-      palette.colors.forEach((color, k) => { if (was === color) removeUnitAt(palette.owners[k], units.ZergOverlord, 1, where.at); });
-      palette.colors.forEach((color, k) => { if (now === color) createUnit(palette.owners[k], units.ZergOverlord, 1, where.at); });
-      shown[i] = now;
+export interface Look { colors: readonly number[]; owners: readonly Player[]; at: Location }
+
+export class UnitScreen {
+  /** What each cell shows on the map now: the board as it was the last time it was drawn. */
+  shown: number[] = [];
+  x: number;
+  y: number;
+  width: number;
+  cell: number;
+
+  /** A board `width` × `height` cells, its corner at (x, y) on the map, a cell `cell` pixels. */
+  constructor(x: number, y: number, width: number, height: number, cell: number) {
+    this.x = x;
+    this.y = y;
+    this.width = width;
+    this.cell = cell;
+    for (let i = 0; i < width * height; i++) this.shown.push(0);
+  }
+
+  /** The board on the map: each cell that changed since the last time, taken away and made again in its colour (0 is empty). */
+  draw(board: number[], look: Look) {
+    for (let i = 0; i < this.shown.length; i++) {
+      const now = board[i];
+      const was = this.shown[i];
+      if (now !== was) {
+        centerLocation(look.at, this.x + (i % this.width) * this.cell + this.cell / 2, this.y + Math.floor(i / this.width) * this.cell + this.cell / 2);
+        look.colors.forEach((color, k) => { if (was === color) removeUnitAt(look.owners[k], units.ZergOverlord, 1, look.at); });
+        look.colors.forEach((color, k) => { if (now === color) createUnit(look.owners[k], units.ZergOverlord, 1, look.at); });
+        this.shown[i] = now;
+      }
     }
   }
-});
+}

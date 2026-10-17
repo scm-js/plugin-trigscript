@@ -1,7 +1,7 @@
 // Tetris in StarCraft's text lines and on its minimap (TrigScript 4, S2's showpiece). The game writes one board; two
 // screens show it. The text lines are JSX: ui.lines() shows them to Player 1, redrawn when the board changes. The other
 // is a board of Overlords in the top left corner of the map, one a cell in its piece's colour, which the minimap shows as
-// solid blocks: probes/lib/unit-screen.ts, a function that knows nothing of Tetris. A player a piece owns the Overlords,
+// solid blocks: probes/lib/unit-screen.ts, a class that knows nothing of Tetris. A player a piece owns the Overlords,
 // each given its piece's colour as the text lines draw it (measured from screenshots). Remastered will not start a game
 // without a computer, and a computer moves its own units and sends them to fight, so Player 2 stays a computer and owns
 // none: the S piece is yours — your units are green on the minimap anyway — and P3 … P8 have the other six. A D move (hold to slide), W turns, S drops (hold to keep
@@ -12,7 +12,7 @@
 // Built with
 //   npx tsx scripts/build-fixture.mts probes/tetris.tsx fixtures/eud/tetris.scx
 import { program, P1, P3, P4, P5, P6, P7, P8, keyPressed, keyHeld, random, sleep, frames, ui, textColors, createUnit, centerLocation, units, type Location } from "trigscript";
-import { drawUnits } from "./lib/unit-screen";
+import { UnitScreen } from "./lib/unit-screen";
 
 const W = 10;
 const H = 10;
@@ -53,13 +53,13 @@ const ROWS = [...Array(H).keys()];
  * the base, so the minimap's view box is never over it — and a cell, 64 pixels. */
 const MAP_X = 128, MAP_Y = 128, CELL = 64;
 const PIXEL = 3 as Location;
-const ON_MAP = { x: MAP_X, y: MAP_Y, width: W, cell: CELL, at: PIXEL };
+/** How the Overlord board looks: a piece's colour, the player whose Overlords show it, the location moved to each cell. */
+const LOOK = { colors: COLORS, owners: OWNERS, at: PIXEL };
 const COLS = [...Array(W).keys()];
 
 program(async () => {
   const board: number[] = new Array(W * H).fill(0);
-  /** What the board of Overlords shows now. */
-  let shown: number[] = new Array(W * H).fill(0);
+  const screen = new UnitScreen(MAP_X, MAP_Y, W, H, CELL);
   /** Whether the board was written since the Overlords were last drawn. */
   let changed = true;
   // Sight over the board, for the minimap.
@@ -183,7 +183,7 @@ program(async () => {
         if (!move(0, 1, 0)) land();
       }
     }
-    if (changed) { drawUnits(board, shown, ON_MAP, { colors: COLORS, owners: OWNERS }); changed = false; }
+    if (changed) { screen.draw(board, LOOK); changed = false; }
     await sleep(frames(1));
   }
 }, { owner: P1 });
