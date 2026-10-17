@@ -44,7 +44,8 @@ program(async () => {
   for (const u of unitsOf(P1, { type: units.TerranFirebat })) u.remove();
 
   await sleep(seconds(5));
-  print("D: train an SCV now. Expect \"made 7\" when it comes out. Loading and unloading should say nothing.", { position: "center" });
+  setResources(P1, "add", 100, "ore");
+  print("D: train an SCV now (you have 100 more minerals). Expect \"made 7\" when it comes out. Loading and unloading should say nothing.", { position: "center" });
 
   await sleep(seconds(15));
   print("E: 200 Zerglings in one frame, then all killed in one frame. Does the game slow?", { position: "center" });
