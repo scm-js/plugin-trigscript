@@ -1041,6 +1041,22 @@ ui.objectives(P1, () => (
   and the made-text field writes (built). No new address.
 - **Probe:** one, for how many characters and colour codes a panel holds before the game
   cuts it, and whether a rewrite every frame flickers.
+- **Where it draws, first** (2026-10-16, started on S2 with a Tetris map as its target):
+  the objectives panel is read again on every draw, but it is a dialog the player opens,
+  and in a single-player game opening it may pause the game. A board the player watches
+  while playing may belong in the text lines instead, which Remastered's emulator lets a
+  map write (`0x640B60`, 13 lines of 218 bytes; the line pointer at `0x640B58` is kept
+  beside the game). So the probe asks where before it asks how much:
+  `probes/ui-spike.py` (hand-written eudplib, built beside `probes/ui-spike.ts`), steps
+  A–I: how many text lines stay up, which cell characters line up (■ □ █ ▀ ▄ ░ ▓ ㅁ, a
+  full-width space and more), which colour codes colour a cell, how many cells fit on a
+  line, whether a line break in one Display Text makes several lines, a board redrawn every
+  frame and every fourth frame, twenty rows in ten lines with half blocks, the lines'
+  memory written with no action, a 22-row board in the open objectives with a clock in the
+  leaderboard's label, and how much of that label shows. Run in the lifted game first: no
+  address Remastered ends the game on, about 2.4k actions a frame on average and 82k at
+  most (eudplib's start at frame 2). Copied to
+  `Maps/TrigScript/trigscript-s2-ui-spike.scx`. Not played yet.
 
 ### S3. A hero moved with the keys
 
