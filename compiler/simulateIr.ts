@@ -50,6 +50,8 @@ export const FRAMES_PER_SECOND = 24;
 /** What Elapsed Time and the countdown count: a game second is sixteen frames (the slice 2 probe: 21 after 336 frames), not the twenty-four of a second at Fastest. */
 export const FRAMES_PER_GAME_SECOND = 16;
 const U32 = 0x1_0000_0000;
+/** Frames with no message before a held key counts as let go; python/trigscript.py has the same number (Input.HELD_GRACE). */
+const HELD_GRACE = 2;
 
 export interface ProgramEvent {
   /** 0-based run of the programs. */
@@ -1291,6 +1293,7 @@ export class ProgramSimulation {
   /** The keys and buttons down on the last frame, and on this one (what keyHeld() finds). */
   private down = new Set<string>();
   private downNow = new Set<string>();
+  private readonly lastDown = new Map<string, number>();
   /** Where each player's mouse is, in map pixels. */
   readonly mice = new Map<number, { x: number; y: number }>();
   cycle = 0;
@@ -1557,7 +1560,10 @@ export class ProgramSimulation {
     const down = new Set([...this.current.events].filter((e) => e.startsWith("key:") || e.startsWith("click:")));
     for (const e of down) if (this.down.has(e)) this.current.events.delete(e);
     this.down = down;
-    this.downNow = down;
+    // keyHeld(): down now, or let go no more than HELD_GRACE frames ago — as the game's lowering has it, which covers a
+    // message that went missing on its way between the players' computers.
+    for (const e of down) this.lastDown.set(e, this.frame);
+    this.downNow = new Set([...this.lastDown].filter(([, f]) => this.frame - f <= HELD_GRACE).map(([e]) => e));
     for (const run of this.runs) {
       this.world.current = run.player;
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }

@@ -14,13 +14,12 @@ program(async () => {
   }
 }, { owner: P1 });
 
-// In the lifted game the first two frames' messages arrive together (MSQC), so a hold of n frames is read on n − 1 of
-// them there — 1 → 1, 3 → 2, 10 → 9 — and on n in the simulator. Either way it is held from the second frame to the end.
-test("a key down ten frames is held on (nearly) every one of them and pressed once", (sim) => {
+// A held key is still held for two frames after the last message, in the game and the simulator alike: a message can go
+// missing for a frame (the lifted game loses the second of every hold) and a multiplayer game carries commands in turns.
+test("a key down ten frames is held on those ten and two more, and pressed once", (sim) => {
   sim.frames(4);
   for (let i = 0; i < 10; i++) sim.press("D").frames(1);
   sim.frames(8);
-  expect(sim.resources(P1).ore).toBeGreaterThanOrEqual(9);
-  expect(sim.resources(P1).ore).toBeLessThanOrEqual(10);
+  expect(sim.resources(P1).ore).toBe(12);
   expect(sim.resources(P1).gas).toBe(1);
 });

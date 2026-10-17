@@ -199,12 +199,15 @@ describe("input: the interpreter", () => {
     expect([sim.value("n"), sim.value("v")]).toEqual([2, 10]);
   });
 
-  it("a key down on frames in a row is one press, and held on each of them", () => {
+  it("a key down on frames in a row is one press, and held on each of them and two frames after", () => {
     const sim = simulate(loop(`if (keyPressed(CurrentPlayer, "D")) n += 1; if (keyHeld(CurrentPlayer, "D")) v += 1;`));
     for (let i = 0; i < 4; i++) sim.press("D").step();
     sim.step();
     sim.press("D").step();
-    expect([sim.value("n"), sim.value("v")]).toEqual([2, 5]);
+    // Let go for one frame: still held (the grace covers a message lost on the way), and pressed again after it.
+    expect([sim.value("n"), sim.value("v")]).toEqual([2, 6]);
+    for (let i = 0; i < 4; i++) sim.step();
+    expect(sim.value("v")).toBe(8);
   });
 
   it("another player's key is not this player's", () => {

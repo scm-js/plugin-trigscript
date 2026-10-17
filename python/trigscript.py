@@ -3383,6 +3383,14 @@ class Input:
             raise Fail("trigscript: a program reads keys, clicks, the mouse or chat, and the map has no human player to give any")
         self.key_cells = [self.register("tsin_key%d" % i, EUDArray(12)) for i in range(len(self.keys))]
         self.held_cells = [self.register("tsin_held%d" % i, EUDArray(12)) for i in range(len(self.held))]
+        # A held key is a message each frame it is down, but a multiplayer game carries commands in turns: two frames'
+        # messages may arrive on one frame and none on the next. What arrives is banked and paid out a frame at a time,
+        # so keyHeld() is true on as many frames as the key was down, however the turns grouped them.
+        self.held_bank = [EUDArray(12) for _ in self.held]
+        self.held_now = [EUDArray(12) for _ in self.held]
+        # And a message can go missing for a frame (seen in the lifted game, the second frame of every hold): a key is
+        # still held until HELD_GRACE frames have passed with no message, which delays a release by as much.
+        self.held_quiet = [EUDArray(12) for _ in self.held]
         self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
         self.captures = max([len(c["captures"]) for c in self.chats] or [0])
         if self.chats:
@@ -3398,6 +3406,33 @@ class Input:
             self.capture_in = [self.register("tsin_capture%d_in" % i, EUDArray(12)) for i in range(self.captures)]
             self.unit_table = None
 
+    HELD_BANK_MOST = 8  # a burst after a lag spike pays out at most this many frames
+    HELD_GRACE = 2  # frames with no message before a held key counts as let go
+
+    def frame(self):
+        """Once a frame, before the programs: this frame's held messages banked, one frame of each paid out, and a key
+        with nothing left to pay still held for HELD_GRACE quiet frames."""
+        for cells, bank, now, quiet in zip(self.held_cells, self.held_bank, self.held_now, self.held_quiet):
+            for p in self.humans:
+                b = fresh(bank[p] + cells[p])
+                if EUDIf()(b >= self.HELD_BANK_MOST + 1):
+                    b << self.HELD_BANK_MOST
+                EUDEndIf()
+                if EUDIf()(b >= 1):
+                    now[p] = 1
+                    bank[p] = b - 1
+                    quiet[p] = 0
+                if EUDElse()():
+                    bank[p] = 0
+                    q = fresh(quiet[p] + 1)
+                    quiet[p] = q
+                    if EUDIf()([now[p] >= 1, q <= self.HELD_GRACE]):
+                        now[p] = 1
+                    if EUDElse()():
+                        now[p] = 0
+                    EUDEndIf()
+                EUDEndIf()
+
     @staticmethod
     def register(name, cell):
         EUDRegisterObjectToNamespace(name, cell)
@@ -3408,7 +3443,7 @@ class Input:
         source = i.get("source")
         p = low.one_player(i["player"], node)
         if source == "key" and i.get("held"):
-            return self.cell(self.held_cells, self.held, i["key"], node)[p]
+            return self.cell(self.held_now, self.held, i["key"], node)[p]
         if source == "key":
             return self.cell(self.key_cells, self.keys, i["key"], node)[p]
         if source == "click":
@@ -3769,5 +3804,7 @@ def beforeTriggerExec():
 
 
 def afterTriggerExec():
+    if INPUT.held:
+        INPUT.frame()
     for prog in PROGRAMS:
         prog.run()

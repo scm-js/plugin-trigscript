@@ -7,7 +7,7 @@
  *
  * Bundled on its own as `dist/gametest.js`, which the plugin hands to the host as text.
  */
-import { ENTRY_FILE } from "./compiler";
+import { ENTRY_FILE, entryOf } from "./compiler";
 import { MODULE_NAME } from "./api";
 import { GameSim, readLocations, type GameHandle } from "./gameSim";
 import type { TriggerMap, VariableMap } from "./gameVariables";
@@ -43,7 +43,7 @@ function register(payload: GameTestPayload) {
   registry.where = () => where(new Error()) ?? { file: ENTRY_FILE, line: 1 };
   const runtime = { ...createRuntime(payload.names, collector), ...registry.library() };
   collector.running = true;
-  const failure = runModules(linked, ENTRY_FILE, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: [...linked.keys()].filter(isTestFile).sort() });
+  const failure = runModules(linked, entryOf(linked.keys()), runtime, MODULE_NAME, { imported: TESTING_NAMES, then: [...linked.keys()].filter(isTestFile).sort() });
   collector.running = false;
   return { linked, registry, where, error: failure ? `${failure.file ?? ENTRY_FILE}:${failure.line ?? 1}: ${failure.message}` : null };
 }
