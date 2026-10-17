@@ -246,14 +246,17 @@ export interface ColumnLayout {
   readonly width?: number;
   readonly ink?: "light" | "dark";
   /**
-   * How a shaded column (fog.columns()'s `shaded`) is drawn: "lines" — dark lines a tile thick across it at its
-   * quarters, which run to the horizon as courses of bricks would (the finest, and two dozen brushes a column near the
-   * eye: for a view with room to spare); "line" — one across each half, at its middle; "hollow" — dark, lit only along
-   * its top and bottom edges, two brushes a column; "ribbed" — hollow, and lit across the middle of each half too, four;
-   * "panelled" — hollow and lit across its quarters, eight. The lit ones are a brush deep. "panelled" by default: of
-   * the ones a full view can afford every frame, it reads best (played, 2026-10-17).
+   * How the walls are told apart, with fog.columns()'s `faces`. "outline", the default: every wall drawn as its edges —
+   * its top and bottom, a brush deep, and a column lit whole wherever one face meets another (on the nearer of the
+   * two) — so that blocks read as boxes, the look of the raycasters of monochrome screens; with dark ink, the edges are
+   * lit lines through dark walls. A few brushes a column. Chosen over the rest when played (2026-10-17).
+   *
+   * The others shade the faces whose number is odd (a raycaster's other side) and leave the rest whole: "hollow" —
+   * dark, lit only along its top and bottom edges; "ribbed" — hollow and lit across the middle of each half; "panelled"
+   * — hollow and lit across its quarters; "line" / "lines" — dark lines a tile thick across it at its middle or its
+   * quarters (the finest, and two dozen brushes a column near the eye: for a view with room to spare).
    */
-  readonly shading?: "lines" | "line" | "hollow" | "ribbed" | "panelled";
+  readonly shading?: "outline" | "lines" | "line" | "hollow" | "ribbed" | "panelled";
 }
 
 /**
@@ -368,32 +371,37 @@ const columnShaded = game((player: Player, cx: number, mid: number, a: number, d
  * the board is a few large brushes.
  *
  *   const VIEW = { count: 42, height: 96, ink: "dark" } as const;
- *   fog.columns(P1, 1, 0, VIEW, heights);           // heights: one a column, in tiles, the program's
- *   fog.columns(P1, 1, 0, VIEW, heights, shaded);   // shaded: 1 for a column drawn hollow, 0 whole
+ *   fog.columns(P1, 1, 0, VIEW, heights);          // heights: one a column, in tiles, the program's
+ *   fog.columns(P1, 1, 0, VIEW, heights, faces);   // faces: which face of which wall each column shows
  *
  * @param player Whose fog: P1 … P8, known when the script is built.
  * @param x The column of the layout's left edge.
  * @param y The row of its top edge.
  * @param layout How the columns are laid out: known when the script is built.
  * @param heights Each column's height in tiles (0 to the layout's height), an array of the program's.
- * @param shaded Which columns are drawn hollow (not 0) — the other face of a raycaster's walls, so that a corner
- *   shows — an array of the program's as long as `heights`. Optional.
+ * @param faces Which face of which wall each column shows, a number the same for every column of one face — in a
+ *   raycaster, \`(mapY * width + mapX) * 2 + side\` — an array of the program's as long as `heights`: what the
+ *   layout's `shading` tells walls apart by. Optional: without it, every column is lit whole (a bar chart).
  */
-export const columns = game((player: Player, x: number, y: number, layout: ColumnLayout, heights: readonly number[], shaded?: readonly number[]) => {
+export const columns = game((player: Player, x: number, y: number, layout: ColumnLayout, heights: readonly number[], faces?: readonly number[]) => {
   const { words, starts, half, group } = columnPlan(layout);
   const count = layout.count, width = layout.width ?? 3, dark = layout.ink === "dark";
   // (Dark lines through a lit column count up; lit bands through a dark one, ribbed and panelled, down.)
+  // (Without faces there is nothing to tell apart, and every column is whole.)
+  const outline = faces !== undefined && (layout.shading === undefined || layout.shading === "outline");
   const lines = layout.shading === "lines" ? 3 : layout.shading === "line" ? 1 : layout.shading === "ribbed" ? -1 : layout.shading === "hollow" ? 0 : -3;
   const span = half + 1;
   // Each column's depth from where its lit part starts: the middle row for light ink, the top and bottom for dark.
-  // A shaded column of light ink is drawn on its own, after the rest: to the rest it is as if it were not there.
+  // A shaded column of light ink is drawn on its own, after the rest: to the rest it is as if it were not there — and
+  // so is every column of a light outline, which is all edges.
   const depth: number[] = new Array(count).fill(0);
   let least = half;
   let i = 0;
   while (i < count) {
     const a = Math.min(Math.max(heights[i] >> 1, 0), half);
     let d = dark ? half - a : a;
-    if (shaded !== undefined && !dark && shaded[i] != 0) d = 0;
+    if (!dark && outline) d = 0;
+    else if (faces !== undefined && !dark && !outline && (faces[i] & 1) != 0) d = 0;
     depth[i] = d;
     if (d < least) least = d;
     i++;
@@ -432,10 +440,28 @@ export const columns = game((player: Player, x: number, y: number, layout: Colum
     }
     g = last;
   }
-  if (shaded !== undefined) {
+  if (outline) {
+    // Where one face meets another, the nearer (taller) of the two columns is an edge.
+    const edge: number[] = new Array(count).fill(0);
+    i = 1;
+    while (i < count) {
+      if (faces[i] != faces[i - 1]) { if (heights[i] >= heights[i - 1]) edge[i] = 1; else edge[i - 1] = 1; }
+      i++;
+    }
     i = 0;
     while (i < count) {
-      if (shaded[i] != 0) columnShaded(player, x + i * width + 1, mid, Math.min(Math.max(heights[i] >> 1, 0), half), dark, lines);
+      const a = Math.min(Math.max(heights[i] >> 1, 0), half), cx = x + i * width + 1;
+      if (dark) { if (edge[i] != 0 && a >= 2) columnBar(player, cx, mid - a, mid, a); }
+      else if (a > 0) {
+        if (edge[i] != 0 || a < 8) columnBar(player, cx, mid - a, mid, a);
+        else columnBar(player, cx, mid - a, mid + a - 4, 4);
+      }
+      i++;
+    }
+  } else if (faces !== undefined) {
+    i = 0;
+    while (i < count) {
+      if ((faces[i] & 1) != 0) columnShaded(player, x + i * width + 1, mid, Math.min(Math.max(heights[i] >> 1, 0), half), dark, lines);
       i++;
     }
   }

@@ -1,7 +1,7 @@
 // TrigScript 4, S5: a raycaster in the fog of war. A maze seen in 3D on the minimap and walked with W A S D: the
 // textbook DDA raycaster (a ray a column, stepped from grid line to grid line until it meets a wall), written as it
 // would be in any TypeScript, with fixed numbers (B6) for the fractions and the fog library for the picture. Under the
-// view, the maze from above with you on it. Walls facing one way are solid, the other way panelled, so corners show.
+// view, the maze from above with you on it. Walls are drawn as their outlines, so every block reads as a box.
 // Find the way out: the wall that flickers.
 // Host it as a multiplayer game, alone, with Classic graphics (Options > Graphics) for a sharp minimap.
 //
@@ -36,7 +36,7 @@ const CELLS = MAZE.join("").split("").map((c) => (c === "#" ? 1 : c === "E" ? 2 
 const COLUMNS = 42, WIDTH = 3, HEIGHT = 78;
 /** A frame of the view is two of the game's: turning and walking are per view frame. */
 const TURN = 0.16, STEP = 0.2, FOV = 0.66;
-const SHADING = "panelled";
+const SHADING = "outline";
 const LIGHT = { count: COLUMNS, height: HEIGHT, width: WIDTH, ink: "light", shading: SHADING } as const;
 const DARK = { count: COLUMNS, height: HEIGHT, width: WIDTH, ink: "dark", shading: SHADING } as const;
 
@@ -65,7 +65,7 @@ program(async () => {
   let x = 1.5, y = 1.5, angle = 0.3;
   let dark = false, out = false, frame = 0;
   const heights: number[] = new Array(COLUMNS).fill(0);
-  const shaded: number[] = new Array(COLUMNS).fill(0);
+  const faces: number[] = new Array(COLUMNS).fill(0);
   while (true) {
     frame++;
     if (keyPressed(P1, "I")) dark = !dark;
@@ -106,15 +106,15 @@ program(async () => {
       }
       const distance = side == 0 ? sideX - deltaX : sideY - deltaY;
       heights[col] = Math.min(HEIGHT, Math.floor(HEIGHT / distance));
-      // One face of every wall drawn with lines across it, so that corners show; the way out flickers.
-      shaded[col] = side;
+      // Which face of which wall: where it changes, the outline draws an edge. The way out flickers.
+      faces[col] = (mapY * SIZE + mapX) * 2 + side;
       if (hit == 2 && (frame & 2) != 0) heights[col] = 0;
       rayX += stepRayX;
       rayY += stepRayY;
       col++;
     }
-    if (dark) fog.columns(P1, 1, 0, DARK, heights, shaded);
-    else fog.columns(P1, 1, 0, LIGHT, heights, shaded);
+    if (dark) fog.columns(P1, 1, 0, DARK, heights, faces);
+    else fog.columns(P1, 1, 0, LIGHT, heights, faces);
     // The plan, and you on it, blinking.
     fog.light(P1, PLAN_X, PLAN_Y, PLAN);
     if ((frame & 4) != 0) fog.light(P1, PLAN_X + Math.floor(x * CELL), PLAN_Y + Math.floor(y * CELL), 1);

@@ -251,6 +251,19 @@ program(async () => { const hs: number[] = new Array(24).fill(0); let i = 0; whi
     });
   }
 
+  it("fog.columns, outline (the default): every column its top and bottom edges, and whole where one face meets another, on the nearer", () => {
+    const rows = fogAfter(`import { fog } from "trigscript/fog";
+const VIEW = { count: 4, height: 96 } as const;
+program(async () => { const hs: number[] = [60, 60, 80, 80]; const faces: number[] = [3, 3, 8, 8]; while (true) { fog.columns(P1, 1, 0, VIEW, hs, faces); await nextFrame(); } });`, 3);
+    const column = (c: number) => rows.map((r) => r[2 + 3 * c]).join("");
+    const hollow = (a: number) => ".".repeat(48 - a) + "#".repeat(4) + ".".repeat(2 * a - 8) + "#".repeat(4) + ".".repeat(48 - a);
+    expect(column(0)).toBe(hollow(30));
+    expect(column(1)).toBe(hollow(30));
+    // Faces 3 and 8 meet between columns 1 and 2: the taller, 2, is the edge.
+    expect(column(2)).toBe(".".repeat(8) + "#".repeat(80) + ".".repeat(8));
+    expect(column(3)).toBe(hollow(40));
+  });
+
   it("fog.columns with shading: a shaded column is hollow, lit a brush deep along its top and bottom edges", () => {
     const rows = fogAfter(`import { fog } from "trigscript/fog";
 const VIEW = { count: 2, height: 96, ink: "light", shading: "hollow" } as const;
@@ -261,9 +274,9 @@ program(async () => { const hs: number[] = [80, 80]; const sh: number[] = [0, 1]
     expect(column(5)).toBe(want);
   });
 
-  it("fog.columns, panelled (the default): hollow, and lit a brush deep across each half's quarters", () => {
+  it("fog.columns, panelled: hollow, and lit a brush deep across each half's quarters", () => {
     const rows = fogAfter(`import { fog } from "trigscript/fog";
-const VIEW = { count: 1, height: 96, ink: "light" } as const;
+const VIEW = { count: 1, height: 96, ink: "light", shading: "panelled" } as const;
 program(async () => { const hs: number[] = [80]; const sh: number[] = [1]; while (true) { fog.columns(P1, 1, 0, VIEW, hs, sh); await nextFrame(); } });`, 3);
     const column = rows.map((r) => r[2]).join("");
     // Half its height is 40: the edges (rows 8–11, 84–87) and bands centred 10, 20 and 30 rows from the middle.
