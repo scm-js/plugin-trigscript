@@ -68,7 +68,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 17
+IR_VERSION = 18
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -95,6 +95,11 @@ GROUP_BITS = {230: 0x08, 231: 0x10, 232: 0x20}
 # flingy.dat, by flingy id: movement control (byte), top speed (dword), acceleration (word), halt distance (dword).
 FLINGY_CONTROL, FLINGY_SPEED, FLINGY_ACCELERATION, FLINGY_HALT = 0x6C9858, 0x6C9EF8, 0x6C9C78, 0x6C9930
 MINIMAP_COLOR_OFFSET = 0x581DD6 - 0x581D76
+# The heads of the game's lists of units (1.16.1, which Remastered emulates): the visible units and the dying ones. Each
+# links a record in just behind its head, so behind the head a list runs latest first (scm-sim docs/specs/unit-lists.md).
+VISIBLE_HEAD, DYING_HEAD = 0x628430, 0x62842C
+# How many units one frame's events pass hands on of each kind; past that the rest are handed on in the next frame.
+EVENT_CAP = 512
 # The location table, and the one an order borrows for the length of one action (put back after).
 MRGN = 0x58DC60
 SCRATCH_LOCATION = 255
@@ -1151,6 +1156,9 @@ class Pool:
         # turn can test it every time round: the slots after the last running one are not looked at.
         self.live = RowCell(Rows(lowering, True, None) if lowering.per_player else None, 0)
         self.count = self.live.store if not lowering.per_player else EUDVariable(0)  # initial: the pool's own state
+        # A listener's start (on.created, ...): set when one of its tasks is started and has not had its first turn, so
+        # that without it and with nothing heard the tasks' turn passes the whole start by.
+        self.fresh = RowCell(Rows(lowering, True, None) if lowering.per_player else None, 0) if st.get("listen") is not None else None
 
     def add(self, n):
         """One more task running (1) or one fewer (-1)."""
@@ -1167,6 +1175,116 @@ class Pool:
     def at(self, cell, slot):
         """A cell of the slot `slot`, without selecting it: the one being run stays where it is."""
         return cell.store[self.base + slot]
+
+
+class SlotTable(EUDObject):
+    """A dword for each of the game's 1700 unit slots, 336 bytes apart as the slots are: a unit's own EPD plus one number is
+    its cell, as eudplib's EUDLoopNewUnit keeps its marks. The space between the cells is left for anything else."""
+
+    def GetDataSize(self):
+        return 4 + UNIT_SIZE * (UNIT_SLOTS - 1)
+
+    def WritePayload(self, buf):
+        buf.WriteDword(0)
+        for _ in range(UNIT_SLOTS - 1):
+            buf.WriteSpace(UNIT_SIZE - 4)
+            buf.WriteDword(0)
+
+
+class Events:
+    """The frame's events pass (on.created / on.died), before the programs' turns: the units that came onto the map since
+    the pass before, and the ones that died. A slot's cell of `seen` holds the uniqueness byte of the unit seen in it (as
+    it sits in its dword, masked 0xFF00) and, once that unit's death has been handed on, one more: so a unit is new when
+    its slot's cell is not its byte, and a death is handed on once, and only for a unit that was seen on the map. Each
+    list is walked from its head to the record that was behind the head at the pass before, the units linked in since
+    lying in between; when that record has left the list the walk goes to the end, which costs more and misses nothing.
+    Nothing of the game is written."""
+
+    def __init__(self, created, died):
+        self.created, self.died = created, died
+        self.seen = SlotTable()
+        # Each a unit's pointer, which f_cunitepdread_epd reads back cheaply with its EPD: within the frame a slot is not
+        # given to another unit (that takes a dying pass), so its uniqueness byte need not be kept.
+        self.made = EUDArray(EVENT_CAP) if created else None
+        self.made_n = EUDVariable(0)  # initial: the pass's own state, set at its start
+        self.gone = EUDArray(EVENT_CAP) if died else None
+        self.gone_n = EUDVariable(0)  # initial: the pass's own state, set at its start
+        # For each list, as the pass before left it: the record behind the head (pointer, EPD, uniqueness byte) and the
+        # head (pointer, EPD). Nothing is linked in but behind the head, so with both the same nothing came in since.
+        self.bounds = {h: [EUDVariable(0) for _ in range(5)] for h in (VISIBLE_HEAD, DYING_HEAD)}  # initial: no pass before
+
+    def cell(self, epd):
+        return epd + (EPD(self.seen) - EPD(UNIT_TABLE))
+
+    def walk(self, head, step):
+        """`step(ptr, epd, uid, cell, stop)` for each record from the head to the one behind the head at the pass before."""
+        bptr, bepd, buid, hptr, hepd = self.bounds[head]
+        top, done, stop = Forward(), Forward(), Forward()
+        # Nothing linked in since the pass before: the same head, the same record behind it (or none).
+        walk = Forward()
+        EUDJumpIfNot(Memory(head, Exactly, hptr), walk)
+        EUDJumpIf(hptr == 0, stop)
+        if EUDIf()(bptr == 0):
+            EUDJumpIf(MemoryEPD(hepd + 1, Exactly, 0), stop)
+        if EUDElse()():
+            EUDJumpIf([MemoryEPD(hepd + 1, Exactly, bptr), MemoryXEPD(bepd + OFF_UID, Exactly, buid, 0xFF00)], stop)
+        EUDEndIf()
+        walk << NextTrigger()
+        ptr, epd = f_cunitepdread_epd(EPD(head))
+        first = fresh(1)
+        top << NextTrigger()
+        EUDJumpIf(ptr == 0, done)
+        uid = f_maskread_epd(epd + OFF_UID, 0xFF00)
+        EUDJumpIf([first == 0, ptr == bptr, uid == buid], done)
+        first << 0
+        step(ptr, epd, uid, self.cell(epd), stop)
+        f_cunitepdread_epd(epd + 1, ret=[ptr, epd])
+        EUDJump(top)
+        done << NextTrigger()
+        # What is behind the head now is where the next pass stops.
+        f_cunitepdread_epd(EPD(head), ret=[hptr, hepd])
+        bptr << 0
+        if EUDIf()(hptr >= 1):
+            f_cunitepdread_epd(hepd + 1, ret=[bptr, bepd])
+            if EUDIf()(bptr >= 1):
+                buid << f_maskread_epd(bepd + OFF_UID, 0xFF00)
+            EUDEndIf()
+        EUDEndIf()
+        stop << NextTrigger()
+
+    def run(self):
+        self.made_n << 0
+        self.gone_n << 0
+
+        def came(ptr, epd, uid, cell, stop):
+            if EUDIfNot()(MemoryEPD(cell, Exactly, uid)):
+                EUDJumpIf(self.made_n >= EVENT_CAP, stop)
+                f_dwwrite_epd(cell, uid)
+                if self.created:
+                    self.made[self.made_n] = ptr
+                    self.made_n += 1
+            EUDEndIf()
+        self.walk(VISIBLE_HEAD, came)
+        if self.died:
+            def went(ptr, epd, uid, cell, stop):
+                if EUDIf()(MemoryEPD(cell, Exactly, uid)):
+                    EUDJumpIf(self.gone_n >= EVENT_CAP, stop)
+                    f_dwwrite_epd(cell, uid + 1)
+                    self.gone[self.gone_n] = ptr
+                    self.gone_n += 1
+                EUDEndIf()
+            self.walk(DYING_HEAD, went)
+
+
+def uses_source(node, which):
+    """Whether a piece of the IR has a loop over the events pass's units of that kind."""
+    if isinstance(node, list):
+        return any(uses_source(x, which) for x in node)
+    if isinstance(node, dict):
+        if node.get("kind") == "unitLoop" and node.get("source") == which:
+            return True
+        return any(uses_source(v, which) for v in node.values() if isinstance(v, (list, dict)))
+    return False
 
 
 class Lowering:
@@ -1866,7 +1984,54 @@ class Lowering:
         def body(ref, next_, exit_):
             self.vars[st["decl"]["id"]] = LoopUnit(ref)
             self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": next_}))
+        if st.get("source"):
+            self.event_loop(st["source"], st.get("filter", {}), st, body)
+            return
         self.scan(st.get("filter", {}), st, body)
+
+    def event_loop(self, source, flt, node, body):
+        """The units of this frame's events pass, in the order it found them: `body(ref, next_, exit_)` for each the
+        filter matches. One that came on and has gone since is passed over; one that died is the dying record, read as
+        it died (its slot is not given to another unit before the next frame's dying pass)."""
+        if EVENTS is None:
+            raise Fail("trigscript: a loop over the events pass's units, and no pass%s" % where(node))
+        cells, count = (EVENTS.made, EVENTS.made_n) if source == "created" else (EVENTS.gone, EVENTS.gone_n)
+        i = fresh(0)
+        head, next_, exit_ = Forward(), Forward(), Forward()
+        head << NextTrigger()
+        EUDJumpIf(i >= count, exit_)
+        ptr, epd = f_cunitepdread_epd(EPD(cells) + i)
+        if source == "created":
+            # Gone since the pass: killed or removed by a program before this turn (its slot is still its own).
+            EUDJumpIfNot([MemoryEPD(epd + OFF_SPRITE, AtLeast, 1), MemoryXEPD(epd + OFF_OWNER_ORDER, AtLeast, 0x100, 0xFF00)], next_)
+        match = []
+        owner = flt.get("owner")
+        if owner is not None:
+            who = self.current() if owner == CURRENT_PLAYER else int(owner)
+            match.append(MemoryXEPD(epd + OFF_OWNER_ORDER, Exactly, who, 0xFF))
+        kind = flt.get("type")
+        if kind is not None and kind < 228:
+            match.append(MemoryXEPD(epd + OFF_TYPE, Exactly, int(kind), 0xFFFF))
+        elif kind is not None and kind not in GROUP_BITS:
+            raise Fail("trigscript: unknown unit type %r%s" % (kind, where(node)))
+        if flt.get("at"):
+            left, top, right, bottom = self.location_bounds(flt["at"])
+            for v in (left, top):
+                if EUDIf()(v >= 0x80000000):
+                    v << 0
+                EUDEndIf()
+            match += [MemoryXEPD(epd + OFF_POS, AtLeast, left, 0xFFFF), MemoryXEPD(epd + OFF_POS, AtMost, right, 0xFFFF),
+                      MemoryXEPD(epd + OFF_POS, AtLeast, f_bitlshift(top, 16), 0xFFFF0000), MemoryXEPD(epd + OFF_POS, AtMost, f_bitlshift(bottom, 16), 0xFFFF0000)]
+        if match:
+            EUDJumpIfNot(match, next_)
+        if kind in GROUP_BITS:
+            group = fresh(f_bread(UNITS_GROUP + f_maskread_epd(epd + OFF_TYPE, 0xFFFF)))
+            EUDJumpIf((group & GROUP_BITS[kind]) == 0, next_)
+        body(UnitRef(ptr, epd, None), next_, exit_)
+        next_ << NextTrigger()
+        i += 1
+        EUDJump(head)
+        exit_ << NextTrigger()
 
     def unit_write(self, st):
         ref = self.unit(st["unit"])
@@ -3038,6 +3203,13 @@ class Lowering:
         sweep << NextTrigger()
         self.again << 0
         for pool in self.pools.values():
+            passed = Forward()
+            if pool.fresh is not None:
+                go = Forward()
+                EUDJumpIf(as_var(pool.fresh.get()) >= 1, go)
+                EUDJumpIfNot(self.heard(pool.st["listen"]), passed)
+                go << NextTrigger()
+                pool.fresh.set(0)
             i, seen = EUDVariable(), EUDVariable()
             i << 0
             seen << 0
@@ -3050,6 +3222,14 @@ class Lowering:
                 seen += 1
                 EUDJumpIf(as_var(pool.ran.get()) == self.tick, skip)
                 pool.ran.set(self.tick)
+                listen = pool.st.get("listen")
+                if listen is not None:
+                    # A listener (on.created, on.chat, ...) that has begun waits at the top of its loop, where a turn
+                    # with nothing to hand on does nothing: it is not given one.
+                    go = Forward()
+                    EUDJumpIf(as_var(pool.co.get_state()) == 0, go)
+                    EUDJumpIfNot(self.heard(listen), skip)
+                    go << NextTrigger()
                 outer = self.pool
                 self.pool = pool
                 end = Forward()
@@ -3064,7 +3244,20 @@ class Lowering:
                 skip << NextTrigger()
                 i += 1
             EUDEndWhile()
+            passed << NextTrigger()
         EUDJumpIf(self.again >= 1, sweep)
+
+    def heard(self, listen):
+        """Whether a listener has anything to hand on this frame: units the events pass found, or one of its inputs."""
+        source = listen.get("source")
+        if source is not None:
+            return (EVENTS.made_n if source == "created" else EVENTS.gone_n) >= 1
+        found = fresh(0)
+        for inp in listen.get("inputs", []):
+            if EUDIf()(as_var(INPUT.read(inp, self, listen)) >= 1):
+                found << 1
+            EUDEndIf()
+        return found >= 1
 
     def start(self, st):
         """A task into a free slot of its start: the arguments worked out as things are now, then the slot taken - its
@@ -3125,6 +3318,8 @@ class Lowering:
         pool.co.set_wait(0)
         pool.ran.set(self.tick - 1)
         pool.add(1)
+        if pool.fresh is not None:
+            pool.fresh.set(1)
         self.again << 1
         if st.get("handle"):
             self.var(st["handle"], st).set(pool.slot + pool.task * 256 + f_bitlshift(fresh(gen), 16))
@@ -3798,6 +3993,8 @@ if settings.get("variableMap"):
 
 
 INPUT = Input(IR.get("input"))
+_DIED = uses_source(IR.get("programs", []), "died")
+EVENTS = Events(uses_source(IR.get("programs", []), "created"), _DIED) if _DIED or uses_source(IR.get("programs", []), "created") else None
 PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
 
 
@@ -3816,5 +4013,7 @@ def beforeTriggerExec():
 def afterTriggerExec():
     if INPUT.held:
         INPUT.frame()
+    if EVENTS is not None:
+        EVENTS.run()
     for prog in PROGRAMS:
         prog.run()

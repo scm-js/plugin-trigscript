@@ -216,6 +216,8 @@ class ProgramRun {
   readonly unsigned = new Set<string>();
   /** Every latch's state; a task has its own, swapped in while it runs. */
   latches = new Map<object, boolean>();
+  /** The units of on.died() turns: read as they died, though they are gone. */
+  readonly asDied = new Set<string>();
   /** The program's arrays: their cells, as a variable's value is kept. */
   readonly arrays: Map<string, Held> = new (class extends Map<string, Held> {
     run!: ProgramRun;
@@ -497,6 +499,8 @@ class ProgramRun {
   /** The unit, when there is one and it is still on the map. */
   private *living(e: UnitExpr): Gen<SimUnit | null> {
     const u = yield* this.unit(e);
+    // The unit of an on.died() turn is read as it died.
+    if (u && e.kind === "unitVar" && this.asDied.has(e.id)) return u;
     return u?.alive ? u : null;
   }
 
@@ -945,9 +949,12 @@ class ProgramRun {
       }
       case "unitLoop": {
         this.declare(s.decl);
-        // The units as they are when the loop starts, in table order; one that dies on the way is passed over.
-        for (const u of this.sim.matching(s.filter)) {
-          if (!u.alive) continue;
+        // The units as they are when the loop starts, in table order; one that dies on the way is passed over. Those of
+        // the frame's events pass (`on.created` / `on.died`): the ones that came on, and the ones that died, read as they died.
+        const dead = s.source === "died";
+        if (dead) this.asDied.add(s.decl.id);
+        for (const u of s.source ? this.sim.eventUnits(s.source, s.filter) : this.sim.matching(s.filter)) {
+          if (!dead && !u.alive) continue;
           this.unitVars.set(s.decl.id, u);
           const flow = yield* this.block(s.body, ctx);
           if (flow === "break") break;
@@ -1553,8 +1560,31 @@ export class ProgramSimulation {
     }
   }
 
+  /**
+   * The frame's events pass (on.created / on.died), as the game's lowering has it: a unit is seen the first time a pass
+   * finds it on the map, and its death is found by the first pass after it, once. A unit made and gone between two
+   * passes is neither. Each list is the latest first, as the game's lists keep them.
+   */
+  private eventsFrom = 0;
+  private readonly seen = new Set<SimUnit>();
+  private events_: { created: SimUnit[]; died: SimUnit[] } = { created: [], died: [] };
+  private eventsPass(): void {
+    const created: SimUnit[] = [], died: SimUnit[] = [];
+    for (const u of this.seen) if (!u.alive) { died.push(u); this.seen.delete(u); }
+    const all = this.game.units;
+    for (; this.eventsFrom < all.length; this.eventsFrom++) { const u = all[this.eventsFrom]; if (u.alive) { created.push(u); this.seen.add(u); } }
+    this.events_ = { created: created.reverse(), died: died.reverse() };
+  }
+
+  /** What this frame's events pass found that a filter matches: the units that came on and are still here, or the ones that died, as they died. */
+  eventUnits(source: "created" | "died", f: UnitFilter): SimUnit[] {
+    const owners = f.owner === undefined ? undefined : this.slotsOf(f.owner);
+    return this.events_[source].filter((u) => (source === "died" || u.alive) && this.game.fits(u, owners, f.type, f.at));
+  }
+
   /** One frame: every program in order, from where it left off. */
   step(): void {
+    this.eventsPass();
     // What was done since the last frame is what this one finds, and only this one.
     this.current = this.queued;
     this.queued = { events: new Set(), lines: new Map() };

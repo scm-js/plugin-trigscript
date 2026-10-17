@@ -90,6 +90,7 @@ try {
       const ran = r.cost.perFrame.filter((n) => n > 0), avg = ran.length ? Math.round(ran.reduce((a, b) => a + b, 0) / ran.length) : 0;
       console.log(`    cost: ${avg} conditions and actions a frame on average, ${r.cost.peak} at the most (frame ${r.cost.peakFrame})`);
       for (const l of r.cost.lines.slice(0, 3)) console.log(`      line ${l.line}: ${l.peak} at the most (frame ${l.peakFrame}), ran in ${l.frames} frames`);
+      if (process.env.COST_FRAMES) console.log(`      frames from ${r.cost.from}: ${r.cost.perFrame.join(" ")}\n      other: ${r.cost.other.join(" ")}`);
     }
   }
   // A test of several players: the map built again with their slots open to people, then a copy of the game for

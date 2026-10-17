@@ -101,6 +101,12 @@ export function libraryCallName(ts: typeof TS, checker: TS.TypeChecker, call: TS
   return id ? libraryName(ts, checker, id) : null;
 }
 
+/** Whether a call is one of `on`'s — `on.died(…)` — with `on` the library's own object. */
+export function isOnCall(ts: typeof TS, checker: TS.TypeChecker, call: TS.CallExpression): boolean {
+  const callee = call.expression;
+  return ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && libraryName(ts, checker, callee.expression) === "on";
+}
+
 /** Climb from a binding element to the declaration that owns it. */
 function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
   let d: TS.Node = decl;
@@ -108,10 +114,13 @@ function owningDeclaration(ts: typeof TS, decl: TS.Declaration): TS.Node {
   return d;
 }
 
+/** What `on.…` listens for (TrigScript 4, B2): `on.created(filter, handler)` and the rest. */
+export const ON_EVENTS = ["created", "died", "chat", "key"] as const;
+
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared", "lines", "centerLocation"]);
+const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -153,6 +162,7 @@ export function isTaskFunction(ts: typeof TS, checker: TS.TypeChecker, node: TS.
   if (!call.arguments.includes(at as TS.Expression)) return false;
   if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "then") return true;
   const lib = libraryCallName(ts, checker, call);
+  if (lib && (ON_EVENTS as readonly string[]).includes(lib) && isOnCall(ts, checker, call)) return call.arguments.includes(at as TS.Expression);
   return lib === "until" || (lib === "start" && call.arguments[0] === at) || (lib === "lines" && call.arguments[1] === at);
 }
 

@@ -429,6 +429,46 @@ ${kw}const ui: {
    */
   lines(player: Player, view: () => string): Task;
 };
+/** A unit as it was when it died, which is what on.died() hands its function: the unit itself is gone. */
+${kw}interface DeadUnit {
+  readonly type: UnitType;
+  readonly owner: Player;
+  /** Where it died, in pixels (32 a tile). */
+  readonly x: number;
+  readonly y: number;
+}
+/** How many of an event's handlers can be waiting at once, when the handler is async (16 unless said, up to 255). */
+${kw}interface EventOptions { max?: number }
+/**
+ * What happens in the game, as it happens: on.created(…), on.died(…), on.chat(…), on.key(…) each runs its function for
+ * every time it happens from the next frame on, inside an async program only. Each is a task (it keeps listening after
+ * the program moves on, and the Task it gives back stops it). A function that is not async runs within the frame, once
+ * for each time; an async one is started as a task each time, so it can wait: \`max\` of them at once.
+ */
+${kw}const on: {
+  /**
+   * A unit comes onto the map — made by an action or a program, trained, hatched, landed, placed by a test — and the
+   * function is handed it in the next frame. A unit in a transport or a hangar comes on when it first comes out.
+   * \`on.created(units.ZergZergling, (u) => { u.energy = 50; })\`
+   */
+  created(handler: (unit: Unit) => void | Promise<void>, options?: EventOptions): Task;
+  created(filter: UnitType | UnitFilter, handler: (unit: Unit) => void | Promise<void>, options?: EventOptions): Task;
+  /**
+   * A unit dies or is removed, and the function is handed what it was and where, in the next frame — once for every
+   * unit on.created() would have been handed. The filter is of the unit as it died.
+   * \`on.died({ owner: P8 }, async (u) => { await sleep(seconds(2)); createUnit(P8, u.type, 1, locations.Spawn); })\`
+   */
+  died(handler: (unit: DeadUnit) => void | Promise<void>, options?: EventOptions): Task;
+  died(filter: UnitType | UnitFilter, handler: (unit: DeadUnit) => void | Promise<void>, options?: EventOptions): Task;
+  /**
+   * A player types a line that fits the pattern, which is chatted()'s: \`on.chat("-give {n}", (p, { n }) => setResources(p, "add", n, "ore"))\`.
+   * Every player P1 … P8 unless \`from\` names one (CurrentPlayer in a program for several players); \`p\` is known
+   * when the script is built, so an action can be for them.
+   */
+  chat<const P extends string>(pattern: P, handler: (player: Player, values: ChatValues<P>) => void | Promise<void>, options?: EventOptions & { from?: Player }): Task;
+  /** A player presses a key, as keyPressed() sees it: \`on.key("F2", (p) => print("Help", { to: p }))\`. Every player P1 … P8 unless \`from\` names one. */
+  key(key: Key, handler: (player: Player) => void | Promise<void>, options?: EventOptions & { from?: Player }): Task;
+};
 /**
  * What the players do, inside program() only. A key, a click and a typed line are true on the one
  * frame they arrive, so look for them in a loop that runs every frame:

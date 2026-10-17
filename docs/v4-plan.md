@@ -885,6 +885,63 @@ on.chat("-give {n}", (p, { n }) => …);
   hint says so.
 - A handler is a task (B1), so it may await.
 
+**As built, first part (2026-10-16, under Node and in the lifted game; branch `b2-events`).** `on.created`,
+`on.died`, `on.chat` and `on.key`; `on.order` and who killed a unit are the second part.
+
+```ts
+on.created(units.ZergZergling, (u) => { u.energy = 50; });
+on.died({ owner: P8 }, async (u) => { await sleep(seconds(2)); createUnit(P8, u.type, 1, locations.Spawn); });
+on.chat("-give {n}", (p, { n }) => setResources(p, "add", n, "ore"));
+on.key("F2", (p) => print("Help", { to: p }), { from: P1 });
+```
+
+- **A listener is a task.** Each `on.…` is a `start` of one slot whose body is `while (true) { sleep 1; … }`,
+  inside an async program, as `ui.lines` is; it gives a Task, so `cancel()` stops it. The first turn only waits:
+  a listener hands on what happens from the next frame, as a JavaScript listener added now hears nothing from
+  before. A handler that is not async is inlined in the loop; an async one is a `start` of its own each time
+  (`{ max }`, 16 unless said), its parameters copies of what it was handed.
+- **Where the units come from: the frame's events pass**, once a frame before the programs. It walks two of the
+  game's lists from their heads, the visible units (0x628430) and the dying ones (0x62842C). The reader's spec
+  `scm-sim docs/specs/unit-lists.md` says every list links a record in just behind its head, so what came in
+  since the pass before lies between the head and the record that was behind it then: the walk is as long as
+  what happened, and a frame where nothing did costs three conditions a list. A table of a cell for each unit slot,
+  336 bytes apart as the slots are (eudplib's EUDLoopNewUnit keeps its marks that way), holds the uniqueness byte of
+  the unit seen in the slot, and one more once its death has been handed on. Nothing of the game is written.
+- **What counts.** A unit that comes onto the visible list for the first time is made: made by an action or a
+  program, trained (when it comes out, not when it is queued), placed by a test; a unit in a transport is made when
+  it first comes out, and unloading it again is nothing new. A unit on the dying list that was seen is dead,
+  killed or removed (both go through the dying list; Remove Unit releases the sprite at once), handed on once. So
+  every unit `on.created` hands on gets one `on.died`, and a turret, a scanner sweep, a unit made and gone between
+  two passes, or one that never left its transport is neither. A unit that turns into another — an egg hatching, a
+  Drone becoming a building, a Siege Tank sieging — is the same unit: it was made once, as what it was then.
+- **What a handler is handed.** `on.created`: the Unit. `on.died`: a `DeadUnit` record, `{ type, owner, x, y }`,
+  read from the dying record as the unit died (the slot is not given to another unit before the next dying pass),
+  and only the fields the handler reads; what the filter says for certain is a value of the script, so
+  `on.died({ owner: P8 }, (u) => createUnit(u.owner, …))` has its player known. `on.chat` / `on.key`: the player,
+  a value of the script in each of eight unrolled copies (P1 … P8, or `{ from }`, or CurrentPlayer in a program for
+  several players), so an action can be for them; `on.chat` also the pattern's values, as `chatted()` gives them.
+- **What it costs** (lifted game, Binary Burghs): a frame where nothing happened, about 46 conditions and actions for
+  the pass and a listener, 2 more for each other listener; about 100 for each unit made and 80 for each death. Two
+  things made it so: the task runner passes a listener's whole start by when it has nothing to hand on and no task
+  that has not had its first turn (`start.listen` in IR 18; a skipped turn would have done nothing), and the pass
+  passes a walk by when the list's head and the record behind it are as it left them. Before either, two idle
+  listeners cost about 1,240 a frame. `on.chat` and `on.key` for all eight players idle at about 1,290, where the
+  same polled with `chatted()` / `keyPressed()` in a loop costs about 1,730.
+- **Simulator.** The same pass over its world's units: a unit is seen at the first pass it is alive at, its death
+  found by the first pass after, each list latest first.
+- **Found on the way:** the build-time evaluator had no object literals, so `print(t, { to: p })` with `p` known
+  failed; and a record's known field (`u.owner` above) was not a value. Both are fixed. The lifted game's
+  `sim.printed()` folds a text shown twice in one frame (its text-line reader); the probe counts the actions.
+- **Checked.** `tests/events.test.ts` (7), eudplib fixtures `events` and `eventsPerPlayer`, `probes/game-events.ts`
+  (4) and `probes/events.ts` (3) in the lifted game and the simulator, at the same frames; every older game probe
+  still passes. **Probe for Remastered:** `Maps/TrigScript/trigscript-b2-events.scx` with its answer sheet: whether
+  Remastered's emulator gives the dying list as 1.16.1 has it (R0 says 0x62842C reads; nobody has walked it), a
+  trained SCV, unloading, 200 made and killed in a frame, and chat and a key in a multiplayer game. Not played yet.
+- **Not yet:** `on.order` (each unit's order against the last frame's: a scan, or a pass over the visible list),
+  `u.killedBy` (the killer's kill count rises a frame before; or the unit's +0x90, last attacking player, from the
+  dying record — both to check), a `removed` flag on a DeadUnit, a morph event, listeners at the top of a script
+  without a program around them.
+
 ### B3. Function values (4.5.0)
 
 ```ts

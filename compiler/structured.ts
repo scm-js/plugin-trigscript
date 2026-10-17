@@ -60,7 +60,8 @@ import type * as TS from "typescript";
 import { ActionType, PlayerGroup } from "../vendor/triggers";
 import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
-import { declarationOf, isScriptClass, libraryCallName } from "./hoist";
+import { declarationOf, isOnCall, isScriptClass, libraryCallName } from "./hoist";
+import { DEAF_KEYS, KEY_NAMES, keyName, parseChatPattern, type ChatPattern, type InputSource } from "./input";
 import { scriptParams } from "./api";
 import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
 import { cellMax } from "./tables";
@@ -517,6 +518,11 @@ export class Structured {
     if (ts.isNumericLiteral(e)) return { value: Number(e.text) };
     if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return { value: e.text };
     if (ts.isPropertyAccessExpression(e)) {
+      // A field of a record of the program that is known when the script is built: what on.died({ owner: P8 }, …) says of `u.owner`.
+      if (ts.isIdentifier(e.expression)) {
+        const r = this.bindingOf(e.expression);
+        if (r?.kind === "record") { const f = r.fields.get(e.name.text); return f?.kind === "value" ? { value: f.value } : undefined; }
+      }
       const obj = sub(e.expression);
       if (!obj || obj.value === null || obj.value === undefined) return undefined;
       return { value: (obj.value as Record<string, unknown>)[e.name.text] };
@@ -553,6 +559,16 @@ export class Structured {
         const v = sub(span.expression);
         if (!v || isGameValue(v.value)) return undefined;
         out += String(v.value) + span.literal.text;
+      }
+      return { value: out };
+    }
+    // `{ to: p }` where p is known when the script is built, as a handler's player is (on.chat): an object of values.
+    if (ts.isObjectLiteralExpression(e)) {
+      const out: Record<string, unknown> = {};
+      for (const p of e.properties) {
+        if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))) { const v = sub(p.initializer); if (!v || isGameValue(v.value)) return undefined; out[p.name.text] = v.value; continue; }
+        if (ts.isShorthandPropertyAssignment(p)) { const v = sub(p.name); if (!v || isGameValue(v.value)) return undefined; out[p.name.text] = v.value; continue; }
+        return undefined;
       }
       return { value: out };
     }
@@ -4448,18 +4464,7 @@ export class Structured {
       if (!call) { if (stmts.length) refuse(); return; }
     } else { refuse(); return; }
     if (!call) return;
-    // What the body declares is the task's own: one of each a slot. A start inside it marked its own task's first.
-    for (const d of [...call.params.map((p) => p.decl), ...(call.result ? [call.result.decl] : []), ...declarations(call.body)]) d.task ??= task;
-    const arrays = new Set<string>();
-    const visit = (root: unknown): void => {
-      if (Array.isArray(root)) { root.forEach(visit); return; }
-      if (!root || typeof root !== "object") return;
-      const o = root as Record<string, unknown>;
-      if (o.kind === "declareArray" && typeof o.array === "string") arrays.add(o.array);
-      Object.values(o).forEach((v) => { if (v && typeof v === "object") visit(v); });
-    };
-    visit(call.body);
-    for (const a of this.arrays) if (arrays.has(a.id)) a.task ??= task;
+    this.claimTask(call, task);
     this.emit({ kind: "start", task, max, call, ...(handle ? { handle: handle.id } : {}), at: this.at(node), label: this.label(node) }, node);
   }
 
@@ -4604,6 +4609,7 @@ export class Structured {
     if (ts.isVoidExpression(bare) && this.isPromise(bare.expression)) { this.startTask(bare.expression, bare, TASK_MAX); return; }
     if (ts.isCallExpression(bare) && this.isLibraryCall(bare, "start")) { this.startCall(bare); return; }
     if (ts.isCallExpression(bare) && this.isLibraryCall(bare, "lines")) { this.uiLines(bare); return; }
+    if (ts.isCallExpression(bare) && isOnCall(ts, this.c.checker, bare)) { this.onEvent(bare); return; }
     if (ts.isCallExpression(bare) && ts.isPropertyAccessExpression(bare.expression) && bare.expression.name.text === "cancel" && this.isTaskType(this.c.checker.getTypeAtLocation(bare.expression.expression))) { this.cancelTask(bare, bare.expression.expression); return; }
     // A promise nothing waits for. sleep() in a function that is not async is the language before 4: it pauses there.
     if (!awaited && ts.isCallExpression(bare) && this.isPromise(bare) && !(this.isLibraryCall(bare, "sleep") && !this.inAsync(bare))) { this.notAwaited(bare); return; }
@@ -5670,6 +5676,232 @@ export class Structured {
     this.emit({ kind: "declare", decl: t, init: num(0), at, label }, e);
     this.uiLines(e, t);
     return varRef(t);
+  }
+
+  /**
+   * `on.created(…)`, `on.died(…)`, `on.chat(…)`, `on.key(…)` (TrigScript 4, B2): a task that, from the next frame on, runs
+   * the handler for every time it happens — a unit the frame's events pass found, a line typed, a key pressed. A handler
+   * that is not async is inlined in the task's loop; an async one is a start of its own each time, its parameters copies.
+   */
+  private onEvent(call: TS.CallExpression, handle?: VarDecl) {
+    const { ts } = this;
+    const what = (call.expression as TS.PropertyAccessExpression).name.text as "created" | "died" | "chat" | "key";
+    const at = this.at(call), label = this.label(call);
+    const named = `on.${what}()`;
+    if (!this.inAsync(call)) { this.c.error(call, `${named} listens beside the program as a task: inside program(async () => { … }).`); return; }
+    const args = [...call.arguments];
+    const isFn = (a: TS.Expression) => { const u = this.unwrap(a); return ts.isArrowFunction(u) || ts.isFunctionExpression(u); };
+    let filter: { type?: number; owner?: number; at?: number } = {};
+    let fnArg: TS.Expression | undefined, optArg: TS.Expression | undefined, word = "";
+    if (what === "created" || what === "died") {
+      const f = args.findIndex(isFn);
+      if (f !== 0 && f !== 1) { this.c.error(call, `${named} takes what to look for, if you like, and a function written where it is used: on.${what}(units.ZergZergling, (u) => { … }).`); return; }
+      if (f === 1) { const got = this.eventFilter(args[0], named); if (!got) return; filter = got; }
+      fnArg = args[f]; optArg = args[f + 1];
+      if (args.length > f + 2) { this.c.error(args[f + 2], `${named} takes the filter, the function and the options.`); return; }
+    } else {
+      const h = args[0] && this.evaluate(args[0]);
+      if (!h || typeof h.value !== "string") { this.c.error(args[0] ?? call, what === "chat" ? `on.chat() takes the pattern first, as chatted() does: on.chat("-give {n}", (p, { n }) => { … }).` : `on.key() takes the key first, as keyPressed() does: on.key("F2", (p) => { … }).`); return; }
+      word = h.value;
+      fnArg = args[1]; optArg = args[2];
+      if (!fnArg || !isFn(fnArg)) { this.c.error(args[1] ?? call, `${named} takes a function written where it is used, after the ${what === "chat" ? "pattern" : "key"}.`); return; }
+      if (args.length > 3) { this.c.error(args[3], `${named} takes the ${what === "chat" ? "pattern" : "key"}, the function and the options.`); return; }
+    }
+    // The options: how many async handlers at once, and whose lines or keys.
+    let max = TASK_MAX;
+    let from: number | undefined;
+    if (optArg) {
+      const h = this.evaluate(optArg);
+      const o = h?.value as Record<string, unknown> | undefined;
+      if (!o || typeof o !== "object" || Array.isArray(o)) { this.c.error(optArg, `${named}'s options are written out, as { max: 4 }.`); return; }
+      for (const [k, v] of Object.entries(o)) {
+        if (v === undefined) continue;
+        if (k === "max") {
+          if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > 255) { this.c.error(optArg, `${named}'s max is how many of its handlers can be waiting at once: a whole number from 1 to 255.`); return; }
+          max = v;
+        } else if (k === "from" && (what === "chat" || what === "key")) {
+          if (typeof v !== "number" || !Number.isInteger(v) || ((v < 0 || v > 7) && v !== CURRENT_PLAYER)) { this.c.error(optArg, `${named}'s from is one player who can type and press keys: P1 … P8, or CurrentPlayer.`); return; }
+          from = v;
+        } else { this.c.error(optArg, `${named} has no option "${k}"; it has max${what === "chat" || what === "key" ? " and from" : ""}.`); return; }
+      }
+    }
+    const fn = this.unwrap(fnArg) as TS.ArrowFunction | TS.FunctionExpression;
+    const waits = !!fn.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+    if (!waits && optArg && max !== TASK_MAX) { this.c.error(optArg, `max is for an async handler: how many can be waiting at once. This one runs within the frame.`); return; }
+    const caught = this.loopCapture(fn, call);
+    if (caught) { this.c.error(caught, `This handler reads ${caught.text}, which the loop around ${named} changes; the task would find it as it is when it reads it. Keep it in a variable the program changes instead.`); return; }
+    const task = ++this.taskCount;
+    const heard: InputSource[] = [];
+    const name = (i: number, or: string) => { const p = fn.parameters[i]; return p && ts.isIdentifier(p.name) ? p.name.text : or; };
+    // The handler, handed `bound`: inlined, or started — its parameters copies of what it is handed, in the started task's cells.
+    const run = (bound: Binding[]) => {
+      if (!waits) {
+        const c = this.callback(fnArg, named, bound, "void", call);
+        if (c) this.emit({ kind: "call", call: c, at, label }, call);
+        return;
+      }
+      const params: Call["params"] = [];
+      const copy = (b: Binding): Binding => {
+        if (b.kind === "var") { const v = this.newVar(b.v.name, b.v.kind, b.v.at, { ...(b.v.bits ? { bits: b.v.bits } : {}), ...(b.v.unsigned ? { unsigned: true } : {}) }); params.push({ decl: v, init: refOf(b.v), label }); return { kind: "var", v }; }
+        if (b.kind === "record") return { ...b, fields: new Map([...b.fields].map(([k, f]) => [k, copy(f)])) };
+        return b;
+      };
+      const mine = bound.map(copy);
+      const inner = ++this.taskCount;
+      const c = this.callback(fnArg, named, mine, "void", call, true);
+      if (!c) return;
+      c.params.unshift(...params);
+      this.claimTask(c, inner);
+      this.emit({ kind: "start", task: inner, max, call: c, at, label }, call);
+    };
+    const body = this.collect(() => {
+      const loop = this.collect(() => {
+        // What happened since the frame before: the first frame of the task, the frame it was started in, looks at nothing.
+        this.emit({ kind: "sleep", cycles: 1, at, label }, call);
+        if (what === "created") {
+          const v = this.newVar(name(0, "(unit)"), "unit", at, { temp: true });
+          const turn = this.collect(() => run([{ kind: "var", v }]));
+          this.emit({ kind: "unitLoop", decl: v, filter: { ...filter }, source: "created", body: turn, at, label }, call);
+        } else if (what === "died") {
+          const v = this.newVar("(dead unit)", "unit", at, { temp: true });
+          const turn = this.collect(() => {
+            // What it was and where, taken as it died; what the filter says for certain is known when the script is built.
+            const fields = new Map<string, Binding>();
+            const known: Record<string, number | undefined> = { type: filter.type !== undefined && filter.type < 228 ? filter.type : undefined, owner: filter.owner !== undefined && filter.owner !== CURRENT_PLAYER ? filter.owner : undefined };
+            // Only what the handler reads is read from the dead unit: each field is a read of the game.
+            const wanted = this.fieldsRead(fn, 0);
+            for (const f of ["type", "owner", "x", "y"] as const) {
+              const k = known[f];
+              if (k !== undefined) { fields.set(f, { kind: "value", value: k }); continue; }
+              if (wanted && !wanted.has(f)) { fields.set(f, { kind: "value", value: 0 }); continue; }
+              const fv = this.newVar(`${name(0, "(dead unit)")}.${f}`, "number", at, { temp: true });
+              this.emit({ kind: "declare", decl: fv, init: { kind: "unitField", unit: unitRef(v), field: f, at, label }, at, label }, call);
+              fields.set(f, { kind: "var", v: fv });
+            }
+            run([{ kind: "record", fields }]);
+          });
+          this.emit({ kind: "unitLoop", decl: v, filter: { ...filter }, source: "died", body: turn, at, label }, call);
+        } else {
+          const players = from !== undefined ? [from] : this.c.perPlayer ? [CURRENT_PLAYER] : [0, 1, 2, 3, 4, 5, 6, 7];
+          let parsed: ChatPattern | undefined;
+          let key = "";
+          if (what === "chat") {
+            try { parsed = parseChatPattern(word); } catch (err) { this.c.error(args[0], `on.chat(): ${err instanceof Error ? err.message : String(err)}`); return; }
+          } else {
+            const deaf = DEAF_KEYS[word.trim().toUpperCase()];
+            const k = keyName(word);
+            if (deaf || !k) { this.c.error(args[0], deaf ? `on.key(): ${deaf}.` : `on.key(): the key is one of ${KEY_NAMES.slice(0, 3).map((x) => JSON.stringify(x)).join(", ")} … "F1" … "Space", "Enter", "Escape", "Left" …; got ${JSON.stringify(word)}.`); return; }
+            key = k;
+          }
+          for (const p of players) {
+            const input = (source: InputSource): NumExpr => ({ kind: "input", input: source, at, label });
+            const source: InputSource = what === "chat" ? { source: "chat", pattern: word, capture: null, player: p } : { source: "key", key, player: p };
+            heard.push(source);
+            const happened = input(source);
+            const turn = this.collect(() => {
+              const bound: Binding[] = [{ kind: "value", value: p }];
+              if (parsed) {
+                const fields = new Map<string, Binding>();
+                parsed.captures.forEach((c, i) => {
+                  const fv = this.newVar(`${name(1, "(typed)")}.${c.name}`, "number", at, { temp: true });
+                  this.emit({ kind: "declare", decl: fv, init: input({ source: "chat", pattern: word, capture: i, player: p }), at, label }, call);
+                  fields.set(c.name, { kind: "var", v: fv });
+                });
+                bound.push({ kind: "record", fields });
+              }
+              run(bound);
+            });
+            this.emit({ kind: "if", cond: { kind: "test", expr: happened, at, label }, then: turn, at, label }, call);
+          }
+        }
+      });
+      this.emit({ kind: "while", body: loop, at, label }, call);
+    });
+    const listener: Call = this.mark({ name: named, at, label, params: [], body }, call);
+    this.claimTask(listener, task);
+    this.emit({ kind: "start", task, max: 1, call: listener, ...(handle ? { handle: handle.id } : {}), listen: what === "created" || what === "died" ? { source: what } : { inputs: heard }, at, label }, call);
+  }
+
+  /**
+   * The fields of a function's parameter its body reads — `u.x`, `const { type } = u` — or null when the parameter is used
+   * some other way (handed on whole), and then every field is wanted.
+   */
+  private fieldsRead(fn: TS.ArrowFunction | TS.FunctionExpression, index: number): Set<string> | null {
+    const { ts } = this;
+    const p = fn.parameters[index];
+    if (!p) return new Set();
+    const out = new Set<string>();
+    if (ts.isObjectBindingPattern(p.name)) {
+      for (const el of p.name.elements) {
+        if (el.dotDotDotToken) return null;
+        const key = el.propertyName ?? el.name;
+        if (!ts.isIdentifier(key)) return null;
+        out.add(key.text);
+      }
+      return out;
+    }
+    if (!ts.isIdentifier(p.name)) return null;
+    const symbol = this.c.checker.getSymbolAtLocation(p.name);
+    let whole = false;
+    const walk = (n: TS.Node): void => {
+      if (whole) return;
+      if (ts.isIdentifier(n) && n !== p.name && this.c.checker.getSymbolAtLocation(n) === symbol) {
+        const parent = n.parent;
+        if (ts.isPropertyAccessExpression(parent) && parent.expression === n) out.add(parent.name.text);
+        else whole = true;
+        return;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(fn.body);
+    return whole ? null : out;
+  }
+
+  /** `const deaths = on.died(…)`: its task's number, to stop it with. */
+  private onEventValue(e: TS.CallExpression): NumExpr {
+    const at = this.at(e), label = this.label(e);
+    const t = this.newVar("(task)", "number", at, { temp: true });
+    this.emit({ kind: "declare", decl: t, init: num(0), at, label }, e);
+    this.onEvent(e, t);
+    return varRef(t);
+  }
+
+  /** What on.created() / on.died() looks for: a unit type, or a filter as unitsOf() takes one; known when the script is built. */
+  private eventFilter(arg: TS.Expression, named: string): { type?: number; owner?: number; at?: number } | null {
+    const h = this.evaluate(arg);
+    if (!h) { this.notConstant(arg, `What ${named} looks for`); return null; }
+    const v = h.value;
+    const out: { type?: number; owner?: number; at?: number } = {};
+    const fail = () => { this.c.error(arg, `${named} looks for a unit type — units.ZergZergling — or a filter such as { type: units.TerranMarine, owner: P1, at: locations.Base }.`); return null; };
+    if (typeof v === "number") out.type = v;
+    else if (v && typeof v === "object" && !Array.isArray(v) && !isGameValue(v)) {
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+        if (x === undefined || x === null) continue;
+        if ((k !== "type" && k !== "owner" && k !== "at") || typeof x !== "number" || !Number.isInteger(x)) return fail();
+        out[k] = x;
+      }
+    } else return fail();
+    if (out.type === 229) delete out.type;
+    if (out.type !== undefined && (out.type < 0 || out.type > 232)) return fail();
+    if (out.owner !== undefined && (out.owner < 0 || (out.owner > 11 && out.owner !== CURRENT_PLAYER))) { this.c.error(arg, `${named}'s owner is one player: P1 … P12, or CurrentPlayer.`); return null; }
+    if (out.at !== undefined && (out.at === 0 || out.at === 64)) delete out.at;
+    if (out.at !== undefined && (out.at < 0 || out.at > 255)) return fail();
+    return out;
+  }
+
+  /** What a task's body declares is the task's own: a cell of each a slot. A task started inside it marked its own first. */
+  private claimTask(c: Call, task: number) {
+    for (const d of [...c.params.map((p) => p.decl), ...(c.result ? [c.result.decl] : []), ...declarations(c.body)]) d.task ??= task;
+    const arrays = new Set<string>();
+    const visit = (root: unknown): void => {
+      if (Array.isArray(root)) { root.forEach(visit); return; }
+      if (!root || typeof root !== "object") return;
+      const o = root as Record<string, unknown>;
+      if (o.kind === "declareArray" && typeof o.array === "string") arrays.add(o.array);
+      Object.values(o).forEach((x) => { if (x && typeof x === "object") visit(x); });
+    };
+    visit(c.body);
+    for (const a of this.arrays) if (arrays.has(a.id)) a.task ??= task;
   }
 
   /** `names.join(", ")`: the texts one after another with the separator between, made where the call stands. */
@@ -7104,6 +7336,7 @@ export class Structured {
     if (this.promiseCall(e)) return this.raceValue(e, "number") as NumExpr | null;
     if (this.isLibraryCall(e, "start")) return this.startValue(e);
     if (this.isLibraryCall(e, "lines")) return this.uiLinesValue(e);
+    if (isOnCall(this.ts, this.c.checker, e)) return this.onEventValue(e);
     const method = this.methodCall(e);
     if (method !== undefined) return this.numberOf(method, e);
     if (ts.isIdentifier(e.expression) && (e.expression.text === "parseInt" || e.expression.text === "Number" || e.expression.text === "parseFloat") && !this.gameDeclaration(e.expression)) {
