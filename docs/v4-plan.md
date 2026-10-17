@@ -1012,7 +1012,7 @@ on.died(units.TerranMarine, (u) => print("Marine down"));                 // at 
   probe; `game-check` of the Remastered probe: 0 accesses that end the game. **Probe for Remastered:**
   `Maps/TrigScript/trigscript-b2-events-2.scx` with its answer sheet — a fight (killer both ways), a program's kill,
   Psionic Storm (order and kills), an Archon, a Siege Tank both ways, a Drone into a Hatchery and a Larva into an
-  egg into a Drone, a move order, 300 Overlords with the walk on. Not played yet.
+  egg into a Drone, a move order, 300 Overlords with the walk on. **Played in Remastered, 2026-10-17, A and B:** the fight said "killed 37 by P1" for each of the four Zerglings and gave 25 minerals each (75 after three, 100 after four), and for the one Marine that fell "killed 0 by P2" and the top-of-file listener's "top: Marine down"; the program's two Firebat kills said "died 32" twice and no "killed". So Remastered's dying record has hit points 0 and the killer at +0x90 after a fight, as 1.16.1's does. C to G not reported yet.
 - **Not yet:** a morph in a test in the lifted game (scm-sim's test handle would take a player's command); `on.order`
   only for units of the filter's types (skip the order read for the rest: cheaper, but a unit that morphs into a
   watched type would bring a stale order once); whether a program's `u.damage()` to 0 credits an earlier attacker.
