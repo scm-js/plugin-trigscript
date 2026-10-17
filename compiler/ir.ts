@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 20: fixed-point numbers — `VarDecl.fixed` / `ArrayDecl.fixed` (a 16.16 number: the cell holds the value times 65 536), `fixed` on a `const` (its value is the raw cell), the intrinsics `fmul` / `fdiv` (a product and a quotient of two fixed numbers, rounded towards zero), `sqrt` (of a fixed, rounded down) and `atan2` (`table`: the program's array of arc tangents it reads), and `fixed` on a printed number (shown as a decimal). `numbers.ts` writes them; a backend never works a type out.
  * 19: more events — `unitLoop.source` also `killed` (a death in a fight, the killer in `was`), `ordered` (a unit that took up a new order, the one it had in `was`) and `morphed` (a unit that turned into another type, the type it was in `was`); `unitLoop.event` filters them by the new order or the killer.
  * 18: events — `unitLoop.source`: the units that came onto the map (`created`) or died (`died`) since the frame before, as the frame's events pass found them, where a loop without one goes through the unit table.
  * 17: texts built a piece at a time — `buildText` writes parts into a buffer (`reset` starts it empty) and `built` is what the buffer holds, which is how a JSX text is put together without copying it at every piece; `char` among the parts, one byte from a number (a colour code).
@@ -29,7 +30,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 19;
+export const IR_VERSION = 20;
 
 /** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
@@ -57,6 +58,8 @@ export interface VarDecl {
   bits?: 8 | 16;
   /** A `u32`: the 32 bits read as 0 … 4 294 967 295. Unset, a number is signed (a `u8` / `u16` never goes below zero either way). */
   unsigned?: boolean;
+  /** A `fixed`: a 16.16 number, the cell the value times 65 536 (signed). Declared so, or found by `numbers.ts` to be stored a fraction. */
+  fixed?: boolean;
   /** A backend's scratch value that dies with the statement (a function's result). */
   temp?: boolean;
   /** A variable of a task's body (`start`, its `task`): a cell for each of its slots, within each player's row. */
@@ -79,6 +82,8 @@ export interface ArrayDecl {
   shared: boolean;
   bits?: 8 | 16;
   unsigned?: boolean;
+  /** Its cells are `fixed` numbers (16.16), as a variable's are; `values` are then the raw cells. */
+  fixed?: boolean;
   values?: number[];
   /** A list of texts the script has, which a program indexes with a variable (`titles[level]`): `values` are their places here, the lowering's their ids in the built map's table. */
   texts?: string[];
@@ -240,7 +245,8 @@ export const I32_MIN = -0x80000000;
 export const U32_MAX = 0xffffffff;
 
 export type NumExpr =
-  | { kind: "const"; value: number }
+  /** `fixed`: a 16.16 number, `value` its raw cell (the value times 65 536); `numbers.ts` reads it so, a backend takes `value` as it is. */
+  | { kind: "const"; value: number; fixed?: boolean }
   | { kind: "var"; id: string }
   /** `hp[i]`: a cell of an array of numbers; 0 when the index is past either end. */
   | { kind: "element"; array: string; index: NumExpr; at: At }
@@ -255,7 +261,7 @@ export type NumExpr =
   | { kind: "pop"; array: string; at: At }
   | { kind: "unary"; op: "-"; expr: NumExpr; at: At }
   /** `u32(x)` / `i32(x)`: the same 32 bits read the other way. Nothing is computed; it is there for `numbers.ts`, which works out what each operation reads its sides as. */
-  | { kind: "cast"; to: "u32" | "i32"; expr: NumExpr; at: At }
+  | { kind: "cast"; to: "u32" | "i32" | "fixed"; expr: NumExpr; at: At }
   /** `unsigned`, on `/` and `%`: both sides are `u32`s. Unset, the division is signed and rounds towards zero, the remainder taking the dividend's sign. */
   | { kind: "binary"; op: ArithOp; left: NumExpr; right: NumExpr; unsigned?: boolean; at: At; label: string }
   /** A value of the game, read when the expression is evaluated. */
@@ -269,8 +275,16 @@ export type NumExpr =
   /** What a player did, as it reached every computer (`input.ts`): a key or a click reads 1 on its frame, the mouse its place on the map, a typed line 1 or a value it carried. */
   | { kind: "input"; input: InputSource; at: At; label: string }
   | { kind: "ternary"; cond: BoolExpr; whenTrue: NumExpr; whenFalse: NumExpr; at: At; label: string }
-  /** `unsigned`, on `min` and `max`: the arguments are compared as `u32`s. `abs` is of a signed number. */
-  | { kind: "intrinsic"; name: "min" | "max" | "abs"; args: NumExpr[]; unsigned?: boolean; at: At; label: string }
+  /**
+   * `unsigned`, on `min` and `max`: the arguments are compared as `u32`s. `abs` is of a signed number.
+   * Of fixed numbers (16.16, raw cells): `fmul` is a × b / 65 536 and `fdiv` a × 65 536 / b, each rounded towards zero
+   * and wrapping at 32 bits (a divisor of 0 gives 0); `sqrt` is the square root of a fixed, rounded down (0 below
+   * zero), or with `unsigned` of a whole number read from 0 up, the root still a fixed; `atan2` of (y, x) is the angle in radians, a fixed from −π to π, read from `table`, an array of the program
+   * whose 1 025 cells are atan(i / 1 024), between its cells; `sin` / `cos` of (x, scale) read `table`, the 4 096 cells
+   * sin(2π i / 4 096), at fmul(x, scale) (a quarter turn on for `cos`), between its cells. The front end also gives
+   * `floor` / `ceil` / `round` / `trunc`, which `numbers.ts` turns into the operations above and no backend meets.
+   */
+  | { kind: "intrinsic"; name: "min" | "max" | "abs" | "fmul" | "fdiv" | "sqrt" | "atan2" | "sin" | "cos" | "floor" | "ceil" | "round" | "trunc"; args: NumExpr[]; unsigned?: boolean; table?: string; at: At; label: string }
   /** `s.length`, in characters (code points). */
   | { kind: "textLength"; of: TextExpr; at: At; label: string }
   /** `s.indexOf(find, from)`: the place of the first character of the first match at or after `from`, in characters; −1 when there is none. */
@@ -406,8 +420,8 @@ export type BoolExpr =
 /** A piece of a `print`'s text: written text, a number's digits, a player's name, the colour code of a player's colour. */
 export type TextPart =
   | { kind: "text"; text: string }
-  /** `unsigned`: printed as a `u32`; unset, a number below zero has its minus sign. */
-  | { kind: "number"; expr: NumExpr; unsigned?: boolean }
+  /** `unsigned`: printed as a `u32`; unset, a number below zero has its minus sign. `fixed`: a 16.16 number, printed as a decimal of up to four places (3.5, -0.25). */
+  | { kind: "number"; expr: NumExpr; unsigned?: boolean; fixed?: boolean }
   | { kind: "name"; player: number }
   | { kind: "color"; player: number }
   /** A text of the program: a variable's, a function's result. */

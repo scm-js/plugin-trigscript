@@ -620,6 +620,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(19);
+    expect(ir.version).toBe(20);
   });
 });

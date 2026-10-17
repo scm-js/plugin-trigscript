@@ -34,6 +34,7 @@
  * the next frame finds. A key, a click and a typed line last that one frame, as they do in the
  * game; the mouse stays where it was put.
  */
+import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "./fixedMath";
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
 import { ORDER_OF_VERB } from "./orders";
@@ -43,6 +44,10 @@ import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { Simulation, type SimulationOptions } from "./simulate";
 import { TABLE_FIELDS } from "./tables";
+import { FOG_SHAPES } from "./fogShapes";
+
+/** The tiles across and down the simulator's fog keeps: the largest map's. */
+const FOG_SIZE = 256;
 import type { SimBounds, SimUnit, SimUnitInit, World } from "./world";
 
 export type { SimBounds, SimUnit, SimUnitInit, SimUnitProperties } from "./world";
@@ -577,6 +582,13 @@ class ProgramRun {
         const args: number[] = [];
         for (const a of e.args) args.push(yield* this.num(a));
         if (e.name === "abs") return Math.abs(args[0]) | 0;
+        if (e.name === "fmul") return fixedMul(args[0], args[1]);
+        if (e.name === "fdiv") return fixedDiv(args[0], args[1]);
+        if (e.name === "sqrt") return fixedSqrt(args[0], !!e.unsigned);
+        if (e.name === "atan2" || e.name === "sin" || e.name === "cos") {
+          const table = (this.arrays.get(e.table ?? "")?.cells ?? []).map((c) => Number(c) | 0);
+          return e.name === "atan2" ? fixedAtan2(args[0], args[1], table) : fixedSin(args[0], args[1], table, e.name === "cos");
+        }
         const seen = e.unsigned ? args.map((a) => a >>> 0) : args;
         return (e.name === "min" ? Math.min(...seen) : Math.max(...seen)) | 0;
       }
@@ -629,7 +641,7 @@ class ProgramRun {
   private *parts(parts: TextPart[], used: TextValue[]): Gen<string> {
     let out = "";
     for (const p of parts) {
-      if (p.kind === "number") out += String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
+      if (p.kind === "number") out += p.fixed ? fixedText(yield* this.num(p.expr)) : String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
       // A colour code is a control character in the game; the log keeps the words, as it does for a player's colour.
       else if (p.kind === "char") yield* this.num(p.expr);
       else if (p.kind === "value") { const v = yield* this.text(p.text); used.push(v); out += v.s; }
@@ -1502,14 +1514,61 @@ export class ProgramSimulation {
   tableRead(c: TableCell): number {
     // The game's own count of frames, which a program can read and never write (memory.ts).
     if (c.name === "memory.game.frame") return this.frame;
+    // The vision countdown, run down by the frames (visionStep) as much as written by the programs.
+    if (c.name === "memory.vision.countdown") return this.countdown;
     const stored = this.tables.get(this.cellKey(c));
     if (typeof stored === "number") return Math.floor(stored / (c.scale ?? 1));
     const given = this.tableOf?.(c);
     return given === undefined ? 0 : Math.max(0, Math.trunc(given));
   }
 
+  /**
+   * The fog of war, as far as the simulator draws it: each player's tiles, 0 never seen, 1 seen before, 2 seen now. A
+   * unit lights the tiles of its sight when it is made — a unit whose type's sight a program set (\`stats(t).sight\`),
+   * with the shape a flying unit of that sight has in the game (FOG_SHAPES), which is what the fog library draws with —
+   * and the vision countdown (\`memory.vision.countdown\`) run down to 0 at the start of a frame puts every tile seen
+   * now back to seen before and has the units there light theirs again, as the game's frame step does.
+   */
+  private readonly vision = new Map<number, Uint8Array>();
+  private countdown = 0;
+  private visionOf(player: number): Uint8Array {
+    let v = this.vision.get(player);
+    if (!v) { v = new Uint8Array(FOG_SIZE * FOG_SIZE); this.vision.set(player, v); }
+    return v;
+  }
+  private reveal(u: SimUnit): void {
+    const sight = this.tables.get(`unit.sight:${u.type}`);
+    if (typeof sight !== "number" || sight < 1 || u.owner > 7) return;
+    const shape = FOG_SHAPES[Math.min(sight, FOG_SHAPES.length) - 1];
+    const cy = shape.findIndex((r) => r.includes("@")), cx = shape[cy].indexOf("@");
+    const tx = Math.floor(u.x / 32), ty = Math.floor(u.y / 32), v = this.visionOf(u.owner);
+    shape.forEach((row, dy) => { for (let dx = 0; dx < row.length; dx++) if (row[dx] !== ".") { const x = tx + dx - cx, y = ty + dy - cy; if (x >= 0 && y >= 0 && x < FOG_SIZE && y < FOG_SIZE) v[y * FOG_SIZE + x] = 2; } });
+  }
+  /** At the start of a frame: the countdown, and the wipe when it runs out. */
+  private visionStep(): void {
+    if (this.countdown <= 0) return;
+    if (--this.countdown > 0) return;
+    this.countdown = 100;
+    for (const v of this.vision.values()) for (let i = 0; i < v.length; i++) if (v[i] === 2) v[i] = 1;
+    for (const u of this.world.game.units) if (u.alive) this.reveal(u);
+  }
+  /** What a player sees of the fog, as GameSim.fog gives it from the game: "#" now, "+" before, "." never. */
+  fog(player: number, area?: { x: number; y: number; width: number; height: number }): string[] {
+    const w = this.tableOf?.({ name: "memory.map.width", base: 0x57f1d4, stride: 0, index: 0, width: 2 }) || 128;
+    const h = this.tableOf?.({ name: "memory.map.height", base: 0x57f1d6, stride: 0, index: 0, width: 2 }) || 128;
+    const { x = 0, y = 0, width = w, height = h } = area ?? {};
+    const v = this.visionOf(player), rows: string[] = [];
+    for (let ty = y; ty < Math.min(y + height, FOG_SIZE); ty++) {
+      let row = "";
+      for (let tx = x; tx < Math.min(x + width, FOG_SIZE); tx++) row += ".+#"[v[ty * FOG_SIZE + tx]];
+      rows.push(row);
+    }
+    return rows;
+  }
+
   /** `scaled`: the value is already what the cell stores. A cell holds what its width allows and no more. */
   tableWrite(c: TableCell, value: number, scaled: boolean, text?: string): void {
+    if (c.name === "memory.vision.countdown") this.countdown = value;
     if (text !== undefined) { this.tables.set(this.cellKey(c), text); return; }
     const raw = scaled ? value : value * (c.scale ?? 1);
     this.tables.set(this.cellKey(c), Math.min(raw, cellMax(c.width)));
@@ -1562,7 +1621,9 @@ export class ProgramSimulation {
       case ActionType.Comment: case ActionType.PreserveTrigger: return;
       default: {
         // What is done to units is done, and said like everything else.
-        this.game.act(a, run.player);
+        const made: SimUnit[] = [];
+        this.game.act(a, run.player, made);
+        for (const u of made) this.reveal(u);
         const ev: ProgramEvent = { cycle: this.cycle, frame: this.frame, program: run.index, player: run.player, at, action: a };
         const text = programText ?? this.world.text(a.text);
         if (text !== undefined) ev.text = text;
@@ -1615,6 +1676,7 @@ export class ProgramSimulation {
   /** One frame: every program in order, from where it left off. */
   step(): void {
     this.eventsPass();
+    this.visionStep();
     // What was done since the last frame is what this one finds, and only this one.
     this.current = this.queued;
     this.queued = { events: new Set(), lines: new Map() };

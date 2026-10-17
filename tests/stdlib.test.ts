@@ -13,6 +13,7 @@ import { defaultLib } from "../bundle/lib.mjs";
 import { STDLIB_SOURCES } from "../compiler/generated/stdlib";
 import { stdlibImports } from "../compiler/stdlib";
 import type { Program, Stmt } from "../compiler/ir";
+import { ProgramSimulation } from "../compiler/simulateIr";
 
 const LIB = defaultLib();
 const NAMES = defaultScriptNames();
@@ -36,6 +37,8 @@ function walk(stmts: Stmt[], out: Stmt[] = []): Stmt[] {
     // A loop unrolled when the script is built: a copy of its body for each turn.
     const turns = (s as unknown as { iterations?: Stmt[][] }).iterations;
     if (turns) for (const t of turns) walk(t, out);
+    const cases = (s as unknown as { cases?: { body: Stmt[] }[] }).cases;
+    if (cases) for (const c of cases) walk(c.body, out);
   }
   return out;
 }
@@ -122,6 +125,8 @@ describe("fog", () => {
     const actions = s.filter((x): x is Extract<Stmt, { kind: "action" }> => x.kind === "action").map((a) => [a.record.type, a.record.unitId]);
     expect(actions).toEqual([[44, BRUSH_UNITS[4]], [24, BRUSH_UNITS[4]]]);
     expect(s.some((x) => x.kind === "if")).toBe(false);
+    // The size known when the script is built: of disc()'s switch, only its case is built.
+    expect(s.filter((x) => x.kind === "switch").map((x) => (x as Extract<Stmt, { kind: "switch" }>).cases.length)).toEqual([1]);
   });
 
   it("light() with a size the program works out keeps the choice for the game", () => {
@@ -193,5 +198,91 @@ describe("nextFrame() and a sized centerLocation", () => {
     const r = ok(`program(() => { let x = 5; centerLocation(3 as Location, x, 64, 32, 48); });`);
     expect(walk(r.ir[0].body).find((s) => s.kind === "centerLocation")).toMatchObject({ size: { width: { value: 32 }, height: { value: 48 } } });
     expect(compile(`program(() => {\n  // @ts-expect-error\n  centerLocation(3 as Location, 1, 2, 3);\n});`).diagnostics.map((d) => d.message).join()).toMatch(/a width and a height to size it too/);
+  });
+});
+
+describe("fog, as the simulator draws it", () => {
+  /** A script's fog after `frames` frames of the simulator: player 1's, the top-left `w` × `h` tiles. */
+  const fogAfter = (main: string, frames: number, w = 128, h = 96): string[] => {
+    const r = ok(main);
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings });
+    sim.run(frames);
+    return sim.fog(0, { x: 0, y: 0, width: w, height: h });
+  };
+
+  it("draws a brush's tiles where it is made, and the countdown wipes them the next frame", () => {
+    const lit = (rows: string[]) => rows.join("").split("").filter((c) => c === "#").length;
+    const once = `import { fog } from "trigscript/fog";\nprogram(async () => { await nextFrame(); fog.light(P1, 30, 20, 3); await nextFrame(); await nextFrame(); });`;
+    expect(lit(fogAfter(once, 2))).toBe(52); // size 3: 52 tiles
+    expect(lit(fogAfter(once, 4))).toBe(0);
+  });
+
+  it("fog.show(n) keeps a picture on the board n frames, then the board is wiped", () => {
+    const lit = (rows: string[]) => rows.join("").split("").filter((c) => c === "#").length;
+    const shown = `import { fog } from "trigscript/fog";\nprogram(async () => { await nextFrame(); fog.light(P1, 30, 20, 3); await fog.show(3); await nextFrame(); await nextFrame(); });`;
+    expect([2, 3, 4, 5].map((f) => lit(fogAfter(shown, f)))).toEqual([52, 52, 52, 0]);
+  });
+
+  it("fog.rect is exact from 3 × 4 up", () => {
+    const rows = fogAfter(`import { fog } from "trigscript/fog";\nprogram(async () => { let w = 7, h = 9; while (true) { fog.rect(P1, 10, 12, w, h); await nextFrame(); } });`, 3, 40, 40);
+    for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) expect(rows[y][x] === "#", `${x},${y}`).toBe(x >= 10 && x < 17 && y >= 12 && y < 21);
+  });
+
+  // Columns of random heights, with and without shading, in both inks: every tile as the layout says.
+  for (const ink of ["light", "dark"] as const) {
+    it(`fog.columns, ${ink} ink: each column lit from the middle out (light) or from the edges in (dark), exactly`, () => {
+      let seed = ink === "light" ? 7 : 11;
+      const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) % 97);
+      const heights = Array.from({ length: 24 }, () => rnd());
+      const rows = fogAfter(`import { fog } from "trigscript/fog";
+const H = ${JSON.stringify(heights)};
+const VIEW = { count: 24, height: 96, ink: "${ink}" } as const;
+program(async () => { const hs: number[] = new Array(24).fill(0); let i = 0; while (i < 24) { hs[i] = H[i]; i++; } while (true) { fog.columns(P1, 1, 0, VIEW, hs); await nextFrame(); } });`, 3);
+      for (let c = 0; c < 24; c++) {
+        const a = Math.min(heights[c] >> 1, 48);
+        for (let x = 1 + 3 * c; x < 4 + 3 * c; x++) for (let y = 0; y < 96; y++) {
+          const wall = y >= 48 - a && y < 48 + a;
+          // (A wall less than 4 tall is drawn a brush tall: the one place the picture may be off, and only by a tile or two.)
+          if (ink === "light" && a < 2) continue;
+          if (ink === "dark" && a > 46) continue;
+          expect(rows[y][x] === "#", `column ${c} (${heights[c]} tall), tile ${x},${y}`).toBe(ink === "light" ? wall : !wall);
+        }
+      }
+    });
+  }
+
+  it("fog.columns, outline (the default): every column its top and bottom edges, and whole where one face meets another, on the nearer", () => {
+    const rows = fogAfter(`import { fog } from "trigscript/fog";
+const VIEW = { count: 4, height: 96 } as const;
+program(async () => { const hs: number[] = [60, 60, 80, 80]; const faces: number[] = [3, 3, 8, 8]; while (true) { fog.columns(P1, 1, 0, VIEW, hs, faces); await nextFrame(); } });`, 3);
+    const column = (c: number) => rows.map((r) => r[2 + 3 * c]).join("");
+    const hollow = (a: number) => ".".repeat(48 - a) + "#".repeat(4) + ".".repeat(2 * a - 8) + "#".repeat(4) + ".".repeat(48 - a);
+    expect(column(0)).toBe(hollow(30));
+    expect(column(1)).toBe(hollow(30));
+    // Faces 3 and 8 meet between columns 1 and 2: the taller, 2, is the edge.
+    expect(column(2)).toBe(".".repeat(8) + "#".repeat(80) + ".".repeat(8));
+    expect(column(3)).toBe(hollow(40));
+  });
+
+  it("fog.columns with shading: a shaded column is hollow, lit a brush deep along its top and bottom edges", () => {
+    const rows = fogAfter(`import { fog } from "trigscript/fog";
+const VIEW = { count: 2, height: 96, ink: "light", shading: "hollow" } as const;
+program(async () => { const hs: number[] = [80, 80]; const sh: number[] = [0, 1]; while (true) { fog.columns(P1, 1, 0, VIEW, hs, sh); await nextFrame(); } });`, 3);
+    const column = (x: number) => rows.map((r) => r[x]).join("");
+    expect(column(2)).toBe(".".repeat(8) + "#".repeat(80) + ".".repeat(8));
+    const want = ".".repeat(8) + "#".repeat(4) + ".".repeat(72) + "#".repeat(4) + ".".repeat(8);
+    expect(column(5)).toBe(want);
+  });
+
+  it("fog.columns, panelled: hollow, and lit a brush deep across each half's quarters", () => {
+    const rows = fogAfter(`import { fog } from "trigscript/fog";
+const VIEW = { count: 1, height: 96, ink: "light", shading: "panelled" } as const;
+program(async () => { const hs: number[] = [80]; const sh: number[] = [1]; while (true) { fog.columns(P1, 1, 0, VIEW, hs, sh); await nextFrame(); } });`, 3);
+    const column = rows.map((r) => r[2]).join("");
+    // Half its height is 40: the edges (rows 8–11, 84–87) and bands centred 10, 20 and 30 rows from the middle.
+    const lit = new Set<number>();
+    for (const r of [8, 9, 10, 11, 84, 85, 86, 87]) lit.add(r);
+    for (const at of [10, 20, 30]) for (let d = -2; d < 2; d++) { lit.add(48 - at + d); lit.add(48 + at + d); }
+    expect(column).toBe(Array.from({ length: 96 }, (_, y) => (lit.has(y) ? "#" : ".")).join(""));
   });
 });

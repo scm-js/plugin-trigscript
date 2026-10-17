@@ -79,6 +79,14 @@ ${kw}type u16 = number & Brand<"u16">;
  * but compare exactly: a number below zero is smaller than any u32.
  */
 ${kw}type u32 = number & Brand<"u32">;
+/**
+ * A number with a fraction: 16.16 fixed point, −32 768 … 32 767.99998 in steps of 1/65 536. A number is one as soon as a
+ * fraction is stored into it (\`let x = 0.5\`, \`x += speed * 0.1\`, \`Math.cos(a)\`), so the annotation is only needed
+ * to say so before anything does. + − × ÷ and the comparisons work as on any number, and a whole number beside one is
+ * turned into one; Math.floor / round / trunc / ceil make a whole number of it, which is what an index, a count or a
+ * place on the map takes. Math.sqrt, sin, cos, tan, atan, atan2 and hypot give one (angles in radians, as in JavaScript).
+ */
+${kw}type fixed = number & Brand<"fixed">;
 /** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
 ${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
 
@@ -311,6 +319,8 @@ ${kw}function clamp(value: number, low: number, high: number): number;
 ${kw}function u32(value: number): u32;
 /** The same 32 bits read as a signed number: i32(4294967295) is -1. Costs nothing in a program; \`x | 0\` of a u32 says the same. */
 ${kw}function i32(value: number): number;
+/** A whole number as a fixed one, so that what is computed with it keeps the fraction: 3 / 2 is 1, 3 / fixed(2) is 1.5. Costs a shift in a program. */
+${kw}function fixed(value: number): fixed;
 /**
  * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
  * number goes — \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,
@@ -816,6 +826,12 @@ export interface Sim {
   deaths(player: Player, type: UnitType): number;
   kills(player: Player, type: UnitType): number;
   switch(n: Switch): boolean;
+  /**
+   * What \`player\` sees of the map's fog of war this frame, a text a row of tiles: "#" lit now, "+" seen before (fog),
+   * "." never seen. \`area\` takes a part of the map (tiles), the whole of it by default. Null where the world has no
+   * fog to read: the simulator does not draw it, the game does — run the tests in the game to check a picture.
+   */
+  fog(player: Player, area?: { x: number; y: number; width: number; height: number }): string[] | null;
   /** Where a location is now: a program may have moved it. */
   location(n: Location): { left: number; top: number; right: number; bottom: number } | undefined;
 

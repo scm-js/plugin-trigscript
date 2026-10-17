@@ -70,7 +70,11 @@ import { markViewWrites, type View } from "./views";
 import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
 import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
+import { FIXED_MAX, FIXED_MIN, fixedRaw } from "./numbers";
 import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+
+/** Bindings that are there once they are made, never null or undefined: what `x !== undefined` of one is known to be. */
+const PRESENT_KINDS: ReadonlySet<string> = new Set(["array", "records", "record", "grid", "lists", "texts", "hash", "keyed", "row"]);
 
 /** The outcome of a thunk, kept so it runs once whatever asks. */
 type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
@@ -408,14 +412,14 @@ export class Structured {
   private readonly collections = new Map<object, Keyed>();
   private readonly recordLists = new Map<object, Extract<Binding, { kind: "records" }>>();
 
-  private newArray(name: string, kind: "number" | "boolean", length: number, at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; values?: number[] } = {}): ArrayDecl {
-    const a: ArrayDecl = { id: `${name}#${this.nextId++}`, name, kind, length, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.values ? { values: extra.values } : {}), at };
+  private newArray(name: string, kind: "number" | "boolean", length: number, at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; fixed?: boolean; values?: number[] } = {}): ArrayDecl {
+    const a: ArrayDecl = { id: `${name}#${this.nextId++}`, name, kind, length, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.fixed ? { fixed: true } : {}), ...(extra.values ? { values: extra.values } : {}), at };
     this.arrays.push(a);
     return a;
   }
 
-  private newVar(name: string, kind: VarDecl["kind"], at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; temp?: boolean; text?: "id" | "made" } = {}): VarDecl {
-    const v: VarDecl = { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.temp ? { temp: true } : {}), ...(kind === "text" ? { text: extra.text ?? "made" } : {}), at };
+  private newVar(name: string, kind: VarDecl["kind"], at: At, extra: { shared?: boolean; bits?: 8 | 16; unsigned?: boolean; fixed?: boolean; temp?: boolean; text?: "id" | "made" } = {}): VarDecl {
+    const v: VarDecl = { id: `${name}#${this.nextId++}`, name, kind, shared: extra.shared ?? false, ...(extra.bits ? { bits: extra.bits } : {}), ...(extra.unsigned ? { unsigned: true } : {}), ...(extra.fixed ? { fixed: true } : {}), ...(extra.temp ? { temp: true } : {}), ...(kind === "text" ? { text: extra.text ?? "made" } : {}), at };
     if (kind === "text") this.textKinds.set(v.id, v.text ?? "made");
     return v;
   }
@@ -519,6 +523,7 @@ export class Structured {
     const sub = (x: TS.Expression) => this.evaluate(x, depth + 1);
     if (ts.isIdentifier(e)) {
       const b = this.bindingOf(e);
+      if (!b && e.text === "undefined") return { value: undefined };
       return b?.kind === "value" ? { value: b.value } : undefined;
     }
     if (e.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
@@ -609,10 +614,43 @@ export class Structured {
       const cls = this.classOf(e.right);
       return b?.kind === "record" && b.cls && cls ? { value: this.chainOf(b.cls).includes(cls) } : undefined;
     }
+    // `shaded !== undefined` of an optional parameter: an array, a record or a collection the call gave is there, whatever
+    // is in it (a unit is not one of these: it may be null while the game runs).
+    if (ts.isBinaryExpression(e) && [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken].includes(e.operatorToken.kind)) {
+      const nothing = (x: TS.Expression) => { const u = this.unwrap(x); return u.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(u) && u.text === "undefined" && !this.bindingOf(u)); };
+      const other = nothing(e.left) ? e.right : nothing(e.right) ? e.left : null;
+      const b = other ? this.bindingOf(other) : undefined;
+      if (b && PRESENT_KINDS.has(b.kind)) {
+        const equal = e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken || e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
+        return { value: !equal };
+      }
+    }
+    if (ts.isBinaryExpression(e) && (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken || e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)) {
+      // `options.width ?? 3`, `a || b`, `a && b` of values known when the script is built: as JavaScript decides them,
+      // the right side only looked at when the left does not decide.
+      const l = sub(e.left);
+      if (!l || isGameValue(l.value)) return undefined;
+      const k = e.operatorToken.kind;
+      // Only of plain values: a condition or an action of the library is an object, and its truth is the game's.
+      const v = l.value;
+      const plain = v === null || v === undefined || typeof v === "number" || typeof v === "boolean" || typeof v === "string";
+      if (!plain && (k !== ts.SyntaxKind.QuestionQuestionToken || isBuilder(v))) return undefined;
+      const decided = k === ts.SyntaxKind.QuestionQuestionToken ? v !== null && v !== undefined : k === ts.SyntaxKind.BarBarToken ? !!v : !v;
+      if (decided) return l;
+      const r = sub(e.right);
+      return r && !isGameValue(r.value) ? r : undefined;
+    }
     if (ts.isBinaryExpression(e)) {
       const l = sub(e.left);
       const r = sub(e.right);
       if (!l || !r || isGameValue(l.value) || isGameValue(r.value)) return undefined;
+      switch (e.operatorToken.kind) {
+        case ts.SyntaxKind.EqualsEqualsEqualsToken: return { value: l.value === r.value };
+        case ts.SyntaxKind.ExclamationEqualsEqualsToken: return { value: l.value !== r.value };
+        // (== and != as TypeScript lets them be written between two values of one type: the same as === and !==.)
+        case ts.SyntaxKind.EqualsEqualsToken: return { value: l.value === r.value };
+        case ts.SyntaxKind.ExclamationEqualsToken: return { value: l.value !== r.value };
+      }
       const a = l.value as number;
       const b = r.value as number;
       switch (e.operatorToken.kind) {
@@ -628,6 +666,10 @@ export class Structured {
         case ts.SyntaxKind.AmpersandToken: return { value: a & b };
         case ts.SyntaxKind.BarToken: return { value: a | b };
         case ts.SyntaxKind.CaretToken: return { value: a ^ b };
+        case ts.SyntaxKind.LessThanToken: return { value: a < b };
+        case ts.SyntaxKind.LessThanEqualsToken: return { value: a <= b };
+        case ts.SyntaxKind.GreaterThanToken: return { value: a > b };
+        case ts.SyntaxKind.GreaterThanEqualsToken: return { value: a >= b };
         default: return undefined;
       }
     }
@@ -801,6 +843,13 @@ export class Structured {
         continue;
       }
       if (!d.initializer) { this.c.error(d, `Give ${d.name.text} an initial value: let ${d.name.text} = 0 or = false.`); continue; }
+      // `const count = layout.count` in a game function whose `layout` is known when the script is built: a value too, as
+      // a const the plan computed is (a number, a boolean or a text: an object's fields may still be assigned).
+      if (list.flags & ts.NodeFlags.Const) {
+        const known = this.evaluate(d.initializer);
+        const v = known?.value;
+        if (known && (typeof v === "number" || typeof v === "boolean" || typeof v === "string")) { this.scope.bind(d, { kind: "value", value: v }); continue; }
+      }
       const init = this.unwrap(d.initializer);
       if (ts.isCallExpression(init) && ts.isIdentifier(init.expression)) {
         const g = this.gameDeclaration(init.expression);
@@ -1289,7 +1338,7 @@ export class Structured {
         let v: NumExpr | BoolExpr | null;
         if ("value" in src) {
           if (f.kind === "boolean") { if (typeof src.value !== "boolean") { this.c.error(where, `${name}: ${field} is true or false, got ${describe(src.value)}.`); return false; } v = { kind: "const", value: src.value }; }
-          else { const n = this.asInteger({ value: src.value }, where); v = n === null ? null : num(n); }
+          else v = this.constOf({ value: src.value }, where);
         } else if ("expr" in src) v = f.kind === "number" ? this.num(src.expr) : this.boolValue(src.expr);
         else v = src.binding.kind === "record" ? null : (this.valueOf(src.binding, f.kind, where) as NumExpr | BoolExpr | null);
         if (!v) return false;
@@ -1693,7 +1742,7 @@ export class Structured {
         const index = this.keyConstant(keyed, typeof k === "string" && /^\d+$/.test(k) ? Number(k) : k, init);
         if (index === null) continue;
         if (values) {
-          const value: NumExpr | BoolExpr | null = values.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : (() => { const n = this.asInteger({ value: v }, init); return n === null ? null : num(n); })();
+          const value: NumExpr | BoolExpr | null = values.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : this.constOf({ value: v }, init);
           if (!value) { if (values.kind === "boolean") this.c.error(init, `Expected true or false, got ${describe(v)}.`); continue; }
           this.emit({ kind: "store", array: values.id, index: num(index), value, at: atIr, label }, at);
         }
@@ -2184,7 +2233,7 @@ export class Structured {
       if (!Array.isArray(h.value)) { this.c.error(e, `Expected a list here, got ${describe(h.value)}.`); return false; }
       for (const v of h.value as unknown[]) {
         if (of === "boolean") { if (typeof v !== "boolean") { this.c.error(e, `Expected true or false, got ${describe(v)}.`); return false; } this.emit({ kind: "push", array: into.id, value: { kind: "const", value: v }, at, label }, e); }
-        else { const n = this.asInteger({ value: v }, e); if (n === null) return false; this.emit({ kind: "push", array: into.id, value: num(n), at, label }, e); }
+        else { const n = this.constOf({ value: v }, e); if (n === null) return false; this.emit({ kind: "push", array: into.id, value: n, at, label }, e); }
       }
       return true;
     }
@@ -2233,7 +2282,7 @@ export class Structured {
       if (Array.isArray(row)) {
         for (const v of row) {
           if (shape.kind === "boolean") { if (typeof v !== "boolean") { this.c.error(init, `Expected true or false, got ${describe(v)}.`); return null; } this.emit({ kind: "push", array: inner.id, value: { kind: "const", value: v }, at: this.at(at), label: this.label(at) }, at); }
-          else { const n = this.asInteger({ value: v }, init); if (n === null) return null; this.emit({ kind: "push", array: inner.id, value: num(n), at: this.at(at), label: this.label(at) }, at); }
+          else { const n = this.constOf({ value: v }, init); if (n === null) return null; this.emit({ kind: "push", array: inner.id, value: n, at: this.at(at), label: this.label(at) }, at); }
         }
       } else if (!this.fillInner(inner, shape.kind, row)) return null;
     }
@@ -2327,8 +2376,8 @@ export class Structured {
     if (b.kind !== "value") return this.takenCopy(b, name, at);
     const kind: Kind = typeof b.value === "boolean" ? "boolean" : "number";
     const v = this.newVar(name, kind, this.sourceOf(at));
-    const n = kind === "number" ? this.asInteger({ value: b.value }, at) : null;
-    this.emit({ kind: "declare", decl: v, init: kind === "boolean" ? { kind: "const", value: b.value as boolean } : num(n ?? 0), at: this.at(at), label: this.label(at) }, at);
+    const n = kind === "number" ? this.constOf({ value: b.value }, at) : null;
+    this.emit({ kind: "declare", decl: v, init: kind === "boolean" ? { kind: "const", value: b.value as boolean } : n ?? num(0), at: this.at(at), label: this.label(at) }, at);
     return { kind: "var", v };
   }
 
@@ -2595,7 +2644,7 @@ export class Structured {
   }
 
   private isPlainList(v: unknown): v is (number | boolean)[] {
-    return Array.isArray(v) && v.length > 0 && v.length <= MAX_TABLE && (v.every((x) => typeof x === "number" && Number.isInteger(x)) || v.every((x) => typeof x === "boolean"));
+    return Array.isArray(v) && v.length > 0 && v.length <= MAX_TABLE && (v.every((x) => typeof x === "number" && (Number.isInteger(x) || (Number.isFinite(x) && x >= FIXED_MIN && x <= FIXED_MAX))) || v.every((x) => typeof x === "boolean"));
   }
 
   /** A list the script has, as the array nothing writes that a program reads it through: once a list. */
@@ -2605,8 +2654,9 @@ export class Structured {
     let a = this.tables.get(list);
     if (!a) {
       const booleans = typeof list[0] === "boolean";
-      const values = list.map((v) => (typeof v === "boolean" ? (v ? 1 : 0) : v));
-      a = this.newArray(expr.getText(this.body.sf).replace(/\s+/g, " "), booleans ? "boolean" : "number", values.length, this.at(expr), { shared: true, values, ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
+      const cells = this.listCells(list.map((v) => (typeof v === "boolean" ? (v ? 1 : 0) : v)));
+      const values = cells.values;
+      a = this.newArray(expr.getText(this.body.sf).replace(/\s+/g, " "), booleans ? "boolean" : "number", values.length, this.at(expr), { shared: true, values, ...(cells.fixed ? { fixed: true } : {}), ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
       this.tables.set(list, a);
     }
     return { kind: "array", a };
@@ -2865,7 +2915,7 @@ export class Structured {
     if (b.kind === "unitAt" && kind === "unit") return this.unitAtPlaces(b, at);
     if (b.kind === "value") {
       if (kind === "boolean" && typeof b.value === "boolean") return { kind: "const", value: b.value };
-      if (kind === "number") { const n = this.asInteger({ value: b.value }, at); return n === null ? null : num(n); }
+      if (kind === "number") return this.constOf({ value: b.value }, at);
     }
     this.c.error(at, `Expected a ${kind} here.`);
     return null;
@@ -3406,8 +3456,7 @@ export class Structured {
     };
     const constant = (v: unknown, where: TS.Node): NumExpr | BoolExpr | null => {
       if (kind === "boolean") { if (typeof v === "boolean") return { kind: "const", value: v }; this.c.error(where, `Expected true or false, got ${describe(v)}.`); return null; }
-      const n = this.asInteger({ value: v }, where);
-      return n === null ? null : num(n);
+      return this.constOf({ value: v }, where);
     };
     const h = this.evaluate(init);
     if (h) {
@@ -3466,7 +3515,7 @@ export class Structured {
         if (!Array.isArray(h.value)) { this.c.error(x, `... spreads a list, got ${describe(h.value)}.`); return null; }
         for (const v of h.value as unknown[]) {
           if (kind === "boolean") { if (typeof v !== "boolean") { this.c.error(x, `Expected true or false, got ${describe(v)}.`); return null; } parts.push({ value: { kind: "const", value: v } }); }
-          else { const n = this.asInteger({ value: v }, x); if (n === null) return null; parts.push({ value: num(n) }); }
+          else { const n = this.constOf({ value: v }, x); if (n === null) return null; parts.push({ value: n }); }
         }
         continue;
       }
@@ -3535,15 +3584,22 @@ export class Structured {
       a = this.tables.get(list);
       if (!a) {
         const booleans = list.length > 0 && list.every((v) => typeof v === "boolean");
-        const values: number[] = [];
+        const raw: number[] = [];
         for (const v of list as unknown[]) {
+          if (!booleans && typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v)) {
+            if (v < FIXED_MIN || v > FIXED_MAX) { this.c.error(e.expression, `${v} has a fraction, which makes it a fixed number, and a fixed number holds −32 768 … 32 767.99998.`); return null; }
+            raw.push(v);
+            continue;
+          }
           const n = booleans ? (v ? 1 : 0) : this.asInteger({ value: v }, e.expression);
           if (n === null) return null;
-          values.push(n);
+          raw.push(n);
         }
+        const cells = this.listCells(raw);
+        const values = cells.values;
         if (values.length < 1 || values.length > MAX_TABLE) { this.c.error(e.expression, `A list a program looks a value up in has 1 to ${MAX_TABLE.toLocaleString("en-US")} entries (got ${values.length.toLocaleString("en-US")}).`); return null; }
         const name = e.expression.getText(this.body.sf).replace(/\s+/g, " ");
-        a = this.newArray(name, booleans ? "boolean" : "number", values.length, this.at(e.expression), { shared: true, values, ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
+        a = this.newArray(name, booleans ? "boolean" : "number", values.length, this.at(e.expression), { shared: true, values, ...(cells.fixed ? { fixed: true } : {}), ...(values.some((v) => v > I32_MAX) ? { unsigned: true } : {}) });
         this.tables.set(list, a);
       }
     }
@@ -3669,7 +3725,7 @@ export class Structured {
   }
 
   /** What a `u8` / `u16` / `u32` annotation declares, read off the brand in the type; nothing for a plain number, which is signed. */
-  private widthOf(type: TS.Type): { bits?: 8 | 16; unsigned?: boolean } {
+  private widthOf(type: TS.Type): { bits?: 8 | 16; unsigned?: boolean; fixed?: boolean } {
     type = this.awaited(type);
     for (const t of type.isIntersection() ? type.types : [type]) {
       const p = t.getProperty("__kind");
@@ -3679,7 +3735,9 @@ export class Structured {
       if (names.includes("u8")) return { bits: 8 };
       if (names.includes("u16")) return { bits: 16 };
       if (names.includes("u32")) return { unsigned: true };
+      if (names.includes("fixed")) return { fixed: true };
     }
+    // `fixed[]` read as its element's type is the caller's to ask; a `number` is whole until something stores a fraction into it.
     return {};
   }
 
@@ -5296,7 +5354,6 @@ export class Structured {
     if (this.isTextTyped(s.expression) && !this.evaluate(s.expression)) { this.textSwitch(s, ctx); return; }
     const value = this.num(s.expression);
     if (!value) return;
-    if (value.kind === "const") { this.c.error(s.expression, "switch over a value known when the script is built: write the case that applies."); return; }
     const clauses = s.caseBlock.clauses;
     // A case whose value could not be read keeps its body (it can be fallen into) but no test: NaN stands for that.
     const values: (number | null)[] = clauses.map((c) => {
@@ -5306,8 +5363,25 @@ export class Structured {
       const n = this.asInteger(h, c.expression);
       return n === null ? Number.NaN : n;
     });
+    // Over a value known when the script is built (a size a library's function was given): only the case that applies,
+    // and those it falls through into, are built, each with the value itself as its test, so the first is the one taken.
+    let from = 0;
+    if (value.kind === "const") {
+      const v = value.value | 0;
+      from = values.findIndex((n) => n !== null && (n | 0) === v);
+      if (from < 0) from = values.indexOf(null);
+      if (from < 0) return;
+    }
+    // (Those after the one that applies only as far as it falls through: a clause ending in break or return ends it.)
+    let to = clauses.length;
+    if (value.kind === "const") {
+      const ends = (c: TS.CaseOrDefaultClause) => { const l = c.statements[c.statements.length - 1]; return !!l && (ts.isBreakStatement(l) || ts.isReturnStatement(l) || ts.isContinueStatement(l) || ts.isThrowStatement(l)); };
+      to = from;
+      while (to < clauses.length && !ends(clauses[to])) to++;
+      to = Math.min(to + 1, clauses.length);
+    }
     const scope = new Scope(this.scope);
-    const cases = clauses.map((c, i) => ({ value: values[i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    const cases = clauses.slice(from, to).map((c, i) => ({ value: value.kind === "const" ? value.value | 0 : values[from + i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
     this.emit({ kind: "switch", value, cases, at: this.at(s), label: this.label(s) }, s);
   }
 
@@ -6098,7 +6172,7 @@ export class Structured {
     for (const [v, first] of [[h.size, 0], [h.mask, HASH_START - 1], [h.used, 0], [h.dead, 0], [h.walking, 0]] as const) this.emit({ kind: "declare", decl: v, init: num(first), at: atIr, label }, at);
     // What it starts with: worked out whole when nothing of the program is in it, else the pairs as they are written.
     const whole = this.evaluate(init)?.value;
-    const constant = (v: unknown): NumExpr | BoolExpr | null => (h.values?.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : (() => { const n = this.asInteger({ value: v }, init); return n === null ? null : num(n); })());
+    const constant = (v: unknown): NumExpr | BoolExpr | null => (h.values?.kind === "boolean" ? (typeof v === "boolean" ? { kind: "const", value: v } : null) : this.constOf({ value: v }, init));
     if (unitKeys && (whole instanceof Map || whole instanceof Set) && whole.size > 0) { this.c.error(init, `${name}'s keys are units of the game, which the script has none of: it starts empty.`); return null; }
     if (whole instanceof Map || whole instanceof Set) {
       for (const [k, v] of whole instanceof Map ? whole.entries() : [...whole.values()].map((x) => [x, true] as const)) {
@@ -6854,6 +6928,12 @@ export class Structured {
         return;
       }
       if (!arg) {
+        // An optional parameter left out (\`shaded?: number[]\`) is undefined, which the body can ask about when it is built.
+        if (!p.initializer && p.questionToken) {
+          scope.bind(p, { kind: "value", value: undefined });
+          asCalled(`${p.name.text} is left out of this call`);
+          return;
+        }
         if (!p.initializer) { this.c.error(call, `Missing argument ${p.name.text}.`); ok = false; return; }
         // The default is the function's own expression: evaluated in its body.
         const saved = this.enterBody(target);
@@ -7051,6 +7131,7 @@ export class Structured {
     if (value === null || value === undefined) return this.kindOf(this.c.checker.getTypeAtLocation(parameter.name)) === "unit" ? { init: NO_UNIT, label } : null;
     if (typeof value === "boolean") return { init: value ? TRUE : FALSE, label };
     if (typeof value === "number" && Number.isInteger(value) && value >= I32_MIN && value <= U32_MAX) return { init: num(value), label };
+    if (typeof value === "number" && Number.isFinite(value) && !Number.isInteger(value) && value >= FIXED_MIN && value <= FIXED_MAX) return { init: { kind: "const", value: fixedRaw(value), fixed: true }, label };
     if (typeof value === "string" && this.isTextType(this.c.checker.getTypeAtLocation(parameter.name))) return { init: this.literalText(value, parameter), label };
     return null;
   }
@@ -7264,9 +7345,31 @@ export class Structured {
     const v = h.value;
     if (typeof v === "boolean") return v ? 1 : 0;
     if (typeof v !== "number" || !Number.isFinite(v)) { this.c.error(at, `Expected a number, got ${describe(v)}.`); return null; }
-    if (!Number.isInteger(v)) { this.c.error(at, `Only whole numbers exist in the game (got ${v}).`); return null; }
+    if (!Number.isInteger(v)) { this.c.error(at, `Only a whole number goes here (got ${v}): Math.floor(x), Math.round(x) or Math.trunc(x) says how to round it.`); return null; }
     if (v < I32_MIN || v > U32_MAX) { this.c.error(at, `A number of the game has 32 bits: −2 147 483 648 to 2 147 483 647, or up to 4 294 967 295 as a u32 (got ${v}).`); return null; }
     return v;
+  }
+
+  /**
+   * A number known when the script is built, as a constant of the program: a whole number as it is, one with a fraction
+   * a fixed number (16.16, `numbers.ts`), which is what makes `0.5`, `Math.PI` and `Math.cos(1)` mean what they say.
+   */
+  private constOf(h: { value: unknown }, at: TS.Node): NumExpr | null {
+    const v = h.value;
+    if (typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v)) return this.fixedConst(v, at);
+    const n = this.asInteger(h, at);
+    return n === null ? null : num(n);
+  }
+
+  private fixedConst(v: number, at: TS.Node): NumExpr | null {
+    if (v < FIXED_MIN || v > FIXED_MAX) { this.c.error(at, `${v} has a fraction, which makes it a fixed number, and a fixed number holds −32 768 … 32 767.99998.`); return null; }
+    return { kind: "const", value: fixedRaw(v), fixed: true };
+  }
+
+  /** A list's numbers as cells: whole as they are, or every one a fixed number's cell when any has a fraction. */
+  private listCells(list: readonly number[]): { values: number[]; fixed?: boolean } {
+    if (list.every((v) => Number.isInteger(v))) return { values: [...list] };
+    return { values: list.map(fixedRaw), fixed: true };
   }
 
   /** `num` without diagnostics, for a probe that may fail. */
@@ -7294,8 +7397,9 @@ export class Structured {
       if (isInput(h.value)) return this.inputValue(h.value, e);
       if (isMouse(h.value)) { this.c.error(e, "mouse() is a place on the map: read its x or its y."); return null; }
       if (isChat(h.value)) { this.c.error(e, "chatted() is what a player typed: test it in an if, or read one of the values its pattern names."); return null; }
-      const n = this.asInteger(h, e);
-      return n === null ? null : num(n);
+      // A value whose type is \`fixed\` (fixed(2), a parameter declared so) is a fixed number even when it is whole.
+      if (typeof h.value === "number" && Number.isInteger(h.value) && this.brandOf(e) === "fixed") return this.fixedConst(h.value, e);
+      return this.constOf(h, e);
     }
     if (ts.isPropertyAccessExpression(e)) {
       const member = this.unitMember(e);
@@ -7533,8 +7637,49 @@ export class Structured {
       return call?.result ? this.mark<NumExpr>({ kind: "call", call }, e) : null;
     }
     if (callee === Math.floor || callee === Math.trunc || callee === Math.round || callee === Math.ceil) {
-      const a = args(1, "Math rounding");
-      return a ? a[0] : null; // Whole numbers already.
+      // Of a whole number nothing at all; of a fixed one, what numbers.ts makes of it.
+      const name = callee === Math.floor ? "floor" : callee === Math.trunc ? "trunc" : callee === Math.round ? "round" : "ceil";
+      const a = args(1, `Math.${name}()`);
+      return a ? this.mark<NumExpr>({ kind: "intrinsic", name, args: a, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    if (this.isLibraryCall(e, "fixed")) {
+      // A whole number as a fixed one: 3 is 3.0, so that 3 / fixed(2) is 1.5.
+      const a = args(1, "fixed()");
+      return a ? this.mark<NumExpr>({ kind: "cast", to: "fixed", expr: a[0], at: this.at(e) }, e) : null;
+    }
+    if (callee === Math.sqrt || callee === Math.sin || callee === Math.cos) {
+      const name = callee === Math.sqrt ? "sqrt" : callee === Math.sin ? "sin" : "cos";
+      const a = args(1, `Math.${name}()`);
+      return a ? this.mark<NumExpr>({ kind: "intrinsic", name, args: a, at: this.at(e), label: this.label(e) }, e) : null;
+    }
+    if (callee === Math.tan) {
+      // sin over cos, of the angle once.
+      const a = args(1, "Math.tan()");
+      if (!a) return null;
+      const x = this.temp(a[0], e);
+      const at = this.at(e), label = this.label(e);
+      const sin: NumExpr = { kind: "intrinsic", name: "sin", args: [x], at, label };
+      const cos: NumExpr = { kind: "intrinsic", name: "cos", args: [x], at, label };
+      return this.mark<NumExpr>({ kind: "binary", op: "/", left: sin, right: cos, at, label }, e);
+    }
+    if (callee === Math.atan2 || callee === Math.atan) {
+      const a = callee === Math.atan2 ? args(2, "Math.atan2()") : args(1, "Math.atan()");
+      if (!a) return null;
+      return this.mark<NumExpr>({ kind: "intrinsic", name: "atan2", args: callee === Math.atan2 ? a : [a[0], num(1)], at: this.at(e), label: this.label(e) }, e);
+    }
+    if (callee === Math.hypot) {
+      // The square root of the sum of the squares, each side once.
+      if (e.arguments.length < 1) { this.c.error(e, "Math.hypot() takes at least one argument."); return null; }
+      const at = this.at(e), label = this.label(e);
+      let sum: NumExpr | null = null;
+      for (const arg of e.arguments) {
+        const v = this.num(arg);
+        if (!v) return null;
+        const x = this.temp(v, arg);
+        const sq: NumExpr = { kind: "binary", op: "*", left: x, right: x, at, label };
+        sum = sum ? { kind: "binary", op: "+", left: sum, right: sq, at, label } : sq;
+      }
+      return this.mark<NumExpr>({ kind: "intrinsic", name: "sqrt", args: [sum!], at, label }, e);
     }
     if (callee === Math.abs) {
       const a = args(1, "Math.abs()");

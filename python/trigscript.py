@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 19
+IR_VERSION = 20
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -225,10 +225,14 @@ class ArrayStorage:
         if decl.get("texts") is not None:
             # A list of texts the script has: a cell is the text's id in the built map's table.
             values = [text_id(t) for t in decl["texts"]]
+        # What a list known when the map is built holds, for what is worked out with it then (an atan2 of constants).
+        self.values = [int(v) & U32 for v in values] if values is not None else None
         if table is not None:
             # A long table (a video's brushes): its bytes straight into the map, no list of a value at a time.
             # (An EUDArray is its cells' EPD, so that is what it is made from.)
-            self.store = EUDArray(_from=EPD(Db(unpack_table(table, self.length))))
+            raw = unpack_table(table, self.length)
+            self.values = [int.from_bytes(raw[i:i + 4], "little") for i in range(0, len(raw), 4)]
+            self.store = EUDArray(_from=EPD(Db(raw)))
         else:
             self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (rows.count if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
 
@@ -1097,6 +1101,128 @@ def saturate(value, bits):
     return v
 
 
+# ── fixed-point numbers (16.16, TrigScript 4's B6): a cell is the value times 65 536, read signed ──
+FIXED_ONE = 1 << 16
+FIXED_PI = 205887  # round(pi * 65536); compiler/fixedMath.ts has the same
+FIXED_HALF_PI = 102944
+DIGIT_TEXTS = Db(b"0\x001\x002\x003\x004\x005\x006\x007\x008\x009\x00")  # a digit d's text at 2 * d
+DOT_TEXT = Db(b".\0\0\0")
+_FIXED = {}
+
+
+def fixed_text(v):
+    """A fixed number known when the map is built, as a program prints it: compiler/fixedMath.ts#fixedText."""
+    v = signed(v)
+    m = abs(v)
+    whole, places = m >> 16, ((m & 0xFFFF) * 10000 + 32768) >> 16
+    if places == 10000:
+        whole, places = whole + 1, 0
+    sign = "-" if v < 0 and (whole or places) else ""
+    return sign + str(whole) + ("." + ("%04d" % places).rstrip("0") if places else "")
+
+
+def magnitudes(a, b):
+    """a and b made their distances from 0 in place, and 1 when exactly one of them was below zero."""
+    neg = fresh(0)
+    if EUDIf()(a >= SIGN):
+        a << 0 - a
+        neg << 1
+    EUDEndIf()
+    if EUDIf()(b >= SIGN):
+        b << 0 - b
+        neg << 1 - neg
+    EUDEndIf()
+    return neg
+
+
+def fixed_fns():
+    """The fixed numbers' functions, made when the first one is met: one body each in the map, called."""
+    if _FIXED:
+        return _FIXED
+
+    @EUDFunc
+    def fmul(a, b):
+        """a * b / 65536 towards zero, wrapping: the four products of the 16-bit halves of the magnitudes."""
+        neg = magnitudes(a, b)
+        ah, al = [fresh(x) for x in f_div(a, FIXED_ONE)]
+        bh, bl = [fresh(x) for x in f_div(b, FIXED_ONE)]
+        r = fresh(f_mul(ah, bh))
+        r << f_mul(r, FIXED_ONE)
+        r += f_mul(ah, bl)
+        r += f_mul(bh, al)
+        low = fresh(f_mul(al, bl))
+        r += f_div(low, FIXED_ONE)[0]
+        if EUDIf()(neg == 1):
+            r << 0 - r
+        EUDEndIf()
+        EUDReturn(r)
+
+    @EUDFunc
+    def fdiv(a, b):
+        """a * 65536 / b towards zero, wrapping; a divisor of 0 gives 0. The whole part by eudplib's division, then
+        sixteen more bits of the quotient, one a step, from what is left over."""
+        if EUDIf()(b == 0):
+            EUDReturn(0)
+        EUDEndIf()
+        neg = magnitudes(a, b)
+        q, r = [fresh(x) for x in f_div(a, b)]
+        for _ in range(16):
+            r += r
+            q += q
+            if EUDIf()(r >= b):
+                r -= b
+                q += 1
+            EUDEndIf()
+        if EUDIf()(neg == 1):
+            q << 0 - q
+        EUDEndIf()
+        EUDReturn(q)
+
+    def root(x, pairs, zeros):
+        """The largest r with r * r <= x * 4 ** zeros, x read as `pairs` pairs of bits from the top: two bits a step."""
+        r, rem = fresh(0), fresh(0)
+        for i in range(pairs + zeros):
+            rem += rem
+            rem += rem
+            if i < pairs:
+                # The two bits at the top of x, shifted out of it.
+                for weight in (2, 1):
+                    if EUDIf()(x >= SIGN):
+                        rem += weight
+                    EUDEndIf()
+                    x += x
+            trial = fresh(r)
+            trial += trial
+            trial += trial
+            trial += 1
+            r += r
+            if EUDIf()(rem >= trial):
+                rem -= trial
+                r += 1
+            EUDEndIf()
+        return r
+
+    @EUDFunc
+    def sqrt_fixed(x):
+        """The square root of a fixed number, rounded down: isqrt(x * 65536); 0 below zero."""
+        if EUDIf()(x >= SIGN):
+            EUDReturn(0)
+        EUDEndIf()
+        EUDReturn(root(x, 16, 8))
+
+    @EUDFunc
+    def sqrt_whole(x):
+        """The square root of a whole number read from 0 up, as a fixed one: isqrt(x * 2 ** 32). From 2 ** 30 up it
+        is past what a fixed number holds, and gives the largest."""
+        if EUDIf()(x >= 1 << 30):
+            EUDReturn(0x7FFFFFFF)
+        EUDEndIf()
+        EUDReturn(root(x, 16, 16))
+
+    _FIXED.update(fmul=fmul, fdiv=fdiv, sqrt_fixed=sqrt_fixed, sqrt_whole=sqrt_whole)
+    return _FIXED
+
+
 def as_var(value):
     if isinstance(value, int):
         return EUDVariable(value & U32)  # initial: a constant, never written
@@ -1522,6 +1648,8 @@ class Lowering:
                 t << 0 - t
             EUDEndIf()
             return t
+        if k == "intrinsic" and e["name"] in ("fmul", "fdiv", "sqrt", "atan2", "sin", "cos"):
+            return self.fixed_op(e)
         if k == "intrinsic":
             a, b = [self.num(x) for x in e["args"]]
             name = e["name"]
@@ -1540,6 +1668,133 @@ class Lowering:
             return self.call(e["call"])
         raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))
 
+    def fixed_op(self, e):
+        """fmul / fdiv / sqrt / atan2 of fixed numbers (raw cells): worked out here when every argument is known, else a
+        call of the function fixed_fns() makes. compiler/fixedMath.ts is the same arithmetic for the simulator."""
+        name = e["name"]
+        args = [self.num(x) for x in e["args"]]
+        if all(isinstance(x, int) for x in args):
+            return fixed_const(name, [signed(x) for x in args], e.get("unsigned"), [signed(v) for v in self.array(e["table"], e).values] if name in ("atan2", "sin", "cos") else None) & U32
+        fns = fixed_fns()
+        if name == "fmul":
+            return fresh(fns["fmul"](*[as_var(x) for x in args]))
+        if name == "fdiv":
+            return fresh(fns["fdiv"](*[as_var(x) for x in args]))
+        if name == "sqrt":
+            return fresh(fns["sqrt_whole" if e.get("unsigned") else "sqrt_fixed"](as_var(args[0])))
+        if name in ("sin", "cos"):
+            return self.sine(args[0], args[1], self.array(e["table"], e), name == "cos")
+        return self.atan2(args[0], args[1], self.array(e["table"], e), e)
+
+    @staticmethod
+    def between(table, i, f, bits):
+        """table[i] + (table[i + 1] - table[i]) * f / 2 ** bits, the part of the step towards zero: a table read between
+        its cells (compiler/fixedMath.ts#between). `i + 1` past the end reads 0, as any cell past the end does."""
+        a, b = fresh(table.get(i)), fresh(table.get(i + 1))
+        d, out = fresh(b - a), fresh(a)
+        if EUDIf()(d >= SIGN):
+            d << 0 - d
+            out -= f_div(f_mul(d, f), 1 << bits)[0]
+        if EUDElse()():
+            out += f_div(f_mul(d, f), 1 << bits)[0]
+        EUDEndIf()
+        return out
+
+    def sine(self, x, scale, table, cos):
+        """sin(x) of a fixed number of radians (x * scale the place in the 4096 cells of the table), or with `cos` a
+        quarter turn on: compiler/fixedMath.ts#fixedSin. The next cell is cell 0 again at the end of the turn."""
+        at = fresh(fixed_fns()["fmul"](as_var(x), as_var(scale)))
+        f = fresh(at & 0xFFFF)
+        i = fresh(f_bitrshift(at, 16))
+        if cos:
+            i += 1024
+        i << (i & 4095)
+        # Cell 4096 is cell 0: the table read with its first cell after its last.
+        a, b = fresh(table.get(i)), fresh(0)
+        if EUDIf()(i == 4095):
+            b << table.get(0)
+        if EUDElse()():
+            b << table.get(i + 1)
+        EUDEndIf()
+        d, out = fresh(b - a), fresh(a)
+        if EUDIf()(d >= SIGN):
+            d << 0 - d
+            out -= f_div(f_mul(d, f), 1 << 16)[0]
+        if EUDElse()():
+            out += f_div(f_mul(d, f), 1 << 16)[0]
+        EUDEndIf()
+        return out
+
+    def atan2(self, y, x, table, node):
+        """atan2(y, x) of fixed numbers: the smaller side over the larger to the nearest 1/1024, read from the table
+        (atan(i / 1024)), then put in its octant: compiler/fixedMath.ts#fixedAtan2."""
+        fns = fixed_fns()
+        ax, ay, t = fresh(x), fresh(y), fresh(0)
+        if EUDIf()(ax >= SIGN):
+            ax << 0 - ax
+        EUDEndIf()
+        if EUDIf()(ay >= SIGN):
+            ay << 0 - ay
+        EUDEndIf()
+        if EUDIfNot()(EUDAnd(ax == 0, ay == 0)):
+            if EUDIf()(ay <= ax):
+                i, f = [fresh(v) for v in f_div(fns["fdiv"](ay, ax), 64)]
+                t << self.between(table, i, f, 6)
+            if EUDElse()():
+                i, f = [fresh(v) for v in f_div(fns["fdiv"](ax, ay), 64)]
+                t << FIXED_HALF_PI - self.between(table, i, f, 6)
+            EUDEndIf()
+            if EUDIf()(as_var(x) >= SIGN):
+                t << FIXED_PI - t
+            EUDEndIf()
+            if EUDIf()(as_var(y) >= SIGN):
+                t << 0 - t
+            EUDEndIf()
+        EUDEndIf()
+        return t
+
+    def fixed_pieces(self, v):
+        """A fixed number as printed pieces: its sign, its whole part, and the point and up to four places, without the
+        zeros at the end. The most it comes to is 11 bytes."""
+        if isinstance(v, int):
+            return [fixed_text(v)]
+        sign, m = fresh(NO_SIGN), fresh(v)
+        if EUDIf()(m >= SIGN):
+            sign << MINUS_SIGN
+            m << 0 - m
+        EUDEndIf()
+        whole, frac = [fresh(x) for x in f_div(m, FIXED_ONE)]
+        places = fresh(f_div(f_mul(frac, 10000) + 32768, FIXED_ONE)[0])
+        if EUDIf()(places == 10000):
+            whole += 1
+            places << 0
+        EUDEndIf()
+        if EUDIf()(EUDAnd(whole == 0, places == 0)):
+            sign << NO_SIGN
+        EUDEndIf()
+        # The four places as digits, then each one's text, or none once only zeros are left after it.
+        digits = []
+        rest = fresh(places)
+        for unit in (1000, 100, 10):
+            d, rest2 = [fresh(x) for x in f_div(rest, unit)]
+            digits.append(d)
+            rest << rest2
+        digits.append(rest)
+        texts = [fresh(NO_SIGN) for _ in range(4)]
+        dot = fresh(NO_SIGN)
+        shown = fresh(0)
+        for i in (3, 2, 1, 0):
+            if EUDIf()(digits[i] >= 1):
+                shown << 1
+            EUDEndIf()
+            if EUDIf()(shown == 1):
+                texts[i] << DIGIT_TEXTS + digits[i] + digits[i]
+            EUDEndIf()
+        if EUDIf()(shown == 1):
+            dot << DOT_TEXT
+        EUDEndIf()
+        return [ptr2s(sign), whole, ptr2s(dot)] + [ptr2s(t) for t in texts]
+
     def binary(self, e):
         a, b = self.num(e["left"]), self.num(e["right"])
         op = e["op"]
@@ -1551,7 +1806,13 @@ class Lowering:
         if op == "-":
             return (a - b) & U32 if both else a - b
         if op == "*":
-            return (a * b) & U32 if both else f_mul(as_var(a), as_var(b))
+            if both:
+                return (a * b) & U32
+            # By a power of two, a shift: x * 32 is x << 5, a fifth of the cost of eudplib's general product.
+            k, v = (b, a) if isinstance(b, int) else (a, b) if isinstance(a, int) else (None, None)
+            if k is not None and k > 0 and k & (k - 1) == 0:
+                return v if k == 1 else f_bitlshift(fresh(v), k.bit_length() - 1)
+            return f_mul(as_var(a), as_var(b))
         # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
         unsigned = bool(e.get("unsigned"))
         pick = (lambda q, r: q) if op == "/" else (lambda q, r: r)
@@ -2674,6 +2935,8 @@ class Lowering:
                 v = self.text(part["text"])
                 temps.append(v)
                 args.append(ptr2s(v.addr))
+            elif k == "number" and part.get("fixed"):
+                args.extend(self.fixed_pieces(self.num(part["expr"])))
             elif k == "number":
                 v = self.num(part["expr"])
                 if isinstance(v, int):
@@ -2834,6 +3097,9 @@ class Lowering:
             if k == "text":
                 data = part["text"].encode("utf-8")[:TEXT_BYTES].decode("utf-8", "ignore")
                 items.append(([data], len(data.encode("utf-8")), None))
+            elif k == "number" and part.get("fixed"):
+                pieces = self.fixed_pieces(self.num(part["expr"]))
+                items.append((pieces, 11 if len(pieces) > 1 else len(pieces[0]), None))
             elif k == "number":
                 v = self.num(part["expr"])
                 if isinstance(v, int):
@@ -3645,6 +3911,60 @@ def signed(v):
     """The 32 bits as a signed number."""
     v &= U32
     return v - (1 << 32) if v >= SIGN else v
+
+
+def isqrt(n):
+    r = int(n ** 0.5)
+    while r * r > n:
+        r -= 1
+    while (r + 1) * (r + 1) <= n:
+        r += 1
+    return r
+
+
+def between_wrapped(table, i, f):
+    """The sine table read between cell i and the next, cell 0 after the last."""
+    a, b = table[i], table[(i + 1) & 4095]
+    part = (abs(b - a) * f) >> 16
+    return a - part if b < a else a + part
+
+
+def fixed_const(name, args, unsigned=False, table=None):
+    """A fixed operation of numbers known when the map is built, exactly as the functions of fixed_fns() compute it."""
+    def towards_zero(m, negative):
+        return (-(m & U32)) & U32 if negative else m & U32
+    if name == "fmul":
+        a, b = args
+        return towards_zero((abs(a) * abs(b)) >> 16, (a < 0) != (b < 0))
+    if name == "fdiv":
+        a, b = args
+        return 0 if b == 0 else towards_zero((abs(a) << 16) // abs(b), (a < 0) != (b < 0))
+    if name == "sqrt":
+        x = args[0] & U32 if unsigned else args[0]
+        if unsigned:
+            return 0x7FFFFFFF if x >= 1 << 30 else isqrt(x << 32)
+        return 0 if x <= 0 else isqrt(x << 16)
+    def between(i, f, bits):
+        a = table[i] if i < len(table) else 0
+        b = table[i + 1] if i + 1 < len(table) else 0
+        part = (abs(b - a) * f) >> bits
+        return a - part if b < a else a + part
+    if name in ("sin", "cos"):
+        x, scale = args
+        at = fixed_const("fmul", [x, scale])
+        i = ((at >> 16) + (1024 if name == "cos" else 0)) & 4095
+        return between_wrapped(table, i, at & 0xFFFF)
+    y, x = args
+    ax, ay = abs(x), abs(y)
+    if ax == 0 and ay == 0:
+        return 0
+    read = lambda small, large: between(((small << 16) // large) >> 6, ((small << 16) // large) & 63, 6)
+    t = read(ay, ax) if ay <= ax else FIXED_HALF_PI - read(ax, ay)
+    if x < 0:
+        t = FIXED_PI - t
+    if y < 0:
+        t = -t
+    return t
 
 
 def always(truth):

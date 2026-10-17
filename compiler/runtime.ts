@@ -450,6 +450,8 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   };
   rt.u32 = (v: unknown) => signed(v, "u32: value") >>> 0;
   rt.i32 = (v: unknown) => signed(v, "i32: value") | 0;
+  // A number's own value: when the script is built, numbers have their fractions already.
+  rt.fixed = (v: unknown) => signed(v, "fixed: value");
   rt.clamp = (v: unknown, lo: unknown, hi: unknown) => Math.min(Math.max(signed(v, "clamp: value"), signed(lo, "clamp: low")), signed(hi, "clamp: high"));
 
   /* ── Reads: what the game holds, as a value of a program ── */
@@ -761,7 +763,7 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
-  out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32");
+  out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
   out.push("textColors", "ui", "on", "reserveLocation", "cover", "__jsx", "__fragment", "__class", "__listen");
