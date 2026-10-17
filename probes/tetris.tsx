@@ -1,11 +1,14 @@
-// Tetris in StarCraft's text lines (TrigScript 4, S2's showpiece). The screen is JSX: ui.lines() shows it to Player 1
-// every frame, redrawn from the program's variables. A D move (hold to slide), W turns, S drops (hold to keep
+// Tetris in StarCraft's text lines and on its minimap (TrigScript 4, S2's showpiece). The game writes one board; two
+// screens show it. The text lines are JSX: ui.lines() shows them to Player 1, redrawn when the board changes. The other
+// is a board of Overlords on the map beside your base, one a cell in its piece's colour, which the minimap shows as solid
+// blocks: probes/lib/unit-screen.ts, a function that knows nothing of Tetris. A D move (hold to slide), W turns, S drops (hold to keep
 // dropping), Space drops all the way.
 // The pieces and their four turns are worked out when the script is built, in ordinary JavaScript.
 // Host it as a multiplayer game, alone: the keys reach the game the way typed lines do.
 // Built with
 //   npx tsx scripts/build-fixture.mts probes/tetris.tsx fixtures/eud/tetris.scx
-import { program, P1, keyPressed, keyHeld, random, sleep, frames, ui, textColors } from "trigscript";
+import { program, P1, keyPressed, keyHeld, random, sleep, frames, ui, textColors, createUnit, centerLocation, centerView, units, type Location } from "trigscript";
+import { drawUnits, OWNERS } from "./lib/unit-screen";
 
 const W = 10;
 const H = 10;
@@ -40,10 +43,22 @@ const DELAY = 8;
 const SLIDE = 2;
 const DROP = 2;
 const ROWS = [...Array(H).keys()];
+/** The board of Overlords: its corner on the map, beside Player 1's base on (2)Binary Burghs, a cell 64 pixels. */
+const MAP_X = 672, MAP_Y = 2144, CELL = 64;
+const PIXEL = 3 as Location;
+const ON_MAP = { x: MAP_X, y: MAP_Y, width: W, cell: CELL, at: PIXEL };
 const COLS = [...Array(W).keys()];
 
 program(async () => {
   const board: number[] = new Array(W * H).fill(0);
+  /** What the board of Overlords shows now. */
+  let shown: number[] = new Array(W * H).fill(0);
+  /** Whether the board was written since the Overlords were last drawn. */
+  let changed = true;
+  // Sight over the board, for the minimap; and the camera on it, the text lines beside.
+  for (let y = 1; y < H; y += 3) for (let x = 1; x < W; x += 3) { centerLocation(PIXEL, MAP_X + x * CELL, MAP_Y + y * CELL); createUnit(P1, units.MapRevealer, 1, PIXEL); }
+  centerLocation(PIXEL, MAP_X + (W * CELL) / 2, MAP_Y + (H * CELL) / 2);
+  centerView(PIXEL);
   let piece = random(7), next = random(7), turn = 0, px = 3, py = 0;
   let score = 0, lines = 0, level = 0, over = false, best = 0;
 
@@ -85,6 +100,7 @@ program(async () => {
       const cy = py + SHAPES[at + k * 2 + 1];
       if (cy >= 0) board[cy * W + px + SHAPES[at + k * 2]] = color;
     }
+    changed = true;
   }
 
   /** The piece moved and turned, if it fits there. */
@@ -108,6 +124,7 @@ program(async () => {
         for (let yy = y; yy > 0; yy--) for (let x = 0; x < W; x++) board[yy * W + x] = board[(yy - 1) * W + x];
         for (let x = 0; x < W; x++) board[x] = 0;
         cleared++;
+        changed = true;
       } else y--;
     }
     return cleared;
@@ -141,6 +158,7 @@ program(async () => {
     if (over) {
       if (keyPressed(P1, "Space")) {
         board.fill(0);
+        changed = true;
         score = 0; lines = 0; level = 0; over = false;
         spawn();
       }
@@ -160,6 +178,7 @@ program(async () => {
         if (!move(0, 1, 0)) land();
       }
     }
+    if (changed) { drawUnits(board, shown, ON_MAP, { colors: COLORS, owners: OWNERS }); changed = false; }
     await sleep(frames(1));
   }
 }, { owner: P1 });

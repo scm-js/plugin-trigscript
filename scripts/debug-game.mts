@@ -21,6 +21,7 @@ import { defaultScriptNames } from "../compiler/names";
 import { STEP_EUDPLIB, STEP_TEST, STEP_UNSEEN, type DebugHost, type DebugRecording } from "../compiler/gameDebug";
 import { programVariables, type VariableMap } from "../compiler/gameVariables";
 import { defaultLib } from "../bundle/lib.mjs";
+import { scriptFiles } from "./script-files.mts";
 
 const root = resolve(import.meta.dirname, "..");
 const [script, only, baseMap] = process.argv.slice(2);
@@ -52,7 +53,7 @@ try {
   const payloadEnd = 0x191943c8 + strings.bytes;
   const handle = testGame(run.engine, run.lifted, [{ from: strings.gameTable, to: payloadEnd }], { cost: installCost(run.lifted), payloadEnd, eud }) as DebugHost;
 
-  const source = { [script.endsWith(".tsx") ? "main.tsx" : "main.ts"]: readFileSync(script, "utf8") };
+  const source = scriptFiles(script);
   const names = defaultScriptNames();
   const locations = readLocations(handle);
   const compiled = compileScript(ts, source, names, { lib: defaultLib(), tests: {} });

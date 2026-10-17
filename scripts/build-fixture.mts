@@ -24,6 +24,7 @@ import { readTriggerMap, readVariableMap } from "../compiler/gameVariables";
 import { resolveStrings } from "../script";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
+import { scriptFiles } from "./script-files.mts";
 
 const [scriptPath, outPath, mapArg, eudplibArg] = process.argv.slice(2);
 if (!scriptPath || !outPath) { console.error("usage: build-fixture <script.ts> <out.scx> [map.scx] [plugin-eudplib dir]"); process.exit(2); }
@@ -33,7 +34,7 @@ const eudplib = resolve(eudplibArg ?? process.env.EUDPLIB_DIR ?? join(root, ".."
 if (!existsSync(map)) { console.error(`no map at ${map}`); process.exit(2); }
 if (!existsSync(join(eudplib, "scripts", "build-map.mts"))) { console.error(`no plugin-eudplib checkout at ${eudplib}`); process.exit(2); }
 
-const r = compileScript(ts, { [scriptPath.endsWith(".tsx") ? "main.tsx" : "main.ts"]: readFileSync(scriptPath, "utf8") }, defaultScriptNames(), { lib: defaultLib() });
+const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib() });
 if (r.diagnostics.length) { for (const d of r.diagnostics) console.error(`${d.file}:${d.line}:${d.column} ${d.message}`); process.exit(1); }
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));
