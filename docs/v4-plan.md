@@ -1835,7 +1835,7 @@ picture two frames and the raycaster draws every other one, half the work for th
 faces (lit bands at the quarters) "look weird": combs. Six looks mocked up on the same views (solid, hollow,
 panelled, outline, seams, floor lines); the user chose **outline** — every wall as its edges, top and bottom and a
 column lit whole where one face meets another — now the default of `fog.columns` with its `faces` argument. Round 3
-(outline, about 110k a frame) awaits play.
+(outline, about 110k a frame): "it looks great", rendered cleanly throughout, and the way out was found in 22 s.
 
 **Not yet:** Textures, sprites
 (a monster drawn as a scaled picture in front of the walls), a floor with distance, more than one level.
