@@ -1137,6 +1137,22 @@ of it, counted as one press by `keyPressed` (MSQC's KeyDown since `b09f04d`). So
 press: S3's movement needs no `Local<T>` and no `sync()`. Magenta probe 7's "one event a press,
 no key-up" was its own setup; R0's `GetKeyState` reading agrees with what was played.
 
+**Pixels made of units, played 2026-10-16** (`probes/unit-pixels.ts`, steps A–D; E not yet
+reported). A board can be drawn with units on the map and the minimap:
+- **Colours:** nine Overlords, P1 … P8 and P12, show nine colours on the minimap once the board
+  is in sight (your own units are green there). Player 2 is a computer and its AI moved its
+  Overlord a cell, so a board's owners are P1 and the empty slots P3 … P8 (P12 too: Remastered
+  made it, the lifted game did not).
+- **Vision:** Map Revealers of Player 1's lift the fog over the board. The lifted game never
+  makes a Map Revealer — a gap in scm-sim, not the game.
+- **The minimap merges neighbours:** units 64 pixels apart and of one owner join into one block,
+  so a piece reads as a solid shape.
+- **Overlords** sit on their cells on any ground. Science Vessels are wider than a cell and
+  zigzag; Pylons, Flags and small items miss cells where the ground will not take them, and
+  **Remastered prints "WARNING: Unit unplaceable! (Protoss Pylon) (1024,2304)" in the text lines
+  for every Create Unit that fails** — so a unit board must never ask for a cell it cannot have,
+  or it scribbles over a text board beside it.
+
 ### S3. A hero moved with the keys
 
 W A S D move a hero, the mouse aims, a key casts. The map plays as an action game.
