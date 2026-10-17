@@ -1829,7 +1829,15 @@ the ray's direction is stepped across the camera plane instead of computed a col
 The tests hold the game's fog against a floating-point raycaster column by column (within a row) and pass in the game
 and in the simulator, which now draws the fog of units a program set the sight of.
 
-**Not yet:** played in Remastered (`Maps/TrigScript/trigscript-s5-raycaster.scx` + answers sheet). Textures, sprites
+**Played (2026-10-17), three rounds.** Round 1: it works in Remastered. Its minimap changed 12 times a second, as
+Bad Apple's recording does: Remastered redraws the fog on the minimap every other frame — so `fog.show(2)` keeps a
+picture two frames and the raycaster draws every other one, half the work for the same picture. Round 2: panelled
+faces (lit bands at the quarters) "look weird": combs. Six looks mocked up on the same views (solid, hollow,
+panelled, outline, seams, floor lines); the user chose **outline** — every wall as its edges, top and bottom and a
+column lit whole where one face meets another — now the default of `fog.columns` with its `faces` argument. Round 3
+(outline, about 110k a frame) awaits play.
+
+**Not yet:** Textures, sprites
 (a monster drawn as a scaled picture in front of the walls), a floor with distance, more than one level.
 
 ### Smaller things that show well
