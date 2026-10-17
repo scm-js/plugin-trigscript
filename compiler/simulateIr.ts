@@ -1288,6 +1288,8 @@ export class ProgramSimulation {
   /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
   private queued: { events: Set<string>; lines: Map<number, { pattern: string; values: number[] }> } = { events: new Set(), lines: new Map() };
   private current = this.queued;
+  /** The keys and buttons down on the last frame. */
+  private down = new Set<string>();
   /** Where each player's mouse is, in map pixels. */
   readonly mice = new Map<number, { x: number; y: number }>();
   cycle = 0;
@@ -1549,6 +1551,11 @@ export class ProgramSimulation {
     // What was done since the last frame is what this one finds, and only this one.
     this.current = this.queued;
     this.queued = { events: new Set(), lines: new Map() };
+    // A key or a button down on this frame and the last is held, not pressed again: the game reports the frame it goes
+    // down (MSQC's KeyDown / MouseDown), however many frames a tap lasts.
+    const down = new Set([...this.current.events].filter((e) => e.startsWith("key:") || e.startsWith("click:")));
+    for (const e of down) if (this.down.has(e)) this.current.events.delete(e);
+    this.down = down;
     for (const run of this.runs) {
       this.world.current = run.player;
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }

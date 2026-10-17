@@ -597,7 +597,7 @@ The build's plugin sections, in the order they run (`buildPlugins`): **chatEvent
 messages of its own — it only finds the line the local player typed and leaves its address
 and length; **trigscript**, which before the triggers matches that line against the patterns
 on the computer it was typed on, into a number for the pattern and up to three values;
-**MSQC**, which sends those, the keys (`KeyPress(K); NotTyping`) and the clicks
+**MSQC**, which sends those, the keys (`KeyDown(K); NotTyping`: the frame a key goes down; `KeyPress` is every frame it is down, and a tap is two or three) and the clicks
 (`MouseDown(B)`) to every computer as the player they came from, and keeps each human's
 mouse in a location; **eudTurbo**. Every cell is an `EUDArray(12)` or an `EUDVariable` the
 lowering registers by name (`tsin_key0`, `tsin_chat_in`, …), which is how the other two

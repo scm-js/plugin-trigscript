@@ -142,7 +142,7 @@ describe("input: the plan and the build's plugins", () => {
     expect(r.input).toEqual({ keys: ["A", "Escape"], buttons: ["left"], chats: [], qcLocation: 62, mouseBase: null });
     const plugins = buildPlugins(r.input, "/ir.json");
     expect(Object.keys(plugins)).toEqual(["trigscript", "MSQC", "eudTurbo"]);
-    expect(plugins.MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyPress(A); NotTyping": "tsin_key0, 1", "KeyPress(ESC); NotTyping": "tsin_key1, 1", "MouseDown(L)": "tsin_button0, 1" });
+    expect(plugins.MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyDown(A); NotTyping": "tsin_key0, 1", "KeyDown(ESC); NotTyping": "tsin_key1, 1", "MouseDown(L)": "tsin_button0, 1" });
   });
 
   it("the mouse: eight locations in a row, clear of the map's own and of Anywhere", () => {

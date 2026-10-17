@@ -331,7 +331,9 @@ export function inputPlugins(plan: InputPlan): { before: Record<string, Record<s
   const before: Record<string, Record<string, string | number>> = {};
   if (plan.chats.length) before.chatEvent = { __addr__: INPUT_NAMES.heard, __ptrAddr__: INPUT_NAMES.pointer, __lenAddr__: INPUT_NAMES.length, __patternAddr__: INPUT_NAMES.pattern };
   const msqc: Record<string, string | number> = { QCUnit: QC_UNIT, QCLoc: plan.qcLocation, QCPlayer: QC_PLAYER, QCDebug: "false" };
-  plan.keys.forEach((key, i) => { msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`; });
+  // KeyDown, not KeyPress: MSQC's KeyPress is true on every frame the key is down, and a tap is two or three frames —
+  // one tap of W turned the Tetris piece two or three times (TrigScript 4, S2, played). KeyDown is the frame it goes down.
+  plan.keys.forEach((key, i) => { msqc[`KeyDown(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`; });
   plan.buttons.forEach((b, i) => { msqc[`MouseDown(${MSQC_BUTTON[b]})`] = `${INPUT_NAMES.button(i)}, 1`; });
   if (plan.mouseBase !== null) msqc.Mouse = plan.mouseBase;
   if (plan.chats.length) {
