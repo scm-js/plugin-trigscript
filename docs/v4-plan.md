@@ -1093,6 +1093,38 @@ ui.objectives(P1, () => (
   Text a frame when the view's inputs changed (and again before the lines fade), ten rows
   under a header. The objectives and the label stay as plain made texts.
 
+**As built (2026-10-16, IR 17).** JSX in a `.tsx` file (the entry may be `main.tsx`): the
+compiler options say `jsx: react` with the factory `__jsx`, so TypeScript type-checks every
+element against `JSX.IntrinsicElements` and a JSX expression is a `string`. The elements are
+`<line color>` (a line of its own; a line break goes before each one but the first thing
+written), `<span color>` (its colour comes back after it, lazily: the parent's next piece says
+it again), `<cell color>` (■ in its colour; 0 or none is □ in lavender — a board's cell) and
+`<bar value max width color>`. A colour is one of `textColors`' names (the codes the spike
+measured) or a number of the program's. `{…}` is the program's value; `cond && …`, `?:` and
+`.map((x, i) => …)` are its if and its loop — unrolled over a list the script has, so a board
+drawn over `[...Array(10).keys()]` reads its cells at constant indices. Nothing in a text can
+wait.
+
+- **Lowering:** a JSX text is not a template. It has a buffer of its own (`buildText` writes
+  parts at its end, `reset` empties it; `built` reads it), so a 100-cell board is written in
+  place, never copied whole per piece. Parts gain `char`, a byte from a number. JSX is never
+  hoisted (`hoist.ts#hasJsx`); outside a program `__jsx` makes the same text at build time
+  (`compiler/jsx.ts`).
+- **`ui.lines(player, () => …)`** is a task (`start`, one slot) that loops: built and printed
+  when a flag says the view is stale or 24 frames after it was shown (the lines fade in under
+  six seconds). `views.ts` declares the flag first in the program, finds what the view reads
+  and sets the flag after every statement anywhere in the program that writes it. A view that
+  reads the game is built every frame. It gives back the Task (`board.cancel()`).
+- **Measured in the lifted game:** a static 10×10 board costs ~360 actions a frame when nothing
+  changed, ~63k on a frame it is built and printed. Tetris (`probes/tetris.tsx`): ~80k on a frame
+  the board changed; a headless run reads the keys as held, so every frame changed there. Nothing
+  Remastered refuses.
+- **Found on the way:** the freeze check called `while (move(0, 1, 0)) {}` endless: a call in a
+  loop's condition that writes what is outside it now counts as changing it.
+- **Not yet:** components (`<Row />`: call a function in braces instead), `Array.from`, the
+  per-cell cost (~600 actions: the colour byte and the glyph are copied in; a cell could be one
+  dword), the editor's workspace knowing `.tsx`, guide and README (wait for 4.0).
+
 ### S3. A hero moved with the keys
 
 W A S D move a hero, the mouse aims, a key casts. The map plays as an action game.
