@@ -167,7 +167,7 @@ ${kw}interface UnitFilter {
   /** Inside this location. */
   at?: Location;
 }
-/** A key keyPressed() knows. F6 is not among them: the game reports no press of it. */
+/** A key keyPressed() knows. F2 to F6 are not among them: StarCraft: Remastered reports no press of them. */
 ${kw}type Key = __KEY_NAMES__;
 /** What a chatted() pattern's captures are read as: {n} a number, {unit:unit} a unit type, {kind:ore|gas} the place of the word in its list. */
 ${kw}type ChatCapture<C extends string> = C extends \`\${infer N}:unit\` ? { readonly [K in N]: UnitType } : C extends \`\${infer N}:\${string}\` ? { readonly [K in N]: number } : { readonly [K in C]: number };
@@ -466,13 +466,13 @@ ${kw}const on: {
    * when the script is built, so an action can be for them.
    */
   chat<const P extends string>(pattern: P, handler: (player: Player, values: ChatValues<P>) => void | Promise<void>, options?: EventOptions & { from?: Player }): Task;
-  /** A player presses a key, as keyPressed() sees it: \`on.key("F2", (p) => print("Help", { to: p }))\`. Every player P1 … P8 unless \`from\` names one. */
+  /** A player presses a key, as keyPressed() sees it: \`on.key("F7", (p) => print("Help", { to: p }))\`. Every player P1 … P8 unless \`from\` names one. */
   key(key: Key, handler: (player: Player) => void | Promise<void>, options?: EventOptions & { from?: Player }): Task;
 };
 /**
  * What the players do, inside program() only. A key, a click and a typed line are true on the one
  * frame they arrive, so look for them in a loop that runs every frame:
- * \`while (true) { if (keyPressed(CurrentPlayer, "F2")) …; sleep(frames(1)); }\`. They reach every
+ * \`while (true) { if (keyPressed(CurrentPlayer, "F7")) …; sleep(frames(1)); }\`. They reach every
  * player's computer in step, a few frames after they happen. The player is one of P1 … P8 or
  * CurrentPlayer — in a program with \`{ owner: AllPlayers }\`, each player's own keys.
  * The map gives up a little for it: one free location among the first 63 (nine when the mouse is read),

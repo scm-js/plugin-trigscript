@@ -96,9 +96,9 @@ describe("events: in the simulator", () => {
   it("on.chat and on.key: every player, the player known in the handler", () => {
     const r = compile(`
       on.chat("-give {n}", (p, { n }) => { setResources(p, "add", n, "ore"); print(\`gave \${n}\`, { to: p }); });
-      on.key("F2", (p) => print("help", { to: p }), { from: P2 });`);
+      on.key("F7", (p) => print("help", { to: p }), { from: P2 });`);
     const s = sim(r);
-    s.run(2).type("-give 25", 1).press("F2", 1).press("F2", 0).run(1);
+    s.run(2).type("-give 25", 1).press("F7", 1).press("F7", 0).run(1);
     expect(printed(s)).toEqual(["2:gave 25", "2:help"]);
     expect(s.events.filter((e) => e.action.type === ActionType.SetResources).map((e) => e.action.player)).toEqual([1]);
   });

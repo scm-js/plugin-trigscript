@@ -277,7 +277,7 @@ import { test, expect, program, keyPressed, chatted, setResources, print, sleep,
 program(() => {
   let shop = false;
   while (true) {
-    if (keyPressed(CurrentPlayer, "F2")) { shop = !shop; print(shop ? "Shop open" : "Shop closed"); }
+    if (keyPressed(CurrentPlayer, "F7")) { shop = !shop; print(shop ? "Shop open" : "Shop closed"); }
     const give = chatted(CurrentPlayer, "-give {n}");
     if (give && shop) setResources(CurrentPlayer, "add", give.n, "ore");
     sleep(frames(1));
@@ -287,7 +287,7 @@ program(() => {
 test("-give pays only while the shop is open", (sim) => {
   sim.type("-give 100").frames(2);
   expect(sim.resources(0 as Player).ore).toBe(0);
-  sim.press("F2").frames(1);
+  sim.press("F7").frames(1);
   expect(sim.program("shop").shop).toBe(true);
   sim.type("-give 100").frames(2);
   expect(sim.resources(0 as Player).ore).toBe(100);
@@ -1292,8 +1292,9 @@ program(() => {
 
 `keyPressed(player, key)` is true when the press arrives — once per press, not while the
 key is held (the game reports no held key), and not while the player is typing a message.
-Keys are the letters and digits, `"F1"` … `"F12"` without `"F6"` (the game keeps it to
-itself and reports no press of it — played and seen — so it is an error to ask), `"Space"`, `"Enter"`, `"Escape"`,
+Keys are the letters and digits, `"F1"`, `"F7"` … `"F12"` (the game keeps F2 to F6 to
+itself and reports no press of them — played and seen; F2 to F4 move the camera — so it is
+an error to ask), `"Space"`, `"Enter"`, `"Escape"`,
 `"Tab"`, `"Shift"`, `"Ctrl"`, `"Alt"`, the arrows (`"Left"` …), `"Backspace"`, `"Delete"`,
 `"Insert"`, `"Home"`, `"End"`, `"PageUp"`, `"PageDown"` and `"Numpad0"` … `"Numpad9"`; the
 game's own use of a key still happens. `clicked(player, "left" | "right" | "middle")` is

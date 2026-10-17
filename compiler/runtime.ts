@@ -632,7 +632,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     created: listens("created", "on.created(units.ZergZergling, (u) => { … })"),
     died: listens("died", "on.died({ owner: P8 }, (u) => { … })"),
     chat: listens("chat", "on.chat(\"-give {n}\", (p, { n }) => { … })"),
-    key: listens("key", "on.key(\"F2\", (p) => { … })"),
+    key: listens("key", "on.key(\"F7\", (p) => { … })"),
   });
 
   /* ── Text a program fills in ── */

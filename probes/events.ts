@@ -13,7 +13,7 @@
 //          Then load and unload anything you like (a Bunker, a Dropship): nothing new should be said.
 //   E  35  200 Zerglings of yours in one frame, then all killed in one frame: "E: made 200, died 200". Does the game
 //          slow or stutter at either?
-//   F  45  in a multiplayer game only: type "-give 100" (Enter, the line, Enter): +100 minerals. Press F2: "help".
+//   F  45  in a multiplayer game only: type "-give 100" (Enter, the line, Enter): +100 minerals. Press F7: "help".
 // Host it as a multiplayer game, alone, for F; the rest also works single player.
 //   npx tsx scripts/build-fixture.mts probes/events.ts fixtures/eud/events.scx
 //   npx tsx scripts/test-game.mts probes/events.ts     (A to E in the lifted game)
@@ -27,7 +27,7 @@ program(async () => {
   on.died((u) => { died++; if (u.type != units.ZergZergling) print(`died ${u.type} at ${u.x}, ${u.y}`); });
   on.died(units.TerranMarine, async () => { await sleep(seconds(2)); createUnit(P1, units.TerranMarine, 1, HOME); print("back"); });
   on.chat("-give {n}", (p, { n }) => { setResources(p, "add", n, "ore"); print(`gave ${n}`, { to: p }); });
-  on.key("F2", (p) => print("help", { to: p }));
+  on.key("F7", (p) => print("help", { to: p }));
 
   await sleep(seconds(3));
   print("A: three Marines made by the program. Expect \"made 0\" three times.", { position: "center" });
@@ -48,7 +48,7 @@ program(async () => {
   print("D: train an SCV now (you have 100 more minerals). Expect \"made 7\" when it comes out. Loading and unloading should say nothing.", { position: "center" });
 
   await sleep(seconds(15));
-  print("E: 200 Zerglings in one frame, then all killed in one frame. Does the game slow?", { position: "center" });
+  print("E: 200 Zerglings made in one frame; three seconds later all killed in one frame. Does the game slow?", { position: "center" });
   const before = made, gone = died;
   for (let i = 0; i < 8; i++) createUnit(P1, units.ZergZergling, 25, HOME);
   await sleep(seconds(3));
@@ -57,7 +57,7 @@ program(async () => {
   print(`E: made ${made - before}, died ${died - gone}`);
 
   await sleep(seconds(6));
-  print("F: in multiplayer, type -give 100, and press F2.", { position: "center" });
+  print("F: in multiplayer, type -give 100, and press F7.", { position: "center" });
 }, { owner: P1, name: "events" });
 
 /** How many times a text was shown. (The game's own lines fold the same text shown twice in a frame, so the actions are counted.) */

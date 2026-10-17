@@ -950,6 +950,13 @@ on.key("F2", (p) => print("Help", { to: p }), { from: P1 });
   (4) and `probes/events.ts` (3) in the lifted game and the simulator, at the same frames; every older game probe
   still passes. **Probe for Remastered:** `Maps/TrigScript/trigscript-b2-events.scx` with its answer sheet: whether
   every death reaches `on.died` in Remastered (rebuilt 2026-10-17 with the walk both ways), a trained SCV, unloading, 200 made and killed in a frame, and chat and a key in a multiplayer game. Not played yet.
+- **Played in Remastered, 2026-10-17** (multiplayer, alone): every step passes but the key. A: three "made 0".
+  B: three "died 0 at x, y" near the base, then three "back" and three new Marines, each "made 0". C: two Firebats
+  made and removed, "died 32" twice. D: "made 7" when the SCV came out, not when queued (loading not tried: nothing
+  to load). E: "E: made 200, died 200", no stutter. F: `-give 100` gave 100 and printed "gave 100" to the player.
+  F2 moved the camera (the game's own key) and said nothing; a second probe (Q, F2–F5, F7, F9, each through
+  `on.key`, and F2 through `keyPressed`) heard only Q, F7 and F9. So F2–F5 join F6 as keys Remastered keeps: they
+  are not a `Key`, and the examples use F7. F1, F10–F12 not played.
 - **Not yet:** `on.order` (each unit's order against the last frame's: a scan, or a pass over the visible list),
   `u.killedBy` (the killer's kill count rises a frame before; or the unit's +0x90, last attacking player, from the
   dying record — both to check), a `removed` flag on a DeadUnit, a morph event, listeners at the top of a script

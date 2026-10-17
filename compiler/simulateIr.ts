@@ -1294,7 +1294,7 @@ export class ProgramSimulation {
   /** The typed-line patterns of all the programs, in the order the game tries them: the first that matches a line is the one that line is. */
   private readonly chats: ChatPattern[] = [];
   private readonly unitByName: (lower: string) => number | undefined;
-  /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
+  /** What the players did, for the next frame and for the one running: "key:0:F7", "click:0:left", and a typed line as the pattern it matched with its values. */
   private queued: { events: Set<string>; lines: Map<number, { pattern: string; values: number[] }> } = { events: new Set(), lines: new Map() };
   private current = this.queued;
   /** The keys and buttons down on the last frame, and on this one (what keyHeld() finds). */

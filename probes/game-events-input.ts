@@ -5,7 +5,7 @@ import { test, expect, program, print, setResources, on, P1 } from "trigscript";
 program(async () => {
   let gave = 0, helped = 0;
   on.chat("-give {n}", (p, { n }) => { gave += n; setResources(p, "add", n, "ore"); print(`gave ${n}`, { to: p }); });
-  on.key("F2", (p) => { helped++; print("help", { to: p }); });
+  on.key("F7", (p) => { helped++; print("help", { to: p }); });
 }, { owner: P1, name: "input" });
 
 test("a typed line and a key reach their handlers, and what they print shows", (sim) => {
@@ -13,7 +13,7 @@ test("a typed line and a key reach their handlers, and what they print shows", (
   sim.type("-give 100").seconds(1);
   expect(sim.program("input").gave).toBe(100);
   expect(sim).toHavePrinted("gave 100");
-  sim.press("F2").seconds(1);
+  sim.press("F7").seconds(1);
   expect(sim.program("input").helped).toBe(1);
   expect(sim).toHavePrinted("help");
 });
