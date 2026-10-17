@@ -4903,6 +4903,8 @@ export class Structured {
 
   /** A condition known when the script is built (a hoisted boolean, number or text): true, false, or undefined when it must be tested in the game. */
   private knownCondition(expr: TS.Expression): boolean | undefined {
+    const narrowed = this.knownTypeof(expr);
+    if (narrowed !== undefined) return narrowed;
     const h = this.evaluate(expr);
     if (!h) return undefined;
     const v = h.value;
@@ -4910,6 +4912,36 @@ export class Structured {
     if (typeof v === "number") return v !== 0;
     if (typeof v === "string") return v !== "";
     return undefined;
+  }
+
+  /**
+   * `typeof shape === "number"`: known when the script is built, whatever `shape` is bound to — a value known then
+   * (its own typeof), or a variable of the program (its kind). So a function written for two kinds of argument, as
+   * TypeScript narrows them, is inlined with only the side its argument takes (`fog.draw(P1, x, y, 5)` and
+   * `fog.draw(P1, x, y, heart)` are one function).
+   */
+  private knownTypeof(expr: TS.Expression): boolean | undefined {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isBinaryExpression(e)) return undefined;
+    const op = e.operatorToken.kind;
+    const equal = op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken;
+    if (!equal && op !== ts.SyntaxKind.ExclamationEqualsEqualsToken && op !== ts.SyntaxKind.ExclamationEqualsToken) return undefined;
+    const left = this.unwrap(e.left), right = this.unwrap(e.right);
+    const [of, word] = ts.isTypeOfExpression(left) && ts.isStringLiteralLike(right) ? [left, right.text] : ts.isTypeOfExpression(right) && ts.isStringLiteralLike(left) ? [right, left.text] : [null, ""];
+    if (!of) return undefined;
+    const kind = this.typeofOf(of.expression);
+    return kind === undefined ? undefined : (kind === word) === equal;
+  }
+
+  /** What `typeof` would say of an expression, when the compiler knows: a value known when the script is built, or a binding of the program. */
+  private typeofOf(expr: TS.Expression): string | undefined {
+    const b = this.bindingOf(expr);
+    if (b?.kind === "value") return typeof b.value;
+    if (b?.kind === "var") return b.v.kind === "text" ? "string" : b.v.kind === "unit" ? "object" : b.v.kind;
+    if (b) return "object";
+    const h = this.evaluate(expr);
+    return h && !isGameValue(h.value) ? typeof h.value : undefined;
   }
 
   private ifStatement(s: TS.IfStatement, ctx: Ctx) {

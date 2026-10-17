@@ -18,7 +18,7 @@ program(async () => {
   await nextFrame();
   while (true) {
     fog.light(P1, 30, 30, 5);
-    fog.draw(P1, heart, 60, 40);
+    fog.light(P1, 60, 40, heart);
     await nextFrame();
   }
 });

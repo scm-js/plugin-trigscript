@@ -131,7 +131,7 @@ describe("fog", () => {
 
   it("a picture's brushes light exactly its lit tiles, when every part of it is three wide and four tall", () => {
     const rows = ["######......", "######......", "######......", "######......", "############", "############", "############", "############"];
-    const r = ok(`import { fog } from "trigscript/fog";\nconst pic = fog.picture(${JSON.stringify(rows)});\nprogram(async () => { fog.draw(P1, pic, 40, 30); await nextFrame(); });`);
+    const r = ok(`import { fog } from "trigscript/fog";\nconst pic = fog.picture(${JSON.stringify(rows)});\nprogram(async () => { fog.light(P1, 40, 30, pic); await nextFrame(); });`);
     const want = new Set<string>();
     rows.forEach((row, y) => { for (let x = 0; x < row.length; x++) if (row[x] === "#") want.add(`${40 + x},${30 + y}`); });
     expect([...litBy(r.ir[1])].sort()).toEqual([...want].sort());
@@ -139,14 +139,46 @@ describe("fog", () => {
 
   it("a thin line is drawn a tile thick rather than lost", () => {
     const rows = ["##########"];
-    const r = ok(`import { fog } from "trigscript/fog";\nconst pic = fog.picture(${JSON.stringify(rows)});\nprogram(async () => { fog.draw(P1, pic, 10, 10); await nextFrame(); });`);
+    const r = ok(`import { fog } from "trigscript/fog";\nconst pic = fog.picture(${JSON.stringify(rows)});\nprogram(async () => { fog.light(P1, 10, 10, pic); await nextFrame(); });`);
     const lit = litBy(r.ir[1]);
     for (let x = 0; x < 10; x++) expect(lit.has(`${10 + x},10`)).toBe(true);
+  });
+
+  it("dark ink: the # tiles stay dark — a line one tile wide exactly — and the rest of the rectangle is lit", () => {
+    const rows = Array.from({ length: 10 }, () => "......#......");
+    const r = ok(`import { fog } from "trigscript/fog";\nconst pic = fog.picture(${JSON.stringify(rows)}, { ink: "dark" });\nprogram(async () => { fog.light(P1, 20, 20, pic); await nextFrame(); });`);
+    const want = new Set<string>();
+    rows.forEach((row, y) => { for (let x = 0; x < row.length; x++) if (row[x] !== "#") want.add(`${20 + x},${20 + y}`); });
+    expect([...litBy(r.ir[1])].sort()).toEqual([...want].sort());
+  });
+
+  it("light() is one function for a size and a picture: only the side its argument takes is compiled", () => {
+    const r = ok(`import { fog } from "trigscript/fog";\nconst pic = fog.picture(["####", "####", "####", "####"]);\nprogram(async () => { let n = 2; fog.light(P1, 5, 5, n); fog.light(P1, 20, 20, pic); await nextFrame(); });`);
+    const creates = walk(r.ir[1].body).filter((s) => s.kind === "action" && s.record.type === 44);
+    expect(creates.length).toBe(11 + 2); // the size the program holds: one Create Unit per size, in the if-chain; the 4 × 4 picture: two size-1 brushes (3 wide each)
+    expect(compile(`import { fog } from "trigscript/fog";\nprogram(() => {\n  // @ts-expect-error\n  fog.light(P1, 5, 5, "big");\n});`).diagnostics.length).toBeGreaterThan(0);
   });
 
   it("reveal() walks the map's own size, read in the game", () => {
     const r = ok(`import { fog } from "trigscript/fog";\nprogram(async () => { fog.reveal(P1); await nextFrame(); });`);
     expect(JSON.stringify(r.ir[1].body)).toContain(`"name":"memory.map.width"`);
+  });
+});
+
+describe("typeof in an inlined function", () => {
+  it("is known when the script is built, for a value and for a program's variable, and only the live side is compiled", () => {
+    const lib = `export const pay = game((player: Player, amount: number | string) => {
+  if (typeof amount === "number") setResources(player, "add", amount, "ore");
+  else displayText(amount);
+});`;
+    const run = (body: string) => compileScript(ts, { "main.ts": `import { pay } from "./lib";\nprogram(() => { ${body} });`, "lib.ts": lib }, NAMES, { lib: LIB });
+    for (const [body, type] of [[`pay(P1, 5);`, 26], [`let n = 3; pay(P1, n);`, 26], [`pay(P1, "hello");`, 9]] as const) {
+      const r = run(body);
+      expect(r.diagnostics).toEqual([]);
+      const actions = walk(r.ir[0].body).filter((s): s is Extract<Stmt, { kind: "action" }> => s.kind === "action");
+      expect(actions.map((a) => a.record.type)).toEqual([type]);
+      expect(walk(r.ir[0].body).some((s) => s.kind === "if")).toBe(false);
+    }
   });
 });
 

@@ -3,16 +3,21 @@
  *
  *   import { fog } from "trigscript/fog";
  *
+ *   const heart = fog.picture([".##.##.", "#######", ".#####.", "..###.."]);
+ *
  *   program(async () => {
- *     fog.reveal(P1);                              // the whole map lit once: from now on dark is fog, not black
- *     const heart = fog.picture(["#.#", "###", ".#."]);
+ *     fog.reveal(P1);                  // the whole map lit once: from now on dark is fog, not black
  *     while (true) {
- *       fog.draw(P1, heart, 60, 40);               // this frame only
+ *       fog.light(P1, 30, 20, 5);       // a disc of size 5 around tile (30, 20), this frame only
+ *       fog.light(P1, 60, 40, heart);   // a picture, its top left on tile (60, 40)
  *       await nextFrame();
  *     }
  *   });
  *
- * The fog is a canvas cleared every frame: what a program lights this frame is what shows this frame, and nothing
+ * The fog is a canvas that starts every frame dark: what a program lights this frame is what shows this frame, and
+ * nothing else needs doing. There is no dark brush — the game's sight only ever reveals — so dark is whatever is not
+ * lit; to draw dark shapes, light around them (a picture with `{ ink: "dark" }`). Dark is also the sharper ink: a lit
+ * part is at least a brush wide (3 tiles across, 4 down), while a dark line one tile wide stays exactly that. Nothing
  * else needs doing — the library writes the game's vision countdown after every frame (memory.vision.countdown), so
  * the next frame starts from a wiped board. Watch it on the minimap with Classic graphics (Options > Graphics): a tile
  * of the map is a pixel there, sharp; Remastered graphics blurs it a few tiles wide.
@@ -72,14 +77,8 @@ const brush = game((player: Player, type: UnitType) => {
   removeUnit(player, type);
 });
 
-/**
- * Light the fog around a tile for this frame: the tiles a brush of `size` covers (SHAPES), centred on (x, y).
- * @param player Whose fog: P1 … P8, known when the script is built.
- * @param x The tile's column, from the map's left edge.
- * @param y The tile's row, from the map's top edge.
- * @param size 1 (3 tiles wide) to 11 (23 wide).
- */
-export const light = game((player: Player, x: number, y: number, size: number) => {
+/** One disc: the tiles a brush of `size` covers (SHAPES), centred on tile (x, y). What light() does with a size. */
+const disc = game((player: Player, x: number, y: number, size: number) => {
   centerLocation(SPOT, x * 32 + 16, y * 32 + 16, 32, 32);
   if (size <= 1) brush(player, BRUSHES[0]);
   else if (size == 2) brush(player, BRUSHES[1]);
@@ -104,7 +103,7 @@ export const reveal = game((player: Player) => {
   const height = memory.map.height;
   // Size 11 is 23 tiles wide: a brush every 14 tiles leaves no gap, and one more past the end, kept inside, reaches the edge.
   for (let y = 2; y < height + 12; y += 14) {
-    for (let x = 2; x < width + 12; x += 14) light(player, Math.min(x, width - 3), Math.min(y, height - 3), 11);
+    for (let x = 2; x < width + 12; x += 14) disc(player, Math.min(x, width - 3), Math.min(y, height - 3), 11);
   }
 });
 
@@ -116,15 +115,20 @@ export interface Picture {
 }
 
 /**
- * A picture from rows of text, worked out when the script is built: each `lit` character is a tile lit, anything
- * else a tile left dark. The smallest brush is three tiles wide and four tall, so a lit part thinner than that is
- * drawn a tile or two thicker; a dark part keeps every tile, however thin.
- * @example fog.picture(["..##..", ".####.", "######"])
+ * A picture from rows of text, worked out when the script is built: `#` is the ink, anything else is not.
+ *
+ *   fog.picture(["..##..", ".####.", "######"])                     // light ink: the # tiles are lit
+ *   fog.picture(["..##..", ".####.", "######"], { ink: "dark" })    // dark ink: the # tiles stay dark, the rest is lit
+ *
+ * With light ink a lit part thinner than a brush (3 tiles across, 4 down) is drawn a tile or two thicker. With dark
+ * ink every tile of the picture's rectangle that is not `#` is lit and the `#` tiles keep their shape exactly,
+ * however thin — the ink for line art and silhouettes.
  */
-export function picture(rows: readonly string[], lit = "#"): Picture {
+export function picture(rows: readonly string[], options: { readonly ink?: "light" | "dark" } = {}): Picture {
   const height = rows.length;
   const width = Math.max(0, ...rows.map((r) => r.length));
-  const on = (x: number, y: number) => y >= 0 && y < height && x >= 0 && rows[y][x] === lit;
+  const dark = options.ink === "dark";
+  const on = (x: number, y: number) => y >= 0 && y < height && x >= 0 && x < width && ((rows[y][x] ?? ".") === "#") !== dark;
   const offsets = SHAPES.map((shape) => {
     const cy = shape.findIndex((r) => r.includes("@")), cx = shape[cy].indexOf("@");
     const out: [number, number][] = [];
@@ -161,16 +165,23 @@ export function picture(rows: readonly string[], lit = "#"): Picture {
 }
 
 /**
- * Draw a picture for this frame, its top left on tile (x, y).
+ * Light the fog for this frame: a disc or a picture. Tiles count from the map's top left, (0, 0).
+ *
+ *   fog.light(P1, 30, 20, 5);        // a disc of size 5 centred on tile (30, 20)
+ *   fog.light(P1, 60, 40, heart);    // a picture (fog.picture), its top left on tile (60, 40)
+ *
  * @param player Whose fog: P1 … P8, known when the script is built.
- * @param pic A picture made when the script is built: fog.picture([…]).
+ * @param x The tile's column: a disc's centre, a picture's left edge.
+ * @param y The tile's row: a disc's centre, a picture's top edge.
+ * @param shape A size, 1 (3 tiles wide) to 11 (23 wide) — it may change while the game runs — or a picture.
  */
-export const draw = game((player: Player, pic: Picture, x: number, y: number) => {
-  for (const b of pic.brushes) light(player, x + b.x, y + b.y, b.size);
+export const light = game((player: Player, x: number, y: number, shape: number | Picture) => {
+  if (typeof shape === "number") disc(player, x, y, shape);
+  else for (const b of shape.brushes) disc(player, x + b.x, y + b.y, b.size);
 });
 
 /** Everything above as one name: import { fog } from "trigscript/fog"; fog.light(P1, x, y, 3). */
-export const fog = { light, reveal, picture, draw, SHAPES };
+export const fog = { light, reveal, picture, SHAPES };
 
 // The canvas: every brush's sight set, every frame, and the board wiped on the next — for as long as the game runs.
 program(() => {
