@@ -843,6 +843,29 @@ known when the script is built, so its place and its wait are two cells, like a 
   `probes/game-generators.ts` (3) pass in the lifted game and in the simulator at the
   same frames. Every older game probe still passes.
 
+### Classes from any file (built 2026-10-16, between B1 and B2)
+
+Asked for while S2's Tetris grew a library (`probes/lib/unit-screen.ts`): a class declared at
+the top of any of the script's files is the program's wherever a program makes an instance of
+it, with no `game()` around it, and stays an ordinary class when the script is built
+(`const AT_BUILD = new V(21).double()` beside `new V(n)` in a program).
+
+- **Planned as a game function is** (`hoist.ts#planClass`): its parameters and variables are
+  the game's, and what its field values and bodies compute when the script is built is
+  hoisted. The emitter adds `__class(C, { at, pos, hoisted })` after each such class, so the
+  run hands its own file's values — its imports, its constants — to the lowering.
+- **In a program**, a script class is never hoisted (`new C(1)` is an instance, whatever its
+  arguments). Before the program's first statement the lowering declares every script class
+  the program names, the ones they name and extend, and those of the `game()` functions it
+  calls — their static fields — then walks their bodies in their own files.
+- **Errors wait for use:** a class only ever used when the script is built reports nothing.
+- **The rules of a program's class still hold:** an array field has its first value where it
+  is declared, a field holds no build-time object, and an action's player and location are
+  known when the script is built — so the unit screen takes them with each `draw(board, look)`.
+- Checked: same file, another file with its own imports, `extends` across files with a static
+  field, a class used at build time and in a program, errors only where used; Tetris's
+  `UnitScreen` follows the board in the lifted game as the function did.
+
 ### B2. Events (4.4.0)
 
 ```ts

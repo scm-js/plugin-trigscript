@@ -592,6 +592,8 @@ declare namespace JSX {
   }
 }
 declare function __jsx(tag: string, props: object | null, ...children: unknown[]): string;
+/** What the build adds after each class at the top of a file, for a program that makes an instance of it. Not for scripts. */
+declare function __class(cls: unknown, descriptor: unknown): void;
 declare const __fragment: string;
 interface ArrayConstructor {
   new <T = number>(arrayLength: number): T[];

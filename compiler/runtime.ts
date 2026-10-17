@@ -24,6 +24,7 @@ import { allTables, type ScriptNames } from "./names";
 import type { RaceId, ReadSource, TableCell, TextPart, UnitFilter } from "./ir";
 import { DEAF_KEYS, keyName, KEY_NAMES, MOUSE_BUTTONS, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
 import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
+import type { HoistedThunks } from "./hoist";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
@@ -199,6 +200,8 @@ export class ScriptError extends Error {
 /** What a run of the script produces, in execution order. */
 export class Collector {
   readonly entries: Entry[] = [];
+  /** The classes at the top of the script's files, by where each is (`file:position`): what their bodies compute when the script is built. */
+  readonly classes = new Map<string, { hoisted: () => HoistedThunks }>();
   readonly strings: ScriptString[] = [];
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
@@ -615,6 +618,9 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.colors = Object.freeze({ ...PLAYER_COLORS });
 
   /* ── JSX: a text as elements ── */
+  // After each class at the top of a file (hoist.ts#transformer): what its bodies compute when the script is built, for a
+  // program that makes an instance of it.
+  rt.__class = (_cls: unknown, d: { at: [number, number]; pos: number; hoisted: () => HoistedThunks }) => { collector.classes.set(`${d.at[0]}:${d.pos}`, { hoisted: d.hoisted }); };
   rt.textColors = TEXT_COLORS;
   rt.__jsx = jsxAtBuild;
   rt.__fragment = JSX_FRAGMENT;
@@ -709,6 +715,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
-  out.push("textColors", "ui", "__jsx", "__fragment");
+  out.push("textColors", "ui", "__jsx", "__fragment", "__class");
   return out;
 }

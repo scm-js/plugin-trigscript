@@ -60,7 +60,7 @@ import type * as TS from "typescript";
 import { ActionType, PlayerGroup } from "../vendor/triggers";
 import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
-import { declarationOf, libraryCallName } from "./hoist";
+import { declarationOf, isScriptClass, libraryCallName } from "./hoist";
 import { scriptParams } from "./api";
 import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
 import { cellMax } from "./tables";
@@ -100,6 +100,8 @@ export interface StructuredContext {
   error(node: TS.Node, message: string, source?: "compiler" | "script"): void;
   /** The body of a `game()` function, from the value the run made for it; undefined when the compiler cannot place it. */
   resolve(fn: GameFunctionValue): Body | undefined;
+  /** The body of a class at the top of one of the script's files (`hoist.ts#planClass`); undefined when there is none. */
+  classBody?(cls: TS.ClassDeclaration): Body | undefined;
 }
 
 /** A hoisted expression threw when it was evaluated: reported at the expression, as the script's own error. */
@@ -333,6 +335,7 @@ export class Structured {
     this.nodes.set(program, this.body.plan.body);
     this.out = program.body;
     try {
+      this.declareScriptClasses(this.body.plan.root);
       this.block(statements, {}, this.topScope);
     } catch (err) {
       if (!(err instanceof LowerError)) throw err;
@@ -1167,7 +1170,7 @@ export class Structured {
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isElementAccessExpression(n.left) && mine(n.left.expression)) take(n.right);
       ts.forEachChild(n, walk);
     };
-    walk(this.body.plan.arrow.body);
+    walk(this.body.plan.root);
     const init = d.initializer && this.unwrap(d.initializer);
     if (init && ts.isArrayLiteralExpression(init)) init.elements.forEach(take);
     if (made.size > 1) { this.c.error(d, `${d.name.getText(this.body.sf)} would hold ${[...made].map((c) => this.className(c)).join(" and ")}: an array of instances holds one class, since a row has the fields of one. Keep an array for each.`); return null; }
@@ -2000,7 +2003,7 @@ export class Structured {
       else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(n.left) && n.left.name.text === "length" && rowOfDecl(n.left.expression)) found = true;
       else ts.forEachChild(n, walk);
     };
-    walk(this.body.plan.arrow.body);
+    walk(this.body.plan.root);
     return found;
   }
 
@@ -2014,7 +2017,7 @@ export class Structured {
       }
       ts.forEachChild(n, walk);
     };
-    walk(this.body.plan.arrow.body);
+    walk(this.body.plan.root);
     return out;
   }
 
@@ -6061,20 +6064,57 @@ export class Structured {
   /** The constructors being walked, innermost last: whose `super(…)` a call of it is, the instance, and the name its fields are declared under. */
   private readonly constructing: { cls: TS.ClassDeclaration; self: Instance; name: string }[] = [];
 
-  /** The class an expression names, when it is one declared in the body. */
+  /** The class an expression names, when it is one declared in the body or one of the script's own (`scriptClass`). */
   private classOf(expr: TS.Expression): TS.ClassDeclaration | undefined {
     const { ts } = this;
     const e = this.unwrap(expr);
     if (!ts.isIdentifier(e)) return undefined;
     const decl = declarationOf(ts, this.c.checker, e);
-    return decl && ts.isClassDeclaration(decl) && this.body.plan.game.has(decl) ? decl : undefined;
+    return decl && ts.isClassDeclaration(decl) && (this.body.plan.game.has(decl) || this.scriptClass(decl)) ? decl : undefined;
   }
 
-  /** The class a type is an instance of, when it is one declared in the body. */
+  /** The class a type is an instance of, when it is one declared in the body or one of the script's own. */
   private classOfType(type: TS.Type): TS.ClassDeclaration | undefined {
     const { ts } = this;
     const decl = type.getSymbol()?.valueDeclaration;
-    return decl && ts.isClassDeclaration(decl) && this.body.plan.game.has(decl) ? decl : undefined;
+    return decl && ts.isClassDeclaration(decl) && (this.body.plan.game.has(decl) || this.scriptClass(decl)) ? decl : undefined;
+  }
+
+  /**
+   * A class declared at the top of one of the script's files: the program's wherever a program makes an instance of it,
+   * its bodies walked in their own file with what they compute when the script is built (`hoist.ts#planClass`). Known
+   * once `run` has declared it — its static fields — before the program's first statement.
+   */
+  private scriptClass(decl: TS.ClassDeclaration): boolean {
+    return this.classBodies.has(decl) && isScriptClass(this.ts, decl);
+  }
+
+  /** The script's classes a program uses — the classes it names, and theirs in turn, what they extend first — declared before its first statement. */
+  private declareScriptClasses(root: TS.Node) {
+    const { ts } = this;
+    const seen = new Set<TS.ClassDeclaration>();
+    const visit = (n: TS.Node) => {
+      if (ts.isIdentifier(n)) {
+        const decl = declarationOf(ts, this.c.checker, n);
+        if (decl && isScriptClass(ts, decl) && !seen.has(decl)) use(decl);
+        // A game() function the program calls, wherever it is written: the classes it names too.
+        const init = decl && ts.isVariableDeclaration(decl) ? decl.initializer : undefined;
+        if (init && ts.isCallExpression(init) && !followed.has(init) && libraryCallName(ts, this.c.checker, init) === "game") { followed.add(init); init.arguments.forEach(visit); }
+      }
+      ts.forEachChild(n, visit);
+    };
+    const followed = new Set<TS.Node>();
+    const use = (cls: TS.ClassDeclaration) => {
+      seen.add(cls);
+      const body = this.c.classBody?.(cls);
+      if (!body) return;
+      // What it extends, and the classes its bodies name, first: a static field's first value may make one.
+      visit(cls);
+      if (this.classBodies.has(cls)) return;
+      const saved = this.enterBody(body);
+      try { this.declareClass(cls); } finally { this.leaveBody(saved); }
+    };
+    visit(root);
   }
 
   /** What a class extends: a class of the body, null when it extends nothing, undefined — with a diagnostic — when it extends anything else. */
@@ -6351,6 +6391,7 @@ export class Structured {
     const target = this.c.resolve(fn);
     if (!target) { this.c.error(call, "This game function's body could not be found again."); return undefined; }
     const arrow = target.plan.arrow;
+    if (!arrow) { this.c.error(call, "This game function's body could not be found again."); return undefined; }
     return this.inline(call, arrow.parameters, target.plan.expression ?? (arrow.body as TS.Block), target, target.name, arrow);
   }
 
