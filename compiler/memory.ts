@@ -24,6 +24,7 @@ export interface MemoryField {
 export const MEMORY_GROUPS: Record<string, [string, string]> = {
   vision: ["MemoryVision", "How the game keeps fog of war."],
   game: ["MemoryGame", "The game as a whole."],
+  map: ["MemoryMap", "The map being played."],
 };
 
 export const MEMORY_FIELDS: MemoryField[] = [
@@ -36,6 +37,16 @@ export const MEMORY_FIELDS: MemoryField[] = [
     path: ["game", "frame"], base: 0x57f23c, width: 4, readonly: true,
     doc: "Game frames since the game began: 24 a second on Fastest, the same on every player's computer.",
     remastered: "Remastered: read allowed (its own EUD emulator). The game keeps it; a write would only confuse its own count.",
+  },
+  {
+    path: ["map", "width"], base: 0x57f1d4, width: 2, readonly: true,
+    doc: "The map's width, in tiles (a tile is 32 pixels).",
+    remastered: "Remastered: read allowed (its own EUD emulator).",
+  },
+  {
+    path: ["map", "height"], base: 0x57f1d6, width: 2, readonly: true,
+    doc: "The map's height, in tiles (a tile is 32 pixels).",
+    remastered: "Remastered: read allowed (its own EUD emulator).",
   },
 ];
 

@@ -557,7 +557,8 @@ export type Stmt =
    */
   | { kind: "action"; record: ActionRecord; variables?: ActionVariable[]; text?: TextExpr; at: At; label: string }
   /** Centre a location on a point of the map, in pixels, its size kept. */
-  | { kind: "centerLocation"; location: number; x: NumExpr; y: NumExpr; at: At; label: string }
+  /** `size`: the location takes it too, centred on the point (nothing of the old size is read). */
+  | { kind: "centerLocation"; location: number; x: NumExpr; y: NumExpr; size?: { width: NumExpr; height: NumExpr }; at: At; label: string }
   /**
    * Text with values in it, shown to `to` — a slot, 13 for the current player, All Players or a
    * force — in the chat area or on the line in the middle of the screen the game's own errors use.
@@ -671,7 +672,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) init(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
-      case "centerLocation": expr(s.x); expr(s.y); break;
+      case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
       case "print": case "buildText": parts(s.parts); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;

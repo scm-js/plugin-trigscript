@@ -263,6 +263,11 @@ ${kw}function cycles(n: number): Duration;
  */
 ${kw}function sleep(duration: Duration): Promise<void>;
 /**
+ * Wait for the next frame — the same as sleep(frames(1)), as a frame loop reads:
+ * \`while (true) { …draw…; await nextFrame(); }\`. Inside program() only.
+ */
+${kw}function nextFrame(): Promise<void>;
+/**
  * Wait until a condition holds, inside an async program only: \`await until(() => countUnits(P8, units.ZergZergling) === 0)\`.
  * The function is asked once now and then once every frame; the program goes on in the frame it answers true.
  * A condition on its own is asked again the same way: \`await until(bring(P1, units.AnyUnit, locations.Exit, ">=", 1))\`.
@@ -392,6 +397,12 @@ ${kw}function stats(weapon: Weapon): WeaponStats;
 ${kw}function stats(upgrade: Upgrade): UpgradeStats;
 ${kw}function stats(tech: Tech): TechStats;
 ${kw}function stats(player: Player): PlayerStats;
+/**
+ * For a library: a location of the map's first 63 that the map does not use, taken when the script is
+ * built, so the library's users never have to give it one. The same reason gives the same location; the
+ * reason is what the map's requirements show. \`const spot = reserveLocation("fog: where each brush is made");\`
+ */
+${kw}function reserveLocation(why: string): Location;
 /** The player colours stats(player).color takes. */
 ${kw}const colors: { __COLOR_TABLE__ };
 /**
@@ -537,6 +548,11 @@ ${kw}function underMouse(player: Player, filter?: UnitFilter & { within?: number
 ${kw}function chatted<const P extends string>(player: Player, pattern: P): ChatValues<P> | null;
 /** Centre a location on a point of the map, in pixels, its size kept; inside program() only. With mouse(): \`centerLocation(locations.Cursor, at.x, at.y)\`, then createUnit() there. */
 ${kw}function centerLocation(location: Location, x: number, y: number): void;
+/**
+ * Centre a location on a point of the map and give it a size, all in pixels; inside program() only. Nothing of its
+ * old size is read, so it costs less than keeping the size: \`centerLocation(spot, x, y, 32, 32)\`.
+ */
+${kw}function centerLocation(location: Location, x: number, y: number, width: number, height: number): void;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**

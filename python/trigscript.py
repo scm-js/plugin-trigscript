@@ -2223,9 +2223,19 @@ class Lowering:
             f_dwwrite_epd(base + i, v)
 
     def center_location(self, st):
-        """A location centred on a point, its size kept."""
+        """A location centred on a point, its size kept - or the size given, when nothing of the old one is read."""
         x, y = self.num(st["x"]), self.num(st["y"])
         base = EPD(MRGN + (int(st["location"]) - 1) * 20)
+        size = st.get("size")
+        if size:
+            width, height = self.num(size["width"]), self.num(size["height"])
+            if isinstance(width, int) and isinstance(height, int):
+                nx, ny = x - width // 2, y - height // 2
+            else:
+                nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
+            for i, v in enumerate((nx, ny, nx + width, ny + height)):
+                f_dwwrite_epd(base + i, v)
+            return
         left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
         width, height = right - left, bottom - top
         nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]

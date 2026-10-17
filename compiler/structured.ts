@@ -4211,19 +4211,33 @@ export class Structured {
 
   /** `centerLocation(locations.Cursor, at.x, at.y)`: the location known when the script is built, the point the program's. */
   private centerLocation(e: TS.CallExpression) {
-    if (e.arguments.length !== 3) { this.c.error(e, "centerLocation() takes the location and the point: centerLocation(locations.Cursor, x, y)."); return; }
+    if (e.arguments.length !== 3 && e.arguments.length !== 5) { this.c.error(e, "centerLocation() takes the location and the point, and a width and a height to size it too: centerLocation(locations.Cursor, x, y) or centerLocation(locations.Cursor, x, y, 32, 32)."); return; }
     const h = this.evaluate(e.arguments[0]);
     if (!h || isGameValue(h.value)) { this.notConstant(e.arguments[0], "The location"); return; }
     const location = h.value;
     if (typeof location !== "number" || !Number.isInteger(location) || location < 1 || location > 255 || location === 64) { this.c.error(e.arguments[0], "centerLocation() takes one of locations.*, which is moved (not Anywhere)."); return; }
     const x = this.num(e.arguments[1]);
     const y = this.num(e.arguments[2]);
-    if (x && y) this.emit({ kind: "centerLocation", location, x, y, at: this.at(e), label: this.label(e) }, e);
+    const width = e.arguments.length === 5 ? this.num(e.arguments[3]) : undefined;
+    const height = e.arguments.length === 5 ? this.num(e.arguments[4]) : undefined;
+    if (e.arguments.length === 5 && (!width || !height)) return;
+    const size = width && height ? { size: { width, height } } : {};
+    if (x && y) this.emit({ kind: "centerLocation", location, x, y, ...size, at: this.at(e), label: this.label(e) }, e);
+  }
+
+  /** `sleep(…)`, or `nextFrame()` — which is `sleep(frames(1))`, said the way a frame loop reads. */
+  private isSleep(e: TS.CallExpression): boolean {
+    return this.isLibraryCall(e, "sleep") || this.isLibraryCall(e, "nextFrame");
   }
 
   /** `sleep(seconds(2))`: the duration is a build-time value; what it makes of it is the target's. */
   private sleepStatement(call: TS.CallExpression) {
     if (this.inCallback > 0) { this.c.error(call, "sleep() inside a function given to an array method: the method is one loop within the frame. A for…of over the same list can sleep between its turns."); return; }
+    if (this.isLibraryCall(call, "nextFrame")) {
+      if (call.arguments.length) { this.c.error(call, "nextFrame() takes nothing: await nextFrame(); waits for the next frame."); return; }
+      this.emit({ kind: "sleep", cycles: 1, at: this.at(call), label: this.label(call) }, call);
+      return;
+    }
     if (call.arguments.length !== 1) { this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(frames(5))."); return; }
     const h = this.evaluate(call.arguments[0]);
     if (!h) { this.notConstant(call.arguments[0], "A duration"); return; }
@@ -4275,7 +4289,7 @@ export class Structured {
   private notAwaited(e: TS.CallExpression) {
     const text = e.getText();
     const mode = this.promiseCall(e);
-    const what = this.isLibraryCall(e, "sleep") ? "sleep()" : this.isLibraryCall(e, "until") ? "until()" : mode ? `Promise.${mode}()` : `${this.unwrap(e.expression).getText()}()`;
+    const what = this.isSleep(e) ? "sleep()" : this.isLibraryCall(e, "until") ? "until()" : mode ? `Promise.${mode}()` : `${this.unwrap(e.expression).getText()}()`;
     if (this.inAsync(e)) this.c.error(e, `${what} gives a promise, and nothing waits for it here: await ${text}${mode || what === "sleep()" || what === "until()" ? "" : ` — or, to leave it running beside the program, start(${text})`}.`);
     else this.c.error(e, `${what} waits, and a program waits in an async function: program(async () => { … await ${text}; … }).`);
   }
@@ -4307,7 +4321,7 @@ export class Structured {
       return;
     }
     if (ts.isCallExpression(e)) {
-      if (this.isLibraryCall(e, "sleep")) { this.sleepStatement(e); valueless("sleep()"); return; }
+      if (this.isSleep(e)) { this.sleepStatement(e); valueless("sleep()"); return; }
       if (this.isLibraryCall(e, "until")) { this.untilStatement(e); valueless("until()"); return; }
       const mode = this.promiseCall(e);
       if (mode) {
@@ -4616,7 +4630,7 @@ export class Structured {
     if (ts.isCallExpression(bare) && isOnCall(ts, this.c.checker, bare)) { this.onEvent(bare); return; }
     if (ts.isCallExpression(bare) && ts.isPropertyAccessExpression(bare.expression) && bare.expression.name.text === "cancel" && this.isTaskType(this.c.checker.getTypeAtLocation(bare.expression.expression))) { this.cancelTask(bare, bare.expression.expression); return; }
     // A promise nothing waits for. sleep() in a function that is not async is the language before 4: it pauses there.
-    if (!awaited && ts.isCallExpression(bare) && this.isPromise(bare) && !(this.isLibraryCall(bare, "sleep") && !this.inAsync(bare))) { this.notAwaited(bare); return; }
+    if (!awaited && ts.isCallExpression(bare) && this.isPromise(bare) && !(this.isSleep(bare) && !this.inAsync(bare))) { this.notAwaited(bare); return; }
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
     if (h) { this.hoistedStatement(e, h); return; }
@@ -4862,7 +4876,7 @@ export class Structured {
       if (member) { this.unitCall(e, member); return; }
     }
     if (this.isLibraryCall(e, "random")) { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a variable."); return; }
-    if (this.isLibraryCall(e, "sleep")) { this.sleepStatement(e); return; }
+    if (this.isSleep(e)) { this.sleepStatement(e); return; }
     if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) { this.c.error(e, "rose() / once() are conditions: test them in an if."); return; }
     if (this.isLibraryCall(e, "shared")) { this.c.error(e, "shared() goes on a declaration: let total = shared(0)."); return; }
     if (this.isLibraryCall(e, "print")) { this.printStatement(e); return; }
@@ -4910,6 +4924,14 @@ export class Structured {
     if (cond.kind === "const" && !cond.value) {
       // The condition failed to compile: as before, the then side is not walked and the else side is what remains.
       if (s.elseStatement) this.statement(s.elseStatement, ctx);
+      return;
+    }
+    // Two numbers known once compiled — a parameter of an inlined function bound to a build-time value, compared with
+    // one (`if (size == 3)` in a library's function): only the side that runs is compiled, as for a known condition.
+    const folded = foldedCompare(cond);
+    if (folded !== undefined) {
+      const live = folded ? s.thenStatement : s.elseStatement;
+      if (live) this.statement(live, ctx);
       return;
     }
     const then = this.sub(s.thenStatement, ctx);
@@ -7944,7 +7966,7 @@ export class Structured {
       }
       if (this.isLibraryCall(e, "rose")) return this.edge(e, "rose");
       if (this.isLibraryCall(e, "once")) return this.edge(e, "once");
-      if (this.isLibraryCall(e, "sleep") || this.isLibraryCall(e, "until")) { this.c.error(e, `${this.isLibraryCall(e, "sleep") ? "sleep" : "until"}() is a statement, not a condition: await it on a line of its own.`); return FALSE; }
+      if (this.isSleep(e) || this.isLibraryCall(e, "until")) { this.c.error(e, `${this.isSleep(e) ? "sleep" : "until"}() is a statement, not a condition: await it on a line of its own.`); return FALSE; }
       if (this.promiseCall(e)) return (this.raceValue(e, "boolean") as BoolExpr | null) ?? FALSE;
       const read = this.readCall(e);
       if (read !== undefined) return read ? this.readBool(read, e) : FALSE;
@@ -8020,6 +8042,22 @@ export class Structured {
     const r = this.num(e.right);
     if (!l || !r) return FALSE;
     return this.mark<BoolExpr>({ kind: "compare", op, left: l, right: r, at: this.at(e), label: `L${this.line(e)}: ${e.getText(this.body.sf).replace(/\s+/g, " ")}` }, e);
+  }
+}
+
+/** A comparison of two constants, worked out as the lowering would (`unsigned` read as u32), or undefined. */
+function foldedCompare(cond: BoolExpr): boolean | undefined {
+  if (cond.kind !== "compare" || cond.left.kind !== "const" || cond.right.kind !== "const") return undefined;
+  const u = cond.unsigned;
+  const a = u === true || u === "left" ? cond.left.value >>> 0 : cond.left.value | 0;
+  const b = u === true || u === "right" ? cond.right.value >>> 0 : cond.right.value | 0;
+  switch (cond.op) {
+    case "<": return a < b;
+    case "<=": return a <= b;
+    case ">": return a > b;
+    case ">=": return a >= b;
+    case "==": return a === b;
+    case "!=": return a !== b;
   }
 }
 

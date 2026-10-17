@@ -17,6 +17,8 @@
  */
 import type * as Monaco from "monaco-editor";
 import { DECLARATIONS_FILE } from "./compiler/declarations";
+import { MODULE_NAME } from "./compiler/api";
+import { STDLIB } from "./compiler/stdlib";
 import type { LineHint, ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
 import { describeVariable, normalizePath } from "./compiler/compiler";
 import { findReferences } from "./refs";
@@ -153,9 +155,16 @@ export function loadMonaco(base: string = DEFAULT_DIST): Promise<MonacoApi> {
   return loading;
 }
 
-/** Point the language service at a fresh declaration file (the map's names changed). */
+/**
+ * Point the language service at a fresh declaration file (the map's names changed), and at the standard library's
+ * modules, where `import { fog } from "trigscript/fog"` finds them by the bundler's rules — so a hover and go to
+ * definition show the library's own TrigScript.
+ */
 export function setDeclarations(monaco: MonacoApi, content: string) {
-  tsLanguage(monaco).typescriptDefaults.setExtraLibs([{ content, filePath: `file:///${DECLARATIONS_FILE}` }]);
+  tsLanguage(monaco).typescriptDefaults.setExtraLibs([
+    { content, filePath: `file:///${DECLARATIONS_FILE}` },
+    ...Object.entries(STDLIB).map(([name, source]) => ({ content: source, filePath: `file:///node_modules/${MODULE_NAME}/${name}.ts` })),
+  ]);
 }
 
 export const fileUri = (monaco: MonacoApi, path: string) => monaco.Uri.parse(`file:///${normalizePath(path)}`);

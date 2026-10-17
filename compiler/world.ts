@@ -238,11 +238,11 @@ export class World {
     return b ? { x: Math.floor((b.left + b.right) / 2), y: Math.floor((b.top + b.bottom) / 2) } : { x: 0, y: 0 };
   }
 
-  /** A location centred on a point, its size kept. */
-  centre(location: number, x: number, y: number): void {
+  /** A location centred on a point, its size kept — or the size given. */
+  centre(location: number, x: number, y: number, size?: { width: number; height: number }): void {
     const b = this.locations.get(location) ?? { left: 0, top: 0, right: 0, bottom: 0 };
-    const w = b.right - b.left;
-    const h = b.bottom - b.top;
+    const w = size ? size.width : b.right - b.left;
+    const h = size ? size.height : b.bottom - b.top;
     const left = x - Math.floor(w / 2);
     const top = y - Math.floor(h / 2);
     this.locations.set(location, { left, top, right: left + w, bottom: top + h });

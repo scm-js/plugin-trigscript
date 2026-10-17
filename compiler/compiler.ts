@@ -21,7 +21,8 @@ import { MODULE_NAME } from "./api";
 import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type TestReport, type TestRunOptions } from "./testing";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
 import { isScriptClass, isTopListener, libraryCallName, libraryName, planClass, planListener, planProgram, transformer, type ProgramPlan } from "./hoist";
-import { locate, resolveModule, runModules, type LinkedFile } from "./link";
+import { locate, resolveModule, runModules, STDLIB_DIR, stdlibFile, type LinkedFile } from "./link";
+import { STDLIB, stdlibImports } from "./stdlib";
 import { checkProgram } from "./eud";
 import { typeNumbers } from "./numbers";
 import { markRecursion, settleRecursion } from "./recursion";
@@ -194,6 +195,9 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const refs: MapReference[] = [];
   const scripts = new Map<string, string>();
   for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
+  // The standard library's modules the script imports ("trigscript/fog"), as files of its own: only those, since one
+  // may hold a program of its own.
+  for (const name of stdlibImports([...scripts.values()])) scripts.set(stdlibFile(name), STDLIB[name]);
   const entry = entryOf(scripts.keys());
   if (!scripts.has(entry)) {
     diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: `The script has no ${ENTRY_FILE}; that is the file a build starts from.`, source: "compiler" });
@@ -206,6 +210,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const compilerOptions: TS.CompilerOptions = {
     target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, moduleResolution: ts.ModuleResolutionKind.Bundler,
     strict: true, types: [], sourceMap: true, noLib: false,
+    paths: { [`${MODULE_NAME}/*`]: [`./${STDLIB_DIR}/*`] },
     // JSX (in a .tsx file) is a text the game shows: elements are calls of __jsx, which the structured compiler lowers in a program.
     jsx: ts.JsxEmit.React, jsxFactory: "__jsx", jsxFragmentFactory: "__fragment",
   };
@@ -436,7 +441,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   }
   let input: InputPlan | null = null;
   try {
-    input = inputPlan(ir, names.locations, names.units);
+    input = inputPlan(ir, names.locations, names.units, [...collector.reserved.values()]);
   } catch (err) {
     // No room in the map for what carries input: said where the first input is asked for.
     const at = inputsOf(ir).at ?? ir[0]?.at;

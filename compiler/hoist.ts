@@ -120,7 +120,7 @@ export const ON_EVENTS = ["created", "died", "killed", "order", "morphed", "chat
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "until", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
+const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -360,6 +360,14 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   };
   const memo = new Map<TS.Node, boolean>();
   const isGameDecl = (decl: TS.Declaration) => plan.game.has(owningDeclaration(ts, decl));
+  /** `memory.vision.countdown` — a field of one of GAME_CELL_ROOTS, two names down. */
+  const isGameCell = (n: TS.Node): boolean => {
+    if (!ts.isPropertyAccessExpression(n) || !ts.isPropertyAccessExpression(n.expression)) return false;
+    const root = n.expression.expression;
+    if (!ts.isIdentifier(root)) return false;
+    const lib = libraryName(ts, checker, root);
+    return !!lib && GAME_CELL_ROOTS.has(lib);
+  };
   const hoistable = (e: TS.Node): boolean => {
     const hit = memo.get(e);
     if (hit !== undefined) return hit;
@@ -387,14 +395,6 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       if (decl && isScriptClass(ts, decl)) { ok = false; return; }
       // A generator is walked by the program's for…of, a copy of its body at each loop: never run when the script is built.
       if (decl && (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl)) && decl.asteriskToken) { ok = false; return; }
-    };
-    /** `memory.vision.countdown` — a field of one of GAME_CELL_ROOTS, two names down. */
-    const isGameCell = (n: TS.Node): boolean => {
-      if (!ts.isPropertyAccessExpression(n) || !ts.isPropertyAccessExpression(n.expression)) return false;
-      const root = n.expression.expression;
-      if (!ts.isIdentifier(root)) return false;
-      const lib = libraryName(ts, checker, root);
-      return !!lib && GAME_CELL_ROOTS.has(lib);
     };
     const check = (n: TS.Node): void => {
       if (!ok) return;
@@ -554,7 +554,10 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       if (isConst && plan.game.has(d)) { value(d.initializer, items); continue; }
       if (isConst) {
         if (!d.initializer) { error(d, "A constant needs a value."); continue; }
-        if (hoistable(d.initializer)) { plan.consts.set(d, plan.constList.length); plan.constList.push(d); items.push({ kind: "const", decl: d }); continue; }
+        // (`const w = memory.map.width` reads the game: a const of the program's, like one computed from its variables.)
+        let init: TS.Expression = d.initializer;
+        while (ts.isParenthesizedExpression(init)) init = init.expression;
+        if (hoistable(d.initializer) && !isGameCell(init)) { plan.consts.set(d, plan.constList.length); plan.constList.push(d); items.push({ kind: "const", decl: d }); continue; }
         if (isFunctionValue(d.initializer)) { error(d, `${ts.isIdentifier(d.name) ? d.name.text : "This constant"} is a function that uses the program's variables; declare it with function so it is inlined at each call.`); continue; }
         // A const computed from the program's variables lives in the game like a let; the checker keeps it from being reassigned.
         plan.game.add(d);
