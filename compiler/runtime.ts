@@ -27,6 +27,8 @@ import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
 import type { HoistedThunks } from "./hoist";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
 import { MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
+import { coverValue } from "./cover";
+import { isVideo } from "./media";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -598,6 +600,10 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     for (let n = LAST_SLOT + 1; n >= 1; n--) if (!used.has(n)) { collector.reserved.set(why, n); return n; }
     throw new ScriptError(`reserveLocation("${why}"): the map uses every one of its first 63 locations; free one for it.`);
   };
+  /** Build-time: a picture's ink, or each frame of a video's, as the brushes of shapes that cover it (`cover.ts`). */
+  rt.cover = (picture: unknown, shapes: unknown) => {
+    try { return coverValue(picture, shapes, { isVideo }); } catch (err) { throw new ScriptError(err instanceof Error ? err.message : String(err)); }
+  };
   rt.centerLocation = () => { throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement — centerLocation(locations.Cursor, x, y)."); };
 
   /* ── The game's tables ── */
@@ -758,6 +764,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
-  out.push("textColors", "ui", "on", "reserveLocation", "__jsx", "__fragment", "__class", "__listen");
+  out.push("textColors", "ui", "on", "reserveLocation", "cover", "__jsx", "__fragment", "__class", "__listen");
   return out;
 }

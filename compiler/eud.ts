@@ -9,7 +9,7 @@
  * condition does not mention a variable the body assigns, is an error naming the loop.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { HEAP_CELLS, STACK_DEPTH, bodiesOf, declarations, eachCall, heapCells, stackDepth, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
+import { HEAP_CELLS, STACK_DEPTH, bodiesOf, declarations, eachCall, heapCells, stackDepth, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type ArrayDecl, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
 import type { LineHint, ScriptString } from "./compiler";
 import type { InputPlan } from "./input";
 
@@ -380,6 +380,38 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
  * named one (`{ index }`). Nothing a program says is written into the map the user edits.
  * `input` is the compile's plan for what the players do (`input.ts`), when a program reads any.
  */
+/** A table this long or longer goes to the lowering packed (`packTable`) rather than as a list of numbers. */
+export const PACK_FROM = 256;
+
+/**
+ * A table's values as the narrowest little-endian bytes that hold every one (1 to 4 a value), in base64: a video's
+ * brushes are a few hundred thousand values, which as JSON numbers would outgrow the build's 4 MB of data. The
+ * lowering widens them back to a dword each (`python/trigscript.py#unpack_table`).
+ */
+export function packTable(values: readonly number[]): { bytes: 1 | 2 | 3 | 4; data: string } {
+  let top = 0;
+  for (const v of values) { const u = v >>> 0; if (u > top) top = u; }
+  const bytes: 1 | 2 | 3 | 4 = top < 0x100 ? 1 : top < 0x10000 ? 2 : top < 0x1000000 ? 3 : 4;
+  const out = new Uint8Array(values.length * bytes);
+  for (let i = 0, at = 0; i < values.length; i++) {
+    const u = values[i] >>> 0;
+    for (let b = 0; b < bytes; b++) out[at++] = (u >>> (8 * b)) & 0xff;
+  }
+  return { bytes, data: base64(out) };
+}
+
+function base64(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+const packed = (a: ArrayDecl): ArrayDecl | (Omit<ArrayDecl, "values"> & { packed: ReturnType<typeof packTable> }) => {
+  if (!a.values || a.values.length < PACK_FROM) return a;
+  const { values, ...rest } = a;
+  return { ...rest, packed: packTable(values) };
+};
+
 export function serializeIr(programs: Program[], strings: readonly ScriptString[], input: InputPlan | null = null, settings: { heapCells?: number; stackDepth?: number } = {}): string {
   const resolve = (local: number): number | string => {
     if (local <= 0) return 0;
@@ -456,5 +488,5 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
   const heap = settings.heapCells !== undefined && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a) => a.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
   // The same for how deep a function that calls itself may go: only when one does.
   const stack = settings.stackDepth !== undefined && settings.stackDepth !== STACK_DEPTH && programs.some((p) => p.functions?.some((f) => f.recursive)) ? { stack: stackDepth(settings.stackDepth) } : {};
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...stack, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, ...(p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}), body: p.body.map(stmt) })) });
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...stack, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, arrays: p.arrays.map(packed), ...(p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}), body: p.body.map(stmt) })) });
 }

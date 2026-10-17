@@ -48,10 +48,12 @@ export interface ScriptNames {
   techs: NameTable;
   /** orders.dat ids: what a unit is doing (`u.orderId`) and what `on.order()` listens for. */
   orders: NameTable;
+  /** The map's sounds, the Sound Editor's list: each the string of its path, what Play WAV takes. */
+  sounds: NameTable;
 }
 
 /** Every table, in the order the declarations list them. */
-export const allTables = (n: ScriptNames): NameTable[] => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs, n.orders];
+export const allTables = (n: ScriptNames): NameTable[] => [n.players, n.units, n.locations, n.switches, n.aiScripts, n.weapons, n.upgrades, n.techs, n.orders, n.sounds];
 
 /** What a map contributes to the tables; every part is optional (the fixed lists stand without a map). */
 export interface NameSources {
@@ -63,6 +65,8 @@ export interface NameSources {
   switchNames?: (string | null)[];
   /** A unit type's custom name, null or blank for the default. */
   unitCustomName?: (id: number) => string | null;
+  /** The map's sounds: the string each one's path is (1-based, as a trigger names it) and the path. */
+  sounds?: { stringIndex: number; path: string }[];
 }
 
 /** `Terran Siege Tank (Tank Mode)` → `TerranSiegeTankTankMode`; never empty, never starts with a digit. */
@@ -132,7 +136,7 @@ export const defaultSwitchName = (index: number) => `Switch ${index + 1}`;
 
 /** The tables for a map's names — or, with nothing given, the fixed lists alone (what tests use). */
 export function scriptNames(src: NameSources = {}): ScriptNames {
-  const withMap = !!(src.forceNames || src.locations || src.switchNames || src.unitCustomName);
+  const withMap = !!(src.forceNames || src.locations || src.switchNames || src.unitCustomName || src.sounds);
   const locations: NameEntry[] = [{ value: 0, keys: ["NoLocation", "No Location"] }];
   const listed = (src.locations ?? []).slice().sort((a, b) => a.index - b.index);
   if (!listed.some((l) => l.index === ANYWHERE_INDEX)) listed.push({ index: ANYWHERE_INDEX, name: "Anywhere" });
@@ -155,6 +159,11 @@ export function scriptNames(src: NameSources = {}): ScriptNames {
     upgrades: table("upgrades", "Upgrade", "Upgrades, for stats().", UPGRADE_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
     techs: table("techs", "Tech", "Technologies, for stats().", TECH_NAMES.map((name, id) => ({ value: id, keys: keysFor(name) }))),
     orders: table("orders", "Order", "Orders, what a unit is doing: u.orderId, and what on.order() listens for.", ORDER_NAMES.map((name, id) => ({ value: id, keys: [name] }))),
+    // `staredit\wav\bad apple.ogg` is sounds.BadApple — the file's name without its folder or extension — or by its path.
+    sounds: table("sounds", "Sound", "The map's sounds (the Sound Editor's list), for playWav() and transmission().", (src.sounds ?? []).filter((w) => w.stringIndex > 0).map((w) => {
+      const file = w.path.split(/[\\/]/).pop() ?? w.path;
+      return { value: w.stringIndex, keys: [identifier(file.replace(/\.[^.]*$/, "")), w.path] };
+    })),
   };
 }
 

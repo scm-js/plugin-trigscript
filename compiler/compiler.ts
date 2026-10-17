@@ -22,6 +22,7 @@ import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type Test
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
 import { isScriptClass, isTopListener, libraryCallName, libraryName, planClass, planListener, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { locate, resolveModule, runModules, STDLIB_DIR, stdlibFile, type LinkedFile } from "./link";
+import { isMediaFile, videoValue } from "./media";
 import { STDLIB, stdlibImports } from "./stdlib";
 import { checkProgram } from "./eud";
 import { typeNumbers } from "./numbers";
@@ -194,7 +195,9 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
 
   const refs: MapReference[] = [];
   const scripts = new Map<string, string>();
-  for (const [path, text] of Object.entries(files)) scripts.set(normalizePath(path), text);
+  // A video among the files (`media.ts`) is no TypeScript: an import of it gives a value the linker makes.
+  const media = new Map<string, string>();
+  for (const [path, text] of Object.entries(files)) (isMediaFile(path) ? media : scripts).set(normalizePath(path), text);
   // The standard library's modules the script imports ("trigscript/fog"), as files of its own: only those, since one
   // may hold a program of its own.
   for (const name of stdlibImports([...scripts.values()])) scripts.set(stdlibFile(name), STDLIB[name]);
@@ -358,7 +361,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const runtime = { ...createRuntime(names, collector), ...registry.library() };
   collector.running = true;
   // The entry first, so the programs are there; then the test files, which nothing imports.
-  const failure = runModules(linked, entry, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort() });
+  const failure = runModules(linked, entry, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort(), media: (path) => { const text = media.get(path); return text === undefined ? undefined : videoValue(text); } });
   collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;

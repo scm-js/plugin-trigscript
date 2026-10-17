@@ -54,7 +54,7 @@ export const stdlibFile = (name: string) => `${STDLIB_DIR}/${name}.ts`;
  * Run the entry module with the library in scope. Resolves to null when the script ran
  * to the end, else to the error it threw, located when possible.
  */
-export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string, library: Record<string, unknown>, moduleName: string, options: { imported?: readonly string[]; then?: readonly string[] } = {}): RunError | null {
+export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string, library: Record<string, unknown>, moduleName: string, options: { imported?: readonly string[]; then?: readonly string[]; media?: (path: string) => unknown } = {}): RunError | null {
   const names = new Set(files.keys());
   const cache = new Map<string, { exports: Record<string, unknown> }>();
   // `imported`: names the module has and the globals do not — a script may well have a `test` of its own.
@@ -69,6 +69,9 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
       if (spec === moduleName) return library;
       // The standard library: a module of TrigScript that ships with the compiler, among the files when imported.
       if (spec.startsWith(`${moduleName}/`) && names.has(stdlibFile(spec.slice(moduleName.length + 1)))) return load(stdlibFile(spec.slice(moduleName.length + 1)));
+      // A video (`media.ts`): the value its file gives, by the path the import names.
+      const asMedia = spec.startsWith(".") && options.media ? options.media(resolvePath(file, spec)) : undefined;
+      if (asMedia !== undefined) return { __esModule: true, default: asMedia };
       const target = resolveModule(names, file, spec);
       if (!target) {
         throw new Error(spec.startsWith(".")

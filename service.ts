@@ -333,7 +333,7 @@ export class ScriptService {
     return { dispose: () => { mine?.dispose(); watch.dispose(); } };
   }
 
-  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names and custom unit names. Null with no map. */
+  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names, custom unit names and sounds. Null with no map. */
   names(): MapNames | null {
     const api = this.api;
     const info = api.document.info();
@@ -347,6 +347,8 @@ export class ScriptService {
       locations: used.map((index) => ({ index, name: api.names.location(index) })),
       switchNames,
       unitCustomName: (id) => custom.get(id) || null,
+      // (A host from before the Sound Editor's API has no sounds() to ask.)
+      sounds: (api.settings.sounds?.() ?? []).map((w) => ({ stringIndex: w.stringIndex, path: w.path })),
     });
     const decls = generateDeclarations(names);
     return { names, decls, context: hashText(decls) };

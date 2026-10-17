@@ -59,6 +59,8 @@ ${kw}type ColorName = __COLOR_NAMES__;
 ${kw}type Location<N extends number = number> = N & Brand<"location">;
 /** A switch (switches.*, or a raw 0-based switch number). */
 ${kw}type Switch<N extends number = number> = N & Brand<"switch">;
+/** A sound of the map (sounds.*, the Sound Editor's list): the string of its path, what playWav() takes. A path in the map's archive as text also works. */
+${kw}type Sound<N extends number = number> = N & Brand<"sound">;
 /** An AI script (aiScripts.*; a four-character code or StarEdit name as a string also works). */
 ${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
 /** A race (races.*), as race() returns it. */
@@ -403,6 +405,37 @@ ${kw}function stats(player: Player): PlayerStats;
  * reason is what the map's requirements show. \`const spot = reserveLocation("fog: where each brush is made");\`
  */
 ${kw}function reserveLocation(why: string): Location;
+/**
+ * A video the script imports, when the script is built: \`import badApple from "./bad-apple.video"\`.
+ * A .video file is made by Import Video… in the Explorer — the frames the editor decoded, a tile a pixel,
+ * ink or not, a frame for every frame of the game — and kept in the map with the script.
+ */
+${kw}interface Video {
+  /** Tiles across. */
+  readonly width: number;
+  /** Tiles down. */
+  readonly height: number;
+  /** How many frames. */
+  readonly length: number;
+  /** How long a frame shows, in milliseconds: 42 is a frame of the game on Fastest. */
+  readonly frameMs: number;
+  /** How long the whole video plays, in seconds. */
+  readonly seconds: number;
+  /** Frame i as rows of text, # ink and . not: what fog.picture takes. When the script is built. */
+  frame(i: number): readonly string[];
+}
+/** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
+${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
+/**
+ * When the script is built: the brushes whose union is a picture's ink — rows of text, # the ink — each one
+ * of \`shapes\` (rows of text, # its tiles and @ its centre, a row one run of tiles) lying on ink only. Ink
+ * thinner than the first shape gets the first shape on it anyway. Greedy, the largest gain first. For a
+ * renderer of a library's own: fog.picture is this with the game's sight ranges.
+ *   cover([".##.", "####"], [["#@#"]])   // brushes of a 3-wide bar
+ * Of a video, each frame's brushes (worked out once while the file and the shapes stay the same).
+ */
+${kw}function cover(picture: readonly string[], shapes: readonly (readonly string[])[]): readonly Brush[];
+${kw}function cover(video: Video, shapes: readonly (readonly string[])[]): readonly (readonly Brush[])[];
 /** The player colours stats(player).color takes. */
 ${kw}const colors: { __COLOR_TABLE__ };
 /**
@@ -850,11 +883,19 @@ export function afterEach(fn: (sim: Sim) => void): void;
 `;
 
 /** The whole declaration file for a set of names. */
+/** What importing one of the script's media files gives (`media.ts`). */
+const MEDIA_MODULES = `// ── A video the script imports: import badApple from "./bad-apple.video"; ──
+declare module "*.video" {
+  const video: Video;
+  export default video;
+}
+`;
+
 export function generateDeclarations(names: ScriptNames = defaultScriptNames(), options: DeclarationOptions = {}): string {
   const compact = options.compact === true;
   const globals = body("declare ", "", names, compact);
   if (compact) return `${HEADER}${globals}\n${ARRAYS}`;
   const module = `${body("export ", "export ", names, false)}\n${TESTING}`.split("\n").map((l) => (l ? `  ${l}` : l)).join("\n");
-  return `${HEADER}${globals}\n${ARRAYS}\n// ── The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; ──\ndeclare module "${MODULE_NAME}" {\n${module}\n}\n`;
+  return `${HEADER}${globals}\n${ARRAYS}\n// ── The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; ──\ndeclare module "${MODULE_NAME}" {\n${module}\n}\n${MEDIA_MODULES}`;
 }
 
