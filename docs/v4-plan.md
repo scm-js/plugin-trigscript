@@ -1056,7 +1056,34 @@ ui.objectives(P1, () => (
   leaderboard's label, and how much of that label shows. Run in the lifted game first: no
   address Remastered ends the game on, about 2.4k actions a frame on average and 82k at
   most (eudplib's start at frame 2). Copied to
-  `Maps/TrigScript/trigscript-s2-ui-spike.scx`. Not played yet.
+  `Maps/TrigScript/trigscript-s2-ui-spike.scx`.
+
+  **Played 2026-10-16** (A–G single player, H again hosted as multiplayer; Remastered at
+  2560×1440, the bars measured in the screenshots):
+  - **The board goes in the text lines.** 11 stay up (a header and ten rows). One Display
+    Text with line breaks makes as many lines (E), so a board is one action. Redrawn every
+    frame it neither flickers nor tears, and every fourth frame looks the same (F1, F2).
+    Sixty cells still fit on one line (D).
+  - **The lines are drawn from their memory, live** (G): text written into `0x640B60` with
+    no action appeared and counted. But each line still fades on its own timer; a write
+    changes the words, not how long the line stays. A Display Text restarts a line's timer.
+  - **The objectives panel is out for anything live** (H): it pauses a single-player game,
+    and in multiplayer the open panel is a picture taken when it opened (it said second 128
+    at 137 and 146). It shows nine lines; past them the line breaks are lost and the rest
+    runs together on one line. It is fine for a static text.
+  - **The leaderboard's label** shows about 23 characters, then "..." (I). Live, as the
+    strings spike found: a score or a level, not a board.
+  - **Cells:** ■ □ ● are one width; ㅁ, the full-width space, Ｏ and ▒ are another (wider).
+    █ ▀ ▄ ░ ▓ ▌ ▐ Ⅰ are not in the font and come out as narrow boxes, so half blocks are
+    dead. Colour codes take no width.
+  - **Colours:** 02 03 04 07 08 0E 0F 10 11 15 18 19 1B 1C 1D 1E 1F each draw a colour of
+    their own (16 is 04's white; 01 takes the line's colour). **Grey sticks:** after 05,
+    every later code on the line is ignored and the rest stays grey, so empty cells must not
+    be grey. 06 was only seen after 05; a second round tests each code on a line of its own.
+
+  So S2's first surface is `ui.lines(player, () => <…/>)`: the text lines, one Display
+  Text a frame when the view's inputs changed (and again before the lines fade), ten rows
+  under a header. The objectives and the label stay as plain made texts.
 
 ### S3. A hero moved with the keys
 
