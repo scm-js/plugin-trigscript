@@ -4,7 +4,8 @@ Written 2026-10-15. Status: Part A built (A0–A5, each with its *As built*), an
 emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece maps
 (*Showpieces*, 2026-10-16), B1 and B2 built (2026-10-16/17), and an EUD error code taken back to its line
 (*EUD error code to line*, 2026-10-17); a fourth showpiece, Bad Apple, with fog of war found to work as a
-framebuffer in the lifted game (*S4*, 2026-10-17). The question it answers: now that there is a
+framebuffer in the lifted game (*S4*, 2026-10-17); B6, fixed numbers and Math, built with a fifth showpiece, a
+raycaster in the fog (*S5*, 2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1079,6 +1080,36 @@ const picked = await sync(sel[0]);       // Unit, the same on every machine, a f
 - Movement uses the actions Remastered allows: a location centred on a point and Move
   Unit to it. A unit's position is never written; that ends the game.
 
+**As built (2026-10-17).** Differs from the above in four ways, each for the TypeScript people write:
+
+- **A number is fixed when a fraction is stored into it**, not only when declared so: `let x = 1.5`, `x += 0.25`,
+  `const d = Math.cos(a)`. `numbers.ts` finds which variables, arrays, parameters and results are fixed by going over
+  the program until no more turn fixed (as it finds the never-below-zero ones), and remembers the line that made each
+  one fixed for the error that names it. `fixed` (the type, and `fixed(x)`) says so before anything does; a value typed
+  `fixed` is fixed even when whole (`fixed(2)`, a parameter). `u8` / `u16` / `u32` stay whole: a fraction into one is
+  an error.
+- **Whole numbers still divide as whole numbers**: `7 / 2` is 3, as since 3.5; `7 / fixed(2)` is 3.5. Mixing converts as
+  TypeScript computes (`<< 16`, a constant times 65 536), except that a fixed number times or divided by a whole one is
+  the raw cell's own `*` / `/`. Where only a whole number goes (an index, a count, a place, a shift, a unit's field) a
+  fixed one is an error naming `Math.floor` / `round` / `trunc`; `x | 0` is `Math.trunc`.
+- **Angles are radians**, as in JavaScript, not the game's 256 directions: `Math.sin(Math.PI / 6)` is 0.5. `sin` /
+  `cos` read a table of 4 096 cells and `atan2` one of 1 025, each between its cells, added to the program by
+  `numbers.ts`, so the game and the simulator read the same numbers: within 1/65 536 of JavaScript's. `tan`, `atan`,
+  `hypot`, `sqrt` (of a whole number, the root is still fixed, so `Math.hypot` of distances in pixels does not
+  overflow), `floor` / `ceil` / `round` / `trunc`, `abs` / `min` / `max`.
+- **Printed as a decimal**, up to four places without trailing zeros (`${x}` of 1.25 is "1.25").
+
+IR 20: `VarDecl.fixed`, `ArrayDecl.fixed`, `const.fixed` (the raw cell), the intrinsics `fmul` / `fdiv` / `sqrt` /
+`atan2` / `sin` / `cos`, a printed number's `fixed`. A product and a quotient are rounded towards zero through the
+magnitudes, wrapping at 32 bits, in Python (`fixed_fns()`: the four 16-bit partial products; eudplib's division then
+sixteen bits one at a time) and in `compiler/fixedMath.ts` alike. In the lifted game, conditions and actions:
+multiply 461, divide 562, `sqrt` 1 068, `sin` 856, `atan2` 960, a fixed times a whole number 164. **Checked:**
+`probes/game-fixed.ts` (six tests: the same lines printed by the lifted game and the simulator), `tests/fixed.test.ts`
+(16). Found on the way, fixed in the language: a switch over a value known when the script is built keeps the case that
+applies (was an error); `??` `||` `&&` and the comparisons fold over known values; a `const` of a game function set from
+a known parameter is a value; an optional parameter left out is `undefined`, and `xs !== undefined` of an array given is
+known; `x * 2^n` is a shift in the lowering (`w * 32` cost 144, `w << 5` 30).
+
 ### B7. Typed memory (4.8.0)
 
 ```ts
@@ -1265,7 +1296,8 @@ already says so.
 | Idea | What it needs | Known |
 | --- | --- | --- |
 | Terrain as a framebuffer | tile buffer writes | **No.** Magenta 10: Remastered does not draw them. Dropped. (My first answer on 2026-10-15 proposed it; that was wrong.) |
-| Fog of war as a framebuffer | the vision countdown `0x51CE98`, sight writes, Map Revealers made and removed in one pass | **Yes in the lifted game** (S4, 2026-10-17); Remastered's drawing of it is the probe |
+| Fog of war as a framebuffer | the vision countdown `0x51CE98`, sight writes, Map Revealers made and removed in one pass | **Yes**: S4, Bad Apple played in Remastered (2026-10-17) |
+| A raycaster in the fog | B6, `fog.columns` | in the lifted game and the simulator (S5, 2026-10-17); Remastered is the probe |
 | Units moved freely every frame (bullet hell, orbits) | location + Move Unit, B6 for the paths | position writes end the game (Magenta 6); moving by action is ordinary, so the probe is how many a frame before it lags (A4's dial) |
 | Panels of text: objectives, leaderboard label, unit names as live UI | made texts in those fields | **Yes**, the strings spike (2026-09-19): re-read every draw, written only on the target's machine |
 | Custom command buttons | button set data in memory | unknown: probe |
@@ -1772,6 +1804,33 @@ picture, and the text lines are for lyrics and a small second copy.
 "./bad-apple.webm"` → a table of brushes, B8's machinery), typed memory for the countdown
 (B7: `memory.vision.countdown`, allowed both ways by R0), and the lifted game's test of the
 whole video read back from the tile array and held against the source frames (A2).
+
+### S5. A raycaster in the fog
+
+Added 2026-10-17, with B6. A 3D maze on the minimap, walked with W A S D: `probes/raycaster.ts`, the textbook DDA
+raycaster (Lode Vandevenne's, a ray a column stepped from grid line to grid line) written as any TypeScript would
+have it, fixed numbers for its fractions. 42 columns 3 tiles wide over 78 rows; under them the maze from above, three
+tiles a cell, the player blinking on it; a way out that flickers; `I` switches between light walls on fog and dark
+walls between a lit ceiling and floor.
+
+**How it draws: `fog.columns(player, x, y, layout, heights, shaded?)`.** A brush every 3 × 4 tiles took 860 brushes a
+frame in that maze, 1 008 at worst: past the game's limit of about 950 unit creations a frame. The columns are drawn
+instead as rectangles whose covers the encoder works out when the script is built: a band across every column as deep
+as the shallowest, a band a group of six as deep as that group's, and a bar a column for the rest, each half above
+and below the middle (light ink) or below the top and above the bottom (dark ink). A cover a rectangle depth is a
+table; a single column's bar is the smallest brush stacked, worked out rather than read. Shaded columns (the other
+face of the walls, so corners show) are drawn hollow, lit a brush deep along their top and bottom edges: two brushes a
+column. Lines across them at their quarters looked best but cost two dozen a column.
+
+**Measured in the lifted game** (`scripts/fog-frames.mts`, which plays a map headless with keys held and writes the
+fog as pictures): about 280 brushes a frame, 440 at worst over a walk through the level; 220k conditions and actions
+a frame on average, 252k at most — the rays about 150k of it (four fixed multiplies and three divides a column, after
+the ray's direction is stepped across the camera plane instead of computed a column at a time), the drawing the rest.
+The tests hold the game's fog against a floating-point raycaster column by column (within a row) and pass in the game
+and in the simulator, which now draws the fog of units a program set the sight of.
+
+**Not yet:** played in Remastered (`Maps/TrigScript/trigscript-s5-raycaster.scx` + answers sheet). Textures, sprites
+(a monster drawn as a scaled picture in front of the walls), a floor with distance, more than one level.
 
 ### Smaller things that show well
 
