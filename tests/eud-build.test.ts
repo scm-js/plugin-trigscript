@@ -348,7 +348,7 @@ const FIXTURES: Record<string, string> = {
 
 function build(name: string, src: string): { out: number; triggers: number } {
   // A fixture that writes JSX is a .tsx file: its name ends in Tsx.
-  const r = compileScript(ts, { [name.endsWith("Tsx") ? "main.tsx" : "main.ts"]: src }, NAMES, { lib: LIB });
+  const r = compileScript(ts, { [name.endsWith("Tsx") ? "main.tsx" : "main.ts"]: src, ...(FIXTURE_FILES[name] ?? {}) }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
   expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" ? 2 : name === "leftoversProbe" ? 1 : name === "recursionProbe" ? 3 : 1);
@@ -384,6 +384,10 @@ FIXTURES.uiTsx = `program(async () => {
     print(<line>done</line>);
   });`;
 FIXTURES.tetrisTsx = readFileSync(resolve(import.meta.dirname, "..", "probes", "tetris.tsx"), "utf8");
+/** The files a fixture imports, beside it. */
+const FIXTURE_FILES: Record<string, Record<string, string>> = {
+  tetrisTsx: { "lib/unit-screen.ts": readFileSync(resolve(import.meta.dirname, "..", "probes", "lib", "unit-screen.ts"), "utf8") },
+};
 
 // Functions that are called: parameters and results of each kind, an argument that is a call of the same function, a copy an
 // array, a called function calling another, and — in the second program — cells that are a row a player.
