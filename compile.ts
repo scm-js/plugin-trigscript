@@ -48,6 +48,10 @@ export const compilerUrl = (dist: string = DEFAULT_DIST) =>
 export const gametestUrl = (dist: string = DEFAULT_DIST) =>
   dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/gametest.js` : `${dist.replace(/\/+$/, "")}/gametest.js`;
 
+/** What Remastered is known to allow (`data/allowlist.json`, copied into `dist/` by the build), for Find EUD Error: fetched only then. */
+export const allowlistUrl = (dist: string = DEFAULT_DIST) =>
+  dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/allowlist.json` : `${dist.replace(/\/+$/, "")}/allowlist.json`;
+
 /**
  * What the worker is told to import. The editor's loader turns a fetched plugin into
  * `blob:` modules, and the compiler's own blob URL is the compiler the main thread would

@@ -12,6 +12,7 @@ import { MODULE_NAME } from "./api";
 import { GameSim, readLocations, type GameHandle } from "./gameSim";
 import type { TriggerMap, VariableMap } from "./gameVariables";
 import { CostLines } from "./gameCost";
+import { EudTracer, type EudTraceHost, type EudTraceRow } from "./eudError";
 import { RecordingHandle, type DebugHost, type DebugLimits, type DebugRecording } from "./gameDebug";
 import { here, locate, runModules, type LinkedFile } from "./link";
 import type { ScriptNames } from "./names";
@@ -32,7 +33,17 @@ export interface GameTestPayload {
   variables?: VariableMap | null;
   /** The build's map of triggers (`readTriggerMap` of its log): with it, what each test's frames cost is read by line. */
   triggers?: TriggerMap | null;
+  /**
+   * Every EUD read and write written down by line (`EudTracer`), and returned as the report's `trace`: what an "EUD
+   * ERROR" code is looked up in. Needs `triggers` and a host with both taps; said in `traceError` when it has not.
+   */
+  trace?: boolean;
+  /** Before the tests, the map played this many frames with nobody at it (a script with no tests is traced so). */
+  play?: number;
 }
+
+/** What `runGameTests` returns: the report, and with `trace` asked, the run's reads and writes by line. */
+export type GameTestReport = TestReport & { error?: string; trace?: { rows: EudTraceRow[]; frames: number }; traceError?: string };
 
 /** The modules run again to register the tests: the registry, or what stopped them. */
 function register(payload: GameTestPayload) {
@@ -48,17 +59,37 @@ function register(payload: GameTestPayload) {
   return { linked, registry, where, error: failure ? `${failure.file ?? ENTRY_FILE}:${failure.line ?? 1}: ${failure.message}` : null };
 }
 
-export function runGameTests(game: GameHandle, payload: GameTestPayload): TestReport & { error?: string } {
+export function runGameTests(game: GameHandle, payload: GameTestPayload): GameTestReport {
+  // (What a frame costs, where the host counts it and knows where the payload is.)
+  const costLines = payload.triggers && game.cost && game.payloadEnd ? new CostLines(payload.triggers, game.payloadEnd) : null;
+  if (costLines && game.cost) game.cost.group = costLines.group;
+  const host = game as GameHandle & EudTraceHost;
+  const traceError = !payload.trace ? undefined : !costLines ? "the build said nothing of where its triggers are" : !EudTracer.can(host) ? "the engine's page is from before EUD traces" : undefined;
+  const tracer = payload.trace && !traceError ? new EudTracer(host, costLines) : null;
+  let played = 0;
+  tracer?.start();
+  try {
+    if (payload.play) {
+      game.reset();
+      while (played < payload.play && !game.over) { game.step(); played++; }
+    }
+    const report: GameTestReport = payload.modules.length ? runRegistered(game, payload, costLines) : { list: [], results: [], only: [], ms: 0 };
+    if (tracer) report.trace = { rows: tracer.rows(), frames: played + report.results.reduce((n, r) => n + r.frames, 0) };
+    if (traceError) report.traceError = traceError;
+    return report;
+  } finally {
+    tracer?.stop();
+  }
+}
+
+function runRegistered(game: GameHandle, payload: GameTestPayload, costLines: CostLines | null): GameTestReport {
   const { registry, where, error } = register(payload);
   if (error) return { list: [], results: [], only: [], ms: 0, error };
   const locations = payload.locations ?? readLocations(game);
   // A test of several players runs only where the game is one of several copies, one a player (A3); one game says so.
   const several = listTests(registry).list.filter((t) => t.kind === "test" && t.players);
   const ids = game.copy ? payload.ids : payload.ids ?? listTests(registry).list.filter((t) => t.kind === "test" && !t.players).map((t) => t.id);
-  // (What a frame costs, where the host counts it and knows where the payload is.)
-  const costLines = payload.triggers && game.cost && game.payloadEnd ? new CostLines(payload.triggers, game.payloadEnd) : null;
-  if (costLines && game.cost) game.cost.group = costLines.group;
-  const report = runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { files: payload.files, ids, makeWorld: (_as, test) => new GameSim(game, { locations, variables: payload.variables, test, costLines }) });
+  const report: GameTestReport = runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { files: payload.files, ids, makeWorld: (_as, test) => new GameSim(game, { locations, variables: payload.variables, test, costLines }) });
   if (!game.copy && !payload.ids) {
     const held: TestResult[] = several.filter((t) => !payload.files || payload.files.includes(t.file)).map((t) => ({ id: t.id, status: "skipped", message: `a test of ${t.players!.length} players runs as a copy of the game for each`, printed: [], events: [], frames: 0, ms: 0 }));
     report.results.push(...held);
@@ -67,7 +98,7 @@ export function runGameTests(game: GameHandle, payload: GameTestPayload): TestRe
 }
 
 /** What a copy of the game runs (scm-sim's `runCopies` driver): the same tests, at this copy's computer. */
-export function drive(game: GameHandle, payload: GameTestPayload): TestReport & { error?: string } {
+export function drive(game: GameHandle, payload: GameTestPayload): GameTestReport {
   return runGameTests(game, payload);
 }
 

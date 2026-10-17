@@ -27,7 +27,10 @@
  * Monaco and TypeScript come from the CDN on first open.
  */
 import type { PluginApi } from "@scm-js/plugin-api";
-import { CompileSuperseded, gametestUrl, retainCompileWorker } from "./compile";
+import { CompileSuperseded, allowlistUrl, gametestUrl, retainCompileWorker } from "./compile";
+import type { Allowlist } from "./compiler/allowlist";
+import { addressOfEudError, findEudError, type EudErrorAnswer } from "./compiler/eudError";
+import type { GameTestReport } from "./compiler/gameTests";
 import { ENTRY_FILE, normalizePath, type CompileResult, type LineHint, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_CELLS_MAX, STACK_DEPTH, STACK_DEPTH_MAX, STACK_DEPTH_MIN, heapCells, stackDepth } from "./compiler/ir";
 import { largestFrame } from "./compiler/recursion";
@@ -135,6 +138,8 @@ const TESTS_SLOW_MS = 2_000;
 const COST_SEEN = 500_000;
 /** A line that ran this many conditions and actions in one frame of a test in the game says so beside it: 2% of COST_SEEN. */
 const COST_HINT = 10_000;
+/** Frames the map is played with nobody at it when an EUD error is looked up, before the tests: two minutes of game time at Fastest. */
+const EUD_TRACE_FRAMES = 3_000;
 /** The costliest lines a test's results name. */
 const COST_LINES = 3;
 /** The key the shortcuts are written with. */
@@ -349,6 +354,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     null,
     ...["runTests", "runFailedTests", "runTestsInGame"].map(menuItem),
     null,
+    menuItem("findEudError"),
+    null,
     ...["problems", "output", "panel", "explorer", "testing"].map(menuItem),
     null,
     menuItem("settings"),
@@ -473,6 +480,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   let costFiles: ScriptFiles | null = null;
   /** The text of `dist/gametest.js`, fetched once. */
   let gametest: Promise<string> | null = null;
+  /** What Remastered is known to allow, fetched the first time an EUD error is looked up. */
+  let allowlist: Promise<Allowlist> | null = null;
+  /**
+   * The last EUD error looked up (Find EUD Error), and the files as they were when the game was traced: its lines are
+   * marked only while their file is still that text, as a line's cost is.
+   */
+  let eudFound: { files: ScriptFiles; answer: EudErrorAnswer } | null = null;
   /** The files with a tab, in the order they were opened. */
   let openTabs: string[] = [normalizePath(options.file ?? ENTRY_FILE)];
   /** What Apply, Play and the builds of the programs reported, oldest first. */
@@ -679,8 +693,9 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const renderProblems = () => {
     // A failing test and an only left in are warnings: said here, and no obstacle to a build unless the map's settings make one of them.
     const warnings = warningsOf(tests, t);
-    problemsView.badge(diagnostics.length + warnings.length);
-    if (diagnostics.length + warnings.length === 0) { problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? t("No problems have been detected in the script.") : t("Checking…"))); return; }
+    const eud = eudLines(), found = eudFound?.answer;
+    problemsView.badge(diagnostics.length + warnings.length + eud.length);
+    if (diagnostics.length + warnings.length + eud.length === 0) { problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? t("No problems have been detected in the script.") : t("Checking…"))); return; }
     problemsView.body.replaceChildren(el("ul", { className: "tsd-list" },
       ...diagnostics.map((d) =>
         el("li", { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
@@ -689,6 +704,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
           el("span", { className: "src" }, d.source === "typescript" ? t("types") : d.source === "script" ? t("script") : t("compiler")),
           el("span", { className: "where" }, t("{file} [Ln {line}, Col {column}]", { file: d.file, line: d.line, column: d.column })),
         )),
+      ...(found ? eud.map((l) =>
+        el("li", { title: eudLineNote(found, l), onClick: () => goTo(l.file, l.line) },
+          shell.icon("error"),
+          el("span", { className: "msg" }, `EUD ERROR ${found.code}: ${found.place}`),
+          el("span", { className: "src" }, t("game")),
+          el("span", { className: "where" }, t("{file} [Ln {line}]", { file: l.file, line: l.line })),
+        )) : []),
       ...warnings.map((w) =>
         el("li", { className: "tsd-warning", title: w.message, onClick: () => goTo(w.file, w.line) },
           shell.icon("warning"),
@@ -773,7 +795,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    * page reads the scenario out of it), with the build's maps of variables and triggers from its log, and the text of
    * `dist/gametest.js`. Null, the reason said in the status bar, when something is missing.
    */
-  const prepareInGame = async (filter: Pick<TestRunOptions, "files" | "ids">, ask: "tests" | "debug") => {
+  const prepareInGame = async (filter: Pick<TestRunOptions, "files" | "ids">, ask: "tests" | "debug" | "trace") => {
     const engine = svc.engine();
     if (!engine?.present || !engine.test || (ask === "debug" && !engine.debug)) {
       setStatus("error", ask === "debug"
@@ -781,7 +803,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         : t("Running tests in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins…."));
       return null;
     }
-    const notRun = (message: string) => (ask === "debug" ? t("Not debugged in the game: {message}", { message }) : t("Not run in the game: {message}", { message }));
+    const notRun = (message: string) => (ask === "debug" ? t("Not debugged in the game: {message}", { message }) : ask === "trace" ? t("Not looked up in the game: {message}", { message }) : t("Not run in the game: {message}", { message }));
     const status = await engine.status();
     if (!status.available) { setStatus("error", notRun(status.reason ?? t("the engine cannot run a game now"))); return null; }
     if (!status.tests) { setStatus("error", t("Not run in the game: the engine's page is from before tests in the game. Reload the editor and try again.")); return null; }
@@ -789,9 +811,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (!(await build()) || cancelled) return null;
     const a = await compileNow({ world: svc.world(), ...filter });
     if (!a || cancelled) return null;
-    if (!a.compiled.ok) { setStatus("error", t("Tests not run: {n, plural, one {# problem} other {# problems}} in the script.", { n: a.compiled.diagnostics.length }), NOTICE_MS); shell.showPanel("problems"); return null; }
-    if (!a.compiled.modules) { setStatus("info", t("The script has no tests.")); return null; }
-    if (!a.compiled.ir.length) { setStatus("info", t("Tests run in the game only for a script with a program: without one, nothing of the script is built into the map.")); return null; }
+    if (!a.compiled.ok) { setStatus("error", ask === "trace" ? t("Not looked up: {n, plural, one {# problem} other {# problems}} in the script.", { n: a.compiled.diagnostics.length }) : t("Tests not run: {n, plural, one {# problem} other {# problems}} in the script.", { n: a.compiled.diagnostics.length }), NOTICE_MS); shell.showPanel("problems"); return null; }
+    // (An EUD error is looked up in the map played with nobody at it, then the tests when there are any.)
+    if (!a.compiled.modules && ask !== "trace") { setStatus("info", t("The script has no tests.")); return null; }
+    if (!a.compiled.ir.length) {
+      setStatus("info", ask === "trace"
+        ? t("The script has no program, so nothing of it is built into the map and no line of it can touch the game's memory: an EUD error came from the map's other triggers.")
+        : t("Tests run in the game only for a script with a program: without one, nothing of the script is built into the map."));
+      return null;
+    }
     const names = svc.names()?.names;
     if (!names) { setStatus("error", t("No map is open.")); return null; }
     setStatus("busy", t("Building the map…"));
@@ -933,6 +961,83 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         label: t("{n} a frame", { n: shortCount(l.peak) }),
         note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran 500 thousand a frame with no visible effect; its screen flickers from a million and the game slows at 5 million. This is {share} of the 500 thousand.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames, share: shareOf(l.peak) }),
       }));
+  };
+
+  /** The lines of the last EUD error looked up, while their file is the text that was traced. */
+  const eudLines = () => {
+    if (!eudFound) return [];
+    const seen = eudFound.files;
+    return eudFound.answer.lines.filter((l) => seen[normalizePath(l.file)] === files[normalizePath(l.file)]);
+  };
+  /** What a line did to the address, and what Remastered does with that, in a sentence. */
+  const eudLineNote = (a: EudErrorAnswer, l: EudErrorAnswer["lines"][number]) => {
+    const did = l.read && l.write ? t("reads and writes") : l.write ? t("writes") : t("reads");
+    const verdict = l.write ? a.write : a.read;
+    const said = verdict === "ends" ? t("Remastered ends the game on this.") : verdict === "ignored" ? t("Remastered does nothing with this.") : verdict === "allowed" ? t("Remastered was seen to allow this, so the game that ended did something else to it.") : t("This has not been seen in Remastered.");
+    return l.match === "exact"
+      ? t("In the game, this line {did} {place} ({times, plural, one {# time} other {# times}}). {said}", { did, place: a.place, times: l.times, said })
+      : t("In the game, this line {did} the same field of another unit ({times, plural, one {# time} other {# times}}): a unit sits elsewhere in the table from one game to the next. {said}", { did, times: l.times, said });
+  };
+  const eudHints = (): LineHint[] => {
+    const a = eudFound?.answer;
+    return a ? eudLines().map((l) => ({ file: l.file, line: l.line, label: `EUD ERROR ${a.code}`, note: eudLineNote(a, l) })) : [];
+  };
+
+  /**
+   * An "EUD ERROR: 0x…" Remastered showed, back to the lines of the script (TrigScript 4): the code is the address
+   * the trigger named, bits inverted (R0). The map is built as Save builds it and played in the lifted game with
+   * nobody at it, then the tests run, every EUD access written down under its line; the lines that touched the
+   * address are marked, and what lies there is said.
+   */
+  const lookUpEudError = async () => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    const answer = await api.ui.prompt(t("The code Remastered showed when the game ended (EUD ERROR: 0x…):"), { title: "TrigScript", value: "", placeholder: "EUD ERROR: 0xFFA632E3" });
+    if (answer === null || cancelled) return;
+    const address = addressOfEudError(answer);
+    if (address === null) { setStatus("error", t("“{text}” is not an EUD error code: Remastered shows one as EUD ERROR: 0x and eight digits.", { text: answer.trim() })); return; }
+    testsRunning = true;
+    renderTesting();
+    try {
+      const got = await prepareInGame({}, "trace");
+      if (!got || cancelled) return;
+      const { engine, a, names, variables, triggers, module, bytes, built } = got;
+      if (!triggers) { setStatus("error", t("Not looked up: the build did not say where its triggers are. Update the eudplib plugin.")); return; }
+      setStatus("busy", t("Playing the map in the game, writing down what each line reads and writes…"));
+      allowlist ??= fetch(allowlistUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`allowlist.json: ${r.status}`); return r.json() as Promise<Allowlist>; });
+      const [report, list] = await Promise.all([
+        engine.test!(bytes, module, { modules: a.compiled.modules ?? [], names, variables, triggers, trace: true, play: EUD_TRACE_FRAMES }) as Promise<GameTestReport>,
+        allowlist.catch(() => { allowlist = null; return undefined; }),
+      ]);
+      if (cancelled) return;
+      if (report.error) { setStatus("error", t("Not looked up in the game: {message}", { message: report.error })); return; }
+      if (!report.trace) { setStatus("error", t("Not looked up in the game: {message}", { message: report.traceError ?? t("the engine's page sent back no trace") })); return; }
+      const found = findEudError(address, report.trace.rows, list);
+      eudFound = { files: built, answer: found };
+      log(t("EUD ERROR {code}: {place}, at 0x{address}.", { code: found.code, place: found.place, address: found.address.toString(16) }));
+      for (const l of found.lines) log(`  ${l.file}:${l.line} — ${eudLineNote(found, l)}`, false);
+      const ran = report.results.filter((r) => r.status !== "skipped").length;
+      const where = found.lines.slice(0, 3).map((l) => `${l.file}:${l.line}`).join(", ") + (found.lines.length > 3 ? "…" : "");
+      const exact = found.lines.some((l) => l.match === "exact");
+      const head = t("EUD ERROR {code} is {place}.", { code: found.code, place: found.place });
+      const said = found.lines.length
+        ? exact
+          ? t("{n, plural, one {# line touched it} other {# lines touched it}} in the game: {where}.", { n: found.lines.length, where })
+          : t("No line touched that very unit, but {n, plural, one {# line touches} other {# lines touch}} the same field of other units, and a unit sits elsewhere in the table from one game to the next: {where}.", { n: found.lines.length, where })
+        : found.unlined.exact + found.unlined.field
+          ? t("No line of the script touched it: eudplib's own work did ({n, plural, one {# time} other {# times}}).", { n: found.unlined.exact + found.unlined.field })
+          : ran
+            ? t("Nothing touched it in {frames} frames of the map played with nobody at it, nor in {tests, plural, one {# test} other {# tests}}: the line that did is one this run did not reach. A test that gets there will find it.", { frames: EUD_TRACE_FRAMES.toLocaleString(), tests: ran })
+            : t("Nothing touched it in {frames} frames of the map played with nobody at it: the line that did is one this run did not reach. A test that gets there will find it.", { frames: EUD_TRACE_FRAMES.toLocaleString() });
+      setStatus(found.lines.length ? "error" : "info", `${head} ${said}`);
+      const first = found.lines[0];
+      if (first) goTo(first.file, first.line);
+      refreshLineHints();
+    } catch (err) {
+      setStatus("error", t("Not looked up in the game: {message}", { message: (err as Error).message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
   };
 
   /** "0.2%", "31%": a count as a share of what Remastered was seen to run in a frame. */
@@ -1725,6 +1830,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     { id: "test", label: t("Play the Map"), key: { code: "F5" }, run: () => { void test(); } },
     { id: "runTests", label: t("Run All Tests"), run: () => { void runTests(); } },
     { id: "runTestsInGame", label: t("Run All Tests in the Game"), run: () => { void runTestsInGame(); } },
+    { id: "findEudError", label: t("Find an EUD Error…"), run: () => { void lookUpEudError(); } },
     { id: "runTestAtCursor", label: t("Run Test at Cursor"), context: true, run: () => { void runTestAtCursor(); } },
     { id: "runFailedTests", label: t("Run Failed Tests"), run: () => { void runFailedTests(); } },
     { id: "testing", label: t("Show Testing"), run: () => testingView.show() },
@@ -1788,7 +1894,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         monaco = m;
         if (generated) setDeclarations(m, generated.decls);
         setHoverVariables(m, () => result?.variables ?? []);
-        setLineHints(m, () => [...(result?.hints ?? []), ...costHints(), ...debug.hints()]);
+        setLineHints(m, () => [...(result?.hints ?? []), ...costHints(), ...eudHints(), ...debug.hints()]);
         setMapRefs(m, mapRefs);
         // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
         loadingCover.done();
