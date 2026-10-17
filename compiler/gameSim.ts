@@ -338,7 +338,8 @@ export class GameSim implements TestWorldLike {
     // whose attack hurt the unit (+0x90), which is what on.killed() reads.
     if (by !== undefined) {
       const at = UNITS + UNIT_BYTES * unit.slot;
-      this.game.m.setInt32(at + 0x08, 0, true); this.game.u8[at + 0x90] = by;
+      // (A unit killed by its own player keeps no attacker: the game records none for friendly fire.)
+      this.game.m.setInt32(at + 0x08, 0, true); if (by !== unit.owner) this.game.u8[at + 0x90] = by;
       this.game.wrote?.(at + 0x08, 4); this.game.wrote?.(at + 0x90, 1);
     }
     return this.onOne(unit, (loc) => this.act(this.record(ActionType.KillUnitAt, { location: loc, player: unit.owner, unit: unit.type, count: 1 }), unit.owner));

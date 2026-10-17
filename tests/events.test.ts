@@ -120,6 +120,14 @@ describe("events, second part: killed, order, morphed, at the top of a script", 
     expect(printed(s)).toEqual([`1:killed ${ZERGLING} by 1`, "1:P2 got 7", `1:died ${ZERGLING}`, `2:died ${MARINE}`]);
   });
 
+  it("a unit killed by its own player has no killer, as the game keeps none", () => {
+    const r = compile(`on.killed((u, by) => print(\`killed by \${by}\`)); on.died(() => print("died"));`);
+    const s = sim(r).run(1);
+    s.game.gone(s.game.living().find((u) => u.type === ZERGLING)!, true, 7);
+    s.run(2);
+    expect(printed(s)).toEqual(["1:died"]);
+  });
+
   it("on.order hands the unit, the order it took up and the one it had; a filter on the order", () => {
     const r = compile(`
       on.order((u, order, was) => { print(\`\${u.type} \${was} -> \${order}\`); });

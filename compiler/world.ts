@@ -194,7 +194,8 @@ export class World {
     unit.alive = false;
     if (this.table[unit.slot] === unit) this.table[unit.slot] = null;
     if (!killed || !fought) return;
-    if (by !== undefined) unit.killedBy = by;
+    // (The game keeps no attacker for a unit its own player killed — a storm on your own units — so there is no killer then.)
+    if (by !== undefined && by !== unit.owner) unit.killedBy = by;
     this.onDeath(unit);
     if (by !== undefined) this.killed.set(unit.type * 4096 + by, (this.killed.get(unit.type * 4096 + by) ?? 0) + 1);
   }

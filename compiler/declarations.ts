@@ -470,7 +470,8 @@ ${kw}const on: {
   /**
    * A unit is killed in a fight — shot, burned, caught in a storm — and the function is handed what it was, where, and
    * the player whose attack killed it. A unit a trigger or a program kills or removes, or one that goes down with its
-   * transport, has no killer and is not handed on (on.died() hears every one).
+   * transport, has no killer and is not handed on (on.died() hears every one); nor does one its own player killed (a
+   * storm on your own units), for which the game keeps no attacker, as it counts no kill.
    * \`on.killed({ owner: P8, by: P1 }, (u, by) => setResources(by, "add", 25, "ore"))\`
    */
   killed(handler: (unit: DeadUnit, by: Player) => void, options?: EventOptions): Task;
