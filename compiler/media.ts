@@ -155,7 +155,10 @@ export function videoValue(text: string): Video {
 /** What the hover on an import says: "a video, 128 × 96 tiles, 5,216 frames at the game's speed (3:39), from bad-apple.mkv". */
 export function describeVideo(text: string): string {
   try {
-    const v = readVideo(text);
+    // The header alone: the frames are not decoded for this.
+    const h = JSON.parse(text) as Partial<VideoHeader>;
+    if (h?.trigscript !== "video") return "This is not a video TrigScript imported.";
+    const v = { width: Number(h.width), height: Number(h.height), length: Number(h.frames), frameMs: Number(h.frameMs), source: typeof h.source === "string" ? h.source : undefined };
     const seconds = Math.round((v.length * v.frameMs) / 1000);
     const speed = v.frameMs === FASTEST_FRAME_MS ? "at the game's speed on Fastest" : `${(1000 / v.frameMs).toFixed(1)} a second`;
     return `A video, ${v.width} × ${v.height} tiles, ${v.length.toLocaleString("en-US")} frame${v.length === 1 ? "" : "s"} ${speed} (${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")})${v.source ? `, from ${v.source}` : ""}.`;

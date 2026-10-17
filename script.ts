@@ -117,11 +117,14 @@ export function memberOf(path: string): string {
 export function pathOf(member: string): string | null {
   if (!isScriptMember(member)) return null;
   const rest = member.replace(/\//g, "\\").slice(SCRIPT_FOLDER.length);
-  return /\.ts$/i.test(rest) ? rest.replace(/\\/g, "/") : null;
+  return SCRIPT_FILE.test(rest) ? rest.replace(/\\/g, "/") : null;
 }
 
-/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts`. */
-export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.ts$/;
+/** What a file of the script ends in: TypeScript, TypeScript with JSX, or a video it imports (`compiler/media.ts`). */
+const SCRIPT_FILE = /\.(?:tsx?|video)$/i;
+
+/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts` (or `.tsx`, `.video`). */
+export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video)$/;
 
 function member(extras: Extras, name: string): Uint8Array | undefined {
   const key = memberKey(name);

@@ -60,6 +60,8 @@ import type { DebugRecording } from "./compiler/gameDebug";
 import type { ScmSimDebugView } from "./vendor/scmSim";
 import type { EudplibBuildEvent, EudplibService } from "./vendor/eudplib";
 import type { Translate } from "./i18n";
+import { describeVideo, isMediaFile } from "./compiler/media";
+import { importMedia, showVideo } from "./videoImport";
 
 export const TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
 // one trigger of the map, in order; code inside program(() => { … }) runs in the game.
@@ -350,7 +352,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const moreAction = shell.action({ icon: "ellipsis", title: t("More actions…"), run: () => shell.menu(moreAction.element, [
     menuItem("save"),
     null,
-    ...["import", "newFile", "newFolder"].map(menuItem),
+    ...["import", "newFile", "newFolder", "importVideo"].map(menuItem),
     null,
     ...["runTests", "runFailedTests", "runTestsInGame"].map(menuItem),
     null,
@@ -367,6 +369,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   shell.section({ title: t("Script"), actions: [
     { icon: "new-file", title: t("New file…: main.ts imports it with import { … } from \"./name\""), run: () => { void newFile(); } },
     { icon: "new-folder", title: t("New folder…: a folder is there while a file is in it, so its first file is asked for next"), run: () => { void newFolder(); } },
+    { icon: "device-camera-video", title: t("Import Video…: a video or a picture as a file of the script, for fog.light to draw"), run: () => { void importVideo(); } },
   ] }).body.append(fileList);
   const programList = el("ul", { className: "tsd-rows" });
   const programsSection = shell.section({ title: t("Programs") });
@@ -544,11 +547,12 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   const where = (s: TriggerSource | null | undefined) => (s ? (Object.keys(files).length > 1 ? `${s.file}:${s.line}` : t("Ln {line}", { line: s.line })) : "?");
 
-  /** Show a file, in a tab of its own. */
+  /** Show a file, in a tab of its own; a video in a viewer of its own. */
   const openFile = (path: string) => {
     if (!editor) return;
     const p = normalizePath(path);
     if (files[p] === undefined) return;
+    if (isMediaFile(p)) { showVideo(api, t, p, files[p]); return; }
     if (!openTabs.includes(p)) openTabs.push(p);
     editor.show(p);
     renderFiles();
@@ -594,6 +598,17 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
   // Below the last row is the top of the script.
   acceptDrops(fileList, "");
+  // A video or a picture dropped in from outside: Import Video… with it.
+  const fromOutside = (e: DragEvent) => !dragged && !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  fileList.addEventListener("dragover", (e) => { if (!fromOutside(e)) return; e.preventDefault(); fileList.classList.add("tsd-drop"); });
+  fileList.addEventListener("dragleave", () => fileList.classList.remove("tsd-drop"));
+  fileList.addEventListener("drop", (e) => {
+    fileList.classList.remove("tsd-drop");
+    if (!fromOutside(e)) return;
+    e.preventDefault();
+    const file = [...(e.dataTransfer?.files ?? [])].find((f) => /^(video|image)\//.test(f.type) || /\.(mkv|webm|mp4|mov|gif)$/i.test(f.name));
+    if (file) void importVideo(file);
+  });
 
   const renderFiles = () => {
     const active = editor?.active() ?? openTabs[0] ?? ENTRY_FILE;
@@ -643,8 +658,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         }
         const path = node.path;
         const fixed = path === ENTRY_FILE;
-        const row = el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: path, onClick: () => openFile(path) },
-          el("span", { className: "tsd-ts" }, "TS"),
+        const row = el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: isMediaFile(path) ? `${path}\n${describeVideo(files[path])}` : path, onClick: () => openFile(path) },
+          isMediaFile(path) ? shell.icon("device-camera-video") : el("span", { className: "tsd-ts" }, "TS"),
           el("span", { className: broken.has(path) ? "tsd-name tsd-problem" : "tsd-name" }, node.name),
           el("span", { className: "tsd-row-actions" },
             !fixed ? shell.iconButton({ icon: "edit", title: t("Rename or move…"), run: () => { void renameFile(path); } }).element : undefined,
@@ -1664,13 +1679,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /* ── Files ── */
 
   /** A file's name asked for until it can be one. Inside `folder` the answer is a name in it (`boss.ts`, or `big/boss.ts` for a folder under it). */
-  const askName = async (message: string, value: string, folder = ""): Promise<string | null> => {
+  const askName = async (message: string, value: string, folder = "", ext = ".ts"): Promise<string | null> => {
     for (;;) {
       const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: "helpers.ts" });
       if (answer === null) return null;
       let name = normalizePath(answer.trim());
       if (name && folder) name = `${folder}/${name}`;
-      if (name && !/\.ts$/i.test(name)) name += ".ts";
+      if (name && !/\.(?:tsx?|video)$/i.test(name)) name += ext;
       if (!FILE_NAME.test(name) || name.split("/").some((p) => p === "." || p === "..")) { value = answer; message = t("A file name is letters, digits, _ - and ., folders with /, ending in .ts."); continue; }
       if (files[name] !== undefined) { value = answer; message = t("There is already a {name}.", { name }); continue; }
       return name;
@@ -1687,6 +1702,23 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (folder && collapsed.has(folder)) { const next = new Set(collapsed); next.delete(folder); setCollapsed(next); }
     editor.add(name, isTestFile(name) ? TEST_TEMPLATE : FILE_TEMPLATE);
     openFile(name);
+  };
+
+  /**
+   * Import Video…: a video becomes a .video file of the script, a picture a .ts file of its rows (`videoImport.ts`).
+   * A picture opens in a tab; a video says how a script imports it.
+   */
+  const importVideo = async (file?: File) => {
+    if (!editor) return;
+    const info = api.document.info();
+    const got = await importMedia(api, t, { mapWidth: info?.width ?? 128, mapHeight: info?.height ?? 128, taken: (p) => files[normalizePath(p)] !== undefined, file });
+    if (!got || !editor || cancelled) return;
+    editor.add(got.path, got.text);
+    if (got.kind === "image") { openFile(got.path); return; }
+    renderFiles();
+    const stem = (got.path.split("/").pop() ?? got.path).replace(/\.video$/i, "");
+    const name = stem.replace(/[^A-Za-z0-9]+(.)?/g, (_m, c: string | undefined) => (c ? c.toUpperCase() : "")).replace(/^[^A-Za-z_]+/, "") || "video";
+    setStatus("ok", t("{path} is in the script: import {name} from \"./{path}\"; then await fog.play(P1, {name}) plays it.", { path: got.path, name }));
   };
 
   /** An archive has no empty folder, so a folder is there while a file is in it: the folder's name, then its first file's. */
@@ -1739,7 +1771,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   const renameFile = async (path: string) => {
     if (!editor || path === ENTRY_FILE) return;
-    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path);
+    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path, "", isMediaFile(path) ? ".video" : ".ts");
     if (!name) return;
     moveTo(path, name);
   };
@@ -1840,6 +1872,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     { id: "import", label: t("Import the Map's Triggers"), run: () => { void importHand(); } },
     { id: "newFile", label: t("New File…"), run: () => { void newFile(); } },
     { id: "newFolder", label: t("New Folder…"), run: () => { void newFolder(); } },
+    { id: "importVideo", label: t("Import Video…"), run: () => { void importVideo(); } },
     { id: "mode", label: mode === "dialog" ? t("Open Beside the Map") : t("Open in a Window"), run: () => switchMode() },
     { id: "problems", label: t("Show Problems"), key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
     { id: "output", label: t("Show Output"), key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },

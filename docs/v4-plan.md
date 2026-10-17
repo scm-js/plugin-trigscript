@@ -1166,7 +1166,7 @@ explores every tile, ~280 conditions and actions a frame for the probe (`probes/
 Found: Arcturus Mengsk's and Gerard DuGalle's Battlecruisers and Raszagal cannot be made by
 a trigger; the brushes are Kukulza ×2, Yggdrasill, Magellan, Gantrithor, Hyperion, Norad II,
 Tom Kazansky, Danimoth, Mojo and Artanis. Not yet: played in Remastered with the heroes; an
-error when a map places one of them; `import` of a video (B8).
+error when a map places one of them; `import` of a video (B8, built: see B8's As built).
 
 ### B8. Built from the game (4.9.0)
 
@@ -1179,6 +1179,79 @@ game when the map is built:
   time and its result becomes a constant table.
 
 Cost: map size. The hint says how many bytes each table adds.
+
+**As built, first part: imported videos (2026-10-17).** Started with what S4 needed rather than the game's tables:
+a video a script imports, and the tables made from it when the script is built.
+
+```ts
+import { fog } from "trigscript/fog";
+import badApple from "./bad-apple.video";
+
+program(async () => {
+  fog.reveal(P1);
+  await nextFrame();
+  playWav("staredit\\wav\\badapple.ogg", 0);
+  await fog.play(P1, badApple);          // or fog.light(P1, x, y, badApple, frame) each frame
+});
+```
+
+- **The `.video` file** (`compiler/media.ts`) is one of the script's files, kept in the map with the others: the
+  frames the editor decoded, a tile a pixel, ink or not, a frame for every frame of the game (42 ms, Fastest). The
+  source video is not kept: what the build reads is the same on every computer, whichever browser or codec decoded it.
+  One line of JSON, the frames compressed as JBIG compresses a fax — LZMA's binary range coder, the odds from 11 tiles
+  around each (six of this frame, five of the frame before). Bad Apple, 5,216 frames of 128 × 96: **559 KB** of text,
+  where runs of tiles were 2.1 MB; read back in 0.7 s, every tile exact. `import x from "./x.video"` is typed by a
+  `declare module "*.video"` (a `Video`: sizes, length, `frameMs`, `seconds`, `frame(i)` as rows of text); the
+  linker hands the value over, kept while the file's text is the same. A `.video` is no TypeScript: the compiler,
+  Monaco and the archive keep it beside the code (and `.tsx` files, which the archive dropped on reopening since 2.0,
+  are kept now too).
+- **`cover(picture, shapes)`** (`compiler/cover.ts`), new in the language: the brushes whose union is a picture's ink,
+  each a shape on ink only, greedy, largest gain first. Lazy greedy over one candidate a tile — the largest shape that
+  fits there (the game's sight ranges nest, so a smaller one on the same tile never gains more; found by halves, a fit
+  tested a row at a time on prefix sums), candidates a larger fitting neighbour holds dropped, gains kept as prefix
+  sums of covered tiles. **2.6 ms a 128 × 96 frame**, where S4's encoder took 130. Ink thinner than any shape gets the
+  smallest shape placed, of every place it covers the tile from, inside the picture and on the fewest dark tiles:
+  0.36% of Bad Apple's tiles lit that are dark, where it was 0.80%. Of a video, every frame's brushes, worked out once
+  while the file and the shapes stay the same (Bad Apple: 11.6 s the first compile, 285 ms after). `fog.picture` is
+  `cover` now.
+- **The fog library** draws a video: `fog.light(player, x, y, video, frame)` reads the frame's brushes out of two
+  tables made when the script is built (a word a brush, `x | y << 8 | size << 16`, and where each frame starts), so a
+  frame can be a variable; `fog.play(player, video, x?, y?)` is `game(async …)`, a frame each game frame.
+- **Tables a program only reads** may hold 1,048,576 entries (4,096 before), and the IR carries one of 256 or more
+  packed — base64 of the narrowest little-endian width (1–4 bytes) — which the lowering widens back with slices and
+  puts in the map as one `Db` (`EUDArray(_from=EPD(Db(…)))`, no Python list of a value at a time). Bad Apple's IR is
+  2.77 MB, within the eudplib plugin's 4 MB of data.
+- **Language:** `"key" in value` folds when the value is known when the script is built (TypeScript's other way of
+  narrowing a union of objects; `fog.light` tells a picture from a video so). The map's sounds are a name table,
+  `sounds.BadApple` (the Sound Editor's list, by file name or path), and a WAV argument takes one.
+- **Import Video…** (`videoImport.ts`, the Explorer's camera button, the More menu, the palette, or a video or picture
+  dropped on the Explorer): a preview frame, the size in tiles (the map's width, the video's shape), the threshold, which
+  parts are ink, the name. A picture becomes a `.ts` file of rows of text — editable, what `fog.picture` takes. Clicking
+  a `.video` opens a viewer: play or scrub, the tiles or **as the fog draws it** (the brushes `cover` makes, tiles off
+  the video in red, brushes a frame).
+- **Decoding** (`videoDecode.ts`): the file taken apart — WebM and Matroska (EBML), MP4 and QuickTime (boxes, with
+  composition offsets and the edit list for B-frames) — its samples handed to WebCodecs' `VideoDecoder`, every frame
+  with its own time; each game frame takes the video's frame nearest its time, as ffmpeg's fps filter does. Bad Apple
+  (AV1 in WebM) in **12 s** in the editor, 3.3 tiles a frame off the source frame nearest in time (ffmpeg's import:
+  24.9). Where that cannot be done, the video plays in an element and frames not shown are sought. Found on the way,
+  in a busy editor page in headless Chromium: the browser shows 7.5 frames a second, `requestVideoFrameCallback`'s
+  `mediaTime` names an earlier frame than the element holds when the callback draws it (`VideoFrame.timestamp` and
+  `.duration` are the frame's own), and a seek takes 66 ms — the first three ways tried came out 300 tiles a frame off.
+- **Under Node:** `scripts/import-video.mts` makes a `.video` with ffmpeg; `scripts/script-files.mts` follows imports
+  of videos.
+
+**Checked:** `tests/media.test.ts` (the format both ways and cut short, `cover` exact on ink a shape wide and a thin
+line kept inside, the library's shapes the same as `compiler/fogShapes.ts`, packing at each width, a script playing a
+video whose tables light what `cover` meant frame by frame, a missing file, sounds, `.tsx` and `.video` in the
+archive); `tests/video-decode.test.ts` (H.264 with B-frames in MP4, MOV and MKV, HEVC, VP8, VP9, AV1 in WebM and MP4,
+made by ffmpeg on the spot). **In the lifted game** (`probes/bad-apple.ts`, built with `scripts/build-fixture.mts` on
+S4's white board): all 5,176 frames from the first with ink equal their cover, nothing lit off the board, 0.49% of
+tiles off the video (S4's hand-written map: 1.17%); 54k conditions and actions a frame on average, 151k at most — about
+twice the hand-written eudplib, within the 500k budget. **In the editor** (headless Chromium, the local build):
+Import Video… on the real file, the script's "Cannot find ./bad-apple.video" gone after it, 0 problems, the viewer.
+**Not yet:** played in Remastered (`Maps/TrigScript/trigscript-b8-bad-apple.scx`); grey levels and colour (a
+renderer that needs them — the raycaster's textures — will say which); the game's own tables (`ground.distance`,
+`atBuild`), the rest of B8.
 
 ## Part C — the game, pushed
 
