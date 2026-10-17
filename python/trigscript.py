@@ -1806,7 +1806,13 @@ class Lowering:
         if op == "-":
             return (a - b) & U32 if both else a - b
         if op == "*":
-            return (a * b) & U32 if both else f_mul(as_var(a), as_var(b))
+            if both:
+                return (a * b) & U32
+            # By a power of two, a shift: x * 32 is x << 5, a fifth of the cost of eudplib's general product.
+            k, v = (b, a) if isinstance(b, int) else (a, b) if isinstance(a, int) else (None, None)
+            if k is not None and k > 0 and k & (k - 1) == 0:
+                return v if k == 1 else f_bitlshift(fresh(v), k.bit_length() - 1)
+            return f_mul(as_var(a), as_var(b))
         # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
         unsigned = bool(e.get("unsigned"))
         pick = (lambda q, r: q) if op == "/" else (lambda q, r: r)

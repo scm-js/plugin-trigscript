@@ -116,6 +116,8 @@ export function desyncMessage(d: Desync, names: Map<number, string> = new Map())
 // 1.16.1's addresses, which Remastered's emulation keeps.
 const UNITS = 0x59cca8, UNIT_BYTES = 336, UNIT_COUNT = 1700, FIRST_UNIT = 0x628430;
 const ORE = 0x57f0f0, GAS = 0x57f120, DEATHS = 0x58a364, KILLS = 0x5878a4, SWITCHES = 0x58dc40, LOCATIONS = 0x58dc60;
+/** The fog of war's tiles (a pointer) and the map's size in tiles. */
+const TILES = 0x6d1260, MAP_WIDTH = 0x57f1d4;
 const MAX_HP = 0x662350, MAX_SHIELDS = 0x660e00, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4;
 const SCRATCH = 255, SCRATCH_TO = 254;
 /** The routine a unit that dies in the game goes through to be counted: its owner's death, the killer's kill (0x488AF0). */
@@ -427,6 +429,22 @@ export class GameSim implements TestWorldLike {
   deaths(player: number, type: number): number { return this.game.m.getUint32(DEATHS + 4 * (player + 12 * type), true); }
   kills(player: number, type: number): number { return this.owners(player).reduce((n, p) => n + this.game.m.getUint32(KILLS + 4 * (p + 12 * type), true), 0); }
   switch(n: number): boolean { return ((this.game.u8[SWITCHES + (n >> 3)] >> (n & 7)) & 1) === 1; }
+  /** The fog of war as the game keeps it: a dword a tile from the pointer at 0x6D1260, its low byte a bit a player set while the tile is not seen now, the next one while it was never seen. */
+  fog(player: number, area?: { x: number; y: number; width: number; height: number }): string[] | null {
+    const m = this.game.m, tiles = m.getUint32(TILES, true), width = m.getUint16(MAP_WIDTH, true), height = m.getUint16(MAP_WIDTH + 2, true);
+    if (!tiles || !width || player < 0 || player > 7) return null;
+    const { x = 0, y = 0, width: w = width, height: h = height } = area ?? {};
+    const rows: string[] = [];
+    for (let ty = y; ty < Math.min(height, y + h); ty++) {
+      let row = "";
+      for (let tx = x; tx < Math.min(width, x + w); tx++) {
+        const at = tiles + 4 * (ty * width + tx);
+        row += !(this.game.u8[at] & (1 << player)) ? "#" : !(this.game.u8[at + 1] & (1 << player)) ? "+" : ".";
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
   location(n: number): SimBounds | undefined {
     if (n < 1 || n > 255) return undefined;
     if (this.game.frame < LOCATIONS_READY) return this.known[n] ? { ...this.known[n] } : undefined;

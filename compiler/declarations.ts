@@ -826,6 +826,12 @@ export interface Sim {
   deaths(player: Player, type: UnitType): number;
   kills(player: Player, type: UnitType): number;
   switch(n: Switch): boolean;
+  /**
+   * What \`player\` sees of the map's fog of war this frame, a text a row of tiles: "#" lit now, "+" seen before (fog),
+   * "." never seen. \`area\` takes a part of the map (tiles), the whole of it by default. Null where the world has no
+   * fog to read: the simulator does not draw it, the game does — run the tests in the game to check a picture.
+   */
+  fog(player: Player, area?: { x: number; y: number; width: number; height: number }): string[] | null;
   /** Where a location is now: a program may have moved it. */
   location(n: Location): { left: number; top: number; right: number; bottom: number } | undefined;
 

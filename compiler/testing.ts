@@ -261,6 +261,7 @@ export interface TestWorldLike {
   deaths(player: number, type: number): number;
   kills(player: number, type: number): number;
   switch(n: number): boolean;
+  fog(player: number, area?: { x: number; y: number; width: number; height: number }): string[] | null;
   location(n: number): SimBounds | undefined;
   program(name?: string | number, player?: number): Record<string, unknown>;
   printed(player?: number): string[];
@@ -449,6 +450,8 @@ export class TestSim implements TestWorldLike {
   deaths(player: number, type: number): number { return this.world.death(player, type); }
   kills(player: number, type: number): number { return this.world.game.kills(this.owners(player), type); }
   switch(n: number): boolean { return this.world.switches[n] === 1; }
+  /** The simulator does not draw the fog of war: only the game's tests can read it. */
+  fog(): string[] | null { return null; }
   /** Where a location is now. */
   location(n: number): SimBounds | undefined { const b = this.world.game.locations.get(n); return b ? { ...b } : undefined; }
 

@@ -113,7 +113,7 @@ try {
     if (r.cost && process.env.COST !== "0") {
       const ran = r.cost.perFrame.filter((n) => n > 0), avg = ran.length ? Math.round(ran.reduce((a, b) => a + b, 0) / ran.length) : 0;
       console.log(`    cost: ${avg} conditions and actions a frame on average, ${r.cost.peak} at the most (frame ${r.cost.peakFrame})`);
-      for (const l of r.cost.lines.slice(0, Number(process.env.COST_LINES ?? 3))) console.log(`      line ${l.line}: ${l.peak} at the most (frame ${l.peakFrame}), ran in ${l.frames} frames`);
+      for (const l of r.cost.lines.slice(0, Number(process.env.COST_LINES ?? 3))) console.log(`      ${l.file}:${l.line}: ${l.peak} at the most (frame ${l.peakFrame}), ran in ${l.frames} frames`);
       if (process.env.COST_FRAMES) console.log(`      frames from ${r.cost.from}: ${r.cost.perFrame.join(" ")}\n      other: ${r.cost.other.join(" ")}`);
     }
   }

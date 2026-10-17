@@ -610,10 +610,28 @@ export class Structured {
       const cls = this.classOf(e.right);
       return b?.kind === "record" && b.cls && cls ? { value: this.chainOf(b.cls).includes(cls) } : undefined;
     }
+    if (ts.isBinaryExpression(e) && (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken || e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)) {
+      // `options.width ?? 3`, `a || b`, `a && b` of values known when the script is built: as JavaScript decides them,
+      // the right side only looked at when the left does not decide.
+      const l = sub(e.left);
+      if (!l || isGameValue(l.value)) return undefined;
+      const k = e.operatorToken.kind;
+      const decided = k === ts.SyntaxKind.QuestionQuestionToken ? l.value !== null && l.value !== undefined : k === ts.SyntaxKind.BarBarToken ? !!l.value : !l.value;
+      if (decided) return l;
+      const r = sub(e.right);
+      return r && !isGameValue(r.value) ? r : undefined;
+    }
     if (ts.isBinaryExpression(e)) {
       const l = sub(e.left);
       const r = sub(e.right);
       if (!l || !r || isGameValue(l.value) || isGameValue(r.value)) return undefined;
+      switch (e.operatorToken.kind) {
+        case ts.SyntaxKind.EqualsEqualsEqualsToken: return { value: l.value === r.value };
+        case ts.SyntaxKind.ExclamationEqualsEqualsToken: return { value: l.value !== r.value };
+        // (== and != as TypeScript lets them be written between two values of one type: the same as === and !==.)
+        case ts.SyntaxKind.EqualsEqualsToken: return { value: l.value === r.value };
+        case ts.SyntaxKind.ExclamationEqualsToken: return { value: l.value !== r.value };
+      }
       const a = l.value as number;
       const b = r.value as number;
       switch (e.operatorToken.kind) {
@@ -629,6 +647,10 @@ export class Structured {
         case ts.SyntaxKind.AmpersandToken: return { value: a & b };
         case ts.SyntaxKind.BarToken: return { value: a | b };
         case ts.SyntaxKind.CaretToken: return { value: a ^ b };
+        case ts.SyntaxKind.LessThanToken: return { value: a < b };
+        case ts.SyntaxKind.LessThanEqualsToken: return { value: a <= b };
+        case ts.SyntaxKind.GreaterThanToken: return { value: a > b };
+        case ts.SyntaxKind.GreaterThanEqualsToken: return { value: a >= b };
         default: return undefined;
       }
     }
@@ -802,6 +824,13 @@ export class Structured {
         continue;
       }
       if (!d.initializer) { this.c.error(d, `Give ${d.name.text} an initial value: let ${d.name.text} = 0 or = false.`); continue; }
+      // `const count = layout.count` in a game function whose `layout` is known when the script is built: a value too, as
+      // a const the plan computed is (a number, a boolean or a text: an object's fields may still be assigned).
+      if (list.flags & ts.NodeFlags.Const) {
+        const known = this.evaluate(d.initializer);
+        const v = known?.value;
+        if (known && (typeof v === "number" || typeof v === "boolean" || typeof v === "string")) { this.scope.bind(d, { kind: "value", value: v }); continue; }
+      }
       const init = this.unwrap(d.initializer);
       if (ts.isCallExpression(init) && ts.isIdentifier(init.expression)) {
         const g = this.gameDeclaration(init.expression);
@@ -5306,7 +5335,6 @@ export class Structured {
     if (this.isTextTyped(s.expression) && !this.evaluate(s.expression)) { this.textSwitch(s, ctx); return; }
     const value = this.num(s.expression);
     if (!value) return;
-    if (value.kind === "const") { this.c.error(s.expression, "switch over a value known when the script is built: write the case that applies."); return; }
     const clauses = s.caseBlock.clauses;
     // A case whose value could not be read keeps its body (it can be fallen into) but no test: NaN stands for that.
     const values: (number | null)[] = clauses.map((c) => {
@@ -5316,8 +5344,17 @@ export class Structured {
       const n = this.asInteger(h, c.expression);
       return n === null ? Number.NaN : n;
     });
+    // Over a value known when the script is built (a size a library's function was given): only the case that applies,
+    // and those it falls through into, are built, each with the value itself as its test, so the first is the one taken.
+    let from = 0;
+    if (value.kind === "const") {
+      const v = value.value | 0;
+      from = values.findIndex((n) => n !== null && (n | 0) === v);
+      if (from < 0) from = values.indexOf(null);
+      if (from < 0) return;
+    }
     const scope = new Scope(this.scope);
-    const cases = clauses.map((c, i) => ({ value: values[i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    const cases = clauses.slice(from).map((c, i) => ({ value: value.kind === "const" ? value.value | 0 : values[from + i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
     this.emit({ kind: "switch", value, cases, at: this.at(s), label: this.label(s) }, s);
   }
 
