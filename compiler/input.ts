@@ -167,8 +167,8 @@ export function matchChat(p: ChatPattern, line: string, unitByName: (lower: stri
 
 /** One thing a program reads from the players; `player` is a slot, or 13 for the current player. */
 export type InputSource =
-  /** 1 on the frame the key's press arrives. */
-  | { source: "key"; key: string; player: number }
+  /** 1 on the frame the key's press arrives; `held`, on every frame it is down. */
+  | { source: "key"; key: string; player: number; held?: boolean }
   /** 1 on the frame the button's press arrives. */
   | { source: "click"; button: MouseButton; player: number }
   /** Where the player's mouse is on the map, in pixels. */
@@ -179,6 +179,8 @@ export type InputSource =
 /** Everything the input plugins are set up from, written into the IR file beside the programs. */
 export interface InputPlan {
   keys: string[];
+  /** The keys a program asks are held, each read on every frame it is down (MSQC's KeyPress). */
+  held?: string[];
   buttons: MouseButton[];
   chats: ChatPattern[];
   /** Unit names a `{…:unit}` capture knows, lower case, with the type each means; only when one is used. */
@@ -277,10 +279,12 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
   const { sources, mouse } = inputsOf(programs);
   if (sources.length === 0 && !mouse) return null;
   const keys: string[] = [];
+  const held: string[] = [];
   const buttons: MouseButton[] = [];
   const chats: ChatPattern[] = [];
   for (const s of sources) {
-    if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
+    if (s.source === "key" && s.held) { if (!held.includes(s.key)) held.push(s.key); }
+    else if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
     else if (s.source === "click" && !buttons.includes(s.button)) buttons.push(s.button);
     else if (s.source === "chat" && !chats.some((c) => c.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
   }
@@ -299,7 +303,7 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
     }
     if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
   }
-  const plan: InputPlan = { keys, buttons, chats, qcLocation, mouseBase };
+  const plan: InputPlan = { keys, ...(held.length ? { held } : {}), buttons, chats, qcLocation, mouseBase };
   if (chats.some((c) => c.captures.some((x) => x.kind === "unit"))) {
     const seen = new Set<string>();
     plan.unitNames = [];
@@ -314,6 +318,7 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
 /** The names the lowering registers its cells under, which is how MSQC's and chatEvent's settings reach them. */
 export const INPUT_NAMES = {
   key: (i: number) => `tsin_key${i}`,
+  held: (i: number) => `tsin_held${i}`,
   button: (i: number) => `tsin_button${i}`,
   chatLocal: "tsin_chat",
   chatIn: "tsin_chat_in",
@@ -334,6 +339,8 @@ export function inputPlugins(plan: InputPlan): { before: Record<string, Record<s
   // KeyDown, not KeyPress: MSQC's KeyPress is true on every frame the key is down, and a tap is two or three frames —
   // one tap of W turned the Tetris piece two or three times (TrigScript 4, S2, played). KeyDown is the frame it goes down.
   plan.keys.forEach((key, i) => { msqc[`KeyDown(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`; });
+  // keyHeld(): every frame the key is down on the player's computer, sent each such frame.
+  plan.held?.forEach((key, i) => { msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.held(i)}, 1`; });
   plan.buttons.forEach((b, i) => { msqc[`MouseDown(${MSQC_BUTTON[b]})`] = `${INPUT_NAMES.button(i)}, 1`; });
   if (plan.mouseBase !== null) msqc.Mouse = plan.mouseBase;
   if (plan.chats.length) {

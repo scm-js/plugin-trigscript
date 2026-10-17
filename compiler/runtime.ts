@@ -148,7 +148,7 @@ export const READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kill
 /** The library's functions about units on the map and the game's tables: the game's too, never computed when the script is built. */
 export const UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "underMouse", "stats"] as const;
 /** The library's functions about what the players do, and the one that moves a location to a point: the game's as well. */
-export const INPUT_CALL_NAMES = ["keyPressed", "clicked", "mouse", "chatted", "centerLocation"] as const;
+export const INPUT_CALL_NAMES = ["keyPressed", "keyHeld", "clicked", "mouse", "chatted", "centerLocation"] as const;
 
 /**
  * What the transformer turns `program(() => { … })` — and the arrow of `game(…)` — into:
@@ -552,13 +552,15 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     if (collector.running) throw new ScriptError(`${what.split(":")[0]}() asks what a player does while the game runs: use it inside program().`);
     return onePlayer(v, what, 8);
   };
-  rt.keyPressed = (player: unknown, key: unknown) => {
+  const keyRead = (what: "keyPressed" | "keyHeld") => (player: unknown, key: unknown) => {
     const name = typeof key === "string" ? keyName(key) : null;
     const deaf = typeof key === "string" ? DEAF_KEYS[key.trim().toUpperCase()] : undefined;
-    if (deaf) throw new ScriptError(`keyPressed: ${deaf}.`);
-    if (!name) throw new ScriptError(`keyPressed: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} … "F1" … "Space", "Enter", "Escape", "Left" …; got ${describe(key)}.`);
-    return inputValue(`keyPressed(…, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, "keyPressed: player") }, true);
+    if (deaf) throw new ScriptError(`${what}: ${deaf}.`);
+    if (!name) throw new ScriptError(`${what}: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} … "F1" … "Space", "Enter", "Escape", "Left" …; got ${describe(key)}.`);
+    return inputValue(`${what}(…, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, `${what}: player`), ...(what === "keyHeld" ? { held: true } : {}) }, true);
   };
+  rt.keyPressed = keyRead("keyPressed");
+  rt.keyHeld = keyRead("keyHeld");
   rt.clicked = (player: unknown, button: unknown = "left") => {
     const b = typeof button === "string" ? button.trim().toLowerCase() : "";
     if (!(MOUSE_BUTTONS as readonly string[]).includes(b)) throw new ScriptError(`clicked: the button is "left", "right" or "middle", got ${describe(button)}.`);

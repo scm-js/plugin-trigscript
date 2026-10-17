@@ -440,6 +440,11 @@ ${kw}const ui: {
  */
 /** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
 ${kw}function keyPressed(player: Player, key: Key): boolean;
+/**
+ * True on every frame a key is down — for moving while it is held. It reaches every player's computer
+ * in step, a few frames after it happens, as a press does. Not while the player is typing a message.
+ */
+${kw}function keyHeld(player: Player, key: Key): boolean;
 /** True on the frame a player's press of a mouse button arrives ("left" when none is named). */
 ${kw}function clicked(player: Player, button?: "left" | "right" | "middle"): boolean;
 /** Where a player's mouse is on the map, in pixels (32 to a tile): \`const at = mouse(CurrentPlayer);\` keeps the place as it is now. */

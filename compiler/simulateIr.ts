@@ -1288,8 +1288,9 @@ export class ProgramSimulation {
   /** What the players did, for the next frame and for the one running: "key:0:F2", "click:0:left", and a typed line as the pattern it matched with its values. */
   private queued: { events: Set<string>; lines: Map<number, { pattern: string; values: number[] }> } = { events: new Set(), lines: new Map() };
   private current = this.queued;
-  /** The keys and buttons down on the last frame. */
+  /** The keys and buttons down on the last frame, and on this one (what keyHeld() finds). */
   private down = new Set<string>();
+  private downNow = new Set<string>();
   /** Where each player's mouse is, in map pixels. */
   readonly mice = new Map<number, { x: number; y: number }>();
   cycle = 0;
@@ -1434,7 +1435,7 @@ export class ProgramSimulation {
   input(i: InputSource): number {
     const p = this.slotOf(i.player);
     switch (i.source) {
-      case "key": return this.current.events.has(`key:${p}:${i.key}`) ? 1 : 0;
+      case "key": return (i.held ? this.downNow : this.current.events).has(`key:${p}:${i.key}`) ? 1 : 0;
       case "click": return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
       case "mouse": return this.mice.get(p)?.[i.axis] ?? 0;
       case "chat": {
@@ -1556,6 +1557,7 @@ export class ProgramSimulation {
     const down = new Set([...this.current.events].filter((e) => e.startsWith("key:") || e.startsWith("click:")));
     for (const e of down) if (this.down.has(e)) this.current.events.delete(e);
     this.down = down;
+    this.downNow = down;
     for (const run of this.runs) {
       this.world.current = run.player;
       try { run.tick(); } catch (err) { if (err instanceof Halt) throw new Error(err.message); throw err; }

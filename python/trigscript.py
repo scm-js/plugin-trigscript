@@ -3373,6 +3373,7 @@ class Input:
     def __init__(self, plan):
         self.plan = plan or {}
         self.keys = list(self.plan.get("keys", []))
+        self.held = list(self.plan.get("held", []))
         self.buttons = list(self.plan.get("buttons", []))
         self.chats = list(self.plan.get("chats", []))
         self.mouse_base = self.plan.get("mouseBase")
@@ -3381,6 +3382,7 @@ class Input:
         if plan and not self.humans:
             raise Fail("trigscript: a program reads keys, clicks, the mouse or chat, and the map has no human player to give any")
         self.key_cells = [self.register("tsin_key%d" % i, EUDArray(12)) for i in range(len(self.keys))]
+        self.held_cells = [self.register("tsin_held%d" % i, EUDArray(12)) for i in range(len(self.held))]
         self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
         self.captures = max([len(c["captures"]) for c in self.chats] or [0])
         if self.chats:
@@ -3405,6 +3407,8 @@ class Input:
     def read(self, i, low, node):
         source = i.get("source")
         p = low.one_player(i["player"], node)
+        if source == "key" and i.get("held"):
+            return self.cell(self.held_cells, self.held, i["key"], node)[p]
         if source == "key":
             return self.cell(self.key_cells, self.keys, i["key"], node)[p]
         if source == "click":

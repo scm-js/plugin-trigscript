@@ -145,6 +145,12 @@ describe("input: the plan and the build's plugins", () => {
     expect(plugins.MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyDown(A); NotTyping": "tsin_key0, 1", "KeyDown(ESC); NotTyping": "tsin_key1, 1", "MouseDown(L)": "tsin_button0, 1" });
   });
 
+  it("keyHeld: MSQC's KeyPress, every frame the key is down, into cells of its own", () => {
+    const r = compile(`while (true) { if (keyHeld(P1, "D") || keyPressed(P1, "D")) displayText("x"); sleep(frames(1)); }`);
+    expect(r.input).toEqual({ keys: ["D"], held: ["D"], buttons: [], chats: [], qcLocation: 62, mouseBase: null });
+    expect(buildPlugins(r.input, "/ir.json").MSQC).toEqual({ QCUnit: 58, QCLoc: 62, QCPlayer: 11, QCDebug: "false", "KeyDown(D); NotTyping": "tsin_key0, 1", "KeyPress(D); NotTyping": "tsin_held0, 1" });
+  });
+
   it("the mouse: eight locations in a row, clear of the map's own and of Anywhere", () => {
     const names = scriptNames({ locations: [{ index: 62, name: "Top" }, { index: 58, name: "Gate" }] });
     const r = compileFile(`program(() => { while (true) { const u = underMouse(P1); if (u) u.kill(); sleep(frames(1)); } });`, names);
@@ -185,6 +191,14 @@ describe("input: the interpreter", () => {
     expect([sim.value("n"), sim.value("v")]).toEqual([1, 0]);
     sim.press("F2").click("right").step();
     expect([sim.value("n"), sim.value("v")]).toEqual([2, 10]);
+  });
+
+  it("a key down on frames in a row is one press, and held on each of them", () => {
+    const sim = simulate(loop(`if (keyPressed(CurrentPlayer, "D")) n += 1; if (keyHeld(CurrentPlayer, "D")) v += 1;`));
+    for (let i = 0; i < 4; i++) sim.press("D").step();
+    sim.step();
+    sim.press("D").step();
+    expect([sim.value("n"), sim.value("v")]).toEqual([2, 5]);
   });
 
   it("another player's key is not this player's", () => {
