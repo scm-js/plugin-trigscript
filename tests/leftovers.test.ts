@@ -54,8 +54,8 @@ describe("a call that gives an instance", () => {
   it("a function that makes one, and one that hands back what it was given", () => {
     same(`${VEC} function make(n: number) { return new Vec(n, n * 2); } function doubled(v: Vec) { v.scale(2); return v; } function total(v: Vec) { return v.sum; } let n = 4; const a = make(n); const b = doubled(a); b.x += 1; const c = make(n + 1).add(a); print(\`\${a.x} \${a.y} \${c.x} \${c.y} \${total(make(7))}\`);`);
   });
-  it("says so when which instance comes back would only be known in the game", () => {
-    expect(messages(`${VEC} function pick(a: Vec, b: Vec, first: boolean) { if (first) return a; return b; } let f = true; const p = pick(new Vec(1, 1), new Vec(2, 2), f); p.x = 0;`).join("\n")).toMatch(/has to give the same instance/);
+  it("one instance or another, which only the game knows: the class is kept by reference (B9)", () => {
+    same(`${VEC} function pick(a: Vec, b: Vec, first: boolean) { if (first) return a; return b; } let f = true; const a = new Vec(1, 1); const b = new Vec(2, 2); const p = pick(a, b, f); p.x = 0; print(\`\${a.x} \${b.x} \${p.y}\`);`);
   });
 });
 

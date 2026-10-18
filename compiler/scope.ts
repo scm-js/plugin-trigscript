@@ -61,9 +61,11 @@ export type Binding =
    * `cls`: the record is an instance — `new Squad()` — and this is its class, known when the script is built, which is what a
    * method call, a getter, `instanceof` and an overridden method are settled by.
    */
-  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration; /** An instance of a generic class: what each of its type parameters is (`new Signal<number>()`). */ typeArgs?: TypeArgs }
+  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration; /** An instance of a generic class: what each of its type parameters is (`new Signal<number>()`). */ typeArgs?: TypeArgs; /** A reference (B9): the row of the object table it is, and the classes it may be an instance of — what a method called on it asks among. */ ref?: { place: NumExpr; classes: readonly TS.ClassDeclaration[] } }
   /** A function known when the script is built (TrigScript 4, B3): a call of it is a call of its body, inlined or called as any function is. */
-  | { kind: "fn"; fn: FnValue };
+  | { kind: "fn"; fn: FnValue }
+  /** `number | undefined`, `boolean | undefined` (B9): the value, a variable or a cell, and beside it whether there is one. */
+  | { kind: "maybe"; value: Binding; there: Binding };
 
 /**
  * A function as a value: where it is written, and the scope it closes over — what the names in its body are bound to
@@ -105,7 +107,9 @@ export type RowField =
   /** A text: `addr`, `block`, `chars` — where it is, the block of the heap it owns (0 for one of the map's table), its length. The row owns the block. */
   | { kind: "text" }
   /** A record, or an instance, inside the row: its fields' columns under its name. */
-  | { kind: "record"; shape: RowShape; cls?: TS.ClassDeclaration };
+  | { kind: "record"; shape: RowShape; cls?: TS.ClassDeclaration }
+  /** A number or a boolean that may be undefined (B9): its column, and `there`, whether it holds one. */
+  | { kind: "maybe"; of: "number" | "boolean"; width: { bits?: 8 | 16; unsigned?: boolean } };
 
 /** The parts of a unit, and of an array's handle, in the order their columns are kept. */
 export const UNIT_PARTS = ["ptr", "epd", "uid"] as const;

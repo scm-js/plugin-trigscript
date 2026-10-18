@@ -954,7 +954,8 @@ describe("structured: game functions, returns and records", () => {
     expect(r.variables.find((v) => v.name === "p.lives")).toMatchObject({ kind: "number", at: expect.objectContaining({ line: 2 }) });
     const typed = okProgram("let p: { n: u8 } = { n: 250 }; p.n += 10;");
     expect(value(run(typed, 1), "p.n")).toBe(255);
-    expect(messagesOf(program("let p = { n: 1 }; p = { n: 2 };"))).toEqual(["A record is assigned field by field: p.lives = 3."]);
+    // Given whole (B9): a copy of the fields.
+    expect(value(run(okProgram("let p = { n: 1 }; p = { n: 2 };"), 1), "p.n")).toBe(2);
     // A const record something writes is the program's, as a const array is (TrigScript 4).
     expect(value(run(okProgram("const p = { n: 1 }; p.n = 2;"), 1), "p.n")).toBe(2);
   });

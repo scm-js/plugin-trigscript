@@ -174,7 +174,8 @@ describe("what is refused, and how", () => {
     expect(messages("let xs = [2, 1]; xs.sort((a, b) => a > b);").join("\n")).toMatch(/'boolean' is not assignable to type 'number'/);
   });
   it("find of a number on its own, and of a record", () => {
-    expect(messages("let xs = [2, 1]; const a = xs.find((x) => x > 1);").join("\n")).toMatch(/\?\? 0/);
+    // A number or nothing (B9): what find() gives of numbers is kept as such.
+    expect(messages("let xs = [2, 1]; const a = xs.find((x) => x > 1);")).toEqual([]);
     expect(messages("let ws = [{ n: 1 }]; const w = ws.find((w) => w.n > 0);").join("\n")).toMatch(/findIndex/);
   });
   it("reduce without what it starts from", () => {

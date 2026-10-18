@@ -9,7 +9,7 @@ raycaster in the fog (*S5*, 2026-10-17); B3, functions as values, and B4, `try` 
 (2026-10-17); closures over locals, and the text and array methods a program was missing, built (*Closures and the
 missing methods*, 2026-10-17); JSX components, functions from any file and the first two libraries, `trigscript/ui` and
 `trigscript/screen`, with Snake as their showpiece (*Components, functions from any file, and the first libraries*,
-2026-10-17); generics and `timers`, `signals`, `random` and `math` (*timers, signals, random and math, and generics*, 2026-10-17). The question it answers: now that there is a
+2026-10-17); generics and `timers`, `signals`, `random` and `math` (*timers, signals, random and math, and generics*, 2026-10-17); a sweep of what is still missing, B9, references and values, and generators finished with `trigscript/cutscene` (*What is still missing*, *B9*, *Generators finished*, 2026-10-18). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1666,6 +1666,184 @@ Four modules of pure TrigScript, no probe needed, that the next showpieces lean 
 same xorshift in JavaScript, easing within a hundredth), `tests/closures.test.ts` (+1, the task). In the lifted game and
 the simulator, `probes/game-stdlib-core.ts` (4), about 4k conditions and actions a frame; the earlier probes and Snake
 re-run, all passing.
+
+### What is still missing: a sweep (2026-10-18)
+
+Before more showpieces, about a hundred lines of the TypeScript people write were put through the compiler and the
+simulator, each over values only the game has (`random(9)`), so that nothing was worked out when the script was built.
+Control flow and syntax are nearly whole. What is left is mostly **what a value can be**.
+
+**Refused:**
+- *Instances as references.* An array or a variable of a base class or an interface holding more than one class
+  (`const world: Entity[] = [new Bullet(), new Enemy()]`, `let x: Shape = c ? new Circle() : new Square()`); an instance
+  that may be none (`target: Enemy | null`, `next: Node | null`); an array of instances inside an instance
+  (`squad.members: Soldier[]`); a `Map` whose values are instances or records; an array of a union of records
+  (`Event[]` with `kind: "hit" | "heal"`).
+- *Records and instances as values.* `p = p.add(q)` ("a record is assigned field by field"), which makes `trigscript/math`'s
+  `Vec` awkward; a `?:` that gives a record; `number | undefined`.
+- *Generators and helpers.* `g.next()` by hand, a generator method, `yield*`, `[Symbol.iterator]`, a generator or an
+  `async function` at the top of a file called with the program's values.
+- *Small:* labelled `break` / `continue`; `sort()` of texts; `${flag}`; `String.fromCharCode`, `JSON.stringify` and
+  `toFixed` of values of the game; `Object.keys` of a record of the program; `enum` inside `program()` (at the top of a
+  file it works); `using`.
+
+**Two faults found:** a function handed a value of the program that narrows with `typeof x === "string"` sends the
+compiler into endless recursion ("Maximum call stack size exceeded"); `Date.now()` is the moment the script was built,
+silently. *Both fixed:* `c ? a : b` (in a number, a text, a truth value, a colour, a record copied whole, a maybe) folds
+a condition known when the script is built, as `if` did, so the side a narrowed argument does not take is never
+compiled; and a variable of the program is read as its own kind whatever TypeScript narrowed its name to, which was the
+loop. `Date.now()`, `new Date()`, `Math.random()` and `performance.now()` inside a program, or in a function of the
+script's that a program calls, are refused with `elapsed()`, `memory.game.frame` or `random(n)` named instead; at the top
+of a file they stay the build's (`tests/sweep-faults.test.ts`).
+
+**Already working:** `enum` at the top of a file, `switch` on texts, unions of literal types as states, spread,
+`extends` and `super`, getters and setters, statics, `#private`, tuples, `sort` with a comparison, `reduce`,
+`Array.from`, async generators inside a program.
+
+**In order of what the showpieces need:**
+1. References and polymorphism (B9, below). *Built.*
+2. Records and instances as values everywhere (B9, below). *Built.*
+3. Generators finished, and async functions in libraries — with the cutscene library, which is written in them. *Built,
+   but `g.next()` by hand (below).*
+4. Abstractions over what a frame costs: `unroll`; a loop spread over frames by a budget (A4 knows each line's cost);
+   fields packed into one cell and written with a mask; a view printed only when what it reads changed.
+5. `using` for what a program holds for a while: a location (`reserveLocation`), a reveal, the camera.
+6. The small ones and the two faults.
+
+### B9. References and values
+
+A showpiece with things in it — bullets, enemies, a tower and its targets — is a list of objects of several kinds, each
+pointing at others. Until now an instance was its fields' variables, its class known when the script is built: cheap
+(a field is a variable) and enough for one of each, but not for a list of kinds, a pointer that may be none, or a
+variable that is one object now and another later.
+
+**References.** A class the program keeps *by reference* has its instances in one table for the program: rows of the
+pool the closures already keep (`closures.ts`), counted the same way, a column for each field.
+- *A reference is the row*, 1 to 1 023; none (`null`, `undefined`) is 0. `x === y` compares rows; `if (x)`, `x?.hp`,
+  `x ?? y` ask whether it is 0.
+- *The columns* are shared between classes by field name and kind, so a field of an interface is one column whatever
+  class the row is, and reading it needs no question of the class. A field of a unit is three columns, a text three, an
+  array that grows four, as a row of an array of records already has them; the row is the same binding, so a method, a
+  getter, a setter and a field's text or array work on it as they do on a row of an array.
+- *The class of a row* is kept in the pool's function column. A method called through a reference whose class could be
+  several asks it: one case for each class that gives the method its own body (one where they all share it), each the
+  method with `this` that class. `instanceof` is the same question.
+- *Which classes are kept so* is found by walking the program, as the closures' environments are: a class goes by
+  reference when the program needs it to — a variable or a field that may be none, a variable given another instance, an
+  array or a variable of a type more than one class fits, an array of instances inside an instance, a `Map` of them —
+  and the program is walked again. Every other class stays as it was, its fields variables; nothing gets slower that
+  does not need to.
+- *Lifetime* is the closures': every place that holds a reference counts it, a row nothing holds is queued, and the next
+  wait gives back what is still at nothing — what it held let go of too (its references, its texts, its arrays). Rows
+  that hold each other in a ring are never given back (no collector looks for rings); said in the guide.
+- *A method of a class kept by reference* is called, not copied, from its second call on: `this` is a number, so the
+  method is one function for every instance — and a method that calls itself on another row (a list walked, a tree) is
+  recursion as any function's is.
+- *Through none:* a field of none reads 0, and a write to one does nothing (JavaScript would throw).
+
+**Values.** A `let` record or instance of a class that is not kept by reference may be given another whole: `p =
+p.add(q)`, `r = c ? a : b`, `r = { x: 1, y: 2 }` copy the fields. A copy is what JavaScript does only while nothing else
+names the same fields, so a `const q = p` of such a `p` is a copy too, and a class whose instances are both given whole
+and changed field by field where another name shares them goes by reference instead. `number | undefined` (and
+`boolean | undefined`) is the value and a flag beside it: `=== undefined`, `??`, `!` and narrowing read them;
+`xs.find(…)` gives one.
+
+**As built (2026-10-18).** No new IR: the object table is arrays and statements the front end writes, as the closures'
+pool is (`compiler/closures.ts`, `structured.ts` *References* and *Records and instances as values*).
+- *Which classes.* `refs` is carried from walk to walk as `boxed` is (`compiler.ts`, up to seven walks). A class joins
+  where the program would otherwise be refused: an array or a variable of a type more than one class fits or that may be
+  none, a field that may be none or is an array of instances, a variable given another instance (of a class something
+  changes in place), a function giving one instance or another, a `Map` of instances, a `Set` of them, an instance kept in
+  a variable pushed to an array of instances. With it come the classes that fit it. Which classes a type may be is the
+  checker's assignability over every class of the script's files (`instanceClasses`), so an interface fits whatever has
+  its members.
+- *A reference is a number.* `kindOf` says "number" for a type every class of which is kept by reference, as it does for
+  a function (B3), so variables, arrays, parameters, results, `Map` values, `Set` keys, task arguments and fields of other
+  rows hold one with nothing of their own. Where it is used as an object — a field, a method, `instanceof`, `?.` — it is a
+  row binding (`refRow`): `rowOf` over the table, the place the number, the classes it may be beside it.
+- *A call through a reference* of one class, or of several sharing the member, is that member's; of several with bodies of
+  their own, a call whose body is a `switch` on the row's class (`virtualCall`), a case for each body. A method called
+  twice is a called function whose last parameter is `this`, a number, one copy for the classes it may be; so a method
+  that calls itself on other rows (`left.sum()`) is recursion's. Constructors stay copies at each `new`. Methods of a class
+  at the top of a file may now be called functions too (they were always copies).
+- *The table.* A column a field name and kind, shared between classes (`hp` of a `Grunt` and of a `Boss` is one array);
+  two kinds under one name are said. 1 023 rows, the closures' own: a closure, an environment and an object are rows of
+  one pool, each class a number in its function column (from 2²²). `new` takes a row (`make(class, 0)`) and runs the
+  constructor on it under one test that there was one; a field's first value is stored with nothing let go of.
+- *Counting* is the closures'. Two changes for every program: only a variable that a wait may come between its
+  declaration and a use is counted (a loop's `const e = enemies[i]`, and every local of a called function, need nothing:
+  no row is given back while they are read), which also fixed a variable of an unrolled loop holding its last object for
+  good; and the sweep asks a row's class once, then lets go of that class's references, gives back its texts' and arrays'
+  blocks, and empties only the cells its constructor does not write.
+- *None.* 0. A field of none reads 0; a write to one is skipped (a test before each, except on a row being made);
+  `x?.f`, `x?.m()` and `x ?? y` ask first. JavaScript would throw a `TypeError`.
+- *Values.* `p = …` of a `let` record, or of an instance of a class whose fields only its constructors write
+  (`isValueClass`: no write of one of its fields outside a constructor in any file), stores a copy into its fields:
+  of a record written there, an instance made there, what a call gives (copied first: it may be `p` itself), another
+  record's fields; `c ? a : b` is an `if`. `const q = p` of a `p` given whole is a copy, and is said when a field of
+  either is written (the two would no longer be one record). `const r = c ? a : b` is declared empty and filled. A class
+  changed in place and given whole goes by reference instead.
+- *A number or nothing* (`number | undefined`, `boolean | undefined`, `?:` fields): a variable, or a column, and a
+  boolean beside it, `(there)`. `=== undefined` and `== null` read the flag; `=== 3` reads both; `if (x)` is there and not
+  0; `x ?? d` a ternary; narrowed (`if (x !== undefined)`, `x!`) it is the number, and read where the checker says it may
+  be nothing it is said. `find()` / `findLast()` of any list and a `Map`'s `get()` give one; a record written out may
+  leave an optional field out.
+- *An array of a union of records* (`Event[]`): a row holds every kind's fields, a field one kind has not got empty in
+  its rows. Narrowed by `kind`, as TypeScript narrows, each reads its own.
+- **Not yet:** rows that hold each other in a ring are never given back (no collector looks for rings); more than 1 023
+  closures, environments and objects alive at once; an object made and dropped within one frame is given back only at the
+  next wait, so a frame that makes more than 1 023 runs out; a function that returns `number | undefined` (only `find`,
+  `get` and variables give one); a field of the same name and two kinds in two classes kept by reference.
+- *Cost, lifted game:* a field through a reference is a cell read with a place worked out in the game, about 70; made and
+  given back, an object costs about 530 conditions and actions (`make`, the counting when it is let go of, the sweep) — 100
+  a frame is about 53 000. A class that needs no reference costs what it did.
+- **Checked:** `tests/references.test.ts` (20) and `tests/values.test.ts` (19), each body also run as JavaScript and the
+  prints compared; in the lifted game and the simulator, the same lines: `probes/game-references.ts` (5: one of several
+  classes, a list made, walked and reversed, a tree summed by a method that calls itself, instances in an instance with a
+  text and a `Map`, 3 000 made and given back across frames) and `probes/game-values.ts` (3). Five older tests that said
+  a refusal now say what the program prints.
+
+### Generators finished, async functions in libraries, and trigscript/cutscene (built 2026-10-18)
+
+The third of the sweep's list, and the library it was for.
+
+**Generators.** Still walked where the `for…of` is (the loop's body put where each `yield` is), now from anywhere one is
+written: a generator at the top of a file, a generator method (`squad.alive()`, `this` the instance), and an instance's
+`*[Symbol.iterator]()` (`for (const u of squad)`). `yield*` walks another generator there, or a list (`yield* [1, 2]`,
+`yield* xs`); a `break` in the loop leaves both. A generator method of a reference that may be of several classes with
+bodies of their own is refused (which one runs is the game's, and a generator is walked where it is written).
+**Not yet:** `g.next()` by hand. A generator stepped by a program is a coroutine that runs a turn when it is asked, inside
+the frame of whoever asks; the lowering has coroutines (a program, a `parallel` branch, a task) but none that another
+calls and comes back from. That is a lowering of its own (a `resume` of a task's body, returning to its caller) and the
+simulator's, kept for later; a task and `await until(…)` do what a hand-stepped generator is wanted for.
+
+**Async functions in libraries.** A generator or an `async function` at the top of a file is a function of the script's
+own now (`isScriptFunction`), called, awaited and started with the program's values, as `trigscript/timers` had to wrap
+its own in `game()` before. `sleep(frames(n))` and `sleep(seconds(n))` of a number the game holds count down a frame at
+a time (the next frame at the least, as `frames(0)` waits), which a scene's timings need.
+
+**Found on the way:** a class from another file used only inside a function at the top of a file was never declared for
+the program, so its methods were walked in the calling file and their variables not found — a fault since functions
+from any file (B3's time); a parameter's default naming a constant of its file (`limit = 30 * SECOND`) was not worked out
+for such functions or for methods; a unit variable the checker narrowed to `null` where it is tested was read as a
+boolean.
+
+**`trigscript/cutscene`** (`stdlib/cutscene.ts`), everything a trigger can do, a frame at a time:
+- `Camera(x, y)`: `look(x, y)` (Center View on a location the library keeps), `pan(x, y, frames, ease)` (`"linear"`,
+  `"in"`, `"out"`, `"inOut"`, `"back"`, from `trigscript/math`), `follow(unit, frames)`, `shake(frames, size)`. The camera
+  of the player the program runs as.
+- `walk(unit, x, y, near?, limit?)` and `charge(…)` (a Move or an Attack order to another location the library keeps,
+  then waiting until the unit is within `near` pixels, gone, or `limit` frames have passed), `walkAll(units, x, y)`.
+- `line(speaker, text, frames)`: the speaker's portrait talks and the words show in the middle of the screen.
+- `play(player, start(scene()), key?)`: a scene started as a task, which the key (Escape) skips; it says whether it was.
+- **Checked:** `tests/cutscene.test.ts` (4, simulator); `probes/game-cutscene.ts` (3) passes in the lifted game and the
+  simulator — a Marine really walks there, the camera's place after a glide and a shake, Escape skipping a scene.
+  `probes/cutscene.ts` → `Maps/TrigScript/trigscript-cutscene.scx` and its answers sheet: a scene (Raynor's line, four
+  Marines walking with the camera following, a glide and a shake to the Zerg base, a circle round it turned by `Vec`
+  given whole, back), then a list of `Effect`s of two classes (`Ping`, `Wave`) ticked every frame for twenty seconds — B9
+  in a map. In the lifted game every step prints what the sheet expects; a frame costs about 5 000 at the most. Awaiting a
+  play in Remastered. Seen there: the centre line ("Raynor: …") is read back from the game's memory more than once
+  by the lifted game; whether Remastered shows it again is the sheet's question 10.
 
 ## Part C — the game, pushed
 

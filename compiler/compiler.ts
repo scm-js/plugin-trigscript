@@ -441,6 +441,17 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     return b ?? undefined;
   };
 
+  // Every class written in the script's files, for what a type of a program may be an instance of (B9).
+  let classList: TS.ClassDeclaration[] | null = null;
+  const scriptClasses = (): TS.ClassDeclaration[] => {
+    if (classList) return classList;
+    classList = [];
+    const found = classList;
+    const visit = (n: TS.Node) => { if (ts.isClassDeclaration(n) && n.name) found.push(n); ts.forEachChild(n, visit); };
+    for (const name of fileNames) { const sf = program.getSourceFile(name); if (sf) visit(sf); }
+    return classList;
+  };
+
   const triggers: TriggerRecord[] = [];
   const sources: (TriggerSource | null)[] = [];
   const programs: ProgramInfo[] = [];
@@ -463,12 +474,15 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
     // Walked again when kept functions turned out to use variables of the blocks they were written in: those are kept in
     // environments the next walk (closures over locals), and only the last walk's errors are said.
+    // Walked again, too, when classes turned out to be kept by reference (B9): their instances are rows of the object
+    // table the next walk.
     const boxed = new Set<TS.Node>();
+    const refs = new Set<TS.ClassDeclaration>();
     let emitted: ReturnType<Structured["run"]>;
     for (let walk = 0; ; walk++) {
       const said: [TS.Node, string, "compiler" | "script" | undefined][] = [];
-      emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => { said.push([node, message, source]); }, resolve, classBody, functionBody, boxed }).run();
-      if (emitted.boxes?.length && walk < 4) { for (const d of emitted.boxes) boxed.add(d); continue; }
+      emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => { said.push([node, message, source]); }, resolve, classBody, functionBody, boxed, refs, classes: scriptClasses() }).run();
+      if ((emitted.boxes?.length || emitted.refs?.length) && walk < 6) { for (const d of emitted.boxes ?? []) boxed.add(d); for (const c of emitted.refs ?? []) refs.add(c); continue; }
       for (const [node, message, source] of said) nodeError(node, message, source);
       break;
     }
