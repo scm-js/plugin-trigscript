@@ -246,6 +246,37 @@ export function planFunction(ts: typeof TS, checker: TS.TypeChecker, fn: TS.Func
   return planProgram(ts, checker, fn as unknown as TS.FunctionExpression, { parameters: true });
 }
 
+const usesGameMemo = new WeakMap<TS.Node, boolean>();
+
+/**
+ * Whether a function of the script's own does what only the game can — draws a random number, reads the game, waits,
+ * prints — itself or through another of the script's functions: called with values the script knows, it still runs in
+ * the game, never when the script is built.
+ */
+export function usesGame(ts: typeof TS, checker: TS.TypeChecker, fn: TS.Node, seen = new Set<TS.Node>()): boolean {
+  const hit = usesGameMemo.get(fn);
+  if (hit !== undefined) return hit;
+  if (seen.has(fn)) return false;
+  seen.add(fn);
+  let found = false;
+  const look = (n: TS.Node): void => {
+    if (found) return;
+    if (ts.isIdentifier(n)) {
+      const lib = libraryName(ts, checker, n);
+      if (lib && (GAME_CALLS.has(lib) || READ_CALLS.has(lib) || READ_ARITY.has(lib) || GAME_CELL_ROOTS.has(lib))) { found = true; return; }
+      const decl = declarationOf(ts, checker, n);
+      const other = decl && decl !== fn && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl));
+      if (other && usesGame(ts, checker, other, seen)) { found = true; return; }
+      return;
+    }
+    ts.forEachChild(n, look);
+  };
+  const body = (fn as TS.FunctionLikeDeclaration).body;
+  if (body) look(body);
+  usesGameMemo.set(fn, found);
+  return found;
+}
+
 /** Whether a class is one of the script's own, declared at the top of one of its files: a program may make instances of it. */
 export function isScriptClass(ts: typeof TS, decl: TS.Node): decl is TS.ClassDeclaration {
   return ts.isClassDeclaration(decl) && !!decl.name && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
@@ -356,15 +387,15 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   const parameterWrite = (call: TS.CallExpression, i: number): "grows" | "stores" | undefined => {
     let callee: TS.Expression = call.expression;
     while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
-    if (!ts.isIdentifier(callee)) return undefined;
-    let fn: TS.Node | undefined = declarationOf(ts, checker, callee);
+    // `rng.shuffle(xs)`: a method, found by what the checker says it is.
+    let fn: TS.Node | undefined = ts.isPropertyAccessExpression(callee) ? checker.getSymbolAtLocation(callee.name)?.declarations?.[0] : ts.isIdentifier(callee) ? declarationOf(ts, checker, callee) : undefined;
     if (fn && ts.isVariableDeclaration(fn) && fn.initializer) {
       let init: TS.Expression = fn.initializer;
       // `const add = game((xs, t) => …)` as well as `const add = (xs, t) => …`.
       if (ts.isCallExpression(init) && init.arguments.length === 1) init = init.arguments[0];
       fn = init;
     }
-    if (!fn || !(ts.isFunctionDeclaration(fn) || ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || !fn.body) return undefined;
+    if (!fn || !(ts.isFunctionDeclaration(fn) || ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isMethodDeclaration(fn)) || !fn.body) return undefined;
     const p = fn.parameters[i];
     if (!p || !ts.isIdentifier(p.name)) return undefined;
     const name = p.name.text;
@@ -485,6 +516,10 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       if (decl && isGameDecl(decl)) { ok = false; return; }
       // A class of the script's own: inside a program, `new C()` is an instance of the program's, whatever its arguments.
       if (decl && isScriptClass(ts, decl)) { ok = false; return; }
+      // A function of the script's own that does what only the game can (`range(2, 4)` draws the game's random numbers):
+      // run in the game, whatever its arguments.
+      const own = decl && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl));
+      if (own && usesGame(ts, checker, own)) { ok = false; return; }
       // A function of the script's own kept in an array or a record (`const fs = [a, b]`): the program's functions as
       // values, which it calls with its own values. Handed to a function (`xs.map(sq)`) or called, it is the script's.
       if (decl && (isScriptFunction(ts, decl) || scriptArrow(ts, decl)) && (ts.isArrayLiteralExpression(p) || (ts.isPropertyAssignment(p) && p.initializer === n) || ts.isShorthandPropertyAssignment(p))) { ok = false; return; }

@@ -81,6 +81,16 @@ describe("what holds a closure", () => {
   });
 });
 
+describe("a function handed to a task", () => {
+  it("keeps what it uses of a loop's turn, each task its own, as JavaScript's setInterval callbacks do", () => {
+    const r = compileScript(ts, { "main.ts": "const tick = game(async (period: number, fn: () => void) => { while (true) { await sleep(frames(period)); fn(); } }); const every = game((period: number, fn: () => void): Task => start(tick(period, fn))); program(async () => { let log = ''; let k = 1; while (k <= 3) { const tag = k * 10; every(4, () => { log += `${tag} `; }); k++; } await sleep(frames(6)); print(log); });" }, NAMES, { lib: LIB });
+    expect(r.diagnostics.map((d) => d.message)).toEqual([]);
+    const sim = simulatePrograms(r.ir, 8, { strings: r.strings });
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(["10 20 30 "]);
+  });
+});
+
 describe("environments are given back", () => {
   it("thousands made over many frames, each let go of, never run out", () => {
     const sim = run("let total = 0; let f: () => number = () => 0; let n = 0; while (n < 3000) { const k = n; f = () => k; total += f(); n++; if (n % 100 == 0) await sleep(frames(1)); } print(`${total}`);", 40);

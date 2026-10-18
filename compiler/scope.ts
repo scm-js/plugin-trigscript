@@ -61,7 +61,7 @@ export type Binding =
    * `cls`: the record is an instance — `new Squad()` — and this is its class, known when the script is built, which is what a
    * method call, a getter, `instanceof` and an overridden method are settled by.
    */
-  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration }
+  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration; /** An instance of a generic class: what each of its type parameters is (`new Signal<number>()`). */ typeArgs?: TypeArgs }
   /** A function known when the script is built (TrigScript 4, B3): a call of it is a call of its body, inlined or called as any function is. */
   | { kind: "fn"; fn: FnValue };
 
@@ -77,6 +77,9 @@ export interface FnValue {
   target: unknown;
   name?: string;
 }
+
+/** What each type parameter of a generic class or function stands for, in one instance or one call. */
+export type TypeArgs = Map<TS.Symbol, TS.Type>;
 
 /** What `this` is bound under in the scope of a method's body: no declaration of the source stands for it. */
 export const THIS = { kind: -1 } as unknown as TS.Node;

@@ -9,7 +9,7 @@ raycaster in the fog (*S5*, 2026-10-17); B3, functions as values, and B4, `try` 
 (2026-10-17); closures over locals, and the text and array methods a program was missing, built (*Closures and the
 missing methods*, 2026-10-17); JSX components, functions from any file and the first two libraries, `trigscript/ui` and
 `trigscript/screen`, with Snake as their showpiece (*Components, functions from any file, and the first libraries*,
-2026-10-17). The question it answers: now that there is a
+2026-10-17); generics and `timers`, `signals`, `random` and `math` (*timers, signals, random and math, and generics*, 2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1617,6 +1617,45 @@ cells pushed and the walls made — a fixed-size screen would cost less). Awaiti
 **Checked:** `tests/ui.test.ts` (components, 4 more), `tests/script-functions.test.ts` (6), `tests/ui-kit.test.ts`
 (5: the kit rendered, the meter's colour in the IR, the log, `choose` and `say` with keys pressed), `tests/screen.test.ts`
 (4: drawing, digits, `present` making only what changed).
+
+### timers, signals, random and math, and generics (built 2026-10-17)
+
+Four modules of pure TrigScript, no probe needed, that the next showpieces lean on — and what the language needed first.
+
+**Language:**
+- *Generics.* A generic class's instance (`new Signal<number>()`) and a generic function at a call (`shuffle(names)`)
+  are worked out with their type parameters standing for what they are there. The structured compiler's checker is
+  wrapped so that a type it hands back that is a type parameter comes back as that type; the instance carries its type
+  arguments (`typeArgs`) into its constructor and every method called on it; a call's are read from the checker's
+  resolved signature (a parameter declared `T` or `T[]`); a function kept as a value inside a generic method is walked
+  later with them; a generic function is a copy for each set of them. "A class of a program takes no type parameters"
+  is gone.
+- *A function handed to a task keeps what it uses*: a known function handed to `start(…)`'s call is kept as a value
+  there, so its variables get an environment — `every(4, () => log += tag)` in a loop keeps each turn's `tag`, as a
+  `setInterval` callback does — and the program holds it for the task's slot (an array a `start`, a cell a slot) until a
+  later task takes the slot. A known function's environment is reached from where it was written, not from where its
+  number is made (inside a game function, which sees nothing of the program).
+- *A function of the script's own that uses the game* (`random`, a read, a wait, a print — itself or through another)
+  is never run when the script is built, whatever its arguments (`hoist.ts#usesGame`): `range(2, 4)` drew at build.
+- *A Task a function gives* (`every(…)`) is not a promise left unawaited.
+- `v.rotate(a).x`: a field of the instance or record a call gives, the call made once a statement.
+- A method that writes an array handed to it makes the array the program's, as a function already did; a class's text
+  field written in its own methods (`this.value = v`) is a made text when the class is at the top of a file.
+
+**`trigscript/timers`:** `every(period, fn, times?)` (handed the count), `after(delay, fn)` — tasks, so `cancel()` and
+`running` — and `Cooldown` (`use()`, `ready()`, `left()`), `Countdown`, `Stopwatch`, `now()`, `SECOND` = 24.
+**`trigscript/signals`:** `Signal<T>` — `on`, `once`, `off(id)` (the place reused), `emit`, `count`, `clear`.
+**`trigscript/random`:** `chance`, `range`, `dice`, `pick<T>`, `weighted`, `shuffle<T>` on the game's synced random;
+`Random(seed)`, xorshift, the same numbers as JavaScript's.
+**`trigscript/math`:** `lerp`, `inverseLerp`, `remap`, `clamp01`, `approach`, `wrap`, `sign`, `distance`, `distanceSq`,
+`manhattan`, `angleTo`, `radians` / `degrees`, `PI` / `TAU`, easing (`easeIn/Out/InOutQuad`, cubic, `easeOutBack`,
+`smoothstep`), `Vec` (fixed `x`, `y`: `fromAngle`, `add`, `sub`, `scale`, `dot`, `length`, `normalized`, `angle`,
+`rotate`, `distanceTo`, `lerp`).
+
+**Checked:** `tests/generics.test.ts` (3, against JavaScript), `tests/stdlib-core.test.ts` (11; `Random` against the
+same xorshift in JavaScript, easing within a hundredth), `tests/closures.test.ts` (+1, the task). In the lifted game and
+the simulator, `probes/game-stdlib-core.ts` (4), about 4k conditions and actions a frame; the earlier probes and Snake
+re-run, all passing.
 
 ## Part C — the game, pushed
 

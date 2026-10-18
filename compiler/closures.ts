@@ -291,6 +291,24 @@ export function countReferences(program: Pick<Program, "body">, functions: FuncD
           out.push(...eachCell(s.array, at, label, num(0), (cell) => release(pool, cell, at, label, m)), s, ...eachCell(s.array, at, label, num(0), (cell) => hold(rc, cell, at, label)));
           continue;
         }
+        case "start": {
+          // A closure handed to a task (its parameter, which nothing counts) is held by the program for the task's slot
+          // until another task takes the slot: kept while the task runs, let go of once a later one starts there.
+          const kept = s.call.params.filter((p) => isRef(p.init));
+          if (!kept.length) break;
+          const temps = kept.map((p) => { const t = tmp("(handed to the task)", at); out.push({ kind: "declare", decl: t, init: p.init as NumExpr, at, label }); p.init = ref(t); return t; });
+          const handle = s.handle ? decls.get(s.handle) ?? m.newVar("(task)", "number", at) : m.newVar("(task)", "number", at);
+          if (!s.handle) s.handle = handle.id;
+          out.push(s);
+          const slot = tmp("(slot)", at);
+          const then: Stmt[] = [{ kind: "declare", decl: slot, init: { kind: "binary", op: "%", left: { kind: "var", id: s.handle }, right: num(256), at, label }, at, label }];
+          temps.forEach((t, i) => {
+            const held = m.newArray(`(closures of task ${s.task} ${i})`, "number", 256, at);
+            then.push(...hold(rc, ref(t), at, label), ...release(pool, el(held, ref(slot), at), at, label, m), { kind: "store", array: held.id, index: ref(slot), value: ref(t), at, label });
+          });
+          out.push({ kind: "if", cond: cmp(">", { kind: "var", id: s.handle }, num(0), at, label), then, at, label });
+          continue;
+        }
         case "sleep": if (waits) out.push(sweepCall(at, label)); break;
         default: break;
       }

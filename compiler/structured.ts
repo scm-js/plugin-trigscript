@@ -69,7 +69,7 @@ import { cellMax } from "./tables";
 import { markViewWrites, type View } from "./views";
 import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
 import { CLOSURE_CAP, countReferences, FN_BASE, makePool, type ClosurePool, type PoolMaker } from "./closures";
-import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type FnValue, type Place, type RowField, type RowShape } from "./scope";
+import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type FnValue, type Place, type RowField, type RowShape, type TypeArgs } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { FIXED_MAX, FIXED_MIN, fixedRaw } from "./numbers";
 import { ERROR_CODES, FIRST_ERROR_CLASS, I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
@@ -410,7 +410,72 @@ export class Structured {
   /** Functions given a number whose bodies are still to be walked: once the program's is, so that they see every name it declares, as JavaScript's do. */
   /** How many attempts to make a function one that is called are under way (`callable`): their errors are caught. */
   private attempts = 0;
-  private readonly pendingTargets: { fn: FnValue; t: FnTarget; node: TS.Node; returned: TS.Type }[] = [];
+  private readonly pendingTargets: { fn: FnValue; t: FnTarget; node: TS.Node; returned: TS.Type; typeArgs?: TypeArgs[] }[] = [];
+  /** What type parameters stand for while a generic class's instance or a generic function's call is walked: innermost last. */
+  private typeArgs: TypeArgs[] = [];
+
+  /** A type parameter as what it stands for here; any other type as it is. */
+  private resolveType(t: TS.Type): TS.Type {
+    for (let depth = 0; depth < 8 && t.flags & this.ts.TypeFlags.TypeParameter; depth++) {
+      let found: TS.Type | undefined;
+      for (let i = this.typeArgs.length - 1; i >= 0 && !found; i--) found = t.symbol ? this.typeArgs[i].get(t.symbol) : undefined;
+      if (!found) break;
+      t = found;
+    }
+    return t;
+  }
+
+  /** A union's members (or the one type), each type parameter as what it stands for. */
+  private membersOf(type: TS.Type): TS.Type[] {
+    return (type.isUnion() ? type.types : [type]).map((t) => this.resolveType(t));
+  }
+
+  /** `fn` with these type arguments in force (none: as it is). */
+  private withTypeArgs<T>(args: TypeArgs | undefined, fn: () => T): T {
+    if (!args || !args.size) return fn();
+    this.typeArgs.push(args);
+    try { return fn(); } finally { this.typeArgs.pop(); }
+  }
+
+  /** What a generic class's type parameters are in `new C<…>(…)`, by what the checker says the instance is. */
+  private classTypeArgs(cls: TS.ClassDeclaration, at: TS.Node): TypeArgs | undefined {
+    if (!cls.typeParameters?.length) return undefined;
+    const type = this.c.checker.getTypeAtLocation(at);
+    const args = (type.flags & this.ts.TypeFlags.Object) && ((type as TS.ObjectType).objectFlags & this.ts.ObjectFlags.Reference) ? this.c.checker.getTypeArguments(type as TS.TypeReference) : [];
+    const out: TypeArgs = new Map();
+    cls.typeParameters.forEach((tp, i) => { const sym = this.c.checker.getSymbolAtLocation(tp.name); if (sym && args[i]) out.set(sym, this.resolveType(args[i])); });
+    return out;
+  }
+
+  /**
+   * What a generic function's type parameters are at a call (`shuffle(names)`), by the types the checker gave its
+   * parameters there: one declared `T` is the argument's type, one declared `T[]` its element's.
+   */
+  private callTypeArgs(decl: TS.Node, call: TS.Expression): TypeArgs | undefined {
+    const { ts } = this;
+    const params = (decl as { typeParameters?: TS.NodeArray<TS.TypeParameterDeclaration> }).typeParameters;
+    if (!params?.length || !ts.isCallExpression(call)) return undefined;
+    const signature = this.c.checker.getResolvedSignature(call);
+    const declared = (decl as TS.SignatureDeclaration).parameters ?? [];
+    const out: TypeArgs = new Map();
+    for (const tp of params) {
+      const sym = this.c.checker.getSymbolAtLocation(tp.name);
+      if (!sym) continue;
+      declared.forEach((p, i) => {
+        if (out.has(sym) || !p.type || !signature?.parameters[i]) return;
+        const given = this.c.checker.getTypeOfSymbolAtLocation(signature.parameters[i], call);
+        let node: TS.TypeNode = p.type;
+        while (ts.isTypeOperatorNode(node)) node = node.type;
+        if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && node.typeName.text === tp.name.text) out.set(sym, given);
+        else if (ts.isArrayTypeNode(node) && ts.isTypeReferenceNode(node.elementType) && ts.isIdentifier(node.elementType.typeName) && node.elementType.typeName.text === tp.name.text) {
+          const element = this.c.checker.getIndexTypeOfType(this.c.checker.getNonNullableType(given), ts.IndexKind.Number);
+          if (element) out.set(sym, element);
+        }
+      });
+    }
+    return out;
+  }
+
   /** The scope each function declaration of the body was written in, as its block is walked. */
   private readonly declaredIn = new Map<TS.Node, Scope>();
 
@@ -440,7 +505,20 @@ export class Structured {
   private envUnreachable = false;
 
   constructor(c: StructuredContext) {
-    this.c = c;
+    // Generics: what the checker says a type is, a type parameter given as what it stands for in the instance or the
+    // call being walked (`typeArgs`), so a kind is worked out of `T` as of `number`.
+    const raw = c.checker;
+    const resolve = (t: TS.Type) => this.resolveType(t);
+    const RESOLVED = new Set(["getTypeAtLocation", "getTypeOfSymbolAtLocation", "getTypeOfSymbol", "getReturnTypeOfSignature", "getIndexTypeOfType", "getNonNullableType", "getAwaitedType", "getContextualType", "getTypeFromTypeNode", "getTypeOfPropertyOfType", "getBaseTypeOfLiteralType"]);
+    const checker = new Proxy(raw, {
+      get: (target, prop) => {
+        const v = (target as unknown as Record<string | symbol, unknown>)[prop];
+        if (typeof v !== "function") return v;
+        if (typeof prop === "string" && RESOLVED.has(prop)) return (...args: unknown[]) => { const out = (v as (...a: unknown[]) => TS.Type | undefined).apply(target, args); return out ? resolve(out) : out; };
+        return (v as (...a: unknown[]) => unknown).bind(target);
+      },
+    });
+    this.c = { ...c, checker };
     this.ts = c.ts;
     this.body = c.body;
     this.boxed = c.boxed ?? new Set();
@@ -600,7 +678,11 @@ export class Structured {
       // `Squad.count`: a static field, which is a variable of the program's.
       const cls = this.classOf(e.expression);
       if (cls) { const field = this.memberOf(cls, (m) => ts.isPropertyDeclaration(m) && this.isStatic(m) && this.memberKey(m.name) === e.name.text); return field ? this.statics.get(field) : undefined; }
-      const obj = this.bindingOf(e.expression);
+      const inner = this.unwrap(e.expression);
+      // A field (not a getter: that runs the call inside it) of what a call gives.
+      const field = this.c.checker.getSymbolAtLocation(e.name)?.declarations?.[0];
+      const isField = !!field && (ts.isPropertyDeclaration(field) || ts.isPropertySignature(field) || ts.isPropertyAssignment(field) || ts.isShorthandPropertyAssignment(field) || ts.isParameter(field));
+      const obj = ts.isCallExpression(inner) ? (isField ? this.madeByCall(inner) ?? undefined : undefined) : this.bindingOf(e.expression);
       return obj?.kind === "record" ? obj.fields.get(e.name.text) : undefined;
     }
     if (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression)) {
@@ -899,8 +981,21 @@ export class Structured {
 
   private statement(s: TS.Statement, ctx: Ctx) {
     const was = this.ctxNow;
+    const made = this.madeHere;
     this.ctxNow = ctx;
-    try { this.statementIn(s, ctx); } finally { this.ctxNow = was; }
+    this.madeHere = new Map();
+    try { this.statementIn(s, ctx); } finally { this.ctxNow = was; this.madeHere = made; }
+  }
+
+  /** What a call that gives an instance or a record gave, in the statement being walked: `v.rotate(a).x` and `.y` of the same call make it once. */
+  private madeHere = new Map<TS.Node, Binding | null>();
+
+  /** The instance or record a call gives (`v.rotate(a)`), made where the statement is, once a statement; undefined for a call that gives neither. */
+  private madeByCall(e: TS.CallExpression): Binding | null | undefined {
+    if (this.madeHere.has(e)) return this.madeHere.get(e);
+    const made = this.instanceCall(e, "(made)");
+    if (made !== undefined) this.madeHere.set(e, made);
+    return made;
   }
 
   private statementIn(s: TS.Statement, ctx: Ctx) {
@@ -4525,7 +4620,9 @@ export class Structured {
       // `name: "Boss"`: a text variable the record's name leads to, kept by what `p.name = …` anywhere gives it.
       // Handed to a function (`say(P1, talk, …)`), the record may be given a made text there, where this cannot look: made.
       const handed = this.handedToCall(at);
-      const keptAs = prop && !handed ? this.textKept(init, (left) => ts.isPropertyAccessExpression(left) && this.c.checker.getSymbolAtLocation(left.name) === prop) : "made";
+      // A field of a class is written in the class's own methods too, wherever the class is declared.
+      const cls = prop?.valueDeclaration?.parent;
+      const keptAs = prop && !handed ? this.textKept(init, (left) => ts.isPropertyAccessExpression(left) && this.c.checker.getSymbolAtLocation(left.name) === prop, cls && ts.isClassDeclaration(cls) ? cls : undefined) : "made";
       if (init) return { kind: "var", v: this.declareText(full, init, keptAs, this.sourceOf(nameNode), at) };
       const v = this.newVar(full, "text", this.sourceOf(nameNode), { text: keptAs });
       this.emit({ kind: "declare", decl: v, init: { kind: "text", text: "" }, at: this.at(at), label: this.label(at) }, at);
@@ -4610,11 +4707,12 @@ export class Structured {
     if (this.isTaskType(type)) return "number";
     type = this.awaited(type);
     // `c ? 1 : 0` is `0 | 1`: a union of numbers is a number.
-    const isNumber = (t: TS.Type): boolean => (t.flags & ts.TypeFlags.NumberLike) !== 0 || (t.isIntersection() && t.types.some(isNumber)) || (t.isUnion() && t.types.every(isNumber));
+    const isNumber = (t: TS.Type): boolean => { t = this.resolveType(t); return (t.flags & ts.TypeFlags.NumberLike) !== 0 || (t.isIntersection() && t.types.some(isNumber)) || (t.isUnion() && t.types.every(isNumber)); };
     if (type.flags & ts.TypeFlags.BooleanLike) return "boolean";
     if (isNumber(type)) return "number";
     // `Unit | null`: a unit of the game, or none.
-    const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    const bare = this.membersOf(type).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    if (bare.length > 0 && bare.every((t) => (t.flags & ts.TypeFlags.BooleanLike) !== 0)) return "boolean";
     if (bare.length > 0 && bare.every((t) => !!t.getProperty("__unit"))) return "unit";
     // A function (B3): kept as a number, which function it is; `f?: () => void` is one or undefined, 0.
     if (bare.length > 0 && bare.every((t) => this.isFunctionType(t))) return "number";
@@ -4696,7 +4794,7 @@ export class Structured {
   private isTextType(type: TS.Type): boolean {
     const { ts } = this;
     type = this.awaited(type);
-    const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
+    const bare = this.membersOf(type).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
     return bare.length > 0 && bare.every((t) => (t.flags & ts.TypeFlags.StringLike) !== 0);
   }
 
@@ -4781,18 +4879,20 @@ export class Structured {
     return found;
   }
 
-  private textKept(initializer: TS.Expression | undefined, isTarget: (left: TS.Expression) => boolean): "id" | "made" {
+  private textKept(initializer: TS.Expression | undefined, isTarget: (left: TS.Expression) => boolean, also?: TS.Node): "id" | "made" {
     const { ts } = this;
     if (initializer && !this.hasId(initializer)) return "made";
     let made = false;
     const walk = (n: TS.Node) => {
       if (made) return;
       if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && isTarget(this.unwrap(n.left))) {
-        if (n.operatorToken.kind !== ts.SyntaxKind.EqualsToken || !this.hasId(n.right)) made = true;
+        // What a parameter is (`this.value = v`) is known only at a call: made, which takes any text.
+        if (n.operatorToken.kind !== ts.SyntaxKind.EqualsToken || !this.hasId(n.right) || (ts.isIdentifier(this.unwrap(n.right)) && ts.isParameter(declarationOf(ts, this.c.checker, this.unwrap(n.right) as TS.Identifier) ?? n))) made = true;
       }
       ts.forEachChild(n, walk);
     };
     walk(this.body.plan.body);
+    if (also && !made) walk(also);
     return made ? "made" : "id";
   }
 
@@ -5917,7 +6017,8 @@ export class Structured {
     if (ts.isCallExpression(bare) && isOnCall(ts, this.c.checker, bare)) { this.onEvent(bare); return; }
     if (ts.isCallExpression(bare) && ts.isPropertyAccessExpression(bare.expression) && bare.expression.name.text === "cancel" && this.isTaskType(this.c.checker.getTypeAtLocation(bare.expression.expression))) { this.cancelTask(bare, bare.expression.expression); return; }
     // A promise nothing waits for. sleep() in a function that is not async is the language before 4: it pauses there.
-    if (!awaited && ts.isCallExpression(bare) && this.isPromise(bare) && !(this.isSleep(bare) && !this.inAsync(bare))) { this.notAwaited(bare); return; }
+    // A Task a function gives (`every(30, f)`, which starts one) runs beside the program: nothing is to wait for it.
+    if (!awaited && ts.isCallExpression(bare) && this.isPromise(bare) && !(this.isSleep(bare) && !this.inAsync(bare)) && !this.isTaskType(this.c.checker.getTypeAtLocation(bare))) { this.notAwaited(bare); return; }
     const e = this.unwrap(expr);
     const h = this.evaluate(expr);
     if (h) { this.hoistedStatement(e, h); return; }
@@ -8120,7 +8221,7 @@ export class Structured {
   private declareClass(cls: TS.ClassDeclaration) {
     const { ts } = this;
     this.classBodies.set(cls, this.body);
-    if (cls.typeParameters?.length) this.c.error(cls.typeParameters[0], "A class of a program takes no type parameters: what each field holds has to be known when the script is built.");
+
     for (const m of cls.members) {
       if (ts.isClassStaticBlockDeclaration(m)) { this.c.error(m, "A static block is not supported in a program; give the static fields their values where they are declared."); continue; }
       if (ts.isMethodDeclaration(m) && m.asteriskToken) this.c.error(m, "A generator method is not supported in a class yet; a generator function declared in the program can take the instance.");
@@ -8137,8 +8238,10 @@ export class Structured {
     const cls = this.classOf(e.expression);
     if (!cls) { this.c.error(e.expression, "new makes an instance of a class declared in the program."); return null; }
     if (this.constructing.length >= MAX_INLINE_DEPTH) { this.c.error(e, `${this.className(cls)} makes another instance while it is being made, sixteen deep: an instance is a set of variables of its own, made when the script is built, so this would have no end.`); return null; }
-    const self: Instance = { kind: "record", fields: new Map(), cls };
-    return this.construct(cls, e.arguments ?? [], self, e, name) ? self : null;
+    // `new Signal<number>()`: the instance's type parameters, in force for its fields, its constructor and every method called on it.
+    const typeArgs = this.classTypeArgs(cls, e);
+    const self: Instance = { kind: "record", fields: new Map(), cls, ...(typeArgs ? { typeArgs } : {}) };
+    return this.withTypeArgs(typeArgs, () => this.construct(cls, e.arguments ?? [], self, e, name)) ? self : null;
   }
 
   private construct(cls: TS.ClassDeclaration, args: readonly TS.Expression[], self: Instance, at: TS.Expression, name: string): boolean {
@@ -8480,11 +8583,13 @@ export class Structured {
       this.targets.set(fn, t);
       // Inside an attempt to make a function one that is called, now: what the body cannot keep is that attempt's failure.
       if (this.attempts > 0) this.walkTarget({ fn, t, node, returned });
-      else this.pendingTargets.push({ fn, t, node, returned });
+      else this.pendingTargets.push({ fn, t, node, returned, ...(this.typeArgs.length ? { typeArgs: [...this.typeArgs] } : {}) });
     }
     const value = this.mark<NumExpr>({ kind: "const", value: this.boxed.size ? FN_BASE + t.id : t.id, fn: t.fd.id }, node);
     if (!t.envScope) return value;
-    const env = this.envRefAt(t.envScope, this.scope);
+    // Reached from where the function was written — the same run of its block, wherever it is handed on to (a function
+    // known when built never outlives it) — not from here, which may be a game function that sees nothing of the program.
+    const env = this.envRefAt(t.envScope, fn.closure ?? this.scope) ?? this.envRefAt(t.envScope, this.scope);
     if (!env) { this.envUnreachable = true; return value; }
     return this.mark<NumExpr>({ kind: "call", call: this.makeCall(value, env, this.at(node)) }, node);
   }
@@ -8494,7 +8599,12 @@ export class Structured {
    * `function idle() { state = busy; }` has to see `state` — with what it names from outside it watched.
    */
   private walkTargets() {
-    for (let next = this.pendingTargets.shift(); next; next = this.pendingTargets.shift()) this.walkTarget(next);
+    for (let next = this.pendingTargets.shift(); next; next = this.pendingTargets.shift()) {
+      // Walked later, with what the type parameters stood for where it was made (a handler written in a generic method).
+      const saved = this.typeArgs;
+      this.typeArgs = next.typeArgs ?? [];
+      try { this.walkTarget(next); } finally { this.typeArgs = saved; }
+    }
   }
 
   private walkTarget(next: { fn: FnValue; t: FnTarget; node: TS.Node; returned: TS.Type }) {
@@ -8545,6 +8655,18 @@ export class Structured {
       this.mark(fd, fn.decl);
       this.functions.push(fd);
     }
+  }
+
+  /** Whether a function handed to a task can be kept as a value there: not async, nor a generator, taking and giving what a number can stand for. */
+  private keepableInTask(fn: FnValue): boolean {
+    const { ts } = this;
+    if (fn.decl.asteriskToken || ts.getModifiers(fn.decl)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return false;
+    const signature = this.c.checker.getSignatureFromDeclaration(fn.decl);
+    if (!signature) return false;
+    if (fn.parameters.some((p) => p.dotDotDotToken || !ts.isIdentifier(p.name) || !this.valueKind(this.c.checker.getTypeAtLocation(p.name)))) return false;
+    const returned = this.c.checker.getReturnTypeOfSignature(signature);
+    if (returned.getProperty("then")) return false;
+    return (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 || !!this.valueKind(returned);
   }
 
   /** Whether a function kept as a value may name a binding found outside its body: the program's own, or a value of the script. */
@@ -8882,6 +9004,15 @@ export class Structured {
    * in a variable of the call's own that dies with the statement.
    */
   private inline(call: TS.Expression, parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression | undefined, target: Body, name: string | undefined, decl: TS.Node, as: MethodCall = {}): Call | undefined {
+    // Generics: a method of an instance of a generic class, a generic function at this call — their type parameters stand
+    // for what they are here, while the call is worked out (its parameters' kinds included).
+    const own = this.callTypeArgs(decl, call);
+    const fromSelf = as.self?.kind === "record" ? as.self.typeArgs : undefined;
+    const args = own?.size && fromSelf?.size ? new Map([...fromSelf, ...own]) : own?.size ? own : fromSelf;
+    return this.withTypeArgs(args, () => this.inlineWith(call, parameters, body, target, name, decl, as, args));
+  }
+
+  private inlineWith(call: TS.Expression, parameters: readonly TS.ParameterDeclaration[], body: TS.Block | TS.Expression | undefined, target: Body, name: string | undefined, decl: TS.Node, as: MethodCall, typeArgs: TypeArgs | undefined): Call | undefined {
     const { ts } = this;
     // What is handed over: a call's arguments — or, where `call` is not one (`new Squad(P1)`, a getter read, a setter's `=`), what `as` says.
     const written: readonly TS.Expression[] = as.args ?? (ts.isCallExpression(call) ? call.arguments : []);
@@ -8999,6 +9130,17 @@ export class Structured {
       // `twice(() => n++)`, `each(xs, add)` (B3): the function itself, known when the script is built — a call of the
       // parameter is a call of it, and a function that is called is one copy for each function it is handed.
       const fnArg = this.isFunctionType(this.c.checker.getTypeAtLocation(p.name)) ? this.fnValueOf(arg) : undefined;
+      // Handed to a task, which runs on after this frame (`every(30, () => …)`): a function kept as a value, so that what
+      // it uses of the block it was written in is kept for it, a turn of a loop each its own — as JavaScript has it.
+      if (fnArg && copies && this.keepableInTask(fnArg)) {
+        const id = this.functionId(fnArg, arg);
+        if (!id) { ok = false; return; }
+        const copy = this.newVar(p.name.text, "number", this.sourceOfIn(target, p.name));
+        out.params.push({ decl: copy, init: id, label });
+        scope.bind(p, { kind: "var", v: copy });
+        asCalled({ init: id, label });
+        return;
+      }
       if (fnArg) {
         if (this.assigns(body, p)) { this.c.error(p, `${p.name.text} is the function handed over; keep another in a let of the function's own to change it.`); ok = false; return; }
         const b: Binding = { kind: "fn", fn: fnArg };
@@ -9098,7 +9240,8 @@ export class Structured {
     if (given.length > parameters.length && !parameters.some((p) => p.dotDotDotToken)) { this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`); return out; }
 
     const at = this.sourceOfIn(target, (decl as { name?: TS.Node }).name ?? decl);
-    const site = args ? this.siteOf(decl, args, as.closure ?? undefined) : undefined;
+    // A generic function is one copy for each set of what its type parameters are, as it is one for each array.
+    const site = args ? this.siteOf(decl, args, as.closure ?? undefined, typeArgs && [...typeArgs.values()].map((t) => this.c.checker.typeToString(t)).join(",")) : undefined;
     if (site && args) {
       if (site.fn) return this.calls(out, site.fn, args);
       // Inside the attempt to make it a function that is called: the function calls itself, and this is that call.
@@ -9213,7 +9356,7 @@ export class Structured {
   }
 
   /** What is known of a function at these arrays: a function that takes an array is one copy an array passed, as a template is. */
-  private siteOf(decl: TS.Node, args: CallArgument[], closure?: Scope): FunctionSite {
+  private siteOf(decl: TS.Node, args: CallArgument[], closure?: Scope, types?: string): FunctionSite {
     const part = (b: Binding): string => {
       switch (b.kind) {
         case "array": return `a${this.identity(b.a)}`;
@@ -9229,7 +9372,7 @@ export class Structured {
       }
     };
     // A function written as a value is one in the scope it was written in: the same arrow in another copy of what holds it sees other variables.
-    const key = `${this.identity(decl)}${closure ? `@${this.identity(closure)}` : ""}:${args.map((a) => ("binding" in a ? part(a.binding) : "")).join(",")}`;
+    const key = `${this.identity(decl)}${closure ? `@${this.identity(closure)}` : ""}${types ? `<${types}>` : ""}:${args.map((a) => ("binding" in a ? part(a.binding) : "")).join(",")}`;
     let site = this.sites.get(key);
     if (!site) { site = {}; this.sites.set(key, site); }
     return site;
