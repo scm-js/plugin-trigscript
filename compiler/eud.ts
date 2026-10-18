@@ -9,7 +9,7 @@
  * condition does not mention a variable the body assigns, is an error naming the loop.
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
-import { HEAP_CELLS, STACK_DEPTH, bodiesOf, heapCells, stackDepth, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
+import { HEAP_CELLS, STACK_DEPTH, bodiesOf, declarations, eachCall, heapCells, stackDepth, isTextExpr, isUnitExpr, mapText, mapTextOperands, mapTextParts, programDeclarations, type ArrayDecl, type At, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type UnitExpr, type VarDecl } from "./ir";
 import type { LineHint, ScriptString } from "./compiler";
 import type { InputPlan } from "./input";
 
@@ -57,6 +57,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "not": expr(e.expr); break;
       case "test": expr(e.expr); break;
       case "edge": expr(e.cond); break;
+      case "running": expr(e.task); break;
       case "call": call(e.call); break;
       default: break;
     }
@@ -84,11 +85,14 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "do": s.body.forEach(stmt); expr(s.cond); break;
       case "for": if (s.cond) expr(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": call(s.call); break;
+      case "cancel": expr(s.task); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
-      case "centerLocation": expr(s.x); expr(s.y); break;
-      case "print": mapTextParts(s.parts, looks); break;
+      case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
+      case "print": case "buildText": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
@@ -97,8 +101,8 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
   body.forEach(stmt);
 }
 
-/** Every statement of a list, nested ones and calls' bodies (as statements) included. */
-function statements(body: Stmt[], visit: (s: Stmt) => void) {
+/** Every statement of a list, nested ones and calls' bodies (as statements) included; a started task's body unless `tasks` is false. */
+function statements(body: Stmt[], visit: (s: Stmt) => void, tasks = true) {
   const stmt = (s: Stmt) => {
     visit(s);
     switch (s.kind) {
@@ -106,6 +110,8 @@ function statements(body: Stmt[], visit: (s: Stmt) => void) {
       case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": if (tasks) s.call.body.forEach(stmt); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -120,8 +126,9 @@ function checkUnitLoops(body: Stmt[], out: ProgramDiagnostic[]) {
   statements(body, (s) => {
     if (s.kind !== "unitLoop") return;
     statements(s.body, (inner) => {
+      if (inner.kind === "parallel") out.push({ at: inner.at, message: "await inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. Collect the units into an array first, and await in a loop over that array." });
       if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a loop over units: the loop looks at the game's units as they are in one frame and cannot be left half way. To do something to one unit at a time, find it again after each sleep: while (true) { const u = first(…); if (!u) break; u.kill(); sleep(seconds(1)); }" });
-    });
+    }, false);
   });
 }
 
@@ -130,8 +137,9 @@ function checkTextLoops(body: Stmt[], out: ProgramDiagnostic[]) {
   statements(body, (s) => {
     if (s.kind !== "textLoop") return;
     statements(s.body, (inner) => {
+      if (inner.kind === "parallel") out.push({ at: inner.at, message: "await inside a for…of over a text: the loop walks the text once, within the frame. A loop over its places can wait between turns: for (let i = 0; i < s.length; i++) { … }" });
       if (inner.kind === "sleep") out.push({ at: inner.at, message: "sleep() inside a for…of over a text: the loop walks the text once, within the frame. A loop over its places can sleep between turns: for (let i = 0; i < s.length; i++) { const ch = s[i]; … sleep(frames(2)); }" });
-    });
+    }, false);
   });
 }
 
@@ -149,7 +157,9 @@ function scans(program: Program, out: LineHint[]) {
   for (const body of bodiesOf(program)) statements(body, (s) => { if (s.kind === "for" && s.sorts) hint(s.at, "sorts in the frame", `${s.sorts} is sorted where it stands, within the frame: each item is taken in hand and the ones that go after it moved up. Nearly in order already, that is a pass over the list; in no order it is the length squared — a few dozen items are nothing, a few hundred every frame will be felt.`); });
   // A call that stands in an expression (`unitsOf(P1).some(…)` in an if) has statements of its own, which the walk over statements does not reach.
   const everywhere = (body: Stmt[], visit: (s: Stmt) => void) => { statements(body, visit); expressions(body, (e) => { if (e.kind === "call") statements(e.call.body, visit); }); };
-  for (const body of bodiesOf(program)) everywhere(body, (s) => { if (s.kind === "unitLoop") hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
+  // on.order() / on.morphed(): the frame's events pass looks at every unit on the map, for as long as the game runs.
+  for (const body of bodiesOf(program)) everywhere(body, (s) => { if (s.kind === "unitLoop" && (s.source === "ordered" || s.source === "morphed")) hint(s.at, "watches every unit", `Every frame, for the rest of the game, each unit on the map has its ${s.source === "ordered" ? "order" : "type"} looked at: about 100 conditions and actions a unit (on.order() and on.morphed() together, about 140), so 200 units cost about 20,000 a frame of Remastered's 500,000. Paid once however many listeners there are.`); });
+  for (const body of bodiesOf(program)) everywhere(body, (s) => { if (s.kind === "unitLoop" && !s.source) hint(s.at, "scans units", `Looks at ${SLOTS} every time the line runs${each}, and runs the body for the ones that match. Fine once or a few times a second; inside a loop that runs every frame, ask whether it needs to.`); });
   for (const body of bodiesOf(program)) expressions(body, () => {}, (u) => hint(u.at, u.by === "random" ? "scans units ×2" : "scans units", u.by === "random"
     ? `Looks at ${SLOTS} twice every time the line runs${each}: once to count the units that match, once to take the one drawn.`
     : `Looks at ${SLOTS} every time the line runs${each}. Keep the unit in a variable when several lines need it.`));
@@ -180,6 +190,8 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, 
       case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at); s.call.body.forEach(stmt); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at); s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -189,22 +201,21 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, 
   body.forEach(stmt);
 }
 
-/** The `remark` statements, as hints for their lines. */
+/** The `remark` statements, as hints for their lines: those of calls inside expressions too. */
 function remarks(body: Stmt[], out: LineHint[]) {
-  const stmt = (s: Stmt) => {
-    switch (s.kind) {
-      case "remark": if (s.short) out.push({ file: s.at.file, line: s.at.line, label: s.short, note: s.text }); break;
-      case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
-      case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
-      case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
-      case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
-      case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
-      case "call": s.call.body.forEach(stmt); break;
-      case "block": s.body.forEach(stmt); break;
-      default: break;
+  const visit = (root: unknown): void => {
+    if (Array.isArray(root)) { root.forEach(visit); return; }
+    if (!root || typeof root !== "object") return;
+    const o = root as Record<string, unknown>;
+    if (o.kind === "remark") {
+      // (A function's body inlined at several calls says the same of its line each time: once is enough.)
+      const r = o as Extract<Stmt, { kind: "remark" }>;
+      if (r.short && !out.some((h) => h.file === r.at.file && h.line === r.at.line && h.label === r.short)) out.push({ file: r.at.file, line: r.at.line, label: r.short, note: r.text });
+      return;
     }
+    Object.values(o).forEach((v) => { if (v && typeof v === "object") visit(v); });
   };
-  body.forEach(stmt);
+  visit(body);
 }
 
 /** The variables a statement list assigns (declares count too), by id — and `THE_GAME` when it takes an action, which may change what a read finds. */
@@ -219,11 +230,12 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
       case "store": case "declareArray": case "push": case "pop": case "setLength": into.add(whole(s.array)); break;
       case "storeText": into.add(whole(s.addr)); break;
       case "releaseText": into.add(whole(s.block)); break;
-      case "unitLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
+      case "unitLoop": into.add(s.decl.id); if (s.was) into.add(s.was.id); s.body.forEach(stmt); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": case "for": s.body.forEach(stmt); if (s.kind === "for") s.update.forEach(stmt); break;
       case "do": s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
@@ -295,6 +307,8 @@ function sleepsOnEveryPath(body: Stmt[]): boolean {
       case "if": if (s.else && sleepsOnEveryPath(s.then) && sleepsOnEveryPath(s.else)) return true; break;
       case "block": if (sleepsOnEveryPath(s.body)) return true; break;
       case "unrolled": if (s.iterations.some(sleepsOnEveryPath)) return true; break;
+      // `all` waits for every branch, so one that always sleeps is enough; `race` goes on when the first ends, so every one has to.
+      case "parallel": if (s.mode === "all" ? s.branches.some(sleepsOnEveryPath) : s.branches.length > 0 && s.branches.every(sleepsOnEveryPath)) return true; break;
       case "switch": {
         const hasDefault = s.cases.some((c) => c.value === null);
         if (hasDefault && s.cases.every((c) => sleepsOnEveryPath(c.body))) return true;
@@ -308,12 +322,37 @@ function sleepsOnEveryPath(body: Stmt[]): boolean {
   return false;
 }
 
+/** Whether a loop's body can leave it: a `break` of its own (not of a loop or a switch inside it), or a `return`. */
+function leaves(body: Stmt[]): boolean {
+  const stmt = (s: Stmt, own: boolean): boolean => {
+    switch (s.kind) {
+      case "break": return own;
+      case "return": return true;
+      case "if": return s.then.some((x) => stmt(x, own)) || !!s.else?.some((x) => stmt(x, own));
+      case "block": return s.body.some((x) => stmt(x, own));
+      case "unrolled": return s.iterations.some((i) => i.some((x) => stmt(x, own)));
+      case "while": case "do": case "for": return s.body.some((x) => stmt(x, false));
+      case "switch": return s.cases.some((c) => c.body.some((x) => stmt(x, false)));
+      default: return false;
+    }
+  };
+  return body.some((s) => stmt(s, true));
+}
+
 function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<string, FuncDecl>) {
   const stmt = (s: Stmt) => {
     switch (s.kind) {
       case "while": case "for": case "do": {
-        const moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body, functions).has(id)) : false;
-        if (!moves && !sleepsOnEveryPath(s.body)) out.push({ at: s.at, message: s.cond
+        let moves = s.cond ? [...reads(s.cond)].some((id) => assigned(s.kind === "for" ? [...s.body, ...s.update] : s.body, functions).has(id)) : false;
+        // A call in the condition that changes what is outside it may change what the condition finds: `while (move(0, 1, 0)) {}`.
+        if (s.cond && !moves) eachCall(s.cond, (c) => {
+          const fn = c.fn ? functions.get(c.fn) : undefined;
+          const own = new Set([...declarations(fn ? fn.body : c.body), ...(fn ? fn.params : c.params.map((p) => p.decl))].map((d) => d.id));
+          if (c.result) own.add(c.result.decl.id);
+          if (fn?.result) own.add(fn.result.decl.id);
+          if ([...assigned([{ kind: "call", call: c, at: s.at, label: s.label }], functions)].some((id) => !own.has(id))) moves = true;
+        });
+        if (!moves && !sleepsOnEveryPath(s.body) && !leaves(s.body) && !(s.kind === "do" && s.cond.kind === "const" && s.cond.value === false)) out.push({ at: s.at, message: s.cond
           ? "This loop's condition never changes inside it, and no path around it sleeps. A program runs until it sleeps or ends, all within one frame of the game, so this loop would never give the frame back and the game would freeze. Add sleep(frames(1)) inside it, or change what it tests."
           : "A loop without an end needs a sleep() on every path around it. A program runs until it sleeps or ends, all within one frame of the game, so this loop would freeze the game. Add sleep(frames(1)) at the end of its body." });
         s.body.forEach(stmt);
@@ -323,6 +362,8 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "unitLoop": s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": s.call.body.forEach(stmt); break;
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
@@ -339,6 +380,38 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
  * named one (`{ index }`). Nothing a program says is written into the map the user edits.
  * `input` is the compile's plan for what the players do (`input.ts`), when a program reads any.
  */
+/** A table this long or longer goes to the lowering packed (`packTable`) rather than as a list of numbers. */
+export const PACK_FROM = 256;
+
+/**
+ * A table's values as the narrowest little-endian bytes that hold every one (1 to 4 a value), in base64: a video's
+ * brushes are a few hundred thousand values, which as JSON numbers would outgrow the build's 4 MB of data. The
+ * lowering widens them back to a dword each (`python/trigscript.py#unpack_table`).
+ */
+export function packTable(values: readonly number[]): { bytes: 1 | 2 | 3 | 4; data: string } {
+  let top = 0;
+  for (const v of values) { const u = v >>> 0; if (u > top) top = u; }
+  const bytes: 1 | 2 | 3 | 4 = top < 0x100 ? 1 : top < 0x10000 ? 2 : top < 0x1000000 ? 3 : 4;
+  const out = new Uint8Array(values.length * bytes);
+  for (let i = 0, at = 0; i < values.length; i++) {
+    const u = values[i] >>> 0;
+    for (let b = 0; b < bytes; b++) out[at++] = (u >>> (8 * b)) & 0xff;
+  }
+  return { bytes, data: base64(out) };
+}
+
+function base64(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+const packed = (a: ArrayDecl): ArrayDecl | (Omit<ArrayDecl, "values"> & { packed: ReturnType<typeof packTable> }) => {
+  if (!a.values || a.values.length < PACK_FROM) return a;
+  const { values, ...rest } = a;
+  return { ...rest, packed: packTable(values) };
+};
+
 export function serializeIr(programs: Program[], strings: readonly ScriptString[], input: InputPlan | null = null, settings: { heapCells?: number; stackDepth?: number } = {}): string {
   const resolve = (local: number): number | string => {
     if (local <= 0) return 0;
@@ -370,6 +443,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "and": case "or": return { ...e, items: e.items.map(expr) };
       case "not": return { ...e, expr: expr(e.expr) };
       case "edge": return { ...e, cond: expr(e.cond) };
+      case "running": return { ...e, task: expr(e.task) };
       default: return e;
     }
   };
@@ -397,11 +471,14 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "do": return { ...s, body: s.body.map(stmt), cond: expr(s.cond) };
       case "for": return { ...s, ...(s.cond ? { cond: expr(s.cond) } : {}), update: s.update.map(stmt), body: s.body.map(stmt) };
       case "unrolled": return { ...s, iterations: s.iterations.map((i) => i.map(stmt)) };
+      case "parallel": return { ...s, branches: s.branches.map((b) => b.map(stmt)) };
+      case "start": return { ...s, call: call(s.call) };
+      case "cancel": return { ...s, task: expr(s.task) };
       case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
       case "return": return s.value ? { ...s, value: any(s.value) } : s;
       case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}), ...(s.text ? { text: text(s.text) } : {}) };
-      case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y) };
-      case "print": return { ...s, parts: mapTextParts(s.parts, copies) };
+      case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y), ...(s.size ? { size: { width: expr(s.size.width), height: expr(s.size.height) } } : {}) };
+      case "print": case "buildText": return { ...s, parts: mapTextParts(s.parts, copies) };
       case "call": return { ...s, call: call(s.call) };
       case "block": return { ...s, body: s.body.map(stmt) };
       default: return s;
@@ -411,5 +488,5 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
   const heap = settings.heapCells !== undefined && settings.heapCells !== HEAP_CELLS && programs.some((p) => p.arrays.some((a) => a.dynamic)) ? { heap: heapCells(settings.heapCells) } : {};
   // The same for how deep a function that calls itself may go: only when one does.
   const stack = settings.stackDepth !== undefined && settings.stackDepth !== STACK_DEPTH && programs.some((p) => p.functions?.some((f) => f.recursive)) ? { stack: stackDepth(settings.stackDepth) } : {};
-  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...stack, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, ...(p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}), body: p.body.map(stmt) })) });
+  return JSON.stringify({ version: programs[0]?.version ?? 1, ...heap, ...stack, ...(input ? { input } : {}), programs: programs.map((p) => ({ ...p, arrays: p.arrays.map(packed), ...(p.functions ? { functions: p.functions.map((f) => ({ ...f, body: f.body.map(stmt) })) } : {}), body: p.body.map(stmt) })) });
 }

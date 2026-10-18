@@ -332,9 +332,14 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             if (s.text) s.text = rewriteText(s.text, pre, w);
             break;
           }
-          case "centerLocation": [s.x, s.y] = operands([{ e: s.x, kind: "number" }, { e: s.y, kind: "number" }], pre, w) as NumExpr[]; break;
-          case "print": {
-            const numbers = s.parts.filter((p) => p.kind === "number");
+          case "centerLocation": {
+            const done = operands([s.x, s.y, ...(s.size ? [s.size.width, s.size.height] : [])].map((e) => ({ e, kind: "number" as const })), pre, w) as NumExpr[];
+            [s.x, s.y] = done;
+            if (s.size) s.size = { width: done[2], height: done[3] };
+            break;
+          }
+          case "print": case "buildText": {
+            const numbers = s.parts.filter((p) => p.kind === "number" || p.kind === "char");
             const done = operands(numbers.map((p) => ({ e: p.expr, kind: "number" as const })), pre, w) as NumExpr[];
             numbers.forEach((p, i) => { p.expr = done[i]; });
             for (const p of s.parts) if (p.kind === "value") p.text = rewriteText(p.text, pre, w);
@@ -373,6 +378,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             continue;
           }
           case "unrolled": s.iterations = s.iterations.map((i) => body(i, returns)); break;
+          case "parallel": s.branches = s.branches.map((b) => body(b, returns)); break;
           case "block": s.body = body(s.body, returns); break;
           case "textLoop":
             errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over a text holds such a call: the loop's place in the text is not something a call can keep. Walk it by place — for (let i = 0; i < s.length; i++) — which a call keeps as it keeps any number.` });

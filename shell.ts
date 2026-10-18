@@ -27,6 +27,8 @@ const ICONS = {
   ellipsis: "ea7c",
   "new-file": "ea7f",
   "new-folder": "ea80",
+  "device-camera-video": "ead9",
+  "debug-pause": "ead1",
   folder: "ea83",
   "folder-opened": "eaf7",
   edit: "ea73",
@@ -54,6 +56,19 @@ const ICONS = {
   "circle-outline": "eabc",
   "circle-slash": "eabd",
   "pass-filled": "ebb3",
+  // The debugger's (TrigScript 4, A5).
+  "debug-alt": "eb91",
+  "debug-continue": "eacf",
+  "debug-reverse-continue": "eb8e",
+  "debug-step-over": "ead6",
+  "debug-step-back": "eb8f",
+  "debug-stop": "ead7",
+  "debug-restart": "ead2",
+  "debug-line-by-line": "ebd0",
+  "arrow-left": "ea9b",
+  "arrow-right": "ea9c",
+  eye: "ea70",
+  game: "ec17",
 } as const;
 
 export type IconName = keyof typeof ICONS;
@@ -178,6 +193,8 @@ export interface Shell {
   showPanel(id?: string): void;
   /** What the view's shortcut does: show it, or hide the panel when it is already what is shown. */
   togglePanel(id?: string): void;
+  /** The panel at least this tall (as far as the editor leaves room), for a view that needs it: the debugger's. */
+  growPanel(height: number): void;
   statusItem(side: "left" | "right"): StatusItemHandle;
   notify(spec: NotificationSpec): void;
   dismiss(key: string): void;
@@ -230,6 +247,8 @@ ${Object.entries(ICONS).map(([name, code]) => `.tsd-i-${name}::before { content:
 .tsd-row.tsd-active { background: var(--bg-4); color: var(--text); }
 .tsd-row .tsd-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
 .tsd-row .tsd-about { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); font-size: var(--fs-sm); }
+.tsd-row .tsd-game { display: inline-flex; flex: none; margin-left: -2px; border-radius: 50%; }
+.tsd-row .tsd-game-differs { box-shadow: 0 0 0 1px var(--danger); }
 .tsd-row .tsd-problem, .tsd-tab .tsd-problem { color: var(--danger); }
 .tsd-row .tsd-count { flex: none; margin-left: auto; color: var(--danger); font-size: var(--fs-sm); }
 .tsd-row .tsd-icon-button { display: none; margin-left: 0; }
@@ -604,6 +623,14 @@ export function createShell(options: ShellOptions): Shell {
     },
     showPanel,
     togglePanel,
+    growPanel(height) {
+      const most = Math.max(PANEL_MIN, main.clientHeight - 120);
+      const next = Math.min(most, Math.max(layout.panelHeight, height));
+      if (next === layout.panelHeight) return;
+      layout.panelHeight = next;
+      applyLayout();
+      saveLayout();
+    },
     statusItem(side) {
       const slot = el("span", { hidden: true, style: "display: contents" });
       (side === "left" ? statusLeft : statusRight).append(slot);

@@ -32,6 +32,7 @@ import {
 } from "./script";
 import { english, msg, type Translate } from "./i18n";
 import { EUDPLIB_SERVICE, type EudplibBuildEvent, type EudplibInput, type EudplibService } from "./vendor/eudplib";
+import { SCM_SIM_SERVICE, type ScmSimEngine } from "./vendor/scmSim";
 
 /**
  * A compile, with what it was compiled *for*: the map it read its names from and the
@@ -140,6 +141,8 @@ export class ScriptService {
   private lastManifest: Uint8Array | null | undefined;
   /** The last compile, for a save that comes right after an apply: the same files against the same names need no second compile. */
   private lastArtifact: ScriptArtifact | null = null;
+  /** Builds under way that want the lowering to say where the programs' variables are (`withVariableMap`). */
+  private variableMaps = 0;
   /** The editor's language, for what a person reads in the editor's own trigger editors and notices; what the commands return stays English. */
   private readonly t: Translate;
 
@@ -186,6 +189,16 @@ export class ScriptService {
   /** The eudplib plugin's service, or null when it is not installed or is off. */
   library(): EudplibService | null {
     return this.api.services.get<EudplibService>(EUDPLIB_SERVICE);
+  }
+
+  /** The scm-sim plugin's engine, or null when it is not installed or is off: where a script's tests run in the game. */
+  engine(): ScmSimEngine | null {
+    return this.api.services.get<ScmSimEngine>(SCM_SIM_SERVICE);
+  }
+
+  /** Called at once and whenever the scm-sim plugin arrives or goes. */
+  watchEngine(listener: (service: ScmSimEngine | null) => void): { dispose(): void } {
+    return this.api.services.watch<ScmSimEngine>(SCM_SIM_SERVICE, (s) => listener(s));
   }
 
   /** Called at once and whenever the eudplib plugin arrives or goes. */
@@ -293,12 +306,24 @@ export class ScriptService {
     const artifact = fresh ? cached : await this.prepare(state.files, map, guard ? { world: this.world() } : undefined);
     if (!artifact.compiled.ok) throw new Error(firstFault(artifact.compiled.diagnostics));
     if (guard) this.guardTests(artifact.compiled);
+    const plugins = buildPlugins(artifact.compiled.input, "/work/files/trigscript.json");
+    // (And where each trigger is, for the lines of a desync between copies of the game, TrigScript 4's A3.)
+    if (this.variableMaps) Object.assign(plugins.trigscript as Record<string, string>, { variableMap: "1", triggerMap: "1" });
     return {
       // chatEvent and MSQC join in, around the lowering, when a program reads what the players do.
-      plugins: buildPlugins(artifact.compiled.input, "/work/files/trigscript.json"),
+      plugins,
       sources: { trigscript: TRIGSCRIPT_PY },
       files: { "trigscript.json": serializeIr(artifact.compiled.ir, artifact.compiled.strings, artifact.compiled.input, this.settings()) },
     };
+  }
+
+  /**
+   * `run` with every build it starts asked to say where the programs' variables and its triggers are — lines of the
+   * build's log (`compiler/gameVariables.ts`) — for tests in the lifted game to read them and name lines.
+   */
+  async withVariableMap<T>(run: () => Promise<T>): Promise<T> {
+    this.variableMaps++;
+    try { return await run(); } finally { this.variableMaps--; }
   }
 
   /** Hear about the library's builds (it runs them on Save, Test Map and export): the log, and where a failure points. */
@@ -308,7 +333,7 @@ export class ScriptService {
     return { dispose: () => { mine?.dispose(); watch.dispose(); } };
   }
 
-  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names and custom unit names. Null with no map. */
+  /** The tables and the `.d.ts` for the open map — its forces, used locations, switch names, custom unit names and sounds. Null with no map. */
   names(): MapNames | null {
     const api = this.api;
     const info = api.document.info();
@@ -322,6 +347,8 @@ export class ScriptService {
       locations: used.map((index) => ({ index, name: api.names.location(index) })),
       switchNames,
       unitCustomName: (id) => custom.get(id) || null,
+      // (A host from before the Sound Editor's API has no sounds() to ask.)
+      sounds: (api.settings.sounds?.() ?? []).map((w) => ({ stringIndex: w.stringIndex, path: w.path })),
     });
     const decls = generateDeclarations(names);
     return { names, decls, context: hashText(decls) };

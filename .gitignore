@@ -2,3 +2,5 @@ node_modules/
 *.tsbuildinfo
 # Blizzard's maps, copied in for the round-trip test; never committed.
 fixtures/
+# Videos a probe imports (probes/bad-apple.ts): not ours, made on the spot with scripts/import-video.mts.
+probes/*.video

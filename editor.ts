@@ -27,8 +27,11 @@
  * Monaco and TypeScript come from the CDN on first open.
  */
 import type { PluginApi } from "@scm-js/plugin-api";
-import { CompileSuperseded, retainCompileWorker } from "./compile";
-import { ENTRY_FILE, normalizePath, type CompileResult, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
+import { CompileSuperseded, allowlistUrl, gametestUrl, retainCompileWorker } from "./compile";
+import type { Allowlist } from "./compiler/allowlist";
+import { addressOfEudError, findEudError, type EudErrorAnswer } from "./compiler/eudError";
+import type { GameTestReport } from "./compiler/gameTests";
+import { ENTRY_FILE, normalizePath, type CompileResult, type LineHint, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
 import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_CELLS_MAX, STACK_DEPTH, STACK_DEPTH_MAX, STACK_DEPTH_MIN, heapCells, stackDepth } from "./compiler/ir";
 import { largestFrame } from "./compiler/recursion";
 import { entryFor } from "./compiler/names";
@@ -42,15 +45,23 @@ import {
 } from "./monaco";
 import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./refs";
 import { FILE_NAME } from "./script";
-import { isTestFile, type TestInfo, type TestRunOptions } from "./compiler/testing";
+import { isMachineLine, readTriggerMap, readVariableMap } from "./compiler/gameVariables";
+import { mergeCopies } from "./compiler/gameCopies";
+import { costByLine, shortCount, type TestCost } from "./compiler/gameCost";
+import { isTestFile, type TestInfo, type TestReport, type TestResult, type TestRunOptions } from "./compiler/testing";
 import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, playersLabel, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
 import { testName } from "./service";
 import { applyMoves, buildTree, filesUnder, folderOf, movesOf, refuseMoves, tabLabels, validFolder, type Moves, type TreeNode } from "./tree";
 import { ProgramSimulation, type ProgramEvent, type ProgramSimulationOptions, type SimBounds, type SimUnitInit } from "./compiler/simulateIr";
 import { positionIn, type BuildRefusal, type MapNames, type ScriptArtifact, type ScriptService } from "./service";
 import { COMPACT_LAYOUT, DEFAULT_LAYOUT, SHELL_STYLE, createShell, type IconName, type ShellLayout } from "./shell";
+import { DEBUG_STYLE, Debugger, type DebugGameView } from "./debugger";
+import type { DebugRecording } from "./compiler/gameDebug";
+import type { ScmSimDebugView } from "./vendor/scmSim";
 import type { EudplibBuildEvent, EudplibService } from "./vendor/eudplib";
 import type { Translate } from "./i18n";
+import { describeVideo, isMediaFile } from "./compiler/media";
+import { importMedia, showVideo } from "./videoImport";
 
 export const TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
 // one trigger of the map, in order; code inside program(() => { … }) runs in the game.
@@ -108,6 +119,8 @@ const OWNER_COMPUTER = 5;
 const OWNER_HUMAN = 6;
 /** How many of a simulation's events the list shows before it says how many more there were. */
 const SIMULATE_ROWS = 200;
+/** A build's log as a person reads it: without the lines the lowering says for a run in the lifted game. */
+const withoutMachineLines = (text: string) => text.split("\n").filter((l) => !isMachineLine(l)).join("\n");
 /** The most lines with a fault the Simulate view lists. */
 const SIMULATE_FAULTS = 20;
 
@@ -119,6 +132,18 @@ const STATUS_MS = 10_000;
 const NOTICE_MS = 8_000;
 /** When running every test takes longer than this, only the open file's run by themselves after a compile. */
 const TESTS_SLOW_MS = 2_000;
+/**
+ * What Remastered was seen to run in a frame with no effect: the dial (probes/frame-cost.ts, played 2026-10-16) ran
+ * 500 thousand conditions and actions a frame with none; from a million the screen flickers, enough to distract,
+ * and at 5 million the game slows. That was a fast computer (Ryzen 9 7900X): a slower one reaches each sooner.
+ */
+const COST_SEEN = 500_000;
+/** A line that ran this many conditions and actions in one frame of a test in the game says so beside it: 2% of COST_SEEN. */
+const COST_HINT = 10_000;
+/** Frames the map is played with nobody at it when an EUD error is looked up, before the tests: two minutes of game time at Fastest. */
+const EUD_TRACE_FRAMES = 3_000;
+/** The costliest lines a test's results name. */
+const COST_LINES = 3;
 /** The key the shortcuts are written with. */
 const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl";
 
@@ -133,7 +158,7 @@ const STYLE = `${SHELL_STYLE}
 .tsd .tsd-settings p { margin: 0 0 8px; color: var(--text-dim); line-height: 1.45; }
 .tsd .tsd-settings .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .tsd .tsd-settings input { width: 110px; padding: 2px 6px; font: inherit; font-family: var(--font-mono); color: var(--text); background: var(--bg-1); border: 1px solid var(--border); border-radius: 2px; }
-.tsd .tsd-settings input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+.tsd .tsd-settings input:focus { outline: 1px solid var(--teal); outline-offset: -1px; }
 .tsd .tsd-settings button { padding: 2px 8px; font: inherit; color: var(--text); background: var(--bg-3); border: 1px solid var(--border); border-radius: 2px; cursor: pointer; }
 .tsd .tsd-settings button:disabled { opacity: 0.5; cursor: default; }
 .tsd .tsd-settings .now { color: var(--text-faint); }
@@ -149,9 +174,9 @@ const STYLE = `${SHELL_STYLE}
 .tsd .tsd-output { margin: 0; padding: 4px 20px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-dim); }
 .tsd .tsd-list li.tsd-warning .tsd-i { color: var(--warn); }
 .tsd .tsd-rows .tsd-empty { padding: 6px 12px 6px 20px; color: var(--text-faint); white-space: normal; line-height: 1.45; cursor: default; }
-.tsd .tsd-test-passed { color: var(--ok); }
+.tsd .tsd-test-passed, .tsd .tsd-list .tsd-i.tsd-test-passed { color: var(--ok); }
 .tsd .tsd-test-failed { color: var(--danger); }
-.tsd .tsd-test-none, .tsd .tsd-test-skipped { color: var(--text-faint); }
+.tsd .tsd-test-none, .tsd .tsd-test-skipped, .tsd .tsd-list .tsd-i.tsd-test-none, .tsd .tsd-list .tsd-i.tsd-test-skipped { color: var(--text-faint); }
 .${TEST_MARK_CLASS} { cursor: pointer; font: normal normal normal 14px/18px codicon; text-align: center; color: var(--text-faint); }
 .${TEST_MARK_CLASS}::before { content: "\\eabc"; }
 .${TEST_MARK_CLASS}-passed { color: var(--ok); }
@@ -160,8 +185,11 @@ const STYLE = `${SHELL_STYLE}
 .${TEST_MARK_CLASS}-failed::before { content: "\\ea87"; }
 .${TEST_MARK_CLASS}-skipped::before { content: "\\eabd"; }
 .${TEST_MARK_CLASS}-note { color: var(--danger); font-style: italic; opacity: 0.9; }
+.tsd .tsd-list li.tsd-cost { align-items: center; }
+.tsd .tsd-cost-graph { flex: 1 1 auto; min-width: 0; max-width: 480px; height: 36px; }
+.tsd .tsd-cost-graph path { fill: var(--teal); fill-opacity: 0.35; stroke: var(--teal); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 .${BUILD_TIME_CLASS} { text-decoration: underline dotted rgba(153, 162, 179, 0.55); text-underline-offset: 3px; }
-`;
+${DEBUG_STYLE}`;
 
 /** "P1", "all players", "Force 2", "P1, P2" — who a program runs for. */
 function ownerLabel(p: { owners: number[] }, t: Translate): string {
@@ -324,9 +352,11 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const moreAction = shell.action({ icon: "ellipsis", title: t("More actions…"), run: () => shell.menu(moreAction.element, [
     menuItem("save"),
     null,
-    ...["import", "newFile", "newFolder"].map(menuItem),
+    ...["import", "newFile", "newFolder", "importVideo"].map(menuItem),
     null,
-    ...["runTests", "runFailedTests"].map(menuItem),
+    ...["runTests", "runFailedTests", "runTestsInGame"].map(menuItem),
+    null,
+    menuItem("findEudError"),
     null,
     ...["problems", "output", "panel", "explorer", "testing"].map(menuItem),
     null,
@@ -339,6 +369,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   shell.section({ title: t("Script"), actions: [
     { icon: "new-file", title: t("New file…: main.ts imports it with import { … } from \"./name\""), run: () => { void newFile(); } },
     { icon: "new-folder", title: t("New folder…: a folder is there while a file is in it, so its first file is asked for next"), run: () => { void newFolder(); } },
+    { icon: "device-camera-video", title: t("Import Video…: a video or a picture as a file of the script, for fog.light to draw"), run: () => { void importVideo(); } },
   ] }).body.append(fileList);
   const programList = el("ul", { className: "tsd-rows" });
   const programsSection = shell.section({ title: t("Programs") });
@@ -355,9 +386,17 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const testingView = shell.sidebarView({ id: "testing", title: t("Testing"), icon: "beaker", actions: [
     { icon: "run-all", title: t("Run all tests"), run: () => { void runTests(); } },
     { icon: "run-errors", title: t("Run the tests that failed"), run: () => { void runFailedTests(); } },
+    { icon: "target", title: t("Run all tests in the game (the lifted game of the scm-sim plugin): each gets a second mark"), run: () => { void runTestsInGame(); } },
     { icon: "filter", title: t("Show only the tests that fail"), run: () => { onlyFailing = !onlyFailing; renderTesting(); } },
   ] });
   testingView.body.append(testingList);
+  /** The debugger in the game (TrigScript 4, A5): the Debug view, its marks in the editor, its values beside the lines. */
+  const debug = new Debugger({
+    t, el, shell,
+    reveal: (file, line) => { if (!editor) return; openFile(file); editor.editor.revealLineInCenterIfOutsideViewport(line); },
+    changed: () => { editor?.setDebug(debug.marks()); refreshLineHints(); },
+    setStatus: (kind, text, timeout) => setStatus(kind, text, timeout),
+  });
 
   /**
    * The map's script settings (`script.ts#ScriptSettings`): kept in the map beside the script, because the built map
@@ -432,6 +471,25 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /** Running every test took more than `TESTS_SLOW_MS` the last time. */
   let testsSlow = false;
   let testsRunning = false;
+  /**
+   * The tests' last results in the lifted game (TrigScript 4, A2), by id: a mark of their own beside the simulator's,
+   * kept until the next run in the game. The game is the judge: where the two differ, the simulator is wrong.
+   */
+  let gameResults = new Map<string, TestResult>();
+  /**
+   * The files as they were when the game counted what each line costs (TrigScript 4, A4): a line's count is shown
+   * beside it only while its file is still that text, since an edit moves the lines.
+   */
+  let costFiles: ScriptFiles | null = null;
+  /** The text of `dist/gametest.js`, fetched once. */
+  let gametest: Promise<string> | null = null;
+  /** What Remastered is known to allow, fetched the first time an EUD error is looked up. */
+  let allowlist: Promise<Allowlist> | null = null;
+  /**
+   * The last EUD error looked up (Find EUD Error), and the files as they were when the game was traced: its lines are
+   * marked only while their file is still that text, as a line's cost is.
+   */
+  let eudFound: { files: ScriptFiles; answer: EudErrorAnswer } | null = null;
   /** The files with a tab, in the order they were opened. */
   let openTabs: string[] = [normalizePath(options.file ?? ENTRY_FILE)];
   /** What Apply, Play and the builds of the programs reported, oldest first. */
@@ -489,11 +547,12 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   const where = (s: TriggerSource | null | undefined) => (s ? (Object.keys(files).length > 1 ? `${s.file}:${s.line}` : t("Ln {line}", { line: s.line })) : "?");
 
-  /** Show a file, in a tab of its own. */
+  /** Show a file, in a tab of its own; a video in a viewer of its own. */
   const openFile = (path: string) => {
     if (!editor) return;
     const p = normalizePath(path);
     if (files[p] === undefined) return;
+    if (isMediaFile(p)) { showVideo(api, t, p, files[p]); return; }
     if (!openTabs.includes(p)) openTabs.push(p);
     editor.show(p);
     renderFiles();
@@ -539,6 +598,17 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
   // Below the last row is the top of the script.
   acceptDrops(fileList, "");
+  // A video or a picture dropped in from outside: Import Video… with it.
+  const fromOutside = (e: DragEvent) => !dragged && !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  fileList.addEventListener("dragover", (e) => { if (!fromOutside(e)) return; e.preventDefault(); fileList.classList.add("tsd-drop"); });
+  fileList.addEventListener("dragleave", () => fileList.classList.remove("tsd-drop"));
+  fileList.addEventListener("drop", (e) => {
+    fileList.classList.remove("tsd-drop");
+    if (!fromOutside(e)) return;
+    e.preventDefault();
+    const file = [...(e.dataTransfer?.files ?? [])].find((f) => /^(video|image)\//.test(f.type) || /\.(mkv|webm|mp4|mov|gif)$/i.test(f.name));
+    if (file) void importVideo(file);
+  });
 
   const renderFiles = () => {
     const active = editor?.active() ?? openTabs[0] ?? ENTRY_FILE;
@@ -588,8 +658,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         }
         const path = node.path;
         const fixed = path === ENTRY_FILE;
-        const row = el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: path, onClick: () => openFile(path) },
-          el("span", { className: "tsd-ts" }, "TS"),
+        const row = el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: isMediaFile(path) ? `${path}\n${describeVideo(files[path])}` : path, onClick: () => openFile(path) },
+          isMediaFile(path) ? shell.icon("device-camera-video") : el("span", { className: "tsd-ts" }, "TS"),
           el("span", { className: broken.has(path) ? "tsd-name tsd-problem" : "tsd-name" }, node.name),
           el("span", { className: "tsd-row-actions" },
             !fixed ? shell.iconButton({ icon: "edit", title: t("Rename or move…"), run: () => { void renameFile(path); } }).element : undefined,
@@ -638,8 +708,9 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   const renderProblems = () => {
     // A failing test and an only left in are warnings: said here, and no obstacle to a build unless the map's settings make one of them.
     const warnings = warningsOf(tests, t);
-    problemsView.badge(diagnostics.length + warnings.length);
-    if (diagnostics.length + warnings.length === 0) { problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? t("No problems have been detected in the script.") : t("Checking…"))); return; }
+    const eud = eudLines(), found = eudFound?.answer;
+    problemsView.badge(diagnostics.length + warnings.length + eud.length);
+    if (diagnostics.length + warnings.length + eud.length === 0) { problemsView.body.replaceChildren(el("div", { className: "tsd-empty" }, !ready ? "" : result ? t("No problems have been detected in the script.") : t("Checking…"))); return; }
     problemsView.body.replaceChildren(el("ul", { className: "tsd-list" },
       ...diagnostics.map((d) =>
         el("li", { title: d.message, onClick: () => goTo(d.file, d.line, d.column) },
@@ -648,6 +719,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
           el("span", { className: "src" }, d.source === "typescript" ? t("types") : d.source === "script" ? t("script") : t("compiler")),
           el("span", { className: "where" }, t("{file} [Ln {line}, Col {column}]", { file: d.file, line: d.line, column: d.column })),
         )),
+      ...(found ? eud.map((l) =>
+        el("li", { title: eudLineNote(found, l), onClick: () => goTo(l.file, l.line) },
+          shell.icon("error"),
+          el("span", { className: "msg" }, `EUD ERROR ${found.code}: ${found.place}`),
+          el("span", { className: "src" }, t("game")),
+          el("span", { className: "where" }, t("{file} [Ln {line}]", { file: l.file, line: l.line })),
+        )) : []),
       ...warnings.map((w) =>
         el("li", { className: "tsd-warning", title: w.message, onClick: () => goTo(w.file, w.line) },
           shell.icon("warning"),
@@ -692,10 +770,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         };
         const row = el("li", { className: node.kind === "test" && node.info.id === chosenTest ? "tsd-row tsd-active" : "tsd-row", title: result?.message ?? name, onClick: open },
           stateIcon(state),
+          // (The game's mark next to the simulator's, where a narrow sidebar still shows it.)
+          node.kind === "test" && gameResults.has(node.info.id) ? gameMark(gameResults.get(node.info.id)!, result) : undefined,
           el("span", { className: state === "failed" ? "tsd-name tsd-problem" : "tsd-name" }, name),
           result && result.status !== "skipped" ? el("span", { className: "tsd-about" }, t("{ms} ms", { ms: result.ms })) : undefined,
           el("span", { className: "tsd-row-actions" },
             shell.iconButton({ icon: "play", title: node.kind === "test" ? t("Run this test") : t("Run these tests"), run: () => { void runTests(node.kind === "file" ? { files: [node.path] } : { ids }); } }).element,
+            node.kind === "test" ? shell.iconButton({ icon: "debug-alt", title: t("Debug this test in the game: run it once with everything it did written down, then walk it forwards and back"), run: () => { void debugTest(node.info.id); } }).element : undefined,
           ),
         );
         row.style.paddingLeft = `${10 + depth * 12}px`;
@@ -706,6 +787,292 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     walk(testTree(tests.list), 0);
     if (rows.length === 0) rows.push(el("li", { className: "tsd-empty" }, t("No test fails.")));
     testingList.replaceChildren(...rows);
+  };
+
+  /** A test's mark from the game, the second beside the simulator's: its state, ringed when the two disagree, and in words on hover. */
+  const gameMark = (game: TestResult, simulated: TestResult | undefined) => {
+    const state: TestStateName = game.status === "failed" ? "failed" : game.status === "passed" ? "passed" : "skipped";
+    const differ = simulated && simulated.status !== "skipped" && game.status !== "skipped" && simulated.status !== game.status;
+    return el("span", { className: differ ? "tsd-game tsd-game-differs" : "tsd-game", title: differ
+      ? t("In the game: {status}. The simulator and the game disagree: the game is right, so the simulator is wrong here (or the test leans on something it does differently).", { status: game.status === "failed" ? game.message ?? t("failed") : t("passed") })
+      : game.status === "failed" ? t("In the game: {message}", { message: game.message ?? t("failed") }) : game.status === "skipped" ? game.message ?? t("In the game: not run") : t("In the game: passed") },
+    stateIcon(state));
+  };
+
+  /**
+   * The tests run in the lifted game (TrigScript 4, A2): the map built as Save builds it, handed with the script's
+   * JavaScript and `dist/gametest.js` to the scm-sim plugin's engine page, which runs each test beside the game. The
+   * simulator runs them too, so that each test has both marks.
+   */
+  /**
+   * What a run in the game needs, made ready: the engine there and willing, the script applied and compiled, the map
+   * built as Save builds it and exported whole (a bare .chk has no room for what the build steps make, so the engine's
+   * page reads the scenario out of it), with the build's maps of variables and triggers from its log, and the text of
+   * `dist/gametest.js`. Null, the reason said in the status bar, when something is missing.
+   */
+  const prepareInGame = async (filter: Pick<TestRunOptions, "files" | "ids">, ask: "tests" | "debug" | "trace") => {
+    const engine = svc.engine();
+    if (!engine?.present || !engine.test || (ask === "debug" && !engine.debug)) {
+      setStatus("error", ask === "debug"
+        ? t("Debugging in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install, update or turn it on under Plugins ▸ Manage Plugins….")
+        : t("Running tests in the game needs the scm-sim plugin (0.11 or newer) on scmjs.dev: install or turn it on under Plugins ▸ Manage Plugins…."));
+      return null;
+    }
+    const notRun = (message: string) => (ask === "debug" ? t("Not debugged in the game: {message}", { message }) : ask === "trace" ? t("Not looked up in the game: {message}", { message }) : t("Not run in the game: {message}", { message }));
+    const status = await engine.status();
+    if (!status.available) { setStatus("error", notRun(status.reason ?? t("the engine cannot run a game now"))); return null; }
+    if (!status.tests) { setStatus("error", t("Not run in the game: the engine's page is from before tests in the game. Reload the editor and try again.")); return null; }
+    if (ask === "debug" && !status.debug) { setStatus("error", t("Not debugged: the engine's page is from before the debugger. Reload the editor and try again.")); return null; }
+    if (!(await build()) || cancelled) return null;
+    const a = await compileNow({ world: svc.world(), ...filter });
+    if (!a || cancelled) return null;
+    if (!a.compiled.ok) { setStatus("error", ask === "trace" ? t("Not looked up: {n, plural, one {# problem} other {# problems}} in the script.", { n: a.compiled.diagnostics.length }) : t("Tests not run: {n, plural, one {# problem} other {# problems}} in the script.", { n: a.compiled.diagnostics.length }), NOTICE_MS); shell.showPanel("problems"); return null; }
+    // (An EUD error is looked up in the map played with nobody at it, then the tests when there are any.)
+    if (!a.compiled.modules && ask !== "trace") { setStatus("info", t("The script has no tests.")); return null; }
+    if (!a.compiled.ir.length) {
+      setStatus("info", ask === "trace"
+        ? t("The script has no program, so nothing of it is built into the map and no line of it can touch the game's memory: an EUD error came from the map's other triggers.")
+        : t("Tests run in the game only for a script with a program: without one, nothing of the script is built into the map."));
+      return null;
+    }
+    const names = svc.names()?.names;
+    if (!names) { setStatus("error", t("No map is open.")); return null; }
+    setStatus("busy", t("Building the map…"));
+    const built = { ...files };
+    // (The build says in its log where it put the programs' variables, for sim.program().)
+    const logged: string[] = [];
+    const heard = svc.onBuild((e) => { if (e.kind === "log") logged.push(e.line); else if (e.kind === "done" && !logged.length) logged.push(...e.log.split("\n")); });
+    const file = await svc.withVariableMap(() => api.document.export({ format: "scx" })).finally(() => heard.dispose());
+    if (!file || cancelled) { if (!file) setStatus("error", t("No map is open.")); return null; }
+    const variables = readVariableMap(logged), triggers = readTriggerMap(logged);
+    gametest ??= fetch(gametestUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`gametest.js: ${r.status}`); return r.text(); });
+    const module = await gametest.catch((err) => { gametest = null; throw err; });
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return { engine, status, a, names, variables, triggers, module, bytes, built };
+  };
+
+  const runTestsInGame = async (filter: Pick<TestRunOptions, "files" | "ids"> = {}) => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    testsRunning = true;
+    renderTesting();
+    try {
+      const ready = await prepareInGame(filter, "tests");
+      if (!ready || cancelled) return;
+      const { engine, status, a, names, variables, triggers, module, bytes } = ready;
+      setStatus("busy", t("Running the tests in the game…"));
+      const report = await engine.test!(bytes, module, { modules: a.compiled.modules, names, files: filter.files, ids: filter.ids, variables, triggers }) as TestReport & { error?: string };
+      if (cancelled) return;
+      if (report.error) { setStatus("error", t("Not run in the game: {message}", { message: report.error })); return; }
+      // A test of several players (TrigScript 4, A3): a copy of the game for each player, kept in step, where the
+      // engine's page can run them; where it cannot, the test is marked as not run, and why.
+      const several = new Map<string, { players: number[]; ids: string[] }>();
+      for (const x of tests.list) {
+        if (x.kind !== "test" || !x.players || (filter.files && !filter.files.includes(x.file)) || (filter.ids && !filter.ids.some((id) => x.id === id || x.id.startsWith(`${id} > `)))) continue;
+        const key = x.players.join(","), g = several.get(key) ?? { players: x.players, ids: [] };
+        g.ids.push(x.id);
+        several.set(key, g);
+      }
+      const notRun: TestResult[] = [];
+      if (several.size && (!engine.testCopies || !status.copies)) {
+        const why = t("Not run: a test of several players runs a copy of the game for each, which needs memory shared between them. This browser does not allow that on the engine's page (Chrome and Edge from version 137 do).");
+        for (const g of several.values()) for (const id of g.ids) notRun.push({ id, status: "skipped", message: why, printed: [], events: [], frames: 0, ms: 0 });
+      } else for (const g of several.values()) {
+        setStatus("busy", t("Running a test of {n} players in the game: a copy of the game for each…", { n: g.players.length }));
+        const out = await engine.testCopies!(bytes, module, { modules: a.compiled.modules, names, ids: g.ids, variables, triggers }, { players: g.players, triggers });
+        if (cancelled) return;
+        report.results.push(...mergeCopies(g.ids, out));
+      }
+      const ran = report.results.filter((x) => x.status !== "skipped");
+      const asked = new Set(ran.map((x) => x.id));
+      gameResults = new Map([...gameResults].filter(([id]) => !asked.has(id) && tests.list.some((x) => x.id === id)));
+      for (const r of ran) gameResults.set(r.id, r);
+      for (const r of notRun) gameResults.set(r.id, r);
+      costFiles = { ...files };
+      refreshLineHints();
+      const failed = ran.filter((x) => x.status === "failed");
+      const differ = ran.filter((x) => { const s = tests.results.get(x.id); return s && s.status !== "skipped" && s.status !== x.status; });
+      if (failed.length) { chosenTest = failed[0].id; shell.showPanel("tests"); }
+      const said = t("In the game: {passed} of {n, plural, one {# test} other {# tests}} passed.", { passed: ran.length - failed.length, n: ran.length });
+      const whole = notRun.length ? `${said} ${t("{n, plural, one {# test of several players was} other {# tests of several players were}} not run: this browser cannot run copies of the game.", { n: notRun.length })}` : said;
+      setStatus(failed.length || differ.length ? "error" : notRun.length ? "info" : "ok", differ.length ? `${whole} ${t("The simulator disagrees on {n, plural, one {# test} other {# tests}}.", { n: differ.length })}` : whole, NOTICE_MS);
+    } catch (err) {
+      setStatus("error", t("Not run in the game: {message}", { message: (err as Error).message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
+  };
+
+  /**
+   * One test debugged in the game (TrigScript 4, A5): built as for a run in the game, then run once by the engine's
+   * page with everything it did written down; the Debug view walks that record. The game stays with the page for
+   * pictures of the run's frames, drawn by a view of the scm-sim plugin's where this copy of the game may draw.
+   */
+  const debugTest = async (id: string) => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    const info = tests.list.find((x) => x.id === id);
+    if (!info || info.kind !== "test") { setStatus("info", t("There is no test at the cursor.")); return; }
+    if (info.players) { setStatus("info", t("“{test}” is a test of several players: the debugger runs one game, and a test of several players runs as a copy of the game for each. Not yet.", { test: info.name })); return; }
+    testsRunning = true;
+    renderTesting();
+    try {
+      const got = await prepareInGame({ ids: [id] }, "debug");
+      if (!got || cancelled) return;
+      const { engine, a, names, variables, triggers, module, bytes, built } = got;
+      setStatus("busy", t("Running “{test}” in the game, writing down everything it does…", { test: info.name }));
+      const session = await engine.debug!(bytes, module, { modules: a.compiled.modules, names, variables, triggers, test: id });
+      if (cancelled) { session.close(); return; }
+      const recording = session.recording as DebugRecording;
+      // A view to draw the pictures in, where the plugin has one for a debugged run.
+      let view: DebugGameView | string | null = null;
+      if (engine.view) {
+        try {
+          const host = debug.gameHost();
+          const v = engine.view(host) as ScmSimDebugView;
+          if (typeof v.debug === "function" && typeof v.show === "function") {
+            const shown = await v.debug(bytes).then(() => null, (err: Error) => err.message);
+            if (shown) { v.dispose(); view = shown; }
+            else {
+              v.onError?.((message) => setStatus("error", t("No picture of the game: {message}", { message })));
+              view = { element: host, show: (p) => v.show!(p), dispose: () => v.dispose() };
+            }
+          } else { v.dispose(); view = t("The scm-sim plugin's view is from before the debugger: update the plugin for a picture of the game."); }
+        } catch (err) { view = (err as Error).message; }
+      }
+      debug.start({ recording, variables, pictures: session, view, files: built });
+      debug.setFiles(files);
+      const r = recording.result;
+      setStatus(r.status === "failed" ? "error" : "ok", r.status === "failed"
+        ? t("Debugging “{test}”: it failed in the game at frame {frame}. The debugger stands there; step back to see how it came to that.", { test: info.name, frame: recording.first + recording.frames - 1 })
+        : t("Debugging “{test}”: {frames, plural, one {# frame} other {# frames}} in the game, recorded in {ms} ms.", { test: info.name, frames: recording.frames, ms: recording.ms }), NOTICE_MS);
+    } catch (err) {
+      setStatus("error", t("Not debugged in the game: {message}", { message: (err as Error).message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
+  };
+
+  const debugTestAtCursor = () => {
+    const at = editor?.cursor();
+    const here = at ? tests.list.filter((x) => x.kind === "test" && x.file === normalizePath(at.file) && x.line <= at.line).sort((a, b) => b.line - a.line)[0] : undefined;
+    if (!here) { setStatus("info", t("There is no test at the cursor.")); return; }
+    void debugTest(here.id);
+  };
+
+  /**
+   * What a frame costs, beside the line (TrigScript 4, A4): after a run in the game, each line that ran at least
+   * COST_HINT conditions and actions in one frame of some test says how many at the most, while its file is as it
+   * was then.
+   */
+  const costHints = (): LineHint[] => {
+    if (!costFiles) return [];
+    const seen = costFiles;
+    const costs = [...gameResults.values()].flatMap((r) => (r.cost ? [{ id: r.id, cost: r.cost }] : []));
+    return costByLine(costs)
+      .filter((l) => l.peak >= COST_HINT && seen[normalizePath(l.file)] === files[normalizePath(l.file)])
+      .map((l) => ({
+        file: l.file, line: l.line,
+        label: t("{n} a frame", { n: shortCount(l.peak) }),
+        note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran 500 thousand a frame with no visible effect; its screen flickers from a million and the game slows at 5 million. This is {share} of the 500 thousand.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames, share: shareOf(l.peak) }),
+      }));
+  };
+
+  /** The lines of the last EUD error looked up, while their file is the text that was traced. */
+  const eudLines = () => {
+    if (!eudFound) return [];
+    const seen = eudFound.files;
+    return eudFound.answer.lines.filter((l) => seen[normalizePath(l.file)] === files[normalizePath(l.file)]);
+  };
+  /** What a line did to the address, and what Remastered does with that, in a sentence. */
+  const eudLineNote = (a: EudErrorAnswer, l: EudErrorAnswer["lines"][number]) => {
+    const did = l.read && l.write ? t("reads and writes") : l.write ? t("writes") : t("reads");
+    const verdict = l.write ? a.write : a.read;
+    const said = verdict === "ends" ? t("Remastered ends the game on this.") : verdict === "ignored" ? t("Remastered does nothing with this.") : verdict === "allowed" ? t("Remastered was seen to allow this, so the game that ended did something else to it.") : t("This has not been seen in Remastered.");
+    return l.match === "exact"
+      ? t("In the game, this line {did} {place} ({times, plural, one {# time} other {# times}}). {said}", { did, place: a.place, times: l.times, said })
+      : t("In the game, this line {did} the same field of another unit ({times, plural, one {# time} other {# times}}): a unit sits elsewhere in the table from one game to the next. {said}", { did, times: l.times, said });
+  };
+  const eudHints = (): LineHint[] => {
+    const a = eudFound?.answer;
+    return a ? eudLines().map((l) => ({ file: l.file, line: l.line, label: `EUD ERROR ${a.code}`, note: eudLineNote(a, l) })) : [];
+  };
+
+  /**
+   * An "EUD ERROR: 0x…" Remastered showed, back to the lines of the script (TrigScript 4): the code is the address
+   * the trigger named, bits inverted (R0). The map is built as Save builds it and played in the lifted game with
+   * nobody at it, then the tests run, every EUD access written down under its line; the lines that touched the
+   * address are marked, and what lies there is said.
+   */
+  const lookUpEudError = async () => {
+    if (!editor || testsRunning || building || testing || !ready) return;
+    const answer = await api.ui.prompt(t("The code Remastered showed when the game ended (EUD ERROR: 0x…):"), { title: "TrigScript", value: "", placeholder: "EUD ERROR: 0xFFA632E3" });
+    if (answer === null || cancelled) return;
+    const address = addressOfEudError(answer);
+    if (address === null) { setStatus("error", t("“{text}” is not an EUD error code: Remastered shows one as EUD ERROR: 0x and eight digits.", { text: answer.trim() })); return; }
+    testsRunning = true;
+    renderTesting();
+    try {
+      const got = await prepareInGame({}, "trace");
+      if (!got || cancelled) return;
+      const { engine, a, names, variables, triggers, module, bytes, built } = got;
+      if (!triggers) { setStatus("error", t("Not looked up: the build did not say where its triggers are. Update the eudplib plugin.")); return; }
+      setStatus("busy", t("Playing the map in the game, writing down what each line reads and writes…"));
+      allowlist ??= fetch(allowlistUrl(svc.dist())).then((r) => { if (!r.ok) throw new Error(`allowlist.json: ${r.status}`); return r.json() as Promise<Allowlist>; });
+      const [report, list] = await Promise.all([
+        engine.test!(bytes, module, { modules: a.compiled.modules ?? [], names, variables, triggers, trace: true, play: EUD_TRACE_FRAMES }) as Promise<GameTestReport>,
+        allowlist.catch(() => { allowlist = null; return undefined; }),
+      ]);
+      if (cancelled) return;
+      if (report.error) { setStatus("error", t("Not looked up in the game: {message}", { message: report.error })); return; }
+      if (!report.trace) { setStatus("error", t("Not looked up in the game: {message}", { message: report.traceError ?? t("the engine's page sent back no trace") })); return; }
+      const found = findEudError(address, report.trace.rows, list);
+      eudFound = { files: built, answer: found };
+      log(t("EUD ERROR {code}: {place}, at 0x{address}.", { code: found.code, place: found.place, address: found.address.toString(16) }));
+      for (const l of found.lines) log(`  ${l.file}:${l.line} — ${eudLineNote(found, l)}`, false);
+      const ran = report.results.filter((r) => r.status !== "skipped").length;
+      const where = found.lines.slice(0, 3).map((l) => `${l.file}:${l.line}`).join(", ") + (found.lines.length > 3 ? "…" : "");
+      const exact = found.lines.some((l) => l.match === "exact");
+      const head = t("EUD ERROR {code} is {place}.", { code: found.code, place: found.place });
+      const said = found.lines.length
+        ? exact
+          ? t("{n, plural, one {# line touched it} other {# lines touched it}} in the game: {where}.", { n: found.lines.length, where })
+          : t("No line touched that very unit, but {n, plural, one {# line touches} other {# lines touch}} the same field of other units, and a unit sits elsewhere in the table from one game to the next: {where}.", { n: found.lines.length, where })
+        : found.unlined.exact + found.unlined.field
+          ? t("No line of the script touched it: eudplib's own work did ({n, plural, one {# time} other {# times}}).", { n: found.unlined.exact + found.unlined.field })
+          : ran
+            ? t("Nothing touched it in {frames} frames of the map played with nobody at it, nor in {tests, plural, one {# test} other {# tests}}: the line that did is one this run did not reach. A test that gets there will find it.", { frames: EUD_TRACE_FRAMES.toLocaleString(), tests: ran })
+            : t("Nothing touched it in {frames} frames of the map played with nobody at it: the line that did is one this run did not reach. A test that gets there will find it.", { frames: EUD_TRACE_FRAMES.toLocaleString() });
+      setStatus(found.lines.length ? "error" : "info", `${head} ${said}`);
+      const first = found.lines[0];
+      if (first) goTo(first.file, first.line);
+      refreshLineHints();
+    } catch (err) {
+      setStatus("error", t("Not looked up in the game: {message}", { message: (err as Error).message }));
+    } finally {
+      testsRunning = false;
+      render();
+    }
+  };
+
+  /** "0.2%", "31%": a count as a share of what Remastered was seen to run in a frame. */
+  const shareOf = (n: number) => `${(n / COST_SEEN * 100).toFixed(n < COST_SEEN / 10 ? 1 : 0)}%`;
+
+  /** The test's conditions and actions a frame in the game, as a small graph; eudplib's own work is not in it. */
+  const costGraph = (cost: TestCost): Element => {
+    const NS = "http://www.w3.org/2000/svg", n = Math.max(cost.perFrame.length, 2), top = Math.max(cost.peak, 1);
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "tsd-cost-graph");
+    svg.setAttribute("viewBox", `0 0 ${n - 1} 100`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    const points = cost.perFrame.map((v, i) => `${i},${(100 - (v / top) * 96).toFixed(2)}`);
+    const area = document.createElementNS(NS, "path");
+    area.setAttribute("d", `M0,100 L${points.join(" L")} L${cost.perFrame.length - 1},100 Z`);
+    svg.append(area);
+    const title = document.createElementNS(NS, "title");
+    title.textContent = t("Conditions and actions a frame, frame {from} to {to}: {peak} at the most, at frame {frame}", { from: cost.from, to: cost.from + cost.perFrame.length - 1, peak: cost.peak.toLocaleString(), frame: cost.peakFrame });
+    svg.append(title);
+    return svg;
   };
 
   /** Test Results: the chosen test's message, what it printed, and what happened by frame, each a link to its line. */
@@ -727,6 +1094,30 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         el("span", { className: "frame" }, t("failed")), el("span", { className: "msg" }, r.message ?? t("failed")), el("span", { className: "where" }, where({ file: at.file, line: at.line }))));
       if (r.expected !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("expected")), el("span", { className: "msg" }, r.expected)));
       if (r.actual !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("got")), el("span", { className: "msg" }, r.actual)));
+    }
+    const game = gameResults.get(info.id);
+    if (game && game.status !== "skipped") {
+      const gat = game.at ?? { file: info.file, line: info.line };
+      list.append(el("li", { className: game.status === "failed" ? "tsd-fault" : "tsd-plain", title: t("Go to where it failed in the game"), onClick: () => goTo(gat.file, gat.line, gat.column ?? 1) },
+        el("span", { className: "frame" }, t("in the game")),
+        el("span", { className: "msg" }, game.status === "failed" ? game.message ?? t("failed") : t("passed")),
+        el("span", { className: "where" }, game.status === "failed" ? where({ file: gat.file, line: gat.line }) : t("{frames, plural, one {# frame} other {# frames}} · {ms} ms", { frames: game.frames, ms: game.ms }))));
+      if (game.status === "failed" && game.actual !== undefined) list.append(el("li", { className: "tsd-plain" }, el("span", { className: "frame" }, t("got")), el("span", { className: "msg" }, game.actual)));
+      // (What its frames cost in the game, and the lines that cost the most.)
+      const cost = game.cost;
+      if (cost) {
+        const ran = cost.perFrame.filter((x) => x > 0), average = ran.length ? Math.round(ran.reduce((a, b) => a + b, 0) / ran.length) : 0;
+        const other = cost.other.slice(3), runtime = other.length ? Math.round(other.reduce((a, b) => a + b, 0) / other.length) : 0;
+        list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game: the script's own triggers and the variables they go through. eudplib's work at the top of each frame is apart: {n} a frame.", { n: runtime.toLocaleString() }) },
+          el("span", { className: "frame" }, t("cost")),
+          el("span", { className: "msg" }, t("{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), frame: cost.peakFrame, share: shareOf(cost.peak) }))));
+        if (cost.perFrame.length > 1) list.append(el("li", { className: "tsd-plain tsd-cost" }, el("span", { className: "frame" }), costGraph(cost)));
+        for (const l of cost.lines.slice(0, COST_LINES)) {
+          list.append(el("li", { title: t("Go to the line"), onClick: () => goTo(l.file, l.line) },
+            el("span", { className: "frame" }), el("span", { className: "msg note" }, t("{peak} a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}", { peak: l.peak.toLocaleString(), frame: l.peakFrame, frames: l.frames })),
+            el("span", { className: "where" }, where({ file: l.file, line: l.line }))));
+        }
+      }
     }
     // The same line several times over — to each of eight players, say — is one row that says how often.
     const printed: { line: string; times: number }[] = [];
@@ -1105,14 +1496,15 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       if (failing) log(t("{n, plural, one {A test fails} other {# tests fail}}: see the Testing view.", { n: failing }), false);
     } else if (e.kind === "log") {
       streamed++;
-      log(e.line, false);
+      // (What the lowering says for a run in the lifted game is not for a person to read.)
+      if (!isMachineLine(e.line)) log(e.line, false);
     } else if (e.kind === "done") {
-      if (!streamed && e.log) log(e.log, false);
+      if (!streamed && e.log) log(withoutMachineLines(e.log), false);
       const kb = Math.round(e.chkBytes / 1024), seconds = (e.ms / 1000).toFixed(1);
       buildState = { kind: "ok", text: t("Built {kb} KB · {seconds} s", { kb, seconds }), of: buildState?.of ?? files };
       log(t("Built: {kb} KB of scenario in {seconds} s", { kb, seconds }));
     } else {
-      if (!streamed && e.log) log(e.log, false);
+      if (!streamed && e.log) log(withoutMachineLines(e.log), false);
       // Save goes on without the step: the file is the map and its script, with no programs in it.
       const saved = e.purpose === "save";
       buildState = {
@@ -1287,13 +1679,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /* ── Files ── */
 
   /** A file's name asked for until it can be one. Inside `folder` the answer is a name in it (`boss.ts`, or `big/boss.ts` for a folder under it). */
-  const askName = async (message: string, value: string, folder = ""): Promise<string | null> => {
+  const askName = async (message: string, value: string, folder = "", ext = ".ts"): Promise<string | null> => {
     for (;;) {
       const answer = await api.ui.prompt(message, { title: "TrigScript", value, placeholder: "helpers.ts" });
       if (answer === null) return null;
       let name = normalizePath(answer.trim());
       if (name && folder) name = `${folder}/${name}`;
-      if (name && !/\.ts$/i.test(name)) name += ".ts";
+      if (name && !/\.(?:tsx?|video)$/i.test(name)) name += ext;
       if (!FILE_NAME.test(name) || name.split("/").some((p) => p === "." || p === "..")) { value = answer; message = t("A file name is letters, digits, _ - and ., folders with /, ending in .ts."); continue; }
       if (files[name] !== undefined) { value = answer; message = t("There is already a {name}.", { name }); continue; }
       return name;
@@ -1310,6 +1702,23 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     if (folder && collapsed.has(folder)) { const next = new Set(collapsed); next.delete(folder); setCollapsed(next); }
     editor.add(name, isTestFile(name) ? TEST_TEMPLATE : FILE_TEMPLATE);
     openFile(name);
+  };
+
+  /**
+   * Import Video…: a video becomes a .video file of the script, a picture a .ts file of its rows (`videoImport.ts`).
+   * A picture opens in a tab; a video says how a script imports it.
+   */
+  const importVideo = async (file?: File) => {
+    if (!editor) return;
+    const info = api.document.info();
+    const got = await importMedia(api, t, { mapWidth: info?.width ?? 128, mapHeight: info?.height ?? 128, taken: (p) => files[normalizePath(p)] !== undefined, file });
+    if (!got || !editor || cancelled) return;
+    editor.add(got.path, got.text);
+    if (got.kind === "image") { openFile(got.path); return; }
+    renderFiles();
+    const stem = (got.path.split("/").pop() ?? got.path).replace(/\.video$/i, "");
+    const name = stem.replace(/[^A-Za-z0-9]+(.)?/g, (_m, c: string | undefined) => (c ? c.toUpperCase() : "")).replace(/^[^A-Za-z_]+/, "") || "video";
+    setStatus("ok", t("{path} is in the script: import {name} from \"./{path}\"; then await fog.play(P1, {name}) plays it.", { path: got.path, name }));
   };
 
   /** An archive has no empty folder, so a folder is there while a file is in it: the folder's name, then its first file's. */
@@ -1362,7 +1771,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   const renameFile = async (path: string) => {
     if (!editor || path === ENTRY_FILE) return;
-    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path);
+    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path, "", isMediaFile(path) ? ".video" : ".ts");
     if (!name) return;
     moveTo(path, name);
   };
@@ -1435,12 +1844,25 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   /* ── Commands ── */
 
   /** Everything the workspace does, once: the keys, the More menu and Monaco's command palette are all read from here. */
-  interface Command { id: string; label: string; key?: { code: string; mod?: boolean; shift?: boolean }; context?: boolean; run(): void }
+  interface Command { id: string; label: string; key?: { code: string; mod?: boolean; shift?: boolean }; context?: boolean; run(): void; when?: () => boolean }
+  /** While a test is debugged, its keys come before the others (F5 continues rather than plays). */
+  const debugging = () => debug.active;
   const commands: Command[] = [
+    { id: "debugContinue", label: t("Debug: Continue"), key: { code: "F5" }, when: debugging, run: () => debug.continueForward() },
+    { id: "debugContinueBack", label: t("Debug: Continue Backwards"), key: { code: "F6" }, when: debugging, run: () => debug.continueBack() },
+    { id: "debugStep", label: t("Debug: On a Line"), key: { code: "F10" }, when: debugging, run: () => debug.stepForward() },
+    { id: "debugStepBack", label: t("Debug: Back a Line"), key: { code: "F10", shift: true }, when: debugging, run: () => debug.stepBack() },
+    { id: "debugFrame", label: t("Debug: On a Frame"), key: { code: "F11" }, when: debugging, run: () => debug.nextFrame() },
+    { id: "debugFrameBack", label: t("Debug: Back a Frame"), key: { code: "F11", shift: true }, when: debugging, run: () => debug.prevFrame() },
+    { id: "debugStop", label: t("Debug: Stop"), key: { code: "F5", shift: true }, when: debugging, run: () => debug.end() },
+    { id: "debugTestAtCursor", label: t("Debug Test at Cursor in the Game"), context: true, run: () => debugTestAtCursor() },
+    { id: "toggleBreakpoint", label: t("Toggle Breakpoint"), key: { code: "F9" }, run: () => { const at = editor?.cursor(); if (at) debug.toggleBreakpoint(normalizePath(at.file), at.line); } },
     // The editor's own Ctrl+S does not reach a map under a dialog, and a browser would offer to save the page.
     { id: "save", label: t("Save the Map"), key: { code: "KeyS", mod: true }, run: () => { void api.document.save(); } },
     { id: "test", label: t("Play the Map"), key: { code: "F5" }, run: () => { void test(); } },
     { id: "runTests", label: t("Run All Tests"), run: () => { void runTests(); } },
+    { id: "runTestsInGame", label: t("Run All Tests in the Game"), run: () => { void runTestsInGame(); } },
+    { id: "findEudError", label: t("Find an EUD Error…"), run: () => { void lookUpEudError(); } },
     { id: "runTestAtCursor", label: t("Run Test at Cursor"), context: true, run: () => { void runTestAtCursor(); } },
     { id: "runFailedTests", label: t("Run Failed Tests"), run: () => { void runFailedTests(); } },
     { id: "testing", label: t("Show Testing"), run: () => testingView.show() },
@@ -1450,6 +1872,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     { id: "import", label: t("Import the Map's Triggers"), run: () => { void importHand(); } },
     { id: "newFile", label: t("New File…"), run: () => { void newFile(); } },
     { id: "newFolder", label: t("New Folder…"), run: () => { void newFolder(); } },
+    { id: "importVideo", label: t("Import Video…"), run: () => { void importVideo(); } },
     { id: "mode", label: mode === "dialog" ? t("Open Beside the Map") : t("Open in a Window"), run: () => switchMode() },
     { id: "problems", label: t("Show Problems"), key: { code: "KeyM", mod: true, shift: true }, run: () => shell.togglePanel("problems") },
     { id: "output", label: t("Show Output"), key: { code: "KeyU", mod: true, shift: true }, run: () => shell.togglePanel("output") },
@@ -1475,7 +1898,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     // F1 is the editor's list of shortcuts outside the workspace; inside it, it is the palette, as it is in VS Code.
     const c = (mod && e.shiftKey && e.code === "KeyP") || (!mod && !e.shiftKey && e.code === "F1")
       ? { run: palette }
-      : commands.find((x) => x.key && x.key.code === e.code && !!x.key.mod === mod && !!x.key.shift === e.shiftKey);
+      : commands.find((x) => x.key && x.key.code === e.code && !!x.key.mod === mod && !!x.key.shift === e.shiftKey && (!x.when || x.when()));
     if (!c) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1504,7 +1927,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         monaco = m;
         if (generated) setDeclarations(m, generated.decls);
         setHoverVariables(m, () => result?.variables ?? []);
-        setLineHints(m, () => result?.hints ?? []);
+        setLineHints(m, () => [...(result?.hints ?? []), ...costHints(), ...eudHints(), ...debug.hints()]);
         setMapRefs(m, mapRefs);
         // Uncover first: `done` puts the host back in its own place, and Monaco measures it where it lands.
         loadingCover.done();
@@ -1513,14 +1936,18 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         editor = createScriptEditor(m, hostEl, files, options.file ?? ENTRY_FILE, (path, text) => {
           files = { ...files, [path]: text };
           svc.writeFiles(files);
+          debug.setFiles(files);
           check();
-        }, (id) => { void runTests({ ids: [id] }); });
+        }, (id) => { void runTests({ ids: [id] }); }, (file, line) => debug.toggleBreakpoint(file, line));
+        debug.setFiles(files);
+        editor.setDebug(debug.marks());
         const code = editor.editor;
         for (const c of commands) {
           code.addAction({
             id: `trigscript.${c.id}`,
             label: `TrigScript: ${c.label}`,
-            keybindings: c.key ? [(c.key.mod ? m.KeyMod.CtrlCmd : 0) | (c.key.shift ? m.KeyMod.Shift : 0) | m.KeyCode[c.key.code as keyof typeof m.KeyCode]] : undefined,
+            // (A key that only means something while debugging is the workspace's to hear, not Monaco's.)
+            keybindings: c.key && !c.when ? [(c.key.mod ? m.KeyMod.CtrlCmd : 0) | (c.key.shift ? m.KeyMod.Shift : 0) | m.KeyCode[c.key.code as keyof typeof m.KeyCode]] : undefined,
             ...(c.context ? { contextMenuGroupId: "navigation", contextMenuOrder: 9 } : {}),
             run: () => c.run(),
           });
@@ -1556,6 +1983,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       if (timer !== null) clearTimeout(timer);
       if (statusTimer !== null) clearTimeout(statusTimer);
       root.removeEventListener("keydown", onKey, true);
+      debug.end();
       shell.dispose();
       editor?.dispose();
       editor = null;

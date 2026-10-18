@@ -18,8 +18,10 @@ import { ACTION_IDENTS, argType, CHOICE_TYPES, choiceWords, CONDITION_IDENTS, MO
 import type { ActionDef, ArgKind, ConditionDef } from "../vendor/triggerDefs";
 import { allTables, defaultScriptNames, type NameTable, type ScriptNames } from "./names";
 import { PLAYER_COLORS, TABLE_FIELDS, type TableKind } from "./tables";
+import { MEMORY_FIELDS, MEMORY_GROUPS } from "./memory";
 import { PLAYER_SLOTS } from "./lower";
 import { KEY_NAMES } from "./input";
+import { TEXT_COLORS } from "./jsx";
 
 export const DECLARATIONS_FILE = "trigscript.d.ts";
 
@@ -48,6 +50,8 @@ ${kw}type Weapon<N extends number = number> = N & Brand<"weapon">;
 ${kw}type Upgrade<N extends number = number> = N & Brand<"upgrade">;
 /** A technology (techs.*, or a raw techdata.dat id), for stats(). */
 ${kw}type Tech<N extends number = number> = N & Brand<"tech">;
+/** An order (orders.*, or a raw orders.dat id): what a unit is doing. */
+${kw}type Order<N extends number = number> = N & Brand<"order">;
 /** A player colour (colors.*), for stats(player).color. */
 ${kw}type PlayerColor<N extends number = number> = N & Brand<"color">;
 ${kw}type ColorName = __COLOR_NAMES__;
@@ -55,6 +59,8 @@ ${kw}type ColorName = __COLOR_NAMES__;
 ${kw}type Location<N extends number = number> = N & Brand<"location">;
 /** A switch (switches.*, or a raw 0-based switch number). */
 ${kw}type Switch<N extends number = number> = N & Brand<"switch">;
+/** A sound of the map (sounds.*, the Sound Editor's list): the string of its path, what playWav() takes. A path in the map's archive as text also works. */
+${kw}type Sound<N extends number = number> = N & Brand<"sound">;
 /** An AI script (aiScripts.*; a four-character code or StarEdit name as a string also works). */
 ${kw}type AiScript<N extends number = number> = N & Brand<"aiScript">;
 /** A race (races.*), as race() returns it. */
@@ -73,6 +79,14 @@ ${kw}type u16 = number & Brand<"u16">;
  * but compare exactly: a number below zero is smaller than any u32.
  */
 ${kw}type u32 = number & Brand<"u32">;
+/**
+ * A number with a fraction: 16.16 fixed point, −32 768 … 32 767.99998 in steps of 1/65 536. A number is one as soon as a
+ * fraction is stored into it (\`let x = 0.5\`, \`x += speed * 0.1\`, \`Math.cos(a)\`), so the annotation is only needed
+ * to say so before anything does. + − × ÷ and the comparisons work as on any number, and a whole number beside one is
+ * turned into one; Math.floor / round / trunc / ceil make a whole number of it, which is what an index, a count or a
+ * place on the map takes. Math.sqrt, sin, cos, tan, atan, atan2 and hypot give one (angles in radians, as in JavaScript).
+ */
+${kw}type fixed = number & Brand<"fixed">;
 /** A function that runs in the game, as returned by game(): call it inside program() or another game function. */
 ${kw}type GameFunction<F extends (...args: never[]) => unknown> = F & { readonly __game: true };
 
@@ -124,8 +138,8 @@ ${kw}interface Unit {
   readonly y: number;
   /** How many units it has killed, 0 … 255. */
   kills: number;
-  /** The orders.dat id of what the unit is doing (3 is standing guard, 6 moving, 10 attacking). */
-  readonly orderId: number;
+  /** What the unit is doing: \`if (u.orderId == orders.Move)\`. orders.PlayerGuard is standing guard, orders.AttackUnit attacking. */
+  readonly orderId: Order;
   /** Frames until the unit can attack or cast again, 0 … 255; writing it holds the unit's fire that long. */
   cooldown: number;
   /** What a mineral field or a geyser still holds. */
@@ -166,7 +180,7 @@ ${kw}interface UnitFilter {
   /** Inside this location. */
   at?: Location;
 }
-/** A key keyPressed() knows. F6 is not among them: the game reports no press of it. */
+/** A key keyPressed() knows. F2 to F6 are not among them: StarCraft: Remastered reports no press of them. */
 ${kw}type Key = __KEY_NAMES__;
 /** What a chatted() pattern's captures are read as: {n} a number, {unit:unit} a unit type, {kind:ore|gas} the place of the word in its list. */
 ${kw}type ChatCapture<C extends string> = C extends \`\${infer N}:unit\` ? { readonly [K in N]: UnitType } : C extends \`\${infer N}:\${string}\` ? { readonly [K in N]: number } : { readonly [K in C]: number };
@@ -187,6 +201,7 @@ ${kw}interface ProgramOptions {
 }
 
 const COLOR_NAMES = Object.keys(PLAYER_COLORS).map((w) => JSON.stringify(w)).join(" | ");
+const TEXT_COLOR_TABLE = Object.entries(TEXT_COLORS).map(([w, n]) => `readonly ${w}: ${n}`).join("; ");
 const COLOR_TABLE = Object.entries(PLAYER_COLORS).map(([w, n]) => `readonly ${w}: PlayerColor<${n}>`).join("; ");
 
 function choiceTypes(kw: string): string {
@@ -252,10 +267,43 @@ ${kw}function frames(n: number): Duration;
 ${kw}function cycles(n: number): Duration;
 /**
  * Pause the program, inside program() only: the statements after it run that much later, and nothing
- * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); sleep(seconds(15)); }\`
+ * else of this program runs meanwhile (other programs and triggers go on). \`while (true) { spawn(); await sleep(seconds(15)); }\`
  * is a wave every fifteen seconds. Unlike wait(), it takes nothing from the triggers: a Wait uses the player's one wait slot.
+ * In an async function it is awaited; in a program that is not async, \`sleep(…)\` on its own pauses as before.
  */
-${kw}function sleep(duration: Duration): void;
+${kw}function sleep(duration: Duration): Promise<void>;
+/**
+ * Wait for the next frame — the same as sleep(frames(1)), as a frame loop reads:
+ * \`while (true) { …draw…; await nextFrame(); }\`. Inside program() only.
+ */
+${kw}function nextFrame(): Promise<void>;
+/**
+ * Wait until a condition holds, inside an async program only: \`await until(() => countUnits(P8, units.ZergZergling) === 0)\`.
+ * The function is asked once now and then once every frame; the program goes on in the frame it answers true.
+ * A condition on its own is asked again the same way: \`await until(bring(P1, units.AnyUnit, locations.Exit, ">=", 1))\`.
+ */
+${kw}function until(test: (() => boolean) | Condition): Promise<void>;
+/**
+ * A task that start() started: \`t.cancel()\` stops it where it is, \`t.running\` is true until it ends or is cancelled,
+ * and \`await t\` waits for it to end. Kept in a variable, it is a number of the program, 0 for none.
+ */
+${kw}interface Task extends Promise<void> {
+  readonly __task: true;
+  /** Stop the task where it is. Nothing happens when it has ended already. */
+  cancel(): void;
+  /** True until the task ends or is cancelled. */
+  readonly running: boolean;
+}
+/**
+ * Start a task and go on without waiting for it, inside an async program only: \`start(wave(3))\`, or
+ * \`start(async () => { … })\`. The arguments are worked out now; the task runs beside the program, from this frame on,
+ * and keeps running after the program ends. \`void wave(3)\` starts one too, without a Task to keep.
+ *
+ * Each start() is a body of its own, and \`max\` of its tasks (16 unless said) can run at once: a start with all of
+ * them running starts nothing, and the game says so. \`for (…) start(wave(n), { max: 40 })\`. A loop unrolled when the
+ * script is built has a start() for each of its turns.
+ */
+${kw}function start(task: Promise<unknown> | (() => Promise<unknown>), options?: { max?: number }): Task;
 /** True on the frame its condition becomes true, false until it becomes false and true again. Inside program(), in an if: \`if (rose(bring(…)))\`. */
 ${kw}function rose(condition: Condition | boolean): boolean;
 /** True the first time its condition holds, never again. Inside program(), in an if. */
@@ -271,6 +319,8 @@ ${kw}function clamp(value: number, low: number, high: number): number;
 ${kw}function u32(value: number): u32;
 /** The same 32 bits read as a signed number: i32(4294967295) is -1. Costs nothing in a program; \`x | 0\` of a u32 says the same. */
 ${kw}function i32(value: number): number;
+/** A whole number as a fixed one, so that what is computed with it keeps the fraction: 3 / 2 is 1, 3 / fixed(2) is 1.5. Costs a shift in a program. */
+${kw}function fixed(value: number): fixed;
 /**
  * Reads, inside program() only: a value the game holds, read when the line runs. Use it wherever a
  * number goes — \`let ore = minerals(P1)\`, \`if (minerals(CurrentPlayer) > price * 2)\`,
@@ -359,6 +409,43 @@ ${kw}function stats(weapon: Weapon): WeaponStats;
 ${kw}function stats(upgrade: Upgrade): UpgradeStats;
 ${kw}function stats(tech: Tech): TechStats;
 ${kw}function stats(player: Player): PlayerStats;
+/**
+ * For a library: a location of the map's first 63 that the map does not use, taken when the script is
+ * built, so the library's users never have to give it one. The same reason gives the same location; the
+ * reason is what the map's requirements show. \`const spot = reserveLocation("fog: where each brush is made");\`
+ */
+${kw}function reserveLocation(why: string): Location;
+/**
+ * A video the script imports, when the script is built: \`import badApple from "./bad-apple.video"\`.
+ * A .video file is made by Import Video… in the Explorer — the frames the editor decoded, a tile a pixel,
+ * ink or not, a frame for every frame of the game — and kept in the map with the script.
+ */
+${kw}interface Video {
+  /** Tiles across. */
+  readonly width: number;
+  /** Tiles down. */
+  readonly height: number;
+  /** How many frames. */
+  readonly length: number;
+  /** How long a frame shows, in milliseconds: 42 is a frame of the game on Fastest. */
+  readonly frameMs: number;
+  /** How long the whole video plays, in seconds. */
+  readonly seconds: number;
+  /** Frame i as rows of text, # ink and . not: what fog.picture takes. When the script is built. */
+  frame(i: number): readonly string[];
+}
+/** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
+${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
+/**
+ * When the script is built: the brushes whose union is a picture's ink — rows of text, # the ink — each one
+ * of \`shapes\` (rows of text, # its tiles and @ its centre, a row one run of tiles) lying on ink only. Ink
+ * thinner than the first shape gets the first shape on it anyway. Greedy, the largest gain first. For a
+ * renderer of a library's own: fog.picture is this with the game's sight ranges.
+ *   cover([".##.", "####"], [["#@#"]])   // brushes of a 3-wide bar
+ * Of a video, each frame's brushes (worked out once while the file and the shapes stay the same).
+ */
+${kw}function cover(picture: readonly string[], shapes: readonly (readonly string[])[]): readonly Brush[];
+${kw}function cover(video: Video, shapes: readonly (readonly string[])[]): readonly (readonly Brush[])[];
 /** The player colours stats(player).color takes. */
 ${kw}const colors: { __COLOR_TABLE__ };
 /**
@@ -375,9 +462,105 @@ ${kw}function color(player: Player): string;
  */
 ${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "center" }): void;
 /**
+ * The colours a text in the game takes, as their colour codes: for an array that holds a colour a cell,
+ * \`board[i] = textColors.orange\`, and \`<cell color={board[i]} />\` shows it (0 is an empty cell).
+ * grey ends what colour a line can change: everything after it on its line stays grey.
+ */
+${kw}const textColors: { __TEXT_COLORS__ };
+/** A colour of a text: one of textColors' names, or a colour code (0 for none). */
+${kw}type TextColor = keyof typeof textColors | number;
+/** What a program shows on the screen, redrawn by the game as the program's variables change. */
+${kw}const ui: {
+  /**
+   * Show a text in the player's text lines, top left, and keep it there: the function is worked out again every
+   * frame from the program's variables, and shown when it changed. Inside an async program only, as a task: it keeps
+   * going after the program moves on, and the Task it gives back stops it (\`board.cancel()\`). Eleven lines: one
+   * player's text lines are this text's only, so give a player one ui.lines at a time.
+   *
+   *   ui.lines(P1, () => (
+   *     <>
+   *       <line color="yellow">Score {score}</line>
+   *       {rows.map((r) => <line>{r.map((c) => <cell color={c} />)}</line>)}
+   *     </>
+   *   ));
+   */
+  lines(player: Player, view: () => string): Task;
+};
+/** A unit as it was when it died, which is what on.died() hands its function: the unit itself is gone. */
+${kw}interface DeadUnit {
+  readonly type: UnitType;
+  readonly owner: Player;
+  /** Where it died, in pixels (32 a tile). */
+  readonly x: number;
+  readonly y: number;
+}
+/** How many of an event's handlers can be waiting at once, when the handler is async (16 unless said, up to 255). */
+${kw}interface EventOptions { max?: number }
+/** What on.order() looks for: a unit filter and, if you like, the order the unit takes up. */
+${kw}interface OrderFilter extends UnitFilter { order?: Order }
+/** What on.killed() looks for: a unit filter and, if you like, the player who killed it. */
+${kw}interface KillFilter extends UnitFilter { by?: Player }
+/**
+ * What happens in the game, as it happens: on.created(…), on.died(…), on.chat(…) and the rest each runs its function for
+ * every time it happens from the next frame on. Each is a task (it keeps listening after the program moves on, and the
+ * Task it gives back stops it), inside an async program — or at the top of a script, where it listens from the start
+ * of the game as a program of its own. A function that is not async runs within the frame, once for each time; an
+ * async one is started as a task each time, so it can wait: \`max\` of them at once.
+ */
+${kw}const on: {
+  /**
+   * A unit comes onto the map — made by an action or a program, trained, hatched, landed, placed by a test — and the
+   * function is handed it in the next frame. A unit in a transport or a hangar comes on when it first comes out.
+   * \`on.created(units.ZergZergling, (u) => { u.energy = 50; })\`
+   */
+  created(handler: (unit: Unit) => void, options?: EventOptions): Task;
+  created(filter: UnitType | UnitFilter, handler: (unit: Unit) => void, options?: EventOptions): Task;
+  /**
+   * A unit dies or is removed, and the function is handed what it was and where, in the next frame — once for every
+   * unit on.created() would have been handed. The filter is of the unit as it died.
+   * \`on.died({ owner: P8 }, async (u) => { await sleep(seconds(2)); createUnit(P8, u.type, 1, locations.Spawn); })\`
+   */
+  died(handler: (unit: DeadUnit) => void, options?: EventOptions): Task;
+  died(filter: UnitType | UnitFilter, handler: (unit: DeadUnit) => void, options?: EventOptions): Task;
+  /**
+   * A unit is killed in a fight — shot, burned, caught in a storm — and the function is handed what it was, where, and
+   * the player whose attack killed it. A unit a trigger or a program kills or removes, or one that goes down with its
+   * transport, has no killer and is not handed on (on.died() hears every one); nor does one its own player killed (a
+   * storm on your own units), for which the game keeps no attacker, as it counts no kill.
+   * \`on.killed({ owner: P8, by: P1 }, (u, by) => setResources(by, "add", 25, "ore"))\`
+   */
+  killed(handler: (unit: DeadUnit, by: Player) => void, options?: EventOptions): Task;
+  killed(filter: UnitType | KillFilter, handler: (unit: DeadUnit, by: Player) => void, options?: EventOptions): Task;
+  /**
+   * A unit takes up a new order — told to move, starting to cast, sieging, going back to guard — and the function is
+   * handed it in the next frame, with the order it took up and the one it had. An order held for less than a frame is
+   * not seen. This looks at every unit on the map each frame: the hint says what it costs.
+   * \`on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, (u) => print("Storm!"))\`
+   */
+  order(handler: (unit: Unit, order: Order, was: Order) => void, options?: EventOptions): Task;
+  order(filter: UnitType | OrderFilter, handler: (unit: Unit, order: Order, was: Order) => void, options?: EventOptions): Task;
+  order(filter: UnitType | UnitFilter, order: Order, handler: (unit: Unit, order: Order, was: Order) => void, options?: EventOptions): Task;
+  /**
+   * A unit turns into another type and stays the same unit: a Siege Tank sieging, a Larva becoming an egg and the egg
+   * its unit, a Drone becoming a building, a High Templar becoming an Archon (its partner leaves, as on.died() hears).
+   * The function is handed the unit, now of its new type, and the type it was. The filter is of the new type.
+   * \`on.morphed(units.TerranSiegeTankSiegeMode, (u) => print("Sieged"))\`
+   */
+  morphed(handler: (unit: Unit, was: UnitType) => void, options?: EventOptions): Task;
+  morphed(filter: UnitType | UnitFilter, handler: (unit: Unit, was: UnitType) => void, options?: EventOptions): Task;
+  /**
+   * A player types a line that fits the pattern, which is chatted()'s: \`on.chat("-give {n}", (p, { n }) => setResources(p, "add", n, "ore"))\`.
+   * Every player P1 … P8 unless \`from\` names one (CurrentPlayer in a program for several players); \`p\` is known
+   * when the script is built, so an action can be for them.
+   */
+  chat<const P extends string>(pattern: P, handler: (player: Player, values: ChatValues<P>) => void, options?: EventOptions & { from?: Player }): Task;
+  /** A player presses a key, as keyPressed() sees it: \`on.key("F7", (p) => print("Help", { to: p }))\`. Every player P1 … P8 unless \`from\` names one. */
+  key(key: Key, handler: (player: Player) => void, options?: EventOptions & { from?: Player }): Task;
+};
+/**
  * What the players do, inside program() only. A key, a click and a typed line are true on the one
  * frame they arrive, so look for them in a loop that runs every frame:
- * \`while (true) { if (keyPressed(CurrentPlayer, "F2")) …; sleep(frames(1)); }\`. They reach every
+ * \`while (true) { if (keyPressed(CurrentPlayer, "F7")) …; sleep(frames(1)); }\`. They reach every
  * player's computer in step, a few frames after they happen. The player is one of P1 … P8 or
  * CurrentPlayer — in a program with \`{ owner: AllPlayers }\`, each player's own keys.
  * The map gives up a little for it: one free location among the first 63 (nine when the mouse is read),
@@ -385,6 +568,11 @@ ${kw}function print(text: string, options?: { to?: Player; position?: "chat" | "
  */
 /** True on the frame a player's press of a key arrives. Not while the player is typing a message. */
 ${kw}function keyPressed(player: Player, key: Key): boolean;
+/**
+ * True on every frame a key is down — for moving while it is held. It reaches every player's computer
+ * in step, a few frames after it happens, as a press does. Not while the player is typing a message.
+ */
+${kw}function keyHeld(player: Player, key: Key): boolean;
 /** True on the frame a player's press of a mouse button arrives ("left" when none is named). */
 ${kw}function clicked(player: Player, button?: "left" | "right" | "middle"): boolean;
 /** Where a player's mouse is on the map, in pixels (32 to a tile): \`const at = mouse(CurrentPlayer);\` keeps the place as it is now. */
@@ -403,6 +591,11 @@ ${kw}function underMouse(player: Player, filter?: UnitFilter & { within?: number
 ${kw}function chatted<const P extends string>(player: Player, pattern: P): ChatValues<P> | null;
 /** Centre a location on a point of the map, in pixels, its size kept; inside program() only. With mouse(): \`centerLocation(locations.Cursor, at.x, at.y)\`, then createUnit() there. */
 ${kw}function centerLocation(location: Location, x: number, y: number): void;
+/**
+ * Centre a location on a point of the map and give it a size, all in pixels; inside program() only. Nothing of its
+ * old size is read, so it costs less than keeping the size: \`centerLocation(spot, x, y, 32, 32)\`.
+ */
+${kw}function centerLocation(location: Location, x: number, y: number, width: number, height: number): void;
 /** Keep a condition or action in the trigger but switched off (StarEdit's disabled state). */
 ${kw}function disabled<T extends Condition | Action>(item: T): T;
 /**
@@ -468,6 +661,38 @@ function statsTypes(kw: string): string {
   }).join("\n");
 }
 
+/** The interfaces of `memory`, from its one list of fields (`memory.ts`): each field's doc and Remastered's verdict on it. */
+function memoryTypes(kw: string): string {
+  const groups = Object.entries(MEMORY_GROUPS).map(([group, [name, doc]]) => {
+    const lines = [`/** ${doc} */`, `${kw}interface ${name} {`];
+    for (const f of MEMORY_FIELDS.filter((x) => x.path[0] === group)) {
+      lines.push(`  /**\n   * ${f.doc}\n   *\n   * ${f.remastered}\n   * @address 0x${f.base.toString(16).toUpperCase()}, ${f.width * 8} bits\n   */`);
+      lines.push(`  ${f.readonly ? "readonly " : ""}${f.path[1]}: number;`);
+    }
+    lines.push("}");
+    return lines.join("\n");
+  });
+  return groups.join("\n");
+}
+
+/**
+ * `memory.vision.countdown`: the groups as a namespace merged with the trigger level's \`memory(address, …)\`
+ * condition, which keeps its name.
+ */
+function memoryNamespace(kw: string): string {
+  const lines = [
+    `/**`,
+    ` * Cells of the game's memory that have no other word in the language, inside program() only:`,
+    ` * \\\`memory.vision.countdown = 1;\\\` \\\`if (memory.game.frame % 24 == 0) …\\\`. Each field's hover says what`,
+    ` * StarCraft: Remastered does with it; one the game keeps for itself is readonly.`,
+    ` */`,
+    `${kw}namespace memory {`,
+  ];
+  for (const [group, [name, doc]] of Object.entries(MEMORY_GROUPS)) lines.push(`  /** ${doc} */`, `  export const ${group}: ${name};`);
+  lines.push("}");
+  return lines.join("\n");
+}
+
 function playerAliases(kw: string, names: ScriptNames): string {
   const lines: string[] = [];
   for (const e of names.players.entries) {
@@ -489,15 +714,16 @@ function tables(kw: string, names: ScriptNames, compact: boolean): string {
     tableDecl(kw, names.locations),
     tableDecl(kw, names.switches, (k) => { const m = /^Switch(\d+)$/.exec(k); return m ? Number(m[1]) <= 16 : !isDefaultSwitch(k); }, "Switch1 … Switch256 exist; the first sixteen are listed. A switch given a name in the map is listed by that name."),
     `/** AI scripts, by StarEdit name ("Terran Custom Level") or four-character code. */\n${kw}const ${names.aiScripts.object}: { readonly [name: string]: AiScript<number> };`,
-    ...[names.weapons, names.upgrades, names.techs].map((t) => tableDecl(kw, t, identifierKey)),
+    ...[names.weapons, names.upgrades, names.techs, names.orders].map((t) => tableDecl(kw, t, identifierKey)),
   ].join("\n");
 }
 
 function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean): string {
   return [
-    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", statsTypes(typeKw)),
+    types(typeKw).replace("__COLOR_NAMES__", COLOR_NAMES).replace("__KEY_NAMES__", KEY_NAMES.map((k) => JSON.stringify(k)).join(" | ")).replace("__STATS_TYPES__", `${statsTypes(typeKw)}\n${memoryTypes(typeKw)}`),
     choiceTypes(typeKw),
-    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE),
+    functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE).replace("__TEXT_COLORS__", TEXT_COLOR_TABLE),
+    memoryNamespace(kw),
     "// ── Conditions ──",
     ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
     "",
@@ -516,6 +742,26 @@ function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean):
  * array of numbers unless it says otherwise (`new Array<boolean>(12).fill(false)`), as a number is what everything is.
  */
 const ARRAYS = `
+/** JSX is a text the game shows: \`<line color="yellow">Score {score}</line>\` is a string. */
+declare namespace JSX {
+  type Element = string;
+  interface ElementChildrenAttribute { children: {} }
+  interface IntrinsicElements {
+    /** A line of its own, in its colour (white unless it says). The lines of a text are put one under another. */
+    line: { color?: TextColor; children?: unknown };
+    /** What is inside it in its colour; the colour around it comes back after it. */
+    span: { color?: TextColor; children?: unknown };
+    /** One square: filled in its colour, or empty (lavender) when it has none or 0. A board's cell. */
+    cell: { color?: TextColor };
+    /** \`width\` squares (10 unless it says), as many of them filled as value is of max. */
+    bar: { value: number; max: number; width?: number; color?: TextColor };
+  }
+}
+declare function __jsx(tag: string, props: object | null, ...children: unknown[]): string;
+/** What the build adds after each class at the top of a file, for a program that makes an instance of it. Not for scripts. */
+declare function __class(cls: unknown, descriptor: unknown): void;
+declare function __listen(descriptor: unknown, at?: unknown): void;
+declare const __fragment: string;
 interface ArrayConstructor {
   new <T = number>(arrayLength: number): T[];
   <T = number>(arrayLength: number): T[];
@@ -533,7 +779,7 @@ const TESTING = `
 export interface SimUnit {
   readonly type: UnitType; readonly owner: Player; readonly x: number; readonly y: number;
   readonly hp: number; readonly maxHp: number; readonly shields: number; readonly maxShields: number; readonly energy: number;
-  readonly kills: number; readonly resources: number; readonly invincible: boolean; readonly burrowed: boolean; readonly cloaked: boolean; readonly hallucinated: boolean;
+  readonly kills: number; readonly orderId: Order; readonly resources: number; readonly invincible: boolean; readonly burrowed: boolean; readonly cloaked: boolean; readonly hallucinated: boolean;
   /** Still on the map. */
   readonly alive: boolean;
 }
@@ -546,11 +792,13 @@ export interface SimUnit {
 export interface Sim {
   /** Units for a player at a location's centre, as createUnit() makes them. They are given back. */
   place(player: Player, type: UnitType, at: Location, count?: number): SimUnit[];
-  /** A unit dies: what a fight is in a test. \`by\`: the player whose kill it is. */
+  /** A unit dies: what a fight is in a test. \`by\`: the player whose kill it is, and on.killed()'s killer. */
   kill(unit: SimUnit, by?: Player): this;
   /** A unit goes without dying. */
   remove(unit: SimUnit): this;
   give(unit: SimUnit, to: Player): this;
+  /** A unit turns into another type and stays the same unit, as a Siege Tank sieges: what on.morphed() hears. In the simulator only. */
+  morph(unit: SimUnit, type: UnitType): this;
   /** A unit to a location's centre, or to a point in pixels. */
   move(unit: SimUnit, to: Location | { x: number; y: number }): this;
 
@@ -578,6 +826,12 @@ export interface Sim {
   deaths(player: Player, type: UnitType): number;
   kills(player: Player, type: UnitType): number;
   switch(n: Switch): boolean;
+  /**
+   * What \`player\` sees of the map's fog of war this frame, a text a row of tiles: "#" lit now, "+" seen before (fog),
+   * "." never seen. \`area\` takes a part of the map (tiles), the whole of it by default. Null where the world has no
+   * fog to read: the simulator does not draw it, the game does — run the tests in the game to check a picture.
+   */
+  fog(player: Player, area?: { x: number; y: number; width: number; height: number }): string[] | null;
   /** Where a location is now: a program may have moved it. */
   location(n: Location): { left: number; top: number; right: number; bottom: number } | undefined;
 
@@ -622,6 +876,13 @@ export function expect<T>(actual: T): Expectation<T> & { readonly not: Expectati
 export interface TestOptions {
   /** Without the map's player settings the world has one player: this one. */
   as?: Player;
+  /**
+   * In the game: these players, each at a computer of their own — a copy of the game for each, kept in step as a
+   * game between people is. What a player does (press, click, type, moveMouse) is done at their computer, and the
+   * test fails at the frame the copies stop agreeing, the lines that made them differ named. The simulator runs the
+   * test once, as without it.
+   */
+  players?: readonly Player[];
 }
 type TestBody<A extends readonly unknown[] = []> = (sim: Sim, ...args: A) => void;
 interface TestEach<F> { <T>(cases: readonly T[]): (name: string, fn: F extends "suite" ? (...args: T extends readonly unknown[] ? T : [T]) => void : TestBody<T extends readonly unknown[] ? T : [T]>) => void }
@@ -638,11 +899,19 @@ export function afterEach(fn: (sim: Sim) => void): void;
 `;
 
 /** The whole declaration file for a set of names. */
+/** What importing one of the script's media files gives (`media.ts`). */
+const MEDIA_MODULES = `// ── A video the script imports: import badApple from "./bad-apple.video"; ──
+declare module "*.video" {
+  const video: Video;
+  export default video;
+}
+`;
+
 export function generateDeclarations(names: ScriptNames = defaultScriptNames(), options: DeclarationOptions = {}): string {
   const compact = options.compact === true;
   const globals = body("declare ", "", names, compact);
   if (compact) return `${HEADER}${globals}\n${ARRAYS}`;
   const module = `${body("export ", "export ", names, false)}\n${TESTING}`.split("\n").map((l) => (l ? `  ${l}` : l)).join("\n");
-  return `${HEADER}${globals}\n${ARRAYS}\n// ── The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; ──\ndeclare module "${MODULE_NAME}" {\n${module}\n}\n`;
+  return `${HEADER}${globals}\n${ARRAYS}\n// ── The same names, as a module: import { trigger, units } from "${MODULE_NAME}"; ──\ndeclare module "${MODULE_NAME}" {\n${module}\n}\n${MEDIA_MODULES}`;
 }
 

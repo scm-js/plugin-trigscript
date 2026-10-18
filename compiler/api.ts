@@ -111,7 +111,9 @@ export function argType(kind: ArgKind): string {
     case "unit": return "UnitType";
     case "location": return "Location";
     case "switch": return "Switch";
-    case "text": case "wav": return "string";
+    case "text": return "string";
+    // A sound of the map (sounds.badapple, from the Sound Editor's list) or a path in the map's archive.
+    case "wav": return "Sound | string";
     case "aiScript": return "AiScript | string";
     case "count": return "Count";
     case "textFlags": return "boolean";

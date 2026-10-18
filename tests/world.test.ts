@@ -60,7 +60,9 @@ describe("units are made", () => {
 });
 
 describe("what is done to units", () => {
-  it("gives, moves, kills some and removes the rest; deaths are counted, removals are not", () => {
+  // (Neither a trigger's kill nor a removal is a death: only a unit that dies in the game counts. The lifted game says
+  // so — TrigScript 4, A2 — and the editor's trigger reference, checked in the game, says so of Kill Unit.)
+  it("gives, moves, kills some and removes the rest; neither the kills nor the removals are deaths", () => {
     const sim = run(`
       createUnit(P1, units.TerranMarine, 5, ${HOME});
       giveUnits(P1, P2, units.TerranMarine, 2, ${HOME});
@@ -69,7 +71,7 @@ describe("what is done to units", () => {
       killUnitAt(P1, units.TerranMarine, 2, ${HOME});
       removeUnit(P2, units.TerranMarine);
       print(\`\${a} \${b} \${countUnits(P1, units.AnyUnit)} \${countUnits(P2, units.AnyUnit)} \${deaths(P1, units.TerranMarine)} \${deaths(P2, units.TerranMarine)}\`);`);
-    expect(shown(sim)).toContain("3 2 1 0 2 0");
+    expect(shown(sim)).toContain("3 2 1 0 0 0");
     expect(sim.units.filter((u) => u.owner === 1).map((u) => [u.x, u.y])).toEqual([[1100, 1050], [1100, 1050]]);
   });
 
@@ -109,7 +111,8 @@ describe("what is done to units", () => {
     const programs = new ProgramSimulation(r.ir, { world, strings: r.strings, table: TABLE });
     for (let i = 0; i < 4; i++) { world.step(); programs.step(); }
     expect(world.events.map((e) => e.text).filter(Boolean)).toEqual(["three left"]);
-    expect(world.death(0, ZERGLING)).toBe(1);
+    // (Killed by the program: gone, and not a death.)
+    expect(world.death(0, ZERGLING)).toBe(0);
   });
 });
 

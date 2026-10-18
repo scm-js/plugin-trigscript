@@ -37,6 +37,8 @@ export interface SimUnit {
   slot: number;
   /** The place's uniqueness byte while this unit is in it. */
   uid: number;
+  /** Once it has died in a fight: the player whose attack killed it (on.killed()). */
+  killedBy?: number;
 }
 export type SimUnitInit = Partial<Omit<SimUnit, "alive" | "slot" | "uid">> & { type: number; owner: number };
 export interface SimBounds { left: number; top: number; right: number; bottom: number }
@@ -181,12 +183,19 @@ export class World {
     });
   }
 
-  /** Off the map, its place free for the next unit made. `killed`: it died — counted as a death, and as a kill of `by` when someone is named. */
-  gone(unit: SimUnit, killed: boolean, by?: number): void {
+  /**
+   * Off the map, its place free for the next unit made. `killed`: it died. `fought`: it died in the game — shot, or
+   * killed by a spell — and so counts as a death, and as a kill of `by` when someone is named. A unit a trigger or a
+   * program kills (Kill Unit, a unit's kill(), hit points written down to 0) dies without counting: the lifted game
+   * says so for all three (TrigScript 4, A2, 2026-10-16), as the editor's trigger reference does for Kill Unit.
+   */
+  gone(unit: SimUnit, killed: boolean, by?: number, fought = true): void {
     if (!unit.alive) return;
     unit.alive = false;
     if (this.table[unit.slot] === unit) this.table[unit.slot] = null;
-    if (!killed) return;
+    if (!killed || !fought) return;
+    // (The game keeps no attacker for a unit its own player killed — a storm on your own units — so there is no killer then.)
+    if (by !== undefined && by !== unit.owner) unit.killedBy = by;
     this.onDeath(unit);
     if (by !== undefined) this.killed.set(unit.type * 4096 + by, (this.killed.get(unit.type * 4096 + by) ?? 0) + 1);
   }
@@ -216,7 +225,12 @@ export class World {
 
   /** The living units of these owners (any, when undefined), of a type or a class, inside a location — in table order. */
   matching(owners: readonly number[] | undefined, type?: number, location?: number): SimUnit[] {
-    return this.living().filter((u) => (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location));
+    return this.living().filter((u) => this.fits(u, owners, type, location));
+  }
+
+  /** Whether a unit, living or as it died, is of these owners (any, when undefined), of a type or a class, inside a location. */
+  fits(u: SimUnit, owners: readonly number[] | undefined, type?: number, location?: number): boolean {
+    return (!owners || owners.includes(u.owner)) && this.typed(u, type) && this.inside(u, location);
   }
 
   centreOf(location: number): { x: number; y: number } {
@@ -224,11 +238,11 @@ export class World {
     return b ? { x: Math.floor((b.left + b.right) / 2), y: Math.floor((b.top + b.bottom) / 2) } : { x: 0, y: 0 };
   }
 
-  /** A location centred on a point, its size kept. */
-  centre(location: number, x: number, y: number): void {
+  /** A location centred on a point, its size kept — or the size given. */
+  centre(location: number, x: number, y: number, size?: { width: number; height: number }): void {
     const b = this.locations.get(location) ?? { left: 0, top: 0, right: 0, bottom: 0 };
-    const w = b.right - b.left;
-    const h = b.bottom - b.top;
+    const w = size ? size.width : b.right - b.left;
+    const h = size ? size.height : b.bottom - b.top;
     const left = x - Math.floor(w / 2);
     const top = y - Math.floor(h / 2);
     this.locations.set(location, { left, top, right: left + w, bottom: top + h });
@@ -288,9 +302,9 @@ export class World {
         for (const owner of owners) if (owner < 12) for (let i = 0; i < Math.max(1, a.modifier); i++) { const u = this.create(a.unitId, owner, x, y, properties); if (u) made?.push(u); }
         return true;
       }
-      case ActionType.KillUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, true); return true;
+      case ActionType.KillUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, true, undefined, false); return true;
       case ActionType.RemoveUnit: for (const u of this.matching(owners, a.unitId)) this.gone(u, false); return true;
-      case ActionType.KillUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, true); return true;
+      case ActionType.KillUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, true, undefined, false); return true;
       case ActionType.RemoveUnitAt: for (const u of this.some(this.matching(owners, a.unitId, a.location), a.modifier)) this.gone(u, false); return true;
       case ActionType.GiveUnits: {
         const to = this.players.of(a.target, current)[0];

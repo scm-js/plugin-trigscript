@@ -33,9 +33,14 @@ const DIGITS = "0123456789".split("");
 /**
  * Keys the game never reports a press of, with why: the slice 4 probe pressed F6 in two builds — once
  * first in MSQC's settings, once third — and nothing arrived either time, while F7, F8, a digit and
- * the letters beside it did. Left out of the list, so writing one is an error and not a silent key.
+ * the letters beside it did. The B2 keys probe (2026-10-17) found F2 to F5 the same, through on.key and
+ * keyPressed alike, while Q, F7 and F9 answered: F2–F4 are the game's camera keys. Left out of the list,
+ * so writing one is an error and not a silent key. F1, F10, F11 and F12 have not been played.
  */
-export const DEAF_KEYS: Readonly<Record<string, string>> = { F6: "StarCraft: Remastered keeps F6 to itself and reports no press of it (played and seen); F7 and F8 work" };
+const kept = (key: string, what: string) => `StarCraft: Remastered keeps ${key} to itself${what} and reports no press of it (played and seen); F7, F8 and F9 work`;
+export const DEAF_KEYS: Readonly<Record<string, string>> = {
+  F2: kept("F2", " (a camera key)"), F3: kept("F3", " (a camera key)"), F4: kept("F4", " (a camera key)"), F5: kept("F5", ""), F6: kept("F6", ""),
+};
 /** Every key name, as the declarations list them. */
 export const KEY_NAMES: readonly string[] = [
   ...LETTERS, ...DIGITS, ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`).filter((k) => !(k in DEAF_KEYS)), ...Object.keys(NAMED_KEYS), ...DIGITS.map((d) => `Numpad${d}`),
@@ -167,8 +172,8 @@ export function matchChat(p: ChatPattern, line: string, unitByName: (lower: stri
 
 /** One thing a program reads from the players; `player` is a slot, or 13 for the current player. */
 export type InputSource =
-  /** 1 on the frame the key's press arrives. */
-  | { source: "key"; key: string; player: number }
+  /** 1 on the frame the key's press arrives; `held`, on every frame it is down. */
+  | { source: "key"; key: string; player: number; held?: boolean }
   /** 1 on the frame the button's press arrives. */
   | { source: "click"; button: MouseButton; player: number }
   /** Where the player's mouse is on the map, in pixels. */
@@ -179,6 +184,8 @@ export type InputSource =
 /** Everything the input plugins are set up from, written into the IR file beside the programs. */
 export interface InputPlan {
   keys: string[];
+  /** The keys a program asks are held, each read on every frame it is down (MSQC's KeyPress). */
+  held?: string[];
   buttons: MouseButton[];
   chats: ChatPattern[];
   /** Unit names a `{…:unit}` capture knows, lower case, with the type each means; only when one is used. */
@@ -194,7 +201,7 @@ export const QC_UNIT = 58;
 export const QC_PLAYER = 11;
 const MOUSE_SLOTS = 8;
 /** Input's locations come from the first 63: every map's location table has those. */
-const LAST_SLOT = 62;
+export const LAST_SLOT = 62;
 
 /** Every input a program reads, in the order met, and where the first is. */
 export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: boolean; at: At | null } {
@@ -224,6 +231,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "and": case "or": e.items.forEach(expr); break;
       case "not": case "test": expr(e.expr); break;
       case "edge": expr(e.cond); break;
+      case "running": expr(e.task); break;
       case "call": call(e.call); break;
       default: break;
     }
@@ -245,16 +253,19 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "unitWrite": unit(s.unit); expr(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
       case "tableWrite": any(s.value); break;
-      case "centerLocation": expr(s.x); expr(s.y); break;
+      case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
       case "if": expr(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) expr(s.cond); s.body.forEach(stmt); break;
       case "do": s.body.forEach(stmt); expr(s.cond); break;
       case "for": if (s.cond) expr(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
+      case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
+      case "start": call(s.call); break;
+      case "cancel": expr(s.task); break;
       case "switch": expr(s.value); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
-      case "print": mapTextParts(s.parts, looks); break;
+      case "print": case "buildText": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       default: break;
@@ -269,19 +280,22 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
  * table, to keep clear of the slots it uses. Throws an Error worded for the author when the map
  * has no room.
  */
-export function inputPlan(programs: Program[], locations: NameTable, units: NameTable): InputPlan | null {
+export function inputPlan(programs: Program[], locations: NameTable, units: NameTable, reserved: readonly number[] = []): InputPlan | null {
   const { sources, mouse } = inputsOf(programs);
   if (sources.length === 0 && !mouse) return null;
   const keys: string[] = [];
+  const held: string[] = [];
   const buttons: MouseButton[] = [];
   const chats: ChatPattern[] = [];
   for (const s of sources) {
-    if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
+    if (s.source === "key" && s.held) { if (!held.includes(s.key)) held.push(s.key); }
+    else if (s.source === "key" && !keys.includes(s.key)) keys.push(s.key);
     else if (s.source === "click" && !buttons.includes(s.button)) buttons.push(s.button);
     else if (s.source === "chat" && !chats.some((c) => c.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
   }
   // The highest free slots among the first 63, so the low numbers a map maker reaches for first stay free.
-  const used = new Set(locations.entries.map((e) => e.value - 1));
+  // (And those a library took with reserveLocation() when the script was built.)
+  const used = new Set([...locations.entries.map((e) => e.value - 1), ...reserved.map((n) => n - 1)]);
   const free = (slot: number) => slot >= 0 && slot <= LAST_SLOT && !used.has(slot);
   let qcLocation = -1;
   for (let slot = LAST_SLOT; slot >= 0; slot--) if (free(slot)) { qcLocation = slot; break; }
@@ -295,7 +309,11 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
     }
     if (mouseBase === null) throw new Error("Reading the mouse needs eight free locations in a row among the map's first 63, one per player, besides one more for the plugin that carries input; this map has no such run.");
   }
-  const plan: InputPlan = { keys, buttons, chats, qcLocation, mouseBase };
+  // With a held key in the game, keys go every frame they are down, and a multiplayer game may bring two frames' commands
+  // at once — the later replaces the earlier, since MSQC's carrier has one order. A press of its own ("went down") would
+  // be lost that way, so every key is sent as held and a press is worked out where it arrives: held now, not before.
+  if (held.length) for (const k of keys) if (!held.includes(k)) held.push(k);
+  const plan: InputPlan = { keys, ...(held.length ? { held } : {}), buttons, chats, qcLocation, mouseBase };
   if (chats.some((c) => c.captures.some((x) => x.kind === "unit"))) {
     const seen = new Set<string>();
     plan.unitNames = [];
@@ -310,6 +328,7 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
 /** The names the lowering registers its cells under, which is how MSQC's and chatEvent's settings reach them. */
 export const INPUT_NAMES = {
   key: (i: number) => `tsin_key${i}`,
+  held: (i: number) => `tsin_held${i}`,
   button: (i: number) => `tsin_button${i}`,
   chatLocal: "tsin_chat",
   chatIn: "tsin_chat_in",
@@ -327,7 +346,11 @@ export function inputPlugins(plan: InputPlan): { before: Record<string, Record<s
   const before: Record<string, Record<string, string | number>> = {};
   if (plan.chats.length) before.chatEvent = { __addr__: INPUT_NAMES.heard, __ptrAddr__: INPUT_NAMES.pointer, __lenAddr__: INPUT_NAMES.length, __patternAddr__: INPUT_NAMES.pattern };
   const msqc: Record<string, string | number> = { QCUnit: QC_UNIT, QCLoc: plan.qcLocation, QCPlayer: QC_PLAYER, QCDebug: "false" };
-  plan.keys.forEach((key, i) => { msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`; });
+  // KeyDown, not KeyPress: MSQC's KeyPress is true on every frame the key is down, and a tap is two or three frames —
+  // one tap of W turned the Tetris piece two or three times (TrigScript 4, S2, played). KeyDown is the frame it goes down.
+  // Without a held key, a press is MSQC's KeyDown: one command a tap. With one, every key goes as held (see inputPlan).
+  if (!plan.held?.length) plan.keys.forEach((key, i) => { msqc[`KeyDown(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.key(i)}, 1`; });
+  plan.held?.forEach((key, i) => { msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.held(i)}, 1`; });
   plan.buttons.forEach((b, i) => { msqc[`MouseDown(${MSQC_BUTTON[b]})`] = `${INPUT_NAMES.button(i)}, 1`; });
   if (plan.mouseBase !== null) msqc.Mouse = plan.mouseBase;
   if (plan.chats.length) {

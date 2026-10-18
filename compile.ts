@@ -42,6 +42,17 @@ export const compilerUrl = (dist: string = DEFAULT_DIST) =>
   dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/compiler.js` : `${dist.replace(/\/+$/, "")}/compiler.js`;
 
 /**
+ * What runs a script's tests beside the lifted game (`dist/gametest.js`, from `compiler/gameTestEntry.ts`), at this
+ * release's own tag like the compiler: its text is handed to the engine's page (TrigScript 4, A2).
+ */
+export const gametestUrl = (dist: string = DEFAULT_DIST) =>
+  dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/gametest.js` : `${dist.replace(/\/+$/, "")}/gametest.js`;
+
+/** What Remastered is known to allow (`data/allowlist.json`, copied into `dist/` by the build), for Find EUD Error: fetched only then. */
+export const allowlistUrl = (dist: string = DEFAULT_DIST) =>
+  dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/allowlist.json` : `${dist.replace(/\/+$/, "")}/allowlist.json`;
+
+/**
  * What the worker is told to import. The editor's loader turns a fetched plugin into
  * `blob:` modules, and the compiler's own blob URL is the compiler the main thread would
  * run. A plugin compiled into the editor (a default) has no such URL — its module is a

@@ -29,5 +29,5 @@ jobs:
     # `dist/testing.js` and its declarations are what another repository's tests import at
     # a tag to run triggers, so they are held to the same rule.
     with:
-      artifacts: dist/compiler.js dist/testing.js dist/testing.d.ts
+      artifacts: dist/compiler.js dist/testing.js dist/testing.d.ts dist/gametest.js
     secrets: inherit

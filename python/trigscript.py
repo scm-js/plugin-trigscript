@@ -62,13 +62,14 @@ its new value is worked out. compiler/simulateIr.ts takes and gives blocks in th
 the same text. A made text in an action's field goes over a string the build keeps for that kind of field, on the
 computer of the player the action is for and nowhere else: the game reads such a string again whenever it draws.
 """
+import base64
 import json
 
 from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 14
+IR_VERSION = 21
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -95,6 +96,14 @@ GROUP_BITS = {230: 0x08, 231: 0x10, 232: 0x20}
 # flingy.dat, by flingy id: movement control (byte), top speed (dword), acceleration (word), halt distance (dword).
 FLINGY_CONTROL, FLINGY_SPEED, FLINGY_ACCELERATION, FLINGY_HALT = 0x6C9858, 0x6C9EF8, 0x6C9C78, 0x6C9930
 MINIMAP_COLOR_OFFSET = 0x581DD6 - 0x581D76
+# The heads of the game's lists of units (1.16.1, which Remastered emulates): the visible units and the dying ones. Each
+# links a record in just behind its head, so behind the head a list runs latest first (scm-sim docs/specs/unit-lists.md).
+VISIBLE_HEAD, DYING_HEAD = 0x628430, 0x62842C
+# How many units one frame's events pass hands on of each kind; past that the rest are handed on in the next frame.
+EVENT_CAP = 512
+# A unit's hit points (+0x08), and the last player whose attack hurt it (+0x90, a byte; 8 when none has): a unit that died
+# with no hit points and a player there died in a fight, and that player killed it (on.killed).
+OFF_HP, OFF_LAST_ATTACKER = 0x08 // 4, 0x90 // 4
 # The location table, and the one an order borrows for the length of one action (put back after).
 MRGN = 0x58DC60
 SCRATCH_LOCATION = 255
@@ -134,15 +143,46 @@ class Leave(Exception):
     """Raised through the lowering when a statement ends the straight line (break / continue / return)."""
 
 
-class Storage:
-    """A variable's cell: plain, or a 12-slot row of a per-player program."""
+class Rows:
+    """Which of a cell's copies is the one in use: a per-player program has one a player, a task's body one a slot of its
+    start (`Pool`), and a task's in a per-player program one a slot within each player's. Called, it is the index."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, lowering, per_player, pool):
+        self.lowering, self.per_player, self.pool = lowering, per_player, pool
+        self.count = (12 if per_player else 1) * (pool.max if pool else 1)
+
+    def __call__(self):
+        if self.pool:
+            return self.pool.row
+        return self.lowering.player_of()
+
+
+class RowCell:
+    """A cell of the lowering's own (a coroutine's place, a latch), with a copy for each row of `rows` when it has them."""
+
+    def __init__(self, rows, initial=0):
+        self.rows = rows
+        self.store = EUDArray([initial] * rows.count) if rows else EUDVariable(initial)  # initial: the lowering's own state
+
+    def get(self):
+        return self.store[self.rows()] if self.rows else self.store
+
+    def set(self, value):
+        if self.rows:
+            self.store[self.rows()] = value
+        else:
+            self.store << value
+
+
+class Storage:
+    """A variable's cell: plain, or one of rows (`Rows`) - a 12-slot row of a per-player program, a row a task's slot."""
+
+    def __init__(self, decl, rows):
         self.decl = decl
         self.bits = decl.get("bits")
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        self.store = EUDArray([0] * 12) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
+        self.rowed = rows is not None
+        self.player_of = rows
+        self.store = EUDArray([0] * rows.count) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
 
     def get(self):
         return self.store[self.player_of()] if self.rowed else self.store
@@ -156,25 +196,48 @@ class Storage:
             self.store << value
 
 
+def unpack_table(table, length):
+    """A table the IR carries packed (`compiler/eud.ts#packTable`): `bytes` a value, little-endian, in base64 - as a
+    dword a value, the cells of the map."""
+    width = int(table["bytes"])
+    raw = base64.b64decode(table["data"])
+    if len(raw) != width * length:
+        raise RuntimeError("a packed table is %d bytes, not %d values of %d" % (len(raw), length, width))
+    out = bytearray(4 * length)
+    for b in range(width):
+        out[b::4] = raw[b::width]
+    return bytes(out)
+
+
 class ArrayStorage:
     """An array's cells: `length` of them, twelve rows of that in a per-player program, or - `values` - a list
     the script computed when it was built, which is in the map as it loads and which nothing writes. An index
     past either end (read from 0 up, so one below zero too) reads 0 and stores nothing."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, decl, rows):
         self.decl = decl
         self.length = int(decl["length"])
         self.bits = decl.get("bits")
         values = decl.get("values")
-        self.rowed = per_player and not decl.get("shared") and values is None
-        self.player_of = player_of
+        table = decl.get("packed")
+        self.rowed = rows is not None and values is None and table is None
+        self.player_of = rows
         if decl.get("texts") is not None:
             # A list of texts the script has: a cell is the text's id in the built map's table.
             values = [text_id(t) for t in decl["texts"]]
-        self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (12 if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
+        # What a list known when the map is built holds, for what is worked out with it then (an atan2 of constants).
+        self.values = [int(v) & U32 for v in values] if values is not None else None
+        if table is not None:
+            # A long table (a video's brushes): its bytes straight into the map, no list of a value at a time.
+            # (An EUDArray is its cells' EPD, so that is what it is made from.)
+            raw = unpack_table(table, self.length)
+            self.values = [int.from_bytes(raw[i:i + 4], "little") for i in range(0, len(raw), 4)]
+            self.store = EUDArray(_from=EPD(Db(raw)))
+        else:
+            self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (rows.count if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
 
     def at(self, index):
-        """The cell's place among the store's: the player's row first."""
+        """The cell's place among the store's: the row first (the player's, the task's)."""
         if not self.rowed:
             return index
         p = self.player_of()
@@ -418,12 +481,12 @@ class ListStorage:
     in use, how many the block has room for, and the block's size class - a cell each, or a row of twelve each in
     a per-player program. Reads and stores are bounded by the cells in use; a store at exactly the length is a push."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, decl, rows):
         self.decl = decl
         self.bits = decl.get("bits")
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no block
+        self.rowed = rows is not None
+        self.player_of = rows
+        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no block
         self.handle = {name: make() for name in ("ptr", "len", "room", "k")}
         self.heap = heap()
 
@@ -536,6 +599,7 @@ class InnerListStorage(ListStorage):
 # ── texts ──
 TEXT_BYTES = 1023  # the most a made text holds; compiler/ir.ts has the same number
 TEXT_FIELD_BYTES = 255  # the room of a string kept for an action's field or a unit type's name
+BUILD_BYTES = 2047  # the most a buffer of buildText holds; compiler/ir.ts has the same number
 UNIT_MAP_STRING = 0x660260  # units.dat: the id of the name a map gives a unit type, a word each
 _TEXT = {}
 _SLOTS = {}
@@ -864,6 +928,60 @@ def text_id(text):
     return EncodeString(text) if text else 0
 
 
+_BUFFERS = {}
+
+
+def buffer(name):
+    """A buffer of buildText: its bytes and where the writing has got to. One for the whole game, used up within the
+    frame it is built in. It may run a part past its most before it is cut, and a part is at most a text's room."""
+    if name not in _BUFFERS:
+        _BUFFERS[name] = (Db(BUILD_BYTES + 1 + TEXT_BYTES + 1 + 8), EUDVariable())
+    return _BUFFERS[name]
+
+
+_BUILD = {}
+
+
+def builds():
+    """What every buffer shares: copying a text onto the end of one, and cutting one that ran past its room."""
+    if _BUILD:
+        return _BUILD
+    said_cut = EUDVariable(0)  # initial: said once a game
+
+    @EUDFunc
+    def append(pos, src, last):
+        """The text at src written at pos, ended by a 0; where that 0 is. Never past `last`."""
+        br1.seekoffset(src)
+        bw1.seekoffset(pos)
+        if EUDWhile()(pos <= last):
+            b = br1.readbyte()
+            EUDBreakIf(b == 0)
+            bw1.writebyte(b)
+            pos += 1
+        EUDEndWhile()
+        bw1.writebyte(0)
+        EUDReturn(pos)
+
+    @EUDFunc
+    def cut(pos, end):
+        """A buffer whose writing got to `pos`, cut at `end` (never inside a character) when it went past it."""
+        if EUDIf()(pos > end):
+            pos << end
+            if EUDWhile()(f_bread(pos).ExactlyX(0x80, 0xC0)):
+                pos -= 1
+            EUDEndWhile()
+            f_bwrite(pos, 0)
+            if EUDIf()(said_cut == 0):
+                said_cut << 1
+                GetGlobalStringBuffer().print("\x06TrigScript: a text was cut off - one put together piece by piece holds %d bytes." % BUILD_BYTES)
+            EUDEndIf()
+        EUDEndIf()
+        EUDReturn(pos)
+
+    _BUILD.update(append=append, cut=cut)
+    return _BUILD
+
+
 class TextVal:
     """A text as the lowering holds it: where it is, the block it owns (the int 0: none), and its length in
     characters - an int, a variable, or None when nobody has counted yet. `taken`: the block is the value's own, so
@@ -879,13 +997,13 @@ class TextVal:
 
 
 class TextStorage:
-    """A text variable that is made: three cells, or three rows of twelve in a per-player program."""
+    """A text variable that is made: three cells, or three rows (of twelve in a per-player program, of a task's slots)."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, decl, rows):
         self.decl = decl
-        self.rowed = per_player and not decl.get("shared")
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no text yet, and no block
+        self.rowed = rows is not None
+        self.player_of = rows
+        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no text yet, and no block
         self.addr, self.block, self.len = make(), make(), make()
 
     def cell(self, cell):
@@ -931,13 +1049,13 @@ NO_UNIT = UnitRef(0, 0, 0)
 
 
 class UnitStorage:
-    """A unit variable: three cells, or three 12-slot rows of a per-player program."""
+    """A unit variable: three cells, or three rows (12-slot of a per-player program, of a task's slots)."""
 
-    def __init__(self, decl, per_player, player_of):
+    def __init__(self, decl, rows):
         self.decl = decl
-        self.rowed = per_player
-        self.player_of = player_of
-        make = (lambda: EUDArray([0] * 12)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
+        self.rowed = rows is not None
+        self.player_of = rows
+        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
         self.ptr, self.epd, self.uid = make(), make(), make()
 
     def get(self):
@@ -983,6 +1101,128 @@ def saturate(value, bits):
     return v
 
 
+# ── fixed-point numbers (16.16, TrigScript 4's B6): a cell is the value times 65 536, read signed ──
+FIXED_ONE = 1 << 16
+FIXED_PI = 205887  # round(pi * 65536); compiler/fixedMath.ts has the same
+FIXED_HALF_PI = 102944
+DIGIT_TEXTS = Db(b"0\x001\x002\x003\x004\x005\x006\x007\x008\x009\x00")  # a digit d's text at 2 * d
+DOT_TEXT = Db(b".\0\0\0")
+_FIXED = {}
+
+
+def fixed_text(v):
+    """A fixed number known when the map is built, as a program prints it: compiler/fixedMath.ts#fixedText."""
+    v = signed(v)
+    m = abs(v)
+    whole, places = m >> 16, ((m & 0xFFFF) * 10000 + 32768) >> 16
+    if places == 10000:
+        whole, places = whole + 1, 0
+    sign = "-" if v < 0 and (whole or places) else ""
+    return sign + str(whole) + ("." + ("%04d" % places).rstrip("0") if places else "")
+
+
+def magnitudes(a, b):
+    """a and b made their distances from 0 in place, and 1 when exactly one of them was below zero."""
+    neg = fresh(0)
+    if EUDIf()(a >= SIGN):
+        a << 0 - a
+        neg << 1
+    EUDEndIf()
+    if EUDIf()(b >= SIGN):
+        b << 0 - b
+        neg << 1 - neg
+    EUDEndIf()
+    return neg
+
+
+def fixed_fns():
+    """The fixed numbers' functions, made when the first one is met: one body each in the map, called."""
+    if _FIXED:
+        return _FIXED
+
+    @EUDFunc
+    def fmul(a, b):
+        """a * b / 65536 towards zero, wrapping: the four products of the 16-bit halves of the magnitudes."""
+        neg = magnitudes(a, b)
+        ah, al = [fresh(x) for x in f_div(a, FIXED_ONE)]
+        bh, bl = [fresh(x) for x in f_div(b, FIXED_ONE)]
+        r = fresh(f_mul(ah, bh))
+        r << f_mul(r, FIXED_ONE)
+        r += f_mul(ah, bl)
+        r += f_mul(bh, al)
+        low = fresh(f_mul(al, bl))
+        r += f_div(low, FIXED_ONE)[0]
+        if EUDIf()(neg == 1):
+            r << 0 - r
+        EUDEndIf()
+        EUDReturn(r)
+
+    @EUDFunc
+    def fdiv(a, b):
+        """a * 65536 / b towards zero, wrapping; a divisor of 0 gives 0. The whole part by eudplib's division, then
+        sixteen more bits of the quotient, one a step, from what is left over."""
+        if EUDIf()(b == 0):
+            EUDReturn(0)
+        EUDEndIf()
+        neg = magnitudes(a, b)
+        q, r = [fresh(x) for x in f_div(a, b)]
+        for _ in range(16):
+            r += r
+            q += q
+            if EUDIf()(r >= b):
+                r -= b
+                q += 1
+            EUDEndIf()
+        if EUDIf()(neg == 1):
+            q << 0 - q
+        EUDEndIf()
+        EUDReturn(q)
+
+    def root(x, pairs, zeros):
+        """The largest r with r * r <= x * 4 ** zeros, x read as `pairs` pairs of bits from the top: two bits a step."""
+        r, rem = fresh(0), fresh(0)
+        for i in range(pairs + zeros):
+            rem += rem
+            rem += rem
+            if i < pairs:
+                # The two bits at the top of x, shifted out of it.
+                for weight in (2, 1):
+                    if EUDIf()(x >= SIGN):
+                        rem += weight
+                    EUDEndIf()
+                    x += x
+            trial = fresh(r)
+            trial += trial
+            trial += trial
+            trial += 1
+            r += r
+            if EUDIf()(rem >= trial):
+                rem -= trial
+                r += 1
+            EUDEndIf()
+        return r
+
+    @EUDFunc
+    def sqrt_fixed(x):
+        """The square root of a fixed number, rounded down: isqrt(x * 65536); 0 below zero."""
+        if EUDIf()(x >= SIGN):
+            EUDReturn(0)
+        EUDEndIf()
+        EUDReturn(root(x, 16, 8))
+
+    @EUDFunc
+    def sqrt_whole(x):
+        """The square root of a whole number read from 0 up, as a fixed one: isqrt(x * 2 ** 32). From 2 ** 30 up it
+        is past what a fixed number holds, and gives the largest."""
+        if EUDIf()(x >= 1 << 30):
+            EUDReturn(0x7FFFFFFF)
+        EUDEndIf()
+        EUDReturn(root(x, 16, 16))
+
+    _FIXED.update(fmul=fmul, fdiv=fdiv, sqrt_fixed=sqrt_fixed, sqrt_whole=sqrt_whole)
+    return _FIXED
+
+
 def as_var(value):
     if isinstance(value, int):
         return EUDVariable(value & U32)  # initial: a constant, never written
@@ -999,6 +1239,288 @@ def fresh(value=0):
     return v
 
 
+class Coroutine:
+    """Where a coroutine is: the label it goes on from (0 its start, DONE once it ended) and the frames it still waits,
+    a cell each, a row of twelve in a per-player program, a row a slot in a task's body. The program is one; each branch
+    of a Promise.all / race is another, which runs inside the frame of what waits at that statement; a task is one too.
+    `task`: the coroutine is a task's own, which a cancel() may have ended while it ran: parking leaves an end an end."""
+
+    def __init__(self, lowering, rows, initial=0, task=False):
+        self.lowering = lowering
+        self.state = RowCell(rows, initial)
+        self.wait = RowCell(rows, 0)
+        self.task = task
+        self.resumes = []  # (index, Forward) for every place it can go on from
+        self.frame_end = None
+
+    def get_state(self):
+        return self.state.get()
+
+    def set_state(self, value):
+        self.state.set(value)
+
+    def get_wait(self):
+        return self.wait.get()
+
+    def set_wait(self, value):
+        self.wait.set(value)
+
+    def park(self, index, wait):
+        """Stop here for this frame, to go on from `index` once `wait` more frames have passed."""
+        if self.task:
+            if EUDIfNot()(as_var(self.get_state()) == DONE):
+                self.set_state(index)
+            EUDEndIf()
+        else:
+            self.set_state(index)
+        self.set_wait(wait)
+        EUDJump(self.frame_end)
+
+    def resume_point(self):
+        """A place to go on from: its number, which the state takes, and its label, to be placed where it is."""
+        index = len(self.resumes) + 1
+        label = Forward()
+        self.resumes.append((index, label))
+        return index, label
+
+
+class Pool:
+    """A `start` statement's tasks: `max` slots, each a row of the cells of the task's body - its coroutine's place
+    (DONE: the slot is free), the generation of the task in it, the frame it last had its turn in. `slot` is the slot
+    being run or started, `row` its row among the cells (the player's rows first in a per-player program, from `base`)."""
+
+    def __init__(self, lowering, st):
+        self.st = st
+        self.task = int(st["task"])
+        self.max = int(st["max"])
+        self.slot = EUDVariable(0)  # initial: the pool's own state
+        self.row = EUDVariable(0)  # initial: the pool's own state
+        self.base = EUDVariable(0)  # initial: the pool's own state
+        self.said = EUDVariable(0)  # initial: nothing said yet
+        self.rows = Rows(lowering, lowering.per_player, self)
+        self.co = Coroutine(lowering, self.rows, DONE, task=True)
+        self.gen = RowCell(self.rows, 0)
+        self.ran = RowCell(self.rows, 0)
+        # How many of its slots are running (the player's, in a per-player program), and that count where the tasks'
+        # turn can test it every time round: the slots after the last running one are not looked at.
+        self.live = RowCell(Rows(lowering, True, None) if lowering.per_player else None, 0)
+        self.count = self.live.store if not lowering.per_player else EUDVariable(0)  # initial: the pool's own state
+        # A listener's start (on.created, ...): set when one of its tasks is started and has not had its first turn, so
+        # that without it and with nothing heard the tasks' turn passes the whole start by.
+        self.fresh = RowCell(Rows(lowering, True, None) if lowering.per_player else None, 0) if st.get("listen") is not None else None
+
+    def add(self, n):
+        """One more task running (1) or one fewer (-1)."""
+        if self.count is self.live.store:
+            self.count += n
+            return
+        self.live.set(as_var(self.live.get()) + n)
+        self.count += n
+
+    def select(self, i):
+        self.slot << i
+        self.row << self.base + i
+
+    def at(self, cell, slot):
+        """A cell of the slot `slot`, without selecting it: the one being run stays where it is."""
+        return cell.store[self.base + slot]
+
+
+class SlotTable(EUDObject):
+    """A dword for each of the game's 1700 unit slots, 336 bytes apart as the slots are: a unit's own EPD plus one number is
+    its cell, as eudplib's EUDLoopNewUnit keeps its marks. The space between the cells is left for anything else."""
+
+    def GetDataSize(self):
+        return 4 + UNIT_SIZE * (UNIT_SLOTS - 1)
+
+    def WritePayload(self, buf):
+        buf.WriteDword(0)
+        for _ in range(UNIT_SLOTS - 1):
+            buf.WriteSpace(UNIT_SIZE - 4)
+            buf.WriteDword(0)
+
+
+class Events:
+    """The frame's events pass (on.created / on.died), before the programs' turns: the units that came onto the map since
+    the pass before, and the ones that died. A slot's cell of `seen` holds the uniqueness byte of the unit seen in it (as
+    it sits in its dword, masked 0xFF00) and, once that unit's death has been handed on, one more: so a unit is new when
+    its slot's cell is not its byte, and a death is handed on once, and only for a unit that was seen on the map. Each
+    list on the map is walked from its head to the record that was behind the head at the pass before, the units linked
+    in since lying in between; when that record has left the list the walk goes to the end, which costs more and misses
+    nothing. The dying list is walked whole, both ways from the record its address gives: in 1.16.1 that is the list's
+    head, but Remastered links its dying list the other way round and hands an EUD map its tail there (its own code
+    links a dying unit in behind the other end, which no map can read), so only a walk both ways sees every record in
+    both. A record stays on it only until its sprite is gone. Nothing of the game is written."""
+
+    def __init__(self, created, died, ordered=False, morphed=False):
+        self.created, self.died, self.ordered, self.morphed = created, died, ordered, morphed
+        self.seen = SlotTable()
+        # on.order / on.morphed: each slot's order (masked 0xFF00, as it sits in its dword) and type as the pass before found
+        # them, and this frame's units that changed, each with what it was.
+        self.orders = SlotTable() if ordered else None
+        self.types = SlotTable() if morphed else None
+        self.turned, self.turned_was = (EUDArray(EVENT_CAP), EUDArray(EVENT_CAP)) if ordered else (None, None)
+        self.turned_n = EUDVariable(0)  # initial: the pass's own state, set at its start
+        self.changed, self.changed_was = (EUDArray(EVENT_CAP), EUDArray(EVENT_CAP)) if morphed else (None, None)
+        self.changed_n = EUDVariable(0)  # initial: the pass's own state, set at its start
+        # Each a unit's pointer, which f_cunitepdread_epd reads back cheaply with its EPD: within the frame a slot is not
+        # given to another unit (that takes a dying pass), so its uniqueness byte need not be kept.
+        self.made = EUDArray(EVENT_CAP) if created else None
+        self.made_n = EUDVariable(0)  # initial: the pass's own state, set at its start
+        self.gone = EUDArray(EVENT_CAP) if died else None
+        self.gone_n = EUDVariable(0)  # initial: the pass's own state, set at its start
+        # For each list, as the pass before left it: the record behind the head (pointer, EPD, uniqueness byte) and the
+        # head (pointer, EPD). Nothing is linked in but behind the head, so with both the same nothing came in since.
+        self.bounds = {VISIBLE_HEAD: [EUDVariable(0) for _ in range(5)]}  # initial: no pass before
+
+    def cell(self, epd, table=None):
+        return epd + (EPD(table or self.seen) - EPD(UNIT_TABLE))
+
+    def walk(self, head, step):
+        """`step(ptr, epd, uid, cell, stop)` for each record from the head to the one behind the head at the pass before."""
+        bptr, bepd, buid, hptr, hepd = self.bounds[head]
+        top, done, stop = Forward(), Forward(), Forward()
+        # Nothing linked in since the pass before: the same head, the same record behind it (or none).
+        walk = Forward()
+        EUDJumpIfNot(Memory(head, Exactly, hptr), walk)
+        EUDJumpIf(hptr == 0, stop)
+        if EUDIf()(bptr == 0):
+            EUDJumpIf(MemoryEPD(hepd + 1, Exactly, 0), stop)
+        if EUDElse()():
+            EUDJumpIf([MemoryEPD(hepd + 1, Exactly, bptr), MemoryXEPD(bepd + OFF_UID, Exactly, buid, 0xFF00)], stop)
+        EUDEndIf()
+        walk << NextTrigger()
+        ptr, epd = f_cunitepdread_epd(EPD(head))
+        first = fresh(1)
+        top << NextTrigger()
+        EUDJumpIf(ptr == 0, done)
+        uid = f_maskread_epd(epd + OFF_UID, 0xFF00)
+        EUDJumpIf([first == 0, ptr == bptr, uid == buid], done)
+        first << 0
+        step(ptr, epd, uid, self.cell(epd), stop)
+        f_cunitepdread_epd(epd + 1, ret=[ptr, epd])
+        EUDJump(top)
+        done << NextTrigger()
+        # What is behind the head now is where the next pass stops.
+        f_cunitepdread_epd(EPD(head), ret=[hptr, hepd])
+        bptr << 0
+        if EUDIf()(hptr >= 1):
+            f_cunitepdread_epd(hepd + 1, ret=[bptr, bepd])
+            if EUDIf()(bptr >= 1):
+                buid << f_maskread_epd(bepd + OFF_UID, 0xFF00)
+            EUDEndIf()
+        EUDEndIf()
+        stop << NextTrigger()
+
+    def walk_all(self, head, step):
+        """`step(ptr, epd, uid, cell, stop)` for every record of a list: the one at its address, those after it (+4), then
+        those before it (+0)."""
+        top, done, stop = Forward(), Forward(), Forward()
+        EUDJumpIf(Memory(head, Exactly, 0), stop)
+        ptr, epd = f_cunitepdread_epd(EPD(head))
+        sepd = EUDVariable()
+        sepd << epd
+        link = fresh(1)
+        top << NextTrigger()
+        EUDJumpIf(ptr == 0, done)
+        uid = f_maskread_epd(epd + OFF_UID, 0xFF00)
+        step(ptr, epd, uid, self.cell(epd), stop)
+        if EUDIf()(link == 1):
+            f_cunitepdread_epd(epd + 1, ret=[ptr, epd])
+        if EUDElse()():
+            f_cunitepdread_epd(epd, ret=[ptr, epd])
+        EUDEndIf()
+        EUDJump(top)
+        done << NextTrigger()
+        # The way after it is done: now the way before it, from the record before the first.
+        EUDJumpIf(link == 0, stop)
+        link << 0
+        f_cunitepdread_epd(sepd, ret=[ptr, epd])
+        EUDJump(top)
+        stop << NextTrigger()
+
+    def watch(self):
+        """on.order / on.morphed: every unit on the map, its order and its type against what the pass before found. A unit
+        not seen before (it comes on in this pass) only has them kept; the units that came on are taken after this. The
+        type is read as its low byte (there are 228). Whether the unit was seen is asked only when something changed."""
+        top, done = Forward(), Forward()
+        ptr, epd = f_cunitepdread_epd(EPD(VISIBLE_HEAD))
+        top << NextTrigger()
+        EUDJumpIf(ptr == 0, done)
+        for table, buf, was, n, off, mask in ((self.orders, self.turned, self.turned_was, self.turned_n, OFF_OWNER_ORDER, 0xFF00),
+                                              (self.types, self.changed, self.changed_was, self.changed_n, OFF_TYPE, 0xFF)):
+            if table is None:
+                continue
+            now = f_maskread_epd(epd + off, mask)
+            cell = self.cell(epd, table)
+            if EUDIfNot()(MemoryEPD(cell, Exactly, now)):
+                if EUDIf()([MemoryXEPD(epd + OFF_UID, Exactly, f_dwread_epd(self.cell(epd)), 0xFF00), n < EVENT_CAP]):
+                    buf[n] = ptr
+                    old = f_dwread_epd(cell)
+                    was[n] = f_bitrshift(old, 8) if mask == 0xFF00 else old
+                    n += 1
+                EUDEndIf()
+                f_dwwrite_epd(cell, now)
+            EUDEndIf()
+        f_cunitepdread_epd(epd + 1, ret=[ptr, epd])
+        EUDJump(top)
+        done << NextTrigger()
+
+    def run(self):
+        self.made_n << 0
+        self.gone_n << 0
+        self.turned_n << 0
+        self.changed_n << 0
+        if self.ordered or self.morphed:
+            self.watch()
+
+        def came(ptr, epd, uid, cell, stop):
+            if EUDIfNot()(MemoryEPD(cell, Exactly, uid)):
+                EUDJumpIf(self.made_n >= EVENT_CAP, stop)
+                f_dwwrite_epd(cell, uid)
+                if self.created:
+                    self.made[self.made_n] = ptr
+                    self.made_n += 1
+            EUDEndIf()
+        self.walk(VISIBLE_HEAD, came)
+        if self.died:
+            def went(ptr, epd, uid, cell, stop):
+                if EUDIf()(MemoryEPD(cell, Exactly, uid)):
+                    EUDJumpIf(self.gone_n >= EVENT_CAP, stop)
+                    f_dwwrite_epd(cell, uid + 1)
+                    self.gone[self.gone_n] = ptr
+                    self.gone_n += 1
+                EUDEndIf()
+            self.walk_all(DYING_HEAD, went)
+
+
+def uses_source(node, which):
+    """Whether a piece of the IR has a loop over the events pass's units of that kind."""
+    if isinstance(node, list):
+        return any(uses_source(x, which) for x in node)
+    if isinstance(node, dict):
+        if node.get("kind") == "unitLoop" and node.get("source") == which:
+            return True
+        return any(uses_source(v, which) for v in node.values() if isinstance(v, (list, dict)))
+    return False
+
+
+def collect_decls(node, out):
+    """Every variable declaration in a piece of the IR, by id: what a `declare` and a loop declare, a call's
+    parameters and result, a function's."""
+    if isinstance(node, list):
+        for x in node:
+            collect_decls(x, out)
+        return
+    if not isinstance(node, dict):
+        return
+    if isinstance(node.get("id"), str) and node.get("kind") in ("number", "boolean", "unit", "text") and "shared" in node:
+        out.setdefault(node["id"], node)
+    for v in node.values():
+        if isinstance(v, (list, dict)):
+            collect_decls(v, out)
+
+
 class Lowering:
     def __init__(self, program):
         self.p = program
@@ -1007,11 +1529,36 @@ class Lowering:
         self.slots = owner_slots(program)
         self.player = None
         self.vars = {}
-        self.arrays = {a["id"]: SliceStorage(a, self) if a.get("slice") else InnerListStorage(a, self) if a.get("through") else (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.per_player, self.player_of) for a in program.get("arrays", [])}
-        self.state = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
-        self.wait = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: program state
-        self.resumes = []  # (index, Forward) for every sleep
-        self.frame_end = None
+        # Every variable of the program by id, and those made before their declaration was lowered: a function is
+        # lowered where it is first called, which may come before a variable it uses is declared (a function kept
+        # as a value, B3, is lowered with every other of its dispatcher's).
+        self.decls = {}
+        collect_decls(program, self.decls)
+        self.early = set()
+        # The `start` statements' tasks, by their number, in that order; the one whose body is being lowered.
+        starts = []
+        each_start([program.get("body", []), program.get("functions", [])], starts.append)
+        self.pools = {}
+        self.pool = None
+        for st in sorted(starts, key=lambda st: int(st["task"])):
+            self.pools[int(st["task"])] = Pool(self, st)
+        self.tick = EUDVariable(0)  # initial: frames the tasks have run
+        self.again = EUDVariable(0)  # initial: no task started during the tasks' turn
+        self.arrays = {}
+        for a in program.get("arrays", []):
+            if a.get("slice"):
+                self.arrays[a["id"]] = SliceStorage(a, self)
+            elif a.get("through"):
+                self.arrays[a["id"]] = InnerListStorage(a, self)
+            else:
+                self.arrays[a["id"]] = (ListStorage if a.get("dynamic") else ArrayStorage)(a, self.rows_of(a))
+        # A task's parameters are set where it is started, which may be lowered after its body: theirs are made now.
+        for pool in self.pools.values():
+            for prm in pool.st["call"]["params"]:
+                self.declare(prm["decl"])
+        # The program's own coroutine, and the one being lowered (a branch of a Promise.all / race inside it, a task).
+        self.top = Coroutine(self, self.rows())
+        self.co = self.top
         self.latches = {}
         # The functions that are called, by id, and each one's EUDFunc once something has called it.
         self.functions = {f["id"]: f for f in program.get("functions", [])}
@@ -1026,13 +1573,29 @@ class Lowering:
             raise Fail("trigscript: a per-player variable outside the player loop")
         return self.player
 
+    def rows(self):
+        """The rows a cell of the lowering's own has where the lowering is: a player's, a task's slot's, or none."""
+        return Rows(self, self.per_player, self.pool) if self.per_player or self.pool else None
+
+    def rows_of(self, decl):
+        """The rows of a variable's or an array's cells: one a player unless it is shared, one a slot of its task."""
+        pool = self.pools.get(decl["task"]) if decl.get("task") is not None else None
+        per_player = self.per_player and not decl.get("shared")
+        return Rows(self, per_player, pool) if per_player or pool else None
+
     def declare(self, decl):
+        made = self.vars.get(decl["id"])
+        if made is not None and decl.get("task") is not None:
+            return made  # (a task's parameter, made with its pool)
+        if made is not None and decl["id"] in self.early:
+            self.early.discard(decl["id"])
+            return made  # (used by a function lowered before the declaration was)
         if decl.get("kind") == "unit":
-            s = UnitStorage(decl, self.per_player, self.player_of)
+            s = UnitStorage(decl, Rows(self, self.per_player, self.pools.get(decl.get("task"))) if self.per_player or decl.get("task") is not None else None)
         elif decl.get("kind") == "text" and decl.get("text") != "id":
-            s = TextStorage(decl, self.per_player, self.player_of)
+            s = TextStorage(decl, self.rows_of(decl))
         else:
-            s = Storage(decl, self.per_player, self.player_of)
+            s = Storage(decl, self.rows_of(decl))
         self.vars[decl["id"]] = s
         return s
 
@@ -1044,27 +1607,12 @@ class Lowering:
 
     def var(self, id_, node=None):
         s = self.vars.get(id_)
+        if s is None and id_ in self.decls:
+            s = self.declare(self.decls[id_])
+            self.early.add(id_)
         if s is None:
             raise Fail("trigscript: unknown variable %r%s" % (id_, where(node)))
         return s
-
-    def get_state(self):
-        return self.state[self.player] if self.per_player else self.state
-
-    def set_state(self, value):
-        if self.per_player:
-            self.state[self.player] = value
-        else:
-            self.state << value
-
-    def get_wait(self):
-        return self.wait[self.player] if self.per_player else self.wait
-
-    def set_wait(self, value):
-        if self.per_player:
-            self.wait[self.player] = value
-        else:
-            self.wait << value
 
     # ── numbers: an int (the 32 bits, 0 … 2^32 - 1) or an EUDVariable ──
     def num(self, e):
@@ -1128,6 +1676,8 @@ class Lowering:
                 t << 0 - t
             EUDEndIf()
             return t
+        if k == "intrinsic" and e["name"] in ("fmul", "fdiv", "sqrt", "atan2", "sin", "cos"):
+            return self.fixed_op(e)
         if k == "intrinsic":
             a, b = [self.num(x) for x in e["args"]]
             name = e["name"]
@@ -1146,6 +1696,133 @@ class Lowering:
             return self.call(e["call"])
         raise Fail("trigscript: unknown expression %r%s" % (k, where(e)))
 
+    def fixed_op(self, e):
+        """fmul / fdiv / sqrt / atan2 of fixed numbers (raw cells): worked out here when every argument is known, else a
+        call of the function fixed_fns() makes. compiler/fixedMath.ts is the same arithmetic for the simulator."""
+        name = e["name"]
+        args = [self.num(x) for x in e["args"]]
+        if all(isinstance(x, int) for x in args):
+            return fixed_const(name, [signed(x) for x in args], e.get("unsigned"), [signed(v) for v in self.array(e["table"], e).values] if name in ("atan2", "sin", "cos") else None) & U32
+        fns = fixed_fns()
+        if name == "fmul":
+            return fresh(fns["fmul"](*[as_var(x) for x in args]))
+        if name == "fdiv":
+            return fresh(fns["fdiv"](*[as_var(x) for x in args]))
+        if name == "sqrt":
+            return fresh(fns["sqrt_whole" if e.get("unsigned") else "sqrt_fixed"](as_var(args[0])))
+        if name in ("sin", "cos"):
+            return self.sine(args[0], args[1], self.array(e["table"], e), name == "cos")
+        return self.atan2(args[0], args[1], self.array(e["table"], e), e)
+
+    @staticmethod
+    def between(table, i, f, bits):
+        """table[i] + (table[i + 1] - table[i]) * f / 2 ** bits, the part of the step towards zero: a table read between
+        its cells (compiler/fixedMath.ts#between). `i + 1` past the end reads 0, as any cell past the end does."""
+        a, b = fresh(table.get(i)), fresh(table.get(i + 1))
+        d, out = fresh(b - a), fresh(a)
+        if EUDIf()(d >= SIGN):
+            d << 0 - d
+            out -= f_div(f_mul(d, f), 1 << bits)[0]
+        if EUDElse()():
+            out += f_div(f_mul(d, f), 1 << bits)[0]
+        EUDEndIf()
+        return out
+
+    def sine(self, x, scale, table, cos):
+        """sin(x) of a fixed number of radians (x * scale the place in the 4096 cells of the table), or with `cos` a
+        quarter turn on: compiler/fixedMath.ts#fixedSin. The next cell is cell 0 again at the end of the turn."""
+        at = fresh(fixed_fns()["fmul"](as_var(x), as_var(scale)))
+        f = fresh(at & 0xFFFF)
+        i = fresh(f_bitrshift(at, 16))
+        if cos:
+            i += 1024
+        i << (i & 4095)
+        # Cell 4096 is cell 0: the table read with its first cell after its last.
+        a, b = fresh(table.get(i)), fresh(0)
+        if EUDIf()(i == 4095):
+            b << table.get(0)
+        if EUDElse()():
+            b << table.get(i + 1)
+        EUDEndIf()
+        d, out = fresh(b - a), fresh(a)
+        if EUDIf()(d >= SIGN):
+            d << 0 - d
+            out -= f_div(f_mul(d, f), 1 << 16)[0]
+        if EUDElse()():
+            out += f_div(f_mul(d, f), 1 << 16)[0]
+        EUDEndIf()
+        return out
+
+    def atan2(self, y, x, table, node):
+        """atan2(y, x) of fixed numbers: the smaller side over the larger to the nearest 1/1024, read from the table
+        (atan(i / 1024)), then put in its octant: compiler/fixedMath.ts#fixedAtan2."""
+        fns = fixed_fns()
+        ax, ay, t = fresh(x), fresh(y), fresh(0)
+        if EUDIf()(ax >= SIGN):
+            ax << 0 - ax
+        EUDEndIf()
+        if EUDIf()(ay >= SIGN):
+            ay << 0 - ay
+        EUDEndIf()
+        if EUDIfNot()(EUDAnd(ax == 0, ay == 0)):
+            if EUDIf()(ay <= ax):
+                i, f = [fresh(v) for v in f_div(fns["fdiv"](ay, ax), 64)]
+                t << self.between(table, i, f, 6)
+            if EUDElse()():
+                i, f = [fresh(v) for v in f_div(fns["fdiv"](ax, ay), 64)]
+                t << FIXED_HALF_PI - self.between(table, i, f, 6)
+            EUDEndIf()
+            if EUDIf()(as_var(x) >= SIGN):
+                t << FIXED_PI - t
+            EUDEndIf()
+            if EUDIf()(as_var(y) >= SIGN):
+                t << 0 - t
+            EUDEndIf()
+        EUDEndIf()
+        return t
+
+    def fixed_pieces(self, v):
+        """A fixed number as printed pieces: its sign, its whole part, and the point and up to four places, without the
+        zeros at the end. The most it comes to is 11 bytes."""
+        if isinstance(v, int):
+            return [fixed_text(v)]
+        sign, m = fresh(NO_SIGN), fresh(v)
+        if EUDIf()(m >= SIGN):
+            sign << MINUS_SIGN
+            m << 0 - m
+        EUDEndIf()
+        whole, frac = [fresh(x) for x in f_div(m, FIXED_ONE)]
+        places = fresh(f_div(f_mul(frac, 10000) + 32768, FIXED_ONE)[0])
+        if EUDIf()(places == 10000):
+            whole += 1
+            places << 0
+        EUDEndIf()
+        if EUDIf()(EUDAnd(whole == 0, places == 0)):
+            sign << NO_SIGN
+        EUDEndIf()
+        # The four places as digits, then each one's text, or none once only zeros are left after it.
+        digits = []
+        rest = fresh(places)
+        for unit in (1000, 100, 10):
+            d, rest2 = [fresh(x) for x in f_div(rest, unit)]
+            digits.append(d)
+            rest << rest2
+        digits.append(rest)
+        texts = [fresh(NO_SIGN) for _ in range(4)]
+        dot = fresh(NO_SIGN)
+        shown = fresh(0)
+        for i in (3, 2, 1, 0):
+            if EUDIf()(digits[i] >= 1):
+                shown << 1
+            EUDEndIf()
+            if EUDIf()(shown == 1):
+                texts[i] << DIGIT_TEXTS + digits[i] + digits[i]
+            EUDEndIf()
+        if EUDIf()(shown == 1):
+            dot << DOT_TEXT
+        EUDEndIf()
+        return [ptr2s(sign), whole, ptr2s(dot)] + [ptr2s(t) for t in texts]
+
     def binary(self, e):
         a, b = self.num(e["left"]), self.num(e["right"])
         op = e["op"]
@@ -1157,7 +1834,13 @@ class Lowering:
         if op == "-":
             return (a - b) & U32 if both else a - b
         if op == "*":
-            return (a * b) & U32 if both else f_mul(as_var(a), as_var(b))
+            if both:
+                return (a * b) & U32
+            # By a power of two, a shift: x * 32 is x << 5, a fifth of the cost of eudplib's general product.
+            k, v = (b, a) if isinstance(b, int) else (a, b) if isinstance(a, int) else (None, None)
+            if k is not None and k > 0 and k & (k - 1) == 0:
+                return v if k == 1 else f_bitlshift(fresh(v), k.bit_length() - 1)
+            return f_mul(as_var(a), as_var(b))
         # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
         unsigned = bool(e.get("unsigned"))
         pick = (lambda q, r: q) if op == "/" else (lambda q, r: r)
@@ -1354,16 +2037,23 @@ class Lowering:
             # One comparison, built once: a comparison between variables writes into its own
             # condition, and one that is built and dropped is an orphan eudplib refuses.
             return self.ordered(a, op, b, unsigned)
-        if k == "and":
-            return EUDAnd(*[self.cond(c) for c in e["items"]])
-        if k == "or":
-            return EUDOr(*[self.cond(c) for c in e["items"]])
+        if k in ("and", "or"):
+            items = e["items"]
+            # JavaScript stops at the first item that settles it: an item after it that runs something — a call, a
+            # pop, a random number — must not run. Each such item is worked out inside the test of the ones before.
+            if any(has_effect(c) for c in items[1:]):
+                t = fresh(0)
+                self.short_circuit(items, k == "and", t)
+                return t >= 1
+            return (EUDAnd if k == "and" else EUDOr)(*[self.cond(c) for c in items])
         if k == "not":
             return EUDNot(self.cond(e["expr"]))
         if k == "random":
             return (f_rand() & 1) >= 1
         if k in ("unitAlive", "unitFlag", "unitSame"):
             return as_var(self.truth(e)) >= 1
+        if k == "running":
+            return as_var(self.running(e)) >= 1
         if k == "edge":
             return self.edge(e)
         if k == "ternary":
@@ -1379,6 +2069,23 @@ class Lowering:
         if k in ("textCompare", "textTest"):
             return as_var(self.text_truth(e)) >= 1
         raise Fail("trigscript: unknown condition %r%s" % (k, where(e)))
+
+    def short_circuit(self, items, conj, t):
+        """`a && b && …` (conj) or `a || b || …` into t, each item worked out only when those before it did not settle it."""
+        if not items:
+            if conj:
+                t << 1
+            return
+        if conj:
+            if EUDIf()(self.cond(items[0])):
+                self.short_circuit(items[1:], conj, t)
+            EUDEndIf()
+        else:
+            if EUDIf()(self.cond(items[0])):
+                t << 1
+            if EUDElse()():
+                self.short_circuit(items[1:], conj, t)
+            EUDEndIf()
 
     def truth(self, e):
         """A boolean expression as 0 / 1."""
@@ -1398,6 +2105,8 @@ class Lowering:
             return t
         if e["kind"] == "unitFlag":
             return self.unit_flag(e)
+        if e["kind"] == "running":
+            return self.running(e)
         if e["kind"] == "unitSame":
             a, b = self.unit(e["left"]), self.unit(e["right"])
             t = fresh(0)
@@ -1417,17 +2126,9 @@ class Lowering:
         """rose(c): true on the frame c becomes true; once(c): true the first time it holds."""
         key = id(e)
         if key not in self.latches:
-            self.latches[key] = EUDArray([0] * 12) if self.per_player else EUDVariable(0)  # initial: the latch
+            self.latches[key] = RowCell(self.rows(), 0)  # initial: the latch
         latch = self.latches[key]
-
-        def get():
-            return latch[self.player] if self.per_player else latch
-
-        def put(v):
-            if self.per_player:
-                latch[self.player] = v
-            else:
-                latch << v
+        get, put = latch.get, latch.set
 
         fired = fresh(0)
         held = self.truth(e["cond"])
@@ -1664,7 +2365,68 @@ class Lowering:
         def body(ref, next_, exit_):
             self.vars[st["decl"]["id"]] = LoopUnit(ref)
             self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": next_}))
+        if st.get("source"):
+            self.event_loop(st["source"], st.get("filter", {}), st, body)
+            return
         self.scan(st.get("filter", {}), st, body)
+
+    def event_loop(self, source, flt, node, body):
+        """The units of this frame's events pass, in the order it found them: `body(ref, next_, exit_)` for each the
+        filter matches. One that came on and has gone since is passed over; one that died is the dying record, read as
+        it died (its slot is not given to another unit before the next frame's dying pass)."""
+        if EVENTS is None:
+            raise Fail("trigscript: a loop over the events pass's units, and no pass%s" % where(node))
+        cells, was, count = {"created": (EVENTS.made, None, EVENTS.made_n), "died": (EVENTS.gone, None, EVENTS.gone_n),
+                             "killed": (EVENTS.gone, None, EVENTS.gone_n), "ordered": (EVENTS.turned, EVENTS.turned_was, EVENTS.turned_n),
+                             "morphed": (EVENTS.changed, EVENTS.changed_was, EVENTS.changed_n)}[source]
+        event = node.get("event") or {}
+        i = fresh(0)
+        head, next_, exit_ = Forward(), Forward(), Forward()
+        head << NextTrigger()
+        EUDJumpIf(i >= count, exit_)
+        ptr, epd = f_cunitepdread_epd(EPD(cells) + i)
+        if source in ("created", "ordered", "morphed"):
+            # Gone since the pass: killed or removed by a program before this turn (its slot is still its own).
+            EUDJumpIfNot([MemoryEPD(epd + OFF_SPRITE, AtLeast, 1), MemoryXEPD(epd + OFF_OWNER_ORDER, AtLeast, 0x100, 0xFF00)], next_)
+        match = []
+        if source == "killed":
+            # Died in a fight: no hit points, and one of the eight players the last whose attack hurt it.
+            match += [MemoryEPD(epd + OFF_HP, Exactly, 0), MemoryXEPD(epd + OFF_LAST_ATTACKER, AtMost, 7, 0xFF)]
+            by = event.get("by")
+            if by is not None:
+                match.append(MemoryXEPD(epd + OFF_LAST_ATTACKER, Exactly, self.current() if by == CURRENT_PLAYER else int(by), 0xFF))
+        if event.get("order") is not None:
+            match.append(MemoryXEPD(epd + OFF_OWNER_ORDER, Exactly, int(event["order"]) << 8, 0xFF00))
+        owner = flt.get("owner")
+        if owner is not None:
+            who = self.current() if owner == CURRENT_PLAYER else int(owner)
+            match.append(MemoryXEPD(epd + OFF_OWNER_ORDER, Exactly, who, 0xFF))
+        kind = flt.get("type")
+        if kind is not None and kind < 228:
+            match.append(MemoryXEPD(epd + OFF_TYPE, Exactly, int(kind), 0xFFFF))
+        elif kind is not None and kind not in GROUP_BITS:
+            raise Fail("trigscript: unknown unit type %r%s" % (kind, where(node)))
+        if flt.get("at"):
+            left, top, right, bottom = self.location_bounds(flt["at"])
+            for v in (left, top):
+                if EUDIf()(v >= 0x80000000):
+                    v << 0
+                EUDEndIf()
+            match += [MemoryXEPD(epd + OFF_POS, AtLeast, left, 0xFFFF), MemoryXEPD(epd + OFF_POS, AtMost, right, 0xFFFF),
+                      MemoryXEPD(epd + OFF_POS, AtLeast, f_bitlshift(top, 16), 0xFFFF0000), MemoryXEPD(epd + OFF_POS, AtMost, f_bitlshift(bottom, 16), 0xFFFF0000)]
+        if match:
+            EUDJumpIfNot(match, next_)
+        if kind in GROUP_BITS:
+            group = fresh(f_bread(UNITS_GROUP + f_maskread_epd(epd + OFF_TYPE, 0xFFFF)))
+            EUDJumpIf((group & GROUP_BITS[kind]) == 0, next_)
+        if node.get("was"):
+            # What the unit was: the killer, or the order or the type the pass before found.
+            self.declare(node["was"]).set(f_maskread_epd(epd + OFF_LAST_ATTACKER, 0xFF) if source == "killed" else was[i])
+        body(UnitRef(ptr, epd, None), next_, exit_)
+        next_ << NextTrigger()
+        i += 1
+        EUDJump(head)
+        exit_ << NextTrigger()
 
     def unit_write(self, st):
         ref = self.unit(st["unit"])
@@ -1770,9 +2532,19 @@ class Lowering:
             f_dwwrite_epd(base + i, v)
 
     def center_location(self, st):
-        """A location centred on a point, its size kept."""
+        """A location centred on a point, its size kept - or the size given, when nothing of the old one is read."""
         x, y = self.num(st["x"]), self.num(st["y"])
         base = EPD(MRGN + (int(st["location"]) - 1) * 20)
+        size = st.get("size")
+        if size:
+            width, height = self.num(size["width"]), self.num(size["height"])
+            if isinstance(width, int) and isinstance(height, int):
+                nx, ny = x - width // 2, y - height // 2
+            else:
+                nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
+            for i, v in enumerate((nx, ny, nx + width, ny + height)):
+                f_dwwrite_epd(base + i, v)
+            return
         left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
         width, height = right - left, bottom - top
         nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
@@ -1992,10 +2764,18 @@ class Lowering:
             raise Leave()
         elif k == "sleep":
             self.sleep(st)
+        elif k == "parallel":
+            self.parallel(st)
+        elif k == "start":
+            self.start(st)
+        elif k == "cancel":
+            self.cancel(st)
         elif k == "action":
             self.action(st)
         elif k == "print":
             self.print_(st)
+        elif k == "buildText":
+            self.build_text(st)
         elif k == "centerLocation":
             self.center_location(st)
         elif k == "call":
@@ -2087,15 +2867,43 @@ class Lowering:
             frames = int(st["cycles"])
         else:
             frames = max(1, int(round(float(st.get("ms", 0)) * FRAMES_PER_SECOND / 1000)))
-        index = len(self.resumes) + 1
-        resume = Forward()
-        self.resumes.append((index, resume))
-        self.set_state(index)
+        co = self.co
+        index, resume = co.resume_point()
         # The frame after this one is one frame later: sleep(frames(1)) goes on in the next frame, as the
         # simulator has it. (Until 3.4 the wait was one frame longer, so a loop sleeping a frame ran every other.)
-        self.set_wait(frames - 1)
-        EUDJump(self.frame_end)
+        co.park(index, frames - 1)
         resume << NextTrigger()
+
+    def parallel(self, st):
+        """Promise.all / race: each branch a coroutine of its own, started here and run from here, in order, every frame
+        the program waits at this statement; the program goes on when every branch has ended (all) or the first has
+        (race, which leaves the others where they are). The program waits here through a place of its own to go on
+        from, which this same statement is: the first frame falls into it, the later ones jump to it."""
+        if self.in_function:
+            raise Fail("trigscript: await inside a function that is called%s" % where(st))
+        parent = self.co
+        kids = [Coroutine(self, self.rows()) for _ in st["branches"]]
+        for k in kids:
+            k.set_state(0)
+            k.set_wait(0)
+        index, again = parent.resume_point()
+        again << NextTrigger()
+        after = Forward()
+        for k, body in zip(kids, st["branches"]):
+            skip = Forward()
+            EUDJumpIf(as_var(k.get_state()) == DONE, skip)
+            self.coroutine(k, body)
+            if st["mode"] == "race":
+                EUDJumpIfNot(as_var(k.get_state()) == DONE, skip)
+                for other in kids:
+                    if other is not k:
+                        other.set_state(DONE)
+                EUDJump(after)
+            skip << NextTrigger()
+        if st["mode"] == "all":
+            EUDJumpIf([as_var(k.get_state()) == DONE for k in kids], after)
+        parent.park(index, 0)
+        after << NextTrigger()
 
     def action(self, st):
         r = st["record"]
@@ -2155,6 +2963,8 @@ class Lowering:
                 v = self.text(part["text"])
                 temps.append(v)
                 args.append(ptr2s(v.addr))
+            elif k == "number" and part.get("fixed"):
+                args.extend(self.fixed_pieces(self.num(part["expr"])))
             elif k == "number":
                 v = self.num(part["expr"])
                 if isinstance(v, int):
@@ -2174,6 +2984,8 @@ class Lowering:
                 args.append(PName(self.one_player(part["player"], st)))
             elif k == "color":
                 args.append(PColor(self.one_player(part["player"], st)))
+            elif k == "char":
+                args.append(self.char(part["expr"]))
             else:
                 raise Fail("trigscript: unknown text part %r%s" % (k, where(st)))
         if not args:
@@ -2271,17 +3083,51 @@ class Lowering:
         texts()["release"](storage.cell(storage.block))
         storage.write(addr, block, length)
 
+    def char(self, e):
+        """One byte from a number, as something to print: a colour code chosen when the map is played; 0 is nothing."""
+        v = self.num(e)
+        if isinstance(v, int):
+            return chr(v & 0xFF) if v & 0xFF else ""
+        one = Db(4)
+        f_bwrite(one, v & 0xFF)
+        return ptr2s(one)
+
     def written(self, parts, st):
         """The parts of a text in the scratch, and where it ends. Every value is worked out first, since working one
         out may use the scratch itself; then the parts are written a group at a time, a group being what cannot
         come to more than a text holds, so that checking where the writing has got to between groups keeps it inside."""
         T = texts()
+        items, temps = self.items(parts, st)
+        pos = fresh(T["scratch"])
+        f_bwrite(pos, 0)
+        self.write_items(items, pos, T["scratch"] + TEXT_BYTES, lambda at, value: T["append"](at, value.addr), True)
+        return pos, temps
+
+    def build_text(self, st):
+        """Parts written onto the end of a buffer (emptied first on `reset`): a text put together a piece at a time."""
+        data, pos = buffer(st["buffer"])
+        B = builds()
+        items, temps = self.items(st["parts"], st)
+        if st.get("reset"):
+            pos << data
+            f_bwrite(data, 0)
+        last = data + BUILD_BYTES + TEXT_BYTES
+        self.write_items(items, pos, data + BUILD_BYTES, lambda at, value: B["append"](at, value.addr, last), False)
+        pos << B["cut"](pos, data + BUILD_BYTES)
+        self.used(*temps)
+
+    def items(self, parts, st):
+        """The parts of a text as what f_dbstr_print takes, each with the most bytes it can come to; a value of the
+        program as itself, to be copied in. Every value is worked out here, before anything is written."""
         items, temps = [], []
         for part in parts:
             k = part["kind"]
             if k == "text":
                 data = part["text"].encode("utf-8")[:TEXT_BYTES].decode("utf-8", "ignore")
                 items.append(([data], len(data.encode("utf-8")), None))
+            elif k == "number" and part.get("fixed"):
+                pieces = self.fixed_pieces(self.num(part["expr"]))
+                items.append((pieces, 11 if len(pieces) > 1 else len(pieces[0]), None))
             elif k == "number":
                 v = self.num(part["expr"])
                 if isinstance(v, int):
@@ -2306,11 +3152,19 @@ class Lowering:
                     v = self.own(v)
                 temps.append(v)
                 items.append((None, TEXT_BYTES, v))
+            elif k == "char":
+                c = self.char(part["expr"])
+                if c != "":
+                    items.append(([c], 1, None))
             else:
                 raise Fail("trigscript: unknown text part %r%s" % (k, where(st)))
-        pos = fresh(T["scratch"])
-        f_bwrite(pos, 0)
-        group, room, first = [], 0, [True]
+        return items, temps
+
+    def write_items(self, items, pos, end, append, first_free):
+        """Items written at pos, which moves to where the text ends: a group at a time, a group being what cannot come
+        to more than a text holds, so that checking pos against `end` between groups keeps the writing inside the room
+        behind it. `first_free`: pos starts at the beginning, so the first group needs no check."""
+        group, room, first = [], 0, [first_free]
 
         def flush():
             if not group:
@@ -2318,7 +3172,7 @@ class Lowering:
             if first[0]:
                 pos << f_dbstr_print(pos, *group)
             else:
-                if EUDIf()(pos <= T["scratch"] + TEXT_BYTES):
+                if EUDIf()(pos <= end):
                     pos << f_dbstr_print(pos, *group)
                 EUDEndIf()
             first[0] = False
@@ -2329,10 +3183,10 @@ class Lowering:
                 flush()
                 room = 0
                 if first[0]:
-                    pos << T["append"](pos, value.addr)
+                    pos << append(pos, value)
                 else:
-                    if EUDIf()(pos <= T["scratch"] + TEXT_BYTES):
-                        pos << T["append"](pos, value.addr)
+                    if EUDIf()(pos <= end):
+                        pos << append(pos, value)
                     EUDEndIf()
                 first[0] = False
                 continue
@@ -2342,7 +3196,6 @@ class Lowering:
             group.extend(args)
             room += size
         flush()
-        return pos, temps
 
     def text(self, e):
         """A text: where it is, its block, its length (TextVal)."""
@@ -2362,6 +3215,9 @@ class Lowering:
             return TextVal(addr, fresh(self.array(e["block"], e).get(i)), fresh(self.array(e["chars"], e).get(i)), False)
         if self.has_id(e):
             return TextVal(T["address"](as_var(self.text_id_of(e))), 0, None, True)
+        if k == "built":
+            # Only looked at: what keeps it takes a copy, since the buffer is built again next time.
+            return TextVal(fresh(buffer(e["buffer"])[0]), 0, None, False)
         if k == "template":
             pos, temps = self.written(e["parts"], e)
             addr, block, length = T["make"](pos)
@@ -2590,26 +3446,26 @@ class Lowering:
                 continue
             if isinstance(s, UnitStorage):
                 for cell in (s.ptr, s.epd, s.uid):
-                    pairs.append(self.cell_pair(cell, s.rowed))
+                    pairs.append(self.cell_pair(cell, s.player_of if s.rowed else None))
             elif isinstance(s, TextStorage):
                 for cell in (s.addr, s.block, s.len):
-                    pairs.append(self.cell_pair(cell, s.rowed))
+                    pairs.append(self.cell_pair(cell, s.player_of if s.rowed else None))
             elif isinstance(s, Storage):
-                pairs.append(self.cell_pair(s.store, s.rowed))
+                pairs.append(self.cell_pair(s.store, s.player_of if s.rowed else None))
         for id_ in saves.get("arrays", []):
             a = self.array(id_, node)
             if isinstance(a, ListStorage):
                 for name in HANDLE:
-                    pairs.append(self.cell_pair(a.handle[name], a.rowed))
+                    pairs.append(self.cell_pair(a.handle[name], a.player_of if a.rowed else None))
         return pairs
 
     def saved_texts(self, saves):
         """The made texts among what a frame keeps: each owns a block, which the frame keeps for it."""
         return [s for s in (self.vars.get(id_) for id_ in saves.get("vars", [])) if isinstance(s, TextStorage)]
 
-    def cell_pair(self, cell, rowed):
-        if rowed:
-            return (lambda: cell[self.player_of()]), (lambda v: cell.__setitem__(self.player_of(), v))
+    def cell_pair(self, cell, rows):
+        if rows:
+            return (lambda: cell[rows()]), (lambda v: cell.__setitem__(rows(), v))
         return (lambda: cell), (lambda v: cell << v)
 
     def keep(self, call):
@@ -2625,8 +3481,10 @@ class Lowering:
             GetGlobalStringBuffer().print("\x06TrigScript: stack overflow in %s, line %s - %d calls deep. The program has stopped." % (saves.get("within", "a function"), (call.get("at") or {}).get("line", "?"), STACK_DEPTH))
             st["depth"] << 0
             st["at"] << st["base"]
-            self.set_state(DONE)
-            EUDJump(self.frame_end)
+            # The program stops for good, or, in a task, the task does.
+            stopped = self.pool.co if self.pool else self.top
+            stopped.set_state(DONE)
+            EUDJump(stopped.frame_end)
         EUDEndIf()
         pairs = self.saved_cells(saves, call)
         at = st["at"]
@@ -2734,31 +3592,212 @@ class Lowering:
 
     # ── one frame ──
     def frame(self):
-        self.frame_end = Forward()
+        if self.pools:
+            self.tick += 1
+            if self.per_player:
+                for pool in self.pools.values():
+                    pool.base << f_mul(self.player, pool.max)
+        self.coroutine(self.top, self.p["body"])
+        self.run_tasks()
+
+    def run_tasks(self):
+        """The tasks' turn, after the program's: each slot whose task is running and has not had its turn in this frame
+        goes on until it sleeps, waits or ends - by the number of its start, then by slot. A task started meanwhile
+        sets `again`, and the slots are gone through once more, so that it starts in this frame too."""
+        if not self.pools:
+            return
+        if self.per_player:
+            for pool in self.pools.values():
+                pool.count << pool.live.get()
+        sweep = Forward()
+        sweep << NextTrigger()
+        self.again << 0
+        for pool in self.pools.values():
+            passed = Forward()
+            if pool.fresh is not None:
+                go = Forward()
+                EUDJumpIf(as_var(pool.fresh.get()) >= 1, go)
+                EUDJumpIfNot(self.heard(pool.st["listen"]), passed)
+                go << NextTrigger()
+                pool.fresh.set(0)
+            i, seen = EUDVariable(), EUDVariable()
+            i << 0
+            seen << 0
+            # `seen`: the running slots so far, less those that ended on their turn - so while it is below the count,
+            # a running slot is still ahead (or one started meanwhile, which the next time round finds).
+            if EUDWhile()([i <= pool.max - 1, seen < pool.count]):
+                pool.select(i)
+                skip = Forward()
+                EUDJumpIf(as_var(pool.co.get_state()) == DONE, skip)
+                seen += 1
+                EUDJumpIf(as_var(pool.ran.get()) == self.tick, skip)
+                pool.ran.set(self.tick)
+                listen = pool.st.get("listen")
+                if listen is not None:
+                    # A listener (on.created, on.chat, ...) that has begun waits at the top of its loop, where a turn
+                    # with nothing to hand on does nothing: it is not given one.
+                    go = Forward()
+                    EUDJumpIf(as_var(pool.co.get_state()) == 0, go)
+                    EUDJumpIfNot(self.heard(listen), skip)
+                    go << NextTrigger()
+                outer = self.pool
+                self.pool = pool
+                end = Forward()
+                call = pool.st["call"]
+                result = self.declare(call["result"]["decl"]) if call.get("result") else None
+                self.coroutine(pool.co, call["body"], {"fn": {"result": result, "kind": call["result"]["kind"] if call.get("result") else "void", "end": end}}, end)
+                self.pool = outer
+                if EUDIf()(as_var(pool.co.get_state()) == DONE):
+                    pool.add(-1)
+                    seen -= 1
+                EUDEndIf()
+                skip << NextTrigger()
+                i += 1
+            EUDEndWhile()
+            passed << NextTrigger()
+        EUDJumpIf(self.again >= 1, sweep)
+
+    def heard(self, listen):
+        """Whether a listener has anything to hand on this frame: units the events pass found, or one of its inputs."""
+        source = listen.get("source")
+        if source is not None:
+            return {"created": EVENTS.made_n, "died": EVENTS.gone_n, "killed": EVENTS.gone_n, "ordered": EVENTS.turned_n, "morphed": EVENTS.changed_n}[source] >= 1
+        found = fresh(0)
+        for inp in listen.get("inputs", []):
+            if EUDIf()(as_var(INPUT.read(inp, self, listen)) >= 1):
+                found << 1
+            EUDEndIf()
+        return found >= 1
+
+    def start(self, st):
+        """A task into a free slot of its start: the arguments worked out as things are now, then the slot taken - its
+        generation one more, its parameters set, its place the body's start - and the number the task is known by
+        into `handle`. With every slot running nothing starts, and the game says so once."""
+        pool = self.pools[int(st["task"])]
+        call = st["call"]
+        values = []
+        for prm in call["params"]:
+            kind = prm["decl"]["kind"]
+            target = self.var(prm["decl"]["id"], st)
+            if kind == "unit":
+                ref = self.unit(prm["init"])
+                uid = ref.uid if ref.uid is not None else f_maskread_epd(ref.epd + OFF_UID, 0xFF00)
+                values.append(UnitRef(fresh(ref.ptr), fresh(ref.epd), fresh(uid)))
+            elif kind == "text" and isinstance(target, TextStorage):
+                v = self.own(self.text(prm["init"]))
+                values.append(TextVal(fresh(v.addr), fresh(v.block), fresh(v.length()), True))
+            elif kind == "text":
+                values.append(fresh(self.text_id_of(prm["init"])))
+            else:
+                values.append(fresh(self.value(prm["init"], kind)))
+        found, after = Forward(), Forward()
+        i = fresh(0)
+        if EUDWhile()(i <= pool.max - 1):
+            pool.select(i)
+            EUDJumpIf(as_var(pool.co.get_state()) == DONE, found)
+            i += 1
+        EUDEndWhile()
+        # Every slot is running.
+        for v in values:
+            if isinstance(v, TextVal):
+                texts()["release"](v.block)
+        if EUDIf()(pool.said == 0):
+            pool.said << 1
+            GetGlobalStringBuffer().print("\x06TrigScript: %s did not start, line %s - all %d of this start's tasks are running." % (call.get("name") or "a task", (st.get("at") or {}).get("line", "?"), pool.max))
+        EUDEndIf()
+        if st.get("handle"):
+            self.var(st["handle"], st).set(0)
+        EUDJump(after)
+        found << NextTrigger()
+        gen = fresh(pool.gen.get())
+        if EUDIf()(gen >= 0xFFFF):
+            gen << 0
+        EUDEndIf()
+        gen += 1
+        pool.gen.set(gen)
+        for prm, v in zip(call["params"], values):
+            target = self.var(prm["decl"]["id"], st)
+            if isinstance(v, UnitRef):
+                target.set(v)
+            elif isinstance(v, TextVal):
+                texts()["release"](target.cell(target.block))
+                target.write(v.addr, v.block, v.length())
+            else:
+                target.set(v)
+        pool.co.set_state(0)
+        pool.co.set_wait(0)
+        pool.ran.set(self.tick - 1)
+        pool.add(1)
+        if pool.fresh is not None:
+            pool.fresh.set(1)
+        self.again << 1
+        if st.get("handle"):
+            self.var(st["handle"], st).set(pool.slot + pool.task * 256 + f_bitlshift(fresh(gen), 16))
+        after << NextTrigger()
+
+    def task_slot(self, e, act):
+        """The slot a task's number names, when the task is in it: `act(pool, slot)` runs for it, the slot being run left as it is."""
+        h = fresh(self.num(e))
+        slot = self.bitwise("&", h, 0xFF)
+        task = self.bitwise("&", self.bitwise(">>>", h, 8), 0xFF)
+        gen = self.bitwise(">>>", h, 16)
+        for pool in self.pools.values():
+            if EUDIf()([as_var(task) == pool.task, as_var(slot) <= pool.max - 1]):
+                if EUDIf()([EUDNot(as_var(pool.at(pool.co.state, slot)) == DONE), as_var(pool.at(pool.gen, slot)) == gen]):
+                    act(pool, slot)
+                EUDEndIf()
+            EUDEndIf()
+
+    def running(self, e):
+        out = fresh(0)
+        self.task_slot(e["task"], lambda pool, slot: out << 1)
+        return out
+
+    def cancel(self, st):
+        def stop(pool, slot):
+            pool.co.state.store[pool.base + slot] = DONE
+            # The task whose turn this is ends on it: the tasks' turn counts it then.
+            if self.pool is pool:
+                if EUDIfNot()(as_var(slot) == pool.slot):
+                    pool.add(-1)
+                EUDEndIf()
+            else:
+                pool.add(-1)
+        self.task_slot(st["task"], stop)
+
+    def coroutine(self, co, body, ctx=None, end=None):
+        """One frame of a coroutine: count its wait down and leave, or go on from where it stopped until it sleeps or
+        ends. Its body is lowered here, once, and the places to go on from are recorded as they are met; the jump
+        table is filled in after."""
+        outer = self.co
+        self.co = co
+        co.frame_end = Forward()
         start = Forward()
         skip = Forward()
         # Still waiting: count down and leave.
-        EUDJumpIfNot(as_var(self.get_wait()) >= 1, skip)
-        self.set_wait(as_var(self.get_wait()) - 1)
-        EUDJump(self.frame_end)
+        EUDJumpIfNot(as_var(co.get_wait()) >= 1, skip)
+        co.set_wait(as_var(co.get_wait()) - 1)
+        EUDJump(co.frame_end)
         skip << NextTrigger()
-        # The body once, resumes recorded as sleeps are met; the jump table is filled in after.
         table = Forward()
         EUDJump(table)
         start << NextTrigger()
         try:
-            self.block(self.p["body"], {})
+            self.block(body, ctx or {})
         except Leave:
             pass
-        # The body ended: the program stops for good, as the classic backend's does.
-        self.set_state(DONE)
-        EUDJump(self.frame_end)
+        if end is not None:
+            end << NextTrigger()  # (where a `return` in a task's body goes)
+        # The body ended: it stops for good, as the classic backend's program does.
+        co.set_state(DONE)
+        EUDJump(co.frame_end)
         table << NextTrigger()
-        EUDJumpIf(as_var(self.get_state()) == DONE, self.frame_end)
-        for index, resume in self.resumes:
-            EUDJumpIf(as_var(self.get_state()) == index, resume)
+        EUDJumpIf(as_var(co.get_state()) == DONE, co.frame_end)
+        for index, resume in co.resumes:
+            EUDJumpIf(as_var(co.get_state()) == index, resume)
         EUDJump(start)
-        self.frame_end << NextTrigger()
+        co.frame_end << NextTrigger()
+        self.co = outer
 
     def run(self):
         if self.per_player:
@@ -2782,6 +3821,32 @@ def flipped(t):
         out << 1
     EUDEndIf()
     return out
+
+
+def each_start(node, visit):
+    """Every `start` statement in a piece of the IR, outer ones before those in their bodies."""
+    if isinstance(node, list):
+        for x in node:
+            each_start(x, visit)
+        return
+    if not isinstance(node, dict):
+        return
+    if node.get("kind") == "start" and isinstance(node.get("task"), int) and isinstance(node.get("call"), dict):
+        visit(node)
+    for v in node.values():
+        if isinstance(v, (dict, list)):
+            each_start(v, visit)
+
+
+def has_effect(node):
+    """Whether working out a piece of the IR does something beyond reading: a call, a pop, a random number."""
+    if isinstance(node, list):
+        return any(has_effect(x) for x in node)
+    if not isinstance(node, dict):
+        return False
+    if node.get("kind") in ("pop", "random", "randomInt") or (node.get("kind") in ("call", "textCall") and isinstance(node.get("call"), dict)):
+        return True
+    return any(has_effect(v) for v in node.values() if isinstance(v, (dict, list)))
 
 
 def has_call(node):
@@ -2876,6 +3941,60 @@ def signed(v):
     return v - (1 << 32) if v >= SIGN else v
 
 
+def isqrt(n):
+    r = int(n ** 0.5)
+    while r * r > n:
+        r -= 1
+    while (r + 1) * (r + 1) <= n:
+        r += 1
+    return r
+
+
+def between_wrapped(table, i, f):
+    """The sine table read between cell i and the next, cell 0 after the last."""
+    a, b = table[i], table[(i + 1) & 4095]
+    part = (abs(b - a) * f) >> 16
+    return a - part if b < a else a + part
+
+
+def fixed_const(name, args, unsigned=False, table=None):
+    """A fixed operation of numbers known when the map is built, exactly as the functions of fixed_fns() compute it."""
+    def towards_zero(m, negative):
+        return (-(m & U32)) & U32 if negative else m & U32
+    if name == "fmul":
+        a, b = args
+        return towards_zero((abs(a) * abs(b)) >> 16, (a < 0) != (b < 0))
+    if name == "fdiv":
+        a, b = args
+        return 0 if b == 0 else towards_zero((abs(a) << 16) // abs(b), (a < 0) != (b < 0))
+    if name == "sqrt":
+        x = args[0] & U32 if unsigned else args[0]
+        if unsigned:
+            return 0x7FFFFFFF if x >= 1 << 30 else isqrt(x << 32)
+        return 0 if x <= 0 else isqrt(x << 16)
+    def between(i, f, bits):
+        a = table[i] if i < len(table) else 0
+        b = table[i + 1] if i + 1 < len(table) else 0
+        part = (abs(b - a) * f) >> bits
+        return a - part if b < a else a + part
+    if name in ("sin", "cos"):
+        x, scale = args
+        at = fixed_const("fmul", [x, scale])
+        i = ((at >> 16) + (1024 if name == "cos" else 0)) & 4095
+        return between_wrapped(table, i, at & 0xFFFF)
+    y, x = args
+    ax, ay = abs(x), abs(y)
+    if ax == 0 and ay == 0:
+        return 0
+    read = lambda small, large: between(((small << 16) // large) >> 6, ((small << 16) // large) & 63, 6)
+    t = read(ay, ax) if ay <= ax else FIXED_HALF_PI - read(ax, ay)
+    if x < 0:
+        t = FIXED_PI - t
+    if y < 0:
+        t = -t
+    return t
+
+
 def always(truth):
     """A condition that is known when the map is built."""
     return EUDVariable(1 if truth else 0) >= 1  # initial: a constant, never written
@@ -2913,6 +4032,7 @@ class Input:
     def __init__(self, plan):
         self.plan = plan or {}
         self.keys = list(self.plan.get("keys", []))
+        self.held = list(self.plan.get("held", []))
         self.buttons = list(self.plan.get("buttons", []))
         self.chats = list(self.plan.get("chats", []))
         self.mouse_base = self.plan.get("mouseBase")
@@ -2921,6 +4041,17 @@ class Input:
         if plan and not self.humans:
             raise Fail("trigscript: a program reads keys, clicks, the mouse or chat, and the map has no human player to give any")
         self.key_cells = [self.register("tsin_key%d" % i, EUDArray(12)) for i in range(len(self.keys))]
+        self.held_cells = [self.register("tsin_held%d" % i, EUDArray(12)) for i in range(len(self.held))]
+        # A held key is a message each frame it is down, but a multiplayer game carries commands in turns: two frames'
+        # messages may arrive on one frame and none on the next. What arrives is banked and paid out a frame at a time,
+        # so keyHeld() is true on as many frames as the key was down, however the turns grouped them.
+        self.held_bank = [EUDArray(12) for _ in self.held]
+        self.held_now = [EUDArray(12) for _ in self.held]
+        # And a message can go missing for a frame (seen in the lifted game, the second frame of every hold): a key is
+        # still held until HELD_GRACE frames have passed with no message, which delays a release by as much.
+        self.held_quiet = [EUDArray(12) for _ in self.held]
+        # With held keys every key is sent as held (compiler/input.ts#inputPlan): a press is held now and not before.
+        self.held_pressed = [EUDArray(12) for _ in self.held]
         self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
         self.captures = max([len(c["captures"]) for c in self.chats] or [0])
         if self.chats:
@@ -2936,6 +4067,39 @@ class Input:
             self.capture_in = [self.register("tsin_capture%d_in" % i, EUDArray(12)) for i in range(self.captures)]
             self.unit_table = None
 
+    HELD_BANK_MOST = 8  # a burst after a lag spike pays out at most this many frames
+    HELD_GRACE = 2  # frames with no message before a held key counts as let go
+
+    def frame(self):
+        """Once a frame, before the programs: this frame's held messages banked, one frame of each paid out, and a key
+        with nothing left to pay still held for HELD_GRACE quiet frames."""
+        for cells, bank, now, quiet, pressed in zip(self.held_cells, self.held_bank, self.held_now, self.held_quiet, self.held_pressed):
+            for p in self.humans:
+                was = fresh(now[p])
+                b = fresh(bank[p] + cells[p])
+                if EUDIf()(b >= self.HELD_BANK_MOST + 1):
+                    b << self.HELD_BANK_MOST
+                EUDEndIf()
+                if EUDIf()(b >= 1):
+                    now[p] = 1
+                    bank[p] = b - 1
+                    quiet[p] = 0
+                if EUDElse()():
+                    bank[p] = 0
+                    q = fresh(quiet[p] + 1)
+                    quiet[p] = q
+                    if EUDIf()([now[p] >= 1, q <= self.HELD_GRACE]):
+                        now[p] = 1
+                    if EUDElse()():
+                        now[p] = 0
+                    EUDEndIf()
+                EUDEndIf()
+                if EUDIf()([now[p] >= 1, was == 0]):
+                    pressed[p] = 1
+                if EUDElse()():
+                    pressed[p] = 0
+                EUDEndIf()
+
     @staticmethod
     def register(name, cell):
         EUDRegisterObjectToNamespace(name, cell)
@@ -2945,6 +4109,10 @@ class Input:
     def read(self, i, low, node):
         source = i.get("source")
         p = low.one_player(i["player"], node)
+        if source == "key" and i.get("held"):
+            return self.cell(self.held_now, self.held, i["key"], node)[p]
+        if source == "key" and self.held:
+            return self.cell(self.held_pressed, self.held, i["key"], node)[p]
         if source == "key":
             return self.cell(self.key_cells, self.keys, i["key"], node)[p]
         if source == "click":
@@ -3096,7 +4264,201 @@ class Input:
         EUDEndIf()
 
 
+# Where each trigger came from, for a run in the lifted game to name the line a trigger belongs to (TrigScript 4,
+# A1). Only when the build asks for it (the `triggerMap` setting): every RawTrigger made is tagged with the
+# statement being lowered, or with the eudplib function whose body it is, and once the payload is laid out one
+# header line and lines of rows say where each trigger sits in it:
+#   TRIGSCRIPT-MAP {"payload": <bytes>, "count": <triggers>}
+#   TRIGSCRIPT-ROWS [[offset, conditions, actions, origin], ...]     (400 a line, as many lines as it takes)
+# An origin is "line:column" (or "file:line:column"), "fn:<name>" for a function of eudplib's, "" for what no
+# statement made (a program's frame, its sleeps), or "eudplib" for what eudplib made before this file was read. The payload sits at the end of the strings section, so a run
+# finds it at the section's address plus its length less the payload's.
+if settings.get("triggerMap"):
+    import eudplib.core.allocator.payload as _payload
+    from eudplib.core.eudfunc.eudfuncn import EUDFuncN as _EUDFuncN
+    from eudplib.core.rawtrigger.rawtriggerdef import RawTrigger as _RawTrigger
+
+    _ORIGINS = []
+    _MADE = {}
+
+    def _origin_of(at):
+        if not at:
+            return ""
+        if at.get("file"):
+            return "%s:%s:%s" % (at.get("file"), at.get("line"), at.get("column"))
+        return "%s:%s" % (at.get("line"), at.get("column"))
+
+    _trigger_init = _RawTrigger.__init__
+
+    def _tagged_trigger(self, *args, **kwargs):
+        _trigger_init(self, *args, **kwargs)
+        _MADE[self] = _ORIGINS[-1] if _ORIGINS else ""
+
+    _RawTrigger.__init__ = _tagged_trigger
+
+    _func_body = _EUDFuncN._create_func_body
+
+    def _tagged_body(self):
+        _ORIGINS.append("fn:" + getattr(self._bodyfunc, "__name__", "?"))
+        try:
+            return _func_body(self)
+        finally:
+            _ORIGINS.pop()
+
+    _EUDFuncN._create_func_body = _tagged_body
+
+    _statement = Lowering.statement
+
+    def _tagged_statement(self, st, ctx):
+        _ORIGINS.append(_origin_of(st.get("at")) or (_ORIGINS[-1] if _ORIGINS else ""))
+        try:
+            return _statement(self, st, ctx)
+        finally:
+            _ORIGINS.pop()
+
+    Lowering.statement = _tagged_statement
+
+    _construct = _payload._construct_payload
+
+    def _construct_and_say():
+        built = _construct()
+        found = _payload._found_objects_dict
+        rows = []
+        # (Every trigger in the payload, also those eudplib made before this file was read, at its own import:
+        # those say "eudplib".)
+        for trg, i in found.items():
+            if not isinstance(trg, _RawTrigger):
+                continue
+            origin = _MADE.get(trg, "eudplib")
+            rows.append([_payload._payload_builder.get_object_addr(i).offset, len(trg._conditions), len(trg._actions), origin])
+        rows.sort()
+        # (In parts, so that no one line of the log runs to megabytes.)
+        print("TRIGSCRIPT-MAP " + json.dumps({"payload": len(built.data), "count": len(rows)}, separators=(",", ":")))
+        for k in range(0, len(rows), 400):
+            print("TRIGSCRIPT-ROWS " + json.dumps(rows[k:k + 400], separators=(",", ":")))
+        return built
+
+    _payload._construct_payload = _construct_and_say
+
+
+# Where each program's variables are, for a test in the lifted game to read them as `sim.program()` reads the
+# simulator's (TrigScript 4, A2). Only when the build asks for it (the `variableMap` setting): once the payload is
+# placed, a header line and a line a program give the address of every cell:
+#   TRIGSCRIPT-VARS {"programs": <count>, "heap": <address of the heap's cells>, "strings": <address of STRx>}
+#   TRIGSCRIPT-PROGRAM {"index", "name", "perPlayer", "owners", "vars": [...], "arrays": [...]}
+# A variable is its id (what the simulator keys it by), its kind, and its cells: `value` (a number, a boolean, a text
+# of the table by its id), `addr` + `len` (a text that is made), `ptr` + `uid` (a unit). An array is its cells' `at`,
+# or, growing, its handle's `ptr` + `len` among the heap's cells. A cell of a per-player program's own (`rowed`) is a
+# row of twelve, one a player; an address is null for what nothing in the map uses, which eudplib leaves out.
+if settings.get("variableMap"):
+    import eudplib.core.allocator.payload as _vpayload
+    import eudplib.maprw.injector.apply_injector as _injector
+    from eudplib.core.allocator.constexpr import Evaluate as _evaluate
+    from eudplib.core.mapdata.stringmap import get_string_section_name as _strings_name
+    from eudplib.core.variable.vbuf import get_current_varbuffer as _varbuffer
+    from eudplib.utils import unProxy as _unproxy
+
+    _PLACES = {}
+
+    def _offset(expr):
+        """A payload-relative address as a byte offset into the payload: eudplib's own (relocated whole) or an EPD
+        (relocated a quarter at a time, as EPD(x) = (x - 0x58A364) / 4 is)."""
+        r = _evaluate(expr)
+        if r.rlocmode == 4:
+            return r.offset
+        if r.rlocmode == 1:
+            return r.offset * 4 + 0x58A364
+        return None
+
+    def _place(obj):
+        """Where a variable's value or an array's first cell is in the payload; None for what it left out."""
+        if isinstance(obj, EUDVariable):
+            vb = _varbuffer()
+            if vb is None or obj.GetVTable() not in vb._vdict:
+                return None
+            return _offset(obj.getValueAddr())
+        # An EUDArray is a proxy of its data's EPD (or of the data itself), the data an object of its own.
+        data = _unproxy(obj)
+        while not isinstance(data, EUDObject) and hasattr(data, "_value"):
+            data = _unproxy(data)
+        try:
+            return _offset(data)
+        except Exception:
+            return None  # (nothing in the map uses it, so eudplib did not place it)
+
+    def _cells_of(s):
+        if isinstance(s, UnitStorage):
+            return {"ptr": s.ptr, "uid": s.uid}
+        if isinstance(s, TextStorage):
+            return {"addr": s.addr, "len": s.len}
+        return {"value": s.store}
+
+    def _program_places(k, low):
+        p = low.p
+        out = {"index": k, "name": p.get("name"), "perPlayer": low.per_player, "owners": p.get("owners", [low.owner]), "vars": [], "arrays": []}
+        for id_, s in low.vars.items():
+            # (A loop's unit is the scan's own pointer for one turn, kept nowhere: nothing to read.)
+            d = getattr(s, "decl", None)
+            if d is None or d.get("temp") or d.get("task") is not None:
+                continue  # (a task's variable is a row a slot: nothing a test reads by name)
+            out["vars"].append({"id": id_, "kind": d.get("kind"), "text": d.get("text"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")),
+                                "rowed": bool(s.rowed), "cells": {name: _place(cell) for name, cell in _cells_of(s).items()}})
+        for id_, a in low.arrays.items():
+            if isinstance(a, (InnerListStorage, SliceStorage)) or a.decl.get("task") is not None:
+                continue  # (a row of another's cells, or a list inside one: read through what it is in, not here)
+            d = a.decl
+            row = {"id": id_, "kind": d.get("kind"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")), "length": int(d.get("length", 0)), "rowed": bool(a.rowed)}
+            if isinstance(a, ListStorage):
+                row.update(dynamic=True, ptr=_place(a.handle["ptr"]), len=_place(a.handle["len"]))
+            else:
+                row.update(at=_place(a.store))
+            out["arrays"].append(row)
+        return out
+
+    _vconstruct = _vpayload._construct_payload
+
+    def _construct_and_place():
+        built = _vconstruct()
+        # (eudplib works addresses out only while it writes the payload: for as long as this takes, it is again.)
+        was = _vpayload.phase
+        _vpayload.phase = _vpayload.PHASE_WRITING
+        try:
+            _PLACES["programs"] = [_program_places(k, low) for k, low in enumerate(PROGRAMS)]
+            _PLACES["heap"] = _place(_HEAP["cells"]) if _HEAP else None
+        finally:
+            _vpayload.phase = was
+        _PLACES["bytes"] = len(built.data)
+        return built
+
+    _vpayload._construct_payload = _construct_and_place
+
+    _initialize = _injector.initialize_payload
+
+    def _initialize_and_say(chkt, payload, *args, **kwargs):
+        out = _initialize(chkt, payload, *args, **kwargs)
+        # The payload is the end of the strings section, which Remastered keeps at 0x191943C8.
+        base = 0x191943C8 + len(chkt.getsection(_strings_name())) - _PLACES["bytes"]
+
+        def at(o):
+            return None if o is None else base + o
+
+        print("TRIGSCRIPT-VARS " + json.dumps({"programs": len(_PLACES["programs"]), "heap": at(_PLACES["heap"]), "strings": 0x191943C8}, separators=(",", ":")))
+        for prog in _PLACES["programs"]:
+            for v in prog["vars"]:
+                v["cells"] = {name: at(o) for name, o in v["cells"].items()}
+            for a in prog["arrays"]:
+                for key in ("at", "ptr", "len"):
+                    if key in a:
+                        a[key] = at(a[key])
+            print("TRIGSCRIPT-PROGRAM " + json.dumps(prog, separators=(",", ":")))
+        return out
+
+    _injector.initialize_payload = _initialize_and_say
+
+
 INPUT = Input(IR.get("input"))
+_SOURCES = {s: uses_source(IR.get("programs", []), s) for s in ("created", "died", "killed", "ordered", "morphed")}
+EVENTS = Events(_SOURCES["created"], _SOURCES["died"] or _SOURCES["killed"], _SOURCES["ordered"], _SOURCES["morphed"]) if any(_SOURCES.values()) else None
 PROGRAMS = [Lowering(p) for p in IR.get("programs", [])]
 
 
@@ -3113,5 +4475,9 @@ def beforeTriggerExec():
 
 
 def afterTriggerExec():
+    if INPUT.held:
+        INPUT.frame()
+    if EVENTS is not None:
+        EVENTS.run()
     for prog in PROGRAMS:
         prog.run()

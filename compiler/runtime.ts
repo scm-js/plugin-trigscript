@@ -22,8 +22,13 @@ import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
 import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import type { RaceId, ReadSource, TableCell, TextPart, UnitFilter } from "./ir";
-import { DEAF_KEYS, keyName, KEY_NAMES, MOUSE_BUTTONS, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
+import { DEAF_KEYS, keyName, KEY_NAMES, LAST_SLOT, MOUSE_BUTTONS, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
+import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
+import type { HoistedThunks } from "./hoist";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
+import { MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
+import { coverValue } from "./cover";
+import { isVideo } from "./media";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -147,7 +152,7 @@ export const READER_NAMES = ["minerals", "gas", "resources", "countUnits", "kill
 /** The library's functions about units on the map and the game's tables: the game's too, never computed when the script is built. */
 export const UNIT_CALL_NAMES = ["unitsAt", "unitsOf", "allUnits", "first", "nearest", "randomUnit", "underMouse", "stats"] as const;
 /** The library's functions about what the players do, and the one that moves a location to a point: the game's as well. */
-export const INPUT_CALL_NAMES = ["keyPressed", "clicked", "mouse", "chatted", "centerLocation"] as const;
+export const INPUT_CALL_NAMES = ["keyPressed", "keyHeld", "clicked", "mouse", "chatted", "centerLocation"] as const;
 
 /**
  * What the transformer turns `program(() => { … })` — and the arrow of `game(…)` — into:
@@ -198,9 +203,13 @@ export class ScriptError extends Error {
 /** What a run of the script produces, in execution order. */
 export class Collector {
   readonly entries: Entry[] = [];
+  /** The classes at the top of the script's files, by where each is (`file:position`): what their bodies compute when the script is built. */
+  readonly classes = new Map<string, { hoisted: () => HoistedThunks }>();
   readonly strings: ScriptString[] = [];
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
+  /** Locations a library took with reserveLocation(), by the reason it gave: the location's number. */
+  readonly reserved = new Map<string, number>();
   /**
    * The script's own statements are running — as opposed to a program's build-time parts, which the
    * compiler asks for afterwards. What a player does has no meaning there, and `if (keyPressed(…))`
@@ -280,6 +289,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   const argValue = (kind: ArgKind, v: unknown, what: string): number => {
     switch (kind) {
       case "text": case "wav":
+        if (builtText(v) !== undefined) v = builtText(v);
         if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
         if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
         throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
@@ -427,6 +437,9 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   // The word from before 3.0, when a program's clock was the trigger cycle; a program's clock is the frame now.
   rt.cycles = (n: unknown): DurationValue => ({ __trigscript: "duration", cycles: Math.max(1, Math.round(number(n, "cycles"))) });
   rt.sleep = () => { throw new ScriptError("sleep() pauses a program: use it inside program(), as a statement — sleep(seconds(2))."); };
+  rt.nextFrame = () => { throw new ScriptError("nextFrame() waits for the next frame: use it inside program(), as a statement — await nextFrame();"); };
+  rt.start = () => { throw new ScriptError("start() starts a task inside a program: start(wave(3)), inside program(async () => { … })."); };
+  rt.until = () => { throw new ScriptError("until() waits inside a program: await until(() => …), inside program(async () => { … })."); };
   rt.rose = () => { throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if."); };
   rt.once = () => { throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if."); };
   rt.shared = () => { throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program()."); };
@@ -437,6 +450,8 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   };
   rt.u32 = (v: unknown) => signed(v, "u32: value") >>> 0;
   rt.i32 = (v: unknown) => signed(v, "i32: value") | 0;
+  // A number's own value: when the script is built, numbers have their fractions already.
+  rt.fixed = (v: unknown) => signed(v, "fixed: value");
   rt.clamp = (v: unknown, lo: unknown, hi: unknown) => Math.min(Math.max(signed(v, "clamp: value"), signed(lo, "clamp: low")), signed(hi, "clamp: high"));
 
   /* ── Reads: what the game holds, as a value of a program ── */
@@ -548,13 +563,15 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     if (collector.running) throw new ScriptError(`${what.split(":")[0]}() asks what a player does while the game runs: use it inside program().`);
     return onePlayer(v, what, 8);
   };
-  rt.keyPressed = (player: unknown, key: unknown) => {
+  const keyRead = (what: "keyPressed" | "keyHeld") => (player: unknown, key: unknown) => {
     const name = typeof key === "string" ? keyName(key) : null;
     const deaf = typeof key === "string" ? DEAF_KEYS[key.trim().toUpperCase()] : undefined;
-    if (deaf) throw new ScriptError(`keyPressed: ${deaf}.`);
-    if (!name) throw new ScriptError(`keyPressed: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} … "F1" … "Space", "Enter", "Escape", "Left" …; got ${describe(key)}.`);
-    return inputValue(`keyPressed(…, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, "keyPressed: player") }, true);
+    if (deaf) throw new ScriptError(`${what}: ${deaf}.`);
+    if (!name) throw new ScriptError(`${what}: the key is one of ${KEY_NAMES.slice(0, 3).map((k) => JSON.stringify(k)).join(", ")} … "F1" … "Space", "Enter", "Escape", "Left" …; got ${describe(key)}.`);
+    return inputValue(`${what}(…, ${JSON.stringify(name)})`, { source: "key", key: name, player: human(player, `${what}: player`), ...(what === "keyHeld" ? { held: true } : {}) }, true);
   };
+  rt.keyPressed = keyRead("keyPressed");
+  rt.keyHeld = keyRead("keyHeld");
   rt.clicked = (player: unknown, button: unknown = "left") => {
     const b = typeof button === "string" ? button.trim().toLowerCase() : "";
     if (!(MOUSE_BUTTONS as readonly string[]).includes(b)) throw new ScriptError(`clicked: the button is "left", "right" or "middle", got ${describe(button)}.`);
@@ -572,6 +589,22 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     const values: Record<string, InputValue> = {};
     parsed.captures.forEach((c, i) => { values[c.name] = inputValue(`chatted(…).${c.name}`, { source: "chat", pattern, capture: i, player: who }, false); });
     return Object.freeze({ __trigscript: "chat" as const, pattern: parsed, matched: inputValue("chatted(…)", { source: "chat", pattern, capture: null, player: who }, true), values: Object.freeze(values) });
+  };
+  /**
+   * For a library: a location of the map's first 63 that the map does not use, the highest free one — the one a map
+   * maker reaches for last. Asked again with the same reason, the same location. Input's own (`input.ts`) keeps clear.
+   */
+  rt.reserveLocation = (why: unknown): number => {
+    if (typeof why !== "string" || !why.trim()) throw new ScriptError(`reserveLocation() takes the reason, which the map's requirements show: reserveLocation("fog: where each brush is made").`);
+    const had = collector.reserved.get(why);
+    if (had !== undefined) return had;
+    const used = new Set([...names.locations.entries.map((e) => e.value), ...collector.reserved.values()]);
+    for (let n = LAST_SLOT + 1; n >= 1; n--) if (!used.has(n)) { collector.reserved.set(why, n); return n; }
+    throw new ScriptError(`reserveLocation("${why}"): the map uses every one of its first 63 locations; free one for it.`);
+  };
+  /** Build-time: a picture's ink, or each frame of a video's, as the brushes of shapes that cover it (`cover.ts`). */
+  rt.cover = (picture: unknown, shapes: unknown) => {
+    try { return coverValue(picture, shapes, { isVideo }); } catch (err) { throw new ScriptError(err instanceof Error ? err.message : String(err)); }
   };
   rt.centerLocation = () => { throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement — centerLocation(locations.Cursor, x, y)."); };
 
@@ -600,6 +633,17 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     }
     return Object.freeze(out);
   };
+  /** `memory`: each field a table cell with no index (`memory.ts`), named by its path. */
+  // On the trigger level's memory(address, …) condition, which keeps its name: memory.vision.countdown.
+  Object.assign(rt.memory as object, Object.fromEntries(Object.keys(MEMORY_GROUPS).map((group) => [group, Object.freeze(Object.fromEntries(
+    MEMORY_FIELDS.filter((f) => f.path[0] === group).map((f) => {
+      const field = memoryTableField(f);
+      const ident = `memory.${field.name}`;
+      const fail = (): never => { throw new ScriptError(`${ident} is a value the game holds: it has no value when the script is built. Inside program(), assign to it, assign it to a let, or use it in the program's own arithmetic and comparisons.`); };
+      const cell: TableCell = { name: ident, base: field.base, stride: 0, index: 0, width: field.width };
+      return [f.path[1], { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail } as TableValue];
+    }),
+  ))])));
   const tableNames: Record<TableKind, ScriptNames[keyof ScriptNames]> = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
   const entryName = (kind: TableKind, value: number): string => {
     const t = tableNames[kind];
@@ -608,10 +652,38 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   };
   rt.colors = Object.freeze({ ...PLAYER_COLORS });
 
+  /* ── JSX: a text as elements ── */
+  // After each class at the top of a file (hoist.ts#transformer): what its bodies compute when the script is built, for a
+  // program that makes an instance of it.
+  rt.__class = (_cls: unknown, d: { at: [number, number]; pos: number; hoisted: () => HoistedThunks }) => { collector.classes.set(`${d.at[0]}:${d.pos}`, { hoisted: d.hoisted }); };
+  rt.textColors = TEXT_COLORS;
+  rt.__jsx = jsxAtBuild;
+  rt.__fragment = JSX_FRAGMENT;
+  rt.ui = Object.freeze({
+    lines: () => { throw new ScriptError("ui.lines() shows a text in a program's lines, inside program(async () => { … }): ui.lines(P1, () => <line>…</line>)."); },
+  });
+  const listens = (what: string, example: string) => () => { throw new ScriptError(`on.${what}() listens while the game runs: at the top of a script, or inside program(async () => { … }): ${example}.`); };
+  rt.on = Object.freeze({
+    created: listens("created", "on.created(units.ZergZergling, (u) => { … })"),
+    died: listens("died", "on.died({ owner: P8 }, (u) => { … })"),
+    killed: listens("killed", "on.killed({ owner: P8 }, (u, by) => { … })"),
+    order: listens("order", "on.order(units.ProtossHighTemplar, orders.CastPsionicStorm, (u) => { … })"),
+    morphed: listens("morphed", "on.morphed(units.TerranSiegeTankSiegeMode, (u, was) => { … })"),
+    chat: listens("chat", "on.chat(\"-give {n}\", (p, { n }) => { … })"),
+    key: listens("key", "on.key(\"F7\", (p) => { … })"),
+  });
+  // `on.died(…)` at the top of a script: the transformer hands the call here as a program of its own, which listens from
+  // the start of the game (hoist.ts#transformer).
+  rt.__listen = (body: unknown, at?: unknown) => {
+    if (!isProgramDescriptor(body)) throw new ScriptError("on.…() at the top of a script is written directly, as a statement of its own.");
+    collector.entries.push({ kind: "program", descriptor: body, options: { owners: [0], perPlayer: false }, at: isAt(at) ? at : null });
+  };
+
   /* ── Text a program fills in ── */
   rt.name = (player: unknown) => textMark("n", onePlayer(player, "name: player", 12));
   rt.color = (player: unknown) => textMark("c", onePlayer(player, "color: player", 12));
   rt.print = (text: unknown, options?: unknown): PrintValue => {
+    if (builtText(text) !== undefined) text = builtText(text);
     if (typeof text !== "string") throw new ScriptError(`print: expected text, got ${describe(text)}.`);
     let to: number = PlayerGroup.CurrentPlayer;
     let position: PrintValue["position"] = "chat";
@@ -691,8 +763,9 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
-  out.push("seconds", "minutes", "frames", "cycles", "sleep", "rose", "once", "shared", "clamp", "u32", "i32");
+  out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
+  out.push("textColors", "ui", "on", "reserveLocation", "cover", "__jsx", "__fragment", "__class", "__listen");
   return out;
 }

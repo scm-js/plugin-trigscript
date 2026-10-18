@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 14** (13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 21** (20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -60,7 +60,7 @@ the statement as the source has it ("L12: while (x < 3)"), for a log or a debugg
 ## Variables
 
 ```
-VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | "made", shared, bits?: 8 | 16, unsigned?, temp?, at }
+VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | "made", shared, bits?: 8 | 16, unsigned?, temp?, task?, at }
 ```
 
 `id` is unique within the program (`name#n`); `name` is the source's. `shared` is a
@@ -69,12 +69,13 @@ VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | 
 call's result). A variable exists from its `declare` statement on; a backend allocates
 storage in that order. A `unit` variable holds a unit of the game or none; its `declare`,
 a parameter's `init` and a `return` carry a unit expression (below). A `text` variable
-is kept the way `text` says (*Texts*, below).
+is kept the way `text` says (*Texts*, below). `task` marks a variable of a task's body (*Tasks*,
+below): it has a cell for each slot of that `start`, within each player's row in a per-player program.
 
 ## Arrays
 
 ```
-ArrayDecl { id, name, kind: "number" | "boolean", length, shared, bits?: 8 | 16, unsigned?, values?: number[], dynamic?, slice?, through?, at }
+ArrayDecl { id, name, kind: "number" | "boolean", length, shared, bits?: 8 | 16, unsigned?, values?: number[], dynamic?, slice?, through?, task?, at }
 ```
 
 `Program.arrays` lists every array of the program, those of inlined functions included, so a
@@ -167,7 +168,7 @@ frame's `saves`, and a `slice` is never declared.
 | `store` | `array`, `index`, `value` | `hp[i] = value`; `hp[i] += v` arrives as a store of `hp[i] + v`. The value is evaluated, then the index; nothing is stored past either end. |
 | `assignBool` | `target`, `value` | `target = value` for a boolean. |
 | `assignUnit` | `target`, `value` | `target = value` for a unit variable. |
-| `unitLoop` | `decl`, `filter`, `body` | `for (const u of unitsAt(…))`: the body once for every unit the filter matches, in the order of the game's unit table, within the frame (the compiler refuses a `sleep` inside). `decl` is the unit of the turn; `break` and `continue` are the loop's. |
+| `unitLoop` | `decl`, `filter`, `source?`, `was?`, `event?`, `body` | `for (const u of unitsAt(…))`: the body once for every unit the filter matches, in the order of the game's unit table, within the frame (the compiler refuses a `sleep` inside). `decl` is the unit of the turn; `break` and `continue` are the loop's. With `source` (`on.created` / `on.died`, since version 18; `killed`, `ordered`, `morphed` since 19) the units are this frame's events pass's instead, `was` a number variable set at each turn and `event` a filter of the event's own (*Events*, below). |
 | `unitWrite` | `unit`, `field`, `value` | `u.hp = 40`, `u.invincible = true`. Nothing happens when the unit is none or gone. Hit points at 0 kill. |
 | `unitDo` | `unit`, `verb` | `{ do: "kill" }`, `{ do: "remove" }`, `{ do: "give", to }`, `{ do: "order", order, target }` (a location), `{ do: "damage" \| "heal", amount, percent }`, `{ do: "locate", location }`. Nothing happens when the unit is none or gone; an amount is evaluated either way. |
 | `tableWrite` | `cell`, `value`, `scaled?`, `boolean?` | A cell of the game's tables. `value` is a number expression, a boolean one (`boolean`), or `{ kind: "text", text }` for a name. `scaled`: the number is already what the cell stores. |
@@ -179,7 +180,11 @@ frame's `saves`, and a `slice` is never declared.
 | `switch` | `value`, `cases: { value, body }[]` | Cases tested in order; `value` null is `default`, `NaN` a case whose value could not be read (no test, still fallen into). Bodies fall through unless they `break`. |
 | `break`, `continue` | | Of the nearest loop (`break` also of a `switch`). |
 | `return` | `value?` | Inside a `call` body: writes the result and leaves the call. |
-| `sleep` | `ms?`, `cycles?` | Park the program: a duration in milliseconds, or in frames (`cycles`). `cycles: 1` goes on in the very next frame. |
+| `sleep` | `ms?`, `cycles?` | Park the program: a duration in milliseconds, or in frames (`cycles`). `cycles: 1` goes on in the very next frame. Inside a `parallel` branch it parks that branch alone. |
+| `parallel` | `mode`, `branches` | `await Promise.all([…])` (`all`) or `await Promise.race([…])` / `Promise.any` (`race`). Each branch is a coroutine of its own with its own place to go on from and its own wait: started here, in order, in this frame; then, every frame the program is at this statement, each branch that has not ended goes on, in order. The program goes on past it in the frame the last branch ends (`all`) or the first (`race`, which leaves the others where they are: they never run again). A branch is never left by `break`, `continue` or `return`. Not inside a called function, a `unitLoop` or a `textLoop`. Since version 15. |
+| `start` | `task`, `max`, `call`, `handle?`, `listen?` | `start(wave(n))`, `void wave(n)`: a task that runs beside what started it (*Tasks*, below). `call` is the async function's body inlined, its `params` copies of this start's arguments, worked out here; the body runs in the task. `handle` takes the task's number, or 0 when every slot was running. Since version 16. `listen` (`{ source }` or `{ inputs }`, since version 18): a listener's start (*Events*, below). |
+| `cancel` | `task` (a number) | `t.cancel()`: the task stops where it is; nothing happens for a number that is no running task's. Since version 16. |
+| `buildText` | `buffer`, `parts`, `reset?` | The parts written onto the end of buffer `buffer` — emptied first when `reset` — which a `built` reads back (*Texts put together a piece at a time*, below). Since version 17. |
 | `print` | `parts`, `to`, `position` | Text with values in it. `parts` are `{ kind: "text", text }`, `{ kind: "number", expr, unsigned? }` (its digits, with a minus sign when it is below zero and not `unsigned`), `{ kind: "name", player }` and `{ kind: "color", player }` (the colour code of the player's colour), a player being a slot or 13 for the current player. `to` is who sees it: a slot, 13, All Players (17) or a force (18–21). `position` is `chat` or `center`, the line the game's own errors use. Every number is evaluated before anything is shown. |
 | `action` | `record`, `variables?` | A trigger action. Each of `variables` names a field of the record that takes an expression's value: `{ field, bits: 8, 16 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, a unit type a 16-bit one (the lowering stops it at 228), an amount with a modifier a 32-bit one. Version 4 had one, as `variable`. |
 | `centerLocation` | `location`, `x`, `y` | Centre a location (1-based) on a point of the map in pixels, its size kept. |
@@ -187,13 +192,77 @@ frame's `saves`, and a `slice` is never declared.
 | `block` | `body` | Scoping only. |
 | `remark` | `text`, `short?` | A word for the editor about the line: a loop unrolled when the script was applied. |
 
+### Events
+
+`on.created`, `on.died`, `on.killed`, `on.order`, `on.morphed`, `on.chat` and `on.key` are each a `start` with `max` 1 and `listen`, whose body is
+`while (true) { sleep 1; … }`: the first turn, in the frame it is started in, only waits, so a listener hands
+on what happens from the next frame. What it hands on is a `unitLoop` with a `source`, or for a typed line or
+a key an `if` on the `input` for each player it listens to, unrolled (the player is a value of the script in
+each copy). A handler that is not async is inlined there; an async one is a `start` of its own each time, its
+`params` copies of what it is handed. Once a listener has begun, the lowering may skip its turn in a frame
+nothing it listens for happened (`listen.source`: the pass found none of those; `listen.inputs`: none
+arrived), since such a turn does nothing; the simulator gives it every turn. A listener written at the top of
+a file is a program of its own (owner Player 1, not per player) whose body is that one `start`.
+
+The **events pass** runs once a frame before the programs, when the IR has a `unitLoop` with a `source`. It
+walks two of the game's lists (1.16.1's addresses: the visible units at 0x628430 and the dying ones at
+0x62842C). The visible list is walked from its head along "next": it links a record in just behind its head,
+so the records linked in since the pass before lie between the head and the record that was behind it then.
+The dying list is walked whole, along "next" and then "previous" from the record its address gives, since
+Remastered's EUD layer gives the list's other end there. A cell for each unit
+slot holds the uniqueness byte of the unit last seen in it, and once that unit's death has been handed on,
+one more: a unit on the visible list whose cell is not its byte came on (`created`); a unit on the dying
+list whose cell is its byte has died or been removed (`died`), and is handed on once. A unit made and gone
+between two passes, a turret, a scanner sweep and a unit that never left its transport are neither. When the
+head and the record behind it are both as the pass before left them, the visible walk is passed by; when that
+record has left the list, the walk goes to the end. At most 512 of each a frame; the rest come in the next.
+
+A `created` turn is a unit still on the map (one gone since the pass is passed over); a `died` turn is the
+dying record, whose fields read as the unit was when it died — its slot is not given to another unit before
+the next frame's dying pass — and the front end only reads its fields. The visible list is the latest first;
+the order of a frame's deaths is the dying list's, which is not the same in the two games.
+
+The other three sources (version 19):
+
+- `killed`: the `died` turns whose record has no hit points (+0x08 is 0) and one of the eight players as the
+  last whose attack hurt the unit (+0x90, a byte; 8 when none has). That is what a death in a fight leaves; Kill
+  Unit, Remove Unit, a program's `kill()` and a unit that went down with its transport leave the hit points and,
+  unless the unit was hurt before, 8. `was` is that player. `event.by`: only the units that player killed (13,
+  the current player). The front end copies the handler for each of the eight killers when it takes the killer,
+  so that it is a value of the script in each copy.
+- `ordered` and `morphed`: when the IR has either, the pass first walks the whole visible list and holds each
+  unit's order byte (+0x4D) and type (its low byte) against a table of its own, a cell a slot as the uniqueness
+  cells are. A unit whose cell differs and whose slot was seen before this pass is handed on, `was` the cell's old
+  value; a unit not seen before only has its cells set. So an order or a type held for less than a frame is not
+  seen, and a unit's first order is not a change. `event.order` (`ordered`): only the units whose order is now that
+  one. This walk costs about 100 conditions and actions a unit on the map every frame for one of the two, 140 for
+  both (lifted game, 2026-10-17).
+
+### Tasks
+
+Each `start` statement is a body of its own — a loop unrolled when the script is built has one
+for each turn — numbered from 1 in the order the front end meets them (`task`; one inside
+another's body comes after it), with `max` slots. A slot is a row of the cells of everything
+the body declares (`VarDecl.task`, `ArrayDecl.task`), plus its place to go on from, its wait,
+its generation and the frame it last had its turn in. A `start` works its arguments out, takes
+the lowest free slot — one more generation, its parameters set, its place the body's start —
+and gives `slot | task << 8 | generation << 16`. With every slot running nothing starts, and
+the game says so once.
+
+Each frame, after the program's own turn (whether it slept, waited or ended), every running
+task goes on until it sleeps, waits or ends: by `task`, then by slot. A task started during
+that turn has its first turn in the same frame — the slots are gone through again until none
+was started. Tasks run on after the program has ended. A task's body may read the program's
+variables, but not those of a task it was started from (the front end refuses that), and a
+`sleep`, an `await` or a `parallel` in it is the task's own.
+
 ## Expressions
 
 Numbers (`NumExpr`):
 
 | Kind | Fields |
 | --- | --- |
-| `const` | `value` (a whole number) |
+| `const` | `value` (a whole number); `fixed` (the raw cell of a 16.16 number); `fn` (the number is a function's, *Functions as values*) |
 | `var` | `id` |
 | `element` | `array`, `index` — a cell of an array of numbers; 0 past either end |
 | `length` | `array` — the cells in use of an array that grows |
@@ -225,6 +294,7 @@ Booleans (`BoolExpr`):
 | `not` | `expr` |
 | `random` | a coin toss, fresh at every evaluation |
 | `unitAlive` | `unit` — `if (target)`: there is a unit and it is still on the map |
+| `running` | `task` (a number) — `t.running`: the task that number stands for has not ended or been cancelled |
 | `unitSame` | `left`, `right` — both name one unit of the game (none is never the same as anything) |
 | `unitFlag` | `unit`, `flag: hallucinated | cloaked | burrowed | invincible | underAttack`; false when the unit is none or gone |
 | `edge` | `edge: rose | once`, `cond` |
@@ -275,6 +345,27 @@ the program's body the hint for a function inlined more than once, with the reas
 
 Every pass that walks a program walks `bodiesOf(program)` — the body, then each function's
 — and `programDeclarations(program)` lists the functions' variables with the rest.
+
+### Functions as values
+
+Since version 21. A function a program keeps — in a variable, a cell, a field, a `Map`, what
+another function returns — is a number: a `const` with `fn`, the id of the `FuncDecl` it runs.
+The numbers start at 1, so 0 is no function (`undefined`). A function the front end knows when
+the script is built — handed to a parameter, kept in a `const` — is never a number: its calls
+are calls of its body, inlined or called as any function's.
+
+A call through a number is a `Call` of a *dispatcher*, a function the front end made for each
+shape of call (what it is handed, in order, and what it gives): its first parameter is the
+number, the rest are the call's arguments, and its body is a `switch` on the number with a
+case for each function kept as a value whose shape fits, each calling that function and, when
+the call gives something, returning it. A number no case has (0) does nothing and gives 0. The
+`fn` marks are how the front end knows which functions to give cases: one whose number
+nothing reachable holds is left out.
+
+A dispatcher is lowered where it is first called, and with it every function among its cases,
+which may be before a variable one of them uses is declared — a field of an instance the
+program makes later. A backend makes a variable where it is first used, and its `declare`
+then sets that one.
 
 ### Recursion
 
@@ -382,6 +473,7 @@ TextExpr =
   | { kind: "textPad", of, side: "start" | "end", width, with, at, label }
   | { kind: "textRepeat", of, count, at, label }
   | { kind: "textCall", call }                          a call whose result is a text
+  | { kind: "built", buffer }                           what a buffer of buildText holds (version 17)
 ```
 
 The first three, and a `textTernary` between such, *have an id* whatever happens in the
@@ -440,6 +532,30 @@ lets a made text into those actions only. A `tableWrite` of a unit type's name t
 `TextExpr`: an id is written as it is, a made text goes over a string kept for that unit
 type, on every computer. The places a `textSlice` is given are inside 0 … the length
 already: the front end counts from the end and clamps.
+
+### Texts put together a piece at a time
+
+Version 17, for JSX (TrigScript 4, S2). A JSX text has conditions and loops in it, so it
+cannot be one `template`; made as templates joined with `+` it would be copied whole at every
+piece. Instead it has a **buffer** of its own, named by `buffer` (`jsx L<line>#<n>`): `BUILD_BYTES`
+(2 047) bytes and where the writing has got to, one for the whole game. A `buildText` with
+`reset` starts it empty; every other `buildText` writes its parts at the end; `built` is the
+text there, only looked at — whatever keeps it takes a copy, since the buffer is built again
+the next time the same JSX runs. A buffer is used up within the frame it is built in: the
+front end never lets an `await` come between a JSX text's first `buildText` and its use. Past
+`BUILD_BYTES` the text is cut, never inside a character, and the game says so once in red
+where Simulate records a fault.
+
+Parts gain `{ kind: "char", expr }`: one byte, the number's low eight bits — a colour code
+the program chooses (`<cell color={board[i]} />`). 0 writes nothing. Simulate's log drops it,
+as it drops a player's colour.
+
+`ui.lines(player, view)` is a `start` whose body loops: when a flag of the program says the
+view is stale, or 24 frames after it was last shown, it builds the view and prints `built`.
+The flag is a variable declared first in the program body, set; after every statement anywhere
+in the program (its tasks and its functions too) that writes a variable or an array the view
+reads, the front end adds `flag = 1` (`views.ts`). A view that reads the game — units, input,
+`random`, the game's tables, a function that is called — is built every frame.
 
 ## Units
 
@@ -548,7 +664,7 @@ The build's plugin sections, in the order they run (`buildPlugins`): **chatEvent
 messages of its own — it only finds the line the local player typed and leaves its address
 and length; **trigscript**, which before the triggers matches that line against the patterns
 on the computer it was typed on, into a number for the pattern and up to three values;
-**MSQC**, which sends those, the keys (`KeyPress(K); NotTyping`) and the clicks
+**MSQC**, which sends those, the keys (`KeyDown(K); NotTyping`: the frame a key goes down; `KeyPress` is every frame it is down, and a tap is two or three) and the clicks
 (`MouseDown(B)`) to every computer as the player they came from, and keeps each human's
 mouse in a location; **eudTurbo**. Every cell is an `EUDArray(12)` or an `EUDVariable` the
 lowering registers by name (`tsin_key0`, `tsin_chat_in`, …), which is how the other two
