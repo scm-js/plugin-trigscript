@@ -9,7 +9,7 @@ raycaster in the fog (*S5*, 2026-10-17); B3, functions as values, and B4, `try` 
 (2026-10-17); closures over locals, and the text and array methods a program was missing, built (*Closures and the
 missing methods*, 2026-10-17); JSX components, functions from any file and the first two libraries, `trigscript/ui` and
 `trigscript/screen`, with Snake as their showpiece (*Components, functions from any file, and the first libraries*,
-2026-10-17); generics and `timers`, `signals`, `random` and `math` (*timers, signals, random and math, and generics*, 2026-10-17); a sweep of what is still missing, and B9, references and values (*What is still missing*, *B9*, 2026-10-18). The question it answers: now that there is a
+2026-10-17); generics and `timers`, `signals`, `random` and `math` (*timers, signals, random and math, and generics*, 2026-10-17); a sweep of what is still missing, B9, references and values, and generators finished with `trigscript/cutscene` (*What is still missing*, *B9*, *Generators finished*, 2026-10-18). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1696,9 +1696,10 @@ silently.
 `Array.from`, async generators inside a program.
 
 **In order of what the showpieces need:**
-1. References and polymorphism (B9, below).
-2. Records and instances as values everywhere (B9, below).
-3. Generators finished, and async functions in libraries — with the cutscene library, which is written in them.
+1. References and polymorphism (B9, below). *Built.*
+2. Records and instances as values everywhere (B9, below). *Built.*
+3. Generators finished, and async functions in libraries — with the cutscene library, which is written in them. *Built,
+   but `g.next()` by hand (below).*
 4. Abstractions over what a frame costs: `unroll`; a loop spread over frames by a budget (A4 knows each line's cost);
    fields packed into one cell and written with a mask; a view printed only when what it reads changed.
 5. `using` for what a program holds for a while: a location (`reserveLocation`), a reveal, the camera.
@@ -1796,6 +1797,48 @@ pool is (`compiler/closures.ts`, `structured.ts` *References* and *Records and i
   classes, a list made, walked and reversed, a tree summed by a method that calls itself, instances in an instance with a
   text and a `Map`, 3 000 made and given back across frames) and `probes/game-values.ts` (3). Five older tests that said
   a refusal now say what the program prints.
+
+### Generators finished, async functions in libraries, and trigscript/cutscene (built 2026-10-18)
+
+The third of the sweep's list, and the library it was for.
+
+**Generators.** Still walked where the `for…of` is (the loop's body put where each `yield` is), now from anywhere one is
+written: a generator at the top of a file, a generator method (`squad.alive()`, `this` the instance), and an instance's
+`*[Symbol.iterator]()` (`for (const u of squad)`). `yield*` walks another generator there, or a list (`yield* [1, 2]`,
+`yield* xs`); a `break` in the loop leaves both. A generator method of a reference that may be of several classes with
+bodies of their own is refused (which one runs is the game's, and a generator is walked where it is written).
+**Not yet:** `g.next()` by hand. A generator stepped by a program is a coroutine that runs a turn when it is asked, inside
+the frame of whoever asks; the lowering has coroutines (a program, a `parallel` branch, a task) but none that another
+calls and comes back from. That is a lowering of its own (a `resume` of a task's body, returning to its caller) and the
+simulator's, kept for later; a task and `await until(…)` do what a hand-stepped generator is wanted for.
+
+**Async functions in libraries.** A generator or an `async function` at the top of a file is a function of the script's
+own now (`isScriptFunction`), called, awaited and started with the program's values, as `trigscript/timers` had to wrap
+its own in `game()` before. `sleep(frames(n))` and `sleep(seconds(n))` of a number the game holds count down a frame at
+a time (the next frame at the least, as `frames(0)` waits), which a scene's timings need.
+
+**Found on the way:** a class from another file used only inside a function at the top of a file was never declared for
+the program, so its methods were walked in the calling file and their variables not found — a fault since functions
+from any file (B3's time); a parameter's default naming a constant of its file (`limit = 30 * SECOND`) was not worked out
+for such functions or for methods; a unit variable the checker narrowed to `null` where it is tested was read as a
+boolean.
+
+**`trigscript/cutscene`** (`stdlib/cutscene.ts`), everything a trigger can do, a frame at a time:
+- `Camera(x, y)`: `look(x, y)` (Center View on a location the library keeps), `pan(x, y, frames, ease)` (`"linear"`,
+  `"in"`, `"out"`, `"inOut"`, `"back"`, from `trigscript/math`), `follow(unit, frames)`, `shake(frames, size)`. The camera
+  of the player the program runs as.
+- `walk(unit, x, y, near?, limit?)` and `charge(…)` (a Move or an Attack order to another location the library keeps,
+  then waiting until the unit is within `near` pixels, gone, or `limit` frames have passed), `walkAll(units, x, y)`.
+- `line(speaker, text, frames)`: the speaker's portrait talks and the words show in the middle of the screen.
+- `play(player, start(scene()), key?)`: a scene started as a task, which the key (Escape) skips; it says whether it was.
+- **Checked:** `tests/cutscene.test.ts` (4, simulator); `probes/game-cutscene.ts` (3) passes in the lifted game and the
+  simulator — a Marine really walks there, the camera's place after a glide and a shake, Escape skipping a scene.
+  `probes/cutscene.ts` → `Maps/TrigScript/trigscript-cutscene.scx` and its answers sheet: a scene (Raynor's line, four
+  Marines walking with the camera following, a glide and a shake to the Zerg base, a circle round it turned by `Vec`
+  given whole, back), then a list of `Effect`s of two classes (`Ping`, `Wave`) ticked every frame for twenty seconds — B9
+  in a map. In the lifted game every step prints what the sheet expects; a frame costs about 5 000 at the most. Awaiting a
+  play in Remastered. Seen there: the centre line ("Raynor: …") is read back from the game's memory more than once
+  by the lifted game; whether Remastered shows it again is the sheet's question 10.
 
 ## Part C — the game, pushed
 
