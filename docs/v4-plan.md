@@ -1248,7 +1248,10 @@ flag that refreshes the circles and the panel.
 - **Played (2026-10-17, recording 21.11.18.13):** `probes/local-ui.tsx`, a live panel and Q / W sending a place with
   `sync()`. It works in Remastered: the panel follows the mouse every frame, MSQC's copy of the mouse trails it while
   it moves (779 against 666) and catches up when it stops; Q put a Marine at the screen's top left corner (64, 2688
-  with the camera at 0, 2624) and W one under the cursor, each "sent in 6 frames" for two sync()s in a row.
+  with the camera at 0, 2624) and W one under the cursor, each "sent in 6 frames" for two sync()s in a row. Hosted as a
+  multiplayer game alone (21.12.36.14): the same, "sent in 12 frames" — about 6 a sync() against 3 in single player,
+  the multiplayer game's turns. Found by it: two sync()s in a row read their values 6 frames apart, so a moving
+  mouse's x and y come from two different places. A point wants both sent on the same frame.
 
 ### B6. `fixed` and `Math` (4.7.0)
 
