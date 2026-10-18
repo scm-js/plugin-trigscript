@@ -5655,10 +5655,32 @@ export class Structured {
     }
     if (call.arguments.length !== 1) { this.c.error(call, "sleep() takes one duration: sleep(seconds(2)), sleep(minutes(1)) or sleep(frames(5))."); return; }
     const h = this.evaluate(call.arguments[0]);
-    if (!h) { this.notConstant(call.arguments[0], "A duration"); return; }
+    if (!h) { this.variableSleep(call, call.arguments[0]); return; }
     if (!isDuration(h.value)) { this.c.error(call.arguments[0], `sleep() takes a duration from seconds(), minutes() or frames(), got ${describe(h.value)}.`); return; }
     const d = h.value;
     this.emit({ kind: "sleep", ...(d.cycles !== undefined ? { cycles: d.cycles } : {}), ...(d.ms !== undefined ? { ms: d.ms } : {}), at: this.at(call), label: this.label(call) }, call);
+  }
+
+  /**
+   * `sleep(frames(n))`, `sleep(seconds(t))` of a number the game holds: a frame at a time, counted down — the frame after
+   * at the least, as a duration known when the script is built waits. Twenty-four frames a second.
+   */
+  private variableSleep(call: TS.CallExpression, arg: TS.Expression) {
+    const { ts } = this;
+    const e = this.unwrap(arg);
+    const unit = ts.isCallExpression(e) && e.arguments.length === 1 ? ["frames", "cycles", "seconds", "minutes"].find((n) => this.isLibraryCall(e, n)) : undefined;
+    if (!unit || !ts.isCallExpression(e)) { this.notConstant(arg, "A duration"); return; }
+    if (unit === "seconds" && this.widthOf(this.c.checker.getTypeAtLocation(e.arguments[0])).fixed) { this.c.error(e.arguments[0], "seconds() of a fixed number the game holds: say it in frames — sleep(frames(n)), 24 a second."); return; }
+    const n = this.num(e.arguments[0]);
+    if (!n) return;
+    const at = this.at(call), label = this.label(call);
+    const frames: NumExpr = unit === "seconds" ? { kind: "binary", op: "*", left: n, right: num(24), at, label } : unit === "minutes" ? { kind: "binary", op: "*", left: n, right: num(1440), at, label } : n;
+    const left = this.newVar("(frames left)", "number", at);
+    this.emit({ kind: "declare", decl: left, init: frames, at, label }, call);
+    this.emit({ kind: "do", body: [
+      { kind: "sleep", cycles: 1, at, label },
+      { kind: "assign", target: left.id, value: { kind: "binary", op: "-", left: varRef(left), right: num(1), at, label }, at, label },
+    ], cond: { kind: "compare", op: ">", left: varRef(left), right: num(0), at, label }, condLabel: label, at, label }, call);
   }
 
   /** `await until(() => condition)`: the program waits, asking again every frame, until the condition holds — not at all when it holds now. */
@@ -6056,12 +6078,53 @@ export class Structured {
    * body inlined, and at each `yield` the loop's body, its variable what was yielded — a value the script knows as it
    * is, anything else in a variable of the turn. `continue` goes on after the yield; `break` leaves the generator.
    */
+  /**
+   * The generator a for…of walks, when it walks one: a generator function of the program or at the top of a file, a
+   * generator method (`squad.alive()`), or what an instance's `*[Symbol.iterator]()` gives (`for (const u of squad)`).
+   */
+  private generatorOf(expr: TS.Expression): { fn: TS.FunctionDeclaration | TS.MethodDeclaration; target: Body; name: string; self?: Binding; call: TS.Expression } | null | undefined {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
+      const own = this.gameDeclaration(e.expression);
+      if (own && ts.isFunctionDeclaration(own) && own.asteriskToken) return { fn: own, target: this.body, name: own.name?.text ?? "generator", call: e };
+      const decl = declarationOf(ts, this.c.checker, e.expression);
+      if (decl && isScriptFunction(ts, decl) && decl.asteriskToken && !this.body.plan.game.has(decl)) {
+        const target = this.c.functionBody?.(decl);
+        if (!target) return undefined;
+        return { fn: decl, target, name: decl.name!.text, call: e };
+      }
+      return undefined;
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(this.unwrap(e.expression))) {
+      const callee = this.unwrap(e.expression) as TS.PropertyAccessExpression;
+      const found = this.memberAt(callee, (m, name) => ts.isMethodDeclaration(m) && !!m.asteriskToken && this.memberKey(m.name) === name, true);
+      if (!found) return found;
+      if (found.virtual) { this.c.error(e, `${found.name} is a generator of several classes: which one runs is the game's, and a generator is walked where it is written. Walk it on an instance of one class.`); return null; }
+      const m = found.member as TS.MethodDeclaration;
+      return { fn: m, target: this.classBodies.get(m.parent as TS.ClassDeclaration) ?? this.body, name: found.name, ...(found.self ? { self: found.self } : {}), call: e };
+    }
+    // `for (const x of thing)` of an instance whose class has `*[Symbol.iterator]()`.
+    const type = this.c.checker.getTypeAtLocation(expr);
+    const cls = this.classOfType(this.c.checker.getNonNullableType(type)) ?? this.instanceClasses(type)?.[0];
+    if (!cls) return undefined;
+    const iterator = this.memberOf(cls, (m) => ts.isMethodDeclaration(m) && !!m.asteriskToken && ts.isComputedPropertyName(m.name) && m.name.expression.getText() === "Symbol.iterator") as TS.MethodDeclaration | undefined;
+    if (!iterator) return undefined;
+    const self = this.objectOf(expr);
+    if (self?.kind !== "record") return undefined;
+    if (self.ref && self.ref.classes.length > 1 && new Set(self.ref.classes.map((c) => this.memberOf(c, (m) => m === iterator || (ts.isMethodDeclaration(m) && ts.isComputedPropertyName(m.name) && m.name.expression.getText() === "Symbol.iterator")))).size > 1) {
+      this.c.error(expr, "This may be an instance of several classes, each walked its own way: which one is the game's, and a generator is walked where it is written. Walk an instance of one class.");
+      return null;
+    }
+    return { fn: iterator, target: this.classBodies.get(iterator.parent as TS.ClassDeclaration) ?? this.body, name: `${this.className(iterator.parent as TS.ClassDeclaration)}[Symbol.iterator]`, self, call: expr };
+  }
+
   private generatorLoop(s: TS.ForOfStatement, decl: TS.VariableDeclaration, ctx: Ctx): boolean {
     const { ts } = this;
-    const e = this.unwrap(s.expression);
-    if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression)) return false;
-    const fn = this.gameDeclaration(e.expression);
-    if (!fn || !ts.isFunctionDeclaration(fn) || !fn.asteriskToken) return false;
+    const source = this.generatorOf(s.expression);
+    if (source === null) return true;
+    if (!source) return false;
+    const fn = source.fn;
     let returns: TS.Node | undefined;
     const look = (n: TS.Node): void => { if (returns || ts.isFunctionLike(n)) return; if (ts.isReturnStatement(n)) { returns = n; return; } ts.forEachChild(n, look); };
     look(s.statement);
@@ -6080,7 +6143,22 @@ export class Structured {
     if (pending) this.emit({ kind: "declare", decl: pending, init: FALSE, at, label }, s);
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(decl.name));
     const handler = (y: TS.YieldExpression) => {
-      if (y.asteriskToken) { this.c.error(y, "yield* is not supported yet: walk the other generator with a for…of and yield each of its items."); return; }
+      // `yield* other()`: the other generator walked here, its yields this loop's too; then, if the loop was left, this one leaves.
+      if (y.asteriskToken) {
+        const inner = y.expression ? this.generatorOf(y.expression) : undefined;
+        if (inner === null) return;
+        if (!inner) {
+          // `yield* [a, b]`, `yield* xs`: each item yielded in turn.
+          const over = y.expression ? this.overOf(y.expression) : undefined;
+          if (!over || !y.expression) { this.c.error(y, "yield* walks another generator, or a list: yield* waves(), yield* [1, 2], yield* xs."); return; }
+          this.loopOf(over, y, "(item)", (item) => { deliver(item, y); });
+          return;
+        }
+        const call = this.inline(inner.call, inner.fn.parameters, inner.fn.body, inner.target, inner.name, inner.fn, { generator: true, nothing: true, ...(inner.self ? { self: inner.self } : {}), ...(ts.isCallExpression(inner.call) ? {} : { args: [] }) });
+        if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, y);
+        leaveIfLeft(y);
+        return;
+      }
       if (!y.expression) { this.c.error(y, "yield gives the loop a value here: yield 3, yield { count: 4 }."); return; }
       // The value, worked out where the yield is.
       const h = this.evaluate(y.expression);
@@ -6096,6 +6174,10 @@ export class Structured {
         item = this.declareRecord(ts.isIdentifier(decl.name) ? decl.name.text : "(item)", this.unwrap(y.expression) as TS.ObjectLiteralExpression, this.c.checker.getTypeAtLocation(decl.name), y);
       } else item = this.bindingOf(y.expression) ?? null;
       if (!item) { this.c.error(y.expression, "A generator walked by a program yields numbers, booleans, units, records of them, or values the script knows."); return; }
+      deliver(item, y);
+    };
+    /** The loop's body for one item, where the yield is; then, if the loop was left, the generator leaves. */
+    const deliver = (item: Binding, y: TS.Node) => {
       // The loop's body, where the loop is: its scope, its file, and a yield in it is the generator's around the loop, if any.
       const saved = this.enterBody(loopBody);
       const inner = this.scope;
@@ -6114,6 +6196,10 @@ export class Structured {
       const where = this.at(y), what = this.label(y);
       if (pending && kept) body = [{ kind: "try", body, catch: [kept.save, { kind: "assignBool", target: stop.id, value: TRUE, at: where, label: what }, { kind: "assignBool", target: pending.id, value: TRUE, at: where, label: what }], at: where, label: what }];
       this.emit({ kind: "do", body, cond: FALSE, at: where, label: what, condLabel: what }, y);
+      leaveIfLeft(y);
+    };
+    const leaveIfLeft = (y: TS.Node) => {
+      const where = this.at(y), what = this.label(y);
       // The loop was left: the generator returns, through the finally blocks around this yield.
       const through = this.ctxNow.fn?.finallies ?? [];
       const outer = this.ctxNow.fn ? { ...this.ctxNow.fn, finallies: [] } : undefined;
@@ -6122,7 +6208,7 @@ export class Structured {
     };
     this.yields.push(handler);
     try {
-      const call = this.inline(e, fn.parameters, fn.body, this.body, fn.name?.text, fn, { generator: true, nothing: true });
+      const call = this.inline(source.call, fn.parameters, fn.body, source.target, source.name, fn, { generator: true, nothing: true, ...(source.self ? { self: source.self } : {}), ...(ts.isCallExpression(source.call) ? {} : { args: [] }) });
       if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, s);
       if (call && pending && kept) this.emit({ kind: "if", cond: { kind: "var", id: pending.id }, then: [kept.restore, { kind: "throw", rethrow: true, at, label }], at, label }, s);
     } finally {
@@ -8406,7 +8492,6 @@ export class Structured {
 
     for (const m of cls.members) {
       if (ts.isClassStaticBlockDeclaration(m)) { this.c.error(m, "A static block is not supported in a program; give the static fields their values where they are declared."); continue; }
-      if (ts.isMethodDeclaration(m) && m.asteriskToken) this.c.error(m, "A generator method is not supported in a class yet; a generator function declared in the program can take the instance.");
       if (!ts.isPropertyDeclaration(m) || !this.isStatic(m)) continue;
       const key = this.memberKey(m.name);
       if (!key) { this.c.error(m.name, "A field's name is written out."); continue; }

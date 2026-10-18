@@ -224,7 +224,8 @@ export function planListener(ts: typeof TS, checker: TS.TypeChecker, stmt: TS.Ex
  * script knows, it still runs when the script is built.
  */
 export function isScriptFunction(ts: typeof TS, decl: TS.Node): decl is TS.FunctionDeclaration {
-  return ts.isFunctionDeclaration(decl) && !!decl.name && !!decl.body && !decl.asteriskToken && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword || m.kind === ts.SyntaxKind.AsyncKeyword);
+  // A generator and an async function too (TrigScript 4): a library's `walkTo(u, at)` waits, `waves()` yields.
+  return ts.isFunctionDeclaration(decl) && !!decl.name && !!decl.body && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
 }
 
 /** `const Title = (props: …) => <line>…</line>` at the top of a file: the arrow, a function of the script's own as a declared one is. */
@@ -237,7 +238,7 @@ export function scriptArrow(ts: typeof TS, decl: TS.Node): TS.ArrowFunction | TS
   let init = decl.initializer;
   while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
   if (!ts.isArrowFunction(init) && !ts.isFunctionExpression(init)) return undefined;
-  if (init.asteriskToken || init.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return undefined;
+  if (init.asteriskToken) return undefined;
   return init;
 }
 
@@ -314,7 +315,8 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     plan.body = ts.factory.createBlock([]);
   }
   if (arrow && arrow.parameters.length && !options.parameters) error(arrow.parameters[0], "The program's arrow takes no parameters.");
-  if (arrow?.asteriskToken) error(arrow, `A ${what} body cannot be a generator.`);
+  // A function at the top of a file may be a generator (TrigScript 4): a for…of in a program walks it there.
+  if (arrow?.asteriskToken && !(ts.isFunctionDeclaration(arrow as TS.Node) && ts.isSourceFile((arrow as TS.Node).parent))) error(arrow, `A ${what} body cannot be a generator.`);
 
   /* ── Bindings ── */
   const declare = (node: TS.Node) => plan.game.add(node);
