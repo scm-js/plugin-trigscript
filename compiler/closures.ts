@@ -52,6 +52,13 @@ export interface ClosurePool {
   texts: { addr: ArrayDecl; block: ArrayDecl; chars: ArrayDecl }[];
   /** The variables that hold the environment of a run of a block. */
   envVars: Set<string>;
+  /**
+   * References (B9): the object table's columns of numbers and booleans — a row given back has them emptied, a reference
+   * among them let go of — and its arrays that grow, whose blocks a row given back gives back (`refs`: they may hold
+   * references, each let go of first).
+   */
+  objects: ArrayDecl[];
+  lists: { ptr: ArrayDecl; len: ArrayDecl; room: ArrayDecl; k: ArrayDecl; of: "number" | "boolean"; refs: boolean }[];
 }
 
 export interface PoolMaker {
@@ -120,7 +127,7 @@ export function makePool(m: PoolMaker, at: At): ClosurePool {
   ], at };
 
   const sweep: FuncDecl = { id: m.fnId("(sweep the environments)"), name: "(sweep the environments)", params: [], body: [], at };
-  return { rc, fnOf, parent, queue, queueN, free, freeN, next, warned, make, drop, sweep, cells: [], texts: [], envVars: new Set() };
+  return { rc, fnOf, parent, queue, queueN, free, freeN, next, warned, make, drop, sweep, cells: [], texts: [], envVars: new Set(), objects: [], lists: [] };
 }
 
 /** One reference more: `rc[x] += 1` for a row of the pool (0 and numbers of plain functions are left alone; rc[0] is never read). */
@@ -207,7 +214,32 @@ export function countReferences(program: Pick<Program, "body">, functions: FuncD
   }
   void slices;
 
-  const counted = (id: string) => vars.has(id) && !params.has(id) && !decls.get(id)?.temp;
+  // Only what a wait may come between its declaration and a use of needs counting: a wait is where rows are given back,
+  // so a variable read before any (a loop's `const e = enemies[i]`, a called function's locals, which never wait) holds
+  // nothing a sweep could take from it. Environments are counted always: one is given back only when let go of.
+  const acrossWaits = new Set<string>();
+  const parks = (root: unknown): boolean => {
+    if (Array.isArray(root)) return root.some(parks);
+    if (!root || typeof root !== "object") return false;
+    const o = root as Record<string, unknown>;
+    // A task started here may read the variable on later frames, and its own waits sweep: counted as a wait.
+    if (o.kind === "sleep" || o.kind === "parallel" || o.kind === "start") return true;
+    for (const v of Object.values(o)) if (v && typeof v === "object" && parks(v)) return true;
+    return false;
+  };
+  const lists = (root: unknown): void => {
+    if (!root || typeof root !== "object") return;
+    if (Array.isArray(root)) {
+      if (root.length && root.every((x) => x && typeof x === "object" && typeof (x as { kind?: unknown }).kind === "string" && isStmtKind((x as { kind: string }).kind))) {
+        root.forEach((st, i) => { if ((st as Stmt).kind === "declare" && parks(root.slice(i + 1))) acrossWaits.add((st as Stmt & { kind: "declare" }).decl.id); });
+      }
+      for (const x of root) lists(x);
+      return;
+    }
+    for (const v of Object.values(root as Record<string, unknown>)) if (v && typeof v === "object") lists(v);
+  };
+  lists(program.body);
+  const counted = (id: string) => vars.has(id) && !params.has(id) && !decls.get(id)?.temp && (acrossWaits.has(id) || pool.envVars.has(id));
   const at0 = (s: { at?: At }): At => s.at ?? pool.make.at;
   const tmp = (name: string, at: At) => m.newVar(name, "number", at, { temp: true });
   const sweepCall = (at: At, label: string): Stmt => ({ kind: "if", cond: cmp(">", ref(pool.queueN), num(0), at, label), then: [{ kind: "call", call: { name: pool.sweep.name, fn: pool.sweep.id, at, label, params: [], body: [] }, at, label }], at, label });
@@ -362,6 +394,14 @@ export function countReferences(program: Pick<Program, "body">, functions: FuncD
       ...release(pool, el(pool.parent, row, at), at, label, m),
       ...pool.cells.filter((a) => arrays.has(a.id)).flatMap((a): Stmt[] => [...release(pool, el(a, row, at), at, label, m), { kind: "store", array: a.id, index: row, value: num(0), at, label }]),
       ...pool.texts.map((t): Stmt => ({ kind: "releaseText", block: t.block.id, index: row, at, label })),
+      // An object's row: what it held let go of, its arrays' blocks given back, its cells emptied for the next one made there.
+      ...pool.objects.flatMap((a): Stmt[] => [...(arrays.has(a.id) ? release(pool, el(a, row, at), at, label, m) : []), { kind: "store", array: a.id, index: row, value: a.kind === "boolean" ? { kind: "const", value: false } : num(0), at, label }]),
+      ...pool.lists.flatMap((l): Stmt[] => {
+        const inner = m.newArray(`(objects) ${l.ptr.name} (given back)`, l.of, 0, at);
+        inner.dynamic = true;
+        inner.through = { ptr: l.ptr.id, len: l.len.id, room: l.room.id, k: l.k.id, index: s.id };
+        return [...(l.refs ? eachCell(inner.id, at, label, num(0), (cell) => release(pool, cell, at, label, m)) : []), { kind: "declareArray", array: inner.id, init: [], at, label }];
+      }),
       { kind: "store", array: pool.free.id, index: ref(pool.freeN), value: row, at, label },
       { kind: "assign", target: pool.freeN.id, value: plus(ref(pool.freeN), num(1), at, label), at, label },
     ], else: [

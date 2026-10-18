@@ -111,8 +111,9 @@ describe("an array of instances", () => {
     expect(names.filter((name) => name.startsWith("(new Wave)")).length).toBe(6);
     expect(names.some((name) => name.startsWith("waves[…]"))).toBe(false);
   });
-  it("holds one class", () => {
-    expect(messages("class A { n = 0; } class B extends A { m = 0; } const xs: A[] = []; xs.push(new A()); xs.push(new B());").join("\n")).toMatch(/holds one class/);
+  it("of two classes holds them by reference (B9)", () => {
+    const sim = run("class A { n = 1; size() { return this.n; } } class B extends A { m = 5; size() { return this.n + this.m; } } const xs: A[] = []; xs.push(new A()); xs.push(new B()); print(`${xs[0].size()} ${xs[1].size()}`);");
+    expect(shown(sim)).toEqual(["1 6"]);
   });
   it("of a class others extend holds the one that is put into it", () => {
     const sim = run("class A { n = 1; size() { return this.n; } } class B extends A { m = 5; size() { return this.n + this.m; } } const xs: A[] = []; xs.push(new B()); print(`${xs[0].size()}`);");
