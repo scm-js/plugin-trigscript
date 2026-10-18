@@ -1214,6 +1214,39 @@ write stays on the one machine and orders go to the old selection everywhere. Ne
 `select(player, units)` is possible: write the local selection, send a Select command as MSQC does, and set the
 flag that refreshes the circles and the panel.
 
+**As built, first part (2026-10-17, IR 23, branch `b5-local`).** Differs from the above in these ways:
+
+- **The values:** `local.player`, `local.camera.{x,y}` and `local.mouse.{x,y}` (on the screen), each a cell read as
+  `memory`'s are (`memory.ts`: `LOCAL_FIELDS`), typed `Local<number>`. `Local<T>` is only a name for `T`: TypeScript
+  loses a mark at the first sum, so the check is the compiler's, as planned. The selection waits for the second part.
+- **The check** (`compiler/local.ts`) is a pass over each program's IR, gone round until nothing more is found. A cell
+  — variable, array, text buffer, parameter, a function's result — given a Local value is Local, and so is a cell
+  assigned under a test of one. Refused, at the line and naming where the value came from (`k (from local.camera.x)`):
+  an action that is not only shown (Play WAV, Display Text, Center View, Minimap Ping and the objectives are), a unit
+  changed or ordered, a location moved, a table of the game written; and under a test of one, waiting, starting or
+  cancelling a task, throwing, `sync()`, and a random draw (each draw moves the game's random numbers on — also
+  `local.mouse.x > 3 && random()`, where whether it is drawn depends on one). Leaving early is not refused: a loop,
+  a switch, a function or the program that a `break`, `continue` or `return` under a Local test leaves on some
+  computers only is walked again as a whole under the test, and what it does after is said where it does it. A called
+  function run under a test is walked as if all of it were. A `memory(address, …)` condition on a local address
+  counts. Not followed: the made texts' heap (a Local text may be longer on one computer).
+- **`await sync(player, value)`**: `syncSend` clears the slot's arrival on every computer and, on the player's own
+  (`f_getuserplayerid()`), puts value + 1 where MSQC's `val` sends it from; the program then waits a frame at a time
+  until a value from 1 to 1 048 575 has arrived (MSQC's cell reads 0xFFFFFFFF on a frame with nothing: the first
+  build waited for "not 0" and ended at once with 0, found by the lifted game), or the player is no person or has
+  left (0). Only where it is assigned, in an async program. Slots are numbered across the build; the Python clears
+  the sent cell after MSQC has sent it.
+- **Checked:** `tests/local.test.ts` (30), an eudplib build fixture, `probes/game-local.ts` in the lifted game and
+  the simulator, and `probes/game-local-players.ts` in two copies kept in step: each computer shows its own camera,
+  P2's synced mouse reaches both, and the copies agree every frame. A deliberate leak through a `memory()` condition
+  (before the check followed one) split the copies at frame 2, the detector naming the line that read the screen
+  position — so the passing test is worth something.
+- **The simulator** reads a program's local values at the computer of the player it runs for, and a `sync()`'s value
+  at the sender's; an arrival lasts one frame, as MSQC's cell does. Tests gained `moveCamera(x, y, player?)`.
+  `GameSim.moveMouse` wrote the mouse's y at 0x6CDDC6; the game keeps x and y in 32 bits each from the screen's corner
+  (0x6CDDC4, 0x6CDDC8), now written so.
+- **To play:** `probes/local-ui.tsx`, a live panel and Q / W sending a place with `sync()`.
+
 ### B6. `fixed` and `Math` (4.7.0)
 
 - `fixed` is a 16.16 number with `+ - * /` and comparisons; mixing it with `number`
