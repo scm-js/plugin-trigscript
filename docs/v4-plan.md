@@ -1274,6 +1274,11 @@ flag that refreshes the circles and the panel.
 - **To play:** `probes/local-select.tsx`: a live panel of the selection; S selects the Command Center, D the unit
   under the cursor; W walks the Marines to the cursor with one `sync()` of x and y. What playing answers: whether the
   circles follow a select() (nothing in the code says they do), whether the panel does, and who obeys a right-click.
+- **Played (2026-10-17, single player, recording 21.35.21.15):** the panel at the top followed every click and drag;
+  S with nothing selected made the bottom panel show the Command Center, D the Marine under the cursor (then the
+  Command Center), each at once — the flag at 0x59723C works. **The selection circles do not follow**: no circle
+  under the unit select() chose (the green swirl in the recording is the cursor's hover). W walked the Marines to the
+  cursor, "sent in 3 frames (x and y together)", half of the two sync()s in a row of the first map.
 
 ### B6. `fixed` and `Math` (4.7.0)
 
