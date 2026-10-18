@@ -10,7 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
- * 22: exceptions — `try` (a body, and the statements that run when an error is thrown in it), `throw` (the error in flight goes to the nearest `try` around it, out through the calls it is in), `uncaught` (the error in flight is said in red and given up), and `Program.errors`, the variables an error in flight is kept in. A called function that may throw returns at once with the error in flight, and its call goes on to the nearest `try`. A function that calls itself throws a `RangeError` when the stack runs out, where it used to stop the program.
+ * 22: exceptions — `taskHandle`, the number of the task an expression runs in; `try` (a body, and the statements that run when an error is thrown in it), `throw` (the error in flight goes to the nearest `try` around it, out through the calls it is in), `uncaught` (the error in flight is said in red and given up), and `Program.errors`, the variables an error in flight is kept in. A called function that may throw returns at once with the error in flight, and its call goes on to the nearest `try`. A function that calls itself throws a `RangeError` when the stack runs out, where it used to stop the program.
  * 21: functions as values — `fn` on a `const`: the number is a function's, the id of the `FuncDecl` it runs, which is what keeps that function in the map. A call through such a number is a call of a function the front end made (a *dispatcher*, a `switch` on its first parameter), so no new kind of statement. A function may now be called, and so lowered, before a variable it uses is declared: a backend makes a variable where it is first used.
  * 20: fixed-point numbers — `VarDecl.fixed` / `ArrayDecl.fixed` (a 16.16 number: the cell holds the value times 65 536), `fixed` on a `const` (its value is the raw cell), the intrinsics `fmul` / `fdiv` (a product and a quotient of two fixed numbers, rounded towards zero), `sqrt` (of a fixed, rounded down) and `atan2` (`table`: the program's array of arc tangents it reads), and `fixed` on a printed number (shown as a decimal). `numbers.ts` writes them; a backend never works a type out.
  * 19: more events — `unitLoop.source` also `killed` (a death in a fight, the killer in `was`), `ordered` (a unit that took up a new order, the one it had in `was`) and `morphed` (a unit that turned into another type, the type it was in `was`); `unitLoop.event` filters them by the new order or the killer.
@@ -294,6 +294,8 @@ export type NumExpr =
   | { kind: "textIndexOf"; of: TextExpr; find: TextExpr; from?: NumExpr; at: At; label: string }
   /** `s.codePointAt(i)`: the character's number; −1 past either end. */
   | { kind: "textCode"; of: TextExpr; index: NumExpr; at: At; label: string }
+  /** The number of the task this runs in — what `start()` gave for it, `slot | task << 8 | generation << 16` — or 0 outside a task (B4: where a task's error is kept for an `await` of it). */
+  | { kind: "taskHandle"; at: At }
   /** A call inlined here: its body runs, its result is the number. */
   | { kind: "call"; call: Call };
 
@@ -690,7 +692,7 @@ export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is Num
     case "var": return false; // ambiguous by shape; callers know the variable's kind
     case "element": case "pop": return false; // ambiguous by shape, as a variable is
     case "length": case "unitPart": return true;
-    case "unary": case "cast": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": return true;
+    case "unary": case "cast": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": case "taskHandle": return true;
     case "ternary": return isNumExpr(e.whenTrue);
     case "call": return e.call.result?.kind === "number";
     default: return false;

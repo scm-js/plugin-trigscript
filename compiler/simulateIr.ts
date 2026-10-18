@@ -239,6 +239,8 @@ class ProgramRun {
   depth = 0;
   /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
   private apart: Exec[] = [];
+  /** The number of the task whose turn it is (`taskHandle`); 0 in the program's own turn. */
+  private taskNow = 0;
   /** Where the error in flight was thrown: what an uncaught one is said at. */
   private thrownAt: At | undefined;
   /** The `start` statements' tasks, in order of their numbers. */
@@ -330,6 +332,7 @@ class ProgramRun {
   private runSlot(pool: TaskPool, slot: TaskSlot): void {
     const exec = slot.exec!;
     const outer = this.apart, latches = this.latches;
+    this.taskNow = pool.slots.indexOf(slot) | (pool.start.task << 8) | (slot.gen << 16);
     this.swap(pool, slot, true);
     this.apart = slot.apart;
     this.latches = slot.latches;
@@ -341,6 +344,7 @@ class ProgramRun {
       slot.exec = null;
       this.depth = 0;
     } finally {
+      this.taskNow = 0;
       this.apart = outer;
       this.latches = latches;
       this.swap(pool, slot, false);
@@ -561,6 +565,7 @@ class ProgramRun {
       case "var": return Number(this.read(e.id)) | 0;
       case "element": { const c = yield* this.cell(e.array, e.index, e.at, "it reads 0"); return c ? Number(c.cells[c.i]) | 0 : 0; }
       case "length": return this.arrays.get(e.array)?.cells.length ?? 0;
+      case "taskHandle": return this.taskNow;
       case "pop": return Number(this.arrays.get(e.array)?.cells.pop() ?? 0) | 0;
       case "unary": return -(yield* this.num(e.expr)) | 0;
       case "cast": return yield* this.num(e.expr);

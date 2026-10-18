@@ -1133,17 +1133,31 @@ finally { busy = false; }
   either end is not an error in JavaScript either, and a heap that runs out is said once and the push does nothing.
 - **Unwinding what is held:** a loop over a text gives the copy it walks back to the heap, and a loop over a `Map` or a
   `Set` counts itself out, on an error's way as on a `break`.
+- **Generators:** a `break` out of a `for…of` over one runs the generator's finally blocks, as `return()` does. The loop's
+  body is walked where the `yield` is, inside the generator's `try`, so an error of the body is put aside there, the
+  generator leaves through its finally blocks, and the error is thrown on after the loop: the generator's own catch never
+  takes it (it did, before this was found).
+- **A caught error's methods and getters:** `e.describe()`, `e.short`. Every class `e` may be (what `instanceof` narrowed
+  it to, and what extends that) is asked for the member; when they share one it is inlined with `this` the caught error,
+  and when one overrides it each is, behind a test of the code.
+- **`e.stack`:** "OutOfGold: need 20 more\n    at main.ts:12:5", made at each `throw` of a new error, and only when some
+  catch reads a stack. A stack that runs out leaves the last one there (the lowering throws it, not the front end).
+- **`await t` of a task that ended on an error throws it**, and so does `Promise.all` over tasks. Each slot of each
+  start keeps the error its task ended on, beside the task's number (IR `taskHandle`), in arrays a cell a slot. A task
+  that fails while something awaits it says nothing in red; one that fails while nothing does is said, as an unhandled
+  rejection is in a browser, and an `await` of it later still throws.
 
 Cost (lifted game, 100 a frame): a throw caught in the same body, about 37 conditions and actions; a `try` around calls
 of a function that may throw, about 19, plus the look after each call; a `try` / `finally` that nothing leaves, about 18.
-**Checked:** `tests/errors.test.ts` (28, each body also run as JavaScript and the prints compared, and the refusals; a
+**Checked:** `tests/errors.test.ts` (40, each body also run as JavaScript and the prints compared, and the refusals; a
 leak test that fails without the unwinding); `eud-build` fixture `errors` through eudplib; `probes/game-errors.ts`, six
-tests, the same lines from the lifted game and the simulator, among them 4 800 errors out of loops that hold something,
-and the stack run out at 1 024; game-check: no access Remastered ends the game for. The probes of B1–B3 and B6 still pass.
+tests (seven since: generators, methods, `await t`), the same lines from the lifted game and the simulator, among them
+4 800 errors out of loops that hold something, and the stack run out at 1 024; game-check: no access Remastered ends the game for. The probes of B1–B3 and B6 still pass.
 
-**Not yet:** `await t` of a task that threw does not throw (the task's error is said, and `t` is only no longer
-running); an error kept in an array or a field; a method of a caught error's class; `cause` and `stack`; a `break` out of
-a `for…of` over a generator does not run the generator's finally, as JavaScript's `return()` would; a throw while a text
+**Not yet:** an error kept in a variable, an array or a field (`last = e`, `errors.push(e)`): an error would be a new
+kind of value in every kind of storage — its class, its message and every field of every class — for little a map does
+with one; `new Error(m, { cause })`, refused, saying to put what it needs in a field (a cause is an error inside an
+error, which the same storage would need); a throw while a text
 is being put together (`${made()}${fails()}`) does not give back the block of a text made for an earlier part, in the
 game or the simulator (both lose the same block, so they still run out at the same text).
 

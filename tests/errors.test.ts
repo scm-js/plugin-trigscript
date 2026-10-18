@@ -170,3 +170,64 @@ describe("what an error leaves behind", () => {
     expect(run(body).heap.top).toBeLessThan(100);
   });
 });
+
+describe("generators", () => {
+  it("a break out of the loop runs the generator's finally", () => {
+    same("let log = ''; function* g(n: number) { try { for (let i = 0; i < n; i++) yield i; } finally { log += 'f'; } } let k = 5; for (const x of g(k)) { if (x == 2) break; log += `${x}`; } print(log);");
+  });
+  it("an error of the loop's body is not the generator's to catch: its finally runs, and the error goes on", () => {
+    same("let log = ''; function* g(n: number) { try { for (let i = 0; i < n; i++) yield i; } catch { log += 'gen caught'; } finally { log += 'f'; } } let k = 5; try { for (const x of g(k)) { if (x == 1) throw new Error('body'); log += `${x}`; } } catch (e) { if (e instanceof Error) log += ` ${e.message}`; } print(log);");
+  });
+  it("an error of the generator's own is its to catch", () => {
+    same("let log = ''; function* g(n: number) { try { yield 1; if (n > 0) throw new Error('gen'); yield 2; } catch (e) { if (e instanceof Error) log += e.message; yield 3; } } let k = 1; for (const x of g(k)) log += `${x}`; print(log);");
+  });
+});
+
+describe("a caught error's methods", () => {
+  it("a method and a getter of its class, this the error, after instanceof", () => {
+    same(`class Short extends Error { constructor(public need: number, public what: string) { super(\`short of \${what}\`); } get big() { return this.need > 50; } advice(): string { return this.big ? \`save up \${this.need}\` : \`wait for \${this.need} \${this.what}\`; } }
+      let k = 20;
+      while (k < 100) { try { throw new Short(k, 'ore'); } catch (e) { if (e instanceof Short) print(\`\${e.advice()} \${e.big ? 'big' : 'small'}\`); } k += 40; }`);
+  });
+  it("an overridden method: the class the error is, worked out while the map is played", () => {
+    same(`class Bad extends Error { describe() { return \`bad: \${this.message}\`; } }
+      class Worse extends Bad { describe() { return \`worse: \${this.message}!\`; } }
+      class Worst extends Worse {}
+      let i = 0;
+      while (i < 3) { try { if (i == 0) throw new Bad('a'); if (i == 1) throw new Worse('b'); throw new Worst('c'); } catch (e) { if (e instanceof Bad) print(e.describe()); } i++; }`);
+  });
+});
+
+describe("stack and cause", () => {
+  it("e.stack: the name, the message and where it was thrown", () => {
+    const sim = run("class Late extends Error {} let k = 2; try { if (k > 1) throw new Late(`k ${k}`); } catch (e) { if (e instanceof Error) print(e.stack ?? ''); } try { throw new RangeError(); } catch (e) { if (e instanceof Error) print(e.stack ?? ''); }");
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(["Error: k 2\n    at main.ts:1:72", "RangeError\n    at main.ts:1:166"]);
+  });
+  it("a cause is refused, saying what to do instead", () => {
+    expect(messages("let k = 1; try { throw new Error('a', { cause: k }); } catch {}")).toEqual([expect.stringContaining("a cause is not kept")]);
+  });
+});
+
+describe("await of a task", () => {
+  it("a task that ends on an error while it is awaited: the await throws it, and nothing is said in red", () => {
+    expect(printedAsync("class Lost extends Error { constructor(public wave: number) { super(`wave ${wave} lost`); } } async function wave(n: number) { await sleep(frames(2)); if (n == 2) throw new Lost(n); } const a = start(wave(2)); try { await a; print('a done'); } catch (e) { if (e instanceof Lost) print(`${e.message} ${e.wave}`); }", 8))
+      .toEqual({ printed: ["3:wave 2 lost 2"], faults: [] });
+  });
+  it("one that fails while another is awaited is said, as an unhandled rejection is, and still thrown at its await", () => {
+    expect(printedAsync("async function wave(n: number) { await sleep(frames(n)); if (n == 2) throw new Error(`wave ${n}`); } const a = start(wave(3)); const b = start(wave(2)); try { await a; print('a done'); await b; print('b done'); } catch (e) { if (e instanceof Error) print(e.message); }", 8))
+      .toEqual({ printed: ["2:\x06TrigScript: uncaught Error: wave 2, line 1.", "4:a done", "4:wave 2"], faults: ["Uncaught Error: wave 2"] });
+  });
+  it("Promise.all of tasks: the first error is thrown, and nothing said in red", () => {
+    expect(printedAsync("async function wave(n: number) { await sleep(frames(n)); if (n == 2) throw new Error(`wave ${n}`); } const a = start(wave(4)); const b = start(wave(2)); try { await Promise.all([a, b]); print('both'); } catch (e) { if (e instanceof Error) print(e.message); }", 8))
+      .toEqual({ printed: ["3:wave 2"], faults: [] });
+  });
+  it("awaited after it failed: said when it failed, and thrown at the await still", () => {
+    expect(printedAsync("async function boom() { throw new RangeError('early'); } const t = start(boom()); await sleep(frames(3)); try { await t; } catch (e) { if (e instanceof RangeError) print(`late ${e.message}`); }", 6))
+      .toEqual({ printed: ["0:\x06TrigScript: uncaught RangeError: early, line 1.", "3:late early"], faults: ["Uncaught RangeError: early"] });
+  });
+  it("a task that ended well, and a task that never started: await goes on", () => {
+    expect(printedAsync("async function ok() { await sleep(frames(1)); } const t = start(ok()); await t; let none = 0 as unknown as Task; try { throw new Error('x'); } catch { } await none; print('fine');", 5))
+      .toEqual({ printed: ["2:fine"], faults: [] });
+  });
+});

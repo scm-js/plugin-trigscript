@@ -484,6 +484,10 @@ through variables of the program the front end makes, one for each name and kind
   name, the message and the line it was thrown at, as the game's own faults are said — and sets `thrown` to 0. A
   program or a task then ends; a listener goes on, only that turn of the handler given up.
 
+**`taskHandle`** (a number) is the number of the task it runs in, as `start` gave it, or 0 in the program's own turn.
+The front end keeps a task's error by it, so that an `await` of the task throws it (arrays named `(task errors …)`, a
+cell for each slot of each start).
+
 A `parallel` branch that throws leaves its statement, and the branches still running stop where they are, as a
 race's losers do. A task's error never reaches what started it.
 

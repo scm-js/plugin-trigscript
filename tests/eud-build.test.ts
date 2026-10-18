@@ -386,6 +386,13 @@ const FIXTURES: Record<string, string> = {
       finally { log += 10; }
     }
     try { log = deep(0); } catch (e) { if (e instanceof RangeError) displayText(e.message); }
+    class Bad extends Error { describe() { return \`bad \${this.message}\`; } }
+    class Worse extends Bad { describe() { return \`worse \${this.message}\`; } }
+    function* count(n: number) { try { for (let j = 0; j < n; j++) yield j; } finally { log++; } }
+    for (const x of count(5)) { if (x == log) break; }
+    async function wave(n: number) { await sleep(frames(2)); if (n > 1) throw new Worse(\`wave \${n}\`); }
+    const w = start(wave(log));
+    try { await w; } catch (e) { if (e instanceof Bad) print(\`\${e.describe()} \${e.stack ?? ""}\`); }
     while (true) {
       try { await sleep(frames(1)); if (log > 1000) throw new Error(\`log \${log}\`); log++; }
       catch (e) { if (e instanceof Error) print(e.message); }

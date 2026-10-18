@@ -77,6 +77,23 @@ program(async () => {
     await sleep(frames(1));
   }
   displayText(`E: ${caught} ${seen.size}`);
+  await sleep(frames(1));
+
+  // F: a generator's finally on a break and on the body's error, which its catch does not take; a caught error's
+  // overridden method, chosen in the game; await of a task that failed. 01f 0f body bad: b worse: c! wave 3 lost
+  let f = "";
+  function* count(n: number) { try { for (let j = 0; j < n; j++) yield j; } catch { f += "gen caught"; } finally { f += "f"; } }
+  for (const x of count(g + 2)) { if (x == 2) break; f += `${x}`; }
+  f += " ";
+  try { for (const x of count(g + 2)) { if (x == 1) throw new Error("body"); f += `${x}`; } } catch (e) { if (e instanceof Error) f += ` ${e.message}`; }
+  class Bad extends Error { describe() { return `bad: ${this.message}`; } }
+  class Worse extends Bad { describe() { return `worse: ${this.message}!`; } }
+  let q = 0;
+  while (q < 2) { try { if (q == g - 3) throw new Bad("b"); throw new Worse("c"); } catch (e) { if (e instanceof Bad) f += ` ${e.describe()}`; } q++; }
+  async function wave(n: number) { await sleep(frames(2)); if (n == g) throw new RangeError(`wave ${n} lost`); }
+  const w = start(wave(g));
+  try { await w; } catch (e) { if (e instanceof RangeError) f += ` ${e.message}`; }
+  displayText(`F: ${f}`);
 });
 
 test("classes of error, from a called function", (sim) => {
@@ -99,6 +116,11 @@ test("errors and waiting", (sim) => {
 test("what an error leaves behind goes back", (sim) => {
   sim.frames(140);
   expect(sim).toHavePrinted("E: 9600 2");
+  expect(sim).toHaveFaulted("Uncaught TypeError: worker 3");
+});
+test("generators, a caught error's methods, and await of a task", (sim) => {
+  sim.frames(150);
+  expect(sim).toHavePrinted("F: 01f 0f body bad: b worse: c! wave 3 lost");
   expect(sim).toHaveFaulted("Uncaught TypeError: worker 3");
 });
 test("what a task does not catch is said, and the task ends", (sim) => {

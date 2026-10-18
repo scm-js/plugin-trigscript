@@ -1695,6 +1695,12 @@ class Lowering:
             return self.binary(e)
         if k == "read":
             return self.read(e)
+        if k == "taskHandle":
+            # The task whose turn it is, as start() numbered it; 0 in the program's own turn.
+            pool = self.pool
+            if pool is None:
+                return 0
+            return pool.slot + pool.task * 256 + f_bitlshift(fresh(pool.gen.get()), 16)
         if k == "randomInt":
             # 0 … n - 1; an n of 0 gives 0, as a 0 divisor does.
             n = self.num(e["bound"])
