@@ -86,6 +86,9 @@ UNIT_SIZE = 336
 UNIT_SLOTS = 1700
 UNIT_END = UNIT_TABLE + UNIT_SIZE * UNIT_SLOTS
 OFF_SPRITE, OFF_POS, OFF_OWNER_ORDER, OFF_TYPE, OFF_UID = 0x0C // 4, 0x28 // 4, 0x4C // 4, 0x64 // 4, 0xA4 // 4
+# The selection a computer keeps: twelve unit addresses; and a Select command, 0x09, the count, a tag a unit (B5).
+SELECTION = 0x6284B8
+SELECT_COMMAND = Db(b"\x09" + bytes(27))
 # units.dat: max hit points (dword, 256 to a point), max shields (word), the group flags a trigger's
 # Men / Buildings / Factories go by (byte), the flingy a type moves as (byte).
 UNITS_MAX_HP = 0x662350
@@ -2220,6 +2223,16 @@ class Lowering:
             return UnitRef(fresh(ptr), fresh(self.num(e["epd"])), fresh(self.num(e["uid"])))
         if k == "call":
             return self.call(e["call"])
+        if k == "selected":
+            # A slot of this computer's selection (B5): the unit's address, as Remastered's emulator gives it, and the
+            # slot's uniqueness byte taken now, so a use later re-checks it like any kept unit.
+            ptr = f_dwread(SELECTION + 4 * int(e["index"]))
+            epd, uid = fresh(0), fresh(0)
+            if EUDIf()(ptr >= 1):
+                epd << (ptr - 0x58A364) // 4
+                uid << (f_dwread_epd(epd + OFF_UID) & 0xFF00)
+            EUDEndIf()
+            return UnitRef(fresh(ptr), epd, uid)
         raise Fail("trigscript: unknown unit expression %r%s" % (k, where(e)))
 
     def unit_part(self, e):
@@ -2591,6 +2604,35 @@ class Lowering:
         for i, v in enumerate((x, y, x + width, y + height)):
             f_dwwrite_epd(base + i, v)
 
+    def select(self, st):
+        """select() (B5): on the player's own computer the selection becomes the units still there — the twelve slots
+        (0x6284B8), the panel told it changed (0x59723C, the flag Remastered's panel refresh tests) — and a Select
+        command of their tags (place + 1, uniqueness byte << 11) goes to every computer, as MSQC puts a selection back."""
+        p = self.one_player(st["player"], st)
+        refs = [self.unit(u) for u in st["units"]]
+        if EUDIf()(f_getuserplayerid() == p):
+            n = fresh(0)
+            for ref in refs:
+                def keep(ref=ref):
+                    f_dwwrite(SELECTION + n * 4, ref.ptr)
+                    # The unit's tag: its place in the table from 1, its uniqueness byte above bit 11.
+                    uid = as_var(ref.uid) if ref.uid is not None else f_dwread_epd(as_var(ref.epd) + OFF_UID) & 0xFF00
+                    tag = f_div(as_var(ref.ptr) - 0x59CCA8, 336)[0] + 1 + uid * 8
+                    f_wwrite(SELECT_COMMAND + 2 + n * 2, tag)
+                    n.__iadd__(1)
+                self.when_alive(ref, keep)
+            if EUDIf()(n >= 1):
+                i = fresh(n)
+                if EUDWhile()(i <= 11):
+                    f_dwwrite(SELECTION + i * 4, 0)
+                    i.__iadd__(1)
+                EUDEndWhile()
+                DoActions(SetMemoryX(0x59723C, SetTo, 1, 0xFF))
+                f_bwrite(SELECT_COMMAND + 1, n)
+                QueueGameCommand(SELECT_COMMAND, n * 2 + 2)
+            EUDEndIf()
+        EUDEndIf()
+
     def center_location(self, st):
         """A location centred on a point, its size kept - or the size given, when nothing of the old one is read."""
         x, y = self.num(st["x"]), self.num(st["y"])
@@ -2838,6 +2880,8 @@ class Lowering:
             self.build_text(st)
         elif k == "centerLocation":
             self.center_location(st)
+        elif k == "select":
+            self.select(st)
         elif k == "syncSend":
             INPUT.send_sync(int(st["slot"]), self.one_player(st["player"], st), self.num(st["value"]))
         elif k == "call":

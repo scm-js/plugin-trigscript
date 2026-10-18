@@ -31,16 +31,14 @@ program(async () => {
     sx = m.x; sy = m.y;
     if (keyPressed(P1, "Q")) {
       const asked = memory.game.frame;
-      const x = await sync(P1, local.camera.x + 64);
-      const y = await sync(P1, local.camera.y + 64);
+      const [x, y] = await sync(P1, local.camera.x + 64, local.camera.y + 64);
       centerLocation(SPOT, x, y);
       createUnit(P1, units.TerranMarine, 1, SPOT);
       last = `Q: corner ${x},${y}, sent in ${memory.game.frame - asked} frames`;
     }
     if (keyPressed(P1, "W")) {
       const asked = memory.game.frame;
-      const x = await sync(P1, local.camera.x + local.mouse.x);
-      const y = await sync(P1, local.camera.y + local.mouse.y);
+      const [x, y] = await sync(P1, local.camera.x + local.mouse.x, local.camera.y + local.mouse.y);
       centerLocation(SPOT, x, y);
       createUnit(P1, units.TerranMarine, 1, SPOT);
       last = `W: cursor ${x},${y}, sent in ${memory.game.frame - asked} frames`;

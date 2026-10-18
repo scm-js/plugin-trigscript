@@ -518,6 +518,7 @@ class ProgramRun {
       // A kept unit is its place in the table, from 1, and the place's uniqueness byte: a unit made since in that place is another.
       case "unitAt": { const ptr = (yield* this.num(e.ptr)) >>> 0; yield* this.num(e.epd); const uid = (yield* this.num(e.uid)) >>> 0; return ptr >= 1 ? this.sim.game.at(ptr - 1, uid) : null; }
       case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
+      case "selected": return this.sim.selectedUnit(e.index);
     }
   }
 
@@ -1210,6 +1211,12 @@ class ProgramRun {
         this.sim.buffers.set(s.buffer, text);
         return "next";
       }
+      case "select": {
+        const units: SimUnit[] = [];
+        for (const u of s.units) { const got = yield* this.unit(u); if (got?.alive && units.length < 12) units.push(got); }
+        this.sim.selectUnits(units, this.sim.slotOf(s.player));
+        return "next";
+      }
       case "syncSend": {
         this.sim.readAt(s.player);
         let value: number;
@@ -1539,6 +1546,15 @@ export class ProgramSimulation {
   press(key: string, player = this.player): this { this.queued.events.add(`key:${player}:${keyName(key) ?? key}`); return this; }
   click(button: MouseButton = "left", player = this.player): this { this.queued.events.add(`click:${player}:${button}`); return this; }
   moveMouse(x: number, y: number, player = this.player): this { this.mice.set(player, { x, y }); return this; }
+  /** What each player has selected (B5): \`local.selected\`, \`local.selectionCount\`; select() and the tests set it. */
+  readonly selections = new Map<number, SimUnit[]>();
+  /** A player selects units: what \`local.selected\` reads at their computer, and what select() makes it. */
+  selectUnits(units: readonly SimUnit[], player = this.player): this { this.selections.set(player, units.slice(0, 12)); return this; }
+  /** The unit in a slot of the selection at the computer a program reads (\`localRead\`'s), if it is still there. */
+  selectedUnit(index: number): SimUnit | null {
+    const u = this.selections.get(this.sendingFrom ?? this.slotOf(13))?.[index];
+    return u?.alive ? u : null;
+  }
   /** A player's screen moves: its top left corner to this place on the map, in pixels (what \`local.camera\` reads). */
   moveCamera(x: number, y: number, player = this.player): this { this.cameras.set(player, { x, y }); return this; }
 
@@ -1558,7 +1574,13 @@ export class ProgramSimulation {
       case "local.camera.y": return camera.y;
       case "local.mouse.x": return mouse.x - camera.x;
       case "local.mouse.y": return mouse.y - camera.y;
-      default: return undefined;
+      default: {
+        // A selection slot: the unit's place in the table, from 1, as a kept unit's number is here; 0 for none.
+        const slot = /^local\.selection\[(\d+)\]$/.exec(name);
+        if (!slot) return undefined;
+        const u = this.selections.get(at)?.[Number(slot[1])];
+        return u?.alive ? u.slot + 1 : 0;
+      }
     }
   }
 

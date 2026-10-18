@@ -446,6 +446,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
         unit(s.unit);
         s.value = FLAGS.has(s.field) ? bool(s.value as BoolExpr) : floor(s.value as NumExpr, s.at);
         break;
+      case "select": s.units.forEach(unit); break;
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = floor(s.verb.amount, s.at);

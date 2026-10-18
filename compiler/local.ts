@@ -101,7 +101,7 @@ export function checkLocal(program: Program): LocalCheck {
       case "tableRead": {
         const cell = o.cell as { name: string; base: number; stride: number };
         const mem = cell.stride === 0 ? localMemoryAt(cell.base) : undefined;
-        if (mem) { const root = cell.name.startsWith("local.") ? cell.name : mem; return { say: root, root }; }
+        if (mem) { const root = cell.name.startsWith("local.selection[") ? "local.selectionCount" : cell.name.startsWith("local.") ? cell.name : mem; return { say: root, root }; }
         break;
       }
       case "cond": {
@@ -114,6 +114,7 @@ export function checkLocal(program: Program): LocalCheck {
         }
         break;
       }
+      case "selected": return { say: "local.selected", root: "local.selected" };
       case "var": case "textVar": case "unitVar": if (locals.has(o.id as string)) return cellOf(o.id as string); break;
       case "element": case "textOf": case "length": case "pop": if (locals.has(o.array as string)) return cellOf(o.array as string); break;
       case "built": if (locals.has(o.buffer as string)) { const root = locals.get(o.buffer as string)!; return { say: root, root }; } break;
@@ -252,6 +253,8 @@ export function checkLocal(program: Program): LocalCheck {
       case "sleep": if (L) fail(s.at, need("Waiting", L, "each computer would go on at a different frame")); return;
       case "cancel": if (L) fail(s.at, need("Cancelling a task", L)); return;
       case "throw": case "uncaught": if (L) fail(s.at, need("Throwing", L)); return;
+      // A Select command from the player's computer, run on every computer: whatever chose the units, all agree.
+      case "select": return;
       case "syncSend": if (L) fail(s.at, need("sync()", L, "every computer has to reach the same sync() — test the value after it arrives instead")); return;
       case "action": {
         if (SHOWN.has(s.record.type)) return;

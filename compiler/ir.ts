@@ -204,7 +204,9 @@ export type UnitExpr =
    */
   | { kind: "unitAt"; ptr: NumExpr; epd: NumExpr; uid: NumExpr; at: At }
   /** A call inlined here whose result is a unit. */
-  | { kind: "call"; call: Call };
+  | { kind: "call"; call: Call }
+  /** The unit in slot `index` of this computer's selection (`local.selected` is slot 0; B5), or none: a Local value. */
+  | { kind: "selected"; index: number; at: At };
 
 /** What a unit is told to do. `to` and `target` are known when the script is built; an amount is the program's. */
 export type UnitVerb =
@@ -583,6 +585,12 @@ export type Stmt =
    * on every computer as that cell a few frames later. `value` may be a `Local` one: it is the one thing that may be.
    */
   | { kind: "syncSend"; slot: number; player: number; value: NumExpr; at: At; label: string }
+  /**
+   * `select(player, units)` (B5): on `player`'s own computer, its selection becomes these units (up to 12, none left out
+   * but those that are gone) — the panel told to show them again — and a Select command goes to every computer, so the
+   * player's orders go to them everywhere. Done on every other computer, it does nothing.
+   */
+  | { kind: "select"; player: number; units: UnitExpr[]; at: At; label: string }
   | { kind: "centerLocation"; location: number; x: NumExpr; y: NumExpr; size?: { width: NumExpr; height: NumExpr }; at: At; label: string }
   /**
    * Text with values in it, shown to `to` — a slot, 13 for the current player, All Players or a
@@ -725,6 +733,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "unitLoop": out.push(s.decl); if (s.was) out.push(s.was); s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); init(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
+      case "select": s.units.forEach(unit); break;
       case "tableWrite": init(s.value); break;
       case "if": init(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) init(s.cond); s.body.forEach(stmt); break;

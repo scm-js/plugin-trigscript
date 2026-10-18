@@ -256,6 +256,7 @@ export interface TestWorldLike {
   type(line: string, player?: number): this;
   moveMouse(x: number, y: number, player?: number): this;
   moveCamera(x: number, y: number, player?: number): this;
+  selectUnits(units: readonly SimUnit[], player?: number): this;
   count(player: number, type: number, at?: number): number;
   units(filter?: { owner?: number; type?: number; at?: number }): SimUnit[];
   resources(player: number): { ore: number; gas: number };
@@ -436,6 +437,7 @@ export class TestSim implements TestWorldLike {
   type(line: string, player?: number): this { this.programs.type(line, player); return this; }
   moveMouse(x: number, y: number, player?: number): this { this.programs.moveMouse(x, y, player); return this; }
   moveCamera(x: number, y: number, player?: number): this { this.programs.moveCamera(x, y, player); return this; }
+  selectUnits(units: readonly SimUnit[], player?: number): this { this.programs.selectUnits(units as SimUnit[], player); return this; }
 
   /* ── the world read back ── */
 

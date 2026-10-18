@@ -79,6 +79,14 @@ export const isUnitQuery = (v: unknown): v is UnitQueryValue => typeof v === "ob
 /** What `first(…)`, `nearest(…)` and `randomUnit(…)` return when the script is built: how the game is to pick one unit. */
 export interface UnitPickValue { readonly __trigscript: "pick"; readonly by: "first" | "nearest" | "random"; readonly filter: UnitFilter; readonly near?: number; readonly mouse?: number; readonly within?: number; readonly ident: string }
 export const isUnitPick = (v: unknown): v is UnitPickValue => typeof v === "object" && v !== null && (v as UnitPickValue).__trigscript === "pick";
+/** `local.selected` (B5): the unit in a slot of this computer's selection. */
+export interface SelectedValue { readonly __trigscript: "selected"; readonly index: number; readonly ident: string }
+export const isSelected = (v: unknown): v is SelectedValue => typeof v === "object" && v !== null && (v as SelectedValue).__trigscript === "selected";
+/** `local.selectionCount` (B5): how many units this computer has selected. */
+export interface SelectionCountValue { readonly __trigscript: "selectionCount"; readonly ident: string }
+export const isSelectionCount = (v: unknown): v is SelectionCountValue => typeof v === "object" && v !== null && (v as SelectionCountValue).__trigscript === "selectionCount";
+/** The selection a computer keeps, twelve unit addresses (Remastered's emulator gives each unit's 1.16.1 address). */
+export const SELECTION_ADDRESS = 0x6284b8;
 
 /**
  * A property of `stats(…)`: a cell of the game's tables. Like a read it has no value when the
@@ -101,7 +109,7 @@ export interface ChatValue { readonly __trigscript: "chat"; readonly pattern: Ch
 export const isChat = (v: unknown): v is ChatValue => typeof v === "object" && v !== null && (v as ChatValue).__trigscript === "chat";
 
 /** A value only the game has: nothing the script computes when it is built may take it as a number. */
-export const isGameValue = (v: unknown): v is ReadValue | TableValue | UnitPickValue | InputValue | MouseValue | ChatValue => isRead(v) || isTable(v) || isUnitPick(v) || isInput(v) || isMouse(v) || isChat(v);
+export const isGameValue = (v: unknown): v is ReadValue | TableValue | UnitPickValue | InputValue | MouseValue | ChatValue | SelectedValue | SelectionCountValue => isRead(v) || isTable(v) || isUnitPick(v) || isInput(v) || isMouse(v) || isChat(v) || isSelected(v) || isSelectionCount(v);
 
 /** The colour byte for what a script wrote as a player colour: a word of `PLAYER_COLORS`, or the byte itself. */
 export function playerColor(v: unknown): number {
@@ -653,10 +661,15 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     const cell: TableCell = { name: ident, base: field.base, stride: 0, index: 0, width: field.width };
     return { __trigscript: "table", cell, field: { ...field, name: ident.slice("local.".length) }, ident, valueOf: fail, toString: fail } as TableValue;
   };
-  rt.local = Object.freeze(Object.fromEntries([...new Set(LOCAL_FIELDS.map((f) => f.path[0]))].map((g) => {
-    const fs = LOCAL_FIELDS.filter((f) => f.path[0] === g);
-    return [g, fs.length === 1 && !fs[0].path[1] ? localCell(fs[0]) : Object.freeze(Object.fromEntries(fs.map((f) => [f.path[1], localCell(f)])))];
-  })));
+  rt.local = Object.freeze({
+    ...Object.fromEntries([...new Set(LOCAL_FIELDS.map((f) => f.path[0]))].map((g) => {
+      const fs = LOCAL_FIELDS.filter((f) => f.path[0] === g);
+      return [g, fs.length === 1 && !fs[0].path[1] ? localCell(fs[0]) : Object.freeze(Object.fromEntries(fs.map((f) => [f.path[1], localCell(f)])))];
+    })),
+    selected: Object.freeze({ __trigscript: "selected", index: 0, ident: "local.selected" } satisfies SelectedValue),
+    selectionCount: Object.freeze({ __trigscript: "selectionCount", ident: "local.selectionCount" } satisfies SelectionCountValue),
+  });
+  rt.select = () => { throw new ScriptError("select() changes what a player has selected while the game runs: use it inside program()."); };
   const tableNames: Record<TableKind, ScriptNames[keyof ScriptNames]> = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
   const entryName = (kind: TableKind, value: number): string => {
     const t = tableNames[kind];
@@ -776,7 +789,7 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
-  out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "sync", "local", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
+  out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "sync", "select", "local", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
   out.push("textColors", "ui", "on", "reserveLocation", "cover", "__jsx", "__fragment", "__class", "__listen");

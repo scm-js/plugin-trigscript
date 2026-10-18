@@ -25,6 +25,10 @@ const refused = (main: string, ...words: string[]) => {
 };
 const printed = (s: ProgramSimulation): string[] => s.events.filter((e) => e.action.type === ActionType.DisplayText).map((e) => `${e.frame}:${e.text}`);
 const sim = (r: CompileResult, players = [0]) => new ProgramSimulation(r.ir, { strings: r.strings, players });
+/** A base: a Command Center (106) and two Marines (0) of Player 1's. */
+const base = (r: CompileResult) => new ProgramSimulation(r.ir, { strings: r.strings, players: [0], units: [
+  { type: 106, owner: 0, x: 200, y: 200, hp: 1500 }, { type: 0, owner: 0, x: 100, y: 100, hp: 40 }, { type: 0, owner: 0, x: 120, y: 100, hp: 31 },
+] });
 
 describe("local values: read", () => {
   it("the camera, the mouse on the screen and the player at this computer", () => {
@@ -117,6 +121,21 @@ describe("sync()", () => {
     const slots = JSON.stringify(r.ir).match(/"kind":"syncSend","slot":\d/g);
     expect(slots).toEqual(['"kind":"syncSend","slot":0', '"kind":"syncSend","slot":1', '"kind":"syncSend","slot":2']);
   });
+  it("of several values sends them on the same frame, and gives one for each", () => {
+    const r = compile(`program(async () => {
+      const [x, y] = await sync(P1, local.camera.x + local.mouse.x, local.camera.y + local.mouse.y);
+      print(\`at \${x},\${y}\`);
+    });`);
+    expect(r.input?.syncs).toBe(2);
+    // Both sends are one after the other in the program, before its wait.
+    const kinds = r.ir[0].body.map((s) => s.kind);
+    expect(kinds.slice(0, 2)).toEqual(["syncSend", "syncSend"]);
+    const s = sim(r).moveCamera(100, 200).moveMouse(150, 260).run(4);
+    expect(printed(s)).toEqual(["2:at 150,260"]);
+  });
+  it("of several values gives them apart where it is awaited", () => {
+    expect(messages(`program(async () => { const x = await sync(P1, 1, 2); print(\`\${x}\`); });`).join(" ")).toContain("take them apart");
+  });
   it("from a player who is no person gives 0 at once", () => {
     const r = compile(`program(async () => { const x = await sync(P2, local.camera.x + 7); print(\`got \${x}\`); });`);
     expect(printed(sim(r).run(2))).toEqual(["1:got 0"]);
@@ -131,5 +150,40 @@ describe("sync()", () => {
   });
   it("takes one player, known when the script is built", () => {
     expect(messages(`program(async () => { const x = await sync(AllPlayers, 1); print(\`\${x}\`); });`).join(" ")).toContain("P1 … P8, or CurrentPlayer");
+  });
+});
+
+describe("the selection", () => {
+  it("local.selected is the unit this computer has selected, and local.selectionCount how many", () => {
+    const r = compile(`program(() => { const u = local.selected; if (u) print(\`\${u.type} \${u.hp} of \${local.selectionCount}\`); else print("none"); });`);
+    const s = base(r);
+    s.selectUnits(s.game.matching(undefined, 0)).run(1);
+    expect(printed(s)).toEqual(["1:0 40 of 2"]);
+    expect(printed(base(r).run(1))).toEqual(["1:none"]);
+  });
+  it("is a Local value: an order to it is refused, select() of it is not", () => {
+    refused(`program(() => { const u = local.selected; if (u) u.kill(); });`, "This order to a unit", "local.selected");
+    compile(`program(() => { const u = local.selected; if (u) select(P1, u); });`);
+  });
+  it("select() makes what the player has selected, a unit or a list", () => {
+    const r = compile(`program(async () => {
+      const cc = first({ owner: P1, type: units.TerranCommandCenter });
+      if (cc) select(P1, cc);
+      await sleep(frames(1));
+      let u = local.selected;
+      if (u) print(\`\${u.type} of \${local.selectionCount}\`);
+      const m = first({ owner: P1, type: units.TerranMarine });
+      if (m) if (cc) select(P1, [m, cc]);
+      await sleep(frames(1));
+      u = local.selected;
+      if (u) print(\`\${u.type} of \${local.selectionCount}\`);
+    });`);
+    expect(printed(base(r).run(4))).toEqual(["2:106 of 1", "3:0 of 2"]);
+  });
+  it("under a test of a Local value, as it travels as a command", () => {
+    compile(`program(() => { const m = first({ owner: P1, type: units.TerranMarine }); if (local.mouse.x > 300) if (m) select(P1, m); });`);
+  });
+  it("takes one to twelve units, written out", () => {
+    expect(messages(`program(() => { select(P1, []); });`).join(" ")).toContain("one to twelve");
   });
 });

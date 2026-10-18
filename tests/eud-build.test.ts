@@ -447,8 +447,12 @@ FIXTURES.local = `program(async () => {
   }
 });
 program(async () => {
-  const y = await sync(CurrentPlayer, local.camera.y);
-  setResources(CurrentPlayer, "set", y, "gas");
+  const [x, y] = await sync(CurrentPlayer, local.camera.x, local.camera.y);
+  setResources(CurrentPlayer, "set", x + y, "gas");
+  const u = local.selected;
+  if (u) print(\`\${u.hp} of \${local.selectionCount}\`);
+  const m = first({ owner: CurrentPlayer, type: units.TerranMarine });
+  if (m) select(CurrentPlayer, m);
 }, { owner: AllPlayers });`;
 FIXTURES.uiTsx = `program(async () => {
     const cells = [0, 8, 17, 0];

@@ -120,7 +120,7 @@ export const ON_EVENTS = ["created", "died", "killed", "order", "morphed", "chat
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "sync", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
+const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "sync", "select", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -369,6 +369,8 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     const root = n.expression.expression;
     if (!ts.isIdentifier(root)) return false;
     const lib = libraryName(ts, checker, root);
+    // `local.selected.hp` is a field of a unit, not a cell: the cell is `local.selected`.
+    if (lib === "local" && n.expression.name.text === "selected") return false;
     return !!lib && GAME_CELL_ROOTS.has(lib);
   };
   const hoistable = (e: TS.Node): boolean => {

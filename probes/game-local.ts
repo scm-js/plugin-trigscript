@@ -2,7 +2,7 @@
 // to every computer through MSQC.
 //   npx tsx scripts/test-game.mts probes/game-local.ts
 // A program first runs on frame 2. Built like a probe (Player 1 Terran, Player 2 a Zerg computer).
-import { test, expect, program, print, setResources, keyPressed, sleep, frames, local, sync, P1 } from "trigscript";
+import { test, expect, program, print, setResources, keyPressed, sleep, frames, local, sync, select, first, units, P1 } from "trigscript";
 
 // The camera and the mouse on the screen, as ore and gas every frame: shown would do, but a test reads numbers.
 program(async () => {
@@ -12,8 +12,7 @@ program(async () => {
     seen = local.camera.x + local.mouse.x;
     print(`camera ${local.camera.x},${local.camera.y} mouse ${local.mouse.x},${local.mouse.y} at ${seen}`);
     if (keyPressed(P1, "Q")) {
-      const x = await sync(P1, local.camera.x + local.mouse.x);
-      const y = await sync(P1, local.camera.y + local.mouse.y);
+      const [x, y] = await sync(P1, local.camera.x + local.mouse.x, local.camera.y + local.mouse.y);
       setResources(P1, "set", x, "ore");
       setResources(P1, "set", y, "gas");
     }
@@ -36,4 +35,25 @@ test("a camera moved again is what the next sync sends", (sim) => {
   sim.press("Q").frames(30);
   expect(sim.resources(P1).ore).toBe(100);
   expect(sim.resources(P1).gas).toBe(50);
+});
+
+// The selection: what this computer has selected, shown; and select(), which makes it.
+program(async () => {
+  while (true) {
+    const u = local.selected;
+    if (u) print(`selected ${u.type} of ${local.selectionCount}`);
+    if (keyPressed(P1, "S")) {
+      const cc = first({ owner: P1, type: units.TerranCommandCenter });
+      if (cc) select(P1, cc);
+    }
+    await sleep(frames(1));
+  }
+}, { owner: P1 });
+
+test("local.selected is what the player selected, and select() makes it the Command Center", (sim) => {
+  sim.frames(4);
+  sim.selectUnits(sim.units({ owner: P1, type: units.TerranMarine })).frames(2);
+  expect(sim.printed(P1)).toContain(`selected 0 of ${sim.units({ owner: P1, type: units.TerranMarine }).length}`);
+  sim.press("S").frames(30);
+  expect(sim.printed(P1)).toContain("selected 106 of 1");
 });

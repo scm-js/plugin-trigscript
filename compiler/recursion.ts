@@ -316,6 +316,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             s.value = v as NumExpr | BoolExpr;
             break;
           }
+          case "select": { s.units = operands(s.units.map((e) => ({ e, kind: "unit" as const })), pre, w) as UnitExpr[]; break; }
           case "unitDo": {
             const items: { e: Expr; kind: Kind }[] = [{ e: s.unit, kind: "unit" }];
             if (s.verb.do === "damage" || s.verb.do === "heal") items.push({ e: s.verb.amount, kind: "number" });

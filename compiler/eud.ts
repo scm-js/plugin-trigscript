@@ -79,6 +79,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
+      case "select": s.units.forEach(unit); break;
       case "tableWrite": any(s.value); break;
       case "if": expr(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) expr(s.cond); s.body.forEach(stmt); break;
@@ -227,7 +228,7 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
   const followed = new Set<string>();
   const stmt = (s: Stmt) => {
     switch (s.kind) {
-      case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": case "syncSend": into.add(THE_GAME); break;
+      case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": case "syncSend": case "select": into.add(THE_GAME); break;
       case "declare": into.add(s.decl.id); break;
       case "assign": case "assignBool": case "assignUnit": case "assignText": into.add(s.target); break;
       case "textLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
@@ -481,6 +482,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "assignUnit": return { ...s, value: unit(s.value) };
       case "unitLoop": return { ...s, body: s.body.map(stmt) };
       case "unitWrite": return { ...s, unit: unit(s.unit), value: expr(s.value) };
+      case "select": return { ...s, units: s.units.map(unit) };
       case "unitDo": return { ...s, unit: unit(s.unit), verb: s.verb.do === "damage" || s.verb.do === "heal" ? { ...s.verb, amount: expr(s.verb.amount) } : s.verb };
       case "tableWrite": return { ...s, value: any(s.value) };
       case "assignText": return { ...s, value: text(s.value) };

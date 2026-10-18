@@ -118,7 +118,7 @@ const UNITS = 0x59cca8, UNIT_BYTES = 336, UNIT_COUNT = 1700, FIRST_UNIT = 0x6284
 const ORE = 0x57f0f0, GAS = 0x57f120, DEATHS = 0x58a364, KILLS = 0x5878a4, SWITCHES = 0x58dc40, LOCATIONS = 0x58dc60;
 /** The fog of war's tiles (a pointer) and the map's size in tiles. */
 const TILES = 0x6d1260, MAP_WIDTH = 0x57f1d4;
-const MAX_HP = 0x662350, MAX_SHIELDS = 0x660e00, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4, SCREEN_X = 0x62848c, SCREEN_Y = 0x6284a8;
+const MAX_HP = 0x662350, MAX_SHIELDS = 0x660e00, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4, SCREEN_X = 0x62848c, SCREEN_Y = 0x6284a8, SELECTION = 0x6284b8;
 const SCRATCH = 255, SCRATCH_TO = 254;
 /** The routine a unit that dies in the game goes through to be counted: its owner's death, the killer's kill (0x488AF0). */
 const COUNT_DEATH = 0x488af0;
@@ -406,6 +406,20 @@ export class GameSim implements TestWorldLike {
     m.setInt32(MOUSE, x - m.getInt32(SCREEN_X, true), true);
     m.setInt32(MOUSE + 4, y - m.getInt32(SCREEN_Y, true), true);
     this.game.wrote?.(MOUSE, 8);
+    return this;
+  }
+  /**
+   * The player selects units, as a drag would at their computer: the twelve slots of the selection the computer keeps
+   * (0x6284B8), each a unit's address, the rest 0 — what local.selected reads. The panel and the orders are not told.
+   */
+  selectUnits(units: readonly SimUnit[], player?: number): this {
+    if (!this.local(player, "selectUnits")) return this;
+    const m = this.game.m;
+    for (let i = 0; i < 12; i++) {
+      const u = units[i] as (SimUnit & { slot?: number }) | undefined;
+      m.setUint32(SELECTION + i * 4, u && typeof u.slot === "number" ? UNITS + u.slot * UNIT_BYTES : 0, true);
+    }
+    this.game.wrote?.(SELECTION, 48);
     return this;
   }
   /** The screen to a place on the map, its top left corner in pixels: what local.camera reads (B5). The mouse stays where it is on the map. */

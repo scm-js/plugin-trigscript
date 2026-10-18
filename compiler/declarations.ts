@@ -722,7 +722,28 @@ function localNamespace(kw: string, typeKw: string): string {
     for (const f of fs) lines.push(field(f, "    "), `    readonly ${f.path[1]}: Local<number>;`);
     lines.push(`  };`);
   }
+  lines.push(
+    `  /**`,
+    `   * The unit this computer has selected — the first of a group, the one the panel at the bottom shows — or null. A`,
+    `   * Local value: show it (its hit points, its order, …) as you like; to act on it, select() or sync() first.`,
+    `   *`,
+    `   * Remastered: the selection, read live (its own EUD emulator: each slot a unit's 1.16.1 address). Played.`,
+    `   * @address 0x6284B8, 32 bits a unit, twelve`,
+    `   */`,
+    `  export const selected: Local<Unit | null>;`,
+    `  /** How many units this computer has selected, 0 to 12. */`,
+    `  export const selectionCount: Local<number>;`,
+  );
   lines.push(`}`);
+  lines.push(
+    `/**`,
+    ` * What a player has selected becomes these units — at their computer (the panel shows them) and in the orders every`,
+    ` * computer runs for them, as if they had dragged a box round them: a Select command, sent from their computer as`,
+    ` * MSQC sends one. The units may be any, Local ones too: select(P1, local.selected) is safe. Up to twelve, written out;`,
+    ` * the selection circles may not follow.`,
+    ` */`,
+    `${kw}function select(player: Player, units: Unit | readonly Unit[]): void;`,
+  );
   lines.push(
     `/**`,
     ` * One player's value, sent from their computer to every computer: what \\\`value\\\` is on \\\`player\\\`'s computer, the same`,
@@ -732,6 +753,13 @@ function localNamespace(kw: string, typeKw: string): string {
     ` * left, gives 0 at once. Inside an async program, awaited where it is assigned.`,
     ` */`,
     `${kw}function sync(player: Player, value: Local<number>): Promise<number>;`,
+    `/**`,
+    ` * Several of one player's values, read on the same frame and sent together: a point stays one point while the mouse`,
+    ` * moves, and it takes one trip, not one a value. \\\`const [x, y] = await sync(P1, local.camera.x + local.mouse.x, local.camera.y + local.mouse.y);\\\``,
+    ` */`,
+    `${kw}function sync(player: Player, a: Local<number>, b: Local<number>): Promise<[number, number]>;`,
+    `${kw}function sync(player: Player, a: Local<number>, b: Local<number>, c: Local<number>): Promise<[number, number, number]>;`,
+    `${kw}function sync(player: Player, a: Local<number>, b: Local<number>, c: Local<number>, d: Local<number>): Promise<[number, number, number, number]>;`,
   );
   return lines.join("\n");
 }
@@ -864,6 +892,8 @@ export interface Sim {
   moveMouse(x: number, y: number, player?: Player): this;
   /** The player's screen to a place on the map, its top left corner in pixels: what local.camera reads. The mouse stays where it is on the map. */
   moveCamera(x: number, y: number, player?: Player): this;
+  /** The player selects these units (up to twelve), as a drag would at their computer: what local.selected reads. */
+  selectUnits(units: readonly SimUnit[], player?: Player): this;
 
   count(player: Player, type: UnitType, at?: Location): number;
   /** The units on the map, in the order of the game's unit table. */
