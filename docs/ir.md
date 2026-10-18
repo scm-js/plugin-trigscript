@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 22** (21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 23** (22 had nothing only one computer knows: no `syncSend`, no `select`, no `selected` unit and no `sync` input; 21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -188,6 +188,8 @@ frame's `saves`, and a `slice` is never declared.
 | `print` | `parts`, `to`, `position` | Text with values in it. `parts` are `{ kind: "text", text }`, `{ kind: "number", expr, unsigned? }` (its digits, with a minus sign when it is below zero and not `unsigned`), `{ kind: "name", player }` and `{ kind: "color", player }` (the colour code of the player's colour), a player being a slot or 13 for the current player. `to` is who sees it: a slot, 13, All Players (17) or a force (18–21). `position` is `chat` or `center`, the line the game's own errors use. Every number is evaluated before anything is shown. |
 | `action` | `record`, `variables?` | A trigger action. Each of `variables` names a field of the record that takes an expression's value: `{ field, bits: 8, 16 or 32, name, expr }` — the unit count of `createUnit` and friends is an 8-bit field, a unit type a 16-bit one (the lowering stops it at 228), an amount with a modifier a 32-bit one. Version 4 had one, as `variable`. |
 | `centerLocation` | `location`, `x`, `y` | Centre a location (1-based) on a point of the map in pixels, its size kept. |
+| `syncSend` | `slot`, `player`, `value` | `sync()`'s first half: on every computer, the `sync` input of `slot` from `player` cleared to 0; on `player`'s own computer `value` + 1 (0 … 1 048 574 + 1) put where MSQC's `val` sends it from. `value` may read what only that computer knows. Since version 23. |
+| `select` | `player`, `units` | On `player`'s own computer: its selection becomes the units still there (up to 12), the panel told it changed, and a Select command of them queued, which every computer runs. Nothing on the others. Since version 23. |
 | `call` | `call` | A function as a statement (its result, if any, unused): inlined, or with `fn` called. |
 | `block` | `body` | Scoping only. |
 | `try` | `body`, `catch` | `body` runs; an error thrown inside it stops it there and `catch` runs (*Errors*, below). Since version 22. |
@@ -612,6 +614,7 @@ Units (`UnitExpr`):
 | `unitAt` | `ptr`, `epd`, `uid` — the unit three numbers name, which `unitPart` gave of one and the program kept in cells of its own. None when `ptr` is 0; re-checked before use like any kept unit |
 | `pick` | `by: first | nearest | random`, `filter`, `near?`, `mouse?`, `within?` — one of the units the filter matches: the first in table order, the nearest to the centre of location `near` by \|dx\| + \|dy\| (the first of equals), or one drawn at random; none when nothing matches. With `mouse` (a player: a slot, or 13) in place of `near`, the nearest to that player's mouse and no farther from it than `within` pixels |
 | `call` | `call` whose result is a unit |
+| `selected` | `index` — the unit in that slot of this computer's selection (0 is the one the panel shows), or none. Differs from one computer to the next. Since version 23 |
 
 ```
 UnitFilter { type?, owner?, at? }
@@ -680,6 +683,7 @@ In these two `player` is a slot or 13, the player the program is running as.
 { source: "click", button: "left" | "right" | "middle", player }
 { source: "mouse", axis: "x" | "y", player }            map pixels
 { source: "chat", pattern, capture: number | null, player }
+{ source: "sync", slot, player }                        what syncSend sent from player's computer, + 1, on the frame it arrives; 0 or 0xFFFFFFFF otherwise
 ```
 
 What a player does happens on one computer; two euddraft plugins the build adds bring it to
@@ -693,6 +697,7 @@ input: {
   unitNames?: [lowerCaseName, unitType][],    only when a pattern reads a unit's name
   qcLocation,                                 the 0-based location slot MSQC keeps for itself
   mouseBase                                   the 1-based number of the first of eight locations MSQC keeps the mice in, or null
+  syncs?                                      how many sync slots, numbered across the build; MSQC sends tsin_sync<i> into tsin_sync<i>_in
 }
 ```
 
