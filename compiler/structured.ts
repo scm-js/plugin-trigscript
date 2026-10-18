@@ -581,7 +581,7 @@ export class Structured {
     }
     this.fillDispatchers(program);
     if (this.pool) {
-      for (const p of countReferences(program, this.functions, this.pool, this.poolMaker())) this.c.error(this.body.plan.body, p.message);
+      for (const p of countReferences(program, this.functions, this.pool, this.poolMaker(), this.freshStores)) this.c.error(this.body.plan.body, p.message);
     }
     if (this.envUnreachable) this.c.error(statements[0] ?? this.body.plan.body, "A function kept as a value uses a variable declared after it was made: declare the variable first.");
     this.settleFunctions(program);
@@ -627,7 +627,7 @@ export class Structured {
     // A field written through a reference (B9) that may be none: nothing written, so that a field of none still reads 0.
     const column = s.kind === "store" ? s.array : s.kind === "storeText" ? s.addr : undefined;
     const index = s.kind === "store" || s.kind === "storeText" ? s.index : undefined;
-    if (column && index && index.kind !== "const" && this.objectsTable?.columns.has(column) && (s.kind === "store" || s.kind === "storeText")) {
+    if (column && index && index.kind !== "const" && !(index.kind === "var" && this.freshRows.has(index.id)) && this.objectsTable?.columns.has(column) && (s.kind === "store" || s.kind === "storeText")) {
       this.out.push(this.mark<Stmt>({ kind: "if", cond: { kind: "compare", op: "!=", left: index, right: num(0), at: s.at, label: s.label }, then: [this.mark(s, node)], at: s.at, label: s.label }, node));
       return s;
     }
@@ -2228,7 +2228,8 @@ export class Structured {
     const out: RowValues = { cells: new Map(), fill: [] };
     if (!this.rowField(row.of.name, key, f, src, out, at)) return false;
     // An array's handle and a text's cells are nothing in a new row, and are filled below: only what is a value is stored.
-    if (f.kind !== "list" && f.kind !== "squad" && f.kind !== "text") for (const [column, value] of out.cells) this.emit({ kind: "store", array: row.of.fields.get(column)!.id, index: row.index, value, at: this.at(at), label: this.label(at) }, at);
+    const fresh = row.index.kind === "var" && this.freshRows.has(row.index.id);
+    if (f.kind !== "list" && f.kind !== "squad" && f.kind !== "text") for (const [column, value] of out.cells) { const st = this.emit({ kind: "store", array: row.of.fields.get(column)!.id, index: row.index, value, at: this.at(at), label: this.label(at) }, at); if (fresh) this.freshStores.add(st); }
     return out.fill.every((fill) => fill(row.of, row.index));
   }
 
@@ -8732,24 +8733,30 @@ export class Structured {
         return false;
       }
       into.set(name, f);
-      const one: RowShape = new Map([[name, f]]);
-      const held = new Set<string>();
-      for (const l of this.ownedLists(table, one)) {
-        for (const a of [l.ptr, l.len, l.room, l.k]) held.add(a.id);
-      }
-      for (const { key, kind, width } of this.columnsOf(one)) {
+      for (const { key, kind, width } of this.columnsOf(new Map([[name, f]]))) {
         const a = this.newArray(`(objects) ${key.replace(/ /g, ".")}`, kind, CLOSURE_CAP, pool.make.at, width);
         table.fields.set(key, a);
         o.columns.add(a.id);
       }
-      // What a row given back lets go of: its texts, its arrays' blocks, and every other cell emptied.
-      const texts = this.ownedTexts(table, one);
-      for (const t of texts) pool.texts.push({ addr: t.addr, block: t.block, chars: t.chars });
-      const lists = this.ownedLists(table, one);
-      for (const l of lists) pool.lists.push({ ptr: l.ptr, len: l.len, room: l.room, k: l.k, of: l.of, refs: l.of === "number" && this.listHoldsRefs(cls, name) });
-      const skip = new Set([...texts.map((t) => t.block.id), ...lists.flatMap((l) => [l.ptr.id, l.len.id, l.room.id, l.k.id])]);
-      for (const { key } of this.columnsOf(one)) { const a = table.fields.get(key)!; if (!skip.has(a.id)) pool.objects.push(a); }
     }
+    // What a row of this class given back lets go of: its texts, its arrays' blocks, and every other cell emptied.
+    const texts = this.ownedTexts(table, shape);
+    const lists = this.ownedLists(table, shape);
+    const skip = new Set([...texts.map((t) => t.block.id), ...lists.flatMap((l) => [l.ptr.id, l.len.id, l.room.id, l.k.id])]);
+    // A field every constructor gives a first value (declared with one, or a constructor's parameter) is written over
+    // when the row is made again: it needs letting go of, when it holds a reference, but no emptying.
+    const given = new Set<string>();
+    for (const c of this.chainOf(cls)) for (const m of c.members) {
+      if (this.ts.isPropertyDeclaration(m) && !this.isStatic(m) && m.initializer) { const k = this.memberKey(m.name); if (k) given.add(k); }
+      if (this.ts.isConstructorDeclaration(m)) for (const p of m.parameters) if (this.ts.getModifiers(p)?.length && this.ts.isIdentifier(p.name)) given.add(p.name.text);
+    }
+    const written = new Set(this.columnsOf(new Map([...shape].filter(([k, f]) => given.has(k) && (f.kind === "number" || f.kind === "boolean")))).map(({ key }) => table.fields.get(key)!.id));
+    pool.objects.set(o.tags.get(cls)!, {
+      columns: this.columnsOf(shape).map(({ key }) => table.fields.get(key)!).filter((a) => !skip.has(a.id)),
+      overwritten: written,
+      texts: texts.map((t) => ({ addr: t.addr, block: t.block, chars: t.chars })),
+      lists: lists.map((l) => ({ ptr: l.ptr, len: l.len, room: l.room, k: l.k, of: l.of, refs: l.of === "number" && this.listHoldsRefs(cls, l.name.split(".").pop() ?? "") })),
+    });
     return true;
   }
 
@@ -8809,9 +8816,18 @@ export class Structured {
     this.onRow.set(self, { of: o.table, index: varRef(row), shape: o.table.shape! });
     const typeArgs = this.classTypeArgs(cls, e);
     if (typeArgs) self.typeArgs = typeArgs;
-    const made = this.withTypeArgs(typeArgs, () => this.construct(cls, e.arguments ?? [], self, e, `(${this.className(cls)})`));
+    // Made only when the pool had a row to give: one test for the whole constructor, not one a field.
+    this.freshRows.add(row.id);
+    let made = false;
+    const body = this.collect(() => { made = this.withTypeArgs(typeArgs, () => this.construct(cls, e.arguments ?? [], self, e, `(${this.className(cls)})`)); });
+    this.emit({ kind: "if", cond: { kind: "compare", op: "!=", left: varRef(row), right: num(0), at, label: this.label(e) }, then: body, at, label: this.label(e) }, e);
     return made ? varRef(row) : null;
   }
+
+  /** The rows of objects being made: a field written at one needs no test that it is there (the constructor runs under one). */
+  private readonly freshRows = new Set<string>();
+  /** The stores of a field's first value into a row only just made: nothing was there to let go of. */
+  private readonly freshStores = new WeakSet<object>();
 
   /** The number of each class among `classes` that `test` holds of, for a question of a row's class. */
   private tagsOf(classes: readonly TS.ClassDeclaration[]): number[] {
@@ -9647,8 +9663,10 @@ export class Structured {
       // Met a second time, or met inside itself: one copy that every call runs, when the function can be one.
       if ((site.first || (site.walking ?? 0) > 0) && !site.never && !site.busy) {
         // At the top of one of the script's files it sees only that file, which is the same at every call.
-        if (ts.isFunctionDeclaration(decl) && !isScriptFunction(ts, decl) && (closure === null || decl.parent !== this.c.body.plan.body)) site.never = "it is declared inside a block or another function, whose variables it may use";
-        else if (ts.isClassDeclaration(decl.parent) && !isScriptClass(ts, decl.parent) && (closure === null || decl.parent.parent !== this.c.body.plan.body)) site.never = "its class is declared inside a block or a function, whose variables it may use";
+        const topFunction = isScriptFunction(ts, decl as TS.Node);
+        const topClass = isScriptClass(ts, decl.parent as TS.Node);
+        if (ts.isFunctionDeclaration(decl) && !topFunction && (closure === null || decl.parent !== this.c.body.plan.body)) site.never = "it is declared inside a block or another function, whose variables it may use";
+        else if (ts.isClassDeclaration(decl.parent) && !topClass && (closure === null || decl.parent.parent !== this.c.body.plan.body)) site.never = "its class is declared inside a block or a function, whose variables it may use";
         else {
           site.busy = true;
           let made: FuncDecl | string;

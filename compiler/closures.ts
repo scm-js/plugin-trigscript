@@ -57,7 +57,18 @@ export interface ClosurePool {
    * among them let go of — and its arrays that grow, whose blocks a row given back gives back (`refs`: they may hold
    * references, each let go of first).
    */
-  objects: ArrayDecl[];
+  objects: Map<number, ObjectClass>;
+}
+
+/** What a row of one class of the object table holds (B9), by its number in the function column: what a row given back lets go of. */
+export interface ObjectClass {
+  /** Its columns of numbers and booleans: emptied, a reference among them let go of first. */
+  columns: ArrayDecl[];
+  /** Those every constructor writes first: let go of, not emptied. */
+  overwritten: ReadonlySet<string>;
+  /** Its texts: their blocks given back. */
+  texts: { addr: ArrayDecl; block: ArrayDecl; chars: ArrayDecl }[];
+  /** Its arrays that grow: their blocks given back (`refs`: the references in them let go of first). */
   lists: { ptr: ArrayDecl; len: ArrayDecl; room: ArrayDecl; k: ArrayDecl; of: "number" | "boolean"; refs: boolean }[];
 }
 
@@ -127,12 +138,14 @@ export function makePool(m: PoolMaker, at: At): ClosurePool {
   ], at };
 
   const sweep: FuncDecl = { id: m.fnId("(sweep the environments)"), name: "(sweep the environments)", params: [], body: [], at };
-  return { rc, fnOf, parent, queue, queueN, free, freeN, next, warned, make, drop, sweep, cells: [], texts: [], envVars: new Set(), objects: [], lists: [] };
+  return { rc, fnOf, parent, queue, queueN, free, freeN, next, warned, make, drop, sweep, cells: [], texts: [], envVars: new Set(), objects: new Map() };
 }
 
 /** One reference more: `rc[x] += 1` for a row of the pool (0 and numbers of plain functions are left alone; rc[0] is never read). */
 function hold(rc: ArrayDecl, x: NumExpr, at: At, label: string): Stmt[] {
-  return [{ kind: "if", cond: cmp("<", x, num(FN_BASE), at, label), then: [{ kind: "store", array: rc.id, index: x, value: plus(el(rc, x, at), num(1), at, label), at, label }], at, label }];
+  // None, or a function that keeps nothing, known when built: nothing to count.
+  if (x.kind === "const" && (x.value <= 0 || x.value >= FN_BASE)) return [];
+  return [{ kind: "if", cond: { kind: "and", items: [cmp(">", x, num(0), at, label), cmp("<", x, num(FN_BASE), at, label)] }, then: [{ kind: "store", array: rc.id, index: x, value: plus(el(rc, x, at), num(1), at, label), at, label }], at, label }];
 }
 
 /** One reference fewer, through `drop` when `x` is a row at all. A cell is read once, into a temporary. */
@@ -156,7 +169,7 @@ const isCall = (o: Record<string, unknown>): boolean => Array.isArray(o.params) 
  * and lets go of the old, and every wait of the program sweeps first. Parameters and a call's result are not counted:
  * they live no longer than the statement or the call that set them. Gives the problems it found, in words.
  */
-export function countReferences(program: Pick<Program, "body">, functions: FuncDecl[], pool: ClosurePool, m: PoolMaker): { at: At; message: string }[] {
+export function countReferences(program: Pick<Program, "body">, functions: FuncDecl[], pool: ClosurePool, m: PoolMaker, fresh?: WeakSet<object>): { at: At; message: string }[] {
   const problems: { at: At; message: string }[] = [];
   const own = new Set([pool.make.id, pool.drop.id, pool.sweep.id]);
   const byId = new Map(functions.map((f) => [f.id, f]));
@@ -297,6 +310,12 @@ export function countReferences(program: Pick<Program, "body">, functions: FuncD
         }
         case "store": {
           if (!arrays.has(s.array)) break;
+          // The first value of a field of an object only just made (B9): its row was empty, so nothing is let go of.
+          if (fresh?.has(s)) {
+            const t = tmp("(reference)", at);
+            out.push({ kind: "declare", decl: t, init: s.value as NumExpr, at, label }, ...hold(rc, ref(t), at, label), { ...s, value: ref(t) });
+            continue;
+          }
           const i = tmp("(place)", at), t = tmp("(reference)", at);
           out.push({ kind: "declare", decl: i, init: s.index, at, label }, { kind: "declare", decl: t, init: s.value as NumExpr, at, label }, ...hold(rc, ref(t), at, label),
             ...release(pool, { kind: "element", array: s.array, index: ref(i), at }, at, label, m), { ...s, index: ref(i), value: ref(t) });
@@ -386,23 +405,34 @@ export function countReferences(program: Pick<Program, "body">, functions: FuncD
   const at = pool.sweep.at, label = "(closures)";
   const s = m.newVar("(row)", "number", at, { temp: true }), count = m.newVar("(count)", "number", at, { temp: true });
   const row = ref(s);
+  /** What a row lets go of as it goes: an environment's or a closure's parent and kept variables; an object's own fields, by its class. */
+  const ofEnvironment = (): Stmt[] => [
+    ...release(pool, el(pool.parent, row, at), at, label, m),
+    ...pool.cells.filter((a) => arrays.has(a.id)).flatMap((a): Stmt[] => [...release(pool, el(a, row, at), at, label, m), { kind: "store", array: a.id, index: row, value: num(0), at, label }]),
+    ...pool.texts.map((t): Stmt => ({ kind: "releaseText", block: t.block.id, index: row, at, label })),
+  ];
+  const ofObject = (c: ObjectClass): Stmt[] => [
+    ...c.columns.flatMap((a): Stmt[] => [...(arrays.has(a.id) ? release(pool, el(a, row, at), at, label, m) : []), ...(c.overwritten.has(a.id) ? [] : [{ kind: "store", array: a.id, index: row, value: a.kind === "boolean" ? { kind: "const", value: false } : num(0), at, label } as Stmt])]),
+    ...c.texts.map((t): Stmt => ({ kind: "releaseText", block: t.block.id, index: row, at, label })),
+    ...c.lists.flatMap((l): Stmt[] => {
+      const inner = m.newArray(`(objects) ${l.ptr.name} (given back)`, l.of, 0, at);
+      inner.dynamic = true;
+      inner.through = { ptr: l.ptr.id, len: l.len.id, room: l.room.id, k: l.k.id, index: s.id };
+      return [...(l.refs ? eachCell(inner.id, at, label, num(0), (cell) => release(pool, cell, at, label, m)) : []), { kind: "declareArray", array: inner.id, init: [], at, label }];
+    }),
+  ];
+  const rowGoes = (): Stmt[] => {
+    if (!pool.objects.size) return ofEnvironment();
+    const cases = [...pool.objects].map(([tag, c]) => ({ value: tag, body: [...ofObject(c), { kind: "break", at, label } as Stmt] }));
+    return [{ kind: "switch", value: el(pool.fnOf, row, at), cases: [...cases, { value: null, body: ofEnvironment() }], at, label }];
+  };
   pool.sweep.body = [{ kind: "while", cond: cmp(">", ref(pool.queueN), num(0), at, label), body: [
     { kind: "assign", target: pool.queueN.id, value: minus(ref(pool.queueN), num(1), at, label), at, label },
     { kind: "declare", decl: s, init: el(pool.queue, ref(pool.queueN), at), at, label },
     { kind: "declare", decl: count, init: el(pool.rc, row, at), at, label },
     { kind: "if", cond: cmp("==", ref(count), num(QUEUED), at, label), then: [
       { kind: "store", array: pool.rc.id, index: row, value: num(0), at, label },
-      ...release(pool, el(pool.parent, row, at), at, label, m),
-      ...pool.cells.filter((a) => arrays.has(a.id)).flatMap((a): Stmt[] => [...release(pool, el(a, row, at), at, label, m), { kind: "store", array: a.id, index: row, value: num(0), at, label }]),
-      ...pool.texts.map((t): Stmt => ({ kind: "releaseText", block: t.block.id, index: row, at, label })),
-      // An object's row: what it held let go of, its arrays' blocks given back, its cells emptied for the next one made there.
-      ...pool.objects.flatMap((a): Stmt[] => [...(arrays.has(a.id) ? release(pool, el(a, row, at), at, label, m) : []), { kind: "store", array: a.id, index: row, value: a.kind === "boolean" ? { kind: "const", value: false } : num(0), at, label }]),
-      ...pool.lists.flatMap((l): Stmt[] => {
-        const inner = m.newArray(`(objects) ${l.ptr.name} (given back)`, l.of, 0, at);
-        inner.dynamic = true;
-        inner.through = { ptr: l.ptr.id, len: l.len.id, room: l.room.id, k: l.k.id, index: s.id };
-        return [...(l.refs ? eachCell(inner.id, at, label, num(0), (cell) => release(pool, cell, at, label, m)) : []), { kind: "declareArray", array: inner.id, init: [], at, label }];
-      }),
+      ...rowGoes(),
       { kind: "store", array: pool.free.id, index: ref(pool.freeN), value: row, at, label },
       { kind: "assign", target: pool.freeN.id, value: plus(ref(pool.freeN), num(1), at, label), at, label },
     ], else: [
