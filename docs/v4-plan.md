@@ -8,7 +8,7 @@ framebuffer in the lifted game (*S4*, 2026-10-17); B6, fixed numbers and Math, b
 raycaster in the fog (*S5*, 2026-10-17); B3, functions as values, and B4, `try` / `catch` / `throw`, built
 (2026-10-17); closures over locals, and the text and array methods a program was missing, built (*Closures and the
 missing methods*, 2026-10-17); JSX components, functions from any file and the first two libraries, `trigscript/ui` and
-`trigscript/console`, with Snake as their showpiece (*Components, functions from any file, and the first libraries*,
+`trigscript/screen`, with Snake as their showpiece (*Components, functions from any file, and the first libraries*,
 2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
@@ -1508,7 +1508,7 @@ renderer that needs them — the raycaster's textures — will say which); the g
 
 ### Closures and the missing methods (built 2026-10-17)
 
-The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`console`, `ui`):
+The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
 
 ```ts
 function makeCounter() { let count = 0; return () => ++count; }
@@ -1574,7 +1574,7 @@ lifted game and the simulator, the same lines: `probes/game-closures.ts` (6: cou
 variables, closures inside closures, handlers fired frames later, 3 000 made and let go of across 30 frames with the
 kept ones still there) and `probes/game-text-arrays.ts` (4).
 
-### Components, functions from any file, and the first libraries: ui and console (built 2026-10-17)
+### Components, functions from any file, and the first libraries: ui and screen (built 2026-10-17)
 
 The libraries the language was missing, and what they needed of it first.
 
@@ -1604,18 +1604,18 @@ over its children), `MenuList` and `choose(player, count, menu)` (Up, Down, Ente
 view shows), `DialogBox` and `say(player, box, speaker, text)` with `typewriter`, `LogLines` and `log(lines, text,
 keep)`, `clock(frames)`, `thousands(n)`. One `ui.lines` a player, the components pieces of its view.
 
-**`trigscript/console`** (`stdlib/console.tsx`): `Screen(x, y, width, height, cell?)` — `clear`, `set`, `get`, `rect`,
+**`trigscript/screen`** (`stdlib/screen.tsx`): `Screen(x, y, width, height, cell?)` — `clear`, `set`, `get`, `rect`,
 `line` (Bresenham), `blit(sprite(rows))`, `number` (3 × 5 digits) — and `present()`, which shows it on the map, and so
 on the minimap, a pixel an Overlord of the colour's owner (P3 … P8 and P1), making and taking away only what changed
 since the last time; `ScreenView` shows the same grid in the text lines. Generalises the Tetris probe's `UnitScreen`.
 
-**Showpiece: Snake** (`probes/snake.tsx`, `trigscript-snake.scx`): the board on the minimap with `console`, the score,
+**Showpiece: Snake** (`probes/snake.tsx`, `trigscript-snake.scx`): the board on the minimap with `screen`, the score,
 a length meter and the game-over menu in the text lines with `ui`, the snake two arrays that `push` and `shift`. In the
 lifted game: its test passes in both; about 14k conditions and actions a frame, 400k on the first (the screen's 768
 cells pushed and the walls made — a fixed-size screen would cost less). Awaiting a play in Remastered.
 
 **Checked:** `tests/ui.test.ts` (components, 4 more), `tests/script-functions.test.ts` (6), `tests/ui-kit.test.ts`
-(5: the kit rendered, the meter's colour in the IR, the log, `choose` and `say` with keys pressed), `tests/console.test.ts`
+(5: the kit rendered, the meter's colour in the IR, the log, `choose` and `say` with keys pressed), `tests/screen.test.ts`
 (4: drawing, digits, `present` making only what changed).
 
 ## Part C — the game, pushed

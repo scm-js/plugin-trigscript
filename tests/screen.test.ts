@@ -1,5 +1,5 @@
 /**
- * The standard library's "trigscript/console" (TrigScript 4): a screen of pixels drawn in a program — rectangles, lines,
+ * The standard library's "trigscript/screen" (TrigScript 4): a screen of pixels drawn in a program — rectangles, lines,
  * sprites, digits — shown on the map as units (`present`, which makes and takes away only what changed) and in the text
  * lines as squares (`ScreenView`). Run in the simulator.
  */
@@ -24,10 +24,10 @@ const pictures = (s: ProgramSimulation): string[] => s.events.filter((e) => e.ac
 const made = (s: ProgramSimulation) => s.events.filter((e) => e.action.type === ActionType.CreateUnit);
 const taken = (s: ProgramSimulation) => s.events.filter((e) => e.action.type === ActionType.RemoveUnitAt);
 
-describe("trigscript/console", () => {
+describe("trigscript/screen", () => {
   it("rect, line, a sprite and set, shown in the text lines", () => {
     const r = compile(`
-      import { Screen, ScreenView, sprite } from "trigscript/console";
+      import { Screen, ScreenView, sprite } from "trigscript/screen";
       const SHIP = sprite([".1.", "111", "1.1"]);
       program(async () => {
         const s = new Screen(0, 0, 8, 5);
@@ -43,21 +43,21 @@ describe("trigscript/console", () => {
 
   it("get reads a pixel, and 0 outside; set outside does nothing", () => {
     const r = compile(`
-      import { Screen } from "trigscript/console";
+      import { Screen } from "trigscript/screen";
       program(async () => { const s = new Screen(0, 0, 4, 4); let k = 3; s.set(k, k, 6); s.set(k + 9, 0, 6); print(\`\${s.get(3, 3)} \${s.get(9, 0)} \${s.get(-1, 2)}\`); });`);
     expect(sim(r).run(1).events.map((e) => e.text)).toEqual(["6 0 0"]);
   });
 
   it("number draws a whole number's digits", () => {
     const r = compile(`
-      import { Screen, ScreenView } from "trigscript/console";
+      import { Screen, ScreenView } from "trigscript/screen";
       program(async () => { const s = new Screen(0, 0, 7, 5); let k = 21; s.number(k - 4, 0, 0, 3); print(<ScreenView screen={s} width={7} height={5} />); });`);
     expect(pictures(sim(r).run(1))).toEqual([[".#..###", "##....#", ".#....#", ".#...#.", "###..#."].join("\n")]);
   });
 
   it("present makes a unit a pixel, in its colour's owner's name, then only what changed", () => {
     const r = compile(`
-      import { Screen } from "trigscript/console";
+      import { Screen } from "trigscript/screen";
       program(async () => {
         const s = new Screen(4, 4, 3, 2);
         s.set(0, 0, 1); s.set(2, 1, 7);

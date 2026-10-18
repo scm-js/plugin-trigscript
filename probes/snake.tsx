@@ -1,5 +1,5 @@
 // Snake on the minimap, with its score in the text lines (TrigScript 4): the standard library's two screens together.
-// "trigscript/console" draws the board — a pixel an Overlord, the minimap showing it — and "trigscript/ui" the panel,
+// "trigscript/screen" draws the board — a pixel an Overlord, the minimap showing it — and "trigscript/ui" the panel,
 // the meter and the menu after a game. W A S D steer; the snake grows by one at each apple and speeds up every five.
 // When it runs into itself or a wall, a menu: Up and Down, Enter.
 // Remastered will not start a game without a computer, and a computer moves its own units, so Player 2 is a computer
@@ -9,12 +9,12 @@
 // Built with
 //   npx tsx scripts/build-fixture.mts probes/snake.tsx fixtures/eud/snake.scx
 import { program, P1, keyPressed, random, sleep, frames, nextFrame, ui, test, expect } from "trigscript";
-import { Screen } from "trigscript/console";
+import { Screen } from "trigscript/screen";
 import { Panel, Meter, MenuList, choose, thousands } from "trigscript/ui";
 
 /** The board: 24 × 16 pixels, its corner on tile (4, 4) of the map. */
 const W = 24, H = 16;
-/** Colours, as `console`'s OWNERS have them: 4 the snake (your own units, green), 5 the apple (red), 2 the walls (yellow). */
+/** Colours, as `screen`'s OWNERS have them: 4 the snake (your own units, green), 5 the apple (red), 2 the walls (yellow). */
 const SNAKE = 4, APPLE = 5, WALL = 2, HEAD = 1;
 const AGAIN = ["Play again", "Stop"];
 

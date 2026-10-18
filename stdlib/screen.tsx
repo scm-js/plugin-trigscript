@@ -1,7 +1,7 @@
 /**
- * Pixel screens: the standard library's "trigscript/console" (TrigScript 4).
+ * Pixel screens: the standard library's "trigscript/screen" (TrigScript 4).
  *
- *   import { Screen, ScreenView, sprite } from "trigscript/console";
+ *   import { Screen, ScreenView, sprite } from "trigscript/screen";
  *
  *   const SHIP = sprite([".1.", "111", "1.1"]);
  *
@@ -38,7 +38,7 @@ export const OWNERS: readonly Player[] = [P3, P4, P5, P6, P7, P8, P1];
 export const TEXT_COLORS: readonly number[] = [0, textColors.cyan, textColors.yellow, textColors.purple, textColors.green, textColors.red, textColors.blue, textColors.orange];
 
 /** Where each pixel's unit is made: a location the map does not use, taken when the script is built. */
-const SPOT = reserveLocation("console: where each pixel is made");
+const SPOT = reserveLocation("screen: where each pixel is made");
 
 /** A picture known when the script is built, to `blit` onto a screen: its size, and its pixels a row at a time (0 is see-through). */
 export interface Sprite { readonly width: number; readonly height: number; readonly cells: readonly number[] }
