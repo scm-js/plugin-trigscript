@@ -13,7 +13,7 @@
  *       screen.rect(0, 15, 24, 1, 5);           // the ground, in colour 5
  *       screen.blit(SHIP, x, 12);
  *       screen.number(score, 1, 1, 2);          // digits 3 × 5 pixels, in colour 2
- *       screen.present();                       // on the map, and so on the minimap
+ *       screen.present();                       // on the map, and so on the minimap (screen.reveal(P1) once first)
  *       await nextFrame();
  *     }
  *   });
@@ -23,6 +23,8 @@
  * neighbouring pixels of one colour join into a solid block there. Only the pixels that changed since the last
  * `present()` are made or taken away, so a still picture costs nothing to show. The same grid can be shown in a
  * player's text lines too, as squares (`ScreenView` in a `ui.lines` view): one game, two screens, as the Tetris probe has it.
+ *
+ * A player sees the pixels only where they have vision: `screen.reveal(P1)` once gives them Map Revealers over it.
  *
  * What the map needs, found playing the unit-pixel probe in StarCraft: Remastered (2026-10-16): the owners of the
  * pixels (P3 … P8 and P1 below; their colours are theirs on the map, so pick the map's player colours to suit) must not
@@ -163,6 +165,28 @@ export class Screen {
       rest = Math.floor(rest / 10);
       place -= 4;
       if (rest === 0) break;
+    }
+  }
+
+  /**
+   * Let a player see the screen: Map Revealers of theirs over it, for the rest of the game. Without them its pixels,
+   * owned by other players, are hidden by the fog of war — on the map and on the minimap. Once, before the first
+   * `present()`.
+   * @param player Who sees it: P1 … P8, known when the script is built.
+   */
+  reveal(player: Player) {
+    // A Map Revealer sees ten tiles round; one every six tiles leaves no gap.
+    const right = this.x * 32 + this.width * this.cell;
+    const bottom = this.y * 32 + this.height * this.cell;
+    let py = this.y * 32 + 96;
+    while (py < bottom + 96) {
+      let px = this.x * 32 + 96;
+      while (px < right + 96) {
+        centerLocation(SPOT, px, py, 32, 32);
+        createUnit(player, units.MapRevealer, 1, SPOT);
+        px += 192;
+      }
+      py += 192;
     }
   }
 

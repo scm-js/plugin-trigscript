@@ -21,7 +21,8 @@ const messages = (source: string): string[] => raw(source).diagnostics.map((d) =
 const run = (r: CompileResult, frames: number) => simulatePrograms(r.ir, frames, { strings: r.strings });
 /** What was shown, as "frame:text", over that many frames; `codes` keeps the colour codes a text says itself. */
 const printed = (r: CompileResult, frames: number, codes = false): string[] =>
-  run(r, frames).events.filter((e) => e.action.type === ActionType.DisplayText).map((e) => `${e.cycle}:${codes ? e.text : e.text?.replace(/[\x01-\x08\x0e-\x1f]/g, "")}`);
+  // ui.lines fills the eleven text lines after its view with lines of a space: left out here, and checked on their own below.
+  run(r, frames).events.filter((e) => e.action.type === ActionType.DisplayText).map((e) => `${e.cycle}:${(codes ? e.text : e.text?.replace(/[\x01-\x08\x0e-\x1f]/g, ""))?.replace(/(\n )+$/, "")}`);
 const program = (body: string) => `program(async () => {${body}});`;
 
 describe("JSX texts", () => {
@@ -188,5 +189,17 @@ describe("components: functions of your own as elements", () => {
     expect(messages(`
       function Odd({ n }: { n: number }) { if (n > 1) return <line>big</line>; return <line>small</line>; }
       program(async () => { let n = 3; print(<Odd n={n} />); });`).join("\n")).toMatch(/end with the one return/);
+  });
+});
+
+describe("ui.lines fills the text lines", () => {
+  it("the view and then lines of a space, eleven in all, so the showing before is pushed out of sight", () => {
+    const r = compile(program(`
+      let n = 2;
+      ui.lines(P1, () => <><line>a {n}</line><line>b</line><line>c</line></>);
+      await sleep(frames(2));`));
+    const texts = run(r, 1).events.filter((e) => e.action.type === ActionType.DisplayText).map((e) => (e.text ?? "").replace(/[\x01-\x08\x0e-\x1f]/g, ""));
+    expect(texts[0]).toBe(["a 2", "b", "c", ...Array(8).fill(" ")].join("\n"));
+    expect(texts[0].split("\n")).toHaveLength(11);
   });
 });

@@ -285,6 +285,8 @@ const MAX_ARRAY = 4096;
  * array of the program. What bounds it is the build's data (the IR is packed for it, `eud.ts#serializeIr`).
  */
 const MAX_TABLE = 1 << 20;
+/** How many text lines the game shows at once (the UI spike, 2026-10-16). */
+const TEXT_LINES = 11;
 const TRUE: BoolExpr = { kind: "const", value: true };
 const FALSE: BoolExpr = { kind: "const", value: false };
 const num = (value: number): NumExpr => ({ kind: "const", value });
@@ -7389,6 +7391,10 @@ export class Structured {
     // again once a second whatever happens, before the game's lines fade — put together then too, in case.
     // Declared at the top of the program (`views.ts`): a write before this line already sets it.
     const dirty = this.newVar("(redraw)", "number", at, { temp: true });
+    // The lines after the view, each a space, so that every showing is all the text lines there are: the one before is
+    // pushed out of sight (it stayed above, the newest lines being the lowest, until it faded).
+    const fill = this.newVar("(lines to fill)", "number", at, { temp: true });
+    this.fillVar = fill;
     let text: TextExpr | null = null;
     const build = this.collect(() => { text = this.text(shown); });
     if (!text) return;
@@ -7400,7 +7406,8 @@ export class Structured {
         this.emit({ kind: "if", cond: due, then: [
           { kind: "assign", target: dirty.id, value: num(0), at, label },
           { kind: "block", body: build, at },
-          { kind: "print", parts: [{ kind: "value", text: text! }], to, position: "chat", at, label },
+          ...this.fillLines(text!, at, label),
+          { kind: "print", parts: [{ kind: "value", text: text! }, { kind: "value", text: { kind: "textRepeat", of: { kind: "text", text: "\n " }, count: varRef(fill), at, label } }], to, position: "chat", at, label },
           { kind: "assign", target: age.id, value: num(0), at, label },
         ], else: [{ kind: "assign", target: age.id, value: { kind: "binary", op: "+", left: varRef(age), right: num(1), at, label }, at, label }], at, label }, call);
         this.emit({ kind: "sleep", cycles: 1, at, label }, call);
@@ -7411,6 +7418,23 @@ export class Structured {
     const run: Call = this.mark({ name: "ui.lines", at, label, params: [], body }, call);
     for (const d of declarations(body)) d.task ??= task;
     this.emit({ kind: "start", task, max: 1, call: run, ...(handle ? { handle: handle.id } : {}), at, label }, call);
+  }
+
+  private fillVar: VarDecl | null = null;
+
+  /** How many lines a view lacks of the game's eleven text lines: its line breaks counted, into `fillVar`. */
+  private fillLines(text: TextExpr, at: At, label: string): Stmt[] {
+    const fill = this.fillVar!;
+    const i = this.newVar("(line break at)", "number", at, { temp: true });
+    const nl: TextExpr = { kind: "text", text: "\n" };
+    return [
+      { kind: "declare", decl: fill, init: num(TEXT_LINES - 1), at, label },
+      { kind: "declare", decl: i, init: { kind: "textIndexOf", of: text, find: nl, at, label }, at, label },
+      { kind: "while", cond: { kind: "compare", op: ">=", left: varRef(i), right: num(0), at, label }, body: [
+        { kind: "assign", target: fill.id, value: { kind: "binary", op: "-", left: varRef(fill), right: num(1), at, label }, at, label },
+        { kind: "assign", target: i.id, value: { kind: "textIndexOf", of: text, find: nl, from: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }, at, label },
+      ], at, label },
+    ];
   }
 
   /** `const board = ui.lines(…)`: its task's number, to stop it with. */

@@ -78,4 +78,12 @@ describe("trigscript/screen", () => {
     run.run(2);
     expect(made(run)).toHaveLength(4);
   });
+  it("reveal gives the player Map Revealers over the screen, so the pixels show through the fog", () => {
+    const r = compile(`
+      import { Screen } from "trigscript/screen";
+      program(async () => { const s = new Screen(4, 4, 12, 6); s.reveal(P1); });`);
+    // 12 × 6 pixels of 64 is 768 × 384: a revealer 96 pixels in and every 192 after — 4 across, 2 down, each seeing ten tiles round.
+    const revealers = made(sim(r).run(1)).filter((e) => e.action.player === 0);
+    expect(revealers).toHaveLength(8);
+  });
 });

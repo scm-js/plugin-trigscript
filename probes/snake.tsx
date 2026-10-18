@@ -20,6 +20,8 @@ const AGAIN = ["Play again", "Stop"];
 
 program(async () => {
   const screen = new Screen(4, 4, W, H);
+  // The pixels are other players' units: without vision of them, the fog of war hides them.
+  screen.reveal(P1);
   const hud = { score: 0, best: 0, length: 3, over: false };
   const menu = { selected: 0, open: false };
   ui.lines(P1, () => (
