@@ -87,3 +87,12 @@ describe("a number or nothing", () => {
     expect(messages("let k = 3; let n: number | undefined = k > 2 ? k : undefined; const m = (n as number | undefined) as number | undefined; print(`${(m as number | undefined)}`);").join("\n")).toMatch(/may be undefined here/);
   });
 });
+
+describe("an array of a union of records", () => {
+  it("a row holds every kind's fields; narrowed by its kind, each reads its own", () => {
+    same('type Ev = { kind: "hit"; dmg: number } | { kind: "heal"; amt: number }; let k = 4; const evs: Ev[] = []; evs.push({ kind: "hit", dmg: k }); evs.push({ kind: "heal", amt: 3 }); evs.push({ kind: "hit", dmg: 1 }); let hp = 50; for (const e of evs) { if (e.kind === "hit") hp -= e.dmg; else hp += e.amt; } print(`${hp}`);');
+  });
+  it("and by a switch on it", () => {
+    same('type Cmd = { op: "move"; dx: number; dy: number } | { op: "say"; text: string }; let k = 2; const cs: Cmd[] = [{ op: "move", dx: k, dy: 1 }, { op: "say", text: "hi" }]; let x = 0; let said = ""; for (const c of cs) { switch (c.op) { case "move": x += c.dx; break; case "say": said = c.text; break; } } print(`${x} ${said}`);');
+  });
+});

@@ -2037,7 +2037,9 @@ export class Structured {
     const checker = this.c.checker;
     if (!checker.isArrayType(type) && !checker.isTupleType(type)) return null;
     const element = checker.getIndexTypeOfType(type, ts.IndexKind.Number);
-    if (!element || this.kindOf(element) || !(element.flags & ts.TypeFlags.Object) || checker.isArrayType(element) || checker.isTupleType(element)) return null;
+    // `Event[]` of `{ kind: "hit"; dmg: number } | { kind: "heal"; amt: number }` (B9): a row holds every kind's fields.
+    const recordUnion = !!element?.isUnion() && element.types.every((t) => (t.flags & ts.TypeFlags.Object) !== 0 && !checker.isArrayType(t) && !checker.isTupleType(t) && !this.instanceClasses(t));
+    if (!element || this.kindOf(element) || (!(element.flags & ts.TypeFlags.Object) && !recordUnion) || checker.isArrayType(element) || checker.isTupleType(element)) return null;
     return this.shapeOf(element, why);
   }
 
@@ -2052,6 +2054,20 @@ export class Structured {
     const fields: RowShape = new Map();
     const no = (what: string) => { why?.push(what); return null; };
     if (depth > 4) return no("it holds itself, and a row has every one of its cells when the script is built");
+    // A union of records (B9): every member's fields, one column each; a field of one kind only is empty in the others' rows.
+    if (element.isUnion() && element.types.every((t) => (t.flags & ts.TypeFlags.Object) !== 0)) {
+      for (const t of element.types) {
+        const one = this.shapeOf(t, why, depth);
+        if (!one) return null;
+        for (const [k, f] of one) {
+          const had = fields.get(k);
+          if (had && JSON.stringify(had) !== JSON.stringify(f)) return no(`${k} is of two kinds in the records it may be`);
+          fields.set(k, f);
+        }
+      }
+      this.unionShapes.add(fields);
+      return fields;
+    }
     for (const p of checker.getPropertiesOfType(element)) {
       const d = p.valueDeclaration;
       if (d && (ts.isMethodDeclaration(d) || ts.isAccessor(d))) continue;
@@ -2555,8 +2571,8 @@ export class Structured {
     if (!from) return null;
     const out: RowValues = { cells: new Map(), fill: [] };
     for (const [field, f] of shape) {
-      // An optional field left out (B9) is undefined.
-      const src = from(field) ?? (f.kind === "maybe" ? { value: undefined } : undefined);
+      // An optional field left out (B9) is undefined; a field of another kind of a union of records, empty.
+      const src = from(field) ?? (f.kind === "maybe" ? { value: undefined } : this.unionShapes.has(shape) ? this.emptyField(f) : undefined);
       if (!src) { this.c.error(literal, `${name}: a record has ${[...shape.keys()].join(", ")}; ${field} is missing.`); return null; }
       if (!this.rowField(name, field, f, src, out, literal)) return null;
     }
@@ -9052,6 +9068,22 @@ export class Structured {
     }
     const src = this.wholeValue(e);
     if (src) this.storeInto(target, src, node);
+  }
+
+  /** The shapes that are a union of records' (B9): a row of one kind leaves the others' fields empty. */
+  private readonly unionShapes = new WeakSet<RowShape>();
+
+  /** What a field of a union of records that a row's kind has not got is given: nothing of its kind. */
+  private emptyField(f: RowField): FieldSource {
+    switch (f.kind) {
+      case "number": return { value: 0 };
+      case "boolean": return { value: false };
+      case "text": return { value: "" };
+      case "unit": return { value: null };
+      case "list": case "squad": return { value: [] };
+      case "maybe": return { value: undefined };
+      case "record": return { value: Object.fromEntries([...f.shape].map(([k, inner]) => [k, (this.emptyField(inner) as { value: unknown }).value])) };
+    }
   }
 
   /** A record or an instance as a value of its own, fields that nothing else will change: what is copied into another. */
