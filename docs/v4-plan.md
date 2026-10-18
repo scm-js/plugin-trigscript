@@ -1278,7 +1278,12 @@ flag that refreshes the circles and the panel.
   S with nothing selected made the bottom panel show the Command Center, D the Marine under the cursor (then the
   Command Center), each at once — the flag at 0x59723C works. **The selection circles do not follow**: no circle
   under the unit select() chose (the green swirl in the recording is the cursor's hover). W walked the Marines to the
-  cursor, "sent in 3 frames (x and y together)", half of the two sync()s in a row of the first map.
+  cursor, "sent in 3 frames (x and y together)", half of the two sync()s in a row of the first map. Hosted as a
+  multiplayer game alone (21.38.15.16): with a Marine selected by hand, S turned the bottom panel to the Command
+  Center, and the S key itself then went to the Command Center's buttons ("Not enough minerals", its Build SCV) — the
+  command card follows too; right-clicks on the ground after it moved no Marine (the order went to the Command
+  Center); the Marine kept its circle and its bar. W: "sent in 6 frames (x and y together)", half of the 12 of two in
+  a row. So select() moves the panel, the buttons and the orders, in single player and in multiplayer; not the circles.
 
 ### B6. `fixed` and `Math` (4.7.0)
 
