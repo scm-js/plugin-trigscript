@@ -1253,6 +1253,28 @@ flag that refreshes the circles and the panel.
   the multiplayer game's turns. Found by it: two sync()s in a row read their values 6 frames apart, so a moving
   mouse's x and y come from two different places. A point wants both sent on the same frame.
 
+**As built, second part (2026-10-17).**
+
+- **`const [x, y] = await sync(P1, a, b)`**: up to four values, read and sent on the same frame, each caught on the
+  frame it arrives (MSQC's cell holds an arrival for that frame only, so a value that comes first is kept while the
+  others are waited for). One trip for a point, and one point.
+- **`local.selected`**: the unit in slot 0 of this computer's selection, the one the panel shows — a `Unit`, so its
+  fields read as any unit's, and re-checked before use like any kept unit (its uniqueness byte taken when read). A
+  new kind of unit in the IR, `selected`. **`local.selectionCount`**: the slots that hold one. Both Local: `u.kill()`
+  of the selected unit is refused, showing its hit points is not.
+- **`select(player, units)`**, a unit or up to twelve written out. On the player's computer: the twelve slots written,
+  the panel's flag set — 0x59723C, which Remastered's emulator backs with `+0x10A4450`, the flag its panel refresh
+  (`+0x400100`) tests before copying the selection into the panel — and a Select command of the units' tags (place
+  + 1, uniqueness byte << 11) queued, as MSQC's `RestoreSelUnits` does. Since it travels as a command, every
+  computer runs it alike: it is allowed under a Local test, and of Local units. In the lifted game it selects, and
+  two copies with P2 selecting stay in step.
+- Found on the way: a field of the selected unit was worked out when the script was built (the build-time
+  evaluator read `.type` off the marker object); it now stops there. `u?.type ?? -1` on a unit, and `if (a && b)` of
+  two units, are not supported — older than B5.
+- **To play:** `probes/local-select.tsx`: a live panel of the selection; S selects the Command Center, D the unit
+  under the cursor; W walks the Marines to the cursor with one `sync()` of x and y. What playing answers: whether the
+  circles follow a select() (nothing in the code says they do), whether the panel does, and who obeys a right-click.
+
 ### B6. `fixed` and `Math` (4.7.0)
 
 - `fixed` is a 16.16 number with `+ - * /` and comparisons; mixing it with `number`
