@@ -1037,6 +1037,52 @@ effects[random(effects.length)](target);
 - This also gives 8½'s callbacks a way to work when they are not inlined: a callback
   passed through two functions.
 
+**As built (2026-10-17).** Two kinds of function value, chosen by what the build knows, so that what costs nothing
+stays free:
+
+```ts
+function twice(f: () => void) { f(); f(); }
+twice(() => { n++; });                         // known when built: inlined, nothing kept
+let state: () => void = idle;                  // kept: a number, and a call through it a switch
+function idle() { ticks++; if (ticks == 3) state = busy; }
+const handlers: ((p: number) => void)[] = [];
+handlers.push((p) => { gold += p; });
+for (const h of handlers) h(5);
+```
+
+- **Known when the script is built: no value at all.** An arrow handed to a parameter, a function named by its name, a
+  `const f = (x) => …`, a parameter handed one — a call of it is a call of its body, inlined or called as any
+  function's (`Binding` kind `fn`). A function that is called and takes a function is one copy for each function it is
+  handed, as it is one for each array. Such a function sees every variable where it was written, a function's own
+  included, since it can only run while that function does. `compose(f, g)` and `adder(3)` return functions whose
+  captured `f`, `g`, `k` are known, so each is a function of its own with them folded in.
+- **Kept: a number.** In a `let`, a cell of an array, a field (of a record or an instance: `b.onClick = () => …`), a
+  `Map`, a function's result, a side of `?:`. Its number is the id of a function the build makes of it (one copy,
+  parameters as variables, walked once the program's body has been, so `let state = idle` before `function idle()`
+  sees `state`). A call through a number is a call of a **dispatcher**, one for each shape of call — its parameters'
+  kinds in order and its result — whose body is a `switch` on the number over every function kept as a value that fits.
+  0 is `undefined`: `f?.()`, `if (f)`, `f !== undefined`. No new IR kind; IR 21 adds `fn` to a `const`, which is how
+  only the functions whose numbers the program can reach become cases.
+- **What a kept function may use from outside it:** the program's own variables (one cell each, for good), values the
+  script knows, and other functions known when built — checked as the body is walked (`Scope.watch`), with the variable
+  named in the error. A variable of the function or block it was written in is refused, `const` too, where the plan
+  proposed allowing a `const` by value: one by value needs somewhere to keep the value per function made, and that is an
+  environment on the heap with an owner (see *Open decisions*). A `for` with bounds the build knows is unrolled, so
+  `for (let i = 0; i < 3; i++) hs.push(() => i)` works, each function with its own `i`.
+- **Not kept as a value:** an `async` function or a generator (call it where it is written, or `start()` it), one that
+  takes an array or a record (it is a copy an array), one that sleeps or holds a `rose()` / `once()`.
+- **Python lowering:** a dispatcher is lowered where it is first called, with every function among its cases, which can
+  come before a variable one of them uses is declared (the instance a later line makes); the lowering now makes a
+  variable where it is first used (`Lowering.early`), and its `declare` sets that one. Found by the lifted game, not by
+  the simulator, which makes its variables as it goes.
+
+Cost: a call through a number is a chain of compares, one a case before the one it takes (the state machine with its
+loop: five calls in 515 conditions and actions). A jump table when the cases are many is for later. **Checked:**
+`tests/function-values.test.ts` (24: each body also run as JavaScript and the prints compared, and the refusals);
+`probes/game-function-values.ts`, six tests, the same lines from the lifted game and the simulator; game-check: no
+access Remastered ends the game for. Found on the way: `flatMap` and the other methods a program does not have now say
+so instead of "A call's arguments must be known…"; an optional function parameter left out folds `g?.()` and `if (g)`.
+
 ### B4. `try` / `catch` / `throw` (4.5.0, with B3)
 
 - `throw` unwinds the frames on the heap, task frames and recursion frames both, to the
@@ -1945,6 +1991,10 @@ build, contract 2) ships first, then plugin-scm-sim, then TrigScript.
 - **What a closure may capture.** Proposed above (B3): `const` by value, `let` only when
   the closure does not outlive its frame. The alternative is reference-counted
   environments: closer to JavaScript, more Python, and a new kind of fault.
+  *Built (2026-10-17) narrower:* a function that does not outlive its frame (handed down) captures anything; one
+  kept as a value captures only the program's own variables and values known when built. Capturing a local by value
+  waits for an environment on the heap, owned the way a made text owns its block — `makeCounter()` returning
+  `() => count++` over its own `let` needs that, and reference cells besides.
 - **How a trigger becomes a line.** The candidate is the object address table (A1). If
   eudplib does not keep objects in one piece, the fallback is a marker action per IR node,
   which costs triggers.

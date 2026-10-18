@@ -82,7 +82,7 @@ describe("structured: loops and branches", () => {
     expect(r.triggers).toEqual([]);
     expect(r.strings).toEqual([]);
     expect(r.ir).toHaveLength(1);
-    expect(r.ir[0]).toMatchObject({ version: 20, owner: 0, owners: [0], perPlayer: false });
+    expect(r.ir[0]).toMatchObject({ version: 21, owner: 0, owners: [0], perPlayer: false });
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, "n")).toBe(6);
@@ -617,7 +617,7 @@ describe("structured: diagnostics", () => {
     expect(messages(`program(() => {\n  program(() => {});\n});`)).toEqual(["2:program() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements."]);
     expect(messages(`program(() => {}, { owner: players.Foes });`)).toEqual(["1:program: the owner is a player (P1 … P12), AllPlayers, a force (players.Force1), or a list of players — the program runs once for each of them, with CurrentPlayer as that player."]);
     expect(messages(`const body = () => {};\nprogram(body);`)).toEqual(["2:program() takes an arrow function written directly in the call: program(() => { … })."]);
-    expect(messages(`program(() => {\n  const f = () => { let n = 0; n++; };\n  let m = 0;\n  const g = () => m;\n  [1].flatMap(() => m++);\n});`)).toEqual(["4:g is a function that uses the program's variables; declare it with function so it is inlined at each call.", "5:A function written inside program() cannot use the program's variables; declare it with function so it is inlined, or move it outside."]);
+    expect(messages(`program(() => {\n  const f = () => { let n = 0; n++; };\n  let m = 0;\n  const g = () => m;\n  [1].flatMap(() => m++);\n});`)).toEqual(["5:flatMap() is not one of the methods a program has that take a function: forEach, map, filter, find, findIndex, findLast, findLastIndex, some, every, reduce and sort."]);
     expect(messages(`program(() => {\n  displayText("x");\n  random();\n});`)).toEqual(["3:random() does nothing on its own; test it in an if, or assign it to a variable."]);
     expect(messages(`trigger(P1, [random() as any], []);`)).toEqual(["1:random() is a coin toss and random(n) a number from 0 to n − 1, both made by the game: use them inside program()."]);
   });

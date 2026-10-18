@@ -280,9 +280,9 @@ describe("a class declared outside the program (TrigScript 4)", () => {
   });
 
   it("says what is wrong only where a program uses it", () => {
-    const unused = files(`class Tool { f = () => 1; run(n: number) { return n; } }\nconst t = new Tool();\nprogram(() => { print("x"); });`);
+    const unused = files(`class Tool { f = async () => 1; run(n: number) { return n; } }\nconst t = new Tool();\nprogram(() => { print("x"); });`);
     expect(unused.diagnostics).toEqual([]);
-    const used = files(`class Tool { f = () => 1; run(n: number) { return n; } }\nprogram(() => { let k = 1; const t = new Tool(); k = t.run(k); print(\`\${k}\`); });`);
+    const used = files(`class Tool { f = async () => 1; run(n: number) { return n; } }\nprogram(() => { let k = 1; const t = new Tool(); k = t.run(k); print(\`\${k}\`); });`);
     expect(used.diagnostics.length).toBeGreaterThan(0);
   });
 });

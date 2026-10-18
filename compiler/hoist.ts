@@ -439,11 +439,32 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     if (!e) return;
     // `...base` is not an expression on its own: what it spreads is.
     if (ts.isSpreadElement(e)) { value(e.expression, items); return; }
+    // A function written where a value goes — `let f = (x) => …`, `[a, () => …]`, `twice(() => …)` — is the program's (B3).
+    const fn = functionWritten(e);
+    if (fn) { callback(fn, items); return; }
+    if (holdsFunction(e)) { descend(e, items); return; }
     if (hoistable(e)) { hoist(e, items); return; }
     descend(e, items);
   };
+  /** The arrow or function expression `e` is, through parentheses and type assertions. */
+  const functionWritten = (e: TS.Node): TS.ArrowFunction | TS.FunctionExpression | undefined => {
+    while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e) || ts.isTypeAssertionExpression(e)) e = e.expression;
+    return ts.isArrowFunction(e) || ts.isFunctionExpression(e) ? e : undefined;
+  };
+  /** Whether a function is one of what an expression gives — an item of a list written out, a field, either side of a choice — rather than handed to a call. */
+  const holdsFunction = (e: TS.Node): boolean => {
+    if (functionWritten(e)) return true;
+    while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isSatisfiesExpression(e) || ts.isNonNullExpression(e) || ts.isTypeAssertionExpression(e)) e = e.expression;
+    if (ts.isArrayLiteralExpression(e)) return e.elements.some(holdsFunction);
+    if (ts.isObjectLiteralExpression(e)) return e.properties.some((p) => (ts.isPropertyAssignment(p) && holdsFunction(p.initializer)) || ts.isMethodDeclaration(p));
+    if (ts.isConditionalExpression(e)) return holdsFunction(e.whenTrue) || holdsFunction(e.whenFalse);
+    if (ts.isBinaryExpression(e) && (e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken || e.operatorToken.kind === ts.SyntaxKind.BarBarToken || e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)) return holdsFunction(e.left) || holdsFunction(e.right);
+    return false;
+  };
   const descend = (e: TS.Node, items: PlanItem[]) => {
-    if (isFunctionValue(e)) { error(e, "A function written inside program() cannot use the program's variables; declare it with function so it is inlined, or move it outside."); return; }
+    const fn = functionWritten(e);
+    if (fn) { callback(fn, items); return; }
+    if (isFunctionValue(e)) { error(e, "A class written as a value is not supported inside program(); declare it with class."); return; }
     if (ts.isIdentifier(e)) return;
     if (ts.isPropertyAccessExpression(e)) { value(e.expression, items); return; }
     if (ts.isElementAccessExpression(e)) { value(e.expression, items); value(e.argumentExpression, items); return; }
@@ -557,8 +578,17 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
         // (`const w = memory.map.width` reads the game: a const of the program's, like one computed from its variables.)
         let init: TS.Expression = d.initializer;
         while (ts.isParenthesizedExpression(init)) init = init.expression;
+        // `const f = (x) => …` (B3): a function the program calls with its own values, so its body is planned as a declared
+        // function's. One that uses nothing of the program stays a value of the script too, which build-time code may call.
+        const fn = functionWritten(init);
+        if (fn) {
+          if (hoistable(d.initializer)) { plan.consts.set(d, plan.constList.length); plan.constList.push(d); items.push({ kind: "const", decl: d }); }
+          else plan.game.add(d);
+          callback(fn, items);
+          continue;
+        }
+        if (holdsFunction(init)) { plan.game.add(d); memo.clear(); descend(d.initializer, items); continue; }
         if (hoistable(d.initializer) && !isGameCell(init)) { plan.consts.set(d, plan.constList.length); plan.constList.push(d); items.push({ kind: "const", decl: d }); continue; }
-        if (isFunctionValue(d.initializer)) { error(d, `${ts.isIdentifier(d.name) ? d.name.text : "This constant"} is a function that uses the program's variables; declare it with function so it is inlined at each call.`); continue; }
         // A const computed from the program's variables lives in the game like a let; the checker keeps it from being reassigned.
         plan.game.add(d);
         memo.clear();

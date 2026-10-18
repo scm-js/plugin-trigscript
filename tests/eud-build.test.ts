@@ -601,6 +601,8 @@ FIXTURES.classes = `program(() => {
 // And the callbacks probe: the methods that take a function, over arrays, records, arrays of units, the units of the game
 // and a list the script has — returns out of loops over units, a break inside the sort, arrays made by filter and map.
 FIXTURES.callbacksProbe = readFileSync(resolve(import.meta.dirname, "..", "probes", "callbacks.ts"), "utf8");
+// And functions as values (B3): dispatchers, functions lowered before a variable they use is declared, recursion through a variable.
+FIXTURES.functionValues = readFileSync(resolve(import.meta.dirname, "..", "probes", "game-function-values.ts"), "utf8");
 
 describe.skipIf(!have)("programs build through the eudplib plugin", () => {
   for (const [name, src] of Object.entries(FIXTURES)) {
@@ -620,6 +622,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(20);
+    expect(ir.version).toBe(21);
   });
 });

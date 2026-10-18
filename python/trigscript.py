@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 20
+IR_VERSION = 21
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -1505,6 +1505,22 @@ def uses_source(node, which):
     return False
 
 
+def collect_decls(node, out):
+    """Every variable declaration in a piece of the IR, by id: what a `declare` and a loop declare, a call's
+    parameters and result, a function's."""
+    if isinstance(node, list):
+        for x in node:
+            collect_decls(x, out)
+        return
+    if not isinstance(node, dict):
+        return
+    if isinstance(node.get("id"), str) and node.get("kind") in ("number", "boolean", "unit", "text") and "shared" in node:
+        out.setdefault(node["id"], node)
+    for v in node.values():
+        if isinstance(v, (list, dict)):
+            collect_decls(v, out)
+
+
 class Lowering:
     def __init__(self, program):
         self.p = program
@@ -1513,6 +1529,12 @@ class Lowering:
         self.slots = owner_slots(program)
         self.player = None
         self.vars = {}
+        # Every variable of the program by id, and those made before their declaration was lowered: a function is
+        # lowered where it is first called, which may come before a variable it uses is declared (a function kept
+        # as a value, B3, is lowered with every other of its dispatcher's).
+        self.decls = {}
+        collect_decls(program, self.decls)
+        self.early = set()
         # The `start` statements' tasks, by their number, in that order; the one whose body is being lowered.
         starts = []
         each_start([program.get("body", []), program.get("functions", [])], starts.append)
@@ -1565,6 +1587,9 @@ class Lowering:
         made = self.vars.get(decl["id"])
         if made is not None and decl.get("task") is not None:
             return made  # (a task's parameter, made with its pool)
+        if made is not None and decl["id"] in self.early:
+            self.early.discard(decl["id"])
+            return made  # (used by a function lowered before the declaration was)
         if decl.get("kind") == "unit":
             s = UnitStorage(decl, Rows(self, self.per_player, self.pools.get(decl.get("task"))) if self.per_player or decl.get("task") is not None else None)
         elif decl.get("kind") == "text" and decl.get("text") != "id":
@@ -1582,6 +1607,9 @@ class Lowering:
 
     def var(self, id_, node=None):
         s = self.vars.get(id_)
+        if s is None and id_ in self.decls:
+            s = self.declare(self.decls[id_])
+            self.early.add(id_)
         if s is None:
             raise Fail("trigscript: unknown variable %r%s" % (id_, where(node)))
         return s

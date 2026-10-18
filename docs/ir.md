@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 19** (18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 21** (20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -262,7 +262,7 @@ Numbers (`NumExpr`):
 
 | Kind | Fields |
 | --- | --- |
-| `const` | `value` (a whole number) |
+| `const` | `value` (a whole number); `fixed` (the raw cell of a 16.16 number); `fn` (the number is a function's, *Functions as values*) |
 | `var` | `id` |
 | `element` | `array`, `index` — a cell of an array of numbers; 0 past either end |
 | `length` | `array` — the cells in use of an array that grows |
@@ -345,6 +345,27 @@ the program's body the hint for a function inlined more than once, with the reas
 
 Every pass that walks a program walks `bodiesOf(program)` — the body, then each function's
 — and `programDeclarations(program)` lists the functions' variables with the rest.
+
+### Functions as values
+
+Since version 21. A function a program keeps — in a variable, a cell, a field, a `Map`, what
+another function returns — is a number: a `const` with `fn`, the id of the `FuncDecl` it runs.
+The numbers start at 1, so 0 is no function (`undefined`). A function the front end knows when
+the script is built — handed to a parameter, kept in a `const` — is never a number: its calls
+are calls of its body, inlined or called as any function's.
+
+A call through a number is a `Call` of a *dispatcher*, a function the front end made for each
+shape of call (what it is handed, in order, and what it gives): its first parameter is the
+number, the rest are the call's arguments, and its body is a `switch` on the number with a
+case for each function kept as a value whose shape fits, each calling that function and, when
+the call gives something, returning it. A number no case has (0) does nothing and gives 0. The
+`fn` marks are how the front end knows which functions to give cases: one whose number
+nothing reachable holds is left out.
+
+A dispatcher is lowered where it is first called, and with it every function among its cases,
+which may be before a variable one of them uses is declared — a field of an instance the
+program makes later. A backend makes a variable where it is first used, and its `declare`
+then sets that one.
 
 ### Recursion
 
