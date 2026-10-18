@@ -191,7 +191,14 @@ def beforeTriggerExec():
         if EUDIf()(first >= 1):
             first_type << unit_type(first)
         EUDEndIf()
-        say(LINES[2], "\x073 \x04selected ", count, ", slot 0 type ", first_type,
+        # What every machine holds as Player 1's selection (0x6284E8, the orders run over it): a Select command changes it.
+        held = f_dwread(SELECTION + 0x30)
+        held_type = EUDVariable()
+        held_type << 0xFFFF
+        if EUDIf()(held >= 1):
+            held_type << unit_type(held)
+        EUDEndIf()
+        say(LINES[2], "\x073 \x04selected ", count, ", slot 0 type ", first_type, " | game holds type \x07", held_type, "\x04",
             " | F8 put type ", wrote_type, " in slot 0 (unit ", wrote_to, ", was ", wrote_from, ")")
         say(LINES[3], "\x074 \x04left click: down at ", local_click, ", arrived ", arrived, ": \x07", delay,
             "\x04 frames  (", trips, " clicks, ", shortest, " to ", longest, ")")
