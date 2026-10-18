@@ -1689,7 +1689,12 @@ Control flow and syntax are nearly whole. What is left is mostly **what a value 
 
 **Two faults found:** a function handed a value of the program that narrows with `typeof x === "string"` sends the
 compiler into endless recursion ("Maximum call stack size exceeded"); `Date.now()` is the moment the script was built,
-silently.
+silently. *Both fixed:* `c ? a : b` (in a number, a text, a truth value, a colour, a record copied whole, a maybe) folds
+a condition known when the script is built, as `if` did, so the side a narrowed argument does not take is never
+compiled; and a variable of the program is read as its own kind whatever TypeScript narrowed its name to, which was the
+loop. `Date.now()`, `new Date()`, `Math.random()` and `performance.now()` inside a program, or in a function of the
+script's that a program calls, are refused with `elapsed()`, `memory.game.frame` or `random(n)` named instead; at the top
+of a file they stay the build's (`tests/sweep-faults.test.ts`).
 
 **Already working:** `enum` at the top of a file, `switch` on texts, unions of literal types as states, spread,
 `extends` and `super`, getters and setters, statics, `#private`, tuples, `sort` with a comparison, `reduce`,

@@ -60,7 +60,7 @@ import type * as TS from "typescript";
 import { ActionType, PlayerGroup } from "../vendor/triggers";
 import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
-import { declarationOf, isOnCall, isScriptClass, isScriptFunction, libraryCallName, ON_EVENTS, scriptArrow } from "./hoist";
+import { clockCall, declarationOf, isOnCall, isScriptClass, isScriptFunction, libraryCallName, ON_EVENTS, scriptArrow } from "./hoist";
 import { ORDER_NAMES } from "./orders";
 import { DEAF_KEYS, KEY_NAMES, keyName, parseChatPattern, type ChatPattern, type InputSource } from "./input";
 import { scriptParams } from "./api";
@@ -984,6 +984,8 @@ export class Structured {
   }
 
   private notConstant(expr: TS.Expression, what: string) {
+    // Date.now(), Math.random(): the plan has said what to write instead.
+    if (clockCall(this.ts, this.c.checker, this.unwrap(expr))) return;
     const v = this.blamedVariable(expr);
     this.c.error(expr, v
       ? `${what} must be known when the script is built, but ${v} is a variable of the program. Compare or assign variables in the program's own statements instead.`
@@ -5416,6 +5418,8 @@ export class Structured {
       return parts ? this.textFrom(parts, e) : null;
     }
     if (ts.isConditionalExpression(e)) {
+      const known = this.knownCondition(e.condition);
+      if (known !== undefined) return this.text(known ? e.whenTrue : e.whenFalse);
       const cond = this.bool(e.condition);
       const whenTrue = this.text(e.whenTrue);
       const whenFalse = this.text(e.whenFalse);
@@ -5585,7 +5589,10 @@ export class Structured {
       const r = this.textOf(e.right);
       return l && r ? [...l, ...r] : null;
     }
-    if (this.isTextTyped(e)) { const t = this.text(e); return t ? this.partsOf(t) : null; }
+    // A variable of the program holds its own kind, whatever TypeScript has narrowed its name to.
+    const held = ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e) ? this.bindingOf(e) : undefined;
+    const ownKind = held?.kind === "var" && held.v.kind !== "text";
+    if (this.isTextTyped(e) && !ownKind) { const t = this.text(e); return t ? this.partsOf(t) : null; }
     // A text held where the type says more (a component's `children`, typed `Children`): the text it holds.
     const heldText = ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) ? this.bindingOf(e) : undefined;
     if (heldText?.kind === "var" && heldText.v.kind === "text") return [{ kind: "value", text: { kind: "textVar", id: heldText.v.id } }];
@@ -7231,6 +7238,8 @@ export class Structured {
       return num(c);
     }
     if (ts.isConditionalExpression(e)) {
+      const known = this.knownCondition(e.condition);
+      if (known !== undefined) return this.colorNumber(known ? e.whenTrue : e.whenFalse, tag);
       const cond = this.bool(e.condition);
       const a = this.colorNumber(e.whenTrue, tag), b = this.colorNumber(e.whenFalse, tag);
       return a && b ? this.mark<NumExpr>({ kind: "ternary", cond, whenTrue: a, whenFalse: b, at: this.at(e), label: this.label(e) }, e) : null;
@@ -9148,6 +9157,8 @@ export class Structured {
     const { ts } = this;
     const e = this.unwrap(given);
     if (ts.isConditionalExpression(e)) {
+      const known = this.knownCondition(e.condition);
+      if (known !== undefined) { this.assignWhole(target, known ? e.whenTrue : e.whenFalse, node); return; }
       const cond = this.bool(e.condition);
       const then = this.collect(() => this.assignWhole(target, e.whenTrue, node));
       const otherwise = this.collect(() => this.assignWhole(target, e.whenFalse, node));
@@ -9285,6 +9296,8 @@ export class Structured {
     const b = ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e) ? this.bindingOf(e) : undefined;
     if (b?.kind === "maybe") return { value: this.valueOf(b.value, kind, e) as NumExpr | BoolExpr, there: this.thereOf(b, e) };
     if (ts.isConditionalExpression(e)) {
+      const known = this.knownCondition(e.condition);
+      if (known !== undefined) return this.maybeValue(known ? e.whenTrue : e.whenFalse, kind);
       const cond = this.bool(e.condition);
       const a = this.maybeValue(e.whenTrue, kind), c = this.maybeValue(e.whenFalse, kind);
       if (!a || !c) return null;
@@ -10713,6 +10726,8 @@ export class Structured {
       return this.mark<NumExpr>({ kind: "binary", op, left: l, right: r, at: this.at(e), label: this.label(e) }, e);
     }
     if (ts.isConditionalExpression(e)) {
+      const known = this.knownCondition(e.condition);
+      if (known !== undefined) return this.num(known ? e.whenTrue : e.whenFalse);
       const cond = this.bool(e.condition);
       const whenTrue = this.num(e.whenTrue);
       const whenFalse = this.num(e.whenFalse);
@@ -11319,6 +11334,8 @@ export class Structured {
     }
     if (ts.isConditionalExpression(e)) {
       // `c ? p : q` as a truth value.
+      const known = this.knownCondition(e.condition);
+      if (known !== undefined) return this.boolValue(known ? e.whenTrue : e.whenFalse);
       const cond = this.bool(e.condition);
       const whenTrue = this.boolValue(e.whenTrue);
       const whenFalse = this.boolValue(e.whenFalse);

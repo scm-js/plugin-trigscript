@@ -119,6 +119,29 @@ export const ON_EVENTS = ["created", "died", "killed", "order", "morphed", "chat
 
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
+/**
+ * JavaScript's clock and dice: `Date.now()`, `new Date()`, `Math.random()`, `performance.now()`. Worked out when the script
+ * is built they would be the computer's time and one number, the same in every game; inside a program they are refused,
+ * with the game's own in their place. At the top of a file they are the build's, as everything there is.
+ */
+export function clockCall(ts: typeof TS, checker: TS.TypeChecker, n: TS.Node): string | null {
+  const isLib = (id: TS.Expression) => {
+    const sf = checker.getSymbolAtLocation(id)?.declarations?.[0]?.getSourceFile();
+    return !!sf && (sf.hasNoDefaultLib || /(^|\/)lib(\.[^/]*)?\.d\.ts$/.test(sf.fileName));
+  };
+  if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "Date" && !n.arguments?.length && isLib(n.expression)) return "new Date()";
+  if (!ts.isCallExpression(n) || !ts.isPropertyAccessExpression(n.expression) || !ts.isIdentifier(n.expression.expression)) return null;
+  const name = `${n.expression.expression.text}.${n.expression.name.text}`;
+  return ["Date.now", "Math.random", "performance.now"].includes(name) && isLib(n.expression.expression) ? `${name}()` : null;
+}
+
+/** What a program has in place of one of JavaScript's clock and dice. */
+export function clockMessage(call: string): string {
+  return call === "Math.random()"
+    ? "Math.random() would be drawn once, when the map is built, and be the same number in every game. In a program use random(n), a whole number from 0 to n − 1 the game picks, or random() for a coin toss."
+    : `${call} is the time on the computer that builds the map, not the game's. In a program use elapsed(), game seconds since the start, or memory.game.frame, frames.`;
+}
+
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
 const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "sync", "select", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
 /**
@@ -262,6 +285,7 @@ export function usesGame(ts: typeof TS, checker: TS.TypeChecker, fn: TS.Node, se
   let found = false;
   const look = (n: TS.Node): void => {
     if (found) return;
+    if (clockCall(ts, checker, n)) { found = true; return; }
     if (ts.isIdentifier(n)) {
       const lib = libraryName(ts, checker, n);
       if (lib && (GAME_CALLS.has(lib) || READ_CALLS.has(lib) || READ_ARITY.has(lib) || GAME_CELL_ROOTS.has(lib))) { found = true; return; }
@@ -544,6 +568,7 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
         return;
       }
       if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword || ts.isAwaitExpression(n) || ts.isYieldExpression(n)) { ok = false; return; }
+      if (clockCall(ts, checker, n)) { ok = false; return; }
       // A call of a game() function runs in the game, whatever its arguments are.
       if (ts.isCallExpression(n) && isGame(n)) { ok = false; return; }
       if (ts.isCallExpression(n) && isReadCall(libraryCallName(ts, checker, n), n.arguments.length)) { ok = false; return; }
@@ -602,6 +627,8 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     if (ts.isElementAccessExpression(e)) { value(e.expression, items); value(e.argumentExpression, items); return; }
     if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
       const lib = ts.isCallExpression(e) ? libraryCallName(ts, checker, e) : null;
+      const clock = clockCall(ts, checker, e);
+      if (clock) { error(e, clockMessage(clock)); return; }
       if (lib && FORBIDDEN_INSIDE.has(lib)) error(e, `${lib}() defines triggers of its own and cannot be used inside program(); inside, write conditions in an if and actions as statements.`);
       // `random()`, `sleep()`, … are the game's: their callee is never a value, however it is spelt (`ts.random()` through a namespace import).
       // Of a method call the object is the value, not the method: `cost.get(u.type)` has to leave `cost` — the Map — in reach, and a
