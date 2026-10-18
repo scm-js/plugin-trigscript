@@ -1742,6 +1742,61 @@ and changed field by field where another name shares them goes by reference inst
 `boolean | undefined`) is the value and a flag beside it: `=== undefined`, `??`, `!` and narrowing read them;
 `xs.find(…)` gives one.
 
+**As built (2026-10-18).** No new IR: the object table is arrays and statements the front end writes, as the closures'
+pool is (`compiler/closures.ts`, `structured.ts` *References* and *Records and instances as values*).
+- *Which classes.* `refs` is carried from walk to walk as `boxed` is (`compiler.ts`, up to seven walks). A class joins
+  where the program would otherwise be refused: an array or a variable of a type more than one class fits or that may be
+  none, a field that may be none or is an array of instances, a variable given another instance (of a class something
+  changes in place), a function giving one instance or another, a `Map` of instances, a `Set` of them, an instance kept in
+  a variable pushed to an array of instances. With it come the classes that fit it. Which classes a type may be is the
+  checker's assignability over every class of the script's files (`instanceClasses`), so an interface fits whatever has
+  its members.
+- *A reference is a number.* `kindOf` says "number" for a type every class of which is kept by reference, as it does for
+  a function (B3), so variables, arrays, parameters, results, `Map` values, `Set` keys, task arguments and fields of other
+  rows hold one with nothing of their own. Where it is used as an object — a field, a method, `instanceof`, `?.` — it is a
+  row binding (`refRow`): `rowOf` over the table, the place the number, the classes it may be beside it.
+- *A call through a reference* of one class, or of several sharing the member, is that member's; of several with bodies of
+  their own, a call whose body is a `switch` on the row's class (`virtualCall`), a case for each body. A method called
+  twice is a called function whose last parameter is `this`, a number, one copy for the classes it may be; so a method
+  that calls itself on other rows (`left.sum()`) is recursion's. Constructors stay copies at each `new`. Methods of a class
+  at the top of a file may now be called functions too (they were always copies).
+- *The table.* A column a field name and kind, shared between classes (`hp` of a `Grunt` and of a `Boss` is one array);
+  two kinds under one name are said. 1 023 rows, the closures' own: a closure, an environment and an object are rows of
+  one pool, each class a number in its function column (from 2²²). `new` takes a row (`make(class, 0)`) and runs the
+  constructor on it under one test that there was one; a field's first value is stored with nothing let go of.
+- *Counting* is the closures'. Two changes for every program: only a variable that a wait may come between its
+  declaration and a use is counted (a loop's `const e = enemies[i]`, and every local of a called function, need nothing:
+  no row is given back while they are read), which also fixed a variable of an unrolled loop holding its last object for
+  good; and the sweep asks a row's class once, then lets go of that class's references, gives back its texts' and arrays'
+  blocks, and empties only the cells its constructor does not write.
+- *None.* 0. A field of none reads 0; a write to one is skipped (a test before each, except on a row being made);
+  `x?.f`, `x?.m()` and `x ?? y` ask first. JavaScript would throw a `TypeError`.
+- *Values.* `p = …` of a `let` record, or of an instance of a class whose fields only its constructors write
+  (`isValueClass`: no write of one of its fields outside a constructor in any file), stores a copy into its fields:
+  of a record written there, an instance made there, what a call gives (copied first: it may be `p` itself), another
+  record's fields; `c ? a : b` is an `if`. `const q = p` of a `p` given whole is a copy, and is said when a field of
+  either is written (the two would no longer be one record). `const r = c ? a : b` is declared empty and filled. A class
+  changed in place and given whole goes by reference instead.
+- *A number or nothing* (`number | undefined`, `boolean | undefined`, `?:` fields): a variable, or a column, and a
+  boolean beside it, `(there)`. `=== undefined` and `== null` read the flag; `=== 3` reads both; `if (x)` is there and not
+  0; `x ?? d` a ternary; narrowed (`if (x !== undefined)`, `x!`) it is the number, and read where the checker says it may
+  be nothing it is said. `find()` / `findLast()` of any list and a `Map`'s `get()` give one; a record written out may
+  leave an optional field out.
+- *An array of a union of records* (`Event[]`): a row holds every kind's fields, a field one kind has not got empty in
+  its rows. Narrowed by `kind`, as TypeScript narrows, each reads its own.
+- **Not yet:** rows that hold each other in a ring are never given back (no collector looks for rings); more than 1 023
+  closures, environments and objects alive at once; an object made and dropped within one frame is given back only at the
+  next wait, so a frame that makes more than 1 023 runs out; a function that returns `number | undefined` (only `find`,
+  `get` and variables give one); a field of the same name and two kinds in two classes kept by reference.
+- *Cost, lifted game:* a field through a reference is a cell read with a place worked out in the game, about 70; made and
+  given back, an object costs about 530 conditions and actions (`make`, the counting when it is let go of, the sweep) — 100
+  a frame is about 53 000. A class that needs no reference costs what it did.
+- **Checked:** `tests/references.test.ts` (20) and `tests/values.test.ts` (19), each body also run as JavaScript and the
+  prints compared; in the lifted game and the simulator, the same lines: `probes/game-references.ts` (5: one of several
+  classes, a list made, walked and reversed, a tree summed by a method that calls itself, instances in an instance with a
+  text and a `Map`, 3 000 made and given back across frames) and `probes/game-values.ts` (3). Five older tests that said
+  a refusal now say what the program prints.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
