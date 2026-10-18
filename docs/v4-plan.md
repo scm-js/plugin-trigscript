@@ -1185,6 +1185,35 @@ const picked = await sync(sel[0]);       // Unit, the same on every machine, a f
 - **What can be local:** each read needs its address from the disassembly and a probe in
   Remastered. A3 checks the taint pass's answers in practice.
 
+**Probed (2026-10-17), before building.** First a correction to the above: the mouse is not a B5 value.
+`mouse(p)`, `clicked(p, button)` and `underMouse(p)` have reached every machine through MSQC since 3.4, and
+`keyHeld` since S2, so S3's aim and movement need nothing from B5. What is left is what only one machine knows:
+its camera, its selection, the local player, and the cursor on the screen without the trip to the others.
+
+The dump of Remastered's emulator (R0, read in Ghidra) says what each of those reads, and
+`probes/local-reads.ts` + `.py` was played four times, in single player and in a multiplayer game hosted alone:
+
+| Value | Remastered's emulator | Played |
+| --- | --- | --- |
+| Local player `0x512684` | the real local player number; a write is kept in a copy beside the game | 0 |
+| Camera `0x62848C` / `0x6284A8` | the real camera, read by the drawing code; writes ignored | follows scrolling. The view is **853** wide in Remastered graphics (16:9) and **640** in Classic: the camera stops at 2219 and 2432 on a 3072-wide map |
+| Mouse `0x6CDDC4` | Remastered's input record | screen pixels ÷ 3 at 2560 × 1440, so 853 × 480 in widescreen, not 640 × 480. A write changes what the game thinks (the cursor's icon, what MSQC sends) until the mouse moves; the drawn cursor does not move |
+| Buttons `0x6CDDC0` | live | left 2, right 8, middle 32 |
+| Selection `0x6284B8` | the local selection, read as 1.16.1 unit addresses; a write of a unit's address puts the real unit in the slot | read: right. Written: the circles and the panel stay where they were (the panel's copy is refreshed only when the game's "selection changed" flag is set: 1.16.1 `0x4C38B0`, Remastered `+0x400100`), but orders go to the written unit |
+| A click's trip through MSQC | — | 5 to 6 frames, single player and multiplayer alone alike; a game between machines adds its turns |
+
+**Why orders followed a written selection, and why it is safe.** Both games keep the local selection apart from
+the one each player's orders run over (`0x6284E8 + player × 48`, which every machine holds alike and only a Select
+command changes): 1.16.1's walk over a command's units, `0x49A850`, reads it, as does Remastered's `+0x3D8800`. A
+right-click is sent with no units (1.16.1 `0x4563A0`), and 1.16.1 sends a Select only where the selection is set by
+the player (`0x4C0860`, seven callers). What sent the written Marine was **MSQC**: each time it carries input it
+saves the local selection from `0x6284B8`, selects its own Valkyrie, and puts the saved units back with a real
+Select command (`RestoreSelUnits`). The probe's line for the selection every machine holds showed the Marine the
+frame after F8, before any click. With MSQC in the map a written selection is sent to everyone; without it, the
+write stays on the one machine and orders go to the old selection everywhere. Neither splits the game. So
+`select(player, units)` is possible: write the local selection, send a Select command as MSQC does, and set the
+flag that refreshes the circles and the panel.
+
 ### B6. `fixed` and `Math` (4.7.0)
 
 - `fixed` is a 16.16 number with `+ - * /` and comparisons; mixing it with `number`
