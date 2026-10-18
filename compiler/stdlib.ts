@@ -5,12 +5,17 @@
  * definition. Each is TrigScript like any script's: what it shows a map maker is how the language is used.
  */
 
-import { STDLIB_SOURCES } from "./generated/stdlib";
+import { STDLIB_EXTENSIONS, STDLIB_SOURCES } from "./generated/stdlib";
+import { stdlibFile } from "./link";
 
 export { STDLIB_DIR, stdlibFile } from "./link";
 
-/** Each module's source, by its name after "trigscript/": `stdlib/<name>.ts`, embedded by `npm run embed`. */
+/** Each module's source, by its name after "trigscript/": `stdlib/<name>.ts` (or `.tsx`), embedded by `npm run embed`. */
 export const STDLIB: Readonly<Record<string, string>> = STDLIB_SOURCES;
+/** Each module's extension: `.tsx` for one with JSX in it. */
+export const STDLIB_EXT: Readonly<Record<string, ".ts" | ".tsx">> = STDLIB_EXTENSIONS;
+/** Where a module of the library is among the script's files. */
+export const stdlibPath = (name: string): string => stdlibFile(name, STDLIB_EXT[name] ?? ".ts");
 
 /** The library modules a set of files imports, and those they import in turn. */
 export function stdlibImports(texts: Iterable<string>): string[] {

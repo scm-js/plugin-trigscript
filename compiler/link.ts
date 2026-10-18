@@ -48,7 +48,8 @@ const SOURCE_URL_PREFIX = "trigscript://";
 
 /** Where the standard library's modules sit among a script's files: "trigscript/fog" is `__trigscript__/fog.ts` (`stdlib.ts`). */
 export const STDLIB_DIR = "__trigscript__";
-export const stdlibFile = (name: string) => `${STDLIB_DIR}/${name}.ts`;
+/** A module of the standard library among the script's files: its extension is `.tsx` when it has JSX in it (`stdlib.ts#STDLIB_EXT`). */
+export const stdlibFile = (name: string, ext: ".ts" | ".tsx" = ".ts") => `${STDLIB_DIR}/${name}${ext}`;
 
 /**
  * Run the entry module with the library in scope. Resolves to null when the script ran
@@ -68,7 +69,10 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
     const require = (spec: string): unknown => {
       if (spec === moduleName) return library;
       // The standard library: a module of TrigScript that ships with the compiler, among the files when imported.
-      if (spec.startsWith(`${moduleName}/`) && names.has(stdlibFile(spec.slice(moduleName.length + 1)))) return load(stdlibFile(spec.slice(moduleName.length + 1)));
+      if (spec.startsWith(`${moduleName}/`)) {
+        const name = spec.slice(moduleName.length + 1);
+        for (const ext of [".ts", ".tsx"] as const) if (names.has(stdlibFile(name, ext))) return load(stdlibFile(name, ext));
+      }
       // A video (`media.ts`): the value its file gives, by the path the import names.
       const asMedia = spec.startsWith(".") && options.media ? options.media(resolvePath(file, spec)) : undefined;
       if (asMedia !== undefined) return { __esModule: true, default: asMedia };

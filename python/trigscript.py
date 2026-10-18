@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 23
+IR_VERSION = 24
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -268,6 +268,18 @@ class ArrayStorage:
             return
         if EUDIf()(index <= self.length - 1):
             self.store[self.at(index)] = value
+        EUDEndIf()
+
+    def add(self, index, value, op):
+        """The cell plus (`op` "+") or minus ("-") the value, by the game's own Add / Subtract: nothing read. Past
+        either end, nothing, as a store."""
+        act = self.store.iadditem if op == "+" else self.store.isubtractitem
+        if isinstance(index, int):
+            if index < self.length:
+                act(self.at(index), value)
+            return
+        if EUDIf()(index <= self.length - 1):
+            act(self.at(index), value)
         EUDEndIf()
 
     def fill(self, value):
@@ -1570,6 +1582,17 @@ def collect_decls(node, out):
             collect_decls(v, out)
 
 
+def mentions_array(e, array):
+    """Whether an expression reads the array anywhere in it."""
+    if isinstance(e, dict):
+        if e.get("array") == array:
+            return True
+        return any(mentions_array(x, array) for x in e.values())
+    if isinstance(e, list):
+        return any(mentions_array(x, array) for x in e)
+    return False
+
+
 class Lowering:
     def __init__(self, program):
         self.p = program
@@ -1672,6 +1695,21 @@ class Lowering:
         return s
 
     # ── numbers: an int (the 32 bits, 0 … 2^32 - 1) or an EUDVariable ──
+    def cell_step(self, st, a):
+        """(op, step) when a store is the cell it stores into plus or minus a number - the same array, the same index,
+        an index that reads nothing else (a constant or a variable) - into a plain array of whole numbers; else None."""
+        v, i = st["value"], st["index"]
+        if not isinstance(a, ArrayStorage) or a.bits or a.values is not None or a.decl["kind"] != "number" or a.decl.get("fixed"):
+            return None
+        if v.get("kind") != "binary" or v.get("op") not in ("+", "-") or v.get("unsigned"):
+            return None
+        left = v["left"]
+        if left.get("kind") != "element" or left.get("array") != st["array"] or i.get("kind") not in ("const", "var") or left.get("index") != i:
+            return None
+        if mentions_array(v["right"], st["array"]):
+            return None
+        return (v["op"], v["right"])
+
     def num(self, e):
         k = e["kind"]
         if k in ("textLength", "textIndexOf", "textCode"):
@@ -2832,6 +2870,11 @@ class Lowering:
             self.array(st["array"], st).set_length(self.num(st["value"]))
         elif k == "store":
             a = self.array(st["array"], st)
+            # `xs[i] = xs[i] + v` (`xs[i] += v`, a count): the game adds to the cell itself, nothing read.
+            step = self.cell_step(st, a)
+            if step is not None:
+                a.add(self.num(st["index"]), self.num(step[1]), step[0])
+                return
             value = (self.num if a.decl["kind"] == "number" else self.truth)(st["value"])
             a.set(self.num(st["index"]), value)
         elif k == "if":

@@ -82,7 +82,7 @@ describe("structured: loops and branches", () => {
     expect(r.triggers).toEqual([]);
     expect(r.strings).toEqual([]);
     expect(r.ir).toHaveLength(1);
-    expect(r.ir[0]).toMatchObject({ version: 23, owner: 0, owners: [0], perPlayer: false });
+    expect(r.ir[0]).toMatchObject({ version: 24, owner: 0, owners: [0], perPlayer: false });
     const sim = run(r, 6);
     expect(sim.events.map((e) => `${e.cycle}:${ActionType.Victory === e.action.type ? "Victory" : e.action.type}`)).toEqual(["2:Victory"]);
     expect(value(sim, "n")).toBe(6);
@@ -955,7 +955,8 @@ describe("structured: game functions, returns and records", () => {
     const typed = okProgram("let p: { n: u8 } = { n: 250 }; p.n += 10;");
     expect(value(run(typed, 1), "p.n")).toBe(255);
     expect(messagesOf(program("let p = { n: 1 }; p = { n: 2 };"))).toEqual(["A record is assigned field by field: p.lives = 3."]);
-    expect(messagesOf(program("const p = { n: 1 }; p.n = 2;"))).toEqual(["This object is computed when the script is built. Declare it with let inside the program to make it a record of variables."]);
+    // A const record something writes is the program's, as a const array is (TrigScript 4).
+    expect(value(run(okProgram("const p = { n: 1 }; p.n = 2;"), 1), "p.n")).toBe(2);
   });
 });
 

@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 23** (22 had nothing only one computer knows: no `syncSend`, no `select`, no `selected` unit and no `sync` input; 21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 24** (23 had no `held` on a variable, and no function kept as a value used a variable of the block it was written in; 22 had nothing only one computer knows: no `syncSend`, no `select`, no `selected` unit and no `sync` input; 21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -60,7 +60,7 @@ the statement as the source has it ("L12: while (x < 3)"), for a log or a debugg
 ## Variables
 
 ```
-VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | "made", shared, bits?: 8 | 16, unsigned?, temp?, task?, at }
+VarDecl { id, name, kind: "number" | "boolean" | "unit" | "text", text?: "id" | "made", shared, bits?: 8 | 16, unsigned?, temp?, task?, held?, at }
 ```
 
 `id` is unique within the program (`name#n`); `name` is the source's. `shared` is a
@@ -71,6 +71,9 @@ storage in that order. A `unit` variable holds a unit of the game or none; its `
 a parameter's `init` and a `return` carry a unit expression (below). A `text` variable
 is kept the way `text` says (*Texts*, below). `task` marks a variable of a task's body (*Tasks*,
 below): it has a cell for each slot of that `start`, within each player's row in a per-player program.
+`held` (since version 24) marks a variable that holds a reference the closures count (*Closures*, below): its own
+`declare` reads it first, to let go of what it held, so before it was ever declared it reads 0 — what a backend's cell
+holds anyway.
 
 ## Arrays
 
@@ -371,6 +374,26 @@ A dispatcher is lowered where it is first called, and with it every function amo
 which may be before a variable one of them uses is declared — a field of an instance the
 program makes later. A backend makes a variable where it is first used, and its `declare`
 then sets that one.
+
+### Closures
+
+Since version 24, a function kept as a value may use variables of the function or the block it was written in.
+Nothing of it is new to a backend: it is arrays and statements the front end writes (`compiler/closures.ts`).
+
+- **An environment** is a row of a pool of arrays the program has (1 023 rows): a variable a kept function uses is a
+  cell of an array of its own at that row, and the block it is declared in makes a row each time it runs (a `declare`
+  of a variable holding the row, the value of a call of `(make an environment)`). The `let` of a `for` gets a new row,
+  a copy of the last, at the end of each turn, as JavaScript makes one.
+- **A closure** is a row too: the function's number and the row it was made in. Its value is the row, 1 to 1 023; a
+  function that keeps nothing is `1 048 576` plus its id, as before but moved out of the pool's way. A dispatcher
+  starts by taking a row apart — the function to run and, as that function's last parameter, its environment — and a
+  function reaches the variables it keeps through that parameter, a `parent` cell for each scope further out.
+- **Counting.** Each row has a count of what holds it — variables (`held`), cells of arrays, environments around
+  another — kept by the statements that store into those (one more for the new value, one fewer for the old). A row
+  whose count reaches 0 is queued, and the program's next `sleep` gives back every queued row still at 0, with what it
+  held. A closure only just made, on its way into a variable, is never given back under it. Parameters and a call's
+  result are not counted: they live no longer than the call. A function that calls itself may not declare a variable
+  a kept function uses.
 
 ### Recursion
 

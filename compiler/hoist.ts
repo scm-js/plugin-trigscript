@@ -218,6 +218,65 @@ export function planListener(ts: typeof TS, checker: TS.TypeChecker, stmt: TS.Ex
   }
 }
 
+/**
+ * Whether a function is one of the script's own, declared at the top of one of its files (TrigScript 4): a program may
+ * call it with its own values, as it calls a `game()` function, and use it as a JSX component. Called with values the
+ * script knows, it still runs when the script is built.
+ */
+export function isScriptFunction(ts: typeof TS, decl: TS.Node): decl is TS.FunctionDeclaration {
+  return ts.isFunctionDeclaration(decl) && !!decl.name && !!decl.body && !decl.asteriskToken && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword || m.kind === ts.SyntaxKind.AsyncKeyword);
+}
+
+/** `const Title = (props: …) => <line>…</line>` at the top of a file: the arrow, a function of the script's own as a declared one is. */
+export function scriptArrow(ts: typeof TS, decl: TS.Node): TS.ArrowFunction | TS.FunctionExpression | undefined {
+  if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name) || !decl.initializer) return undefined;
+  const list = decl.parent;
+  if (!ts.isVariableDeclarationList(list) || !(list.flags & ts.NodeFlags.Const)) return undefined;
+  const stmt = list.parent;
+  if (!ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent) || stmt.parent.isDeclarationFile) return undefined;
+  let init = decl.initializer;
+  while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
+  if (!ts.isArrowFunction(init) && !ts.isFunctionExpression(init)) return undefined;
+  if (init.asteriskToken || init.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return undefined;
+  return init;
+}
+
+/** The plan of a function at the top of a file (`isScriptFunction`, `scriptArrow`), made as a `game()` function's is. */
+export function planFunction(ts: typeof TS, checker: TS.TypeChecker, fn: TS.FunctionDeclaration | TS.ArrowFunction | TS.FunctionExpression): ProgramPlan {
+  return planProgram(ts, checker, fn as unknown as TS.FunctionExpression, { parameters: true });
+}
+
+const usesGameMemo = new WeakMap<TS.Node, boolean>();
+
+/**
+ * Whether a function of the script's own does what only the game can — draws a random number, reads the game, waits,
+ * prints — itself or through another of the script's functions: called with values the script knows, it still runs in
+ * the game, never when the script is built.
+ */
+export function usesGame(ts: typeof TS, checker: TS.TypeChecker, fn: TS.Node, seen = new Set<TS.Node>()): boolean {
+  const hit = usesGameMemo.get(fn);
+  if (hit !== undefined) return hit;
+  if (seen.has(fn)) return false;
+  seen.add(fn);
+  let found = false;
+  const look = (n: TS.Node): void => {
+    if (found) return;
+    if (ts.isIdentifier(n)) {
+      const lib = libraryName(ts, checker, n);
+      if (lib && (GAME_CALLS.has(lib) || READ_CALLS.has(lib) || READ_ARITY.has(lib) || GAME_CELL_ROOTS.has(lib))) { found = true; return; }
+      const decl = declarationOf(ts, checker, n);
+      const other = decl && decl !== fn && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl));
+      if (other && usesGame(ts, checker, other, seen)) { found = true; return; }
+      return;
+    }
+    ts.forEachChild(n, look);
+  };
+  const body = (fn as TS.FunctionLikeDeclaration).body;
+  if (body) look(body);
+  usesGameMemo.set(fn, found);
+  return found;
+}
+
 /** Whether a class is one of the script's own, declared at the top of one of its files: a program may make instances of it. */
 export function isScriptClass(ts: typeof TS, decl: TS.Node): decl is TS.ClassDeclaration {
   return ts.isClassDeclaration(decl) && !!decl.name && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
@@ -261,9 +320,13 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   const declare = (node: TS.Node) => plan.game.add(node);
   for (const p of arrow?.parameters ?? []) {
     if (!options.parameters) break;
-    if (!ts.isIdentifier(p.name)) error(p, "Destructured parameters are not supported in a game function.");
-    else if (p.dotDotDotToken) error(p, "Rest parameters are not supported in a game function.");
-    else declare(p);
+    if (p.dotDotDotToken) error(p, "Rest parameters are not supported in a game function.");
+    else if (!ts.isIdentifier(p.name)) {
+      // `({ label, value }: Props)`: each name taken out is the game's, as a parameter is (a component's props).
+      const names = (n: TS.BindingName): void => { if (ts.isIdentifier(n)) return; for (const el of n.elements) if (!ts.isOmittedExpression(el)) { declare(el); names(el.name); } };
+      declare(p);
+      names(p.name);
+    } else declare(p);
   }
   // A class *declared* in the body is the program's, as a function declared there is (see `classItems`); one written as a value is not.
   const isFunctionValue = (n: TS.Node) => ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isClassExpression(n);
@@ -294,7 +357,7 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   collect(plan.root);
   // A `const` list the body stores into — `const hp = [0, 0, 0]; hp[i] = 5`, which TypeScript allows — is an array of the
   // program like a `let` one; a list that is only read stays a value of the script, which a program may still look up in.
-  const ARRAY_WRITERS = new Set(["push", "pop", "fill"]);
+  const ARRAY_WRITERS = new Set(["push", "pop", "fill", "shift", "unshift", "splice"]);
   const written = (node: TS.Node) => {
     if (isFunctionValue(node)) return;
     let target: TS.Expression | undefined;
@@ -313,7 +376,48 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && ARRAY_WRITERS.has(node.expression.name.text)) target = node.expression;
     while (target && (ts.isParenthesizedExpression(target) || ts.isNonNullExpression(target))) target = target.expression;
     store(target);
+    // `add(names, t)` where add pushes to its parameter: the array handed over is written, as if the push were here.
+    if (ts.isCallExpression(node)) node.arguments.forEach((arg, i) => {
+      const how = ts.isIdentifier(arg) ? parameterWrite(node, i) : undefined;
+      if (how) writeTo(arg as TS.Identifier, true, how === "grows" ? "push" : undefined, false);
+    });
     ts.forEachChild(node, written);
+  };
+  /** How a function a call names writes its parameter `i`: pushes or pops it ("grows"), stores into it, or not at all. */
+  const parameterWrite = (call: TS.CallExpression, i: number): "grows" | "stores" | undefined => {
+    let callee: TS.Expression = call.expression;
+    while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+    // `rng.shuffle(xs)`: a method, found by what the checker says it is.
+    let fn: TS.Node | undefined = ts.isPropertyAccessExpression(callee) ? checker.getSymbolAtLocation(callee.name)?.declarations?.[0] : ts.isIdentifier(callee) ? declarationOf(ts, checker, callee) : undefined;
+    if (fn && ts.isVariableDeclaration(fn) && fn.initializer) {
+      let init: TS.Expression = fn.initializer;
+      // `const add = game((xs, t) => …)` as well as `const add = (xs, t) => …`.
+      if (ts.isCallExpression(init) && init.arguments.length === 1) init = init.arguments[0];
+      fn = init;
+    }
+    if (!fn || !(ts.isFunctionDeclaration(fn) || ts.isArrowFunction(fn) || ts.isFunctionExpression(fn) || ts.isMethodDeclaration(fn)) || !fn.body) return undefined;
+    const p = fn.parameters[i];
+    if (!p || !ts.isIdentifier(p.name)) return undefined;
+    const name = p.name.text;
+    let how: "grows" | "stores" | undefined;
+    const look = (n: TS.Node): void => {
+      if (how === "grows") return;
+      let t: TS.Expression | undefined;
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) t = n.left;
+      else if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) t = n.operand;
+      else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && ARRAY_WRITERS.has(n.expression.name.text)) t = n.expression;
+      if (t && (ts.isElementAccessExpression(t) || ts.isPropertyAccessExpression(t))) {
+        let root: TS.Expression = t.expression;
+        while (ts.isElementAccessExpression(root) || ts.isPropertyAccessExpression(root) || ts.isParenthesizedExpression(root) || ts.isNonNullExpression(root)) root = root.expression;
+        if (ts.isIdentifier(root) && root.text === name) {
+          const member = ts.isPropertyAccessExpression(t) && ts.isIdentifier(t.expression) ? t.name.text : undefined;
+          how = member && member !== "fill" && ARRAY_WRITERS.has(member) || member === "length" ? "grows" : (how ?? "stores");
+        }
+      }
+      ts.forEachChild(n, look);
+    };
+    look(fn.body);
+    return how;
   };
   const store = (target: TS.Expression | undefined) => {
     // `grid[y][x] = v`, `waves[i].count++`: a store however deep is a store into the list at the root of it.
@@ -321,19 +425,33 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     const direct = !!root && ts.isIdentifier(root);
     while (root && (ts.isElementAccessExpression(root) || ts.isPropertyAccessExpression(root) || ts.isParenthesizedExpression(root) || ts.isNonNullExpression(root))) root = root.expression;
     if (target && root && ts.isIdentifier(root) && (ts.isElementAccessExpression(target) || ts.isPropertyAccessExpression(target))) {
+      const member = ts.isPropertyAccessExpression(target) ? target.name.text : undefined;
+      const atLength = ts.isElementAccessExpression(target) && ts.isPropertyAccessExpression(target.argumentExpression) && target.argumentExpression.name.text === "length"
+        && ts.isIdentifier(target.argumentExpression.expression) && target.argumentExpression.expression.text === root.text;
+      writeTo(root, direct, member, atLength);
+    }
+  };
+  /** The array a store reaches, if it is one of the body's: the program's from now on, and one that grows when the store is a push, a pop, a shift, … */
+  const writeTo = (root: TS.Identifier, direct: boolean, member: string | undefined, atLength: boolean) => {
+    {
       const decl = declarationOf(ts, checker, root);
       if (decl && ts.isVariableDeclaration(decl) && decl.initializer && inside(decl)) {
         const type = checker.getTypeAtLocation(decl.name);
         if (checker.isArrayType(type) || checker.isTupleType(type)) {
           if (plan.consts.has(decl)) forced.add(decl);
           declare(decl);
-          // xs.push(v), xs.pop(), xs.length = n and xs[xs.length] = v are what make an array one that grows.
+          // xs.push(v), xs.pop(), shift, unshift, splice, xs.length = n and xs[xs.length] = v are what make an array one that grows.
           if (!direct) return;
-          const name = root.text;
-          const member = ts.isPropertyAccessExpression(target) ? target.name.text : undefined;
-          const atLength = ts.isElementAccessExpression(target) && ts.isPropertyAccessExpression(target.argumentExpression) && target.argumentExpression.name.text === "length"
-            && ts.isIdentifier(target.argumentExpression.expression) && target.argumentExpression.expression.text === name;
-          if (member === "push" || member === "pop" || member === "length" || atLength) plan.grows.add(decl);
+          if (member === "push" || member === "pop" || member === "shift" || member === "unshift" || member === "splice" || member === "length" || atLength) plan.grows.add(decl);
+        } else {
+          // `const shop = { selected: 0 }; shop.selected++` — or a function it is handed writes a field: a record of the
+          // program's, as a `let` one is. One only read stays a value of the script.
+          let init: TS.Expression = decl.initializer;
+          while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
+          if (ts.isObjectLiteralExpression(init) && checker.getIndexInfosOfType(type).length === 0) {
+            if (plan.consts.has(decl)) forced.add(decl);
+            declare(decl);
+          }
         }
       }
     }
@@ -398,6 +516,13 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       if (decl && isGameDecl(decl)) { ok = false; return; }
       // A class of the script's own: inside a program, `new C()` is an instance of the program's, whatever its arguments.
       if (decl && isScriptClass(ts, decl)) { ok = false; return; }
+      // A function of the script's own that does what only the game can (`range(2, 4)` draws the game's random numbers):
+      // run in the game, whatever its arguments.
+      const own = decl && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl));
+      if (own && usesGame(ts, checker, own)) { ok = false; return; }
+      // A function of the script's own kept in an array or a record (`const fs = [a, b]`): the program's functions as
+      // values, which it calls with its own values. Handed to a function (`xs.map(sq)`) or called, it is the script's.
+      if (decl && (isScriptFunction(ts, decl) || scriptArrow(ts, decl)) && (ts.isArrayLiteralExpression(p) || (ts.isPropertyAssignment(p) && p.initializer === n) || ts.isShorthandPropertyAssignment(p))) { ok = false; return; }
       // A generator is walked by the program's for…of, a copy of its body at each loop: never run when the script is built.
       if (decl && (ts.isFunctionDeclaration(decl) || ts.isFunctionExpression(decl)) && decl.asteriskToken) { ok = false; return; }
     };
@@ -734,6 +859,8 @@ export interface TransformContext {
   planForClass?: (cls: TS.ClassDeclaration) => ProgramPlan | undefined;
   /** The plan for a listener at the top of a file (`planListener`), made before the transform. */
   planForListener?: (stmt: TS.ExpressionStatement) => ProgramPlan | undefined;
+  /** The plan for a function at the top of a file (`planFunction`), made before the transform. */
+  planForFunction?: (fn: TS.FunctionDeclaration | TS.ArrowFunction | TS.FunctionExpression) => ProgramPlan | undefined;
 }
 
 /**
@@ -800,6 +927,32 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
           f.createPropertyAssignment("hoisted", hoistedFunction(ts, checker, plan, context)),
         ], true);
         return [visited, f.createExpressionStatement(f.createCallExpression(f.createIdentifier("__class"), undefined, [f.createIdentifier(node.name.text), descriptor]))];
+      }
+      // `function bar() { … }` at the top of a file: the function as it is, and after it what its body computes when the
+      // script is built, handed to the run (`__fn`), for a program that calls it with its own values.
+      if (isScriptFunction(ts, node)) {
+        const plan = ctx.planForFunction?.(node);
+        const visited = ts.visitEachChild(node, visit, context);
+        if (!plan) return visited;
+        const descriptor = f.createObjectLiteralExpression([
+          f.createPropertyAssignment("__trigscript", f.createStringLiteral("function")),
+          f.createPropertyAssignment("at", at(node)),
+          f.createPropertyAssignment("pos", f.createNumericLiteral(node.getStart(sf))),
+          f.createPropertyAssignment("hoisted", hoistedFunction(ts, checker, plan, context)),
+        ], true);
+        return [visited, f.createExpressionStatement(f.createCallExpression(f.createIdentifier("__fn"), undefined, [f.createIdentifier(node.name!.text), descriptor]))];
+      }
+      if (ts.isVariableStatement(node) && ts.isSourceFile(node.parent)) {
+        const arrows = node.declarationList.declarations.map((d) => [d, scriptArrow(ts, d)] as const).filter(([, a]) => a && ctx.planForFunction?.(a));
+        if (arrows.length) {
+          const visited = ts.visitEachChild(node, visit, context);
+          return [visited, ...arrows.map(([d, a]) => f.createExpressionStatement(f.createCallExpression(f.createIdentifier("__fn"), undefined, [f.createIdentifier((d.name as TS.Identifier).text), f.createObjectLiteralExpression([
+            f.createPropertyAssignment("__trigscript", f.createStringLiteral("function")),
+            f.createPropertyAssignment("at", at(a!)),
+            f.createPropertyAssignment("pos", f.createNumericLiteral(a!.getStart(sf))),
+            f.createPropertyAssignment("hoisted", hoistedFunction(ts, checker, ctx.planForFunction!(a!)!, context)),
+          ], true)])))];
+        }
       }
       return ts.visitEachChild(node, visit, context);
     };

@@ -70,9 +70,9 @@ function litBy(p: Program): Set<string> {
 describe("the standard library", () => {
   it("is embedded as it is in stdlib/", () => {
     const dir = join(import.meta.dirname, "..", "stdlib");
-    const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
-    expect(Object.keys(STDLIB_SOURCES).sort()).toEqual(files.map((f) => f.replace(/\.ts$/, "")).sort());
-    for (const f of files) expect(STDLIB_SOURCES[f.replace(/\.ts$/, "")]).toBe(readFileSync(join(dir, f), "utf8"));
+    const files = readdirSync(dir).filter((f) => f.endsWith(".ts") || f.endsWith(".tsx"));
+    expect(Object.keys(STDLIB_SOURCES).sort()).toEqual(files.map((f) => f.replace(/\.tsx?$/, "")).sort());
+    for (const f of files) expect(STDLIB_SOURCES[f.replace(/\.tsx?$/, "")]).toBe(readFileSync(join(dir, f), "utf8"));
   });
 
   it("joins a script only when imported: fog's canvas is a program of its own", () => {

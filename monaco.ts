@@ -18,7 +18,7 @@
 import type * as Monaco from "monaco-editor";
 import { DECLARATIONS_FILE } from "./compiler/declarations";
 import { MODULE_NAME } from "./compiler/api";
-import { STDLIB } from "./compiler/stdlib";
+import { STDLIB, STDLIB_EXT } from "./compiler/stdlib";
 import type { LineHint, ScriptDiagnostic, ScriptFiles, SourceRange, VariableInfo } from "./compiler/compiler";
 import { describeVariable, normalizePath } from "./compiler/compiler";
 import { isMediaFile } from "./compiler/media";
@@ -164,7 +164,7 @@ export function loadMonaco(base: string = DEFAULT_DIST): Promise<MonacoApi> {
 export function setDeclarations(monaco: MonacoApi, content: string) {
   tsLanguage(monaco).typescriptDefaults.setExtraLibs([
     { content, filePath: `file:///${DECLARATIONS_FILE}` },
-    ...Object.entries(STDLIB).map(([name, source]) => ({ content: source, filePath: `file:///node_modules/${MODULE_NAME}/${name}.ts` })),
+    ...Object.entries(STDLIB).map(([name, source]) => ({ content: source, filePath: `file:///node_modules/${MODULE_NAME}/${name}${STDLIB_EXT[name] ?? ".ts"}` })),
   ]);
 }
 

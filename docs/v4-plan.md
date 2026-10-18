@@ -6,7 +6,10 @@ emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece 
 (*EUD error code to line*, 2026-10-17); a fourth showpiece, Bad Apple, with fog of war found to work as a
 framebuffer in the lifted game (*S4*, 2026-10-17); B6, fixed numbers and Math, built with a fifth showpiece, a
 raycaster in the fog (*S5*, 2026-10-17); B3, functions as values, and B4, `try` / `catch` / `throw`, built
-(2026-10-17). The question it answers: now that there is a
+(2026-10-17); closures over locals, and the text and array methods a program was missing, built (*Closures and the
+missing methods*, 2026-10-17); JSX components, functions from any file and the first two libraries, `trigscript/ui` and
+`trigscript/screen`, with Snake as their showpiece (*Components, functions from any file, and the first libraries*,
+2026-10-17); generics and `timers`, `signals`, `random` and `math` (*timers, signals, random and math, and generics*, 2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1502,6 +1505,167 @@ frame 241 (the simulator and the lifted game agree), and that recording's audio 
 video, both said to start at 0 — the recorder's, not the map's. **Not yet:** grey levels and colour (a
 renderer that needs them — the raycaster's textures — will say which); the game's own tables (`ground.distance`,
 `atBuild`), the rest of B8.
+
+### Closures and the missing methods (built 2026-10-17)
+
+The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
+
+```ts
+function makeCounter() { let count = 0; return () => ++count; }
+const hs: (() => number)[] = [];
+for (let i = 0; i < n; i++) hs.push(() => i);          // one i for each turn, as JavaScript has it
+function counter() { let c = 0; return { inc: () => { c++; }, get: () => c }; }
+
+const [cmd, who, amount] = line.trim().split(" ");
+if (cmd == "-give" && !isNaN(parseInt(amount))) give(parseInt(who), parseInt(amount));
+queue.push(x); const next = queue.shift() ?? -1; xs.splice(i, 1); xs.at(-1);
+```
+
+**Closures over locals** (`compiler/closures.ts`, IR 24). B3 refused a kept function that used a variable of the
+block it was written in; the open decision above chose between "`let` only when the closure does not outlive its
+frame" and reference-counted environments. Built: environments, counted.
+- *What is kept where.* A variable a kept function uses is a cell of an array of its own at a row of a pool (1 023 rows
+  a program, a player's own in a per-player program); the block it is declared in makes a row each time it runs, its
+  parent the row around it. A closure is a row too: the function and the row it was made in. A function that keeps
+  nothing is `FN_BASE` (2²⁰) plus its id, as B3's numbers were, moved out of the pool's way; a dispatcher takes a
+  closure apart and hands the function its environment as a last parameter.
+- *Which variables.* Found by walking the program once: the B3 watch, which refused, now records the declaration, and
+  the program is walked again with those kept in environments (`compiler.ts`, up to five walks; only the last one's
+  errors are said). Nothing is kept that no kept function uses: a function known when built (an arrow handed down,
+  `xs.forEach(…)`) costs what it did.
+- *Lifetime.* Counted, deferred: every store into a place that may hold a reference (found to a fixed point from
+  what `make` gives) holds the new one and lets go of the old; a row at 0 is queued, and the program's next wait gives
+  back what is still at 0 there. So a closure only just made, on its way into a variable, is never let go of under it,
+  and one made and dropped in the same frame costs no sweep of its own. Parameters and results are not counted.
+- *JavaScript's semantics, checked against it:* the function and its closures share the variable (a write either side
+  is seen by the other); two closures of one run share it (`{ inc, get }`); a copy of a closure is the same closure
+  (`a === b`); the `let` of a `for` is copied into a new environment at the end of each turn, before the update.
+- *Not yet:* a function that calls itself may not declare a variable a kept function uses (its variables go on the
+  stack, where nothing counts them); an array or a record of the function kept by a closure (copy it into the program,
+  or into fields); more than 1 023 alive at once (said once, and the new one does nothing).
+- *Cost, lifted game:* a variable-index read is about 70 conditions and actions, a write 15. A turn that makes an
+  environment and a closure, calls it and lets go of the one before: about 1 700 (2 800 before the counting was made
+  to read one cell where it read three). Found on the way, for every program: `xs[i] = xs[i] + n` (`xs[i] += n`) now
+  lowers to the game's own Add (`EUDArray.iadditem`), nothing read — 85 down to about 25.
+
+**Also found missing, and built:** `++n`, `n--`, `n = v`, `n += v` used as values (`return ++count`, `ids[k++] = id`,
+`while (n-- > 0)`), as a call inlined where the expression is, so `&&` and `?:` run it only when JavaScript would; a
+function may give a record it makes (`return { inc, get }`, `() => ({ x, y })`), inlined where it is called, as an
+instance already could; `join` of an array is worked out where it is used (it was worked out before the statement it
+was in, so `${xs.unshift(5)} ${xs.join()}` read the array too early).
+
+**Texts:** `trim` / `trimStart` / `trimEnd`, `replace` / `replaceAll` (a text to find; an empty one matches before
+every character, as JavaScript's), `toUpperCase` / `toLowerCase` (A–Z only; Korean is left as it is), `lastIndexOf`,
+`split(sep, limit?)` (an array of texts, taken apart with `const [a, b] = …`, indexed, looped over), `parseInt(s,
+radix?)`, `Number(s)`, `Number.parseInt`. A number of a program is never NaN, so `isNaN(parseInt(s))` /
+`Number.isNaN(Number(s))` is compiled as "has no number at its start", and `isNaN` of anything else is refused with
+that said. Regular expressions and `replace` with a function are refused.
+
+**Arrays:** `shift` (a value, or `?? other` for an empty one), `unshift` (gives the new length), `splice(start,
+deleteCount?, ...items)` standing on its own, `at(i)` (from the end below zero; `?? other` past either end), `lastIndexOf`,
+`join` of numbers and booleans — on arrays of numbers, booleans, texts, records and units. One routine (`spliceRows`)
+moves rows for all of them: the rows taken out give their blocks back, the rest move up or down a cell a column, and
+the new rows are emptied before they are filled, so a text or an inner array that moved is never given back twice.
+A `const` array that only these change is the program's (`hoist.ts`), not a list of the script.
+
+**Checked:** `tests/closures.test.ts` (20) and `tests/text-array-methods.test.ts` (20), each body also run as
+JavaScript and the prints compared; `tests/function-values.test.ts`'s two refusals are now working examples. In the
+lifted game and the simulator, the same lines: `probes/game-closures.ts` (6: counters, a turn's own `i`, shared
+variables, closures inside closures, handlers fired frames later, 3 000 made and let go of across 30 frames with the
+kept ones still there) and `probes/game-text-arrays.ts` (4).
+
+### Components, functions from any file, and the first libraries: ui and screen (built 2026-10-17)
+
+The libraries the language was missing, and what they needed of it first.
+
+**Language, found missing while writing them:**
+- *JSX components.* `<Meter label="HP" value={hp} max={100} />`: a function of your own as an element. Its props are a
+  record of the attributes (an optional one left out is `undefined`, which `??` folds; `children` is the text between
+  the tags, typed `Children`), and its text is written into the text it stands in — its `<line>`s are lines there, as
+  React has it, not a text pasted onto the line before. A component is a function declared in the program, a `const`
+  arrow, a `game()` function, or (below) a function at the top of any file; its body is an expression or statements
+  ending with the one `return <…/>`.
+- *Functions from any file.* As classes from any file already were: a function declared at the top of a file — or a
+  `const` arrow there — is called by a program with its own values without `game()`, planned as a game function is,
+  its errors said only where a program uses it so. Called with values the script knows, it still runs when the script
+  is built, whatever JavaScript it uses. Kept in an array or a record (`const fs = [a, b]`) it is the program's function
+  as a value. Destructured parameters work for all of them.
+- *A function declared in a block sees the block's variables* (it saw only the program's top).
+- *What a function writes makes the array or record handed to it the program's:* `add(names, t)` where `add` pushes, a
+  `const shop = { … }` that `choose(…, shop)` writes. And a `const` record written directly is the program's too, as a
+  `const` array was (it said "declare it with let").
+- *A record's text field is a made text when the record is handed to a function*, which may give it one.
+- *JSX:* a colour worked out in the game by name (`color={i === sel ? "cyan" : "white"}`); `map` over an array of
+  texts and over a list handed in as a prop.
+- *The standard library may hold `.tsx` modules* (`STDLIB_EXT`).
+
+**`trigscript/ui`** (`stdlib/ui.tsx`): `Meter` (a labelled bar, green / yellow / red by the share), `Panel` (a title
+over its children), `MenuList` and `choose(player, count, menu)` (Up, Down, Enter; the state a record of yours that the
+view shows), `DialogBox` and `say(player, box, speaker, text)` with `typewriter`, `LogLines` and `log(lines, text,
+keep)`, `clock(frames)`, `thousands(n)`. One `ui.lines` a player, the components pieces of its view.
+
+**`trigscript/screen`** (`stdlib/screen.tsx`): `Screen(x, y, width, height, cell?)` — `clear`, `set`, `get`, `rect`,
+`line` (Bresenham), `blit(sprite(rows))`, `number` (3 × 5 digits) — and `present()`, which shows it on the map, and so
+on the minimap, a pixel an Overlord of the colour's owner (P3 … P8 and P1), making and taking away only what changed
+since the last time; `ScreenView` shows the same grid in the text lines. Generalises the Tetris probe's `UnitScreen`.
+
+*Played and changed (2026-10-18, four rounds):* the board was invisible (other players' units under the fog of war:
+`Screen.reveal(player)` makes Map Revealers over it) and the view showed twice (`ui.lines` now fills the eleven text
+lines); then a 64 × 64 map of Space (`probes/lib/screen-map.mts`) so the board fills the minimap, the screen's owners in
+the text colours' order, fixed arrays of 2 048 cells (the first frame 712k → 434k), Space rather than Enter (which opens
+the chat). The minimap draws an Overlord as a dot with a gap round it; Overlords a tile apart do not fit (the game will
+not place most of them), so `new Screen(…, "solid")` makes each pixel a Pylon, which the minimap draws as its two-tile
+footprint: pixels side by side are one block, on buildable ground (`screen-map.mts --ground`). 320 Pylons on the grid
+in the lifted game, none moved. Played (round 4): solid blocks on the minimap as expected, but on grey platform and with
+the Protoss supply counter climbing; the user prefers the dots on Space, which stay the default.
+
+**Showpiece: Snake** (`probes/snake.tsx`, `trigscript-snake.scx`): the board on the minimap with `screen`, the score,
+a length meter and the game-over menu in the text lines with `ui`, the snake two arrays that `push` and `shift`. In the
+lifted game: its test passes in both; about 14k conditions and actions a frame, 400k on the first (the screen's 768
+cells pushed and the walls made — a fixed-size screen would cost less). Awaiting a play in Remastered.
+
+**Checked:** `tests/ui.test.ts` (components, 4 more), `tests/script-functions.test.ts` (6), `tests/ui-kit.test.ts`
+(5: the kit rendered, the meter's colour in the IR, the log, `choose` and `say` with keys pressed), `tests/screen.test.ts`
+(4: drawing, digits, `present` making only what changed).
+
+### timers, signals, random and math, and generics (built 2026-10-17)
+
+Four modules of pure TrigScript, no probe needed, that the next showpieces lean on — and what the language needed first.
+
+**Language:**
+- *Generics.* A generic class's instance (`new Signal<number>()`) and a generic function at a call (`shuffle(names)`)
+  are worked out with their type parameters standing for what they are there. The structured compiler's checker is
+  wrapped so that a type it hands back that is a type parameter comes back as that type; the instance carries its type
+  arguments (`typeArgs`) into its constructor and every method called on it; a call's are read from the checker's
+  resolved signature (a parameter declared `T` or `T[]`); a function kept as a value inside a generic method is walked
+  later with them; a generic function is a copy for each set of them. "A class of a program takes no type parameters"
+  is gone.
+- *A function handed to a task keeps what it uses*: a known function handed to `start(…)`'s call is kept as a value
+  there, so its variables get an environment — `every(4, () => log += tag)` in a loop keeps each turn's `tag`, as a
+  `setInterval` callback does — and the program holds it for the task's slot (an array a `start`, a cell a slot) until a
+  later task takes the slot. A known function's environment is reached from where it was written, not from where its
+  number is made (inside a game function, which sees nothing of the program).
+- *A function of the script's own that uses the game* (`random`, a read, a wait, a print — itself or through another)
+  is never run when the script is built, whatever its arguments (`hoist.ts#usesGame`): `range(2, 4)` drew at build.
+- *A Task a function gives* (`every(…)`) is not a promise left unawaited.
+- `v.rotate(a).x`: a field of the instance or record a call gives, the call made once a statement.
+- A method that writes an array handed to it makes the array the program's, as a function already did; a class's text
+  field written in its own methods (`this.value = v`) is a made text when the class is at the top of a file.
+
+**`trigscript/timers`:** `every(period, fn, times?)` (handed the count), `after(delay, fn)` — tasks, so `cancel()` and
+`running` — and `Cooldown` (`use()`, `ready()`, `left()`), `Countdown`, `Stopwatch`, `now()`, `SECOND` = 24.
+**`trigscript/signals`:** `Signal<T>` — `on`, `once`, `off(id)` (the place reused), `emit`, `count`, `clear`.
+**`trigscript/random`:** `chance`, `range`, `dice`, `pick<T>`, `weighted`, `shuffle<T>` on the game's synced random;
+`Random(seed)`, xorshift, the same numbers as JavaScript's.
+**`trigscript/math`:** `lerp`, `inverseLerp`, `remap`, `clamp01`, `approach`, `wrap`, `sign`, `distance`, `distanceSq`,
+`manhattan`, `angleTo`, `radians` / `degrees`, `PI` / `TAU`, easing (`easeIn/Out/InOutQuad`, cubic, `easeOutBack`,
+`smoothstep`), `Vec` (fixed `x`, `y`: `fromAngle`, `add`, `sub`, `scale`, `dot`, `length`, `normalized`, `angle`,
+`rotate`, `distanceTo`, `lerp`).
+
+**Checked:** `tests/generics.test.ts` (3, against JavaScript), `tests/stdlib-core.test.ts` (11; `Random` against the
+same xorshift in JavaScript, easing within a hundredth), `tests/closures.test.ts` (+1, the task). In the lifted game and
+the simulator, `probes/game-stdlib-core.ts` (4), about 4k conditions and actions a frame; the earlier probes and Snake
+re-run, all passing.
 
 ## Part C — the game, pushed
 

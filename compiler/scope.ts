@@ -61,7 +61,7 @@ export type Binding =
    * `cls`: the record is an instance — `new Squad()` — and this is its class, known when the script is built, which is what a
    * method call, a getter, `instanceof` and an overridden method are settled by.
    */
-  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration }
+  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration; /** An instance of a generic class: what each of its type parameters is (`new Signal<number>()`). */ typeArgs?: TypeArgs }
   /** A function known when the script is built (TrigScript 4, B3): a call of it is a call of its body, inlined or called as any function is. */
   | { kind: "fn"; fn: FnValue };
 
@@ -77,6 +77,9 @@ export interface FnValue {
   target: unknown;
   name?: string;
 }
+
+/** What each type parameter of a generic class or function stands for, in one instance or one call. */
+export type TypeArgs = Map<TS.Symbol, TS.Type>;
 
 /** What `this` is bound under in the scope of a method's body: no declaration of the source stands for it. */
 export const THIS = { kind: -1 } as unknown as TS.Node;
@@ -121,12 +124,25 @@ export class Scope {
    * watching, which is how a variable it may not keep is found.
    */
   static watch: ((b: Binding, found: Scope, decl: TS.Node) => void) | null = null;
-  constructor(parent: Scope | null) { this.parent = parent; }
-  bind(decl: TS.Node, b: Binding) { this.map.set(decl, b); }
+  /**
+   * Closures over locals (TrigScript 4): a variable a kept function uses is kept in an environment on the heap, not a
+   * variable. `boxer` is told of every binding and may give another in its place (the variable's cell of the
+   * environment); `resolver` is told of every one found outside the scope it was looked up in and may give the same
+   * cell reached from there (through the environment a kept function was handed); `created` is told of every new scope.
+   */
+  static boxer: ((scope: Scope, decl: TS.Node, b: Binding) => Binding | undefined) | null = null;
+  static resolver: ((b: Binding, found: Scope, from: Scope) => Binding) | null = null;
+  static created: ((scope: Scope) => void) | null = null;
+  constructor(parent: Scope | null) { this.parent = parent; Scope.created?.(this); }
+  bind(decl: TS.Node, b: Binding) { this.map.set(decl, Scope.boxer?.(this, decl, b) ?? b); }
   lookup(decl: TS.Node): Binding | undefined {
     for (let s: Scope | null = this; s; s = s.parent) {
       const b = s.map.get(decl);
-      if (b) { if (s !== this) Scope.watch?.(b, s, decl); return b; }
+      if (b) {
+        if (s === this) return b;
+        Scope.watch?.(b, s, decl);
+        return Scope.resolver ? Scope.resolver(b, s, this) : b;
+      }
     }
     return undefined;
   }
