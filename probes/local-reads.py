@@ -8,7 +8,7 @@ which no TrigScript program reads yet. Read from the dump of Remastered's EUD em
   0x62848C  the camera's X, 0x6284A8 its Y: the real camera; writes ignored
   0x6CDDC4  the mouse on the screen, X then Y: Remastered's input record (850 in a dump: wider than 640)
   0x6CDDC0  the mouse buttons: left 2, right 8, middle 32 (MSQC's bits)
-  0x6284B8  the selection, twelve slots: a read gives the unit's 1.16.1 address, a write of one selects the real unit
+  0x6284B8  the selection, twelve slots (F8 writes a Marine into slot 0): a read gives the unit's 1.16.1 address, a write of one selects the real unit
 
 Five lines, printed again every half second, keep every result on the screen:
 
@@ -120,7 +120,8 @@ def beforeTriggerExec():
         i << 0
         if EUDWhile()(i < UNIT_COUNT):
             ptr = UNITS + i * UNIT_SIZE
-            if EUDIf()([f_dwread(ptr + 0x0C) >= 1, f_bread(ptr + 0x4C) == 0, ptr != wrote_from]):
+            # A Marine: the first round took MSQC's own Valkyrie (type 58, Player 1's, hidden), which no player selects.
+            if EUDIf()([f_dwread(ptr + 0x0C) >= 1, f_bread(ptr + 0x4C) == 0, f_wread(ptr + 0x64) == 0, ptr != wrote_from]):
                 wrote_to << ptr
                 EUDBreak()
             EUDEndIf()

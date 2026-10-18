@@ -7,7 +7,7 @@
 // Five lines are printed again every half second; each says what to do. Nothing is on a clock.
 //   1  the live values: local player, camera, the mouse on the screen and on the map, the synced mouse, the buttons
 //   2  the mouse's smallest and largest place on the screen since F7: sweep the cursor into all four corners
-//   3  the selection as the game keeps it; F8 writes it (another unit of yours put in slot 0, the rest cleared)
+//   3  the selection as the game keeps it; F8 writes it (a Marine of yours put in slot 0, the rest cleared)
 //   4  a left click's trip: the frame it was down here, the frame it arrived through MSQC, the frames between
 //   5  F9 writes the mouse to (320, 240): what it reads back after 0, 1, 2 and 8 frames
 // Played twice: in single player, then hosted as a multiplayer game, alone.
