@@ -30,7 +30,7 @@ program(async () => {
       <Panel title="SNAKE  W A S D">
         <span color="yellow">Score {thousands(hud.score)}</span>   Best {thousands(hud.best)}
       </Panel>
-      <Meter label="Length" value={hud.length} max={W * H / 4} width={20} />
+      <Meter label="Length" value={hud.length} max={60} width={20} />
       {hud.over && <line color="red">You ran into something.</line>}
       {menu.open && <MenuList items={AGAIN} selected={menu.selected} />}
     </>
