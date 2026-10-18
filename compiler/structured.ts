@@ -8421,6 +8421,9 @@ export class Structured {
         // A game() function the program calls, wherever it is written: the classes it names too.
         const init = decl && ts.isVariableDeclaration(decl) ? decl.initializer : undefined;
         if (init && ts.isCallExpression(init) && !followed.has(init) && libraryCallName(ts, this.c.checker, init) === "game") { followed.add(init); init.arguments.forEach(visit); }
+        // And a function at the top of a file it calls (a library's `async function scene()`): the classes its body names.
+        const top = decl && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl));
+        if (top && !followed.has(top)) { followed.add(top); visit(top); }
       }
       ts.forEachChild(n, visit);
     };
@@ -11339,6 +11342,8 @@ export class Structured {
     }
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
       const b = this.bindingOf(e);
+      // A unit variable the checker narrowed to null where it is tested is still a unit: there, and on the map.
+      if (b?.kind === "var" && b.v.kind === "unit") return this.mark<BoolExpr>({ kind: "unitAlive", unit: unitRef(b.v), at: this.at(e), label: this.label(e) }, e);
       if (b?.kind === "var") return b.v.kind !== "number" ? boolRef(b.v) : this.mark<BoolExpr>({ kind: "test", expr: varRef(b.v), at: this.at(e), label: this.label(e) }, e);
       if (b?.kind === "cell") {
         const cell = { kind: "element" as const, array: b.a.id, index: b.index, at: this.at(e) };

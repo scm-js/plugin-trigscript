@@ -703,7 +703,11 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     const items: PlanItem[] = [];
     for (const m of c.members) {
       if (ts.isPropertyDeclaration(m)) value(m.initializer, items);
-      else if ((ts.isConstructorDeclaration(m) || ts.isMethodDeclaration(m) || ts.isAccessor(m)) && m.body) items.push({ kind: "block", items: block(m.body.statements) });
+      else if ((ts.isConstructorDeclaration(m) || ts.isMethodDeclaration(m) || ts.isAccessor(m)) && m.body) {
+        // A parameter's default (`size = 8`, `limit = 30 * SECOND`) is worked out where the call leaves it out.
+        for (const p of m.parameters) if (p.initializer) value(p.initializer, items);
+        items.push({ kind: "block", items: block(m.body.statements) });
+      }
     }
     return items;
   };
@@ -746,6 +750,12 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   if (plan.expression) { const items: PlanItem[] = []; value(plan.expression, items); plan.tree = items; return plan; }
   if (ts.isClassDeclaration(plan.root)) { plan.tree = classItems(plan.root); return plan; }
   plan.tree = block(plan.body.statements);
+  // A parameter's default, worked out where a call leaves it out: what it names of the file is the script's.
+  if (options.parameters) {
+    const defaults: PlanItem[] = [];
+    for (const p of arrow?.parameters ?? []) if (p.initializer) value(p.initializer, defaults);
+    if (defaults.length) plan.tree = [...defaults, ...plan.tree];
+  }
   return plan;
 }
 
