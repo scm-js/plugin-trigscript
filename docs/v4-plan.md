@@ -1245,7 +1245,10 @@ flag that refreshes the circles and the panel.
   at the sender's; an arrival lasts one frame, as MSQC's cell does. Tests gained `moveCamera(x, y, player?)`.
   `GameSim.moveMouse` wrote the mouse's y at 0x6CDDC6; the game keeps x and y in 32 bits each from the screen's corner
   (0x6CDDC4, 0x6CDDC8), now written so.
-- **To play:** `probes/local-ui.tsx`, a live panel and Q / W sending a place with `sync()`.
+- **Played (2026-10-17, recording 21.11.18.13):** `probes/local-ui.tsx`, a live panel and Q / W sending a place with
+  `sync()`. It works in Remastered: the panel follows the mouse every frame, MSQC's copy of the mouse trails it while
+  it moves (779 against 666) and catches up when it stops; Q put a Marine at the screen's top left corner (64, 2688
+  with the camera at 0, 2624) and W one under the cursor, each "sent in 6 frames" for two sync()s in a row.
 
 ### B6. `fixed` and `Math` (4.7.0)
 
