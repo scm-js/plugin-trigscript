@@ -18,7 +18,7 @@ import { ACTION_IDENTS, argType, CHOICE_TYPES, choiceWords, CONDITION_IDENTS, MO
 import type { ActionDef, ArgKind, ConditionDef } from "../vendor/triggerDefs";
 import { allTables, defaultScriptNames, type NameTable, type ScriptNames } from "./names";
 import { PLAYER_COLORS, TABLE_FIELDS, type TableKind } from "./tables";
-import { MEMORY_FIELDS, MEMORY_GROUPS } from "./memory";
+import { LOCAL_FIELDS, MEMORY_FIELDS, MEMORY_GROUPS, type MemoryField } from "./memory";
 import { PLAYER_SLOTS } from "./lower";
 import { KEY_NAMES } from "./input";
 import { TEXT_COLORS } from "./jsx";
@@ -693,6 +693,49 @@ function memoryNamespace(kw: string): string {
   return lines.join("\n");
 }
 
+/**
+ * `local` and `sync()` (B5): what only this computer knows, typed `Local`, and the way one player's value reaches
+ * every computer. The check that keeps a `Local` value away from the game is the compiler's (`local.ts`), not the type's:
+ * a sum of a `Local` number is as local, and TypeScript would lose the mark.
+ */
+function localNamespace(kw: string, typeKw: string): string {
+  const field = (f: MemoryField, indent: string) => `${indent}/**\n${indent} * ${f.doc}\n${indent} *\n${indent} * ${f.remastered}\n${indent} * @address 0x${f.base.toString(16).toUpperCase()}, ${f.width * 8} bits\n${indent} */`;
+  const lines = [
+    `/**`,
+    ` * A value only this computer knows: it may be different on every player's computer. It can be shown — in text, in`,
+    ` * ui.lines(), a sound, the camera — but nothing that changes the game may depend on it, or the game would go`,
+    ` * differently on each computer and split. The compiler says so where it happens. To act on one, send it to every`,
+    ` * computer first: \\\`const x = await sync(P1, local.camera.x);\\\``,
+    ` */`,
+    `${typeKw}type Local<T> = T;`,
+    `/**`,
+    ` * What only this computer knows, inside program() only: who sits at it, where its screen is, where its mouse is on the`,
+    ` * screen. Each is a Local value: show it as you like; to act on it, sync() it first.`,
+    ` */`,
+    `${kw}namespace local {`,
+  ];
+  const groups = [...new Set(LOCAL_FIELDS.map((f) => f.path[0]))];
+  for (const g of groups) {
+    const fs = LOCAL_FIELDS.filter((f) => f.path[0] === g);
+    if (fs.length === 1 && !fs[0].path[1]) { lines.push(field(fs[0], "  "), `  export const ${g}: Local<number>;`); continue; }
+    lines.push(`  export const ${g}: {`);
+    for (const f of fs) lines.push(field(f, "    "), `    readonly ${f.path[1]}: Local<number>;`);
+    lines.push(`  };`);
+  }
+  lines.push(`}`);
+  lines.push(
+    `/**`,
+    ` * One player's value, sent from their computer to every computer: what \\\`value\\\` is on \\\`player\\\`'s computer, the same`,
+    ` * on all of them, a few frames later (5 or 6 in a game played alone; a game between computers adds its turns).`,
+    ` * \\\`const x = await sync(CurrentPlayer, local.camera.x + 400);\\\` Every computer runs the program and reaches the same`,
+    ` * sync(): only the named player's sends. A whole number from 0 to 1 048 574. A player who is not a person, or has`,
+    ` * left, gives 0 at once. Inside an async program, awaited where it is assigned.`,
+    ` */`,
+    `${kw}function sync(player: Player, value: Local<number>): Promise<number>;`,
+  );
+  return lines.join("\n");
+}
+
 function playerAliases(kw: string, names: ScriptNames): string {
   const lines: string[] = [];
   for (const e of names.players.entries) {
@@ -724,6 +767,7 @@ function body(kw: string, typeKw: string, names: ScriptNames, compact: boolean):
     choiceTypes(typeKw),
     functions(kw).replace("__COLOR_TABLE__", COLOR_TABLE).replace("__TEXT_COLORS__", TEXT_COLOR_TABLE),
     memoryNamespace(kw),
+    localNamespace(kw, typeKw),
     "// ── Conditions ──",
     ...[...CONDITION_IDENTS].map(([ident, def]) => signature(kw, ident, def, "Condition")),
     "",
@@ -818,6 +862,8 @@ export interface Sim {
   /** A line of chat, for the next frame: what chatted() finds. */
   type(line: string, player?: Player): this;
   moveMouse(x: number, y: number, player?: Player): this;
+  /** The player's screen to a place on the map, its top left corner in pixels: what local.camera reads. The mouse stays where it is on the map. */
+  moveCamera(x: number, y: number, player?: Player): this;
 
   count(player: Player, type: UnitType, at?: Location): number;
   /** The units on the map, in the order of the game's unit table. */

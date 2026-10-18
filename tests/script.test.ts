@@ -93,7 +93,7 @@ describe("declarations", () => {
   });
 
   it("declare every name the runtime provides, and nothing else", () => {
-    const declared = new Set([...DECLS.matchAll(/^declare (?:function|const) ([A-Za-z_$][A-Za-z0-9_$]*)/gm)].map((m) => m[1]));
+    const declared = new Set([...DECLS.matchAll(/^declare (?:function|const|namespace(?! JSX\b)) ([A-Za-z_$][A-Za-z0-9_$]*)/gm)].map((m) => m[1]));
     const provided = new Set(runtimeNames(NAMES));
     expect([...provided].filter((n) => !declared.has(n))).toEqual([]);
     expect([...declared].filter((n) => !provided.has(n))).toEqual([]);

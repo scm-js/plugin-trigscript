@@ -32,7 +32,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 22;
+export const IR_VERSION = 23;
 
 /** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
@@ -577,6 +577,12 @@ export type Stmt =
   | { kind: "action"; record: ActionRecord; variables?: ActionVariable[]; text?: TextExpr; at: At; label: string }
   /** Centre a location on a point of the map, in pixels, its size kept. */
   /** `size`: the location takes it too, centred on the point (nothing of the old size is read). */
+  /**
+   * `sync(player, value)`'s first half (B5): on every computer, `player`'s arrival cell of slot `slot` (the `sync` input
+   * source) is cleared to 0; on `player`'s own computer `value` + 1 is put where the input plugin sends it from, to arrive
+   * on every computer as that cell a few frames later. `value` may be a `Local` one: it is the one thing that may be.
+   */
+  | { kind: "syncSend"; slot: number; player: number; value: NumExpr; at: At; label: string }
   | { kind: "centerLocation"; location: number; x: NumExpr; y: NumExpr; size?: { width: NumExpr; height: NumExpr }; at: At; label: string }
   /**
    * Text with values in it, shown to `to` — a slot, 13 for the current player, All Players or a
@@ -732,6 +738,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "return": if (s.value) init(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
       case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
+      case "syncSend": expr(s.value); break;
       case "print": case "buildText": parts(s.parts); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;

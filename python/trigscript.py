@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 22
+IR_VERSION = 23
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -2838,6 +2838,8 @@ class Lowering:
             self.build_text(st)
         elif k == "centerLocation":
             self.center_location(st)
+        elif k == "syncSend":
+            INPUT.send_sync(int(st["slot"]), self.one_player(st["player"], st), self.num(st["value"]))
         elif k == "call":
             self.call(st["call"])
         elif k == "block":
@@ -4190,6 +4192,10 @@ class Input:
         # With held keys every key is sent as held (compiler/input.ts#inputPlan): a press is held now and not before.
         self.held_pressed = [EUDArray(12) for _ in self.held]
         self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
+        # sync() (B5): each slot a value put on one computer (local) and what arrived of it, by player (everyone's).
+        self.syncs = int(self.plan.get("syncs", 0))
+        self.sync_local = [self.register("tsin_sync%d" % i, EUDVariable()) for i in range(self.syncs)]
+        self.sync_in = [self.register("tsin_sync%d_in" % i, EUDArray(12)) for i in range(self.syncs)]
         self.captures = max([len(c["captures"]) for c in self.chats] or [0])
         if self.chats:
             # Local: what chatEvent found on this computer, and what the patterns made of it.
@@ -4203,6 +4209,30 @@ class Input:
             self.chat_in = self.register("tsin_chat_in", EUDArray(12))
             self.capture_in = [self.register("tsin_capture%d_in" % i, EUDArray(12)) for i in range(self.captures)]
             self.unit_table = None
+
+    SYNC_MOST = 1048574  # what MSQC's val carries, less the 1 that tells a value from nothing
+
+    def sync_frame(self):
+        """Once a frame, before the programs: what was put to be sent has gone (MSQC sends in its beforeTriggerExec)."""
+        if self.sync_local:
+            DoActions([c.SetNumber(0) for c in self.sync_local])
+
+    def send_sync(self, slot, p, value):
+        """sync()'s first half: on every computer the slot's arrival for the player cleared; on the player's own the
+        value, kept to what MSQC carries, plus 1, put where MSQC sends it from."""
+        if slot >= self.syncs:
+            raise Fail("trigscript: the IR's input plan has no sync slot %d" % slot)
+        self.sync_in[slot][p] = 0
+        if EUDIf()(f_getuserplayerid() == p):
+            v = fresh(value)
+            if EUDIf()(v >= 0x80000000):
+                v << 0
+            EUDEndIf()
+            if EUDIf()(v >= self.SYNC_MOST + 1):
+                v << self.SYNC_MOST
+            EUDEndIf()
+            self.sync_local[slot] << v + 1
+        EUDEndIf()
 
     HELD_BANK_MOST = 8  # a burst after a lag spike pays out at most this many frames
     HELD_GRACE = 2  # frames with no message before a held key counts as let go
@@ -4256,6 +4286,11 @@ class Input:
             return self.cell(self.button_cells, self.buttons, i["button"], node)[p]
         if source == "mouse":
             return self.mouse(p, 0 if i["axis"] == "x" else 1, node)
+        if source == "sync":
+            slot = int(i["slot"])
+            if slot >= self.syncs:
+                raise Fail("trigscript: the IR's input plan has no sync slot %d%s" % (slot, where(node)))
+            return self.sync_in[slot][p]
         if source == "chat":
             number = self.chat_number(i["pattern"], node)
             out = fresh(0)
@@ -4612,6 +4647,7 @@ def beforeTriggerExec():
 
 
 def afterTriggerExec():
+    INPUT.sync_frame()
     if INPUT.held:
         INPUT.frame()
     if EVENTS is not None:

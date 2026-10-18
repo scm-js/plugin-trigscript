@@ -255,6 +255,7 @@ export interface TestWorldLike {
   click(button?: "left" | "right" | "middle", player?: number): this;
   type(line: string, player?: number): this;
   moveMouse(x: number, y: number, player?: number): this;
+  moveCamera(x: number, y: number, player?: number): this;
   count(player: number, type: number, at?: number): number;
   units(filter?: { owner?: number; type?: number; at?: number }): SimUnit[];
   resources(player: number): { ore: number; gas: number };
@@ -434,6 +435,7 @@ export class TestSim implements TestWorldLike {
   click(button: "left" | "right" | "middle" = "left", player?: number): this { this.programs.click(button, player); return this; }
   type(line: string, player?: number): this { this.programs.type(line, player); return this; }
   moveMouse(x: number, y: number, player?: number): this { this.programs.moveMouse(x, y, player); return this; }
+  moveCamera(x: number, y: number, player?: number): this { this.programs.moveCamera(x, y, player); return this; }
 
   /* ── the world read back ── */
 

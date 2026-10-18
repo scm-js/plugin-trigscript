@@ -332,6 +332,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             if (s.text) s.text = rewriteText(s.text, pre, w);
             break;
           }
+          case "syncSend": { s.value = (operands([{ e: s.value, kind: "number" as const }], pre, w) as NumExpr[])[0]; break; }
           case "centerLocation": {
             const done = operands([s.x, s.y, ...(s.size ? [s.size.width, s.size.height] : [])].map((e) => ({ e, kind: "number" as const })), pre, w) as NumExpr[];
             [s.x, s.y] = done;

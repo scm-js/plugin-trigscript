@@ -118,7 +118,7 @@ const UNITS = 0x59cca8, UNIT_BYTES = 336, UNIT_COUNT = 1700, FIRST_UNIT = 0x6284
 const ORE = 0x57f0f0, GAS = 0x57f120, DEATHS = 0x58a364, KILLS = 0x5878a4, SWITCHES = 0x58dc40, LOCATIONS = 0x58dc60;
 /** The fog of war's tiles (a pointer) and the map's size in tiles. */
 const TILES = 0x6d1260, MAP_WIDTH = 0x57f1d4;
-const MAX_HP = 0x662350, MAX_SHIELDS = 0x660e00, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4;
+const MAX_HP = 0x662350, MAX_SHIELDS = 0x660e00, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4, SCREEN_X = 0x62848c, SCREEN_Y = 0x6284a8;
 const SCRATCH = 255, SCRATCH_TO = 254;
 /** The routine a unit that dies in the game goes through to be counted: its owner's death, the killer's kill (0x488AF0). */
 const COUNT_DEATH = 0x488af0;
@@ -396,11 +396,30 @@ export class GameSim implements TestWorldLike {
     }
   }
   type(line: string, player?: number): this { if (this.local(player, "type")) this.game.chat(line); return this; }
+  /**
+   * The mouse to a place on the map, in pixels: the game keeps it on the screen, x then y in 32 bits each (0x6CDDC4,
+   * 0x6CDDC8, where MSQC reads them), from the screen's corner (0x62848C, 0x6284A8).
+   */
   moveMouse(x: number, y: number, player?: number): this {
     if (!this.local(player, "moveMouse")) return this;
-    this.game.m.setUint16(MOUSE, x, true);
-    this.game.m.setUint16(MOUSE + 2, y, true);
-    this.game.wrote?.(MOUSE, 4);
+    const m = this.game.m;
+    m.setInt32(MOUSE, x - m.getInt32(SCREEN_X, true), true);
+    m.setInt32(MOUSE + 4, y - m.getInt32(SCREEN_Y, true), true);
+    this.game.wrote?.(MOUSE, 8);
+    return this;
+  }
+  /** The screen to a place on the map, its top left corner in pixels: what local.camera reads (B5). The mouse stays where it is on the map. */
+  moveCamera(x: number, y: number, player?: number): this {
+    if (!this.local(player, "moveCamera")) return this;
+    const m = this.game.m;
+    const mx = m.getInt32(MOUSE, true) + m.getInt32(SCREEN_X, true), my = m.getInt32(MOUSE + 4, true) + m.getInt32(SCREEN_Y, true);
+    m.setInt32(SCREEN_X, x, true);
+    m.setInt32(SCREEN_Y, y, true);
+    m.setInt32(MOUSE, mx - x, true);
+    m.setInt32(MOUSE + 4, my - y, true);
+    this.game.wrote?.(SCREEN_X, 4);
+    this.game.wrote?.(SCREEN_Y, 4);
+    this.game.wrote?.(MOUSE, 8);
     return this;
   }
 

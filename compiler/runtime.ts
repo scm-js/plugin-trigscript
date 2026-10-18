@@ -26,7 +26,7 @@ import { DEAF_KEYS, keyName, KEY_NAMES, LAST_SLOT, MOUSE_BUTTONS, parseChatPatte
 import { JSX_FRAGMENT, TEXT_COLORS, builtText, jsxAtBuild } from "./jsx";
 import type { HoistedThunks } from "./hoist";
 import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField, type TableKind } from "./tables";
-import { MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
+import { LOCAL_FIELDS, localName, MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
 import { coverValue } from "./cover";
 import { isVideo } from "./media";
 
@@ -440,6 +440,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.nextFrame = () => { throw new ScriptError("nextFrame() waits for the next frame: use it inside program(), as a statement — await nextFrame();"); };
   rt.start = () => { throw new ScriptError("start() starts a task inside a program: start(wave(3)), inside program(async () => { … })."); };
   rt.until = () => { throw new ScriptError("until() waits inside a program: await until(() => …), inside program(async () => { … })."); };
+  rt.sync = () => { throw new ScriptError("sync() sends a player's value to every computer inside a program: const x = await sync(P1, local.camera.x), inside program(async () => { … })."); };
   rt.rose = () => { throw new ScriptError("rose() is true on the cycle its condition becomes true: use it inside program(), in an if."); };
   rt.once = () => { throw new ScriptError("once() is true the first time its condition holds: use it inside program(), in an if."); };
   rt.shared = () => { throw new ScriptError("shared() marks a variable every player of a per-player program shares: let total = shared(0), inside program()."); };
@@ -644,6 +645,18 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
       return [f.path[1], { __trigscript: "table", cell, field, ident, valueOf: fail, toString: fail } as TableValue];
     }),
   ))])));
+  /** `local` (B5): the cells only this computer knows, read as `memory`'s are; the compiler keeps them from the game (`local.ts`). */
+  const localCell = (f: (typeof LOCAL_FIELDS)[number]): TableValue => {
+    const field = memoryTableField(f);
+    const ident = localName(f);
+    const fail = (): never => { throw new ScriptError(`${ident} is what this computer knows while the game runs: it has no value when the script is built. Inside program(), show it, or sync() it to act on it.`); };
+    const cell: TableCell = { name: ident, base: field.base, stride: 0, index: 0, width: field.width };
+    return { __trigscript: "table", cell, field: { ...field, name: ident.slice("local.".length) }, ident, valueOf: fail, toString: fail } as TableValue;
+  };
+  rt.local = Object.freeze(Object.fromEntries([...new Set(LOCAL_FIELDS.map((f) => f.path[0]))].map((g) => {
+    const fs = LOCAL_FIELDS.filter((f) => f.path[0] === g);
+    return [g, fs.length === 1 && !fs[0].path[1] ? localCell(fs[0]) : Object.freeze(Object.fromEntries(fs.map((f) => [f.path[1], localCell(f)])))];
+  })));
   const tableNames: Record<TableKind, ScriptNames[keyof ScriptNames]> = { unit: names.units, weapon: names.weapons, upgrade: names.upgrades, tech: names.techs, player: names.players };
   const entryName = (kind: TableKind, value: number): string => {
     const t = tableNames[kind];
@@ -763,7 +776,7 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("CurrentPlayer", "AllPlayers");
   out.push(...CONDITION_IDENTS.keys(), ...ACTION_IDENTS.keys(), "preserve");
   out.push("condition", "action", "memory", "setMemory", "disabled", "not", "trigger", "hyperTriggers", "program", "game", "random");
-  out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
+  out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "sync", "local", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
   out.push("textColors", "ui", "on", "reserveLocation", "cover", "__jsx", "__fragment", "__class", "__listen");

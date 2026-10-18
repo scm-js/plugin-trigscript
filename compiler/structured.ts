@@ -932,6 +932,8 @@ export class Structured {
   /** The same for what a finally puts aside, after the others: those may still add a field to the error in flight. */
   private readonly keepFills: (() => void)[] = [];
   /** Each `await t` of a task: what it fills in once the program is known to throw — a mark that it waits, and the task's error thrown on. */
+  /** The `sync()` slots of this program, 0, 1, …; the compiler numbers them across programs afterwards (`numberSyncSlots`). */
+  private syncSlots = 0;
   private readonly awaitedTasks: { h: VarDecl; watch: Stmt & { kind: "block" }; check: Stmt & { kind: "block" }; at: At; label: string }[] = [];
   /** What an error leaving a statement has to undo on its way (a loop through a Map counted out): put in a `try` once the program is known to throw. */
   private readonly unwinds: { held: Stmt & { kind: "block" }; cleanup: Stmt[] }[] = [];
@@ -4983,6 +4985,49 @@ export class Structured {
     this.emit({ kind: "while", cond: { kind: "not", expr: cond }, body: [{ kind: "sleep", cycles: 1, at, label }], at, label }, call);
   }
 
+  /**
+   * `await sync(player, value)` (B5): `syncSend` — on every computer the slot's arrival cleared, on the player's own the
+   * value put to be sent — then a wait, a frame at a time, until it has arrived (or the player is no person, or has
+   * left: 0), and what arrived, in a variable of its own. The value may be a `Local` one; what comes back is not.
+   */
+  private syncValue(e: TS.CallExpression): NumExpr | null {
+    const { ts } = this;
+    let up: TS.Node = e.parent;
+    while (ts.isParenthesizedExpression(up)) up = up.parent;
+    if (!ts.isAwaitExpression(up)) { this.c.error(e, "sync() gives a promise: await it where it is assigned — const x = await sync(P1, local.camera.x)."); return null; }
+    let host: TS.Node = up.parent;
+    while (ts.isParenthesizedExpression(host)) host = host.parent;
+    const assigned = ts.isVariableDeclaration(host) || ts.isExpressionStatement(host) || (ts.isBinaryExpression(host) && host.operatorToken.kind === ts.SyntaxKind.EqualsToken);
+    if (!assigned) { this.c.error(e, "sync() waits, and its value is kept where it is awaited: const x = await sync(P1, local.camera.x), or x = await sync(…) on a line of its own."); return null; }
+    if (!this.inAsync(e)) { this.c.error(e, "sync() waits, and a program waits in an async function: program(async () => { … await sync(P1, local.camera.x); … })."); return null; }
+    if (this.inCallback > 0) { this.c.error(e, "sync() inside a function given to an array method: the method is one loop within the frame. A for…of over the same list can await between its turns."); return null; }
+    if (e.arguments.length !== 2) { this.c.error(e, "sync() takes the player whose value it is and the value: await sync(P1, local.camera.x)."); return null; }
+    const who = this.evaluate(e.arguments[0])?.value;
+    if (typeof who !== "number" || !Number.isInteger(who) || (who !== CURRENT_PLAYER && (who < 0 || who >= 8))) { this.c.error(e.arguments[0], "sync() sends from one player's computer: P1 … P8, or CurrentPlayer, known when the script is built."); return null; }
+    const value = this.num(e.arguments[1]);
+    if (!value) return null;
+    const at = this.at(e), label = this.label(e);
+    const slot = this.syncSlots++;
+    this.emit({ kind: "syncSend", slot, player: who, value, at, label }, e);
+    const arrived = (): NumExpr => ({ kind: "input", input: { source: "sync", slot, player: who }, at, label });
+    const fact = (f: "slot" | "left"): NumExpr => ({ kind: "read", read: { source: "player", fact: f, player: who }, at, label });
+    // Nothing yet is 0 (cleared by syncSend) or 0xFFFFFFFF (MSQC's cell on a frame with nothing, as the chat's): read
+    // signed, anything below 1 or past what val carries.
+    const nothing = (): BoolExpr => ({ kind: "or", items: [
+      { kind: "compare", op: "<", left: arrived(), right: num(1), at, label },
+      { kind: "compare", op: ">", left: arrived(), right: num(1048575), at, label },
+    ] });
+    const waiting: BoolExpr = { kind: "and", items: [
+      nothing(),
+      { kind: "compare", op: "==", left: fact("slot"), right: num(2), at, label },
+      { kind: "compare", op: "!=", left: fact("left"), right: num(1), at, label },
+    ] };
+    this.emit({ kind: "while", cond: waiting, body: [{ kind: "sleep", cycles: 1, at, label }], at, label }, e);
+    const out = this.newVar("(synced)", "number", at);
+    this.emit({ kind: "declare", decl: out, init: { kind: "ternary", cond: { kind: "not", expr: nothing() }, whenTrue: { kind: "binary", op: "-", left: arrived(), right: num(1), at, label }, whenFalse: num(0), at, label }, at, label }, e);
+    return varRef(out);
+  }
+
   /** `Promise.all(…)`, `Promise.race(…)`, `Promise.any(…)`: which one, when the call is one of the language's own Promise. */
   private promiseCall(e: TS.Expression): "all" | "race" | "any" | undefined {
     const { ts } = this;
@@ -5050,6 +5095,7 @@ export class Structured {
     if (ts.isCallExpression(e)) {
       if (this.isSleep(e)) { this.sleepStatement(e); valueless("sleep()"); return; }
       if (this.isLibraryCall(e, "until")) { this.untilStatement(e); valueless("until()"); return; }
+      if (this.isLibraryCall(e, "sync")) { this.syncValue(e); return; }
       const mode = this.promiseCall(e);
       if (mode) {
         if (mode === "all") valueless("Promise.all()");
@@ -8584,6 +8630,7 @@ export class Structured {
     if (this.promiseCall(e)) return this.raceValue(e, "number") as NumExpr | null;
     if (this.isLibraryCall(e, "start")) return this.startValue(e);
     if (this.isLibraryCall(e, "lines")) return this.uiLinesValue(e);
+    if (this.isLibraryCall(e, "sync")) return this.syncValue(e);
     if (isOnCall(this.ts, this.c.checker, e)) return this.onEventValue(e);
     const method = this.methodCall(e);
     if (method !== undefined) return this.numberOf(method, e);
