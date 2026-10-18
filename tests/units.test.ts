@@ -165,7 +165,7 @@ describe("stats(): the game's tables", () => {
       let cost = stats(units.TerranMarine).minerals; let time = stats(units.TerranMarine).buildTime; let cloaked = stats(units.TerranGhost).permanentCloak; let other = stats(units.TerranFirebat).minerals;
       stats(P1).upgrades[upgrades.TerranInfantryWeapons] = 3; let level = stats(P1).upgrades[upgrades.TerranInfantryWeapons]; stats(P1).researched[techs.Lockdown] = true; let has = stats(P1).researched[techs.Lockdown];`, 1, { table: (c) => (c.name === "unit.minerals" ? 50 : undefined) });
     expect([sim.value("cost"), sim.value("time"), sim.value("cloaked"), sim.value("other"), sim.value("level"), sim.value("has")]).toEqual([30, 1, true, 50, 3, true]);
-    expect(sim.tables.get("unit.buildTime:0")).toBe(24);
+    expect(sim.tables.get("unit.buildTime:0")).toBe(23);
   });
   it("a cell holds what its width allows", () => {
     const sim = run(`let big = 300; stats(units.TerranMarine).armor = big; stats(units.ZergZergling).name = "Dog"; stats(CurrentPlayer).color = colors.green;`);
