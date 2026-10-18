@@ -98,8 +98,9 @@ export function MenuList({ items, selected, color }: { items: readonly string[];
 }
 
 /**
- * Let a player choose one of `count` things: the menu opens (`menu.open`), Up and Down move `menu.selected` (round
- * from the last to the first), and Enter or Space chooses — the place chosen, once it is. Show it with `MenuList`, in the
+ * Let a player choose one of `count` things: the menu opens (`menu.open`), W and S (or Up and Down) move
+ * `menu.selected` (round from the last to the first), and Space chooses — the place chosen, once it is. (Not Enter:
+ * in a game of several players Enter opens the chat.) Show it with `MenuList`, in the
  * player's `ui.lines`: `{shop.open && <MenuList items={ITEMS} selected={shop.selected} />}`.
  * @param player Who chooses: P1 … P8, known when the script is built.
  * @param count How many things there are to choose from.
@@ -108,9 +109,9 @@ export function MenuList({ items, selected, color }: { items: readonly string[];
 export const choose = game(async (player: Player, count: number, menu: { selected: number; open: boolean }): Promise<number> => {
   menu.open = true;
   while (true) {
-    if (keyPressed(player, "Up")) menu.selected = (menu.selected + count - 1) % count;
-    if (keyPressed(player, "Down")) menu.selected = (menu.selected + 1) % count;
-    if (keyPressed(player, "Enter") || keyPressed(player, "Space")) break;
+    if (keyPressed(player, "W") || keyPressed(player, "Up")) menu.selected = (menu.selected + count - 1) % count;
+    if (keyPressed(player, "S") || keyPressed(player, "Down")) menu.selected = (menu.selected + 1) % count;
+    if (keyPressed(player, "Space")) break;
     await nextFrame();
   }
   menu.open = false;
@@ -132,7 +133,7 @@ export const typewriter = game(async (into: { text: string }, text: string, ever
 
 /**
  * Someone says something to a player: the dialog opens (`box.open`), the speaker's name and the words typed in, and it
- * closes when the player presses Enter or Space. Show it with `DialogBox`.
+ * closes when the player presses Space. Show it with `DialogBox`.
  * @param player Who reads it: P1 … P8, known when the script is built.
  * @param box The record a view shows.
  * @param speaker Who speaks.
@@ -143,17 +144,17 @@ export const say = game(async (player: Player, box: { speaker: string; text: str
   box.speaker = speaker;
   box.text = "";
   await typewriter(box, text);
-  while (!(keyPressed(player, "Enter") || keyPressed(player, "Space"))) await nextFrame();
+  while (!keyPressed(player, "Space")) await nextFrame();
   box.open = false;
 });
 
-/** A dialog's lines while it is open: the speaker in yellow, the words, and what to press. Nothing while it is closed. */
+/** A dialog's lines while it is open: the speaker in yellow, the words, and what to press (Space). Nothing while it is closed. */
 export function DialogBox({ box }: { box: { speaker: string; text: string; open: boolean } }) {
   return box.open ? (
     <>
       <line color="yellow">{box.speaker}</line>
       <line>{box.text}</line>
-      <line color="grey">(Enter)</line>
+      <line color="grey">(Space)</line>
     </>
   ) : null;
 }

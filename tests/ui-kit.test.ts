@@ -35,7 +35,7 @@ describe("trigscript/ui", () => {
         log(lines, "boss");
         print(<><Panel title={\`Wave 3 \${clock(hp * 3)}\`}><Meter label="Base" value={hp} max={1500} /></Panel>{shop.open && <MenuList items={ITEMS} selected={shop.selected} />}<DialogBox box={talk} /><LogLines lines={lines} /><line>{thousands(hp * 1371)}</line></>);
       });`);
-    expect(printed(sim(r).run(1))).toEqual(["-- Wave 3 1:52 --\nBase ■■■■■■□□□□ 900/1500\n  Marine (50)\n> Medic (75)\n  Leave\nRaynor\nHold on\n(Enter)\nwave 3\nboss\n1,233,900"]);
+    expect(printed(sim(r).run(1))).toEqual(["-- Wave 3 1:52 --\nBase ■■■■■■□□□□ 900/1500\n  Marine (50)\n> Medic (75)\n  Leave\nRaynor\nHold on\n(Space)\nwave 3\nboss\n1,233,900"]);
   });
 
   it("the meter's colour: green above half, yellow above a quarter, red below (the simulator's log keeps the words; the colour is the IR's)", () => {
@@ -64,7 +64,7 @@ describe("trigscript/ui", () => {
     expect(printed(sim(r).run(1))).toEqual(["line 6\nline 7\nline 8"]);
   });
 
-  it("choose: Up and Down move the mark, round from the end, and Enter chooses", () => {
+  it("choose: W / Up and S / Down move the mark, round from the end, and Space chooses (Enter opens the chat)", () => {
     const r = compile(`
       import { choose } from "trigscript/ui";
       program(async () => {
@@ -74,13 +74,15 @@ describe("trigscript/ui", () => {
       });`);
     const s = sim(r).run(3);
     // A key pressed on frames one after another is one press held, as the game's input has it: a few frames apart.
-    s.press("Up", 0).run(3).press("Up", 0).run(3).press("Down", 0).run(3);
+    s.press("W", 0).run(3).press("Up", 0).run(3).press("S", 0).run(3);
     expect(printed(s)).toEqual([]);
     s.press("Enter", 0).run(2);
+    expect(printed(s)).toEqual([]);
+    s.press("Space", 0).run(2);
     expect(printed(s)).toEqual(["picked 2 closed"]);
   });
 
-  it("say: the words typed in a character at a time, closed when the player presses Enter", () => {
+  it("say: the words typed in a character at a time, closed when the player presses Space", () => {
     const r = compile(`
       import { say } from "trigscript/ui";
       program(async () => {
@@ -95,7 +97,7 @@ describe("trigscript/ui", () => {
     expect(shown).toContain("Raynor: H");
     expect(shown).toContain("Raynor: Hi!");
     expect(shown).not.toContain("done");
-    s.press("Enter", 0).run(2);
+    s.press("Space", 0).run(2);
     expect(printed(s).at(-1)).toBe("done");
   });
 });

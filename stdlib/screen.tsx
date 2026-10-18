@@ -27,15 +27,19 @@
  * A player sees the pixels only where they have vision: `screen.reveal(P1)` once gives them Map Revealers over it.
  *
  * What the map needs, found playing the unit-pixel probe in StarCraft: Remastered (2026-10-16): the owners of the
- * pixels (P3 … P8 and P1 below; their colours are theirs on the map, so pick the map's player colours to suit) must not
+ * pixels (P3, P4, P5, P1, P6, P7, P8 below; their colours are theirs on the map, so give them the colours of TEXT_COLORS) must not
  * be computers — a computer moves its own units — and Remastered will not start a game without a computer, so one slot
  * (P2 here) is a computer that owns no pixel. A pixel is an Overlord, which sits on any ground and on nothing else; keep
  * the screen's tiles clear of buildings. About 80 pixels made and taken away in a frame did not slow the game.
  */
 import { centerLocation, createUnit, removeUnitAt, reserveLocation, textColors, units, P1, P3, P4, P5, P6, P7, P8, type Player } from "trigscript";
 
-/** Whose units show colours 1 to 7 on the map: the players whose colours they are. Not computers. */
-export const OWNERS: readonly Player[] = [P3, P4, P5, P6, P7, P8, P1];
+/**
+ * Whose units show colours 1 to 7 on the map, in the order of TEXT_COLORS: give each player that colour in the map
+ * (cyan, yellow, purple, green, red, blue, orange). Green is P1's — your own units are green on the minimap anyway.
+ * Not computers.
+ */
+export const OWNERS: readonly Player[] = [P3, P4, P5, P1, P6, P7, P8];
 /** The same colours in the text lines (`ScreenView`), 0 an empty square: cyan, yellow, purple, green, red, blue, orange. */
 export const TEXT_COLORS: readonly number[] = [0, textColors.cyan, textColors.yellow, textColors.purple, textColors.green, textColors.red, textColors.blue, textColors.orange];
 
@@ -63,11 +67,14 @@ const DIGITS: readonly number[] = [
   "111100111001111", "111100111101111", "111001001010010", "111101111101111", "111101111001111",
 ].flatMap((d) => d.split("").map(Number));
 
+/** The most pixels a screen has: 32 × 32 at two tiles a pixel covers a 64 × 64 map, 64 × 32 half of a 128 × 128 one. */
+export const MAX_PIXELS = 2048;
+
 export class Screen {
-  /** The picture being drawn: a colour a pixel, a row at a time. */
-  pixels: number[] = [];
+  /** The picture being drawn: a colour a pixel, a row at a time (the first width × height of them). */
+  pixels: number[] = new Array(MAX_PIXELS).fill(0);
   /** What the map shows now: the picture as it was at the last `present()`. */
-  shown: number[] = [];
+  shown: number[] = new Array(MAX_PIXELS).fill(0);
   x: number;
   y: number;
   width: number;
@@ -75,8 +82,8 @@ export class Screen {
   cell: number;
 
   /**
-   * A screen `width` × `height` pixels, its top left corner on tile (x, y) of the map, a pixel every `cell` pixels of the
-   * map (64, two tiles, unless it says: an Overlord's size).
+   * A screen `width` × `height` pixels (MAX_PIXELS at most), its top left corner on tile (x, y) of the map, a pixel every
+   * `cell` pixels of the map (64, two tiles, unless it says: an Overlord's size).
    */
   constructor(x: number, y: number, width: number, height: number, cell: number = 64) {
     this.x = x;
@@ -84,13 +91,13 @@ export class Screen {
     this.width = width;
     this.height = height;
     this.cell = cell;
-    let i = 0;
-    while (i < width * height) { this.pixels.push(0); this.shown.push(0); i++; }
   }
 
   /** Every pixel the colour (0, empty, unless it says). */
   clear(color: number = 0) {
-    for (let i = 0; i < this.pixels.length; i++) this.pixels[i] = color;
+    const n = this.width * this.height;
+    let i = 0;
+    while (i < n) { this.pixels[i] = color; i++; }
   }
 
   /** One pixel; nothing happens outside the screen. */
@@ -193,7 +200,8 @@ export class Screen {
   /** The picture on the map: each pixel that changed since the last time taken away and made again in its colour. */
   present() {
     const half = Math.floor(this.cell / 2);
-    for (let i = 0; i < this.pixels.length; i++) {
+    const n = this.width * this.height;
+    for (let i = 0; i < n; i++) {
       const now = this.pixels[i];
       const was = this.shown[i];
       if (now !== was) {

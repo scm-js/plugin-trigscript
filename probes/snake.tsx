@@ -1,25 +1,26 @@
 // Snake on the minimap, with its score in the text lines (TrigScript 4): the standard library's two screens together.
 // "trigscript/screen" draws the board — a pixel an Overlord, the minimap showing it — and "trigscript/ui" the panel,
 // the meter and the menu after a game. W A S D steer; the snake grows by one at each apple and speeds up every five.
-// When it runs into itself or a wall, a menu: Up and Down, Enter.
+// When it runs into itself or a wall, a menu: W and S (or Up and Down), Space.
 // Remastered will not start a game without a computer, and a computer moves its own units, so Player 2 is a computer
 // that owns no pixel; P3 … P8 and you own them, each given a colour the text lines also draw.
 // Host it as a multiplayer game, alone: the keys reach the game the way typed lines do.
 // probe-players: {"0":{"rgb":[19,255,29]},"2":{"rgb":[0,255,255]},"3":{"rgb":[255,255,73]},"4":{"rgb":[165,77,189]},"5":{"rgb":[255,5,5]},"6":{"rgb":[15,87,247]},"7":{"rgb":[255,169,24]}}
 // Built with
-//   npx tsx scripts/build-fixture.mts probes/snake.tsx fixtures/eud/snake.scx
+//   npx tsx probes/lib/screen-map.mts fixtures/eud/screen-64.scx
+//   npx tsx scripts/build-fixture.mts probes/snake.tsx fixtures/eud/snake.scx fixtures/eud/screen-64.scx
 import { program, P1, keyPressed, random, sleep, frames, nextFrame, ui, test, expect } from "trigscript";
 import { Screen } from "trigscript/screen";
 import { Panel, Meter, MenuList, choose, thousands } from "trigscript/ui";
 
-/** The board: 24 × 16 pixels, its corner on tile (4, 4) of the map. */
-const W = 24, H = 16;
-/** Colours, as `screen`'s OWNERS have them: 4 the snake (your own units, green), 5 the apple (red), 2 the walls (yellow). */
+/** The board: 30 × 24 pixels, a pixel two tiles, its corner on tile (2, 2) of a 64 × 64 map: most of its minimap. */
+const W = 30, H = 24;
+/** Colours, as `screen`'s OWNERS have them: 4 the snake (your own units, green), 5 the apple (red), 2 the walls (yellow), 1 the head (cyan). */
 const SNAKE = 4, APPLE = 5, WALL = 2, HEAD = 1;
 const AGAIN = ["Play again", "Stop"];
 
 program(async () => {
-  const screen = new Screen(4, 4, W, H);
+  const screen = new Screen(2, 2, W, H);
   // The pixels are other players' units: without vision of them, the fog of war hides them.
   screen.reveal(P1);
   const hud = { score: 0, best: 0, length: 3, over: false };

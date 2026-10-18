@@ -69,11 +69,11 @@ describe("trigscript/screen", () => {
         s.present();
       });`);
     const run = sim(r).run(1);
-    // Colour 1 is P3's (slot 2), colour 7 is yours (P1, slot 0).
-    expect(made(run).map((e) => e.action.player)).toEqual([2, 0]);
+    // Colour 1 is P3's (slot 2), colour 7 P8's (slot 7); colour 4, green, is yours.
+    expect(made(run).map((e) => e.action.player)).toEqual([2, 7]);
     expect(taken(run)).toEqual([]);
     run.run(1);
-    expect(made(run).map((e) => e.action.player)).toEqual([2, 0, 3, 2]);
+    expect(made(run).map((e) => e.action.player)).toEqual([2, 7, 3, 2]);
     expect(taken(run).map((e) => e.action.player)).toEqual([2]);
     run.run(2);
     expect(made(run)).toHaveLength(4);
