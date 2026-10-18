@@ -5,7 +5,8 @@ emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece 
 (*Showpieces*, 2026-10-16), B1 and B2 built (2026-10-16/17), and an EUD error code taken back to its line
 (*EUD error code to line*, 2026-10-17); a fourth showpiece, Bad Apple, with fog of war found to work as a
 framebuffer in the lifted game (*S4*, 2026-10-17); B6, fixed numbers and Math, built with a fifth showpiece, a
-raycaster in the fog (*S5*, 2026-10-17). The question it answers: now that there is a
+raycaster in the fog (*S5*, 2026-10-17); B3, functions as values, and B4, `try` / `catch` / `throw`, built
+(2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1091,6 +1092,60 @@ so instead of "A call's arguments must be known…"; an optional function parame
   range) become thrown `RangeError`s that a program can catch. When nothing catches one,
   it is said in red, as now.
 - `finally` runs on every way out, `await` included.
+
+**As built (2026-10-17, IR 22).** What a script throws is an error, and everything else is what JavaScript does with one:
+
+```ts
+class OutOfGold extends Error { constructor(public need: number) { super(`need ${need} more`); } }
+function buy(cost: number) { if (cost > gold) throw new OutOfGold(cost - gold); gold -= cost; }
+try { buy(price); }
+catch (e) { if (e instanceof OutOfGold) print(`${e.message} (${e.need})`); else throw e; }
+finally { busy = false; }
+```
+
+- **What is thrown:** `new Error(…)`, `new RangeError(…)`, `new TypeError(…)`, an instance of a class that extends one of
+  them (made where it is thrown or earlier), or what a catch took (`throw e`). Anything else is refused at the `throw`,
+  saying so. A class of error has a `message` and a `name` (the `name` it gives itself, else what it extends gives, as
+  JavaScript has it) and fields of its own: numbers, booleans, units and texts.
+- **In flight:** an error between its `throw` and its catch is two shared variables of the program (`Program.errors`:
+  its class's code, its message) and one more for each field name and kind any class has. Nothing is in flight across a
+  frame, so one set serves every player and every task. The codes: 1 `Error`, 2 `RangeError`, 3 `TypeError`, 16 and up
+  the program's own classes.
+- **`catch (e)`:** `e` is a record whose fields are made as the body reads them — `e.message`, `e.name`, `e.need` — each a
+  copy taken at the catch's start, so an error thrown and caught inside the catch changes none of them. `e instanceof
+  OutOfGold` is a test of the code against that class and every class that extends it, filled in once the program has
+  been walked and every class that is thrown is known. `` `${e}` `` and `String(e)` are "RangeError: too far", or the name
+  alone with no message. `catch { }` takes nothing. A caught error handed to a function that is inlined is itself.
+- **Through functions:** inlined, a throw is a jump to the catch. A called function returns at once with the error in
+  flight, and a call of one that may (it throws, it calls itself, it calls one that may) is followed by a look at the
+  code. Recursion needs nothing of its own: each frame comes back as on a return, and the look goes on up.
+- **`finally`** is not in the IR. It is copied before each `break`, `continue` and `return` that leaves the try (a
+  `return`'s value worked out first, as JavaScript does), after the try, and into a `try` around the whole that puts the
+  error in flight aside, runs the finally, puts it back and throws on. A finally that would `return`, `break` or
+  `continue` out of itself is refused: one copy of it runs on an error's way, where there is nowhere to go.
+- **What nothing catches** is said in red, as the game's faults are — "TrigScript: uncaught OutOfGold: need 20 more, line
+  12." — and in the simulator a fault at the throw's line. A program or a task then ends, as an async function does in
+  JavaScript; a handler of an event that runs within the frame gives up that turn only, and the listener goes on.
+- **Waiting:** a try may span `await` and `sleep`. An error in a branch of `Promise.all` / `race` leaves the statement,
+  and the other branches stop where they are, as a race's losers do. A task's error never reaches what started it.
+- **A stack that runs out** is a `RangeError`, "Maximum call stack size exceeded", which a catch takes — when the program
+  throws or catches anything; one that does neither stops, as in 3.x. The other faults stay as they were: an index past
+  either end is not an error in JavaScript either, and a heap that runs out is said once and the push does nothing.
+- **Unwinding what is held:** a loop over a text gives the copy it walks back to the heap, and a loop over a `Map` or a
+  `Set` counts itself out, on an error's way as on a `break`.
+
+Cost (lifted game, 100 a frame): a throw caught in the same body, about 37 conditions and actions; a `try` around calls
+of a function that may throw, about 19, plus the look after each call; a `try` / `finally` that nothing leaves, about 18.
+**Checked:** `tests/errors.test.ts` (28, each body also run as JavaScript and the prints compared, and the refusals; a
+leak test that fails without the unwinding); `eud-build` fixture `errors` through eudplib; `probes/game-errors.ts`, six
+tests, the same lines from the lifted game and the simulator, among them 4 800 errors out of loops that hold something,
+and the stack run out at 1 024; game-check: no access Remastered ends the game for. The probes of B1–B3 and B6 still pass.
+
+**Not yet:** `await t` of a task that threw does not throw (the task's error is said, and `t` is only no longer
+running); an error kept in an array or a field; a method of a caught error's class; `cause` and `stack`; a `break` out of
+a `for…of` over a generator does not run the generator's finally, as JavaScript's `return()` would; a throw while a text
+is being put together (`${made()}${fails()}`) does not give back the block of a text made for an earlier part, in the
+game or the simulator (both lose the same block, so they still run out at the same text).
 
 ### B5. `Local<T>` and `sync()` (4.6.0)
 

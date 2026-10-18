@@ -95,6 +95,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "print": case "buildText": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
+      case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
       default: break;
     }
   };
@@ -115,6 +116,7 @@ function statements(body: Stmt[], visit: (s: Stmt) => void, tasks = true) {
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
+      case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
       default: break;
     }
   };
@@ -195,6 +197,7 @@ function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, 
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": for (const p of s.call.params) fits(p.decl.id, p.init, s.call.at); s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
+      case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
       default: break;
     }
   };
@@ -239,6 +242,7 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
+      case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
       default: break;
     }
   };
@@ -302,10 +306,12 @@ function sleepsOnEveryPath(body: Stmt[]): boolean {
   for (const s of body) {
     switch (s.kind) {
       case "sleep": return true;
-      case "break": case "return": return true; // Leaves the loop: no freeze on this path.
+      case "break": case "return": case "throw": return true; // Leaves the loop: no freeze on this path.
       case "continue": return false;
       case "if": if (s.else && sleepsOnEveryPath(s.then) && sleepsOnEveryPath(s.else)) return true; break;
       case "block": if (sleepsOnEveryPath(s.body)) return true; break;
+      // A throw inside the body goes to the catch: that path sleeps when the body slept before anything that can throw, or the catch sleeps or throws on.
+      case "try": if (sleepsOnEveryPath(s.body) && (sleepsBeforeThrowing(s.body) || sleepsOnEveryPath(s.catch) || s.catch.some((c) => c.kind === "throw"))) return true; break;
       case "unrolled": if (s.iterations.some(sleepsOnEveryPath)) return true; break;
       // `all` waits for every branch, so one that always sleeps is enough; `race` goes on when the first ends, so every one has to.
       case "parallel": if (s.mode === "all" ? s.branches.some(sleepsOnEveryPath) : s.branches.length > 0 && s.branches.every(sleepsOnEveryPath)) return true; break;
@@ -322,21 +328,40 @@ function sleepsOnEveryPath(body: Stmt[]): boolean {
   return false;
 }
 
+/** Whether a statement list reaches a `sleep` before anything that may throw (a `throw`, a call). */
+function sleepsBeforeThrowing(body: Stmt[]): boolean {
+  const mayThrow = (root: unknown): boolean => {
+    if (Array.isArray(root)) return root.some(mayThrow);
+    if (!root || typeof root !== "object") return false;
+    const o = root as Record<string, unknown>;
+    if (o.kind === "throw" || ((o.kind === "call" || o.kind === "textCall") && o.call)) return true;
+    return Object.values(o).some((v) => !!v && typeof v === "object" && mayThrow(v));
+  };
+  for (const s of body) {
+    if (s.kind === "sleep") return true;
+    if (mayThrow(s)) return false;
+  }
+  return false;
+}
+
 /** Whether a loop's body can leave it: a `break` of its own (not of a loop or a switch inside it), or a `return`. */
 function leaves(body: Stmt[]): boolean {
-  const stmt = (s: Stmt, own: boolean): boolean => {
+  // `caught`: inside the body of a try, where a throw goes to its catch and not out of the loop.
+  const stmt = (s: Stmt, own: boolean, caught: boolean): boolean => {
     switch (s.kind) {
       case "break": return own;
       case "return": return true;
-      case "if": return s.then.some((x) => stmt(x, own)) || !!s.else?.some((x) => stmt(x, own));
-      case "block": return s.body.some((x) => stmt(x, own));
-      case "unrolled": return s.iterations.some((i) => i.some((x) => stmt(x, own)));
-      case "while": case "do": case "for": return s.body.some((x) => stmt(x, false));
-      case "switch": return s.cases.some((c) => c.body.some((x) => stmt(x, false)));
+      case "throw": return !caught;
+      case "if": return s.then.some((x) => stmt(x, own, caught)) || !!s.else?.some((x) => stmt(x, own, caught));
+      case "block": return s.body.some((x) => stmt(x, own, caught));
+      case "try": return s.body.some((x) => stmt(x, own, true)) || s.catch.some((x) => stmt(x, own, caught));
+      case "unrolled": return s.iterations.some((i) => i.some((x) => stmt(x, own, caught)));
+      case "while": case "do": case "for": return s.body.some((x) => stmt(x, false, caught));
+      case "switch": return s.cases.some((c) => c.body.some((x) => stmt(x, false, caught)));
       default: return false;
     }
   };
-  return body.some((s) => stmt(s, true));
+  return body.some((s) => stmt(s, true, false));
 }
 
 function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<string, FuncDecl>) {
@@ -367,6 +392,7 @@ function checkSleeps(body: Stmt[], out: ProgramDiagnostic[], functions: Map<stri
       case "switch": s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "call": s.call.body.forEach(stmt); break;
       case "block": s.body.forEach(stmt); break;
+      case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
       default: break;
     }
   };
@@ -481,6 +507,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "print": case "buildText": return { ...s, parts: mapTextParts(s.parts, copies) };
       case "call": return { ...s, call: call(s.call) };
       case "block": return { ...s, body: s.body.map(stmt) };
+      case "try": return { ...s, body: s.body.map(stmt), catch: s.catch.map(stmt) };
       default: return s;
     }
   };
