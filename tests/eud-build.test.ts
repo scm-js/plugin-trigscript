@@ -405,7 +405,7 @@ function build(name: string, src: string): { out: number; triggers: number } {
   const r = compileScript(ts, { [name.endsWith("Tsx") ? "main.tsx" : "main.ts"]: src, ...(FIXTURE_FILES[name] ?? {}) }, NAMES, { lib: LIB });
   expect(r.diagnostics).toEqual([]);
   // One program a fixture, but for the numbers probe, which has a second one for every player.
-  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" ? 2 : name === "leftoversProbe" ? 1 : name === "recursionProbe" || name === "eventsMore" ? 3 : 1);
+  expect(r.ir.length).toBe(name === "numbers" || name === "arraysProbe" || name === "functions" || name === "functionsProbe" || name === "callbacksProbe" || name === "insideProbe" || name === "stringsProbe" || name === "classesProbe" || name === "mapProbe" || name === "local" ? 2 : name === "leftoversProbe" ? 1 : name === "recursionProbe" || name === "eventsMore" ? 3 : 1);
   const ir = serializeIr(r.ir, r.strings, r.input);
   const dir = mkdtempSync(join(tmpdir(), "trigscript-eud-"));
   const irPath = join(dir, "trigscript.json");
@@ -434,6 +434,26 @@ FIXTURES.memory = `program(async () => {
     await sleep(frames(1));
   }
 });`;
+// B5: what only one computer knows, shown under a test of it, and sent to every computer with sync() — for one player
+// named and for each player of a per-player program.
+FIXTURES.local = `program(async () => {
+  while (true) {
+    if (local.mouse.x > 400) print(\`right \${local.camera.x + local.mouse.x}\`);
+    if (keyPressed(P1, "Q")) {
+      const x = await sync(P1, local.camera.x + 320);
+      setResources(P1, "set", x, "ore");
+    }
+    await sleep(frames(1));
+  }
+});
+program(async () => {
+  const [x, y] = await sync(CurrentPlayer, local.camera.x, local.camera.y);
+  setResources(CurrentPlayer, "set", x + y, "gas");
+  const u = local.selected;
+  if (u) print(\`\${u.hp} of \${local.selectionCount}\`);
+  const m = first({ owner: CurrentPlayer, type: units.TerranMarine });
+  if (m) select(CurrentPlayer, m);
+}, { owner: AllPlayers });`;
 FIXTURES.uiTsx = `program(async () => {
     const cells = [0, 8, 17, 0];
     let hp = 40;
@@ -649,6 +669,6 @@ describe("the IR as the lowering reads it", () => {
     const ir = JSON.parse(serializeIr(r.ir, r.strings));
     const actions = ir.programs[0].body.filter((s: { kind: string }) => s.kind === "action").map((s: { record: { text: unknown; wav: unknown } }) => [s.record.text, s.record.wav]);
     expect(actions).toEqual([["hello", 0], [0, "sound\\x.wav"]]);
-    expect(ir.version).toBe(22);
+    expect(ir.version).toBe(23);
   });
 });

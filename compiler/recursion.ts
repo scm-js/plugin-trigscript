@@ -316,6 +316,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             s.value = v as NumExpr | BoolExpr;
             break;
           }
+          case "select": { s.units = operands(s.units.map((e) => ({ e, kind: "unit" as const })), pre, w) as UnitExpr[]; break; }
           case "unitDo": {
             const items: { e: Expr; kind: Kind }[] = [{ e: s.unit, kind: "unit" }];
             if (s.verb.do === "damage" || s.verb.do === "heal") items.push({ e: s.verb.amount, kind: "number" });
@@ -332,6 +333,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
             if (s.text) s.text = rewriteText(s.text, pre, w);
             break;
           }
+          case "syncSend": { s.value = (operands([{ e: s.value, kind: "number" as const }], pre, w) as NumExpr[])[0]; break; }
           case "centerLocation": {
             const done = operands([s.x, s.y, ...(s.size ? [s.size.width, s.size.height] : [])].map((e) => ({ e, kind: "number" as const })), pre, w) as NumExpr[];
             [s.x, s.y] = done;

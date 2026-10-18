@@ -179,7 +179,9 @@ export type InputSource =
   /** Where the player's mouse is on the map, in pixels. */
   | { source: "mouse"; axis: "x" | "y"; player: number }
   /** A typed line: with `capture` null, 1 on the frame a line matching the pattern arrives; else that capture's value on that frame, 0 otherwise. */
-  | { source: "chat"; pattern: string; capture: number | null; player: number };
+  | { source: "chat"; pattern: string; capture: number | null; player: number }
+  /** What `syncSend` of the slot sent from `player`'s computer, plus 1, once it has arrived; 0 until then (B5). */
+  | { source: "sync"; slot: number; player: number };
 
 /** Everything the input plugins are set up from, written into the IR file beside the programs. */
 export interface InputPlan {
@@ -194,6 +196,8 @@ export interface InputPlan {
   qcLocation: number;
   /** The 1-based number of the first of eight locations in a row MSQC keeps the players' mice in; null when no program reads the mouse. */
   mouseBase: number | null;
+  /** How many `sync()` slots the programs use (B5): each a value MSQC sends from one computer to all; absent when none. */
+  syncs?: number;
 }
 
 /** The unit type MSQC makes its command units of (the Valkyrie), and the player that holds them, as MSQC's setting takes it: what Magenta's probe maps were played with. */
@@ -252,8 +256,10 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
+      case "select": s.units.forEach(unit); break;
       case "tableWrite": any(s.value); break;
       case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
+      case "syncSend": sources.push({ source: "sync", slot: s.slot, player: s.player }); at ??= s.at; expr(s.value); break;
       case "if": expr(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) expr(s.cond); s.body.forEach(stmt); break;
       case "do": s.body.forEach(stmt); expr(s.cond); break;
@@ -294,6 +300,7 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
     else if (s.source === "click" && !buttons.includes(s.button)) buttons.push(s.button);
     else if (s.source === "chat" && !chats.some((c) => c.pattern === s.pattern)) chats.push(parseChatPattern(s.pattern));
   }
+  const syncs = Math.max(0, ...sources.map((s) => (s.source === "sync" ? s.slot + 1 : 0)));
   // The highest free slots among the first 63, so the low numbers a map maker reaches for first stay free.
   // (And those a library took with reserveLocation() when the script was built.)
   const used = new Set([...locations.entries.map((e) => e.value - 1), ...reserved.map((n) => n - 1)]);
@@ -314,7 +321,7 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
   // at once — the later replaces the earlier, since MSQC's carrier has one order. A press of its own ("went down") would
   // be lost that way, so every key is sent as held and a press is worked out where it arrives: held now, not before.
   if (held.length) for (const k of keys) if (!held.includes(k)) held.push(k);
-  const plan: InputPlan = { keys, ...(held.length ? { held } : {}), buttons, chats, qcLocation, mouseBase };
+  const plan: InputPlan = { keys, ...(held.length ? { held } : {}), buttons, chats, qcLocation, mouseBase, ...(syncs ? { syncs } : {}) };
   if (chats.some((c) => c.captures.some((x) => x.kind === "unit"))) {
     const seen = new Set<string>();
     plan.unitNames = [];
@@ -326,11 +333,34 @@ export function inputPlan(programs: Program[], locations: NameTable, units: Name
   return plan;
 }
 
+/**
+ * Each program numbers its `sync()` slots from 0; the slots of a build are one list, so a program's are moved past those of
+ * the programs before it. Gives how many the program has.
+ */
+export function numberSyncSlots(program: Program, base: number): number {
+  let count = 0;
+  // An expression may be one object in several places: each is moved once.
+  const seen = new Set<object>();
+  const walk = (v: unknown): void => {
+    if (Array.isArray(v)) { v.forEach(walk); return; }
+    if (!v || typeof v !== "object" || seen.has(v)) return;
+    seen.add(v);
+    const o = v as Record<string, unknown>;
+    if ((o.kind === "syncSend" || o.source === "sync") && typeof o.slot === "number") { count = Math.max(count, o.slot + 1); o.slot += base; }
+    for (const k in o) if (k !== "at") walk(o[k]);
+  };
+  walk(program.body);
+  walk(program.functions ?? []);
+  return count;
+}
+
 /** The names the lowering registers its cells under, which is how MSQC's and chatEvent's settings reach them. */
 export const INPUT_NAMES = {
   key: (i: number) => `tsin_key${i}`,
   held: (i: number) => `tsin_held${i}`,
   button: (i: number) => `tsin_button${i}`,
+  syncLocal: (i: number) => `tsin_sync${i}`,
+  syncIn: (i: number) => `tsin_sync${i}_in`,
   chatLocal: "tsin_chat",
   chatIn: "tsin_chat_in",
   captureLocal: (i: number) => `tsin_capture${i}`,
@@ -354,6 +384,8 @@ export function inputPlugins(plan: InputPlan): { before: Record<string, Record<s
   plan.held?.forEach((key, i) => { msqc[`KeyPress(${msqcKey(key)}); NotTyping`] = `${INPUT_NAMES.held(i)}, 1`; });
   plan.buttons.forEach((b, i) => { msqc[`MouseDown(${MSQC_BUTTON[b]})`] = `${INPUT_NAMES.button(i)}, 1`; });
   if (plan.mouseBase !== null) msqc.Mouse = plan.mouseBase;
+  // sync() (B5): each slot a value sent from the computer it was put on, as MSQC's `val` sends a typed number.
+  for (let i = 0; i < (plan.syncs ?? 0); i++) msqc[`${INPUT_NAMES.syncLocal(i)}.AtLeast(1); val, ${INPUT_NAMES.syncLocal(i)}`] = INPUT_NAMES.syncIn(i);
   if (plan.chats.length) {
     const sent = `${INPUT_NAMES.chatLocal}.AtLeast(1)`;
     msqc[`${sent}; val, ${INPUT_NAMES.chatLocal}`] = INPUT_NAMES.chatIn;

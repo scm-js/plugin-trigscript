@@ -1185,6 +1185,106 @@ const picked = await sync(sel[0]);       // Unit, the same on every machine, a f
 - **What can be local:** each read needs its address from the disassembly and a probe in
   Remastered. A3 checks the taint pass's answers in practice.
 
+**Probed (2026-10-17), before building.** First a correction to the above: the mouse is not a B5 value.
+`mouse(p)`, `clicked(p, button)` and `underMouse(p)` have reached every machine through MSQC since 3.4, and
+`keyHeld` since S2, so S3's aim and movement need nothing from B5. What is left is what only one machine knows:
+its camera, its selection, the local player, and the cursor on the screen without the trip to the others.
+
+The dump of Remastered's emulator (R0, read in Ghidra) says what each of those reads, and
+`probes/local-reads.ts` + `.py` was played four times, in single player and in a multiplayer game hosted alone:
+
+| Value | Remastered's emulator | Played |
+| --- | --- | --- |
+| Local player `0x512684` | the real local player number; a write is kept in a copy beside the game | 0 |
+| Camera `0x62848C` / `0x6284A8` | the real camera, read by the drawing code; writes ignored | follows scrolling. The view is **853** wide in Remastered graphics (16:9) and **640** in Classic: the camera stops at 2219 and 2432 on a 3072-wide map |
+| Mouse `0x6CDDC4` | Remastered's input record | screen pixels ÷ 3 at 2560 × 1440, so 853 × 480 in widescreen, not 640 × 480. A write changes what the game thinks (the cursor's icon, what MSQC sends) until the mouse moves; the drawn cursor does not move |
+| Buttons `0x6CDDC0` | live | left 2, right 8, middle 32 |
+| Selection `0x6284B8` | the local selection, read as 1.16.1 unit addresses; a write of a unit's address puts the real unit in the slot | read: right. Written: the circles and the panel stay where they were (the panel's copy is refreshed only when the game's "selection changed" flag is set: 1.16.1 `0x4C38B0`, Remastered `+0x400100`), but orders go to the written unit |
+| A click's trip through MSQC | — | 5 to 6 frames, single player and multiplayer alone alike; a game between machines adds its turns |
+
+**Why orders followed a written selection, and why it is safe.** Both games keep the local selection apart from
+the one each player's orders run over (`0x6284E8 + player × 48`, which every machine holds alike and only a Select
+command changes): 1.16.1's walk over a command's units, `0x49A850`, reads it, as does Remastered's `+0x3D8800`. A
+right-click is sent with no units (1.16.1 `0x4563A0`), and 1.16.1 sends a Select only where the selection is set by
+the player (`0x4C0860`, seven callers). What sent the written Marine was **MSQC**: each time it carries input it
+saves the local selection from `0x6284B8`, selects its own Valkyrie, and puts the saved units back with a real
+Select command (`RestoreSelUnits`). The probe's line for the selection every machine holds showed the Marine the
+frame after F8, before any click. With MSQC in the map a written selection is sent to everyone; without it, the
+write stays on the one machine and orders go to the old selection everywhere. Neither splits the game. So
+`select(player, units)` is possible: write the local selection, send a Select command as MSQC does, and set the
+flag that refreshes the circles and the panel.
+
+**As built, first part (2026-10-17, IR 23, branch `b5-local`).** Differs from the above in these ways:
+
+- **The values:** `local.player`, `local.camera.{x,y}` and `local.mouse.{x,y}` (on the screen), each a cell read as
+  `memory`'s are (`memory.ts`: `LOCAL_FIELDS`), typed `Local<number>`. `Local<T>` is only a name for `T`: TypeScript
+  loses a mark at the first sum, so the check is the compiler's, as planned. The selection waits for the second part.
+- **The check** (`compiler/local.ts`) is a pass over each program's IR, gone round until nothing more is found. A cell
+  — variable, array, text buffer, parameter, a function's result — given a Local value is Local, and so is a cell
+  assigned under a test of one. Refused, at the line and naming where the value came from (`k (from local.camera.x)`):
+  an action that is not only shown (Play WAV, Display Text, Center View, Minimap Ping and the objectives are), a unit
+  changed or ordered, a location moved, a table of the game written; and under a test of one, waiting, starting or
+  cancelling a task, throwing, `sync()`, and a random draw (each draw moves the game's random numbers on — also
+  `local.mouse.x > 3 && random()`, where whether it is drawn depends on one). Leaving early is not refused: a loop,
+  a switch, a function or the program that a `break`, `continue` or `return` under a Local test leaves on some
+  computers only is walked again as a whole under the test, and what it does after is said where it does it. A called
+  function run under a test is walked as if all of it were. A `memory(address, …)` condition on a local address
+  counts. Not followed: the made texts' heap (a Local text may be longer on one computer).
+- **`await sync(player, value)`**: `syncSend` clears the slot's arrival on every computer and, on the player's own
+  (`f_getuserplayerid()`), puts value + 1 where MSQC's `val` sends it from; the program then waits a frame at a time
+  until a value from 1 to 1 048 575 has arrived (MSQC's cell reads 0xFFFFFFFF on a frame with nothing: the first
+  build waited for "not 0" and ended at once with 0, found by the lifted game), or the player is no person or has
+  left (0). Only where it is assigned, in an async program. Slots are numbered across the build; the Python clears
+  the sent cell after MSQC has sent it.
+- **Checked:** `tests/local.test.ts` (30), an eudplib build fixture, `probes/game-local.ts` in the lifted game and
+  the simulator, and `probes/game-local-players.ts` in two copies kept in step: each computer shows its own camera,
+  P2's synced mouse reaches both, and the copies agree every frame. A deliberate leak through a `memory()` condition
+  (before the check followed one) split the copies at frame 2, the detector naming the line that read the screen
+  position — so the passing test is worth something.
+- **The simulator** reads a program's local values at the computer of the player it runs for, and a `sync()`'s value
+  at the sender's; an arrival lasts one frame, as MSQC's cell does. Tests gained `moveCamera(x, y, player?)`.
+  `GameSim.moveMouse` wrote the mouse's y at 0x6CDDC6; the game keeps x and y in 32 bits each from the screen's corner
+  (0x6CDDC4, 0x6CDDC8), now written so.
+- **Played (2026-10-17, recording 21.11.18.13):** `probes/local-ui.tsx`, a live panel and Q / W sending a place with
+  `sync()`. It works in Remastered: the panel follows the mouse every frame, MSQC's copy of the mouse trails it while
+  it moves (779 against 666) and catches up when it stops; Q put a Marine at the screen's top left corner (64, 2688
+  with the camera at 0, 2624) and W one under the cursor, each "sent in 6 frames" for two sync()s in a row. Hosted as a
+  multiplayer game alone (21.12.36.14): the same, "sent in 12 frames" — about 6 a sync() against 3 in single player,
+  the multiplayer game's turns. Found by it: two sync()s in a row read their values 6 frames apart, so a moving
+  mouse's x and y come from two different places. A point wants both sent on the same frame.
+
+**As built, second part (2026-10-17).**
+
+- **`const [x, y] = await sync(P1, a, b)`**: up to four values, read and sent on the same frame, each caught on the
+  frame it arrives (MSQC's cell holds an arrival for that frame only, so a value that comes first is kept while the
+  others are waited for). One trip for a point, and one point.
+- **`local.selected`**: the unit in slot 0 of this computer's selection, the one the panel shows — a `Unit`, so its
+  fields read as any unit's, and re-checked before use like any kept unit (its uniqueness byte taken when read). A
+  new kind of unit in the IR, `selected`. **`local.selectionCount`**: the slots that hold one. Both Local: `u.kill()`
+  of the selected unit is refused, showing its hit points is not.
+- **`select(player, units)`**, a unit or up to twelve written out. On the player's computer: the twelve slots written,
+  the panel's flag set — 0x59723C, which Remastered's emulator backs with `+0x10A4450`, the flag its panel refresh
+  (`+0x400100`) tests before copying the selection into the panel — and a Select command of the units' tags (place
+  + 1, uniqueness byte << 11) queued, as MSQC's `RestoreSelUnits` does. Since it travels as a command, every
+  computer runs it alike: it is allowed under a Local test, and of Local units. In the lifted game it selects, and
+  two copies with P2 selecting stay in step.
+- Found on the way: a field of the selected unit was worked out when the script was built (the build-time
+  evaluator read `.type` off the marker object); it now stops there. `u?.type ?? -1` on a unit, and `if (a && b)` of
+  two units, are not supported — older than B5.
+- **To play:** `probes/local-select.tsx`: a live panel of the selection; S selects the Command Center, D the unit
+  under the cursor; W walks the Marines to the cursor with one `sync()` of x and y. What playing answers: whether the
+  circles follow a select() (nothing in the code says they do), whether the panel does, and who obeys a right-click.
+- **Played (2026-10-17, single player, recording 21.35.21.15):** the panel at the top followed every click and drag;
+  S with nothing selected made the bottom panel show the Command Center, D the Marine under the cursor (then the
+  Command Center), each at once — the flag at 0x59723C works. **The selection circles do not follow**: no circle
+  under the unit select() chose (the green swirl in the recording is the cursor's hover). W walked the Marines to the
+  cursor, "sent in 3 frames (x and y together)", half of the two sync()s in a row of the first map. Hosted as a
+  multiplayer game alone (21.38.15.16): with a Marine selected by hand, S turned the bottom panel to the Command
+  Center, and the S key itself then went to the Command Center's buttons ("Not enough minerals", its Build SCV) — the
+  command card follows too; right-clicks on the ground after it moved no Marine (the order went to the Command
+  Center); the Marine kept its circle and its bar. W: "sent in 6 frames (x and y together)", half of the 12 of two in
+  a row. So select() moves the panel, the buttons and the orders, in single player and in multiplayer; not the circles.
+
 ### B6. `fixed` and `Math` (4.7.0)
 
 - `fixed` is a 16.16 number with `+ - * /` and comparisons; mixing it with `number`

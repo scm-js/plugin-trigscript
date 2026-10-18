@@ -79,6 +79,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "unitLoop": s.body.forEach(stmt); break;
       case "unitWrite": unit(s.unit); expr(s.value); break;
       case "unitDo": unit(s.unit); if (s.verb.do === "damage" || s.verb.do === "heal") expr(s.verb.amount); break;
+      case "select": s.units.forEach(unit); break;
       case "tableWrite": any(s.value); break;
       case "if": expr(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) expr(s.cond); s.body.forEach(stmt); break;
@@ -92,6 +93,7 @@ function expressions(body: Stmt[], visit: (e: NumExpr | BoolExpr) => void, pick?
       case "return": if (s.value) any(s.value); break;
       case "action": for (const v of s.variables ?? []) expr(v.expr); if (s.text) text(s.text); break;
       case "centerLocation": expr(s.x); expr(s.y); if (s.size) { expr(s.size.width); expr(s.size.height); } break;
+      case "syncSend": expr(s.value); break;
       case "print": case "buildText": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
@@ -226,7 +228,7 @@ function assigned(body: Stmt[], functions: Map<string, FuncDecl>, into = new Set
   const followed = new Set<string>();
   const stmt = (s: Stmt) => {
     switch (s.kind) {
-      case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": into.add(THE_GAME); break;
+      case "action": case "unitWrite": case "unitDo": case "tableWrite": case "centerLocation": case "syncSend": case "select": into.add(THE_GAME); break;
       case "declare": into.add(s.decl.id); break;
       case "assign": case "assignBool": case "assignUnit": case "assignText": into.add(s.target); break;
       case "textLoop": into.add(s.decl.id); s.body.forEach(stmt); break;
@@ -480,6 +482,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "assignUnit": return { ...s, value: unit(s.value) };
       case "unitLoop": return { ...s, body: s.body.map(stmt) };
       case "unitWrite": return { ...s, unit: unit(s.unit), value: expr(s.value) };
+      case "select": return { ...s, units: s.units.map(unit) };
       case "unitDo": return { ...s, unit: unit(s.unit), verb: s.verb.do === "damage" || s.verb.do === "heal" ? { ...s.verb, amount: expr(s.verb.amount) } : s.verb };
       case "tableWrite": return { ...s, value: any(s.value) };
       case "assignText": return { ...s, value: text(s.value) };
@@ -503,6 +506,7 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "switch": return { ...s, value: expr(s.value), cases: s.cases.map((c) => ({ ...c, body: c.body.map(stmt) })) };
       case "return": return s.value ? { ...s, value: any(s.value) } : s;
       case "action": return { ...s, record: action(s.record) as unknown as ActionRecord, ...(s.variables ? { variables: s.variables.map((v) => ({ ...v, expr: expr(v.expr) })) } : {}), ...(s.text ? { text: text(s.text) } : {}) };
+      case "syncSend": return { ...s, value: expr(s.value) };
       case "centerLocation": return { ...s, x: expr(s.x), y: expr(s.y), ...(s.size ? { size: { width: expr(s.size.width), height: expr(s.size.height) } } : {}) };
       case "print": case "buildText": return { ...s, parts: mapTextParts(s.parts, copies) };
       case "call": return { ...s, call: call(s.call) };

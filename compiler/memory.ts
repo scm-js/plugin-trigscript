@@ -50,6 +50,61 @@ export const MEMORY_FIELDS: MemoryField[] = [
   },
 ];
 
+/**
+ * `local`: what only the computer the game runs on knows (TrigScript 4, B5) — who sits at it, where its screen is, where
+ * its mouse is on the screen. Each is a cell read as `memory`'s are, and every one is a `Local` value: it may differ from
+ * one computer to the next, so the compiler keeps it away from anything that changes the game (`local.ts`) and `sync()`
+ * is how it reaches everyone. Read from Remastered's emulator and played (`probes/local-reads`, 2026-10-17).
+ */
+export const LOCAL_FIELDS: MemoryField[] = [
+  {
+    path: ["player", ""], base: 0x512684, width: 4, readonly: true,
+    doc: "The player sitting at this computer: 0 for Player 1, 1 for Player 2, … Every computer has its own.",
+    remastered: "Remastered: the real local player number (its own EUD emulator). Played: 0 in a game hosted alone.",
+  },
+  {
+    path: ["camera", "x"], base: 0x62848c, width: 4, readonly: true,
+    doc: "Where this computer's screen is on the map: the left edge, in pixels. The screen is 640 pixels wide in Classic graphics and 853 in Remastered's at 16:9.",
+    remastered: "Remastered: the real camera, read live (its own EUD emulator); a write is ignored — centerView() moves it. Played.",
+  },
+  {
+    path: ["camera", "y"], base: 0x6284a8, width: 4, readonly: true,
+    doc: "Where this computer's screen is on the map: the top edge, in pixels.",
+    remastered: "Remastered: the real camera, read live (its own EUD emulator); a write is ignored. Played.",
+  },
+  {
+    path: ["mouse", "x"], base: 0x6cddc4, width: 4, readonly: true,
+    doc: "Where this computer's mouse is on the screen, from its left edge, in the game's pixels: 0 to 639 in Classic graphics, to 852 in Remastered's at 16:9. On the map it is local.camera.x + local.mouse.x; mouse(p) is that place, sent to every computer.",
+    remastered: "Remastered: its input record, read live; in widescreen wider than 640 (2560 screen pixels read as 853). Played.",
+  },
+  {
+    path: ["mouse", "y"], base: 0x6cddc8, width: 4, readonly: true,
+    doc: "Where this computer's mouse is on the screen, from its top edge, in the game's pixels: 0 to 479.",
+    remastered: "Remastered: its input record, read live. Played.",
+  },
+];
+
+/** The memory that is one computer's own: what a read of it gives is a `Local` value. Not only `LOCAL_FIELDS`: the keys and the selection too. */
+export const LOCAL_MEMORY: readonly { name: string; from: number; size: number }[] = [
+  { name: "the local player", from: 0x512684, size: 4 },
+  { name: "the keys held", from: 0x596a18, size: 256 },
+  { name: "the camera", from: 0x62848c, size: 4 },
+  { name: "the camera", from: 0x6284a8, size: 4 },
+  { name: "the selection", from: 0x6284b8, size: 48 },
+  { name: "the mouse buttons", from: 0x6cddc0, size: 4 },
+  { name: "the mouse", from: 0x6cddc4, size: 8 },
+];
+
+/** What of `LOCAL_MEMORY` an address is in, if any. */
+export function localMemoryAt(address: number): string | undefined {
+  return LOCAL_MEMORY.find((m) => address >= m.from && address < m.from + m.size)?.name;
+}
+
+/** The name a `local` field goes by: `local.camera.x`, `local.player`. */
+export function localName(f: MemoryField): string {
+  return f.path[1] ? `local.${f.path[0]}.${f.path[1]}` : `local.${f.path[0]}`;
+}
+
 /** A field as the table machinery takes it: one cell, no index. */
 export function memoryTableField(f: MemoryField): TableField {
   return { name: f.path.join("."), doc: f.doc, base: f.base, stride: 0, width: f.width, ...(f.readonly ? { readonly: true } : {}) };

@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 22
+IR_VERSION = 23
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -86,6 +86,9 @@ UNIT_SIZE = 336
 UNIT_SLOTS = 1700
 UNIT_END = UNIT_TABLE + UNIT_SIZE * UNIT_SLOTS
 OFF_SPRITE, OFF_POS, OFF_OWNER_ORDER, OFF_TYPE, OFF_UID = 0x0C // 4, 0x28 // 4, 0x4C // 4, 0x64 // 4, 0xA4 // 4
+# The selection a computer keeps: twelve unit addresses; and a Select command, 0x09, the count, a tag a unit (B5).
+SELECTION = 0x6284B8
+SELECT_COMMAND = Db(b"\x09" + bytes(27))
 # units.dat: max hit points (dword, 256 to a point), max shields (word), the group flags a trigger's
 # Men / Buildings / Factories go by (byte), the flingy a type moves as (byte).
 UNITS_MAX_HP = 0x662350
@@ -2220,6 +2223,16 @@ class Lowering:
             return UnitRef(fresh(ptr), fresh(self.num(e["epd"])), fresh(self.num(e["uid"])))
         if k == "call":
             return self.call(e["call"])
+        if k == "selected":
+            # A slot of this computer's selection (B5): the unit's address, as Remastered's emulator gives it, and the
+            # slot's uniqueness byte taken now, so a use later re-checks it like any kept unit.
+            ptr = f_dwread(SELECTION + 4 * int(e["index"]))
+            epd, uid = fresh(0), fresh(0)
+            if EUDIf()(ptr >= 1):
+                epd << (ptr - 0x58A364) // 4
+                uid << (f_dwread_epd(epd + OFF_UID) & 0xFF00)
+            EUDEndIf()
+            return UnitRef(fresh(ptr), epd, uid)
         raise Fail("trigscript: unknown unit expression %r%s" % (k, where(e)))
 
     def unit_part(self, e):
@@ -2591,6 +2604,35 @@ class Lowering:
         for i, v in enumerate((x, y, x + width, y + height)):
             f_dwwrite_epd(base + i, v)
 
+    def select(self, st):
+        """select() (B5): on the player's own computer the selection becomes the units still there — the twelve slots
+        (0x6284B8), the panel told it changed (0x59723C, the flag Remastered's panel refresh tests) — and a Select
+        command of their tags (place + 1, uniqueness byte << 11) goes to every computer, as MSQC puts a selection back."""
+        p = self.one_player(st["player"], st)
+        refs = [self.unit(u) for u in st["units"]]
+        if EUDIf()(f_getuserplayerid() == p):
+            n = fresh(0)
+            for ref in refs:
+                def keep(ref=ref):
+                    f_dwwrite(SELECTION + n * 4, ref.ptr)
+                    # The unit's tag: its place in the table from 1, its uniqueness byte above bit 11.
+                    uid = as_var(ref.uid) if ref.uid is not None else f_dwread_epd(as_var(ref.epd) + OFF_UID) & 0xFF00
+                    tag = f_div(as_var(ref.ptr) - 0x59CCA8, 336)[0] + 1 + uid * 8
+                    f_wwrite(SELECT_COMMAND + 2 + n * 2, tag)
+                    n.__iadd__(1)
+                self.when_alive(ref, keep)
+            if EUDIf()(n >= 1):
+                i = fresh(n)
+                if EUDWhile()(i <= 11):
+                    f_dwwrite(SELECTION + i * 4, 0)
+                    i.__iadd__(1)
+                EUDEndWhile()
+                DoActions(SetMemoryX(0x59723C, SetTo, 1, 0xFF))
+                f_bwrite(SELECT_COMMAND + 1, n)
+                QueueGameCommand(SELECT_COMMAND, n * 2 + 2)
+            EUDEndIf()
+        EUDEndIf()
+
     def center_location(self, st):
         """A location centred on a point, its size kept - or the size given, when nothing of the old one is read."""
         x, y = self.num(st["x"]), self.num(st["y"])
@@ -2838,6 +2880,10 @@ class Lowering:
             self.build_text(st)
         elif k == "centerLocation":
             self.center_location(st)
+        elif k == "select":
+            self.select(st)
+        elif k == "syncSend":
+            INPUT.send_sync(int(st["slot"]), self.one_player(st["player"], st), self.num(st["value"]))
         elif k == "call":
             self.call(st["call"])
         elif k == "block":
@@ -4190,6 +4236,10 @@ class Input:
         # With held keys every key is sent as held (compiler/input.ts#inputPlan): a press is held now and not before.
         self.held_pressed = [EUDArray(12) for _ in self.held]
         self.button_cells = [self.register("tsin_button%d" % i, EUDArray(12)) for i in range(len(self.buttons))]
+        # sync() (B5): each slot a value put on one computer (local) and what arrived of it, by player (everyone's).
+        self.syncs = int(self.plan.get("syncs", 0))
+        self.sync_local = [self.register("tsin_sync%d" % i, EUDVariable()) for i in range(self.syncs)]
+        self.sync_in = [self.register("tsin_sync%d_in" % i, EUDArray(12)) for i in range(self.syncs)]
         self.captures = max([len(c["captures"]) for c in self.chats] or [0])
         if self.chats:
             # Local: what chatEvent found on this computer, and what the patterns made of it.
@@ -4203,6 +4253,30 @@ class Input:
             self.chat_in = self.register("tsin_chat_in", EUDArray(12))
             self.capture_in = [self.register("tsin_capture%d_in" % i, EUDArray(12)) for i in range(self.captures)]
             self.unit_table = None
+
+    SYNC_MOST = 1048574  # what MSQC's val carries, less the 1 that tells a value from nothing
+
+    def sync_frame(self):
+        """Once a frame, before the programs: what was put to be sent has gone (MSQC sends in its beforeTriggerExec)."""
+        if self.sync_local:
+            DoActions([c.SetNumber(0) for c in self.sync_local])
+
+    def send_sync(self, slot, p, value):
+        """sync()'s first half: on every computer the slot's arrival for the player cleared; on the player's own the
+        value, kept to what MSQC carries, plus 1, put where MSQC sends it from."""
+        if slot >= self.syncs:
+            raise Fail("trigscript: the IR's input plan has no sync slot %d" % slot)
+        self.sync_in[slot][p] = 0
+        if EUDIf()(f_getuserplayerid() == p):
+            v = fresh(value)
+            if EUDIf()(v >= 0x80000000):
+                v << 0
+            EUDEndIf()
+            if EUDIf()(v >= self.SYNC_MOST + 1):
+                v << self.SYNC_MOST
+            EUDEndIf()
+            self.sync_local[slot] << v + 1
+        EUDEndIf()
 
     HELD_BANK_MOST = 8  # a burst after a lag spike pays out at most this many frames
     HELD_GRACE = 2  # frames with no message before a held key counts as let go
@@ -4256,6 +4330,11 @@ class Input:
             return self.cell(self.button_cells, self.buttons, i["button"], node)[p]
         if source == "mouse":
             return self.mouse(p, 0 if i["axis"] == "x" else 1, node)
+        if source == "sync":
+            slot = int(i["slot"])
+            if slot >= self.syncs:
+                raise Fail("trigscript: the IR's input plan has no sync slot %d%s" % (slot, where(node)))
+            return self.sync_in[slot][p]
         if source == "chat":
             number = self.chat_number(i["pattern"], node)
             out = fresh(0)
@@ -4612,6 +4691,7 @@ def beforeTriggerExec():
 
 
 def afterTriggerExec():
+    INPUT.sync_frame()
     if INPUT.held:
         INPUT.frame()
     if EVENTS is not None:

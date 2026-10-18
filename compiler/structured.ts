@@ -64,7 +64,7 @@ import { declarationOf, isOnCall, isScriptClass, libraryCallName, ON_EVENTS } fr
 import { ORDER_NAMES } from "./orders";
 import { DEAF_KEYS, KEY_NAMES, keyName, parseChatPattern, type ChatPattern, type InputSource } from "./input";
 import { scriptParams } from "./api";
-import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue } from "./runtime";
+import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGameFunction, isGameValue, isInput, isMouse, isPrint, isRead, isReader, isTable, isTrigger, isUnitPick, isUnitQuery, playerColor, READ_ARITY, textParts, type GameFunctionValue, type InputValue, type ReadValue, type ScriptString, type TableValue, type UnitPickValue, isSelected, isSelectionCount, SELECTION_ADDRESS } from "./runtime";
 import { cellMax } from "./tables";
 import { markViewWrites, type View } from "./views";
 import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
@@ -611,6 +611,8 @@ export class Structured {
       }
       const obj = sub(e.expression);
       if (!obj || obj.value === null || obj.value === undefined) return undefined;
+      // A field of the unit selected (\`local.selected.hp\`) is read when the map is played, as any unit's is.
+      if (isSelected(obj.value) || isSelectionCount(obj.value)) return undefined;
       return { value: (obj.value as Record<string, unknown>)[e.name.text] };
     }
     if (ts.isElementAccessExpression(e)) {
@@ -932,6 +934,8 @@ export class Structured {
   /** The same for what a finally puts aside, after the others: those may still add a field to the error in flight. */
   private readonly keepFills: (() => void)[] = [];
   /** Each `await t` of a task: what it fills in once the program is known to throw — a mark that it waits, and the task's error thrown on. */
+  /** The `sync()` slots of this program, 0, 1, …; the compiler numbers them across programs afterwards (`numberSyncSlots`). */
+  private syncSlots = 0;
   private readonly awaitedTasks: { h: VarDecl; watch: Stmt & { kind: "block" }; check: Stmt & { kind: "block" }; at: At; label: string }[] = [];
   /** What an error leaving a statement has to undo on its way (a loop through a Map counted out): put in a `try` once the program is known to throw. */
   private readonly unwinds: { held: Stmt & { kind: "block" }; cleanup: Stmt[] }[] = [];
@@ -1463,6 +1467,12 @@ export class Structured {
         while (ts.isParenthesizedExpression(given)) given = given.expression;
         const all = ts.isAwaitExpression(given) ? this.unwrap(given.expression) : undefined;
         if (all && ts.isCallExpression(all) && this.promiseCall(all) === "all" && ts.isArrayBindingPattern(d.name)) { this.allValues(d.name, all, d); continue; }
+        // `const [x, y] = await sync(P1, a, b)` (B5): every value sent on the same frame, a name for each.
+        if (all && ts.isCallExpression(all) && this.isLibraryCall(all, "sync") && ts.isArrayBindingPattern(d.name)) {
+          const vars = this.syncValues(all);
+          if (vars) this.bindPattern(d.name, d, vars.map((v) => ({ kind: "var", v }) as Binding), this.scope);
+          continue;
+        }
         const from = this.patternSource(d.initializer, d);
         if (from) this.bindPattern(d.name, d, from, this.scope);
         continue;
@@ -1489,6 +1499,7 @@ export class Structured {
         const g = this.gameDeclaration(init.expression);
         if (g && ts.isFunctionDeclaration(g) && g.asteriskToken) { this.c.error(init, `${init.expression.text} is a generator: a program walks one with for…of — for (const w of ${init.expression.text}(…)) { … }.`); continue; }
       }
+      if (ts.isCallExpression(init) && this.isLibraryCall(init, "sync") && init.arguments.length > 2) { this.c.error(init, "sync() of several values gives one for each: take them apart where it is awaited — const [x, y] = await sync(P1, a, b)."); continue; }
       if (ts.isAwaitExpression(this.stripParens(d.initializer)) && ts.isCallExpression(init) && this.promiseCall(init) === "all") { this.c.error(init, "Promise.all() gives a value for each item: take them apart where it is awaited — const [a, b] = await Promise.all([…])."); continue; }
       if (ts.isObjectLiteralExpression(init) && !this.keyedForm(init, this.c.checker.getTypeAtLocation(d.name))) {
         const record = this.declareRecord(d.name.text, init, this.c.checker.getTypeAtLocation(d.name), d);
@@ -4983,6 +4994,98 @@ export class Structured {
     this.emit({ kind: "while", cond: { kind: "not", expr: cond }, body: [{ kind: "sleep", cycles: 1, at, label }], at, label }, call);
   }
 
+  /** `await sync(player, value)` (B5): one value, as a number. Several are taken apart where they are awaited (`syncValues`). */
+  private syncValue(e: TS.CallExpression): NumExpr | null {
+    if (e.arguments.length > 2) { this.c.error(e, "sync() of several values gives one for each: take them apart where it is awaited — const [x, y] = await sync(P1, a, b)."); return null; }
+    const out = this.syncValues(e);
+    return out ? varRef(out[0]) : null;
+  }
+
+  /**
+   * `await sync(player, value, …)` (B5): `syncSend` for each value on the same frame — on every computer its slot's
+   * arrival cleared, on the player's own the value put to be sent — then, a frame at a time, each value caught on the
+   * frame it arrives (MSQC's cell holds it for that frame only) until all have come, or the player is no person or has
+   * left (0 for what has not come). The values may be `Local` ones; what comes back is not. A variable for each.
+   */
+  private syncValues(e: TS.CallExpression): VarDecl[] | null {
+    const { ts } = this;
+    let up: TS.Node = e.parent;
+    while (ts.isParenthesizedExpression(up)) up = up.parent;
+    if (!ts.isAwaitExpression(up)) { this.c.error(e, "sync() gives a promise: await it where it is assigned — const x = await sync(P1, local.camera.x)."); return null; }
+    let host: TS.Node = up.parent;
+    while (ts.isParenthesizedExpression(host)) host = host.parent;
+    const assigned = ts.isVariableDeclaration(host) || ts.isExpressionStatement(host) || (ts.isBinaryExpression(host) && host.operatorToken.kind === ts.SyntaxKind.EqualsToken);
+    if (!assigned) { this.c.error(e, "sync() waits, and its value is kept where it is awaited: const x = await sync(P1, local.camera.x), or x = await sync(…) on a line of its own."); return null; }
+    if (!this.inAsync(e)) { this.c.error(e, "sync() waits, and a program waits in an async function: program(async () => { … await sync(P1, local.camera.x); … })."); return null; }
+    if (this.inCallback > 0) { this.c.error(e, "sync() inside a function given to an array method: the method is one loop within the frame. A for…of over the same list can await between its turns."); return null; }
+    if (e.arguments.length < 2 || e.arguments.length > 5) { this.c.error(e, "sync() takes the player whose values they are and one to four values: await sync(P1, local.camera.x), const [x, y] = await sync(P1, a, b)."); return null; }
+    const who = this.evaluate(e.arguments[0])?.value;
+    if (typeof who !== "number" || !Number.isInteger(who) || (who !== CURRENT_PLAYER && (who < 0 || who >= 8))) { this.c.error(e.arguments[0], "sync() sends from one player's computer: P1 … P8, or CurrentPlayer, known when the script is built."); return null; }
+    const values: NumExpr[] = [];
+    for (const a of e.arguments.slice(1)) { const v = this.num(a); if (!v) return null; values.push(v); }
+    const at = this.at(e), label = this.label(e);
+    const slots = values.map(() => this.syncSlots++);
+    // All sent on this frame: read here, together, and on their way together.
+    slots.forEach((slot, i) => this.emit({ kind: "syncSend", slot, player: who, value: values[i], at, label }, e));
+    const arrived = (slot: number): NumExpr => ({ kind: "input", input: { source: "sync", slot, player: who }, at, label });
+    // Nothing yet is 0 (cleared by syncSend) or 0xFFFFFFFF (MSQC's cell on a frame with nothing, as the chat's): read
+    // signed, anything below 1 or past what val carries.
+    const came = (slot: number): BoolExpr => ({ kind: "and", items: [
+      { kind: "compare", op: ">=", left: arrived(slot), right: num(1), at, label },
+      { kind: "compare", op: "<=", left: arrived(slot), right: num(1048575), at, label },
+    ] });
+    const out = slots.map((_, i) => this.newVar(values.length > 1 ? `(synced ${i + 1})` : "(synced)", "number", at));
+    const got = slots.map((_, i) => this.newVar(`(sync ${i + 1} came)`, "boolean", at, { temp: true }));
+    out.forEach((v, i) => { this.emit({ kind: "declare", decl: v, init: num(0), at, label }, e); this.emit({ kind: "declare", decl: got[i], init: FALSE, at, label }, e); });
+    const latch = (): Stmt[] => slots.map((slot, i) => ({ kind: "if", cond: came(slot), then: [
+      { kind: "assign", target: out[i].id, value: { kind: "binary", op: "-", left: arrived(slot), right: num(1), at, label }, at, label },
+      { kind: "assignBool", target: got[i].id, value: TRUE, at, label },
+    ], at, label }));
+    const fact = (f: "slot" | "left"): NumExpr => ({ kind: "read", read: { source: "player", fact: f, player: who }, at, label });
+    const waiting: BoolExpr = { kind: "and", items: [
+      { kind: "or", items: got.map((g) => ({ kind: "not", expr: { kind: "var", id: g.id } }) as BoolExpr) },
+      { kind: "compare", op: "==", left: fact("slot"), right: num(2), at, label },
+      { kind: "compare", op: "!=", left: fact("left"), right: num(1), at, label },
+    ] };
+    for (const st of latch()) this.emit(st, e);
+    this.emit({ kind: "while", cond: waiting, body: [{ kind: "sleep", cycles: 1, at, label }, ...latch()], at, label }, e);
+    return out;
+  }
+
+  /** `local.selectionCount` (B5): this computer's selection slots that hold a unit, counted. */
+  private selectionCount(e: TS.Expression): NumExpr {
+    const at = this.at(e), label = this.label(e);
+    let sum: NumExpr | null = null;
+    for (let i = 0; i < 12; i++) {
+      const cell: NumExpr = { kind: "tableRead", cell: { name: `local.selection[${i}]`, base: SELECTION_ADDRESS + i * 4, stride: 0, index: 0, width: 4 }, at, label };
+      const one: NumExpr = { kind: "ternary", cond: { kind: "compare", op: "!=", left: cell, right: num(0), at, label }, whenTrue: num(1), whenFalse: num(0), at, label };
+      sum = sum ? { kind: "binary", op: "+", left: sum, right: one, at, label } : one;
+    }
+    return this.mark<NumExpr>(sum!, e);
+  }
+
+  /**
+   * `select(player, units)` (B5): what the player has selected becomes these units, at their computer and in the orders
+   * every computer runs for them — a unit, or a list of up to twelve written out.
+   */
+  private selectStatement(e: TS.CallExpression) {
+    const { ts } = this;
+    if (e.arguments.length !== 2) { this.c.error(e, "select() takes the player and what they will have selected: select(P1, u) or select(P1, [a, b])."); return; }
+    const who = this.evaluate(e.arguments[0])?.value;
+    if (typeof who !== "number" || !Number.isInteger(who) || (who !== CURRENT_PLAYER && (who < 0 || who >= 8))) { this.c.error(e.arguments[0], "select() is for one player: P1 … P8, or CurrentPlayer, known when the script is built."); return; }
+    const given = this.unwrap(e.arguments[1]);
+    const written = ts.isArrayLiteralExpression(given) ? [...given.elements] : [given];
+    if (written.length < 1 || written.length > 12) { this.c.error(given, "A player has one to twelve units selected: select(P1, [a, b, c])."); return; }
+    const units: UnitExpr[] = [];
+    for (const w of written) {
+      if (ts.isSpreadElement(w)) { this.c.error(w, "select() takes the units written out: select(P1, [a, b]), up to twelve."); return; }
+      const u = this.unitExpr(w);
+      if (!u) return;
+      units.push(u);
+    }
+    this.emit({ kind: "select", player: who, units, at: this.at(e), label: this.label(e) }, e);
+  }
+
   /** `Promise.all(…)`, `Promise.race(…)`, `Promise.any(…)`: which one, when the call is one of the language's own Promise. */
   private promiseCall(e: TS.Expression): "all" | "race" | "any" | undefined {
     const { ts } = this;
@@ -5050,6 +5153,7 @@ export class Structured {
     if (ts.isCallExpression(e)) {
       if (this.isSleep(e)) { this.sleepStatement(e); valueless("sleep()"); return; }
       if (this.isLibraryCall(e, "until")) { this.untilStatement(e); valueless("until()"); return; }
+      if (this.isLibraryCall(e, "sync")) { this.syncValues(e); return; }
       const mode = this.promiseCall(e);
       if (mode) {
         if (mode === "all") valueless("Promise.all()");
@@ -5626,6 +5730,7 @@ export class Structured {
     if (this.isLibraryCall(e, "rose") || this.isLibraryCall(e, "once")) { this.c.error(e, "rose() / once() are conditions: test them in an if."); return; }
     if (this.isLibraryCall(e, "shared")) { this.c.error(e, "shared() goes on a declaration: let total = shared(0)."); return; }
     if (this.isLibraryCall(e, "print")) { this.printStatement(e); return; }
+    if (this.isLibraryCall(e, "select")) { this.selectStatement(e); return; }
     if (this.isLibraryCall(e, "centerLocation")) { this.centerLocation(e); return; }
     if (this.isLibraryCall(e, "keyPressed") || this.isLibraryCall(e, "keyHeld") || this.isLibraryCall(e, "clicked") || this.isLibraryCall(e, "mouse") || this.isLibraryCall(e, "chatted")) { this.c.error(e, "This asks what a player did and does nothing on its own: test it in an if, or keep it in a const."); return; }
     const callee = this.evaluate(e.expression)?.value;
@@ -8414,6 +8519,8 @@ export class Structured {
     if (h) {
       if (isRead(h.value)) return this.readValue(h.value, e);
       if (isTable(h.value)) return this.tableRead(h.value, e);
+      if (isSelected(h.value)) { this.c.error(e, "local.selected is a unit, not a number: keep it and read one of its fields — const u = local.selected; if (u) … u.hp."); return null; }
+      if (isSelectionCount(h.value)) return this.selectionCount(e);
       if (isUnitPick(h.value)) { this.c.error(e, `${h.value.ident}() is a unit, not a number; read one of its fields: ${h.value.ident}(…)?.hp — or keep it: const u = ${h.value.ident}(…).`); return null; }
       if (isInput(h.value)) return this.inputValue(h.value, e);
       if (isMouse(h.value)) { this.c.error(e, "mouse() is a place on the map: read its x or its y."); return null; }
@@ -8584,6 +8691,7 @@ export class Structured {
     if (this.promiseCall(e)) return this.raceValue(e, "number") as NumExpr | null;
     if (this.isLibraryCall(e, "start")) return this.startValue(e);
     if (this.isLibraryCall(e, "lines")) return this.uiLinesValue(e);
+    if (this.isLibraryCall(e, "sync")) return this.syncValue(e);
     if (isOnCall(this.ts, this.c.checker, e)) return this.onEventValue(e);
     const method = this.methodCall(e);
     if (method !== undefined) return this.numberOf(method, e);
@@ -8793,6 +8901,7 @@ export class Structured {
     if (h) {
       if (h.value === null || h.value === undefined) return NO_UNIT;
       if (isUnitPick(h.value)) return this.pick(h.value, e);
+      if (isSelected(h.value)) return this.mark<UnitExpr>({ kind: "selected", index: h.value.index, at: this.at(e) }, e);
       this.c.error(e, `Expected a unit of the game, got ${describe(h.value)}.`);
       return null;
     }

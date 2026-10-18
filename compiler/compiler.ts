@@ -25,9 +25,10 @@ import { locate, resolveModule, runModules, STDLIB_DIR, stdlibFile, type LinkedF
 import { isMediaFile, videoValue } from "./media";
 import { STDLIB, stdlibImports } from "./stdlib";
 import { checkProgram } from "./eud";
+import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
 import { markRecursion, settleRecursion } from "./recursion";
-import { inputPlan, inputsOf, type InputPlan } from "./input";
+import { inputPlan, inputsOf, numberSyncSlots, type InputPlan } from "./input";
 import { programDeclarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
@@ -413,6 +414,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const variables: VariableInfo[] = [];
   const hints: LineHint[] = [];
   const ir: Program[] = [];
+  let syncSlots = 0;
   for (const entry of collector.entries) {
     const from = sourceOf(entry.kind === "trigger" ? entry.at : entry.descriptor.at);
     if (from && isTestFile(from.file)) {
@@ -430,6 +432,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     if (entry.options.name) emitted.program.name = entry.options.name;
     // What every number is read as, written into the operations that care, before anything looks at the program.
     const mixes = typeNumbers(emitted.program);
+    syncSlots += numberSyncSlots(emitted.program, syncSlots);
     markRecursion(emitted.program);
     const index = programs.length;
     ir.push(emitted.program);
@@ -437,9 +440,11 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     for (const d of programDeclarations(emitted.program)) if (!d.temp) variables.push({ name: d.name, kind: d.kind, program: index, shared: d.shared, at: d.at, ...(d.bits ? { bits: d.bits } : {}), ...(d.unsigned ? { unsigned: true } : {}), ...(d.fixed ? { fixed: true } : {}) });
     // What would freeze the game or cannot be built is a fault of the script, said where it is.
     const check = checkProgram(emitted.program);
+    // What only one computer knows, kept from what changes the game (B5).
+    const local = checkLocal(emitted.program);
     // Checked as the script wrote it; only then is a function that calls itself taken apart into what a backend can re-enter.
     const recursion = settleRecursion(emitted.program);
-    for (const d of [...mixes, ...check.errors, ...recursion]) {
+    for (const d of [...mixes, ...check.errors, ...local.errors, ...recursion]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });
     }

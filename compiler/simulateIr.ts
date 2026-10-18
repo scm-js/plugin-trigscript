@@ -518,6 +518,7 @@ class ProgramRun {
       // A kept unit is its place in the table, from 1, and the place's uniqueness byte: a unit made since in that place is another.
       case "unitAt": { const ptr = (yield* this.num(e.ptr)) >>> 0; yield* this.num(e.epd); const uid = (yield* this.num(e.uid)) >>> 0; return ptr >= 1 ? this.sim.game.at(ptr - 1, uid) : null; }
       case "call": { yield* this.call(e.call); return e.call.result ? this.unitVars.get(e.call.result.decl.id) ?? null : null; }
+      case "selected": return this.sim.selectedUnit(e.index);
     }
   }
 
@@ -1210,6 +1211,19 @@ class ProgramRun {
         this.sim.buffers.set(s.buffer, text);
         return "next";
       }
+      case "select": {
+        const units: SimUnit[] = [];
+        for (const u of s.units) { const got = yield* this.unit(u); if (got?.alive && units.length < 12) units.push(got); }
+        this.sim.selectUnits(units, this.sim.slotOf(s.player));
+        return "next";
+      }
+      case "syncSend": {
+        this.sim.readAt(s.player);
+        let value: number;
+        try { value = yield* this.num(s.value); } finally { this.sim.readAt(null); }
+        this.sim.syncSend(s.slot, s.player, value);
+        return "next";
+      }
       case "centerLocation": {
         const x = yield* this.amount(s.x); const y = yield* this.amount(s.y);
         const size = s.size ? { width: yield* this.amount(s.size.width), height: yield* this.amount(s.size.height) } : undefined;
@@ -1397,6 +1411,11 @@ export class ProgramSimulation {
   private heldKeys = false;
   /** Where each player's mouse is, in map pixels. */
   readonly mice = new Map<number, { x: number; y: number }>();
+  /** Where each player's screen is on the map, its top left corner in pixels (`local.camera`; B5). */
+  readonly cameras = new Map<number, { x: number; y: number }>();
+  /** sync() (B5): what arrived this frame, "slot:player" → the value + 1; and what was sent, arriving at the next frame. */
+  private readonly synced = new Map<string, number>();
+  private sending: [key: string, value: number][] = [];
   cycle = 0;
   /** The world is the caller's, run on the game's schedule: the programs run in its passes, and its frame is the game's. */
   private readonly shared: boolean;
@@ -1527,6 +1546,52 @@ export class ProgramSimulation {
   press(key: string, player = this.player): this { this.queued.events.add(`key:${player}:${keyName(key) ?? key}`); return this; }
   click(button: MouseButton = "left", player = this.player): this { this.queued.events.add(`click:${player}:${button}`); return this; }
   moveMouse(x: number, y: number, player = this.player): this { this.mice.set(player, { x, y }); return this; }
+  /** What each player has selected (B5): \`local.selected\`, \`local.selectionCount\`; select() and the tests set it. */
+  readonly selections = new Map<number, SimUnit[]>();
+  /** A player selects units: what \`local.selected\` reads at their computer, and what select() makes it. */
+  selectUnits(units: readonly SimUnit[], player = this.player): this { this.selections.set(player, units.slice(0, 12)); return this; }
+  /** The unit in a slot of the selection at the computer a program reads (\`localRead\`'s), if it is still there. */
+  selectedUnit(index: number): SimUnit | null {
+    const u = this.selections.get(this.sendingFrom ?? this.slotOf(13))?.[index];
+    return u?.alive ? u : null;
+  }
+  /** A player's screen moves: its top left corner to this place on the map, in pixels (what \`local.camera\` reads). */
+  moveCamera(x: number, y: number, player = this.player): this { this.cameras.set(player, { x, y }); return this; }
+
+  /**
+   * \`local.…\` (B5): what this computer knows. The simulator runs every computer's programs at once, so a program reads
+   * the computer of the player it runs for, and a sync()'s value is read at the computer of the player it is sent from
+   * (\`sendingFrom\`).
+   */
+  private sendingFrom: number | null = null;
+  private localRead(name: string): number | undefined {
+    const at = this.sendingFrom ?? this.slotOf(13);
+    const camera = this.cameras.get(at) ?? { x: 0, y: 0 };
+    const mouse = this.mice.get(at) ?? camera;
+    switch (name) {
+      case "local.player": return at;
+      case "local.camera.x": return camera.x;
+      case "local.camera.y": return camera.y;
+      case "local.mouse.x": return mouse.x - camera.x;
+      case "local.mouse.y": return mouse.y - camera.y;
+      default: {
+        // A selection slot: the unit's place in the table, from 1, as a kept unit's number is here; 0 for none.
+        const slot = /^local\.selection\[(\d+)\]$/.exec(name);
+        if (!slot) return undefined;
+        const u = this.selections.get(at)?.[Number(slot[1])];
+        return u?.alive ? u.slot + 1 : 0;
+      }
+    }
+  }
+
+  /** While a sync()'s value is worked out: whose computer's local values it reads. */
+  readAt(player: number | null): void { this.sendingFrom = player === null ? null : this.slotOf(player); }
+  /** sync()'s first half: the slot's arrival cleared everywhere, and the value on its way, arriving at the next frame. */
+  syncSend(slot: number, player: number, value: number): void {
+    const key = `${slot}:${this.slotOf(player)}`;
+    this.synced.delete(key);
+    this.sending.push([key, Math.min(Math.max(0, Math.trunc(value)), 1048574) + 1]);
+  }
   /** A player sends a line of chat: the next frame finds it, as the first of the programs' patterns it matches — or not at all. */
   type(line: string, player = this.player): this {
     for (const c of this.chats) {
@@ -1543,6 +1608,7 @@ export class ProgramSimulation {
       case "key": return (i.held ? this.downNow : this.current.events).has(`key:${p}:${i.key}`) ? 1 : 0;
       case "click": return this.current.events.has(`click:${p}:${i.button}`) ? 1 : 0;
       case "mouse": return this.mice.get(p)?.[i.axis] ?? 0;
+      case "sync": return this.synced.get(`${i.slot}:${p}`) ?? 0;
       case "chat": {
         const line = this.current.lines.get(p);
         if (!line || line.pattern !== i.pattern) return 0;
@@ -1587,6 +1653,8 @@ export class ProgramSimulation {
     if (c.name === "memory.game.frame") return this.frame;
     // The vision countdown, run down by the frames (visionStep) as much as written by the programs.
     if (c.name === "memory.vision.countdown") return this.countdown;
+    const local = c.name.startsWith("local.") ? this.localRead(c.name) : undefined;
+    if (local !== undefined) return local;
     const stored = this.tables.get(this.cellKey(c));
     if (typeof stored === "number") return Math.floor(stored / (c.scale ?? 1));
     const given = this.tableOf?.(c);
@@ -1751,6 +1819,10 @@ export class ProgramSimulation {
     // What was done since the last frame is what this one finds, and only this one.
     this.current = this.queued;
     this.queued = { events: new Set(), lines: new Map() };
+    // What was sent arrives on this frame and only this one, as MSQC's cell holds it (B5).
+    this.synced.clear();
+    for (const [key, value] of this.sending) this.synced.set(key, value);
+    this.sending = [];
     // A key or a button down on this frame and the last is held, not pressed again: the game reports the frame it goes
     // down (MSQC's KeyDown / MouseDown), however many frames a tap lasts.
     const down = new Set([...this.current.events].filter((e) => e.startsWith("key:") || e.startsWith("click:")));

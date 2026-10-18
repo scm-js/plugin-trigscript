@@ -446,6 +446,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
         unit(s.unit);
         s.value = FLAGS.has(s.field) ? bool(s.value as BoolExpr) : floor(s.value as NumExpr, s.at);
         break;
+      case "select": s.units.forEach(unit); break;
       case "unitDo":
         unit(s.unit);
         if (s.verb.do === "damage" || s.verb.do === "heal") s.verb.amount = floor(s.verb.amount, s.at);
@@ -464,6 +465,7 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "switch": s.value = whole(s.value, s.at, "A switch's value"); s.cases.forEach((c) => c.body.forEach(stmt)); break;
       case "return": if (s.value && result) s.value = valueFor(result, s.value, s.at); break;
       case "action": for (const v of s.variables ?? []) v.expr = floor(v.expr, s.at); if (s.text) s.text = text(s.text); break;
+      case "syncSend": s.value = floor(s.value, s.at); break;
       case "centerLocation": s.x = floor(s.x, s.at); s.y = floor(s.y, s.at); if (s.size) s.size = { width: floor(s.size.width, s.at), height: floor(s.size.height, s.at) }; break;
       case "print": case "buildText": shown(s.parts); break;
       case "call": call(s.call); break;

@@ -120,7 +120,7 @@ export const ON_EVENTS = ["created", "died", "killed", "order", "morphed", "chat
 /** The library calls that must not appear inside a program body: they would run at build time, silently. */
 const FORBIDDEN_INSIDE = new Set(["trigger", "program", "hyperTriggers", "game"]);
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
-const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
+const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "sync", "select", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -132,7 +132,7 @@ const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "start", "r
 const READ_CALLS = new Set<string>([...READER_NAMES, ...UNIT_CALL_NAMES, ...INPUT_CALL_NAMES, "print"]);
 const isReadCall = (lib: string | null, args: number) => !!lib && (READ_CALLS.has(lib) || READ_ARITY.get(lib) === args);
 /** The library objects whose fields are cells of the game (`memory.vision.countdown`): a field is a value, but nothing around it is the script's. */
-const GAME_CELL_ROOTS = new Set(["memory"]);
+const GAME_CELL_ROOTS = new Set(["memory", "local"]);
 /**
  * The methods that take a function — `xs.map((x) => x * 2)`, `unitsOf(P1).forEach((u) => u.kill())`. Where such a call
  * is the program's, the function written in it is part of the program as a function declared in the body is: its
@@ -362,12 +362,15 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   };
   const memo = new Map<TS.Node, boolean>();
   const isGameDecl = (decl: TS.Declaration) => plan.game.has(owningDeclaration(ts, decl));
-  /** `memory.vision.countdown` — a field of one of GAME_CELL_ROOTS, two names down. */
+  /** `memory.vision.countdown`, `local.camera.x` — a field of one of GAME_CELL_ROOTS, two names down; or `local.player`, one. */
   const isGameCell = (n: TS.Node): boolean => {
+    if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && libraryName(ts, checker, n.expression) === "local") return true;
     if (!ts.isPropertyAccessExpression(n) || !ts.isPropertyAccessExpression(n.expression)) return false;
     const root = n.expression.expression;
     if (!ts.isIdentifier(root)) return false;
     const lib = libraryName(ts, checker, root);
+    // `local.selected.hp` is a field of a unit, not a cell: the cell is `local.selected`.
+    if (lib === "local" && n.expression.name.text === "selected") return false;
     return !!lib && GAME_CELL_ROOTS.has(lib);
   };
   const hoistable = (e: TS.Node): boolean => {
