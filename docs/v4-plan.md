@@ -7,7 +7,9 @@ emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece 
 framebuffer in the lifted game (*S4*, 2026-10-17); B6, fixed numbers and Math, built with a fifth showpiece, a
 raycaster in the fog (*S5*, 2026-10-17); B3, functions as values, and B4, `try` / `catch` / `throw`, built
 (2026-10-17); closures over locals, and the text and array methods a program was missing, built (*Closures and the
-missing methods*, 2026-10-17). The question it answers: now that there is a
+missing methods*, 2026-10-17); JSX components, functions from any file and the first two libraries, `trigscript/ui` and
+`trigscript/console`, with Snake as their showpiece (*Components, functions from any file, and the first libraries*,
+2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1571,6 +1573,50 @@ JavaScript and the prints compared; `tests/function-values.test.ts`'s two refusa
 lifted game and the simulator, the same lines: `probes/game-closures.ts` (6: counters, a turn's own `i`, shared
 variables, closures inside closures, handlers fired frames later, 3 000 made and let go of across 30 frames with the
 kept ones still there) and `probes/game-text-arrays.ts` (4).
+
+### Components, functions from any file, and the first libraries: ui and console (built 2026-10-17)
+
+The libraries the language was missing, and what they needed of it first.
+
+**Language, found missing while writing them:**
+- *JSX components.* `<Meter label="HP" value={hp} max={100} />`: a function of your own as an element. Its props are a
+  record of the attributes (an optional one left out is `undefined`, which `??` folds; `children` is the text between
+  the tags, typed `Children`), and its text is written into the text it stands in — its `<line>`s are lines there, as
+  React has it, not a text pasted onto the line before. A component is a function declared in the program, a `const`
+  arrow, a `game()` function, or (below) a function at the top of any file; its body is an expression or statements
+  ending with the one `return <…/>`.
+- *Functions from any file.* As classes from any file already were: a function declared at the top of a file — or a
+  `const` arrow there — is called by a program with its own values without `game()`, planned as a game function is,
+  its errors said only where a program uses it so. Called with values the script knows, it still runs when the script
+  is built, whatever JavaScript it uses. Kept in an array or a record (`const fs = [a, b]`) it is the program's function
+  as a value. Destructured parameters work for all of them.
+- *A function declared in a block sees the block's variables* (it saw only the program's top).
+- *What a function writes makes the array or record handed to it the program's:* `add(names, t)` where `add` pushes, a
+  `const shop = { … }` that `choose(…, shop)` writes. And a `const` record written directly is the program's too, as a
+  `const` array was (it said "declare it with let").
+- *A record's text field is a made text when the record is handed to a function*, which may give it one.
+- *JSX:* a colour worked out in the game by name (`color={i === sel ? "cyan" : "white"}`); `map` over an array of
+  texts and over a list handed in as a prop.
+- *The standard library may hold `.tsx` modules* (`STDLIB_EXT`).
+
+**`trigscript/ui`** (`stdlib/ui.tsx`): `Meter` (a labelled bar, green / yellow / red by the share), `Panel` (a title
+over its children), `MenuList` and `choose(player, count, menu)` (Up, Down, Enter; the state a record of yours that the
+view shows), `DialogBox` and `say(player, box, speaker, text)` with `typewriter`, `LogLines` and `log(lines, text,
+keep)`, `clock(frames)`, `thousands(n)`. One `ui.lines` a player, the components pieces of its view.
+
+**`trigscript/console`** (`stdlib/console.tsx`): `Screen(x, y, width, height, cell?)` — `clear`, `set`, `get`, `rect`,
+`line` (Bresenham), `blit(sprite(rows))`, `number` (3 × 5 digits) — and `present()`, which shows it on the map, and so
+on the minimap, a pixel an Overlord of the colour's owner (P3 … P8 and P1), making and taking away only what changed
+since the last time; `ScreenView` shows the same grid in the text lines. Generalises the Tetris probe's `UnitScreen`.
+
+**Showpiece: Snake** (`probes/snake.tsx`, `trigscript-snake.scx`): the board on the minimap with `console`, the score,
+a length meter and the game-over menu in the text lines with `ui`, the snake two arrays that `push` and `shift`. In the
+lifted game: its test passes in both; about 14k conditions and actions a frame, 400k on the first (the screen's 768
+cells pushed and the walls made — a fixed-size screen would cost less). Awaiting a play in Remastered.
+
+**Checked:** `tests/ui.test.ts` (components, 4 more), `tests/script-functions.test.ts` (6), `tests/ui-kit.test.ts`
+(5: the kit rendered, the meter's colour in the IR, the log, `choose` and `say` with keys pressed), `tests/console.test.ts`
+(4: drawing, digits, `present` making only what changed).
 
 ## Part C — the game, pushed
 
