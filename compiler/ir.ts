@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 21: functions as values — `fn` on a `const`: the number is a function's, the id of the `FuncDecl` it runs, which is what keeps that function in the map. A call through such a number is a call of a function the front end made (a *dispatcher*, a `switch` on its first parameter), so no new kind of statement. A function may now be called, and so lowered, before a variable it uses is declared: a backend makes a variable where it is first used.
  * 20: fixed-point numbers — `VarDecl.fixed` / `ArrayDecl.fixed` (a 16.16 number: the cell holds the value times 65 536), `fixed` on a `const` (its value is the raw cell), the intrinsics `fmul` / `fdiv` (a product and a quotient of two fixed numbers, rounded towards zero), `sqrt` (of a fixed, rounded down) and `atan2` (`table`: the program's array of arc tangents it reads), and `fixed` on a printed number (shown as a decimal). `numbers.ts` writes them; a backend never works a type out.
  * 19: more events — `unitLoop.source` also `killed` (a death in a fight, the killer in `was`), `ordered` (a unit that took up a new order, the one it had in `was`) and `morphed` (a unit that turned into another type, the type it was in `was`); `unitLoop.event` filters them by the new order or the killer.
  * 18: events — `unitLoop.source`: the units that came onto the map (`created`) or died (`died`) since the frame before, as the frame's events pass found them, where a loop without one goes through the unit table.
@@ -30,7 +31,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 20;
+export const IR_VERSION = 21;
 
 /** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
@@ -246,7 +247,8 @@ export const U32_MAX = 0xffffffff;
 
 export type NumExpr =
   /** `fixed`: a 16.16 number, `value` its raw cell (the value times 65 536); `numbers.ts` reads it so, a backend takes `value` as it is. */
-  | { kind: "const"; value: number; fixed?: boolean }
+  /** `fn`: the number is a function kept as a value (B3), the id of the function it stands for — what keeps that function in the map. */
+  | { kind: "const"; value: number; fixed?: boolean; fn?: string }
   | { kind: "var"; id: string }
   /** `hp[i]`: a cell of an array of numbers; 0 when the index is past either end. */
   | { kind: "element"; array: string; index: NumExpr; at: At }

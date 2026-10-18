@@ -61,7 +61,22 @@ export type Binding =
    * `cls`: the record is an instance — `new Squad()` — and this is its class, known when the script is built, which is what a
    * method call, a getter, `instanceof` and an overridden method are settled by.
    */
-  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration };
+  | { kind: "record"; fields: Map<string, Binding>; truth?: VarDecl; cls?: TS.ClassDeclaration }
+  /** A function known when the script is built (TrigScript 4, B3): a call of it is a call of its body, inlined or called as any function is. */
+  | { kind: "fn"; fn: FnValue };
+
+/**
+ * A function as a value: where it is written, and the scope it closes over — what the names in its body are bound to
+ * where it was written. `body` is the file's walk the function belongs to (`structured.ts#Body`), typed loosely here.
+ */
+export interface FnValue {
+  decl: TS.FunctionDeclaration | TS.ArrowFunction | TS.FunctionExpression;
+  parameters: readonly TS.ParameterDeclaration[];
+  body: TS.Block | TS.Expression;
+  closure: Scope | null;
+  target: unknown;
+  name?: string;
+}
 
 /** What `this` is bound under in the scope of a method's body: no declaration of the source stands for it. */
 export const THIS = { kind: -1 } as unknown as TS.Node;
@@ -94,12 +109,27 @@ export const UNIT_PARTS = ["ptr", "epd", "uid"] as const;
 export const HANDLE_PARTS = ["block", "length", "room", "size"] as const;
 export const TEXT_PARTS = ["addr", "block", "chars"] as const;
 
+let scopes = 0;
+
 export class Scope {
   private readonly map = new Map<TS.Node, Binding>();
   readonly parent: Scope | null;
+  /** In the order scopes were made: one made after another began is inside what that one's walk made. */
+  readonly serial = ++scopes;
+  /**
+   * Told of every name found outside the scope it was looked up in (B3): a function kept as a value is walked with one
+   * watching, which is how a variable it may not keep is found.
+   */
+  static watch: ((b: Binding, found: Scope, decl: TS.Node) => void) | null = null;
   constructor(parent: Scope | null) { this.parent = parent; }
   bind(decl: TS.Node, b: Binding) { this.map.set(decl, b); }
   lookup(decl: TS.Node): Binding | undefined {
-    return this.map.get(decl) ?? this.parent?.lookup(decl);
+    for (let s: Scope | null = this; s; s = s.parent) {
+      const b = s.map.get(decl);
+      if (b) { if (s !== this) Scope.watch?.(b, s, decl); return b; }
+    }
+    return undefined;
   }
+  /** Every binding of this scope itself, not its parents'. */
+  own(): IterableIterator<Binding> { return this.map.values(); }
 }

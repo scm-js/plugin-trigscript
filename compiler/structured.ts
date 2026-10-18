@@ -68,7 +68,7 @@ import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGa
 import { cellMax } from "./tables";
 import { markViewWrites, type View } from "./views";
 import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
-import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type Place, type RowField, type RowShape } from "./scope";
+import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type FnValue, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { FIXED_MAX, FIXED_MIN, fixedRaw } from "./numbers";
 import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
@@ -262,7 +262,16 @@ const SEARCHES = new Set(["some", "every", "find", "findLast", "findIndex", "fin
 type CallArgument = { init: NumExpr | BoolExpr | UnitExpr | TextExpr; label: string } | { binding: Binding };
 
 /** What a call that is not written as one hands `inline`: a method's instance, and — for `new`, a getter, a setter — the arguments, that nothing comes back, and what runs first in the body. */
-interface MethodCall { /** A generator, walked by a for…of: a copy of its body at each loop. */ generator?: boolean; self?: Binding; args?: readonly TS.Expression[]; nothing?: boolean; first?: (scope: Scope) => void; /** The call gives an instance: where the one it returns is kept, and the name one it makes is declared under. */ instance?: { name: string; made?: Binding }; /** What runs before the body, inside the call: the calls before this one in a chain (`v.add(w).scale(2)`), so that they run where the expression does. */ before?: Stmt[] }
+interface MethodCall { /** A function kept as a value (B3): the scope it was written in, which its body sees. */ closure?: Scope | null; /** A generator, walked by a for…of: a copy of its body at each loop. */ generator?: boolean; self?: Binding; args?: readonly TS.Expression[]; nothing?: boolean; first?: (scope: Scope) => void; /** The call gives an instance: where the one it returns is kept, and the name one it makes is declared under. */ instance?: { name: string; made?: Binding }; /** What runs before the body, inside the call: the calls before this one in a chain (`v.add(w).scale(2)`), so that they run where the expression does. */ before?: Stmt[] }
+
+/** What a value of a function's parameters or result is, for a function kept as a value. */
+type ValueKind = Kind | "text";
+
+/** A function kept as a value (B3): its number, the function that is called through it, and what it takes and gives. */
+interface FnTarget { id: number; fd: FuncDecl; params: ValueKind[]; result: ValueKind | "void"; name: string }
+
+/** The function a call through a value goes through, for calls of one shape: its first parameter is the number of the function to run. */
+interface Dispatcher { fd: FuncDecl; params: ValueKind[]; result: ValueKind | "void"; at: At; label: string }
 
 /** A function at one set of arrays passed: inlined where it was first met, called from then on (`fn`), or never to be (`never` says why). */
 interface FunctionSite {
@@ -335,6 +344,16 @@ export class Structured {
   private readonly walkingBodies = new Map<TS.Node, number>();
   private readonly identities = new WeakMap<object, number>();
   private lastIdentity = 0;
+  /** A function by name (a declared one, a const of the script's) as a value: one each, so that it is the same function wherever it is named. */
+  private readonly fnValues = new Map<TS.Node, FnValue>();
+  /** The functions kept as values (B3): each a number, and a function that is called through it. */
+  private readonly targets = new Map<FnValue, FnTarget>();
+  /** What a call through a value goes through: one function a shape of call, which runs the function whose number it is handed. */
+  private readonly dispatchers = new Map<string, Dispatcher>();
+  /** Functions given a number whose bodies are still to be walked: once the program's is, so that they see every name it declares, as JavaScript's do. */
+  /** How many attempts to make a function one that is called are under way (`callable`): their errors are caught. */
+  private attempts = 0;
+  private readonly pendingTargets: { fn: FnValue; t: FnTarget; node: TS.Node; returned: TS.Type }[] = [];
 
   constructor(c: StructuredContext) {
     this.c = c;
@@ -355,6 +374,13 @@ export class Structured {
       if (!(err instanceof LowerError)) throw err;
       this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
     }
+    try {
+      this.walkTargets();
+    } catch (err) {
+      if (!(err instanceof LowerError)) throw err;
+      this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
+    }
+    this.fillDispatchers(program);
     this.settleFunctions(program);
     this.checkTasks(program);
     markViewWrites(program, this.views);
@@ -843,6 +869,15 @@ export class Structured {
         continue;
       }
       if (!d.initializer) { this.c.error(d, `Give ${d.name.text} an initial value: let ${d.name.text} = 0 or = false.`); continue; }
+      // `const f = (x: number) => x + 1` (B3): the function itself, known when the script is built, so a call of f is a call of its body.
+      if (list.flags & ts.NodeFlags.Const) {
+        const written = this.unwrap(d.initializer);
+        if (ts.isArrowFunction(written) || ts.isFunctionExpression(written)) {
+          const fn = this.fnValueOf(written);
+          if (fn) { fn.name = d.name.text; this.scope.bind(d, { kind: "fn", fn }); }
+          continue;
+        }
+      }
       // `const count = layout.count` in a game function whose `layout` is known when the script is built: a value too, as
       // a const the plan computed is (a number, a boolean or a text: an object's fields may still be assigned).
       if (list.flags & ts.NodeFlags.Const) {
@@ -2806,6 +2841,9 @@ export class Structured {
       const decl = this.gameDeclaration(fn);
       if (decl && ts.isFunctionDeclaration(decl) && decl.body) return { parameters: decl.parameters, body: decl.body, closure: this.body === this.c.body ? this.topScope : null, name: decl.name?.text };
     }
+    // `xs.forEach(f)` with a const or a parameter that is a function (B3).
+    const known = this.fnValueOf(fn);
+    if (known && !known.decl.asteriskToken) return { parameters: known.parameters, body: known.body, closure: known.closure, name: this.functionName(known) };
     this.c.error(arg, `A function is not a value when the map is played: write it where it is used — xs.${method}((x) => …) — or name one declared with function in the program.`);
     return null;
   }
@@ -3758,7 +3796,21 @@ export class Structured {
     // `Unit | null`: a unit of the game, or none.
     const bare = (type.isUnion() ? type.types : [type]).filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) === 0);
     if (bare.length > 0 && bare.every((t) => !!t.getProperty("__unit"))) return "unit";
+    // A function (B3): kept as a number, which function it is; `f?: () => void` is one or undefined, 0.
+    if (bare.length > 0 && bare.every((t) => this.isFunctionType(t))) return "number";
     return null;
+  }
+
+  /** Whether `undefined` or `null` here stands for no function: as written (`undefined as (() => void) | undefined`), or where it goes (`let f: Fn | undefined = undefined`). */
+  private noFunction(expr: TS.Expression): boolean {
+    const { checker } = this.c;
+    const fits = (t: TS.Type | undefined) => !!t && this.isFunctionType(checker.getNonNullableType(t));
+    return fits(checker.getTypeAtLocation(expr)) || fits(checker.getContextualType(expr));
+  }
+
+  /** Whether a type is a function a program may keep: something called, not a game() function or a unit. */
+  private isFunctionType(type: TS.Type): boolean {
+    return type.getCallSignatures().length > 0 && (type.flags & this.ts.TypeFlags.Any) === 0 && !type.getProperty("__game") && !type.getProperty("__unit") && !type.getProperty("__task");
   }
 
   /** Whether a type is the Task start() gives back. */
@@ -4110,11 +4162,9 @@ export class Structured {
         // `n.toString()`: the number's digits.
         if (e.expression.name.text === "toString" && e.arguments.length === 0) { const parts = this.textOf(receiver); return parts ? this.textFrom(parts, e) : null; }
       }
-      let call: Call | undefined;
-      if (ts.isIdentifier(e.expression)) {
-        const decl = this.gameDeclaration(e.expression);
-        if (decl && ts.isFunctionDeclaration(decl)) call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
-      }
+      const user = this.userCall(e);
+      if (user === null) return null;
+      let call: Call | undefined = user;
       if (!call) {
         const callee = this.evaluate(e.expression)?.value;
         if (isGameFunction(callee)) call = this.gameCall(e, callee);
@@ -4901,11 +4951,13 @@ export class Structured {
     if (method !== undefined) { if (method) this.emit({ kind: "call", call: method, at: method.at, label: method.label }, e); return; }
     if (ts.isIdentifier(e.expression)) {
       const decl = this.gameDeclaration(e.expression);
-      if (decl) {
-        if (ts.isFunctionDeclaration(decl)) { const call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl); if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e); return; }
-        this.c.error(e, `${e.expression.text} is not a function.`);
-        return;
-      }
+      const call = this.userCall(e);
+      if (call !== undefined) { if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e); return; }
+      if (decl) { this.c.error(e, `${e.expression.text} is not a function.`); return; }
+    } else if (!ts.isPropertyAccessExpression(e.expression)) {
+      // `handlers[i](p)`, `make()()` (B3): a function the program keeps, called through its number.
+      const call = this.userCall(e);
+      if (call !== undefined) { if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e); return; }
     }
     if (ts.isPropertyAccessExpression(e.expression)) {
       const method = e.expression.name.text;
@@ -4938,6 +4990,9 @@ export class Structured {
       if (made) { this.keyedCall(e, made, e.expression.name.text, "statement"); return; }
       const member = this.unitMember(e.expression);
       if (member) { this.unitCall(e, member); return; }
+      // `ops.add(1, 2)`, `this.onDone()` (B3): a function kept in a field.
+      const call = this.userCall(e);
+      if (call !== undefined) { if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, e); return; }
     }
     if (this.isLibraryCall(e, "random")) { this.c.error(e, "random() does nothing on its own; test it in an if, or assign it to a variable."); return; }
     if (this.isSleep(e)) { this.sleepStatement(e); return; }
@@ -4960,6 +5015,11 @@ export class Structured {
       this.c.error(e, "This is a condition; test it in an if or a while.");
       return;
     }
+    // `xs.flatMap((x) => …)`: a method of the program's that takes a function, which this one is not.
+    if (ts.isPropertyAccessExpression(e.expression) && e.arguments.some((a) => ts.isArrowFunction(this.unwrap(a)) || ts.isFunctionExpression(this.unwrap(a)))) {
+      this.c.error(e, `${e.expression.name.text}() is not one of the methods a program has that take a function: forEach, map, filter, find, findIndex, findLast, findLastIndex, some, every, reduce and sort.`);
+      return;
+    }
     this.notConstant(e, "A call's arguments");
   }
 
@@ -4969,8 +5029,11 @@ export class Structured {
   private knownCondition(expr: TS.Expression): boolean | undefined {
     const narrowed = this.knownTypeof(expr) ?? this.knownIn(expr);
     if (narrowed !== undefined) return narrowed;
+    // A function known when the script is built is there (B3); an optional one left out is undefined, below.
+    if (this.fnValueOf(expr)) return true;
     const h = this.evaluate(expr);
     if (!h) return undefined;
+    if (h.value === undefined || h.value === null) return false;
     const v = h.value;
     if (typeof v === "boolean") return v;
     if (typeof v === "number") return v !== 0;
@@ -6816,6 +6879,297 @@ export class Structured {
   /* ── Functions ── */
 
   /** A call of a `game()` function: inlined from its own body, wherever that file is. */
+  /* ── Functions as values (TrigScript 4, B3) ── */
+
+  /**
+   * The function an expression is, when that is known when the script is built: an arrow or a function written there, a
+   * function declared in the body, a const holding one, a parameter handed one. Undefined for anything else — a function
+   * kept in a variable is a number of the program (`fnHeld`).
+   */
+  private fnValueOf(expr: TS.Expression): FnValue | undefined {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) {
+      return { decl: e, parameters: e.parameters, body: e.body, closure: this.scope, target: this.body, ...(e.name ? { name: e.name.text } : {}) };
+    }
+    if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return undefined;
+    const b = this.bindingOf(e);
+    if (b) return b.kind === "fn" ? b.fn : undefined;
+    if (!ts.isIdentifier(e)) return undefined;
+    const decl = declarationOf(ts, this.c.checker, e);
+    if (!decl) return undefined;
+    const known = this.fnValues.get(decl);
+    if (known) return known;
+    const closure = this.body === this.c.body ? this.topScope : null;
+    let fn: FnValue | undefined;
+    if (ts.isFunctionDeclaration(decl) && decl.body && this.body.plan.game.has(decl) && !decl.asteriskToken) {
+      fn = { decl, parameters: decl.parameters, body: decl.body, closure, target: this.body, name: decl.name?.text ?? "function" };
+    } else if (ts.isVariableDeclaration(decl) && this.body.plan.consts.has(decl) && decl.initializer && ts.isIdentifier(decl.name)) {
+      // `const sq = (x: number) => x * x`, which uses nothing of the program: a value of the script, and a function the program may call.
+      const written = this.unwrap(decl.initializer);
+      if (ts.isArrowFunction(written) || ts.isFunctionExpression(written)) fn = { decl: written, parameters: written.parameters, body: written.body, closure, target: this.body, name: decl.name.text };
+    }
+    if (fn) this.fnValues.set(decl, fn);
+    return fn;
+  }
+
+  /** A name for a function kept as a value: its own, or what holds it where it is written. */
+  private functionName(fn: FnValue): string {
+    const { ts } = this;
+    if (fn.name) return fn.name;
+    const p = fn.decl.parent;
+    if (p && (ts.isVariableDeclaration(p) || ts.isPropertyAssignment(p) || ts.isPropertyDeclaration(p)) && ts.isIdentifier(p.name)) return p.name.text;
+    if (p && ts.isBinaryExpression(p) && p.right === fn.decl) return p.left.getText(this.body.sf);
+    // `return (x) => x + k`: the function its maker returns.
+    for (let up: TS.Node | undefined = p; up; up = up.parent) {
+      if (ts.isReturnStatement(up) || (ts.isArrowFunction(up) && up.body === fn.decl)) continue;
+      if ((ts.isFunctionDeclaration(up) || ts.isMethodDeclaration(up)) && up.name) return `the function ${up.name.getText(this.body.sf)} returns`;
+      if (ts.isArrowFunction(up) && ts.isVariableDeclaration(up.parent) && ts.isIdentifier(up.parent.name)) return `the function ${up.parent.name.text} returns`;
+      if (!ts.isParenthesizedExpression(up) && !ts.isBlock(up) && !ts.isReturnStatement(up)) break;
+    }
+    if (p && ts.isCallExpression(p) && p.arguments.includes(fn.decl as TS.Expression)) return `the function handed to ${p.expression.getText(this.body.sf)}`;
+    return "the function";
+  }
+
+  /** What a value of this type is to a function kept as a value: a number, a boolean, a unit, a text. */
+  private valueKind(type: TS.Type): ValueKind | null {
+    return this.kindOf(type) ?? (this.isTextType(type) ? "text" : null);
+  }
+
+  /**
+   * A function as a value of the program: a number, one for each function, and the function made one that is called —
+   * walked once, its parameters variables, what it sees where it was written. A variable it may keep is the program's
+   * own (one cell, for good) or a value of the script; a variable of the function or the loop it was written in would be
+   * gone, or another, by the time it is called, and is refused with a word on what to write instead.
+   */
+  private functionId(fn: FnValue, node: TS.Node): NumExpr | null {
+    const { ts } = this;
+    let t = this.targets.get(fn);
+    if (!t) {
+      const name = this.functionName(fn);
+      const signature = this.c.checker.getSignatureFromDeclaration(fn.decl);
+      if (!signature) { this.c.error(node, `${name}: its parameters could not be read.`); return null; }
+      if (fn.decl.asteriskToken) { this.c.error(node, `${name} is a generator: a program walks one with for…of, and cannot keep it as a value.`); return null; }
+      if (ts.getModifiers(fn.decl)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) { this.c.error(node, `${name} is async, and an async function cannot be kept as a value yet: call it where it is written, or start() it.`); return null; }
+      const params: ValueKind[] = [];
+      for (const p of fn.parameters) {
+        const k = this.valueKind(this.c.checker.getTypeAtLocation(p.name));
+        if (p.dotDotDotToken || !ts.isIdentifier(p.name) || !k) {
+          this.c.error(p, `${name} is kept as a value, so it is called through its number, and its parameters are numbers, booleans, texts, units or other functions — ${p.name.getText(this.body.sf)} is not one of those.`);
+          return null;
+        }
+        params.push(k);
+      }
+      const returned = this.c.checker.getReturnTypeOfSignature(signature);
+      const result: ValueKind | "void" = (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 ? "void" : this.valueKind(returned) ?? "void";
+      if (result === "void" && (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined | ts.TypeFlags.Never)) === 0) {
+        this.c.error(node, `${name} is kept as a value, so it is called through its number, and it returns a number, a boolean, a text, a unit, another function or nothing — not ${this.c.checker.typeToString(returned)}.`);
+        return null;
+      }
+      const target = fn.target as Body;
+      const at = this.sourceOfIn(target, (fn.decl as { name?: TS.Node }).name ?? fn.decl);
+      const fd: FuncDecl = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
+      t = { id: this.targets.size + 1, fd, params, result, name };
+      // Set before the body is walked: a function that keeps itself (`state = tick`) is the same number.
+      this.targets.set(fn, t);
+      // Inside an attempt to make a function one that is called, now: what the body cannot keep is that attempt's failure.
+      if (this.attempts > 0) this.walkTarget({ fn, t, node, returned });
+      else this.pendingTargets.push({ fn, t, node, returned });
+    }
+    return this.mark<NumExpr>({ kind: "const", value: t.id, fn: t.fd.id }, node);
+  }
+
+  /**
+   * The bodies of the functions given numbers, each walked once the program's body is — `let state = idle` before
+   * `function idle() { state = busy; }` has to see `state` — with what it names from outside it watched.
+   */
+  private walkTargets() {
+    for (let next = this.pendingTargets.shift(); next; next = this.pendingTargets.shift()) this.walkTarget(next);
+  }
+
+  private walkTarget(next: { fn: FnValue; t: FnTarget; node: TS.Node; returned: TS.Type }) {
+    {
+      const { fn, t, node, returned } = next;
+      const { fd, params, result, name } = t;
+      const target = fn.target as Body;
+      const at = fd.at;
+      const scope = new Scope(fn.closure);
+      fn.parameters.forEach((p, i) => {
+        const type = this.c.checker.getTypeAtLocation(p.name);
+        const v = this.newVar((p.name as TS.Identifier).text, params[i], this.sourceOfIn(target, p.name), params[i] === "number" ? this.widthOf(type) : params[i] === "text" ? { text: "made" } : {});
+        fd.params.push(v);
+        scope.bind(p, { kind: "var", v });
+      });
+      if (result !== "void") fd.result = { decl: this.newVar(`(${name} result)`, result, at, { temp: true, ...(result === "number" ? this.widthOf(returned) : {}) }), kind: result };
+      // What the body names from outside it, watched while it is walked.
+      const inside = scope.serial;
+      const refused = new Set<TS.Node>();
+      const watching = Scope.watch;
+      Scope.watch = (b, found, decl) => {
+        if (found.serial >= inside || refused.has(decl) || this.keepable(b, found)) return;
+        refused.add(decl);
+        const what = (decl as { name?: TS.Node }).name?.getText((decl.getSourceFile?.() ?? this.body.sf)) ?? "a variable";
+        this.c.error(node, `${name} is kept as a value, and uses ${what}, a variable of the function or the block it was written in: by the time ${name} is called, ${what} may be gone or hold another call's value. A function kept as a value may use the program's own variables and what the script knows when it is built — hand ${what} over as an argument, or keep it in a variable of the program.`);
+      };
+      const depth = this.inlineDepth;
+      const copyArgsAt = this.copyArgsAt;
+      this.inlineDepth = 0;
+      this.copyArgsAt = -1;
+      try {
+        fd.body = this.walkFunction(fn.body, result, target, scope);
+      } finally {
+        Scope.watch = watching;
+        this.inlineDepth = depth;
+        this.copyArgsAt = copyArgsAt;
+      }
+      if (mentions(fd.body, "sleep") || mentions(fd.body, "parallel") || mentions(fd.body, "start")) this.c.error(node, `${name} is kept as a value, and it waits or starts a task: a function called through its number runs to its end in the frame it is called. Call it where it is written instead.`);
+      if (mentions(fd.body, "edge")) this.c.error(node, `${name} is kept as a value, and rose() / once() remember what they saw at the place they are written: test them where the function is written, and hand it what they found.`);
+      this.mark(fd, fn.decl);
+      this.functions.push(fd);
+    }
+  }
+
+  /** Whether a function kept as a value may name a binding found outside its body: the program's own, or a value of the script. */
+  private keepable(b: Binding, found: Scope): boolean {
+    if (b.kind === "value" || b.kind === "fn") return true;
+    if (found === this.topScope) return true;
+    // `this` of an instance the program made at its top, or an array of the program's handed over as itself: the same cells.
+    for (const own of this.topScope.own()) if (own === b) return true;
+    return false;
+  }
+
+  /**
+   * A call of a function of the program's: one declared in the body, one known as a value when the script is built
+   * (inlined or called as any function), or one kept in a variable, an array or a field — called through its number.
+   * Undefined when the callee is none of those, for the caller to try what else it may be; null when it was one and
+   * could not be compiled (reported).
+   */
+  private userCall(e: TS.CallExpression): Call | null | undefined {
+    const { ts } = this;
+    // `g?.()` of a function known to be left out: nothing happens.
+    if (e.questionDotToken) {
+      const known = this.evaluate(e.expression);
+      if (known && (known.value === undefined || known.value === null)) return { at: this.at(e), label: this.label(e), params: [], body: [] };
+    }
+    if (ts.isIdentifier(e.expression)) {
+      const decl = this.gameDeclaration(e.expression);
+      if (decl && ts.isFunctionDeclaration(decl)) return this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl) ?? null;
+    }
+    const fn = this.fnValueOf(e.expression);
+    if (fn) {
+      if (fn.decl.asteriskToken) return undefined;
+      return this.inline(e, fn.parameters, fn.body, fn.target as Body, this.functionName(fn), fn.decl, { closure: fn.closure }) ?? null;
+    }
+    if (this.fnHeld(e.expression)) return this.dispatch(e) ?? null;
+    return undefined;
+  }
+
+  /** Whether an expression is a function kept by the program — a variable, a cell of an array, a field, what a call gives — rather than one of the library's. */
+  private fnHeld(expr: TS.Expression): boolean {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const type = this.c.checker.getTypeAtLocation(e);
+    if (this.kindOf(type) !== "number" || !this.isFunctionType(this.c.checker.getNonNullableType(type))) return false;
+    if (this.evaluate(e)) return false;
+    if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) { const b = this.bindingOf(e); return b?.kind === "var" || b?.kind === "cell"; }
+    if (ts.isElementAccessExpression(e)) return !!this.bindingOf(e.expression) || !!this.arrayOf(e.expression);
+    return ts.isCallExpression(e) || ts.isConditionalExpression(e) || ts.isBinaryExpression(e);
+  }
+
+  /**
+   * A call through a function's number: the arguments worked out, then the dispatcher for calls of this shape, which runs
+   * the function whose number it is handed. A number known when the script is built (`makeAdder(3)(4)` inlined to a
+   * constant) calls its function straight away.
+   */
+  private dispatch(e: TS.CallExpression): Call | undefined {
+    const { ts } = this;
+    const { checker } = this.c;
+    const callee = checker.getNonNullableType(checker.getTypeAtLocation(e.expression));
+    const signature = callee.getCallSignatures()[0];
+    if (!signature) { this.c.error(e, "This is not a function."); return undefined; }
+    const params: ValueKind[] = [];
+    const widths: string[] = [];
+    for (const p of signature.parameters) {
+      const type = checker.getTypeOfSymbolAtLocation(p, e);
+      const k = this.valueKind(type);
+      if (!k) { this.c.error(e, `A function called through its number takes numbers, booleans, texts, units or other functions; ${p.name} is ${checker.typeToString(type)}.`); return undefined; }
+      params.push(k);
+      widths.push(k === "number" && this.widthOf(type).fixed ? "fixed" : k);
+    }
+    const returned = checker.getReturnTypeOfSignature(signature);
+    if (returned.getProperty("then")) { this.c.error(e, "A function kept as a value is not async yet: await it where it is written."); return undefined; }
+    const result: ValueKind | "void" = (returned.flags & (ts.TypeFlags.Void | ts.TypeFlags.Undefined)) !== 0 ? "void" : this.valueKind(returned) ?? "void";
+    const key = `${widths.join(",")}->${result}`;
+    let d = this.dispatchers.get(key);
+    if (!d) {
+      const at = this.at(e);
+      const fd: FuncDecl = { id: `(call through a value ${this.dispatchers.size + 1})#${this.nextId++}`, name: "(call through a value)", params: [], body: [], at };
+      fd.params.push(this.newVar("(which function)", "number", at));
+      params.forEach((k, i) => fd.params.push(this.newVar(signature.parameters[i].name, k, at, widths[i] === "fixed" ? { fixed: true } : k === "text" ? { text: "made" } : {})));
+      if (result !== "void") fd.result = { decl: this.newVar("(call through a value result)", result, at, { temp: true }), kind: result };
+      d = { fd, params, result, at, label: this.label(e) };
+      this.dispatchers.set(key, d);
+      this.functions.push(d.fd);
+    }
+    const which = this.num(e.expression);
+    if (!which) return undefined;
+    const label = this.label(e);
+    const out: Call = { name: e.expression.getText(this.body.sf), fn: d.fd.id, at: this.at(e), label, params: [{ decl: d.fd.params[0], init: which, label }], body: [] };
+    for (let i = 0; i < params.length; i++) {
+      const arg = e.arguments[i];
+      const k = params[i];
+      let init: NumExpr | BoolExpr | UnitExpr | TextExpr | null;
+      if (!arg) init = k === "number" ? num(0) : k === "boolean" ? FALSE : k === "unit" ? NO_UNIT : this.literalText("", e);
+      else if (ts.isSpreadElement(arg)) { this.c.error(arg, "A call through a function's number takes its arguments one by one."); return undefined; }
+      else init = k === "number" ? this.num(arg) : k === "boolean" ? this.boolValue(arg) : k === "unit" ? this.unitExpr(arg) : this.text(arg);
+      if (!init) return undefined;
+      out.params.push({ decl: d.fd.params[i + 1], init, label });
+    }
+    if (result !== "void") out.result = { decl: this.newVar(`(${out.name} result)`, result, out.at, { temp: true }), kind: result };
+    this.mark(out, e);
+    return out;
+  }
+
+  /**
+   * Once the program is walked: what each dispatcher runs. A function kept as a value is among its cases when its number
+   * is somewhere the program can reach (a function only an abandoned attempt made a number of is not) and its shape fits
+   * the calls — the parameters the dispatcher is handed, in order, and the result the calls want.
+   */
+  private fillDispatchers(program: Program) {
+    if (!this.dispatchers.size) return;
+    const byId = new Map(this.functions.map((f) => [f.id, f]));
+    const byTarget = new Map([...this.targets.values()].map((t) => [t.fd.id, t]));
+    const live = new Set<FnTarget>();
+    const seen = new Set<string>();
+    const walk = (root: unknown): void => {
+      if (Array.isArray(root)) { root.forEach(walk); return; }
+      if (!root || typeof root !== "object") return;
+      const o = root as Record<string, unknown>;
+      if (o.kind === "const" && typeof o.fn === "string") {
+        const t = byTarget.get(o.fn);
+        if (t && !live.has(t)) { live.add(t); walk(t.fd.body); }
+      }
+      if ((o.kind === "call" || o.kind === "textCall") && o.call && typeof o.call === "object") {
+        const fn = (o.call as Call).fn;
+        if (fn && !seen.has(fn)) { seen.add(fn); const f = byId.get(fn); if (f) walk(f.body); }
+      }
+      for (const v of Object.values(o)) if (v && typeof v === "object") walk(v);
+    };
+    walk(program.body);
+    for (const d of this.dispatchers.values()) {
+      const cases: { value: number | null; body: Stmt[] }[] = [];
+      for (const t of [...live].sort((a, b) => a.id - b.id)) {
+        if (t.params.length > d.params.length || t.params.some((k, i) => k !== d.params[i]) || (d.result !== "void" && t.result !== d.result)) continue;
+        const call: Call = { name: t.name, fn: t.fd.id, at: d.at, label: d.label, params: t.fd.params.map((p, i) => ({ decl: p, init: refOf(d.fd.params[i + 1]), label: d.label })), body: [] };
+        if (d.result === "void" || t.result === "void") { cases.push({ value: t.id, body: [{ kind: "call", call, at: d.at, label: d.label }, { kind: "break", at: d.at, label: d.label }] }); continue; }
+        call.result = { decl: this.newVar(`(${t.name} result)`, d.result, d.at, { temp: true }), kind: d.result };
+        const value = d.result === "text" ? ({ kind: "textCall", call } as TextExpr) : ({ kind: "call", call } as NumExpr);
+        cases.push({ value: t.id, body: [{ kind: "return", value, at: d.at, label: d.label }] });
+      }
+      d.fd.body = cases.length ? [{ kind: "switch", value: varRef(d.fd.params[0]), cases, at: d.at, label: d.label }] : [];
+    }
+  }
+
   private gameCall(call: TS.CallExpression, fn: GameFunctionValue): Call | undefined {
     const target = this.c.resolve(fn);
     if (!target) { this.c.error(call, "This game function's body could not be found again."); return undefined; }
@@ -6861,8 +7215,9 @@ export class Structured {
     if (kind !== "void") out.result = { decl: this.newVar(`(${name ?? "function"} result)`, kind, this.at(call), { temp: true, ...(kind === "number" ? this.widthOf(this.c.checker.getTypeAtLocation(call)) : {}) }), kind };
     this.mark(out, call);
     this.callees.set(out, decl);
-    // A function of the body closes over the program's variables; a game function sees only its own.
-    const closure = target === this.body && target === this.c.body ? this.topScope : null;
+    // A function of the body closes over the program's variables; a game function sees only its own; a function written as
+    // a value (B3) sees the scope it was written in.
+    const closure = as.closure !== undefined ? as.closure : target === this.body && target === this.c.body ? this.topScope : null;
     const scope = new Scope(closure);
     if (as.self) scope.bind(THIS, as.self);
     let ok = true;
@@ -6942,6 +7297,16 @@ export class Structured {
         if (!h) { this.notConstant(p.initializer, "A default value"); ok = false; return; }
         scope.bind(p, { kind: "value", value: h.value });
         asCalled(this.constantArgument(h.value, label, p) ?? `${p.name.text} is ${describe(h.value)}, which only the script has`);
+        return;
+      }
+      // `twice(() => n++)`, `each(xs, add)` (B3): the function itself, known when the script is built — a call of the
+      // parameter is a call of it, and a function that is called is one copy for each function it is handed.
+      const fnArg = this.isFunctionType(this.c.checker.getTypeAtLocation(p.name)) ? this.fnValueOf(arg) : undefined;
+      if (fnArg) {
+        if (this.assigns(body, p)) { this.c.error(p, `${p.name.text} is the function handed over; keep another in a let of the function's own to change it.`); ok = false; return; }
+        const b: Binding = { kind: "fn", fn: fnArg };
+        scope.bind(p, b);
+        asCalled({ binding: b });
         return;
       }
       const h = this.evaluate(arg);
@@ -7036,7 +7401,7 @@ export class Structured {
     if (given.length > parameters.length && !parameters.some((p) => p.dotDotDotToken)) { this.c.error(call, `${what} takes ${parameters.length} argument${parameters.length === 1 ? "" : "s"}.`); return out; }
 
     const at = this.sourceOfIn(target, (decl as { name?: TS.Node }).name ?? decl);
-    const site = args ? this.siteOf(decl, args) : undefined;
+    const site = args ? this.siteOf(decl, args, as.closure ?? undefined) : undefined;
     if (site && args) {
       if (site.fn) return this.calls(out, site.fn, args);
       // Inside the attempt to make it a function that is called: the function calls itself, and this is that call.
@@ -7143,7 +7508,7 @@ export class Structured {
   }
 
   /** What is known of a function at these arrays: a function that takes an array is one copy an array passed, as a template is. */
-  private siteOf(decl: TS.Node, args: CallArgument[]): FunctionSite {
+  private siteOf(decl: TS.Node, args: CallArgument[], closure?: Scope): FunctionSite {
     const part = (b: Binding): string => {
       switch (b.kind) {
         case "array": return `a${this.identity(b.a)}`;
@@ -7152,11 +7517,14 @@ export class Structured {
         case "keyed": return `k${this.identity(b.values ?? b.present ?? b)}`;
         case "hash": return `h${this.identity(b.slots)}`;
         case "texts": return `t${this.identity(b.rows)}`;
+        // A function handed over (B3): one copy a function, as one an array — the same function wherever it is named.
+        case "fn": return `f${this.identity(b.fn)}`;
         // A record kept in a `let` is one object the scope hands back; a row of an array of records is made anew at every use, and so never met twice.
         default: return `o${this.identity(b)}`;
       }
     };
-    const key = `${this.identity(decl)}:${args.map((a) => ("binding" in a ? part(a.binding) : "")).join(",")}`;
+    // A function written as a value is one in the scope it was written in: the same arrow in another copy of what holds it sees other variables.
+    const key = `${this.identity(decl)}${closure ? `@${this.identity(closure)}` : ""}:${args.map((a) => ("binding" in a ? part(a.binding) : "")).join(",")}`;
     let site = this.sites.get(key);
     if (!site) { site = {}; this.sites.set(key, site); }
     return site;
@@ -7214,9 +7582,11 @@ export class Structured {
     // Its body is a place of its own: how deep the copies around this attempt go says nothing about it.
     const depth = this.inlineDepth;
     this.inlineDepth = 0;
+    this.attempts++;
     try {
       fn.body = this.walkFunction(body, kind, target, scope, () => patterns.forEach((take) => take()));
     } finally {
+      this.attempts--;
       this.inlineDepth = depth;
       (this.c as { error: StructuredContext["error"] }).error = error;
     }
@@ -7389,7 +7759,12 @@ export class Structured {
   private num(expr: TS.Expression): NumExpr | null {
     const { ts } = this;
     const e = this.unwrap(expr);
+    // A function as a value (B3): its number.
+    const fn = ts.isArrowFunction(e) || ts.isFunctionExpression(e) || ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) ? this.fnValueOf(e) : undefined;
+    if (fn) return this.functionId(fn, e);
     const h = this.evaluate(expr);
+    // No function: `let f: (() => void) | undefined = undefined`.
+    if (h && (h.value === undefined || h.value === null) && this.noFunction(expr)) return num(0);
     if (h) {
       if (isRead(h.value)) return this.readValue(h.value, e);
       if (isTable(h.value)) return this.tableRead(h.value, e);
@@ -7595,14 +7970,13 @@ export class Structured {
         return out && out !== true ? (out as NumExpr) : null;
       }
     }
-    if (ts.isIdentifier(e.expression)) {
-      const decl = this.gameDeclaration(e.expression);
-      if (decl && ts.isFunctionDeclaration(decl)) {
-        const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
-        if (kind !== "number") { this.c.error(e, `${e.expression.text} does not return a number.`); return null; }
-        const call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
-        return call?.result ? this.mark<NumExpr>({ kind: "call", call }, e) : null;
-      }
+    {
+      const kind = this.kindOf(this.c.checker.getTypeAtLocation(e));
+      const decl = ts.isIdentifier(e.expression) ? this.gameDeclaration(e.expression) : undefined;
+      if (decl && ts.isFunctionDeclaration(decl) && kind !== "number") { this.c.error(e, `${(e.expression as TS.Identifier).text} does not return a number.`); return null; }
+      const call = this.userCall(e);
+      if (call === null) return null;
+      if (call) return call.result ? this.mark<NumExpr>({ kind: "call", call }, e) : (this.c.error(e, "This function does not return a number."), null);
     }
     const args = (n: number, what: string): NumExpr[] | null => {
       if (e.arguments.length !== n) { this.c.error(e, `${what} takes ${n} argument${n === 1 ? "" : "s"}.`); return null; }
@@ -7813,10 +8187,10 @@ export class Structured {
       if (over) return this.searchCall(e, over, e.expression.name.text, "unit") as UnitExpr | null;
     }
     if (ts.isCallExpression(e)) {
-      let call: Call | undefined;
-      const decl = ts.isIdentifier(e.expression) ? this.gameDeclaration(e.expression) : undefined;
-      if (decl && ts.isFunctionDeclaration(decl)) call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl);
-      else {
+      const user = this.userCall(e);
+      if (user === null) return null;
+      let call: Call | undefined = user;
+      if (!call) {
         const callee = this.evaluate(e.expression)?.value;
         if (isGameFunction(callee)) call = this.gameCall(e, callee);
         else { this.notConstant(e, "What picks the unit (the type, the owner, the location)"); return null; }
@@ -8153,9 +8527,9 @@ export class Structured {
       }
     }
     if (ts.isCallExpression(e)) {
-      if (ts.isIdentifier(e.expression)) {
-        const decl = this.gameDeclaration(e.expression);
-        if (decl && ts.isFunctionDeclaration(decl)) return this.callBool(e, () => this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl));
+      {
+        const decl = ts.isIdentifier(e.expression) ? this.gameDeclaration(e.expression) : undefined;
+        if ((decl && ts.isFunctionDeclaration(decl)) || this.fnValueOf(e.expression) || this.fnHeld(e.expression)) return this.callBool(e, () => this.userCall(e) ?? undefined);
       }
       if (this.isLibraryCall(e, "random")) {
         if (e.arguments.length === 0) return this.mark<BoolExpr>({ kind: "random", at: this.at(e) }, e);
@@ -8236,8 +8610,10 @@ export class Structured {
       const same: BoolExpr = { kind: "or", items: [{ kind: "and", items: [l, r] }, { kind: "and", items: [{ kind: "not", expr: l }, { kind: "not", expr: r }] }] };
       return op === "==" ? same : { kind: "not", expr: same };
     }
-    const l = this.num(e.left);
-    const r = this.num(e.right);
+    // A function against undefined (B3): a function's number is never 0, and no function is.
+    const fnSide = (x: TS.Expression) => this.isFunctionType(this.c.checker.getNonNullableType(this.c.checker.getTypeAtLocation(x)));
+    const l = isNull(e.left) && fnSide(e.right) ? num(0) : this.num(e.left);
+    const r = isNull(e.right) && fnSide(e.left) ? num(0) : this.num(e.right);
     if (!l || !r) return FALSE;
     return this.mark<BoolExpr>({ kind: "compare", op, left: l, right: r, at: this.at(e), label: `L${this.line(e)}: ${e.getText(this.body.sf).replace(/\s+/g, " ")}` }, e);
   }
