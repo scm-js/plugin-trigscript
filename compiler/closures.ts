@@ -230,7 +230,8 @@ export function countReferences(program: Pick<Program, "body">, functions: FuncD
   const lists = (root: unknown): void => {
     if (!root || typeof root !== "object") return;
     if (Array.isArray(root)) {
-      if (root.length && root.every((x) => x && typeof x === "object" && typeof (x as { kind?: unknown }).kind === "string" && isStmtKind((x as { kind: string }).kind))) {
+      // A list of statements (a `call` and a `pop` stand as statements too).
+      if (root.length && root.every((x) => x && typeof x === "object" && typeof (x as { kind?: unknown }).kind === "string" && (isStmtKind((x as { kind: string }).kind) || (x as { kind: string }).kind === "call" || (x as { kind: string }).kind === "pop"))) {
         root.forEach((st, i) => { if ((st as Stmt).kind === "declare" && parks(root.slice(i + 1))) acrossWaits.add((st as Stmt & { kind: "declare" }).decl.id); });
       }
       for (const x of root) lists(x);

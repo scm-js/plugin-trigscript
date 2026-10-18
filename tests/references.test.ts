@@ -99,6 +99,11 @@ describe("lifetime", () => {
     const sim = run("class B { next: B | null = null; constructor(public x: number) {} } let head: B | null = null; for (let f = 0; f < 4; f++) { let i = 0; head = null; while (i < 300) { const b = new B(i); b.next = head; head = b; i++; } await sleep(frames(1)); } let n = 0; let c = head; while (c) { n++; c = c.next; } print(`${n}`);", 8);
     expect(shown(sim)).toEqual(["300"]);
   });
+  it("what a variable holds across a wait is kept, whatever stands before it in its block", () => {
+    // The instance made at the top is a call standing as a statement in the same list as the variables below.
+    const sim = run("class T { left: T | null = null; constructor(public v: number) {} } class L { next: L | null = null; constructor(public v: number) {} } const root = new T(1); root.left = new T(2); let kept: L | null = null; let last: L | null = null; let made = 0; while (made < 3000) { last = new L(made); if (made % 1000 === 999) { last.next = kept; kept = last; } made++; if (made % 100 === 0) await sleep(frames(1)); } let n = 0; for (let c = kept; c; c = c.next) n++; print(`${last?.v ?? -1} ${n} ${root.left?.v ?? -1}`);", 40);
+    expect(shown(sim)).toEqual(["2999 3 2"]);
+  });
   it("an array of references emptied gives its rows back", () => {
     const sim = run("class B { constructor(public x: number) {} } const live: (B | null)[] = []; for (let f = 0; f < 5; f++) { live.length = 0; let i = 0; while (i < 300) { live.push(new B(i)); i++; } await sleep(frames(1)); } print(`${live.length} ${live[299]?.x ?? -1}`);", 8);
     expect(shown(sim)).toEqual(["300 299"]);

@@ -712,7 +712,7 @@ export class Structured {
       const field = this.c.checker.getSymbolAtLocation(e.name)?.declarations?.[0];
       const isField = !!field && (ts.isPropertyDeclaration(field) || ts.isPropertySignature(field) || ts.isPropertyAssignment(field) || ts.isShorthandPropertyAssignment(field) || ts.isParameter(field));
       // Through a reference (B9): the row it is, its cells read where the reference is now.
-      const classes = this.refClasses(this.c.checker.getTypeAtLocation(inner));
+      const classes = this.refClasses(this.c.checker.getTypeAtLocation(e.expression));
       if (classes && !ts.isCallExpression(inner)) {
         const self = inner.kind === ts.SyntaxKind.ThisKeyword ? this.scope.lookup(THIS) : undefined;
         if (self?.kind === "record") return self.fields.get(e.name.text);
@@ -8600,8 +8600,8 @@ export class Structured {
     // `v.add(w).scale(2)`: what the call before gives is what this one is called on.
     const before: Stmt[] = [];
     // Through a reference (B9): the row, worked out once.
-    const byRef = !!this.refClasses(this.c.checker.getTypeAtLocation(obj));
-    const self = byRef ? this.objectOf(obj) : ts.isCallExpression(obj) ? this.instanceCall(obj, "(made)", before) ?? undefined : this.bindingOf(obj);
+    const byRef = !!this.refClasses(this.c.checker.getTypeAtLocation(e.expression));
+    const self = byRef ? this.objectOf(e.expression) : ts.isCallExpression(obj) ? this.instanceCall(obj, "(made)", before) ?? undefined : this.bindingOf(obj);
     if (self?.kind === "record" && self.ref && self.ref.classes.length > 1) {
       // Which class the row is is the game's: each class's own member, or one for all when they share it.
       const groups = this.memberGroups(self.ref.classes, (m) => pick(m, name));
@@ -8785,7 +8785,8 @@ export class Structured {
     const { ts } = this;
     const e = this.unwrap(expr);
     if (e.kind === ts.SyntaxKind.ThisKeyword) return this.scope.lookup(THIS);
-    const classes = this.refClasses(this.c.checker.getTypeAtLocation(e));
+    // The type as written (`x as Node | null`), not what the checker narrowed the bare name to.
+    const classes = this.refClasses(this.c.checker.getTypeAtLocation(expr));
     if (!classes) return ts.isCallExpression(e) ? undefined : this.bindingOf(e);
     if (ts.isCallExpression(e) && this.madeHere.has(e)) return this.madeHere.get(e) ?? undefined;
     const place = this.num(e);
