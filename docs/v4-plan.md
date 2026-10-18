@@ -1616,7 +1616,8 @@ the text colours' order, fixed arrays of 2 048 cells (the first frame 712k → 4
 the chat). The minimap draws an Overlord as a dot with a gap round it; Overlords a tile apart do not fit (the game will
 not place most of them), so `new Screen(…, "solid")` makes each pixel a Pylon, which the minimap draws as its two-tile
 footprint: pixels side by side are one block, on buildable ground (`screen-map.mts --ground`). 320 Pylons on the grid
-in the lifted game, none moved.
+in the lifted game, none moved. Played (round 4): solid blocks on the minimap as expected, but on grey platform and with
+the Protoss supply counter climbing; the user prefers the dots on Space, which stay the default.
 
 **Showpiece: Snake** (`probes/snake.tsx`, `trigscript-snake.scx`): the board on the minimap with `screen`, the score,
 a length meter and the game-over menu in the text lines with `ui`, the snake two arrays that `push` and `shift`. In the
