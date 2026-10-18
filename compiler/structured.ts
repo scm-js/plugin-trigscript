@@ -1718,12 +1718,31 @@ export class Structured {
         const given = this.instanceCall(init, d.name.text);
         if (given !== undefined) { if (given) this.scope.bind(d, given); continue; }
       }
+      // `const r = c ? { x: 1 } : { x: 2 }`, `const v = c ? a.add(b) : a` (B9): a record made empty, and one or the other copied in.
+      if (ts.isConditionalExpression(init)) {
+        const type = this.c.checker.getTypeAtLocation(d.name);
+        const cls = this.classOfType(type);
+        if ((this.plainRecordType(type) || (cls && !this.refClasses(type) && this.isValueClass(cls))) && !this.kindOf(type)) {
+          const record = this.zeroRecord(d.name.text, type, d, cls);
+          if (record) { this.assignWhole(record, init, d); this.scope.bind(d, record); }
+          continue;
+        }
+      }
       // `const boss = s`, `const p = this.pos`: another name for the same instance, as it is for an object.
       if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init) || init.kind === ts.SyntaxKind.ThisKeyword) {
         const same = this.bindingOf(init);
         if (same?.kind === "inner" || same?.kind === "innerUnits") { this.scope.bind(d, this.takenCopy(same, d.name.text, d)); continue; }
         if (same?.kind === "record" && !same.truth) {
-          if (!(list.flags & ts.NodeFlags.Const) && this.assigns(this.body.plan.body, d)) { this.c.error(d, `${d.name.text} is another name for a record, and a record is not assigned whole: declare it with const, or copy the fields it needs.`); continue; }
+          // Given whole somewhere — this name, or the one it is taken from (B9): a copy of its own, since a record given whole
+          // is copied into. A copy is what JavaScript shows only while nobody writes a field of either: said otherwise.
+          const from = ts.isIdentifier(init) ? declarationOf(ts, this.c.checker, init) : undefined;
+          const mine = !(list.flags & ts.NodeFlags.Const) && this.assigns(this.body.plan.body, d);
+          const theirs = !!from && this.assigns(this.body.plan.body, from);
+          if ((mine || theirs) && !same.ref) {
+            if (!same.cls && (this.fieldsWritten(d) || (from && this.fieldsWritten(from)))) { this.c.error(d, `${d.name.text} is another name for a record that is given whole, and a field of one is written: the two would not stay one record. Copy the fields it needs ({ ...${init.getText(this.body.sf)} }), or keep one name.`); continue; }
+            this.scope.bind(d, this.recordCopy(same, d.name.text, d));
+            continue;
+          }
           this.scope.bind(d, same);
           continue;
         }
@@ -1830,6 +1849,9 @@ export class Structured {
         continue;
       }
       const kind = this.kindOf(type);
+      // `let best: number | undefined`, `const x = xs.find(…)` (B9): the value and whether there is one.
+      const maybe = kind ? null : this.maybeKind(type);
+      if (maybe) { const b = this.declareMaybe(d.name.text, maybe, type, d.initializer, d); if (b) this.scope.bind(d, b); continue; }
       // `const x = xs.find(…)` would be a number or undefined: searchCall says what to write instead.
       if (!kind && ts.isCallExpression(init) && ts.isPropertyAccessExpression(init.expression) && (init.expression.name.text === "find" || init.expression.name.text === "findLast")) {
         const over = this.overOf(init.expression.expression);
@@ -2038,6 +2060,8 @@ export class Structured {
       const key = d && (ts.isPropertyDeclaration(d) || ts.isParameter(d)) ? this.memberKey(d.name as TS.PropertyName) ?? p.name : p.name;
       const kind = this.kindOf(t);
       if (kind === "number" || kind === "boolean") { fields.set(key, { kind, width: kind === "number" ? this.widthOf(t) : {} }); continue; }
+      const maybe = kind ? null : this.maybeKind(t);
+      if (maybe) { fields.set(key, { kind: "maybe", of: maybe, width: maybe === "number" ? this.widthOf(checker.getNonNullableType(t)) : {} }); continue; }
       if (kind === "unit") { fields.set(key, { kind: "unit" }); continue; }
       if (this.isTextType(t)) { fields.set(key, { kind: "text" }); continue; }
       if (checker.isArrayType(t) || checker.isTupleType(t)) {
@@ -2075,6 +2099,7 @@ export class Structured {
         case "text": return TEXT_PARTS.map((part) => ({ key: `${key} ${part}`, kind: "number" as const, width: { unsigned: true } }));
         case "squad": return UNIT_PARTS.flatMap((part) => handle(`${key} ${part}`));
         case "record": return this.columnsOf(f.shape, `${key} `);
+        case "maybe": return [{ key, kind: f.of, width: f.width }, { key: `${key} there`, kind: "boolean" as const, width: {} }];
         default: return [{ key, kind: f.kind, width: f.width }];
       }
     });
@@ -2276,6 +2301,16 @@ export class Structured {
         out.cells.set(key, v);
         return true;
       }
+      case "maybe": {
+        let got: { value: NumExpr | BoolExpr; there: BoolExpr } | null;
+        if ("value" in src) got = src.value === undefined || src.value === null ? { value: f.of === "number" ? num(0) : FALSE, there: FALSE } : (() => { const v = f.of === "number" ? this.constOf({ value: src.value }, where) : typeof src.value === "boolean" ? { kind: "const" as const, value: src.value } : null; return v ? { value: v, there: TRUE } : null; })();
+        else if ("expr" in src) got = this.maybeValue(src.expr, f.of);
+        else got = src.binding.kind === "maybe" ? { value: this.valueOf(src.binding.value, f.of, where) as NumExpr | BoolExpr, there: this.thereOf(src.binding, where) } : (() => { const v = this.valueOf(src.binding, f.of, where) as NumExpr | BoolExpr | null; return v ? { value: v, there: TRUE } : null; })();
+        if (!got) return false;
+        out.cells.set(key, got.value);
+        out.cells.set(`${key} there`, got.there);
+        return true;
+      }
       case "unit": {
         let u: UnitExpr | null;
         if ("value" in src) { if (src.value !== null && src.value !== undefined) { this.c.error(where, `${name}: ${field} is a unit of the game, got ${describe(src.value)}.`); return false; } u = NO_UNIT; }
@@ -2453,6 +2488,7 @@ export class Structured {
         case "text": return [name, this.textCells(of, key, index)];
         case "squad": { const [ptr, epd, uid] = UNIT_PARTS.map((part) => this.listsAt(of, `${key} ${part}`, { of: "number", width: { unsigned: true } })); return [name, { kind: "innerUnits", name: `${of.name}[…].${key.replace(/ /g, ".")}`, ptr, epd, uid, index }]; }
         case "record": return [name, { kind: "record", fields: build(f.shape, `${key} `), ...(f.cls ? { cls: f.cls } : {}) }];
+        case "maybe": return [name, { kind: "maybe", value: { kind: "cell", a: of.fields.get(key)!, index }, there: { kind: "cell", a: of.fields.get(`${key} there`)!, index } }];
         default: return [name, { kind: "cell", a: of.fields.get(key)!, index }];
       }
     }));
@@ -2519,7 +2555,8 @@ export class Structured {
     if (!from) return null;
     const out: RowValues = { cells: new Map(), fill: [] };
     for (const [field, f] of shape) {
-      const src = from(field);
+      // An optional field left out (B9) is undefined.
+      const src = from(field) ?? (f.kind === "maybe" ? { value: undefined } : undefined);
       if (!src) { this.c.error(literal, `${name}: a record has ${[...shape.keys()].join(", ")}; ${field} is missing.`); return null; }
       if (!this.rowField(name, field, f, src, out, literal)) return null;
     }
@@ -3376,6 +3413,7 @@ export class Structured {
   /** A field of a record of the program from whatever a spread gave it: always a variable of its own, since a field can be assigned. */
   private fieldCopy(b: Binding, name: string, at: TS.Node): Binding {
     if (b.kind === "record") return { kind: "record", fields: new Map([...b.fields].map(([field, inner]) => [field, this.fieldCopy(inner, `${name}.${field}`, at)])) };
+    if (b.kind === "maybe") return { kind: "maybe", value: this.fieldCopy(b.value, name, at), there: this.fieldCopy(b.there, `${name} (there)`, at) };
     if (b.kind !== "value") return this.takenCopy(b, name, at);
     const kind: Kind = typeof b.value === "boolean" ? "boolean" : "number";
     const v = this.newVar(name, kind, this.sourceOf(at));
@@ -4020,7 +4058,7 @@ export class Structured {
    * is worked out again wherever the expression is, a loop's condition included. `otherwise` is what `find` gives when
    * nothing is found (`xs.find(…) ?? 0`).
    */
-  private searchCall(e: TS.CallExpression, over: Over, method: string, as: Kind, otherwise?: TS.Expression): NumExpr | BoolExpr | UnitExpr | null {
+  private searchCall(e: TS.CallExpression, over: Over, method: string, as: Kind, otherwise?: TS.Expression, found?: VarDecl): NumExpr | BoolExpr | UnitExpr | null {
     const at = this.at(e);
     const label = this.label(e);
     const name = `${this.overName(over)}.${method}`;
@@ -4067,7 +4105,8 @@ export class Structured {
         if (as !== holds) return wrong(`${name}(…) gives what ${this.overName(over)} holds: a ${holds}.`);
         // A unit that was not found is no unit, as first() gives; a number has nothing of the kind.
         let none: NumExpr | BoolExpr | UnitExpr | null = holds === "unit" ? NO_UNIT : null;
-        if (holds !== "unit") {
+        if (holds !== "unit" && found) none = holds === "number" ? num(0) : FALSE;
+        else if (holds !== "unit") {
           if (!otherwise) return wrong(`${name}(…) is undefined when nothing is found, and there is no undefined when the map is played: say what it is then — ${name}(…) ?? 0 — or take the place with ${method === "find" ? "findIndex" : "findLastIndex"}(…), which is -1.`);
           none = holds === "number" ? this.num(otherwise) : this.boolValue(otherwise);
           if (!none) return null;
@@ -4077,8 +4116,10 @@ export class Structured {
           this.loopOver(over, e, (item, index) => {
             const p = this.predicate(fn, method, this.handed(over, item, index), e);
             if (!p) { ok = false; return; }
-            this.emit({ kind: "if", cond: p, then: ret(this.valueOf(item, holds, e)), at, label }, e);
+            // Kept as a number or nothing (B9): whether one was found, beside it.
+            this.emit({ kind: "if", cond: p, then: [...(found ? [{ kind: "assignBool", target: found.id, value: TRUE, at, label } as Stmt] : []), ...ret(this.valueOf(item, holds, e))], at, label }, e);
           }, method === "findLast");
+          if (found) this.out.push({ kind: "assignBool", target: found.id, value: FALSE, at, label });
           this.out.push(...ret(none));
         });
         break;
@@ -4692,6 +4733,9 @@ export class Structured {
       return { kind: "var", v };
     }
     const kind = this.kindOf(ft);
+    // `cooldown?: number` (B9): the value and whether there is one.
+    const maybe = kind ? null : this.maybeKind(ft);
+    if (maybe) return this.declareMaybe(full, maybe, ft, init, at);
     // `next: Node | null`, `target: Unit | Building` (B9): their classes kept by reference.
     if (!kind) { const wanted = this.instanceClasses(ft); if (wanted && this.needRef(wanted)) { this.c.error(p, `${full} is ${this.c.checker.typeToString(ft)}: its classes are kept by reference.`); return null; } }
     if (!kind) { this.c.error(p, `A record's fields hold numbers, booleans, texts, units, arrays of them, records or instances; ${full} is ${this.c.checker.typeToString(ft)}${init ? "" : " and has no first value"}.`); return null; }
@@ -6229,10 +6273,15 @@ export class Structured {
           if (from) this.emit({ kind: "assign", target: rowVar.place.id, value: from, at: this.at(e), label: this.label(e) }, e);
           return;
         }
+        if (!target && (() => { const b = this.bindingOf(e.left); return b?.kind === "maybe"; })()) { this.assignMaybe(e, this.bindingOf(e.left) as Extract<Binding, { kind: "maybe" }>, op); return; }
         if (!target) {
           const b = this.bindingOf(e.left);
           if (b?.kind === "array") { this.c.error(e.left, `An array is assigned cell by cell: ${b.a.name}[i] = 3.`); return; }
-          // `boss = other` of an instance (B9): which instance it is is the game's, so its class is kept by reference.
+          // `p = p.add(q)`, `r = { x: 1, y: 2 }`, `r = c ? a : b` (B9): a record, or an instance of a class nothing changes in
+          // place, given whole is a copy of its fields.
+          const given = b?.kind === "record" && b.cls ? this.instanceClasses(this.c.checker.getTypeAtLocation(e.right)) : null;
+          if (b?.kind === "record" && !b.truth && op === ts.SyntaxKind.EqualsToken && (!b.cls || (this.isValueClass(b.cls) && given?.length === 1 && given[0] === b.cls))) { this.assignWhole(b, e.right, e); return; }
+          // `boss = other` of an instance: which instance it is is the game's, so its class is kept by reference.
           const wanted = b?.kind === "record" && b.cls ? this.instanceClasses(this.c.checker.getTypeAtLocation(e.left)) : null;
           if (wanted && this.needRef(wanted)) this.c.error(e.left, "This variable is given another instance: its class is kept by reference.");
           else if (b?.kind === "record") this.c.error(e.left, "A record is assigned field by field: p.lives = 3.");
@@ -6289,6 +6338,16 @@ export class Structured {
         if (el.a.values) { this.c.error(e, `${el.a.name} was computed when the script was built and is only read in a program; declare it with let inside the program to write to it.`); return; }
         const now: NumExpr = { kind: "element", array: el.a.id, index: el.index, at: this.at(e) };
         this.emit({ kind: "store", array: el.a.id, index: el.index, value: this.mark<NumExpr>({ kind: "binary", op, left: now, right: num(1), at: this.at(e), label: this.label(e) }, e), at: this.at(e), label: this.label(e) }, e);
+        return;
+      }
+      // `count!++` of a number or nothing (B9): the value moves; whether there is one stays.
+      const maybe = this.bindingOf(e.operand);
+      if (maybe?.kind === "maybe" && (maybe.value.kind === "var" || maybe.value.kind === "cell")) {
+        const now = this.valueOf(maybe.value, "number", e) as NumExpr | null;
+        if (!now) return;
+        const value = this.mark<NumExpr>({ kind: "binary", op, left: now, right: num(1), at: this.at(e), label: this.label(e) }, e);
+        if (maybe.value.kind === "var") this.emit({ kind: "assign", target: maybe.value.v.id, value, at: this.at(e), label: this.label(e) }, e);
+        else this.emit({ kind: "store", array: maybe.value.a.id, index: maybe.value.index, value, at: this.at(e), label: this.label(e) }, e);
         return;
       }
       const target = this.varOf(e.operand);
@@ -8882,6 +8941,294 @@ export class Structured {
     return groups;
   }
 
+  /* ── Records and instances as values (TrigScript 4, B9) ── */
+
+  private readonly valueClasses = new Map<TS.ClassDeclaration, boolean>();
+
+  /**
+   * Whether a class's fields are only ever written by its constructors — `Vec`, whose methods give new ones. Given whole,
+   * a copy of such an instance shows what a JavaScript reference to it would: nothing ever changes it in place.
+   */
+  private isValueClass(cls: TS.ClassDeclaration): boolean {
+    const known = this.valueClasses.get(cls);
+    if (known !== undefined) return known;
+    const { ts } = this;
+    const { checker } = this.c;
+    const props = new Set(checker.getPropertiesOfType(this.instanceType(cls)).map((p) => p.valueDeclaration).filter((d): d is TS.Declaration => !!d));
+    let written = false;
+    const target = (e: TS.Expression) => {
+      const u = this.unwrap(e);
+      if (!ts.isPropertyAccessExpression(u) && !ts.isElementAccessExpression(u)) return;
+      const sym = ts.isPropertyAccessExpression(u) ? checker.getSymbolAtLocation(u.name) : undefined;
+      if (!sym?.valueDeclaration || !props.has(sym.valueDeclaration)) return;
+      for (let n: TS.Node | undefined = u.parent; n; n = n.parent) if (ts.isConstructorDeclaration(n)) return;
+      written = true;
+    };
+    const walk = (n: TS.Node) => {
+      if (written) return;
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) target(n.left);
+      if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) target(n.operand);
+      ts.forEachChild(n, walk);
+    };
+    const files = new Set<TS.SourceFile>([this.c.body.sf, ...(this.c.classes ?? []).map((c) => c.getSourceFile())]);
+    for (const sf of files) walk(sf);
+    this.valueClasses.set(cls, !written);
+    return !written;
+  }
+
+  /** Whether a field of what a declaration holds is written anywhere: `p.x = 1`, `p.hp--`. */
+  private fieldsWritten(decl: TS.Node): boolean {
+    const { ts } = this;
+    let found = false;
+    const target = (e: TS.Expression) => {
+      let u = this.unwrap(e);
+      while (ts.isPropertyAccessExpression(u) || ts.isElementAccessExpression(u)) {
+        const inner = this.unwrap(u.expression);
+        if (ts.isIdentifier(inner) && declarationOf(ts, this.c.checker, inner) === decl) { found = true; return; }
+        u = inner;
+      }
+    };
+    const walk = (n: TS.Node) => {
+      if (found) return;
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) target(n.left);
+      if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) target(n.operand);
+      ts.forEachChild(n, walk);
+    };
+    walk(this.body.plan.root);
+    return found;
+  }
+
+  /** A copy of a record or an instance, every field a variable of its own under `name`, its class kept. */
+  private recordCopy(src: Instance, name: string, node: TS.Node): Instance {
+    const copy = this.fieldCopy(src, name, node) as Instance;
+    return { ...copy, ...(src.cls ? { cls: src.cls } : {}), ...(src.typeArgs ? { typeArgs: src.typeArgs } : {}) };
+  }
+
+  /**
+   * A record or an instance of the type, every field 0, false, no unit or the empty text: what `const r = c ? a : b`
+   * declares before one or the other is copied in. Null when a field is anything else (an array).
+   */
+  private zeroRecord(name: string, type: TS.Type, node: TS.Node, cls?: TS.ClassDeclaration): Instance | null {
+    const why: string[] = [];
+    const shape = this.shapeOf(type, why);
+    if (!shape) { this.c.error(node, `${name} is given one record or another, and so is made first with every field empty: ${why[0] ?? "its fields could not be read"}.`); return null; }
+    const build = (shape: RowShape, prefix: string): Map<string, Binding> | null => {
+      const fields = new Map<string, Binding>();
+      for (const [key, f] of shape) {
+        const full = `${prefix}.${key}`;
+        if (f.kind === "record") { const inner = build(f.shape, full); if (!inner) return null; fields.set(key, { kind: "record", fields: inner, ...(f.cls ? { cls: f.cls } : {}) }); continue; }
+        if (f.kind === "maybe") {
+          const value = this.newVar(full, f.of, this.sourceOf(node), f.width), there = this.newVar(`${full} (there)`, "boolean", this.sourceOf(node));
+          this.emit({ kind: "declare", decl: value, init: f.of === "number" ? num(0) : FALSE, at: this.at(node), label: this.label(node) }, node);
+          this.emit({ kind: "declare", decl: there, init: FALSE, at: this.at(node), label: this.label(node) }, node);
+          fields.set(key, { kind: "maybe", value: { kind: "var", v: value }, there: { kind: "var", v: there } });
+          continue;
+        }
+        if (f.kind !== "number" && f.kind !== "boolean" && f.kind !== "unit" && f.kind !== "text") { this.c.error(node, `${name} is given one record or another, and ${full.slice(name.length + 1)} is an array: give the record its fields one by one.`); return null; }
+        const v = this.newVar(full, f.kind, this.sourceOf(node), f.kind === "number" ? f.width : f.kind === "text" ? { text: "made" } : {});
+        this.emit({ kind: "declare", decl: v, init: f.kind === "number" ? num(0) : f.kind === "boolean" ? FALSE : f.kind === "unit" ? NO_UNIT : { kind: "text", text: "" }, at: this.at(node), label: this.label(node) }, node);
+        fields.set(key, { kind: "var", v });
+      }
+      return fields;
+    };
+    const fields = build(shape, name);
+    return fields ? { kind: "record", fields, ...(cls ? { cls } : {}) } : null;
+  }
+
+  /**
+   * `p = …` of a record, or of an instance of a class whose instances are values: a copy of what it is given — a record
+   * written there, an instance made there, what a call gives, another record's fields — stored into its fields; for
+   * `c ? a : b`, one or the other.
+   */
+  private assignWhole(target: Instance, given: TS.Expression, node: TS.Node) {
+    const { ts } = this;
+    const e = this.unwrap(given);
+    if (ts.isConditionalExpression(e)) {
+      const cond = this.bool(e.condition);
+      const then = this.collect(() => this.assignWhole(target, e.whenTrue, node));
+      const otherwise = this.collect(() => this.assignWhole(target, e.whenFalse, node));
+      this.emit({ kind: "if", cond, then, else: otherwise, at: this.at(e), label: this.label(e) }, e);
+      return;
+    }
+    const src = this.wholeValue(e);
+    if (src) this.storeInto(target, src, node);
+  }
+
+  /** A record or an instance as a value of its own, fields that nothing else will change: what is copied into another. */
+  private wholeValue(e: TS.Expression): Instance | null {
+    const { ts } = this;
+    if (ts.isObjectLiteralExpression(e)) return this.declareRecord("(value)", e, this.c.checker.getTypeAtLocation(e), e) as Instance | null;
+    if (ts.isNewExpression(e) && this.classOf(e.expression) && !this.isRefClass(this.classOf(e.expression))) return this.instantiate(e, "(value)");
+    const made = ts.isCallExpression(e) ? this.instanceCall(e, "(value)") : this.bindingOf(e);
+    // What a call gives may be its own `this`, or what it was handed — the very fields being given a value: copied first.
+    if (made?.kind === "record") return this.recordCopy(made, "(value)", e);
+    if (made !== null) this.c.error(e, "A record is given a record: one written out ({ x: 1, y: 2 }), one made (new Vec(…)), what a call gives, or another record.");
+    return null;
+  }
+
+  /** Every field of `target` given the value of the same field of `src`. False, with a diagnostic, for a field that cannot be. */
+  private storeInto(target: Binding, src: Binding, node: TS.Node): boolean {
+    const at = this.at(node), label = this.label(node);
+    switch (target.kind) {
+      case "record": {
+        if (src.kind !== "record") { this.c.error(node, "A record is given a record."); return false; }
+        for (const [key, t] of target.fields) {
+          const s = src.fields.get(key);
+          if (!s) { this.c.error(node, `What is given has no ${key}.`); return false; }
+          if (!this.storeInto(t, s, node)) return false;
+        }
+        return true;
+      }
+      case "var": {
+        if (target.v.kind === "text") {
+          const value = src.kind === "var" && src.v.kind === "text" ? { kind: "textVar", id: src.v.id } as TextExpr : src.kind === "textAt" ? this.textAtCells(src, node) : src.kind === "value" && typeof src.value === "string" ? this.literalText(src.value, node) : null;
+          if (!value) { this.c.error(node, "A text field is given a text."); return false; }
+          this.emit({ kind: "assignText", target: target.v.id, value, at, label }, node);
+          return true;
+        }
+        const value = this.valueOf(src, target.v.kind as Kind, node);
+        if (!value) return false;
+        this.emit(target.v.kind === "unit" ? { kind: "assignUnit", target: target.v.id, value: value as UnitExpr, at, label } : target.v.kind === "boolean" ? { kind: "assignBool", target: target.v.id, value: value as BoolExpr, at, label } : { kind: "assign", target: target.v.id, value: value as NumExpr, at, label }, node);
+        return true;
+      }
+      case "cell": {
+        const value = this.valueOf(src, target.a.kind, node);
+        if (!value) return false;
+        this.emit({ kind: "store", array: target.a.id, index: target.index, value: value as NumExpr | BoolExpr, at, label }, node);
+        return true;
+      }
+      case "unitAt": {
+        const value = this.valueOf(src, "unit", node);
+        if (value) this.storeUnitAt(target, value as UnitExpr, node);
+        return !!value;
+      }
+      case "textAt": {
+        const value = src.kind === "var" && src.v.kind === "text" ? { kind: "textVar", id: src.v.id } as TextExpr : src.kind === "textAt" ? this.textAtCells(src, node) : src.kind === "value" && typeof src.value === "string" ? this.literalText(src.value, node) : null;
+        if (!value) { this.c.error(node, "A text field is given a text."); return false; }
+        this.storeTextAt(target, value, node);
+        return true;
+      }
+      case "maybe": {
+        if (src.kind === "maybe") return this.storeInto(target.value, src.value, node) && this.storeInto(target.there, src.there, node);
+        return this.storeInto(target.value, src, node) && this.storeInto(target.there, { kind: "value", value: true }, node);
+      }
+      default:
+        this.c.error(node, "A record that holds an array is not given whole: give it its fields one by one.");
+        return false;
+    }
+  }
+
+  /* ── A number or nothing (TrigScript 4, B9) ── */
+
+  /** `number | undefined`, `boolean | null`: what it holds when it holds something; null for any other type. */
+  private maybeKind(type: TS.Type): "number" | "boolean" | null {
+    const { ts } = this;
+    const members = this.membersOf(type);
+    // `number | void` is what a race of a sleep and a value gives, which is said otherwise: not this.
+    if (members.some((t) => (t.flags & ts.TypeFlags.Void) !== 0)) return null;
+    const nothing = members.filter((t) => (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0);
+    const bare = members.filter((t) => !nothing.includes(t));
+    if (!nothing.length || !bare.length) return null;
+    if (bare.every((t) => (t.flags & ts.TypeFlags.BooleanLike) !== 0)) return "boolean";
+    const isNumber = (t: TS.Type): boolean => (this.resolveType(t).flags & ts.TypeFlags.NumberLike) !== 0 || (t.isIntersection() && t.types.some(isNumber));
+    return bare.every(isNumber) ? "number" : null;
+  }
+
+  /** A variable of `number | undefined`: the value, and beside it whether there is one. */
+  private declareMaybe(name: string, kind: "number" | "boolean", type: TS.Type, init: TS.Expression | undefined, at: TS.Node): Extract<Binding, { kind: "maybe" }> | null {
+    const where = this.sourceOf(at);
+    const value = this.newVar(name, kind, where, kind === "number" ? this.widthOf(this.c.checker.getNonNullableType(type)) : {});
+    const there = this.newVar(`${name} (there)`, "boolean", where);
+    const given = init ? this.maybeValue(init, kind) : { value: kind === "number" ? num(0) : FALSE, there: FALSE };
+    if (!given) return null;
+    this.emit({ kind: "declare", decl: value, init: given.value, at: this.at(at), label: this.label(at) }, at);
+    this.emit({ kind: "declare", decl: there, init: given.there, at: this.at(at), label: this.label(at) }, at);
+    return { kind: "maybe", value: { kind: "var", v: value }, there: { kind: "var", v: there } };
+  }
+
+  /** Whether a binding holds something, as a condition. */
+  private thereOf(b: Extract<Binding, { kind: "maybe" }>, at: TS.Node): BoolExpr {
+    return this.valueOf(b.there, "boolean", at) as BoolExpr;
+  }
+
+  /**
+   * What an expression of `number | undefined` is, as a value and whether there is one: nothing (`undefined`), a number,
+   * another such variable, `xs.find(…)`, `m.get(k)`, `c ? a : b`. Null, with a diagnostic, for anything else.
+   */
+  private maybeValue(expr: TS.Expression, kind: "number" | "boolean"): { value: NumExpr | BoolExpr; there: BoolExpr } | null {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const at = this.at(e), label = this.label(e);
+    const none = { value: kind === "number" ? num(0) : FALSE, there: FALSE };
+    const h = this.evaluate(e);
+    if (h && (h.value === undefined || h.value === null)) return none;
+    const b = ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e) ? this.bindingOf(e) : undefined;
+    if (b?.kind === "maybe") return { value: this.valueOf(b.value, kind, e) as NumExpr | BoolExpr, there: this.thereOf(b, e) };
+    if (ts.isConditionalExpression(e)) {
+      const cond = this.bool(e.condition);
+      const a = this.maybeValue(e.whenTrue, kind), c = this.maybeValue(e.whenFalse, kind);
+      if (!a || !c) return null;
+      const t = this.newVar("(condition)", "boolean", at, { temp: true });
+      this.emit({ kind: "declare", decl: t, init: cond, at, label }, e);
+      return { value: { kind: "ternary", cond: boolRef(t), whenTrue: a.value, whenFalse: c.value, at, label } as NumExpr, there: { kind: "ternary", cond: boolRef(t), whenTrue: a.there, whenFalse: c.there, at, label } };
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
+      const method = e.expression.name.text;
+      // `xs.find(…)`: where it is found, then the cell there.
+      if (method === "find" || method === "findLast") {
+        const over = this.overOf(e.expression.expression);
+        if (over) {
+          const found = this.newVar("(found)", "boolean", at, { temp: true });
+          this.emit({ kind: "declare", decl: found, init: FALSE, at, label }, e);
+          const value = this.searchCall(e, over, method, kind, undefined, found) as NumExpr | BoolExpr | null;
+          if (!value) return null;
+          const t = this.newVar("(found value)", kind, at, { temp: true });
+          this.emit({ kind: "declare", decl: t, init: value, at, label }, e);
+          return { value: kind === "number" ? varRef(t) : boolRef(t), there: boolRef(found) };
+        }
+      }
+      // `m.get(k)` of a Map: whether it has the key, and what it holds there.
+      if (method === "get" && e.arguments.length === 1) {
+        const table = this.bindingOf(e.expression.expression);
+        if (table?.kind === "hash" && table.values?.kind === kind) {
+          const there = this.hashMethod(e, table, "has", "boolean"), value = this.hashMethod(e, table, "get", kind);
+          return there && value && there !== true && value !== true ? { value: value as NumExpr | BoolExpr, there: there as BoolExpr } : null;
+        }
+        if (table?.kind === "keyed" && table.values?.kind === kind) {
+          const there = this.keyedCall(e, table, "has", "boolean"), value = this.keyedCall(e, table, "get", kind);
+          return there && value && there !== true && value !== true ? { value: value as NumExpr | BoolExpr, there: there as BoolExpr } : null;
+        }
+      }
+    }
+    const value = kind === "number" ? this.num(e) : this.boolValue(e);
+    return value ? { value, there: TRUE } : null;
+  }
+
+  /** `best = x`, `best = undefined`, `best += 1` of a number or nothing (B9): both cells, worked out before either is written. */
+  private assignMaybe(e: TS.BinaryExpression, b: Extract<Binding, { kind: "maybe" }>, op: TS.SyntaxKind) {
+    const { ts } = this;
+    const at = this.at(e), label = this.label(e);
+    const kind: "number" | "boolean" = b.value.kind === "var" ? (b.value.v.kind as "number" | "boolean") : b.value.kind === "cell" ? b.value.a.kind : "number";
+    const put = (into: Binding, value: NumExpr | BoolExpr) => {
+      if (into.kind === "var") this.emit(into.v.kind === "boolean" ? { kind: "assignBool", target: into.v.id, value: value as BoolExpr, at, label } : { kind: "assign", target: into.v.id, value: value as NumExpr, at, label }, e);
+      else if (into.kind === "cell") this.emit({ kind: "store", array: into.a.id, index: into.index, value, at, label }, e);
+    };
+    if (op !== ts.SyntaxKind.EqualsToken) {
+      const arith = compoundOp(ts, op);
+      const now = this.valueOf(b.value, "number", e) as NumExpr | null;
+      const rhs = arith && now ? this.num(e.right) : null;
+      if (!arith || !now || !rhs) { if (!arith) this.c.error(e, "Only = += -= *= /= %= &= |= ^= <<= >>= >>>= assign a number."); return; }
+      put(b.value, this.mark<NumExpr>({ kind: "binary", op: arith, left: now, right: rhs, at, label }, e));
+      return;
+    }
+    const given = this.maybeValue(e.right, kind);
+    if (!given) return;
+    const there = this.newVar("(there)", "boolean", at, { temp: true });
+    this.emit({ kind: "declare", decl: there, init: given.there, at, label }, e);
+    put(b.value, given.value);
+    put(b.there, boolRef(there));
+  }
+
   /* ── Functions ── */
 
   /** A call of a `game()` function: inlined from its own body, wherever that file is. */
@@ -9605,6 +9952,19 @@ export class Structured {
       const binding = this.listOf(arg);
       // An array reaches a function as itself, as it does in TypeScript: what the function stores, the caller sees.
       if (binding?.kind === "array" || binding?.kind === "records" || binding?.kind === "units" || binding?.kind === "keyed" || binding?.kind === "hash" || binding?.kind === "texts" || binding?.kind === "grid" || binding?.kind === "lists") { scope.bind(p, binding); asCalled({ binding }); return; }
+      // A number or nothing (B9): the caller's own, when the function only reads it; else a copy of both.
+      const maybeArg = ts.isIdentifier(fresh) || ts.isPropertyAccessExpression(fresh) || ts.isElementAccessExpression(fresh) ? this.bindingOf(fresh) : undefined;
+      if (maybeArg?.kind === "maybe") {
+        const binding = maybeArg;
+        if (this.assigns(body, p) || copies) {
+          const kindM = binding.value.kind === "var" ? binding.value.v.kind as "number" | "boolean" : binding.value.kind === "cell" ? binding.value.a.kind : "number";
+          const copy = this.declareMaybe(p.name.text, kindM, this.c.checker.getTypeAtLocation(p.name), arg, p);
+          if (!copy) { ok = false; return; }
+          scope.bind(p, copy);
+        } else scope.bind(p, binding);
+        asCalled(`${p.name.text} may be undefined, a value and whether there is one`);
+        return;
+      }
       if (binding?.kind === "record") {
         if (this.assigns(body, p)) { this.c.error(p, `${p.name.text} is a record; a record parameter can have its fields assigned, not be reassigned itself.`); ok = false; return; }
         scope.bind(p, binding);
@@ -10081,6 +10441,16 @@ export class Structured {
     // No function: `let f: (() => void) | undefined = undefined`; no instance (B9): `let next: Node | null = null`.
     if (h && (h.value === undefined || h.value === null) && this.noFunction(expr)) return num(0);
     if (!h) { const updated = this.updateValue(e); if (updated !== undefined) return updated; }
+    // `best ?? 0` of a number or nothing (B9); `xs.find(…) ?? 0` stays the search's own.
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const left = this.unwrap(e.left);
+      const b = ts.isIdentifier(left) || ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left) ? this.bindingOf(left) : undefined;
+      if (b?.kind === "maybe") {
+        const value = this.valueOf(b.value, "number", e), other = this.num(e.right);
+        if (!value || !other) return null;
+        return this.mark<NumExpr>({ kind: "ternary", cond: this.thereOf(b, e), whenTrue: value as NumExpr, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
+      }
+    }
     // `target?.hp ?? 0` through a reference (B9): the other value when there is no instance.
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
       const base = this.optionalBase(e.left);
@@ -10158,6 +10528,11 @@ export class Structured {
         return varRef(b.v);
       }
       if (b?.kind === "record" && b.ref) return b.ref.place;
+      if (b?.kind === "maybe") {
+        // Read as a number where the checker knows there is one (`if (x !== undefined)`, `x!`); elsewhere it may be nothing.
+        if (this.maybeKind(this.c.checker.getTypeAtLocation(expr))) { this.c.error(e, `${e.getText(this.body.sf)} may be undefined here: test it first (if (x !== undefined) …), or say what it is then — ${e.getText(this.body.sf)} ?? 0.`); return null; }
+        return this.valueOf(b.value, "number", e) as NumExpr | null;
+      }
       if (b?.kind === "record") { this.c.error(e, "This is a record; use one of its fields."); return null; }
       if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program.`);
       else this.notConstant(e, "A value");
@@ -10853,6 +11228,14 @@ export class Structured {
         return b.a.kind === "boolean" ? this.mark<BoolExpr>(cell, e) : this.mark<BoolExpr>({ kind: "test", expr: cell, at: this.at(e), label: this.label(e) }, e);
       }
       if (b?.kind === "record" && b.truth) return boolRef(b.truth);
+      // `if (best)` of a number or nothing (B9): there is one, and it is not 0 (or false).
+      if (b?.kind === "maybe") {
+        const there = this.thereOf(b, e);
+        const v = this.valueOf(b.value, b.value.kind === "var" ? (b.value.v.kind as Kind) : b.value.kind === "cell" ? b.value.a.kind : "number", e);
+        if (!v) return FALSE;
+        return { kind: "and", items: [there, (b.value.kind === "var" && b.value.v.kind === "boolean") || (b.value.kind === "cell" && b.value.a.kind === "boolean") ? v as BoolExpr : this.mark<BoolExpr>({ kind: "test", expr: v as NumExpr, at: this.at(e), label: this.label(e) }, e)] };
+      }
+      if (b?.kind === "record" && b.ref) return this.mark<BoolExpr>({ kind: "test", expr: b.ref.place, at: this.at(e), label: this.label(e) }, e);
       if (b?.kind === "record") { this.c.error(e, "This is a record; test one of its fields."); return FALSE; }
       if (ts.isIdentifier(e)) this.c.error(e, `${e.text} is not a variable of the program or a condition.`);
       else this.notConstant(e, "A condition");
@@ -10953,6 +11336,33 @@ export class Structured {
       const left = this.text(e.left);
       const right = this.text(e.right);
       return left && right ? this.mark<BoolExpr>({ kind: "textCompare", op, left, right, at: this.at(e), label: this.label(e) }, e) : FALSE;
+    }
+    // A number or nothing (B9): against undefined, whether there is one; against a value, there is one and it is that.
+    {
+      const { ts } = this;
+      const maybeOf = (x: TS.Expression) => { const u = this.unwrap(x); const b = ts.isIdentifier(u) || ts.isPropertyAccessExpression(u) || ts.isElementAccessExpression(u) ? this.bindingOf(u) : undefined; return b?.kind === "maybe" ? b : undefined; };
+      const nullish = (x: TS.Expression) => { const h = this.evaluate(x); return !!h && (h.value === null || h.value === undefined); };
+      const lm = maybeOf(e.left), rm = maybeOf(e.right);
+      const m = lm ?? rm;
+      if (m && (op === "==" || op === "!=")) {
+        const other = lm ? e.right : e.left;
+        if (nullish(other)) { const there = this.thereOf(m, e); return op === "!=" ? there : { kind: "not", expr: there }; }
+        const kindM: Kind = m.value.kind === "var" ? (m.value.v.kind as Kind) : m.value.kind === "cell" ? m.value.a.kind : "number";
+        const mv = this.valueOf(m.value, kindM, e);
+        const om = maybeOf(other);
+        if (!mv) return FALSE;
+        if (om) {
+          // Both may be nothing: equal when neither is there, or both are and hold the same.
+          const ov = this.valueOf(om.value, kindM, e);
+          if (!ov) return FALSE;
+          const a = this.thereOf(m, e), b = this.thereOf(om, e);
+          const same: BoolExpr = { kind: "or", items: [{ kind: "and", items: [{ kind: "not", expr: a }, { kind: "not", expr: b }] }, { kind: "and", items: [a, b, kindM === "boolean" ? { kind: "or", items: [{ kind: "and", items: [mv as BoolExpr, ov as BoolExpr] }, { kind: "and", items: [{ kind: "not", expr: mv as BoolExpr }, { kind: "not", expr: ov as BoolExpr }] }] } : { kind: "compare", op: "==", left: mv as NumExpr, right: ov as NumExpr, at: this.at(e), label: this.label(e) }] }] };
+          return op === "==" ? same : { kind: "not", expr: same };
+        }
+        const equal: BoolExpr = kindM === "boolean" ? (() => { const o = this.boolInner(other, depth + 1); return { kind: "or", items: [{ kind: "and", items: [mv as BoolExpr, o] }, { kind: "and", items: [{ kind: "not", expr: mv as BoolExpr }, { kind: "not", expr: o }] }] } as BoolExpr; })() : (() => { const o = this.num(other); return o ? { kind: "compare", op: "==", left: mv as NumExpr, right: o, at: this.at(e), label: this.label(e) } as BoolExpr : FALSE; })();
+        const same: BoolExpr = { kind: "and", items: [this.thereOf(m, e), equal] };
+        return op === "==" ? same : { kind: "not", expr: same };
+      }
     }
     // What chatted() found, against null: `m != null` asks what `if (m)` asks.
     const found = (x: TS.Expression) => { const b = this.bindingOf(x); return b?.kind === "record" && b.truth ? b.truth : undefined; };
