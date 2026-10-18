@@ -2,7 +2,10 @@
 // everywhere but a strip of platform along the bottom, where the start locations stand — so the minimap, two pixels a
 // tile, shows nothing but the screen's pixels on black, and the camera's box stays below them.
 //
-//   npx tsx probes/lib/screen-map.mts <out.scx>
+//   npx tsx probes/lib/screen-map.mts <out.scx> [--ground]
+//
+// --ground: Dark Platform where Space would be — ground a building stands on, for a screen whose pixels are buildings
+// (`new Screen(…, "solid")`), which the minimap draws as their whole footprint.
 //
 // Needs a scm-js checkout beside this one with its tileset data (npm run extract).
 import { writeFileSync, readFileSync } from "node:fs";
@@ -16,10 +19,10 @@ const { TILESET_FILENAMES } = await import(join(E, "src/formats/tileset/load.ts"
 const { loadTileset } = await import(join(E, "src/formats/tileset/decode.ts"));
 const { baseTerrain, flatTerrain } = await import(join(E, "src/formats/tileset/terrain.ts"));
 
-const [out] = process.argv.slice(2);
-if (!out) { console.error("usage: screen-map.mts <out.scx>"); process.exit(2); }
-/** Space Platform; its ISOM terrains Space (2) and Platform (3). */
-const ERA = 1, SPACE = 2, PLATFORM = 3, W = 64, H = 64;
+const [out, flag] = process.argv.slice(2);
+if (!out) { console.error("usage: screen-map.mts <out.scx> [--ground]"); process.exit(2); }
+/** Space Platform; its ISOM terrains Space (2), Platform (3) and Dark Platform (11). */
+const ERA = 1, PLATFORM = 3, SPACE = flag === "--ground" ? 11 : 2, W = 64, H = 64;
 /** The rows of platform along the bottom. */
 const STRIP = 8;
 const part = (ext: string) => new Uint8Array(readFileSync(join(E, "public/tileset", `${TILESET_FILENAMES[ERA]}.${ext}`)));

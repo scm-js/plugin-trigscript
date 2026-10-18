@@ -86,4 +86,12 @@ describe("trigscript/screen", () => {
     const revealers = made(sim(r).run(1)).filter((e) => e.action.player === 0);
     expect(revealers).toHaveLength(8);
   });
+  it("solid: a pixel is a Pylon, made and taken away as an Overlord is", () => {
+    const r = compile(`
+      import { Screen } from "trigscript/screen";
+      program(async () => { const s = new Screen(4, 4, 3, 2, "solid"); s.set(0, 0, 1); s.present(); await sleep(frames(1)); s.set(0, 0, 0); s.present(); });`);
+    const run = sim(r).run(3);
+    expect(made(run).map((e) => e.action.unitId)).toEqual([156]);
+    expect(taken(run).map((e) => e.action.unitId)).toEqual([156]);
+  });
 });

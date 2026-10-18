@@ -1609,6 +1609,15 @@ keep)`, `clock(frames)`, `thousands(n)`. One `ui.lines` a player, the components
 on the minimap, a pixel an Overlord of the colour's owner (P3 … P8 and P1), making and taking away only what changed
 since the last time; `ScreenView` shows the same grid in the text lines. Generalises the Tetris probe's `UnitScreen`.
 
+*Played and changed (2026-10-18, four rounds):* the board was invisible (other players' units under the fog of war:
+`Screen.reveal(player)` makes Map Revealers over it) and the view showed twice (`ui.lines` now fills the eleven text
+lines); then a 64 × 64 map of Space (`probes/lib/screen-map.mts`) so the board fills the minimap, the screen's owners in
+the text colours' order, fixed arrays of 2 048 cells (the first frame 712k → 434k), Space rather than Enter (which opens
+the chat). The minimap draws an Overlord as a dot with a gap round it; Overlords a tile apart do not fit (the game will
+not place most of them), so `new Screen(…, "solid")` makes each pixel a Pylon, which the minimap draws as its two-tile
+footprint: pixels side by side are one block, on buildable ground (`screen-map.mts --ground`). 320 Pylons on the grid
+in the lifted game, none moved.
+
 **Showpiece: Snake** (`probes/snake.tsx`, `trigscript-snake.scx`): the board on the minimap with `screen`, the score,
 a length meter and the game-over menu in the text lines with `ui`, the snake two arrays that `push` and `shift`. In the
 lifted game: its test passes in both; about 14k conditions and actions a frame, 400k on the first (the screen's 768

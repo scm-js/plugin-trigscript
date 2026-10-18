@@ -26,11 +26,15 @@
  *
  * A player sees the pixels only where they have vision: `screen.reveal(P1)` once gives them Map Revealers over it.
  *
+ * Two looks (the constructor's last argument): "dots", Overlords, which fly — the minimap draws each as a dot with a gap
+ * round it, the screen may be over Space; and "solid", Pylons, which the minimap draws as their whole two-tile
+ * footprint, so pixels side by side are one block — on buildable ground (probes/lib/screen-map.mts --ground).
+ *
  * What the map needs, found playing the unit-pixel probe in StarCraft: Remastered (2026-10-16): the owners of the
  * pixels (P3, P4, P5, P1, P6, P7, P8 below; their colours are theirs on the map, so give them the colours of TEXT_COLORS) must not
  * be computers — a computer moves its own units — and Remastered will not start a game without a computer, so one slot
  * (P2 here) is a computer that owns no pixel. A pixel is an Overlord, which sits on any ground and on nothing else; keep
- * the screen's tiles clear of buildings. About 80 pixels made and taken away in a frame did not slow the game.
+ * the screen's tiles clear of buildings. A Pylon needs buildable ground, and none of the map's own units in the way. About 80 pixels made and taken away in a frame did not slow the game.
  */
 import { centerLocation, createUnit, removeUnitAt, reserveLocation, textColors, units, P1, P3, P4, P5, P6, P7, P8, type Player } from "trigscript";
 
@@ -80,17 +84,24 @@ export class Screen {
   width: number;
   height: number;
   cell: number;
+  /** The unit a pixel is: an Overlord ("dots"), or a Pylon ("solid"). */
+  unit = 0;
 
   /**
-   * A screen `width` × `height` pixels (MAX_PIXELS at most), its top left corner on tile (x, y) of the map, a pixel every
-   * `cell` pixels of the map (64, two tiles, unless it says: an Overlord's size).
+   * A screen `width` × `height` pixels (MAX_PIXELS at most), its top left corner on tile (x, y) of the map, a pixel two
+   * tiles across.
+   * @param look "dots" (the default): a pixel is an Overlord, which the minimap draws as a dot, a gap round it — it flies,
+   *   so the screen may be over anything, Space too. "solid": a pixel is a Pylon, which the minimap draws as its whole
+   *   footprint, two tiles square, so pixels side by side are one block — it needs buildable ground under the screen,
+   *   and gives its owner Protoss supply. (Overlords a tile apart do not fit: the game will not place most of them.)
    */
-  constructor(x: number, y: number, width: number, height: number, cell: number = 64) {
+  constructor(x: number, y: number, width: number, height: number, look: "dots" | "solid" = "dots") {
     this.x = x;
     this.y = y;
     this.width = width;
     this.height = height;
-    this.cell = cell;
+    this.cell = 64;
+    this.unit = look === "solid" ? units.ProtossPylon : units.ZergOverlord;
   }
 
   /** Every pixel the colour (0, empty, unless it says). */
@@ -206,8 +217,8 @@ export class Screen {
       const was = this.shown[i];
       if (now !== was) {
         centerLocation(SPOT, this.x * 32 + (i % this.width) * this.cell + half, this.y * 32 + Math.floor(i / this.width) * this.cell + half, 32, 32);
-        OWNERS.forEach((owner, k) => { if (was === k + 1) removeUnitAt(owner, units.ZergOverlord, 1, SPOT); });
-        OWNERS.forEach((owner, k) => { if (now === k + 1) createUnit(owner, units.ZergOverlord, 1, SPOT); });
+        OWNERS.forEach((owner, k) => { if (was === k + 1) removeUnitAt(owner, this.unit, 1, SPOT); });
+        OWNERS.forEach((owner, k) => { if (now === k + 1) createUnit(owner, this.unit, 1, SPOT); });
         this.shown[i] = now;
       }
     }

@@ -13,6 +13,11 @@ import { program, P1, keyPressed, random, sleep, frames, nextFrame, ui, test, ex
 import { Screen } from "trigscript/screen";
 import { Panel, Meter, MenuList, choose, thousands } from "trigscript/ui";
 
+/**
+ * How the board looks: "dots" (Overlords, on Space) or "solid" (Pylons, on buildable ground). For the solid board,
+ * set "solid" and build on `probes/lib/screen-map.mts <out> --ground`.
+ */
+const LOOK: "dots" | "solid" = "dots";
 /** The board: 30 × 24 pixels, a pixel two tiles, its corner on tile (2, 2) of a 64 × 64 map: most of its minimap. */
 const W = 30, H = 24;
 /** Colours, as `screen`'s OWNERS have them: 4 the snake (your own units, green), 5 the apple (red), 2 the walls (yellow), 1 the head (cyan). */
@@ -20,7 +25,7 @@ const SNAKE = 4, APPLE = 5, WALL = 2, HEAD = 1;
 const AGAIN = ["Play again", "Stop"];
 
 program(async () => {
-  const screen = new Screen(2, 2, W, H);
+  const screen = new Screen(2, 2, W, H, LOOK);
   // The pixels are other players' units: without vision of them, the fog of war hides them.
   screen.reveal(P1);
   const hud = { score: 0, best: 0, length: 3, over: false };
