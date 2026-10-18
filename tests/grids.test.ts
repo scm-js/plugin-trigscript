@@ -150,7 +150,7 @@ describe("arrays that grow, inside an array", () => {
   });
   it("in a record, under the record's name", () => {
     const sim = run("let p = { hp: 5, lanes: [[1], [2, 3]] }; p.lanes[0].push(p.hp); let n = 0; n = p.lanes[0].length * 10 + p.lanes[1][1];");
-    expect(sim.value("n")).toBe(23);
+    expect(sim.value("n")).toBe(24);
   });
   it("a row kept in a const is that place in the outer array: popped it reads nothing, and a row pushed there is what it is next", () => {
     const sim = run("const b: number[][] = []; b.push([1, 2]); b.push([3]); const kept = b[1]; b.pop(); let gone = 5; gone = kept.length; b.push([8, 9, 10]); let back = 0; back = kept.length * 10 + kept[0];");

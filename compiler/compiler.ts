@@ -29,7 +29,7 @@ import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
 import { markRecursion, settleRecursion } from "./recursion";
 import { inputPlan, inputsOf, numberSyncSlots, type InputPlan } from "./input";
-import { programDeclarations, type Program } from "./ir";
+import { declarations, programDeclarations, type Program } from "./ir";
 import { LowerError, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
@@ -428,12 +428,26 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     if (!body) { diagnostics.push({ file, line: at.line, column: 1, endLine: at.line, endColumn: 2, message: "program(): the body could not be found again.", source: "compiler" }); continue; }
     const owners = entry.options.owners;
     const owner = owners.find((o) => o < PLAYER_SLOTS) ?? 0;
-    const emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => nodeError(node, message, source), resolve, classBody }).run();
+    // Walked again when kept functions turned out to use variables of the blocks they were written in: those are kept in
+    // environments the next walk (closures over locals), and only the last walk's errors are said.
+    const boxed = new Set<TS.Node>();
+    let emitted: ReturnType<Structured["run"]>;
+    for (let walk = 0; ; walk++) {
+      const said: [TS.Node, string, "compiler" | "script" | undefined][] = [];
+      emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => { said.push([node, message, source]); }, resolve, classBody, boxed }).run();
+      if (emitted.boxes?.length && walk < 4) { for (const d of emitted.boxes) boxed.add(d); continue; }
+      for (const [node, message, source] of said) nodeError(node, message, source);
+      break;
+    }
     if (entry.options.name) emitted.program.name = entry.options.name;
     // What every number is read as, written into the operations that care, before anything looks at the program.
     const mixes = typeNumbers(emitted.program);
     syncSlots += numberSyncSlots(emitted.program, syncSlots);
     markRecursion(emitted.program);
+    // A function that calls itself keeps its variables on the stack, and an environment's references would not be counted there.
+    if (emitted.envVars) for (const f of emitted.program.functions ?? []) {
+      if (f.recursive && declarations(f.body).some((d) => emitted.envVars!.has(d.id))) diagnostics.push({ file: f.at.file, line: f.at.line, column: f.at.column, endLine: f.at.line, endColumn: f.at.column + 1, message: `${f.name} calls itself, and a function kept as a value uses one of its variables: that is not supported yet. Keep the variable in the program, or hand it to the kept function as an argument.`, source: "compiler" });
+    }
     const index = programs.length;
     ir.push(emitted.program);
     programs.push({ ...(emitted.program.name ? { name: emitted.program.name } : {}), owner, owners, perPlayer: entry.options.perPlayer, source: at });

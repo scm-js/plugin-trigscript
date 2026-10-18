@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 24: closures over locals — `VarDecl.held`: a variable that holds a reference the closures count, read by its own `declare` (what it held is let go of) and so 0 before it was ever declared. Everything else of closures is the front end's: an environment is a row of arrays of the program, and the counting is statements.
  * 22: exceptions — `taskHandle`, the number of the task an expression runs in; `try` (a body, and the statements that run when an error is thrown in it), `throw` (the error in flight goes to the nearest `try` around it, out through the calls it is in), `uncaught` (the error in flight is said in red and given up), and `Program.errors`, the variables an error in flight is kept in. A called function that may throw returns at once with the error in flight, and its call goes on to the nearest `try`. A function that calls itself throws a `RangeError` when the stack runs out, where it used to stop the program.
  * 21: functions as values — `fn` on a `const`: the number is a function's, the id of the `FuncDecl` it runs, which is what keeps that function in the map. A call through such a number is a call of a function the front end made (a *dispatcher*, a `switch` on its first parameter), so no new kind of statement. A function may now be called, and so lowered, before a variable it uses is declared: a backend makes a variable where it is first used.
  * 20: fixed-point numbers — `VarDecl.fixed` / `ArrayDecl.fixed` (a 16.16 number: the cell holds the value times 65 536), `fixed` on a `const` (its value is the raw cell), the intrinsics `fmul` / `fdiv` (a product and a quotient of two fixed numbers, rounded towards zero), `sqrt` (of a fixed, rounded down) and `atan2` (`table`: the program's array of arc tangents it reads), and `fixed` on a printed number (shown as a decimal). `numbers.ts` writes them; a backend never works a type out.
@@ -32,7 +33,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 23;
+export const IR_VERSION = 24;
 
 /** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
@@ -66,6 +67,8 @@ export interface VarDecl {
   temp?: boolean;
   /** A variable of a task's body (`start`, its `task`): a cell for each of its slots, within each player's row. */
   task?: number;
+  /** A reference the closures count (24): its declare lets go of what it held before, so it is read first — 0 the first time, as a backend's cell is. */
+  held?: boolean;
   at: At;
 }
 

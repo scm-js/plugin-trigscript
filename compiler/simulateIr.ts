@@ -255,8 +255,11 @@ class ProgramRun {
   /** The player this run is: who Current Player is while it runs. */
   readonly player: number;
   private readonly common: Common;
+  /** The variables the closures count (`VarDecl.held`): read by their own declare, 0 before it. */
+  private readonly held: ReadonlySet<string>;
 
   constructor(sim: ProgramSimulation, index: number, program: Program, player: number, common: Common = newCommon()) {
+    this.held = new Set(programDeclarations(program).filter((d) => d.held).map((d) => d.id));
     this.sim = sim;
     this.index = index;
     this.program = program;
@@ -410,6 +413,7 @@ class ProgramRun {
 
   private read(id: string, at?: At): Value {
     const v = this.vars.get(id);
+    if (v === undefined && this.held.has(id)) return 0;
     if (v === undefined) throw new Error(`The variable ${id} was read before it was declared${at ? ` (line ${at.line})` : ""}.`);
     return v;
   }

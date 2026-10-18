@@ -68,6 +68,7 @@ import { hasTextMark, isAction, isBuilder, isChat, isCondition, isDuration, isGa
 import { cellMax } from "./tables";
 import { markViewWrites, type View } from "./views";
 import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT_COLORS, colorCode } from "./jsx";
+import { CLOSURE_CAP, countReferences, FN_BASE, makePool, type ClosurePool, type PoolMaker } from "./closures";
 import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type FnValue, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { FIXED_MAX, FIXED_MIN, fixedRaw } from "./numbers";
@@ -110,6 +111,8 @@ export interface StructuredContext {
   resolve(fn: GameFunctionValue): Body | undefined;
   /** The body of a class at the top of one of the script's files (`hoist.ts#planClass`); undefined when there is none. */
   classBody?(cls: TS.ClassDeclaration): Body | undefined;
+  /** Closures over locals: the declarations a walk before found kept functions using, kept in environments this walk. */
+  boxed?: ReadonlySet<TS.Node>;
 }
 
 /** A hoisted expression threw when it was evaluated: reported at the expression, as the script's own error. */
@@ -312,8 +315,11 @@ interface MethodCall { /** A function kept as a value (B3): the scope it was wri
 /** What a value of a function's parameters or result is, for a function kept as a value. */
 type ValueKind = Kind | "text";
 
-/** A function kept as a value (B3): its number, the function that is called through it, and what it takes and gives. */
-interface FnTarget { id: number; fd: FuncDecl; params: ValueKind[]; result: ValueKind | "void"; name: string }
+/** A function kept as a value (B3): its number, the function that is called through it, and what it takes and gives. `env`: the parameter it is handed the environment it was made in through, the environment of `envScope` (closures over locals). */
+interface FnTarget { id: number; fd: FuncDecl; params: ValueKind[]; result: ValueKind | "void"; name: string; env?: VarDecl; envScope?: Scope }
+
+/** A variable kept in an environment: its cell there, at any environment's row, and how a row's copy of it is made from another's. */
+interface BoxedCell { home: Scope; at: (index: NumExpr) => Binding; copy: (to: NumExpr, from: NumExpr) => Stmt[] }
 
 /** The function a call through a value goes through, for calls of one shape: its first parameter is the number of the function to run. */
 interface Dispatcher { fd: FuncDecl; params: ValueKind[]; result: ValueKind | "void"; at: At; label: string }
@@ -344,6 +350,10 @@ function mentions(root: unknown, kind: string): boolean {
 export interface Emitted {
   program: Program;
   nodeOf(node: object): TS.Node | undefined;
+  /** Declarations kept functions use that this walk did not keep in environments: walk again with them in `boxed`. */
+  boxes?: TS.Node[];
+  /** The variables that hold an environment (a function that calls itself may not declare one yet). */
+  envVars?: ReadonlySet<string>;
 }
 
 export class Structured {
@@ -400,10 +410,36 @@ export class Structured {
   private attempts = 0;
   private readonly pendingTargets: { fn: FnValue; t: FnTarget; node: TS.Node; returned: TS.Type }[] = [];
 
+  /* Closures over locals (TrigScript 4): see `closures.ts`. */
+  /** The declarations kept in environments in this walk, which a walk before found kept functions using. */
+  private readonly boxed: ReadonlySet<TS.Node>;
+  /** Those this walk found that are not among them yet. */
+  private readonly boxesFound = new Set<TS.Node>();
+  private pool: ClosurePool | null = null;
+  /** The variable holding the environment of a run of each scope that keeps variables in one. */
+  private readonly scopeEnv = new Map<Scope, VarDecl>();
+  /** What each such scope keeps, for a loop's copy of its variables at each turn. */
+  private readonly scopeCells = new Map<Scope, BoxedCell[]>();
+  /** Scopes whose environment has been made (the make emitted). */
+  private readonly envMade = new Set<Scope>();
+  /**
+   * Where the code runs somewhere other than the scope above it says: the top scope of a function kept as a value (it
+   * runs later, handed the environment it was made in) and a function inlined there that was written outside it. `expr`
+   * is the environment of `env` as reached from inside.
+   */
+  private readonly envBoundaries = new Map<Scope, { expr: NumExpr; env: Scope | null }>();
+  private readonly boxedCells = new WeakMap<Binding, BoxedCell>();
+  /** Copies into environments of parameters bound before their function's body is walked: made where it starts. */
+  private readonly pendingBoxes = new Map<Scope, (() => void)[]>();
+  /** The top scope of the function kept as a value being walked. */
+  private targetTop: Scope | null = null;
+  private envUnreachable = false;
+
   constructor(c: StructuredContext) {
     this.c = c;
     this.ts = c.ts;
     this.body = c.body;
+    this.boxed = c.boxed ?? new Set();
   }
 
   run(): Emitted {
@@ -412,6 +448,22 @@ export class Structured {
     const program: Program = { version: IR_VERSION, ...(this.body.name ? { name: this.body.name } : {}), owner: this.c.owner, owners: [...this.c.owners], perPlayer: this.c.perPlayer, arrays: this.arrays, body: [], at };
     this.nodes.set(program, this.body.plan.body);
     this.out = program.body;
+    const hooks = { boxer: Scope.boxer, resolver: Scope.resolver, created: Scope.created };
+    if (this.boxed.size) {
+      Scope.boxer = (scope, decl, b) => this.boxBinding(scope, decl, b);
+      Scope.resolver = (b, _found, from) => this.resolveBoxed(b, from);
+      Scope.created = (scope) => this.scopeCreated(scope);
+    }
+    try {
+      return this.runBody(program, statements, at);
+    } finally {
+      Scope.boxer = hooks.boxer;
+      Scope.resolver = hooks.resolver;
+      Scope.created = hooks.created;
+    }
+  }
+
+  private runBody(program: Program, statements: readonly TS.Statement[], at: At): Emitted {
     try {
       this.declareScriptClasses(this.body.plan.root);
       this.block(statements, {}, this.topScope);
@@ -426,11 +478,17 @@ export class Structured {
       this.c.error(statements[statements.length - 1] ?? this.body.plan.body, err.message);
     }
     this.fillDispatchers(program);
+    if (this.pool) {
+      for (const p of countReferences(program, this.functions, this.pool, this.poolMaker())) this.c.error(this.body.plan.body, p.message);
+    }
+    if (this.envUnreachable) this.c.error(statements[0] ?? this.body.plan.body, "A function kept as a value uses a variable declared after it was made: declare the variable first.");
     this.settleFunctions(program);
     this.checkTasks(program);
     this.finishErrors(program);
     markViewWrites(program, this.views);
-    return { program, nodeOf: (node) => this.nodes.get(node) };
+    const boxes = [...this.boxesFound].filter((d) => !this.boxed.has(d));
+    void at;
+    return { program, nodeOf: (node) => this.nodes.get(node), ...(boxes.length ? { boxes } : {}), ...(this.pool ? { envVars: this.pool.envVars } : {}) };
   }
 
   private lineOf(node: TS.Node): number {
@@ -812,6 +870,7 @@ export class Structured {
   private block(statements: readonly TS.Statement[], ctx: Ctx, scope = new Scope(this.scope)) {
     const outer = this.scope;
     this.scope = scope;
+    this.flushBoxes();
     for (const s of statements) {
       try {
         this.statement(s, ctx);
@@ -878,8 +937,8 @@ export class Structured {
       // `return this`, `return new Wave(n)`, `return other`: which instance the call gives, settled here. A call that does nothing with it only leaves.
       if (fn.instance && s.expression) {
         const given = this.unwrap(s.expression);
-        const made = this.ts.isNewExpression(given) && this.classOf(given.expression) ? this.instantiate(given, fn.instance.name) : this.ts.isCallExpression(given) ? this.instanceCall(given, fn.instance.name) : this.bindingOf(given);
-        if (made?.kind !== "record") { if (made !== null) this.c.error(s.expression, "A function gives an instance it made (return new Wave(…)), itself (return this), or one it was handed."); return; }
+        const made = this.madeInstance(given, fn.instance.name);
+        if (made?.kind !== "record") { if (made !== null) this.c.error(s.expression, "A function gives a record or an instance it made (return { x, y }, return new Wave(…)), itself (return this), or one it was handed."); return; }
         if (fn.instance.made && fn.instance.made !== made) { this.c.error(s, "Every return of this function has to give the same instance: which one a call gives is settled when the script is built. Give the place of a row of an array instead, and let the caller take the row."); return; }
         fn.instance.made = made;
       }
@@ -2999,6 +3058,7 @@ export class Structured {
     }
     if (ts.isObjectLiteralExpression(e)) return this.declareRecord("(taken)", e, this.c.checker.getTypeAtLocation(e), at);
     if (ts.isCallExpression(e) && (this.isLibraryCall(e, "mouse") || this.isLibraryCall(e, "chatted"))) return this.declareInput("(taken)", e, at);
+    if (ts.isCallExpression(e)) { const given = this.instanceCall(e, "(taken)"); if (given !== undefined) return given; }
     const b = this.listOf(init);
     if (b) return b;
     this.c.error(init, "Only a record, an array, or what mouse() and chatted() give can be taken apart in a program.");
@@ -5935,7 +5995,9 @@ export class Structured {
     if (this.neverRuns(s.condition)) { this.scope = outer; return; }
     const cond = this.loopCondition(s.condition);
     const body = this.sub(s.statement, { fn: ctx.fn, canBreak: true, canContinue: true });
-    const update = s.incrementor ? this.collect(() => this.expressionStatement(s.incrementor!)) : [];
+    // A `let` of the loop a kept function uses is one for each turn, as JavaScript's is: a copy of the environment before the update.
+    const renew = this.scopeEnv.has(this.scope) ? this.renewEnv(this.scope, s) : [];
+    const update = [...renew, ...(s.incrementor ? this.collect(() => this.expressionStatement(s.incrementor!)) : [])];
     this.scope = outer;
     this.emit({ kind: "for", ...(cond ? { cond } : {}), update, body, at: this.at(s), label: this.label(s) }, s);
   }
@@ -7574,14 +7636,21 @@ export class Structured {
    */
   private instanceCall(e: TS.CallExpression, name: string, into?: Stmt[]): Binding | null | undefined {
     const { ts } = this;
-    if (!this.classOfType(this.c.checker.getTypeAtLocation(e))) return undefined;
+    const type = this.c.checker.getTypeAtLocation(e);
+    const record = !this.classOfType(type) && this.plainRecordType(type);
+    if (!this.classOfType(type) && !record) return undefined;
     const instance: { name: string; made?: Binding } = { name };
     let call: Call | undefined;
     const callee = this.unwrap(e.expression);
     if (ts.isIdentifier(callee)) {
       const decl = this.gameDeclaration(callee);
-      if (!decl || !ts.isFunctionDeclaration(decl)) { this.c.error(e, "A function that gives an instance is one declared in the program."); return null; }
-      call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl, { instance });
+      // `function counter() { let c = 0; return { inc: () => c++, get: () => c }; }`: a record the call makes, a call's own.
+      const fn = decl && ts.isFunctionDeclaration(decl) ? undefined : this.fnValueOf(callee);
+      if (fn) call = this.inline(e, fn.parameters, fn.body, fn.target as Body, this.functionName(fn), fn.decl, { instance, closure: fn.closure });
+      else if (!decl || !ts.isFunctionDeclaration(decl)) { if (record) return undefined; this.c.error(e, "A function that gives an instance is one declared in the program."); return null; }
+      else call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl, { instance });
+    } else if (record) {
+      return undefined;
     } else if (ts.isPropertyAccessExpression(callee)) {
       const found = this.memberAt(callee, (m, n) => ts.isMethodDeclaration(m) && this.memberKey(m.name) === n);
       if (!found) return null;
@@ -7591,8 +7660,25 @@ export class Structured {
     if (!call) return null;
     // `into`: the call is part of a larger one's chain, and runs inside it; else it runs here.
     if (into) into.push(this.mark({ kind: "call", call, at: call.at, label: call.label }, e)); else this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
-    if (!instance.made) { this.c.error(e, "This call gave no instance: every way through the function has to return one."); return null; }
+    if (!instance.made) { this.c.error(e, `This call gave no ${record ? "record" : "instance"}: every way through the function has to return one.`); return null; }
     return instance.made;
+  }
+
+  /** A type of records a function may give: an object with fields, not an array, a function, a class's instance or one of the library's. */
+  private plainRecordType(type: TS.Type): boolean {
+    const { ts } = this;
+    const { checker } = this.c;
+    if (!(type.flags & ts.TypeFlags.Object) || type.getCallSignatures().length || checker.isArrayType(type) || checker.isTupleType(type)) return false;
+    if (!type.getProperties().length || this.kindOf(type) || this.isTextType(type)) return false;
+    const decl = type.getSymbol()?.declarations?.[0];
+    return !!decl && (ts.isObjectLiteralExpression(decl) || ts.isTypeLiteralNode(decl) || (ts.isInterfaceDeclaration(decl) && !decl.getSourceFile().isDeclarationFile));
+  }
+
+  /** What `return …` gives of a function that gives a record or an instance: one it makes, itself, or one it was handed. */
+  private madeInstance(given: TS.Expression, name: string): Binding | null | undefined {
+    const { ts } = this;
+    if (ts.isObjectLiteralExpression(given)) return this.declareRecord(name, given, this.c.checker.getTypeAtLocation(given), given);
+    return ts.isNewExpression(given) && this.classOf(given.expression) ? this.instantiate(given, name) : ts.isCallExpression(given) ? this.instanceCall(given, name) : this.bindingOf(given);
   }
 
   /**
@@ -7721,13 +7807,20 @@ export class Structured {
       const at = this.sourceOfIn(target, (fn.decl as { name?: TS.Node }).name ?? fn.decl);
       const fd: FuncDecl = { id: `${name}#${this.nextId++}`, name, params: [], body: [], at };
       t = { id: this.targets.size + 1, fd, params, result, name };
+      // Made inside a run of a block that keeps variables in an environment: handed that environment (closures over locals).
+      const envScope = this.boxed.size ? this.nearestEnv(fn.closure) : null;
+      if (envScope) { t.envScope = envScope; t.env = this.newVar("(environment)", "number", at); }
       // Set before the body is walked: a function that keeps itself (`state = tick`) is the same number.
       this.targets.set(fn, t);
       // Inside an attempt to make a function one that is called, now: what the body cannot keep is that attempt's failure.
       if (this.attempts > 0) this.walkTarget({ fn, t, node, returned });
       else this.pendingTargets.push({ fn, t, node, returned });
     }
-    return this.mark<NumExpr>({ kind: "const", value: t.id, fn: t.fd.id }, node);
+    const value = this.mark<NumExpr>({ kind: "const", value: this.boxed.size ? FN_BASE + t.id : t.id, fn: t.fd.id }, node);
+    if (!t.envScope) return value;
+    const env = this.envRefAt(t.envScope, this.scope);
+    if (!env) { this.envUnreachable = true; return value; }
+    return this.mark<NumExpr>({ kind: "call", call: this.makeCall(value, env, this.at(node)) }, node);
   }
 
   /**
@@ -7752,6 +7845,11 @@ export class Structured {
         scope.bind(p, { kind: "var", v });
       });
       if (result !== "void") fd.result = { decl: this.newVar(`(${name} result)`, result, at, { temp: true, ...(result === "number" ? this.widthOf(returned) : {}) }), kind: result };
+      // The environment it was made in, handed last: what it reaches the variables it keeps through.
+      if (t.env) fd.params.push(t.env);
+      if (this.boxed.size) this.envBoundaries.set(scope, t.env && t.envScope ? { expr: varRef(t.env), env: t.envScope } : { expr: num(0), env: null });
+      const top = this.targetTop;
+      this.targetTop = scope;
       // What the body names from outside it, watched while it is walked.
       const inside = scope.serial;
       const refused = new Set<TS.Node>();
@@ -7759,6 +7857,8 @@ export class Structured {
       Scope.watch = (b, found, decl) => {
         if (found.serial >= inside || refused.has(decl) || this.keepable(b, found)) return;
         refused.add(decl);
+        // A variable of a number, a boolean, a unit or a text: kept in an environment, the next walk.
+        if (b.kind === "var" && !b.v.shared && !b.v.temp && (this.ts.isVariableDeclaration(decl) || this.ts.isParameter(decl) || this.ts.isBindingElement(decl))) { this.boxesFound.add(decl); return; }
         const what = (decl as { name?: TS.Node }).name?.getText((decl.getSourceFile?.() ?? this.body.sf)) ?? "a variable";
         this.c.error(node, `${name} is kept as a value, and uses ${what}, a variable of the function or the block it was written in: by the time ${name} is called, ${what} may be gone or hold another call's value. A function kept as a value may use the program's own variables and what the script knows when it is built — hand ${what} over as an argument, or keep it in a variable of the program.`);
       };
@@ -7772,6 +7872,7 @@ export class Structured {
         Scope.watch = watching;
         this.inlineDepth = depth;
         this.copyArgsAt = copyArgsAt;
+        this.targetTop = top;
       }
       if (mentions(fd.body, "sleep") || mentions(fd.body, "parallel") || mentions(fd.body, "start")) this.c.error(node, `${name} is kept as a value, and it waits or starts a task: a function called through its number runs to its end in the frame it is called. Call it where it is written instead.`);
       if (mentions(fd.body, "edge")) this.c.error(node, `${name} is kept as a value, and rose() / once() remember what they saw at the place they are written: test them where the function is written, and hand it what they found.`);
@@ -7783,10 +7884,174 @@ export class Structured {
   /** Whether a function kept as a value may name a binding found outside its body: the program's own, or a value of the script. */
   private keepable(b: Binding, found: Scope): boolean {
     if (b.kind === "value" || b.kind === "fn") return true;
+    if (this.boxedCells.has(b)) return true;
     if (found === this.topScope) return true;
     // `this` of an instance the program made at its top, or an array of the program's handed over as itself: the same cells.
     for (const own of this.topScope.own()) if (own === b) return true;
     return false;
+  }
+
+  /* ── Closures over locals (TrigScript 4) ── */
+
+  private poolMaker(): PoolMaker {
+    return {
+      newVar: (name, kind, at, extra) => this.newVar(name, kind, at, extra),
+      newArray: (name, kind, length, at, extra) => this.newArray(name, kind, length, at, extra),
+      fnId: (name) => `${name}#${this.nextId++}`,
+    };
+  }
+
+  private poolNow(at: At): ClosurePool {
+    if (!this.pool) {
+      this.pool = makePool(this.poolMaker(), at);
+      this.functions.push(this.pool.make, this.pool.drop, this.pool.sweep);
+    }
+    return this.pool;
+  }
+
+  /** `make(fn, parent)`: a new row of the pool — a closure of `fn` made in `parent`, or (fn 0) an environment around `parent`. */
+  private makeCall(fn: NumExpr, parent: NumExpr, at: At): Call {
+    const pool = this.poolNow(at);
+    const label = "(closures)";
+    return { name: pool.make.name, fn: pool.make.id, at, label, params: [{ decl: pool.make.params[0], init: fn, label }, { decl: pool.make.params[1], init: parent, label }], result: { decl: this.newVar("(made)", "number", at, { temp: true }), kind: "number" }, body: [] };
+  }
+
+  /**
+   * A variable bound where a kept function uses it: its cell in the environment of this run of the scope instead, the
+   * value it was declared with copied there — now, or where its function's body starts (a parameter).
+   */
+  private boxBinding(scope: Scope, decl: TS.Node, b: Binding): Binding | undefined {
+    if (b.kind !== "var" || !this.boxed.has(decl) || this.boxedCells.has(b)) return undefined;
+    const v = b.v;
+    const at = v.at;
+    const label = `${v.name} (kept by a closure)`;
+    const pool = this.poolNow(at);
+    let env = this.scopeEnv.get(scope);
+    if (!env) {
+      env = this.newVar("(environment)", "number", at);
+      this.scopeEnv.set(scope, env);
+      pool.envVars.add(env.id);
+    }
+    const index = varRef(env);
+    const named = `${v.name} (kept)`;
+    let cell: BoxedCell;
+    let into: Stmt[];
+    if (v.kind === "number" || v.kind === "boolean") {
+      const a = this.newArray(named, v.kind, CLOSURE_CAP, at, { ...(v.bits ? { bits: v.bits } : {}), ...(v.unsigned ? { unsigned: true } : {}), ...(v.fixed ? { fixed: true } : {}) });
+      if (v.kind === "number") pool.cells.push(a);
+      const read = (i: NumExpr) => ({ kind: "element", array: a.id, index: i, at }) as NumExpr & BoolExpr;
+      cell = { home: scope, at: (i) => ({ kind: "cell", a, index: i }), copy: (to, from) => [{ kind: "store", array: a.id, index: to, value: read(from), at, label }] };
+      into = [{ kind: "store", array: a.id, index, value: refOf(v) as NumExpr | BoolExpr, at, label }];
+    } else if (v.kind === "unit") {
+      const [ptr, epd, uid] = UNIT_PARTS.map((part) => this.newArray(`${named} ${part}`, "number", CLOSURE_CAP, at));
+      const parts = [[ptr, "ptr"], [epd, "epd"], [uid, "uid"]] as const;
+      cell = { home: scope, at: (i) => ({ kind: "unitAt", ptr: { a: ptr, index: i }, epd: { a: epd, index: i }, uid: { a: uid, index: i } }),
+        copy: (to, from) => parts.map(([a]): Stmt => ({ kind: "store", array: a.id, index: to, value: { kind: "element", array: a.id, index: from, at }, at, label })) };
+      into = parts.map(([a, part]): Stmt => ({ kind: "store", array: a.id, index, value: { kind: "unitPart", unit: unitRef(v), part, at }, at, label }));
+    } else {
+      const [addr, block, chars] = TEXT_PARTS.map((part) => this.newArray(`${named} ${part}`, "number", CLOSURE_CAP, at));
+      pool.texts.push({ addr, block, chars });
+      const textAt = (i: NumExpr): TextExpr => ({ kind: "textAt", addr: addr.id, block: block.id, chars: chars.id, index: i, at });
+      cell = { home: scope, at: (i) => ({ kind: "textAt", addr, block, chars, index: i }), copy: (to, from) => [{ kind: "storeText", addr: addr.id, block: block.id, chars: chars.id, index: to, value: textAt(from), at, label }] };
+      into = [{ kind: "storeText", addr: addr.id, block: block.id, chars: chars.id, index, value: { kind: "textVar", id: v.id }, at, label }];
+    }
+    const placeholder = cell.at(index);
+    this.boxedCells.set(placeholder, cell);
+    const cells = this.scopeCells.get(scope) ?? [];
+    cells.push(cell);
+    this.scopeCells.set(scope, cells);
+    const box = () => { this.makeEnv(scope, decl); for (const st of into) this.emit(st, decl); };
+    if (scope === this.scope) box();
+    else this.pendingBoxes.set(scope, [...(this.pendingBoxes.get(scope) ?? []), box]);
+    return placeholder;
+  }
+
+  /** The copies into environments waiting for the scope being walked, or one around it, to start: outermost first. */
+  private flushBoxes() {
+    if (!this.pendingBoxes.size) return;
+    const chain: Scope[] = [];
+    for (let s: Scope | null = this.scope; s; s = s.parent) if (this.pendingBoxes.has(s)) chain.push(s);
+    for (const s of chain.reverse()) {
+      const boxes = this.pendingBoxes.get(s)!;
+      this.pendingBoxes.delete(s);
+      for (const box of boxes) box();
+    }
+  }
+
+  /** The environment of this run of a scope, made where its first kept variable is: its parent the environment around it. */
+  private makeEnv(scope: Scope, at: TS.Node) {
+    if (this.envMade.has(scope)) return;
+    this.envMade.add(scope);
+    const env = this.scopeEnv.get(scope)!;
+    const where = this.at(at);
+    this.emit({ kind: "declare", decl: env, init: { kind: "call", call: this.makeCall(num(0), this.envParentOf(scope), where) }, at: where, label: `${this.label(at)} (environment)` }, at);
+  }
+
+  /** What an environment made at the start of a scope has around it. */
+  private envParentOf(scope: Scope): NumExpr {
+    const b = this.envBoundaries.get(scope);
+    if (b) return b.env ? b.expr : num(0);
+    const env = this.nearestEnv(scope.parent);
+    return (env && this.envRefAt(env, scope.parent!)) || num(0);
+  }
+
+  /** At the end of a turn of a `for`: a new environment for the loop's own variables, a copy of this turn's, as JavaScript makes. */
+  private renewEnv(scope: Scope, at: TS.Node): Stmt[] {
+    const env = this.scopeEnv.get(scope)!;
+    const where = this.at(at);
+    const label = `${this.label(at)} (a new environment for the next turn)`;
+    const next = this.newVar("(next environment)", "number", where, { temp: true });
+    const out: Stmt[] = [{ kind: "declare", decl: next, init: { kind: "call", call: this.makeCall(num(0), this.envParentOf(scope), where) }, at: where, label }];
+    for (const cell of this.scopeCells.get(scope) ?? []) out.push(...cell.copy(varRef(next), varRef(env)));
+    out.push({ kind: "assign", target: env.id, value: varRef(next), at: where, label });
+    return out;
+  }
+
+  /** The nearest scope at or above `from` that keeps variables in an environment. */
+  private nearestEnv(from: Scope | null): Scope | null {
+    for (let s = from; s; s = s.parent) if (this.scopeEnv.has(s)) return s;
+    return null;
+  }
+
+  /**
+   * The environment of `env` (a scope that has one) as reached from `from`: its variable, within the same run of the
+   * function; past where the code runs elsewhere (a kept function's top), what it was handed, and from there a parent a
+   * scope that has an environment. Null when it cannot be reached.
+   */
+  private envRefAt(env: Scope, from: Scope): NumExpr | null {
+    for (let s: Scope | null = from; s; s = s.parent) {
+      if (s === env) return varRef(this.scopeEnv.get(env)!);
+      const b = this.envBoundaries.get(s);
+      if (!b) continue;
+      let expr = b.expr;
+      for (let u = b.env; u; u = this.nearestEnv(u.parent)) {
+        if (u === env) return expr;
+        expr = { kind: "element", array: this.poolNow(this.scopeEnv.get(u)!.at).parent.id, index: expr, at: this.scopeEnv.get(u)!.at };
+      }
+      return null;
+    }
+    return null;
+  }
+
+  /** A kept variable found from somewhere else: its cell at the environment as reached from there. */
+  private resolveBoxed(b: Binding, from: Scope): Binding {
+    const cell = this.boxedCells.get(b);
+    if (!cell) return b;
+    const index = this.envRefAt(cell.home, from);
+    if (!index) { this.envUnreachable = true; return b; }
+    if (index.kind === "var" && index.id === this.scopeEnv.get(cell.home)!.id) return b;
+    return cell.at(index);
+  }
+
+  /** A scope made inside a kept function's body whose code was written outside it (a function inlined there): it reaches environments through the kept function's. */
+  private scopeCreated(scope: Scope) {
+    const top = this.targetTop;
+    if (!top || !scope.parent) return;
+    for (let u: Scope | null = scope.parent; u; u = u.parent) if (u === top) return;
+    const env = this.nearestEnv(scope.parent);
+    if (!env) return;
+    const expr = this.envRefAt(env, this.scope);
+    if (expr) this.envBoundaries.set(scope, { expr, env });
   }
 
   /**
@@ -7907,17 +8172,29 @@ export class Structured {
       for (const v of Object.values(o)) if (v && typeof v === "object") walk(v);
     };
     walk(program.body);
+    const base = this.boxed.size ? FN_BASE : 0;
     for (const d of this.dispatchers.values()) {
       const cases: { value: number | null; body: Stmt[] }[] = [];
+      const { at, label } = d;
+      const which = d.fd.params[0];
+      // A closure (a row of the pool): the function it runs, and the environment it was made in.
+      const env = this.pool ? this.newVar("(environment)", "number", at) : null;
       for (const t of [...live].sort((a, b) => a.id - b.id)) {
         if (t.params.length > d.params.length || t.params.some((k, i) => k !== d.params[i]) || (d.result !== "void" && t.result !== d.result)) continue;
-        const call: Call = { name: t.name, fn: t.fd.id, at: d.at, label: d.label, params: t.fd.params.map((p, i) => ({ decl: p, init: refOf(d.fd.params[i + 1]), label: d.label })), body: [] };
-        if (d.result === "void" || t.result === "void") { cases.push({ value: t.id, body: [{ kind: "call", call, at: d.at, label: d.label }, { kind: "break", at: d.at, label: d.label }] }); continue; }
-        call.result = { decl: this.newVar(`(${t.name} result)`, d.result, d.at, { temp: true }), kind: d.result };
+        const call: Call = { name: t.name, fn: t.fd.id, at, label, params: t.fd.params.map((p, i) => ({ decl: p, init: p === t.env && env ? varRef(env) : refOf(d.fd.params[i + 1]), label })), body: [] };
+        if (d.result === "void" || t.result === "void") { cases.push({ value: base + t.id, body: [{ kind: "call", call, at, label }, { kind: "break", at, label }] }); continue; }
+        call.result = { decl: this.newVar(`(${t.name} result)`, d.result, at, { temp: true }), kind: d.result };
         const value = d.result === "text" ? ({ kind: "textCall", call } as TextExpr) : ({ kind: "call", call } as NumExpr);
-        cases.push({ value: t.id, body: [{ kind: "return", value, at: d.at, label: d.label }] });
+        cases.push({ value: base + t.id, body: [{ kind: "return", value, at, label }] });
       }
-      d.fd.body = cases.length ? [{ kind: "switch", value: varRef(d.fd.params[0]), cases, at: d.at, label: d.label }] : [];
+      const open: Stmt[] = this.pool && env ? [
+        { kind: "declare", decl: env, init: num(0), at, label },
+        { kind: "if", cond: { kind: "compare", op: "<", left: varRef(which), right: num(FN_BASE), at, label }, then: [
+          { kind: "assign", target: env.id, value: { kind: "element", array: this.pool.parent.id, index: varRef(which), at }, at, label },
+          { kind: "assign", target: which.id, value: { kind: "element", array: this.pool.fnOf.id, index: varRef(which), at }, at, label },
+        ], at, label },
+      ] : [];
+      d.fd.body = cases.length ? [...open, { kind: "switch", value: varRef(which), cases, at, label }] : [];
     }
   }
 
@@ -8216,6 +8493,8 @@ export class Structured {
     const fn: Ctx["fn"] = { kind, ...(instance ? { instance } : {}) };
     try {
       return this.collect(() => {
+        // Its parameters a kept function uses, into the environment of this run.
+        this.flushBoxes();
         // What the function does before its first statement: its parameters taken apart.
         first?.();
         if (ts.isBlock(body)) this.block(body.statements, { fn });
@@ -8226,6 +8505,12 @@ export class Structured {
             else if (kind === "unit") { const value = this.unitExpr(body); if (value) this.emit({ kind: "return", value, at: this.at(body), label: this.label(body) }, body); }
             else if (kind === "boolean") this.emit({ kind: "return", value: this.boolValue(body), at: this.at(body), label: this.label(body) }, body);
             else if (kind === "text") { const value = this.text(body); if (value) this.emit({ kind: "return", value, at: this.at(body), label: this.label(body) }, body); }
+            else if (instance) {
+              // `() => ({ inc, get })`: the record it gives.
+              const made = this.madeInstance(this.unwrap(body), instance.name);
+              if (made?.kind === "record") instance.made = made;
+              else if (made !== null) this.c.error(body, "A function gives a record or an instance it made (=> ({ x, y })), or one it was handed.");
+            }
             else this.expressionStatement(body);
           } catch (err) {
             if (!(err instanceof LowerError)) throw err;
@@ -8416,6 +8701,7 @@ export class Structured {
       if (!root || typeof root !== "object") return;
       const o = root as Record<string, unknown>;
       if (typeof o.array === "string") used.add(o.array);
+      for (const k of ["addr", "block", "chars"]) if (typeof o[k] === "string") used.add(o[k] as string);
       for (const v of Object.values(o)) if (v && typeof v === "object") arrays(v);
     };
     arrays(program.body);
@@ -8507,6 +8793,39 @@ export class Structured {
   }
 
   /** A number expression: a constant, a variable, arithmetic, an intrinsic, a call — or null, with a diagnostic. */
+  /**
+   * `++n`, `n--`, `n = v`, `n += v` used for their value (`return ++count`, `ids[next++] = id`): the update runs where
+   * the expression is — a call inlined there, so a `&&`, a `?:` or a loop's condition runs it only when JavaScript would —
+   * and the value is the variable's after it (before it, for `n++`). Undefined for any other expression.
+   */
+  private updateValue(e: TS.Expression): NumExpr | null | undefined {
+    const { ts } = this;
+    const step = (ts.isPrefixUnaryExpression(e) || ts.isPostfixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken);
+    const assigns = ts.isBinaryExpression(e) && e.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && e.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+    if (!step && !assigns) return undefined;
+    const target = step ? (e as TS.PrefixUnaryExpression | TS.PostfixUnaryExpression).operand : (e as TS.BinaryExpression).left;
+    if (this.kindOf(this.c.checker.getTypeAtLocation(target)) !== "number") return undefined;
+    const at = this.at(e);
+    const label = this.label(e);
+    const result = this.newVar("(value)", "number", at, { temp: true, ...this.widthOf(this.c.checker.getTypeAtLocation(target)) });
+    let ok = true;
+    const body = this.collect(() => {
+      let before: VarDecl | null = null;
+      if (ts.isPostfixUnaryExpression(e)) {
+        const old = this.num(target);
+        if (!old) { ok = false; return; }
+        before = this.newVar("(before)", "number", at, { temp: true, ...this.widthOf(this.c.checker.getTypeAtLocation(target)) });
+        this.emit({ kind: "declare", decl: before, init: old, at, label }, e);
+      }
+      this.expressionStatement(e);
+      const value = before ? varRef(before) : this.num(target);
+      if (!value) { ok = false; return; }
+      this.emit({ kind: "return", value, at, label }, e);
+    });
+    if (!ok) return null;
+    return this.mark<NumExpr>({ kind: "call", call: { name: "(update)", at, label, params: [], result: { decl: result, kind: "number" }, body } }, e);
+  }
+
   private num(expr: TS.Expression): NumExpr | null {
     const { ts } = this;
     const e = this.unwrap(expr);
@@ -8516,6 +8835,7 @@ export class Structured {
     const h = this.evaluate(expr);
     // No function: `let f: (() => void) | undefined = undefined`.
     if (h && (h.value === undefined || h.value === null) && this.noFunction(expr)) return num(0);
+    if (!h) { const updated = this.updateValue(e); if (updated !== undefined) return updated; }
     if (h) {
       if (isRead(h.value)) return this.readValue(h.value, e);
       if (isTable(h.value)) return this.tableRead(h.value, e);

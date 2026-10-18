@@ -97,12 +97,12 @@ describe("a function that makes a function", () => {
   });
 });
 
-describe("what a function kept as a value may not do", () => {
-  it("keep a variable of the function it was written in", () => {
-    expect(messages("function make() { let local = 5; local++; return () => local; } let f = make(); let n = 0; n = f();").join("\n")).toMatch(/the function make returns is kept as a value, and uses local, a variable of the function or the block it was written in/);
+describe("what a function kept as a value may do, and not", () => {
+  it("keep a variable of the function it was written in: since closures, it keeps one (tests/closures.test.ts)", () => {
+    same("function make() { let local = 5; local++; return () => local; } let f = make(); let n = 0; n = f(); print(`${n}`);");
   });
-  it("keep a variable of a loop", () => {
-    expect(messages("const hs: (() => number)[] = []; let n = 3; for (let i = 0; i < n; i++) hs.push(() => i); let t = 0; t = hs[0]();").join("\n")).toMatch(/uses i, a variable of the function or the block/);
+  it("keep a variable of a loop: since closures, one for each turn", () => {
+    same("const hs: (() => number)[] = []; let n = 3; for (let i = 0; i < n; i++) hs.push(() => i); let t = 0; for (const h of hs) t = t * 10 + h(); print(`${t}`);");
   });
   it("but a loop with bounds known when the script is built is unrolled, and each function has its own i", () => {
     same("const hs: (() => number)[] = []; for (let i = 0; i < 3; i++) hs.push(() => i * 10); let t = 0; for (const h of hs) t += h(); print(`${t}`);");

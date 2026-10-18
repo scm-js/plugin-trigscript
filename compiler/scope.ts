@@ -121,12 +121,25 @@ export class Scope {
    * watching, which is how a variable it may not keep is found.
    */
   static watch: ((b: Binding, found: Scope, decl: TS.Node) => void) | null = null;
-  constructor(parent: Scope | null) { this.parent = parent; }
-  bind(decl: TS.Node, b: Binding) { this.map.set(decl, b); }
+  /**
+   * Closures over locals (TrigScript 4): a variable a kept function uses is kept in an environment on the heap, not a
+   * variable. `boxer` is told of every binding and may give another in its place (the variable's cell of the
+   * environment); `resolver` is told of every one found outside the scope it was looked up in and may give the same
+   * cell reached from there (through the environment a kept function was handed); `created` is told of every new scope.
+   */
+  static boxer: ((scope: Scope, decl: TS.Node, b: Binding) => Binding | undefined) | null = null;
+  static resolver: ((b: Binding, found: Scope, from: Scope) => Binding) | null = null;
+  static created: ((scope: Scope) => void) | null = null;
+  constructor(parent: Scope | null) { this.parent = parent; Scope.created?.(this); }
+  bind(decl: TS.Node, b: Binding) { this.map.set(decl, Scope.boxer?.(this, decl, b) ?? b); }
   lookup(decl: TS.Node): Binding | undefined {
     for (let s: Scope | null = this; s; s = s.parent) {
       const b = s.map.get(decl);
-      if (b) { if (s !== this) Scope.watch?.(b, s, decl); return b; }
+      if (b) {
+        if (s === this) return b;
+        Scope.watch?.(b, s, decl);
+        return Scope.resolver ? Scope.resolver(b, s, this) : b;
+      }
     }
     return undefined;
   }
