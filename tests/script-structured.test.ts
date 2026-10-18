@@ -955,7 +955,8 @@ describe("structured: game functions, returns and records", () => {
     const typed = okProgram("let p: { n: u8 } = { n: 250 }; p.n += 10;");
     expect(value(run(typed, 1), "p.n")).toBe(255);
     expect(messagesOf(program("let p = { n: 1 }; p = { n: 2 };"))).toEqual(["A record is assigned field by field: p.lives = 3."]);
-    expect(messagesOf(program("const p = { n: 1 }; p.n = 2;"))).toEqual(["This object is computed when the script is built. Declare it with let inside the program to make it a record of variables."]);
+    // A const record something writes is the program's, as a const array is (TrigScript 4).
+    expect(value(run(okProgram("const p = { n: 1 }; p.n = 2;"), 1), "p.n")).toBe(2);
   });
 });
 

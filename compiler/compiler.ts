@@ -20,10 +20,10 @@ import type { TriggerRecord } from "../vendor/triggers";
 import { MODULE_NAME } from "./api";
 import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type TestReport, type TestRunOptions } from "./testing";
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
-import { isScriptClass, isTopListener, libraryCallName, libraryName, planClass, planListener, planProgram, transformer, type ProgramPlan } from "./hoist";
-import { locate, resolveModule, runModules, STDLIB_DIR, stdlibFile, type LinkedFile } from "./link";
+import { isScriptClass, isScriptFunction, scriptArrow, isTopListener, libraryCallName, libraryName, planClass, planFunction, planListener, planProgram, transformer, type ProgramPlan } from "./hoist";
+import { locate, resolveModule, runModules, STDLIB_DIR, type LinkedFile } from "./link";
 import { isMediaFile, videoValue } from "./media";
-import { STDLIB, stdlibImports } from "./stdlib";
+import { STDLIB, stdlibImports, stdlibPath } from "./stdlib";
 import { checkProgram } from "./eud";
 import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
@@ -204,7 +204,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   for (const [path, text] of Object.entries(files)) (isMediaFile(path) ? media : scripts).set(normalizePath(path), text);
   // The standard library's modules the script imports ("trigscript/fog"), as files of its own: only those, since one
   // may hold a program of its own.
-  for (const name of stdlibImports([...scripts.values()])) scripts.set(stdlibFile(name), STDLIB[name]);
+  for (const name of stdlibImports([...scripts.values()])) scripts.set(stdlibPath(name), STDLIB[name]);
   const entry = entryOf(scripts.keys());
   if (!scripts.has(entry)) {
     diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: `The script has no ${ENTRY_FILE}; that is the file a build starts from.`, source: "compiler" });
@@ -288,6 +288,8 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const plans = new Map<TS.Node, ProgramPlan>();
   /** The classes at the top of the script's files, each planned as a game function is (`planClass`). */
   const classPlans = new Map<TS.ClassDeclaration, ProgramPlan>();
+  /** The functions at the top of the script's files, each planned as a game function is (`planFunction`). */
+  const functionPlans = new Map<TS.Node, ProgramPlan>();
   const byPosition = new Map<string, { plan: ProgramPlan; sf: TS.SourceFile; name?: string }>();
   const fileIndex = (sf: TS.SourceFile) => fileNames.indexOf(sf.fileName);
   const buildTime: SourceRange[] = [];
@@ -300,6 +302,18 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
         const plan = planClass(ts, checker, node);
         classPlans.set(node, plan);
         byPosition.set(`${fileIndex(sf)}:${node.getStart(sf)}`, { plan, sf, name: node.name!.text });
+      }
+      // A function at the top of a file: its errors, too, wait for a program that calls it with its own values.
+      if (isScriptFunction(ts, node) && !isTestFile(name)) {
+        const plan = planFunction(ts, checker, node);
+        functionPlans.set(node, plan);
+        byPosition.set(`${fileIndex(sf)}:${node.getStart(sf)}`, { plan, sf, name: node.name!.text });
+      }
+      const arrowFn = !isTestFile(name) ? scriptArrow(ts, node) : undefined;
+      if (arrowFn) {
+        const plan = planFunction(ts, checker, arrowFn);
+        functionPlans.set(arrowFn, plan);
+        byPosition.set(`${fileIndex(sf)}:${arrowFn.getStart(sf)}`, { plan, sf, name: ((node as TS.VariableDeclaration).name as TS.Identifier).text });
       }
       // `on.died(…)` at the top of a file: a program of its own, its body the statement.
       if (isTopListener(ts, checker, node) && !isTestFile(name)) {
@@ -343,7 +357,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   for (const d of diagnostics) planned.add(`${d.file}:${d.line}`);
 
   /* ── Emit ── */
-  const emitted = program.emit(undefined, undefined, undefined, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow), planForClass: (cls) => classPlans.get(cls), planForListener: (stmt) => plans.get(stmt) })] });
+  const emitted = program.emit(undefined, undefined, undefined, false, { before: [transformer(ts, checker, { fileIndex, planFor: (arrow) => plans.get(arrow), planForClass: (cls) => classPlans.get(cls), planForListener: (stmt) => plans.get(stmt), planForFunction: (fn) => functionPlans.get(fn) })] });
   for (const d of emitted.diagnostics) {
     if (d.category === ts.DiagnosticCategory.Error) diagnostics.push({ file: ENTRY_FILE, line: 1, column: 1, endLine: 1, endColumn: 1, message: ts.flattenDiagnosticMessageText(d.messageText, "\n"), source: "typescript" });
   }
@@ -408,6 +422,25 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     return b ?? undefined;
   };
 
+  // A function of the script's own, when a program calls it with its own values: the same, from what `__fn` was handed.
+  const functionBodies = new Map<TS.Node, Body | null>();
+  const functionBody = (fn: TS.FunctionDeclaration | TS.ArrowFunction | TS.FunctionExpression): Body | undefined => {
+    let b = functionBodies.get(fn);
+    if (b === undefined) {
+      const sf = fn.getSourceFile();
+      const key = `${fileIndex(sf)}:${fn.getStart(sf)}`;
+      const found = byPosition.get(key);
+      const ran = collector.functions.get(key);
+      b = null;
+      if (found && ran) {
+        try { b = newBody(found.plan, found.sf, ran.hoisted(), found.name); } catch { b = null; }
+        for (const e of found.plan.errors) nodeError(e.node, e.message);
+      }
+      functionBodies.set(fn, b);
+    }
+    return b ?? undefined;
+  };
+
   const triggers: TriggerRecord[] = [];
   const sources: (TriggerSource | null)[] = [];
   const programs: ProgramInfo[] = [];
@@ -434,7 +467,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     let emitted: ReturnType<Structured["run"]>;
     for (let walk = 0; ; walk++) {
       const said: [TS.Node, string, "compiler" | "script" | undefined][] = [];
-      emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => { said.push([node, message, source]); }, resolve, classBody, boxed }).run();
+      emitted = new Structured({ ts, checker, body, owner, owners, perPlayer: entry.options.perPlayer, strings: collector.strings, error: (node, message, source) => { said.push([node, message, source]); }, resolve, classBody, functionBody, boxed }).run();
       if (emitted.boxes?.length && walk < 4) { for (const d of emitted.boxes) boxed.add(d); continue; }
       for (const [node, message, source] of said) nodeError(node, message, source);
       break;

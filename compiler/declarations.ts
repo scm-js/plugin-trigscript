@@ -829,10 +829,14 @@ declare namespace JSX {
     bar: { value: number; max: number; width?: number; color?: TextColor };
   }
 }
+/** What a component's \`children\` is: the text between its tags (\`function Box(props: { title: string; children?: Children })\`). */
+type Children = string | number | boolean | null | undefined | Children[];
 declare function __jsx(tag: string, props: object | null, ...children: unknown[]): string;
 /** What the build adds after each class at the top of a file, for a program that makes an instance of it. Not for scripts. */
 declare function __class(cls: unknown, descriptor: unknown): void;
 declare function __listen(descriptor: unknown, at?: unknown): void;
+/** What the build adds after each function at the top of a file, for a program that calls it with its own values. Not for scripts. */
+declare function __fn(fn: unknown, descriptor: unknown): void;
 declare const __fragment: string;
 interface ArrayConstructor {
   new <T = number>(arrayLength: number): T[];

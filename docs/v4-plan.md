@@ -6,7 +6,8 @@ emulator read from a dump (*R0*, 2026-10-16); Part B steered by three showpiece 
 (*EUD error code to line*, 2026-10-17); a fourth showpiece, Bad Apple, with fog of war found to work as a
 framebuffer in the lifted game (*S4*, 2026-10-17); B6, fixed numbers and Math, built with a fifth showpiece, a
 raycaster in the fog (*S5*, 2026-10-17); B3, functions as values, and B4, `try` / `catch` / `throw`, built
-(2026-10-17). The question it answers: now that there is a
+(2026-10-17); closures over locals, and the text and array methods a program was missing, built (*Closures and the
+missing methods*, 2026-10-17). The question it answers: now that there is a
 lifted copy of the game's own code (scm-sim's exact engine) beside eudplib, what does
 TrigScript become if it uses the game itself as its checker, and how far can the language
 go towards the TypeScript people actually write.
@@ -1502,6 +1503,74 @@ frame 241 (the simulator and the lifted game agree), and that recording's audio 
 video, both said to start at 0 — the recorder's, not the map's. **Not yet:** grey levels and colour (a
 renderer that needs them — the raycaster's textures — will say which); the game's own tables (`ground.distance`,
 `atBuild`), the rest of B8.
+
+### Closures and the missing methods (built 2026-10-17)
+
+The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`console`, `ui`):
+
+```ts
+function makeCounter() { let count = 0; return () => ++count; }
+const hs: (() => number)[] = [];
+for (let i = 0; i < n; i++) hs.push(() => i);          // one i for each turn, as JavaScript has it
+function counter() { let c = 0; return { inc: () => { c++; }, get: () => c }; }
+
+const [cmd, who, amount] = line.trim().split(" ");
+if (cmd == "-give" && !isNaN(parseInt(amount))) give(parseInt(who), parseInt(amount));
+queue.push(x); const next = queue.shift() ?? -1; xs.splice(i, 1); xs.at(-1);
+```
+
+**Closures over locals** (`compiler/closures.ts`, IR 24). B3 refused a kept function that used a variable of the
+block it was written in; the open decision above chose between "`let` only when the closure does not outlive its
+frame" and reference-counted environments. Built: environments, counted.
+- *What is kept where.* A variable a kept function uses is a cell of an array of its own at a row of a pool (1 023 rows
+  a program, a player's own in a per-player program); the block it is declared in makes a row each time it runs, its
+  parent the row around it. A closure is a row too: the function and the row it was made in. A function that keeps
+  nothing is `FN_BASE` (2²⁰) plus its id, as B3's numbers were, moved out of the pool's way; a dispatcher takes a
+  closure apart and hands the function its environment as a last parameter.
+- *Which variables.* Found by walking the program once: the B3 watch, which refused, now records the declaration, and
+  the program is walked again with those kept in environments (`compiler.ts`, up to five walks; only the last one's
+  errors are said). Nothing is kept that no kept function uses: a function known when built (an arrow handed down,
+  `xs.forEach(…)`) costs what it did.
+- *Lifetime.* Counted, deferred: every store into a place that may hold a reference (found to a fixed point from
+  what `make` gives) holds the new one and lets go of the old; a row at 0 is queued, and the program's next wait gives
+  back what is still at 0 there. So a closure only just made, on its way into a variable, is never let go of under it,
+  and one made and dropped in the same frame costs no sweep of its own. Parameters and results are not counted.
+- *JavaScript's semantics, checked against it:* the function and its closures share the variable (a write either side
+  is seen by the other); two closures of one run share it (`{ inc, get }`); a copy of a closure is the same closure
+  (`a === b`); the `let` of a `for` is copied into a new environment at the end of each turn, before the update.
+- *Not yet:* a function that calls itself may not declare a variable a kept function uses (its variables go on the
+  stack, where nothing counts them); an array or a record of the function kept by a closure (copy it into the program,
+  or into fields); more than 1 023 alive at once (said once, and the new one does nothing).
+- *Cost, lifted game:* a variable-index read is about 70 conditions and actions, a write 15. A turn that makes an
+  environment and a closure, calls it and lets go of the one before: about 1 700 (2 800 before the counting was made
+  to read one cell where it read three). Found on the way, for every program: `xs[i] = xs[i] + n` (`xs[i] += n`) now
+  lowers to the game's own Add (`EUDArray.iadditem`), nothing read — 85 down to about 25.
+
+**Also found missing, and built:** `++n`, `n--`, `n = v`, `n += v` used as values (`return ++count`, `ids[k++] = id`,
+`while (n-- > 0)`), as a call inlined where the expression is, so `&&` and `?:` run it only when JavaScript would; a
+function may give a record it makes (`return { inc, get }`, `() => ({ x, y })`), inlined where it is called, as an
+instance already could; `join` of an array is worked out where it is used (it was worked out before the statement it
+was in, so `${xs.unshift(5)} ${xs.join()}` read the array too early).
+
+**Texts:** `trim` / `trimStart` / `trimEnd`, `replace` / `replaceAll` (a text to find; an empty one matches before
+every character, as JavaScript's), `toUpperCase` / `toLowerCase` (A–Z only; Korean is left as it is), `lastIndexOf`,
+`split(sep, limit?)` (an array of texts, taken apart with `const [a, b] = …`, indexed, looped over), `parseInt(s,
+radix?)`, `Number(s)`, `Number.parseInt`. A number of a program is never NaN, so `isNaN(parseInt(s))` /
+`Number.isNaN(Number(s))` is compiled as "has no number at its start", and `isNaN` of anything else is refused with
+that said. Regular expressions and `replace` with a function are refused.
+
+**Arrays:** `shift` (a value, or `?? other` for an empty one), `unshift` (gives the new length), `splice(start,
+deleteCount?, ...items)` standing on its own, `at(i)` (from the end below zero; `?? other` past either end), `lastIndexOf`,
+`join` of numbers and booleans — on arrays of numbers, booleans, texts, records and units. One routine (`spliceRows`)
+moves rows for all of them: the rows taken out give their blocks back, the rest move up or down a cell a column, and
+the new rows are emptied before they are filled, so a text or an inner array that moved is never given back twice.
+A `const` array that only these change is the program's (`hoist.ts`), not a list of the script.
+
+**Checked:** `tests/closures.test.ts` (20) and `tests/text-array-methods.test.ts` (20), each body also run as
+JavaScript and the prints compared; `tests/function-values.test.ts`'s two refusals are now working examples. In the
+lifted game and the simulator, the same lines: `probes/game-closures.ts` (6: counters, a turn's own `i`, shared
+variables, closures inside closures, handlers fired frames later, 3 000 made and let go of across 30 frames with the
+kept ones still there) and `probes/game-text-arrays.ts` (4).
 
 ## Part C — the game, pushed
 

@@ -1480,14 +1480,12 @@ a message that says so, none is passed over in silence:
 | --- | --- |
 | Fractions: every number is whole | work in a smaller unit (pixels, frames, hundredths) |
 | `**`, `Math.sqrt`, `Math.sign` and the rest of `Math` on a variable — `min`, `max` and `abs` are there, and the rounding ones around a division | a loop, or a list the script worked out (`const roots = Array.from({ length: 100 }, (_, n) => Math.floor(Math.sqrt(n)))`, then `roots[n]`) |
-| A function kept as a value: `const f = (x: number) => x + k`, a function in an array, one returned | `function f(x: number) { … }` in the program; an arrow is fine where a method takes one |
-| A function that returns a record or an array it made | hand it the record or the array to fill in; an instance of a class is the exception (*Classes*) |
-| `try`, `catch`, `throw` — the game has no exceptions | return a number that says what happened |
-| `async`, generators, `for…in`, a labelled `break`, `typeof` | — |
+| A function that returns an array it made (a record or an instance it made is fine) | hand it the array to fill in |
+| `for…in`, a labelled `break` | `for…of`, a flag tested after the inner loop |
 | An `enum` declared inside the program | declare it above the program: its members are numbers the script has, and a variable holds one |
-| On an array: `shift`, `unshift`, `splice`, `at`, `lastIndexOf`, `join` of numbers | `pop` and `push`, a place kept in a variable, `xs[xs.length - 1]`, a template in a loop |
+| What `splice` takes out, as a value | read it first: `xs.slice(start, end)` |
 | `map` into texts or records | `push` in a `for…of` |
-| On a made text: `split`, `trim`, `replace`, `toUpperCase`, `lastIndexOf`, `parseInt`, regular expressions | keep the number beside the text and make the text from it |
+| On a made text: regular expressions, and `replace` with a function | `replace` / `replaceAll` / `split` with a text |
 | A `Map` whose values are texts or records, or whose keys are texts | the place of a row of an array of records as the value |
 | Writing a unit's position, cloak or tint | the game refuses these itself (*Units*) |
 
