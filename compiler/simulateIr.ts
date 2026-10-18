@@ -38,7 +38,7 @@ import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "
 import { ActionType, Comparison, ConditionType, SetModifier, SWITCH_COUNT, SwitchAction, SwitchState, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
 import { emptyAction, ResourceType } from "../vendor/triggers";
 import { ORDER_OF_VERB } from "./orders";
-import { BUILD_BYTES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
+import { BUILD_BYTES, ERROR_CODES, HEAP_CELLS, HEAP_SMALLEST, STACK_DEPTH, STACK_OVERFLOW_MESSAGE, TEXT_BYTES, TEXT_FIELD_BYTES, eachStart, heapCells, isTextExpr, programDeclarations, stackDepth } from "./ir";
 import type { TextExpr, ArrayDecl, At, BoolExpr, Call, EventSource, NumExpr, Program, ReadSource, Stmt, TableCell, TextPart, UnitExpr, UnitFilter, UnitNumField, UnitVerb, VarDecl } from "./ir";
 import { cellMax } from "./tables";
 import { inputsOf, keyName, matchChat, parseChatPattern, type ChatPattern, type InputSource, type MouseButton } from "./input";
@@ -129,6 +129,8 @@ interface Ctx {
 class Halt extends Error {}
 /** The program stops for good, as the game stops it: its stack ran out. Said as a fault where it happened. */
 class Stopped extends Error {}
+/** An error of the program's is in flight (`Program.errors` holds it), on its way to the nearest `try`. */
+class Thrown extends Error {}
 
 /** A slot of a `start`: the task in it (none: free), its generation, the frame it last ran in, and its own cells. */
 interface TaskSlot {
@@ -237,6 +239,10 @@ class ProgramRun {
   depth = 0;
   /** The bodies being run apart from the one that called them, innermost last (`Apart`). */
   private apart: Exec[] = [];
+  /** The number of the task whose turn it is (`taskHandle`); 0 in the program's own turn. */
+  private taskNow = 0;
+  /** Where the error in flight was thrown: what an uncaught one is said at. */
+  private thrownAt: At | undefined;
   /** The `start` statements' tasks, in order of their numbers. */
   private readonly pools: TaskPool[] = [];
   /** Frames the tasks have run, for a slot to tell whether it has had its turn in this one. */
@@ -326,6 +332,7 @@ class ProgramRun {
   private runSlot(pool: TaskPool, slot: TaskSlot): void {
     const exec = slot.exec!;
     const outer = this.apart, latches = this.latches;
+    this.taskNow = pool.slots.indexOf(slot) | (pool.start.task << 8) | (slot.gen << 16);
     this.swap(pool, slot, true);
     this.apart = slot.apart;
     this.latches = slot.latches;
@@ -337,6 +344,7 @@ class ProgramRun {
       slot.exec = null;
       this.depth = 0;
     } finally {
+      this.taskNow = 0;
       this.apart = outer;
       this.latches = latches;
       this.swap(pool, slot, false);
@@ -370,9 +378,20 @@ class ProgramRun {
   /** The run until it gives the frame back (false) or ends (true): the body, and above it each body that was handed over to be run apart. */
   private drive(body: Exec): boolean {
     let send: unknown;
+    // An error thrown in a body run apart goes on in the body that called it, at the call.
+    let thrown: Thrown | undefined;
     for (;;) {
       const top = this.apart[this.apart.length - 1] ?? body;
-      const r = top.next(send);
+      let r: IteratorResult<Apart | undefined, Flow>;
+      try {
+        r = thrown ? top.throw(thrown) : top.next(send);
+      } catch (err) {
+        if (!(err instanceof Thrown) || !this.apart.length) throw err;
+        this.apart.pop();
+        thrown = err;
+        continue;
+      }
+      thrown = undefined;
       send = undefined;
       if (r.done) {
         if (!this.apart.length) return true;
@@ -546,6 +565,7 @@ class ProgramRun {
       case "var": return Number(this.read(e.id)) | 0;
       case "element": { const c = yield* this.cell(e.array, e.index, e.at, "it reads 0"); return c ? Number(c.cells[c.i]) | 0 : 0; }
       case "length": return this.arrays.get(e.array)?.cells.length ?? 0;
+      case "taskHandle": return this.taskNow;
       case "pop": return Number(this.arrays.get(e.array)?.cells.pop() ?? 0) | 0;
       case "unary": return -(yield* this.num(e.expr)) | 0;
       case "cast": return yield* this.num(e.expr);
@@ -854,7 +874,14 @@ class ProgramRun {
       }
     }
     const ctx: Ctx = { fn: { result: c.result?.decl } };
-    const flow = kept && fn ? ((yield { run: this.block(fn.body, ctx) }) as Flow) : yield* this.block(fn ? fn.body : c.body, ctx);
+    let flow: Flow;
+    try {
+      flow = kept && fn ? ((yield { run: this.block(fn.body, ctx) }) as Flow) : yield* this.block(fn ? fn.body : c.body, ctx);
+    } catch (err) {
+      // The error goes on out of the call; what the function holds comes back first, as it does when the function returns.
+      if (kept && err instanceof Thrown) this.bringBack(kept);
+      throw err;
+    }
     if (flow === "break" || flow === "continue") throw new Error(`${flow} inside a function reached its end (line ${c.at.line}).`);
     if (kept) this.bringBack(kept);
     return c.result && c.result.kind !== "unit" && c.result.kind !== "text" ? this.read(c.result.decl.id) : 0;
@@ -867,6 +894,15 @@ class ProgramRun {
    */
   private keep(c: Call): Frame {
     const saves = c.saves!;
+    if (this.depth >= this.sim.stackDepth && this.program.errors) {
+      // A RangeError, as JavaScript's: where the call is, before anything of it is kept.
+      this.store(this.program.errors.thrown, ERROR_CODES.RangeError);
+      const old = this.textVars.get(this.program.errors.message);
+      if (old?.room) this.sim.heap.give(old.room);
+      this.textVars.set(this.program.errors.message, { s: STACK_OVERFLOW_MESSAGE, room: 0 });
+      this.thrownAt = c.at;
+      throw new Thrown();
+    }
     if (this.depth >= this.sim.stackDepth) {
       this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at: c.at, message: `Stack overflow in ${saves.within}: ${this.sim.stackDepth.toLocaleString("en-US")} calls deep, which is as deep as the script's settings allow. The program has stopped, as it does in the game.` });
       throw new Stopped();
@@ -950,13 +986,19 @@ class ProgramRun {
         // The text as it is when the loop starts: a copy of a variable's, so that assigning the variable inside changes nothing here.
         const over = this.owned(yield* this.text(s.of), s.at);
         let flow: Flow = "next";
-        for (const ch of over.s) {
-          const old = this.textVars.get(s.decl.id);
-          const turn = this.made(ch, s.at);
-          if (old?.room) this.sim.heap.give(old.room);
-          this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
-          flow = yield* this.block(s.body, ctx);
-          if (flow === "break" || flow === "return") break;
+        try {
+          for (const ch of over.s) {
+            const old = this.textVars.get(s.decl.id);
+            const turn = this.made(ch, s.at);
+            if (old?.room) this.sim.heap.give(old.room);
+            this.textVars.set(s.decl.id, { s: turn.s, room: turn.room });
+            flow = yield* this.block(s.body, ctx);
+            if (flow === "break" || flow === "return") break;
+          }
+        } catch (err) {
+          // An error out of the body: the text the loop holds goes back on its way, as the game gives it back.
+          if (err instanceof Thrown && over.room) this.sim.heap.give(over.room);
+          throw err;
         }
         if (over.room) this.sim.heap.give(over.room);
         return flow === "return" ? flow : "next";
@@ -1122,12 +1164,15 @@ class ProgramRun {
           for (let i = 0; i < branches.length; i++) {
             if (done[i]) continue;
             let send: unknown;
+            // An error from a body the branch had run apart goes on inside the branch, which may catch it.
+            let thrown: Thrown | undefined;
             for (;;) {
-              const r = branches[i].next(send);
+              const r = thrown ? branches[i].throw(thrown) : branches[i].next(send);
               send = undefined;
+              thrown = undefined;
               if (r.done) { done[i] = true; break; }
               if (r.value === undefined) break;
-              send = yield r.value;
+              try { send = yield r.value; } catch (err) { if (!(err instanceof Thrown)) throw err; thrown = err; }
             }
             // The first to end wins a race; the others stop where they are.
             if (done[i] && s.mode === "race") return "next";
@@ -1211,6 +1256,32 @@ class ProgramRun {
       }
       case "call": { yield* this.call(s.call); return "next"; }
       case "block": return yield* this.block(s.body, ctx);
+      case "try": {
+        try {
+          return yield* this.block(s.body, ctx);
+        } catch (err) {
+          if (!(err instanceof Thrown)) throw err;
+          return yield* this.block(s.catch, ctx);
+        }
+      }
+      case "throw": {
+        if (!s.rethrow) this.thrownAt = s.at;
+        throw new Thrown();
+      }
+      case "uncaught": {
+        const errors = this.program.errors;
+        if (!errors) throw new Error(`An uncaught error, but the program keeps none (line ${s.at.line}).`);
+        const code = this.read(errors.thrown) as number;
+        const names = this.arrays.get(errors.names);
+        const name = names?.decl.texts?.[names.cells[code] as number] || "Error";
+        const message = this.textVars.get(errors.message)?.s ?? "";
+        const at = this.thrownAt ?? s.at;
+        this.sim.faults.push({ cycle: this.sim.cycle, frame: this.sim.frame, program: this.index, at, message: `Uncaught ${name}${message ? `: ${message}` : ""}` });
+        // The game says it in red to the player it ran as, as python/trigscript.py does.
+        this.sim.print(this, `\x06TrigScript: uncaught ${name}: ${message}, line ${at.line}.`, 13, s.at);
+        this.store(errors.thrown, 0);
+        return "next";
+      }
       case "remark": return "next";
     }
   }

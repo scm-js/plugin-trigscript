@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 21
+IR_VERSION = 22
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -111,6 +111,9 @@ UNIT_TIMERS = {"stim": "stimTimer", "ensnare": "ensnareTimer", "plague": "plague
 STATUS_INVINCIBLE, STATUS_HALLUCINATION, STATUS_BURROWED, STATUS_CLOAKED = 0x04000000, 0x40000000, 0x00000010, 0x00000300
 COND_COMMAND, COND_BRING, COND_ACCUMULATE, COND_KILL, COND_OPPONENTS, COND_DEATHS = 2, 3, 4, 5, 14, 15
 CURRENT_PLAYER = 13
+# What a stack that ran out throws (B4), as JavaScript's does: a RangeError (compiler/ir.ts ERROR_CODES).
+RANGE_ERROR = 2
+STACK_OVERFLOW_MESSAGE = "Maximum call stack size exceeded"
 # The state of a program whose body ended: nothing resumes it.
 DONE = 0xFFFFFFFF
 U32 = 0xFFFFFFFF
@@ -1505,6 +1508,49 @@ def uses_source(node, which):
     return False
 
 
+def mentions(node, kind):
+    """Whether a node of that kind is anywhere in a piece of the IR."""
+    if isinstance(node, list):
+        return any(mentions(x, kind) for x in node)
+    if not isinstance(node, dict):
+        return False
+    if node.get("kind") == kind:
+        return True
+    return any(mentions(v, kind) for v in node.values() if isinstance(v, (dict, list)))
+
+
+def called_ids(node, out):
+    """The ids of the functions a piece of the IR calls."""
+    if isinstance(node, list):
+        for x in node:
+            called_ids(x, out)
+    elif isinstance(node, dict):
+        if node.get("kind") in ("call", "textCall") and isinstance(node.get("call"), dict) and node["call"].get("fn") is not None:
+            out.add(node["call"]["fn"])
+        for v in node.values():
+            if isinstance(v, (dict, list)):
+                called_ids(v, out)
+    return out
+
+
+def throwing_functions(program):
+    """The called functions that may come back with an error in flight (B4): one that throws, or calls itself (its stack may
+    run out), or calls one that may. Each call of one is followed by a look at the error in flight."""
+    if not program.get("errors"):
+        return set()
+    fns = {f["id"]: f for f in program.get("functions", [])}
+    out = {i for i, f in fns.items() if f.get("recursive") or mentions(f["body"], "throw")}
+    callees = {i: called_ids(f["body"], set()) for i, f in fns.items()}
+    grew = True
+    while grew:
+        grew = False
+        for i in fns:
+            if i not in out and callees[i] & out:
+                out.add(i)
+                grew = True
+    return out
+
+
 def collect_decls(node, out):
     """Every variable declaration in a piece of the IR, by id: what a `declare` and a loop declare, a call's
     parameters and result, a function's."""
@@ -1563,6 +1609,14 @@ class Lowering:
         # The functions that are called, by id, and each one's EUDFunc once something has called it.
         self.functions = {f["id"]: f for f in program.get("functions", [])}
         self.made = {}
+        # B4: the error in flight's variables (IR `errors`), the catches the lowering is inside, innermost last — or, in a
+        # called function's body, its end, which it returns from with the error still in flight — and the functions whose
+        # calls are followed by a look at it. The line an error was thrown at is a cell of the lowering's own.
+        self.errors = program.get("errors")
+        self.handlers = []
+        self.throwing = throwing_functions(program)
+        if self.errors:
+            self.declare({"id": "(error line)", "name": "(error line)", "kind": "number", "shared": True})
         self.in_function = 0
         # The function being lowered, when it is one that calls itself: whose return address a frame keeps.
         self.within = []
@@ -1641,6 +1695,12 @@ class Lowering:
             return self.binary(e)
         if k == "read":
             return self.read(e)
+        if k == "taskHandle":
+            # The task whose turn it is, as start() numbered it; 0 in the program's own turn.
+            pool = self.pool
+            if pool is None:
+                return 0
+            return pool.slot + pool.task * 256 + f_bitlshift(fresh(pool.gen.get()), 16)
         if k == "randomInt":
             # 0 … n - 1; an n of 0 gives 0, as a 0 divisor does.
             n = self.num(e["bound"])
@@ -2782,10 +2842,54 @@ class Lowering:
             self.call(st["call"])
         elif k == "block":
             self.block(st["body"], ctx)
+        elif k == "try":
+            self.try_(st, ctx)
+        elif k == "throw":
+            if not st.get("rethrow"):
+                self.var("(error line)").set(int((st.get("at") or {}).get("line", 0)))
+            EUDJump(self.handler(st))
+            raise Leave()
+        elif k == "uncaught":
+            self.uncaught(st)
         elif k == "remark":
             pass
         else:
             raise Fail("trigscript: unknown statement %r%s" % (k, where(st)))
+
+    def try_(self, st, ctx):
+        """The body with its catch as the place a throw goes to; the catch after it, reached only that way."""
+        caught, end = Forward(), Forward()
+        self.handlers.append(caught)
+        try:
+            reached = self.straight(st["body"], ctx)
+        finally:
+            self.handlers.pop()
+        if reached:
+            EUDJump(end)
+        caught << NextTrigger()
+        self.straight(st["catch"], ctx)
+        end << NextTrigger()
+
+    def handler(self, node):
+        """Where an error goes from here: the nearest catch, or the end of the called function the lowering is in."""
+        if not self.handlers:
+            raise Fail("trigscript: an error with nothing to go to%s" % where(node))
+        return self.handlers[-1]
+
+    def uncaught(self, st):
+        """The error in flight, said in red where the player sees the game's own faults, and given up."""
+        e = self.errors
+        at = st.get("at")
+        self.print_({"kind": "print", "to": CURRENT_PLAYER, "position": "chat", "at": at, "label": st.get("label", ""), "parts": [
+            {"kind": "text", "text": "\x06TrigScript: uncaught "},
+            {"kind": "value", "text": {"kind": "textOf", "array": e["names"], "index": {"kind": "var", "id": e["thrown"]}, "at": at}},
+            {"kind": "text", "text": ": "},
+            {"kind": "value", "text": {"kind": "textVar", "id": e["message"]}},
+            {"kind": "text", "text": ", line "},
+            {"kind": "number", "expr": {"kind": "var", "id": "(error line)"}},
+            {"kind": "text", "text": "."},
+        ]})
+        self.var(e["thrown"], st).set(0)
 
     def straight(self, statements, ctx):
         """A statement list whose end may not be reached (a break inside): Leave stops it. True when the end was reached."""
@@ -3353,10 +3457,26 @@ class Lowering:
         T["release"](turn.cell(turn.block))
         turn.write(addr, block, length)
         at += n
-        if self.straight(st["body"], inner):
-            EUDJump(head)
+        # An error out of the body leaves through here too (B4), so that the text the loop holds goes back first.
+        unwind = Forward() if self.handlers else None
+        if unwind is not None:
+            outer_handler = self.handlers[-1]
+            self.handlers.append(unwind)
+        try:
+            if self.straight(st["body"], inner):
+                EUDJump(head)
+        finally:
+            if unwind is not None:
+                self.handlers.pop()
         done << NextTrigger()
         T["release"](held)
+        if unwind is not None:
+            past = Forward()
+            EUDJump(past)
+            unwind << NextTrigger()
+            T["release"](held)
+            EUDJump(outer_handler)
+            past << NextTrigger()
         if leave is not None:
             after = Forward()
             EUDJump(after)
@@ -3392,10 +3512,13 @@ class Lowering:
                 result.set(NO_UNIT if kind == "unit" else 0)
             end = Forward()
             lowering.in_function += 1
+            outer = lowering.handlers
+            lowering.handlers = [end]
             try:
                 lowering.straight(f["body"], {"fn": {"result": result, "kind": kind, "end": end}})
             finally:
                 lowering.in_function -= 1
+                lowering.handlers = outer
             end << NextTrigger()
 
         made = self.made[id_] = (body, params, result)
@@ -3426,11 +3549,14 @@ class Lowering:
         end = Forward()
         self.in_function += 1
         self.within.append(entry)
+        outer = self.handlers
+        self.handlers = [end]
         try:
             self.straight(f["body"], {"fn": {"result": result, "kind": kind, "end": end}})
         finally:
             self.within.pop()
             self.in_function -= 1
+            self.handlers = outer
         end << NextTrigger()
         tail << RawTrigger()
         PopTriggerScope()
@@ -3477,7 +3603,15 @@ class Lowering:
         if not self.within:
             raise Fail("trigscript: a call keeps a frame outside a function that calls itself%s" % where(call))
         mine = self.within[-1]
-        if EUDIf()(st["depth"] >= STACK_DEPTH):
+        if self.errors:
+            # B4: a RangeError, as JavaScript's, where the call is and before anything of it is kept: the function this
+            # call is in returns with it in flight.
+            if EUDIf()(st["depth"] >= STACK_DEPTH):
+                self.put(self.var(self.errors["message"], call), {"kind": "text", "text": STACK_OVERFLOW_MESSAGE}, "text")
+                self.var("(error line)").set(int((call.get("at") or {}).get("line", 0)))
+                self.var(self.errors["thrown"], call).set(RANGE_ERROR)
+                EUDJump(self.handler(call))
+        elif EUDIf()(st["depth"] >= STACK_DEPTH):
             GetGlobalStringBuffer().print("\x06TrigScript: stack overflow in %s, line %s - %d calls deep. The program has stopped." % (saves.get("within", "a function"), (call.get("at") or {}).get("line", "?"), STACK_DEPTH))
             st["depth"] << 0
             st["at"] << st["base"]
@@ -3564,6 +3698,9 @@ class Lowering:
         body()
         if kept is not None:
             self.bring_back(call, kept)
+        if call["fn"] in self.throwing:
+            # It came back with an error in flight: on to the nearest catch, nothing of the result used.
+            EUDJumpIf(as_var(self.var(self.errors["thrown"], call).get()) >= 1, self.handler(call))
         if result is None:
             return 0
         if isinstance(result, TextStorage):

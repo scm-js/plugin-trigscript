@@ -485,6 +485,11 @@ export class GameSim implements TestWorldLike {
   get events(): TestEvent[] { return this.log(); }
   /** A program's faults, as it says them in the game: a red line that begins "TrigScript:". */
   get faults(): { at: At; message: string; cycle: number; frame: number; program: number }[] {
-    return this.shown.filter((l) => /^\W*TrigScript: /.test(l.text)).map((l) => ({ at: { file: "", line: 0, column: 0 } as At, message: clean(l.text).replace(/^TrigScript: /, ""), cycle: 0, frame: l.frame, program: 0 }));
+    return this.shown.filter((l) => /^\W*TrigScript: /.test(l.text)).map((l) => {
+      const message = clean(l.text).replace(/^TrigScript: /, "");
+      // "uncaught RangeError: too far, line 12." (B4): the line it says, and the words as the simulator has them.
+      const uncaught = /^uncaught (.*), line (\d+)\.$/.exec(message);
+      return { at: { file: "", line: uncaught ? Number(uncaught[2]) : 0, column: 0 } as At, message: uncaught ? `Uncaught ${uncaught[1]}` : message, cycle: 0, frame: l.frame, program: 0 };
+    });
   }
 }

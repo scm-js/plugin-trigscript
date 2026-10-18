@@ -268,6 +268,7 @@ export function inputsOf(programs: Program[]): { sources: InputSource[]; mouse: 
       case "print": case "buildText": mapTextParts(s.parts, looks); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
+      case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
       default: break;
     }
   };

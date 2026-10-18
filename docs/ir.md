@@ -3,7 +3,7 @@
 What a `program(() => { … })` body means, written down as data. The compiler's front end
 (`compiler/structured.ts`) turns the TypeScript into this, `python/trigscript.py` lowers
 it to eudplib when the map is saved, and `compiler/simulateIr.ts` interprets it for
-Simulate and the tests. **Version 21** (20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
+Simulate and the tests. **Version 22** (21 had no errors: no `try`, `throw` or `uncaught`, no `errors` on a program, and a stack that ran out ended the program; 20 had no functions as values: no `fn` on a `const`, and every variable a function used was declared before the function was first called; 19 had no fixed numbers: no `fixed` on a variable, an array, a `const` or a printed number, and no `fmul`, `fdiv`, `sqrt` or `atan2`; 18 had only two kinds of event: a `unitLoop`'s `source` was `created` or `died`, with no `was` and no `event`; 17 had no events: no `source` on a `unitLoop` and no `listen` on a `start`; 16 had no `buildText`, no `built` and no `char` part: a text was made whole or not at all; 15 had no tasks: no `start`, `cancel`, `running`, and no `task` on a declaration; 14 had no `parallel`: nothing ran beside a program's body; 13 had no text in the cells of an array: no `textAt`, `storeText`, `releaseText`; 12 had no texts: a text was the parts of a `print` and nothing else; 11 had no `slice` and no `through`: every array was cells of its own; 10 had no recursion: no `recursive`, no `saves`, and the heap's top set aside for a stack nothing used; 9 had no functions that are called: every `call` carried a body of its own; 8 had no `unitAt` / `unitPart`, so no array could hold a unit; 7 had no arrays that grow; 6 had no arrays; 5 had unsigned numbers only, the two-sided reading of `+` and `−`, no `>>>` and no `unsigned` anywhere; 4 had no input, no `centerLocation`, and one `variable` on an action where 5 has a list; 3 had no units and no tables; 2 had no reads, no `random(n)`, no bitwise operators
 and no `print`; 1 had the map's string indices in the records and a `cyclesPerSecond` on
 the program, for the death-counter backend 3.0 removed). The types
 are in `compiler/ir.ts`; this is the reference for anyone reading the lowering or writing
@@ -45,7 +45,7 @@ What is *not* settled is anything the lowering decides: what a temporary is, how
 ## Programs
 
 ```
-Program { version, name?, owner, owners, perPlayer, arrays: ArrayDecl[], functions?: FuncDecl[], body: Stmt[], at }
+Program { version, name?, owner, owners, perPlayer, arrays: ArrayDecl[], functions?: FuncDecl[], errors?: { thrown, message, names }, body: Stmt[], at }
 ```
 
 `owner` is the first player slot among the owners (what a simulation runs the program
@@ -190,6 +190,9 @@ frame's `saves`, and a `slice` is never declared.
 | `centerLocation` | `location`, `x`, `y` | Centre a location (1-based) on a point of the map in pixels, its size kept. |
 | `call` | `call` | A function as a statement (its result, if any, unused): inlined, or with `fn` called. |
 | `block` | `body` | Scoping only. |
+| `try` | `body`, `catch` | `body` runs; an error thrown inside it stops it there and `catch` runs (*Errors*, below). Since version 22. |
+| `throw` | `rethrow?` | The error in flight goes to the nearest `try` around this statement, out of the called functions it is in. Since version 22. |
+| `uncaught` | | The error in flight reached the end of a program, a task or a handler: said in red, and given up. Since version 22. |
 | `remark` | `text`, `short?` | A word for the editor about the line: a loop unrolled when the script was applied. |
 
 ### Events
@@ -446,6 +449,47 @@ A call works every argument out first; a text argument is a copy of its own by t
 it is made from may be the parameter itself). Setting the parameter gives back what it held
 from the call before. The function's result moves to the call's own result variable, from
 where a `textCall` takes it; a text result is not reset when a call starts.
+
+### Errors
+
+```
+Program { …, errors: { thrown: "(error thrown)#…", message: "(error message)#…", names: "(error classes)#…" } }
+Stmt    { kind: "try", body, catch } | { kind: "throw", rethrow? } | { kind: "uncaught" }
+```
+
+Since version 22. A program that throws or catches anything has `errors`: two of its variables, both `shared` and
+declared at the start of its body, that hold the error *in flight* between a `throw` and the catch that takes it.
+`thrown` is the code of its class — 0 when nothing is in flight; 1 `Error`, 2 `RangeError`, 3 `TypeError`; 16 and up
+the program's own classes, in the order the front end met them — and `message` its message, a made text. `names` is
+an array of texts, the classes' names by code, which `uncaught` says. No error is ever in flight across a frame, so
+one of each serves every player and every task. A class's own fields (`need` of `class OutOfGold extends Error`) go
+through variables of the program the front end makes, one for each name and kind; a backend knows only the two.
+
+- **`throw`** jumps to the nearest `try`'s `catch` in the body being lowered. Inside a called function with no `try`
+  around it, it jumps to the function's end: the function returns at once, the error still in flight. A call of a
+  function that may come back so — one that throws, calls itself, or calls one that may — is followed by a look at
+  `thrown`, and on anything but 0 it goes on in the same way, before its result is used. The statements before a
+  `throw` are the front end's: the message, the fields, and `thrown` last. `rethrow`: the error is one a catch
+  took, thrown on, so the line it came from stays the first throw's.
+- **`try`**: the first statements of `catch` are the front end's — copies of what the body reads (`e.message`,
+  `e.name`, a field, the code for `instanceof`), then `thrown` set to 0 — so an error thrown and caught inside the
+  catch changes none of them. `break`, `continue` and `return` leave a `try`'s body as they leave a block.
+- **`finally`** is not in the IR. The front end copies it before every `break`, `continue` and `return` that leaves
+  the try, after the try, and inside a `try` around the whole whose catch puts the error in flight aside, runs the
+  finally, puts it back and throws on (`rethrow`).
+- **A stack that runs out** (*Recursion*) is a `RangeError`, "Maximum call stack size exceeded", thrown where the call
+  is, before anything of it is kept, when the program has `errors`. Without them it ends the program as before.
+- **`uncaught`**: the front end puts the program's body and every task's body inside a `try` whose catch is this, and
+  each handler of an event that runs within the frame inside one of its own. It says the error in red — the class's
+  name, the message and the line it was thrown at, as the game's own faults are said — and sets `thrown` to 0. A
+  program or a task then ends; a listener goes on, only that turn of the handler given up.
+
+**`taskHandle`** (a number) is the number of the task it runs in, as `start` gave it, or 0 in the program's own turn.
+The front end keeps a task's error by it, so that an `await` of the task throws it (arrays named `(task errors …)`, a
+cell for each slot of each start).
+
+A `parallel` branch that throws leaves its statement, and the branches still running stop where they are, as a
+race's losers do. A task's error never reaches what started it.
 
 ## Texts
 

@@ -10,6 +10,7 @@ import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
 
 /**
+ * 22: exceptions — `taskHandle`, the number of the task an expression runs in; `try` (a body, and the statements that run when an error is thrown in it), `throw` (the error in flight goes to the nearest `try` around it, out through the calls it is in), `uncaught` (the error in flight is said in red and given up), and `Program.errors`, the variables an error in flight is kept in. A called function that may throw returns at once with the error in flight, and its call goes on to the nearest `try`. A function that calls itself throws a `RangeError` when the stack runs out, where it used to stop the program.
  * 21: functions as values — `fn` on a `const`: the number is a function's, the id of the `FuncDecl` it runs, which is what keeps that function in the map. A call through such a number is a call of a function the front end made (a *dispatcher*, a `switch` on its first parameter), so no new kind of statement. A function may now be called, and so lowered, before a variable it uses is declared: a backend makes a variable where it is first used.
  * 20: fixed-point numbers — `VarDecl.fixed` / `ArrayDecl.fixed` (a 16.16 number: the cell holds the value times 65 536), `fixed` on a `const` (its value is the raw cell), the intrinsics `fmul` / `fdiv` (a product and a quotient of two fixed numbers, rounded towards zero), `sqrt` (of a fixed, rounded down) and `atan2` (`table`: the program's array of arc tangents it reads), and `fixed` on a printed number (shown as a decimal). `numbers.ts` writes them; a backend never works a type out.
  * 19: more events — `unitLoop.source` also `killed` (a death in a fight, the killer in `was`), `ordered` (a unit that took up a new order, the one it had in `was`) and `morphed` (a unit that turned into another type, the type it was in `was`); `unitLoop.event` filters them by the new order or the killer.
@@ -31,7 +32,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 21;
+export const IR_VERSION = 22;
 
 /** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
@@ -293,6 +294,8 @@ export type NumExpr =
   | { kind: "textIndexOf"; of: TextExpr; find: TextExpr; from?: NumExpr; at: At; label: string }
   /** `s.codePointAt(i)`: the character's number; −1 past either end. */
   | { kind: "textCode"; of: TextExpr; index: NumExpr; at: At; label: string }
+  /** The number of the task this runs in — what `start()` gave for it, `slot | task << 8 | generation << 16` — or 0 outside a task (B4: where a task's error is kept for an `await` of it). */
+  | { kind: "taskHandle"; at: At }
   /** A call inlined here: its body runs, its result is the number. */
   | { kind: "call"; call: Call };
 
@@ -588,6 +591,28 @@ export type Stmt =
   | { kind: "call"; call: Call; at: At; label: string }
   /** A block only for scoping; nothing of its own. */
   | { kind: "block"; body: Stmt[]; at: At }
+  /**
+   * `try { … } catch { … }`: `body` runs; when an error is thrown in it — a `throw`, a call that comes back with an error in
+   * flight, a stack that ran out — the body stops there and `catch` runs, with the error still in flight
+   * (`Program.errors`): its first statements are the front end's, which take the error and set `thrown` back to 0.
+   * `finally` is the front end's too: a copy of it before every way out, and a `try` around the whole that runs it and
+   * throws again. A `break`, `continue` or `return` inside `body` leaves it as it would leave a block.
+   */
+  | { kind: "try"; body: Stmt[]; catch: Stmt[]; at: At; label: string }
+  /**
+   * The error in flight (`Program.errors`, which the statements before this one set) goes to the nearest `try` around this
+   * statement: the `catch` of one in this body, or, inside a called function, out of the function — which returns at
+   * once, the error still in flight, to a call that goes on in the same way. `rethrow`: the error is one that was caught
+   * and is thrown again, so where it was first thrown is still where it came from.
+   */
+  | { kind: "throw"; rethrow?: boolean; at: At; label: string }
+  /**
+   * The error in flight reached the end of a program, a task or a handler with nothing to catch it: said in red, as a fault
+   * of the game's is — its class's name (`Program.errors.names` at `thrown`), its message and the line it was thrown at — and
+   * given up (`thrown` 0). What it was thrown in then ends, as JavaScript's does: a program or a task stops, a handler of
+   * an event gives up only this turn.
+   */
+  | { kind: "uncaught"; at: At; label: string }
   /** A word for the editor about a line: a loop unrolled when the script was built. */
   | { kind: "remark"; text: string; short?: string; at: At };
 
@@ -601,9 +626,27 @@ export interface Program {
   arrays: ArrayDecl[];
   /** The functions that are called rather than inlined; absent when there is none. */
   functions?: FuncDecl[];
+  /** Present when the program throws or catches anything (B4): where an error in flight is kept. */
+  errors?: ProgramErrors;
   body: Stmt[];
   at: At;
 }
+
+/**
+ * The error in flight, between a `throw` and the `catch` that takes it: `thrown` is its class's code — 0 when no error is
+ * in flight, `ERROR_CODES` for the built-in classes, 16 and up for a program's own — and `message` its message, a made
+ * text. Both are `shared` variables of the program, declared at the start of its body: an error is never in flight
+ * across a frame, so one of each serves every player and every task. A class's own fields go through variables of their
+ * own, which the front end copies; a backend knows only these two. `names` is the array of texts of the classes' names
+ * by their code, which an uncaught error is said with.
+ */
+export interface ProgramErrors { thrown: string; message: string; names: string }
+
+/** The codes of the built-in classes of error; a program's own classes are numbered from `FIRST_ERROR_CLASS`. */
+export const ERROR_CODES = { Error: 1, RangeError: 2, TypeError: 3 } as const;
+export const FIRST_ERROR_CLASS = 16;
+/** What a stack that ran out throws, as JavaScript's does. */
+export const STACK_OVERFLOW_MESSAGE = "Maximum call stack size exceeded";
 
 /** Every statement list of a program: its body, then the body of each function that is called. */
 export function bodiesOf(program: Pick<Program, "body" | "functions">): Stmt[][] {
@@ -649,7 +692,7 @@ export const isNumExpr = (e: NumExpr | BoolExpr | UnitExpr | TextExpr): e is Num
     case "var": return false; // ambiguous by shape; callers know the variable's kind
     case "element": case "pop": return false; // ambiguous by shape, as a variable is
     case "length": case "unitPart": return true;
-    case "unary": case "cast": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": return true;
+    case "unary": case "cast": case "binary": case "intrinsic": case "read": case "randomInt": case "unitField": case "tableRead": case "input": case "taskHandle": return true;
     case "ternary": return isNumExpr(e.whenTrue);
     case "call": return e.call.result?.kind === "number";
     default: return false;
@@ -692,6 +735,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "print": case "buildText": parts(s.parts); break;
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
+      case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
       default: break;
     }
   };

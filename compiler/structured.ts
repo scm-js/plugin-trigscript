@@ -71,7 +71,7 @@ import { DEFAULT_COLOR, EMPTY_CELL, EMPTY_COLOR, FILLED_CELL, JSX_ELEMENTS, TEXT
 import { HANDLE_PARTS, Scope, TEXT_PARTS, THIS, UNIT_PARTS, type Binding, type FnValue, type Place, type RowField, type RowShape } from "./scope";
 import { ACTIONS_WITH_MODIFIER, LowerError } from "./lower";
 import { FIXED_MAX, FIXED_MIN, fixedRaw } from "./numbers";
-import { I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
+import { ERROR_CODES, FIRST_ERROR_CLASS, I32_MAX, I32_MIN, IR_VERSION, TASK_MAX, TEXT_BYTES, U32_MAX, UNIT_FLAGS, UNIT_NUM_FIELDS, UNIT_WRITABLE, declarations, eachCall, eachStart, programDeclarations, textHasId, type ActionVariable, type ArithOp, type ArrayDecl, type At, type BoolExpr, type Call, type CompareOp, type EventSource, type FuncDecl, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type UnitExpr, type UnitFlag, type UnitNumField, type UnitVerb, type VarDecl } from "./ir";
 
 /** Bindings that are there once they are made, never null or undefined: what `x !== undefined` of one is known to be. */
 const PRESENT_KINDS: ReadonlySet<string> = new Set(["array", "records", "record", "grid", "lists", "texts", "hash", "keyed", "row"]);
@@ -125,10 +125,55 @@ interface Ctx {
   /** Inside a loop (or, for `break`, a switch): what the jump statements may do here. */
   canBreak?: boolean;
   canContinue?: boolean;
-  /** Inside an inlined function: what it returns. `instance`: it returns an instance — which one is settled as its body is walked, and kept here. */
-  fn?: { kind: Kind | "text" | "void"; instance?: { name: string; made?: Binding } };
+  /**
+   * Inside an inlined function: what it returns. `instance`: it returns an instance — which one is settled as its body is walked, and kept here.
+   * `finallies`: the `finally` blocks a `return` here leaves, innermost last (B4), each run before it; `inFinally`: this is one, which nothing leaves.
+   */
+  fn?: { kind: Kind | "text" | "void"; instance?: { name: string; made?: Binding }; finallies?: TS.Block[]; inFinally?: boolean };
   /** Inside the body of a for…of over a generator, walked where a `yield` is: `break` sets this first, and the generator then leaves. */
   breakFlag?: VarDecl;
+  /** The `finally` blocks a `break` or a `continue` here leaves, innermost last (B4): a loop starts with none, a switch keeps its loop's for `continue`. */
+  exits?: { break: TS.Block[]; continue: TS.Block[] };
+  /** Walking a `finally` block, outside any loop of its own: a `break` or `continue` here would leave it. */
+  inFinally?: boolean;
+}
+
+/** The built-in classes of error a program throws: their names. */
+type BuiltinError = keyof typeof ERROR_CODES;
+
+/**
+ * What a `catch (e)` takes (B4): the error in flight, copied into variables of the catch's own as the body reads it —
+ * `e.message`, `e.name`, a field of its class — so that another error thrown and caught inside the catch changes none
+ * of them. `entry` is the catch's first statement, filled once the whole program has been walked (`finishErrors`).
+ */
+interface Caught {
+  name: string;
+  at: At;
+  label: string;
+  entry: Stmt & { kind: "block" };
+  /** The code of its class, for `instanceof`, `e.name` and throwing it on. */
+  code?: VarDecl;
+  message?: VarDecl;
+  jsName?: VarDecl;
+  /** The fields of its class it was read for, by `name:kind`, each the copy of the variable the error in flight keeps it in. */
+  fields: Map<string, VarDecl>;
+  /** Something throws it on: all of it is copied, so that it goes on whole. */
+  rethrown: boolean;
+}
+
+/** The error in flight (`Program.errors`): its class's code, its message, the fields of its class by `name:kind`, the names of the classes by their code. */
+interface Flight { thrown: VarDecl; message: VarDecl; fields: Map<string, VarDecl>; names: ArrayDecl }
+
+/** The fields of a caught error, made as they are asked for: `make` gives the binding of one, or undefined for a name no error has. */
+class CaughtFields extends Map<string, Binding> {
+  private readonly make: (key: string) => Binding | undefined;
+  constructor(make: (key: string) => Binding | undefined) { super(); this.make = make; }
+  override get(key: string): Binding | undefined {
+    let b = super.get(key);
+    if (!b) { b = this.make(key); if (b) super.set(key, b); }
+    return b;
+  }
+  override has(key: string): boolean { return this.get(key) !== undefined; }
 }
 
 /** What a variable of a program holds. */
@@ -383,6 +428,7 @@ export class Structured {
     this.fillDispatchers(program);
     this.settleFunctions(program);
     this.checkTasks(program);
+    this.finishErrors(program);
     markViewWrites(program, this.views);
     return { program, nodeOf: (node) => this.nodes.get(node) };
   }
@@ -781,7 +827,16 @@ export class Structured {
     return this.collect(() => this.statement(s, ctx));
   }
 
+  /** The context of the statement being walked: what a `yield` inside an expression leaves through (B4: the generator's finally blocks). */
+  private ctxNow: Ctx = {};
+
   private statement(s: TS.Statement, ctx: Ctx) {
+    const was = this.ctxNow;
+    this.ctxNow = ctx;
+    try { this.statementIn(s, ctx); } finally { this.ctxNow = was; }
+  }
+
+  private statementIn(s: TS.Statement, ctx: Ctx) {
     const { ts } = this;
     if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s) || ts.isFunctionDeclaration(s)) return;
     if (ts.isClassDeclaration(s)) { this.declareClass(s); return; }
@@ -794,7 +849,11 @@ export class Structured {
     if (ts.isForStatement(s)) { this.forStatement(s, ctx); return; }
     if (ts.isBreakStatement(s) || ts.isContinueStatement(s)) {
       if (s.label) { this.c.error(s, "Labelled break / continue is not supported."); return; }
+      if (ctx.inFinally && (ts.isBreakStatement(s) ? !ctx.canBreak : !ctx.canContinue)) { this.c.error(s, `A finally block runs on every way out of its try, an error's way too, so it does not ${ts.isBreakStatement(s) ? "break" : "continue"} out of it: set a variable, and test it after the try.`); return; }
       if (ts.isBreakStatement(s) ? !ctx.canBreak : !ctx.canContinue) { this.c.error(s, `${ts.isBreakStatement(s) ? "break" : "continue"} outside a loop.`); return; }
+      // Out through a try's finally: it runs first, the innermost first.
+      const through = (ts.isBreakStatement(s) ? ctx.exits?.break : ctx.exits?.continue) ?? [];
+      for (let i = through.length - 1; i >= 0; i--) this.finallyBody(through[i], ctx.fn);
       if (ts.isBreakStatement(s) && ctx.breakFlag) this.emit({ kind: "assignBool", target: ctx.breakFlag.id, value: TRUE, at: this.at(s), label: this.label(s) }, s);
       this.emit({ kind: ts.isBreakStatement(s) ? "break" : "continue", at: this.at(s), label: this.label(s) }, s);
       return;
@@ -803,13 +862,16 @@ export class Structured {
     if (ts.isSwitchStatement(s)) { this.switchStatement(s, ctx); return; }
     if (ts.isForOfStatement(s)) { this.forOfStatement(s, ctx); return; }
     if (ts.isForInStatement(s)) { this.c.error(s, "for…in is not supported in a program; for…of over a list known when the script is built is unrolled."); return; }
-    if (ts.isThrowStatement(s) || ts.isTryStatement(s)) { this.c.error(s, "The game has no exceptions."); return; }
+    if (ts.isThrowStatement(s)) { this.throwStatement(s); return; }
+    if (ts.isTryStatement(s)) { this.tryStatement(s, ctx); return; }
     this.c.error(s, "This statement is not supported in a program.");
   }
 
   private returnStatement(s: TS.ReturnStatement, ctx: Ctx) {
     if (!ctx.fn) { this.c.error(s, "return outside a function."); return; }
     const { fn } = ctx;
+    if (fn.inFinally) { this.c.error(s, "A finally block runs on every way out of its try, an error's way too, so it does not return: return after the try."); return; }
+    if (fn.finallies?.length) { this.returnThrough(s, ctx); return; }
     if (fn.instance || (fn.kind === "void" && s.expression && this.classOfType(this.c.checker.getTypeAtLocation(s.expression)))) {
       // `return this`, `return new Wave(n)`, `return other`: which instance the call gives, settled here. A call that does nothing with it only leaves.
       if (fn.instance && s.expression) {
@@ -850,6 +912,543 @@ export class Structured {
       const value = this.boolValue(s.expression);
       this.emit({ kind: "return", value, at: this.at(s), label: this.label(s) }, s);
     }
+  }
+
+  /* ── Errors (B4) ── */
+
+  /** The error in flight, made when the program first throws or catches; null while it does neither. */
+  private flight: Flight | null = null;
+  /** The program's classes of error that something throws, each with its code. */
+  private readonly errorCodes = new Map<TS.ClassDeclaration, number>();
+  /** What a caught error's record is: `instanceof`, `e.name` and `throw e` look it up here. */
+  private readonly caughtRecords = new WeakMap<Binding, Caught>();
+  /** The texts of the classes' names as `e.name` gives them, by code; made when a catch first reads `e.name`. */
+  private jsNames: ArrayDecl | null = null;
+  /** What is filled in once the whole program has been walked, when every class that is thrown and every field is known. */
+  private readonly errorFills: (() => void)[] = [];
+  /** Each `throw` of a new error, for its `stack` — made there only when a catch reads one: the name, and where. */
+  private readonly stackSites: { block: Stmt & { kind: "block" }; name: string; at: At; label: string }[] = [];
+  private stackRead = false;
+  /** The same for what a finally puts aside, after the others: those may still add a field to the error in flight. */
+  private readonly keepFills: (() => void)[] = [];
+  /** Each `await t` of a task: what it fills in once the program is known to throw — a mark that it waits, and the task's error thrown on. */
+  private readonly awaitedTasks: { h: VarDecl; watch: Stmt & { kind: "block" }; check: Stmt & { kind: "block" }; at: At; label: string }[] = [];
+  /** What an error leaving a statement has to undo on its way (a loop through a Map counted out): put in a `try` once the program is known to throw. */
+  private readonly unwinds: { held: Stmt & { kind: "block" }; cleanup: Stmt[] }[] = [];
+  /** The `try` around each handler of an event that runs within the frame: a block again when the program throws nothing. */
+  private readonly guards: Stmt[] = [];
+
+  private flightOf(at: TS.Node): Flight {
+    if (this.flight) return this.flight;
+    const where = this.at(at);
+    const thrown = this.newVar("(error thrown)", "number", where, { shared: true });
+    const message = this.newVar("(error message)", "text", where, { shared: true, text: "made" });
+    const names = this.newArray("(error classes)", "number", 1, where, { shared: true, values: [0] });
+    names.texts = ["Error"];
+    return (this.flight = { thrown, message, fields: new Map(), names });
+  }
+
+  /** The variable the error in flight keeps a field of its class in: one for each name and kind, whichever class it is of. */
+  private flightField(key: string, kind: VarDecl["kind"], at: At): VarDecl {
+    const f = this.flight!;
+    const k = `${key}:${kind}`;
+    let v = f.fields.get(k);
+    if (!v) { v = this.newVar(`(error ${key})`, kind, at, { shared: true }); f.fields.set(k, v); }
+    return v;
+  }
+
+  /** "RangeError: too far", or the name alone when the message is empty: what JavaScript writes an error as. */
+  private errorText(name: TextExpr, message: TextExpr, at: At, label: string): TextExpr {
+    const rest: TextExpr = { kind: "textTernary", cond: { kind: "compare", op: ">", left: { kind: "textLength", of: message, at, label }, right: num(0), at, label }, whenTrue: { kind: "template", parts: [{ kind: "text", text: ": " }, { kind: "value", text: message }], at, label }, whenFalse: { kind: "text", text: "" }, at, label };
+    return { kind: "template", parts: [{ kind: "value", text: name }, { kind: "value", text: rest }], at, label };
+  }
+
+  /** `to = from`, whatever the two hold. */
+  private copyOf(to: VarDecl, from: VarDecl, at: At, label: string): Stmt {
+    switch (to.kind) {
+      case "number": return { kind: "assign", target: to.id, value: varRef(from), at, label };
+      case "boolean": return { kind: "assignBool", target: to.id, value: boolRef(from), at, label };
+      case "unit": return { kind: "assignUnit", target: to.id, value: unitRef(from), at, label };
+      default: return { kind: "assignText", target: to.id, value: { kind: "textVar", id: from.id }, at, label };
+    }
+  }
+
+  /** `Error`, `RangeError` or `TypeError` of the language, when the expression names one. */
+  private builtinError(expr: TS.Expression): BuiltinError | undefined {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    if (!ts.isIdentifier(e) || !Object.hasOwn(ERROR_CODES, e.text)) return undefined;
+    const decl = this.c.checker.getSymbolAtLocation(e)?.declarations?.[0];
+    const sf = decl?.getSourceFile();
+    return sf && (sf.hasNoDefaultLib || /(^|\/)lib(\.[^/]*)?\.d\.ts$/.test(sf.fileName)) ? (e.text as BuiltinError) : undefined;
+  }
+
+  /** The built-in class a class's own `extends` names: `class OutOfGold extends Error`. */
+  private extendsBuiltin(cls: TS.ClassDeclaration): BuiltinError | undefined {
+    const clause = cls.heritageClauses?.find((h) => h.token === this.ts.SyntaxKind.ExtendsKeyword)?.types[0];
+    return clause ? this.builtinError(clause.expression) : undefined;
+  }
+
+  /** The built-in class of error a class is one of, through what it extends; undefined for a class that is not an error. */
+  private builtinBase(cls: TS.ClassDeclaration): BuiltinError | undefined {
+    for (const c of this.chainOf(cls)) { const b = this.extendsBuiltin(c); if (b) return b; }
+    return undefined;
+  }
+
+  private errorCode(cls: TS.ClassDeclaration): number {
+    let code = this.errorCodes.get(cls);
+    if (code === undefined) { code = FIRST_ERROR_CLASS + this.errorCodes.size; this.errorCodes.set(cls, code); }
+    return code;
+  }
+
+  /** What `e.name` is for an error of a class: the `name` it gives itself (`name = "OutOfGold"`, `this.name = …` in its constructor), else what it extends gives, as JavaScript has it. */
+  private errorName(cls: TS.ClassDeclaration): string {
+    const { ts } = this;
+    for (const c of this.chainOf(cls)) {
+      for (const m of c.members) {
+        if (ts.isPropertyDeclaration(m) && !this.isStatic(m) && this.memberKey(m.name) === "name" && m.initializer && ts.isStringLiteralLike(m.initializer)) return m.initializer.text;
+        if (ts.isConstructorDeclaration(m) && m.body) {
+          for (const st of m.body.statements) {
+            const x = ts.isExpressionStatement(st) ? st.expression : undefined;
+            if (x && ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(x.left) && x.left.expression.kind === ts.SyntaxKind.ThisKeyword && x.left.name.text === "name" && ts.isStringLiteralLike(x.right)) return x.right.text;
+          }
+        }
+      }
+    }
+    return this.builtinBase(cls) ?? "Error";
+  }
+
+  /**
+   * What `super(message)` of a class that extends `Error` makes, and `new OutOfGold("…")` of one with no constructor: the
+   * instance's `message` — the text handed over, or nothing — and its `name`.
+   */
+  private errorFields(self: Instance, message: TS.Expression | undefined, name: string, at: TS.Node): boolean {
+    const where = this.at(at), label = this.label(at);
+    if (this.onRow.has(self)) { this.c.error(at, "An error is made where it is thrown — throw new OutOfGold(…) — and not kept in an array."); return false; }
+    const text = message ? this.text(message) : { kind: "text" as const, text: "" };
+    if (!text) return false;
+    const m = this.newVar(`${name}.message`, "text", where, { text: "made" });
+    this.emit({ kind: "declare", decl: m, init: text, at: where, label }, at);
+    self.fields.set("message", { kind: "var", v: m });
+    const n = this.newVar(`${name}.name`, "text", where, { text: "made" });
+    this.emit({ kind: "declare", decl: n, init: { kind: "text", text: self.cls ? this.errorName(self.cls) : "Error" }, at: where, label }, at);
+    self.fields.set("name", { kind: "var", v: n });
+    return true;
+  }
+
+  /** The kind of a field that a class of error declares under that name, in any class of error the program has; undefined when none does. */
+  private errorFieldKind(key: string): VarDecl["kind"] | undefined {
+    const { ts } = this;
+    for (const cls of this.classBodies.keys()) {
+      if (!this.builtinBase(cls)) continue;
+      for (const m of cls.members) {
+        const node = ts.isPropertyDeclaration(m) && !this.isStatic(m) && this.memberKey(m.name) === key ? m.name
+          : ts.isConstructorDeclaration(m) ? m.parameters.find((p) => ts.getModifiers(p)?.length && ts.isIdentifier(p.name) && p.name.text === key)?.name : undefined;
+        if (!node) continue;
+        const type = this.c.checker.getTypeAtLocation(node);
+        if (this.isTextType(type)) return "text";
+        const kind = this.kindOf(type);
+        if (kind) return kind;
+      }
+    }
+    return undefined;
+  }
+
+  /** A field of a caught error as the catch's body asks for it: a copy of its own, made at the catch's start. */
+  private caughtField(caught: Caught, key: string): Binding | undefined {
+    const at = caught.at;
+    if (key === "message") return { kind: "var", v: (caught.message ??= this.newVar(`${caught.name}.message`, "text", at, { text: "made" })) };
+    if (key === "name") {
+      caught.code ??= this.newVar(`${caught.name} (class)`, "number", at);
+      return { kind: "var", v: (caught.jsName ??= this.newVar(`${caught.name}.name`, "text", at, { text: "made" })) };
+    }
+    if (key === "stack") this.stackRead = true;
+    const kind = key === "stack" ? "text" : this.errorFieldKind(key);
+    if (!kind) return undefined;
+    const k = `${key}:${kind}`;
+    let v = caught.fields.get(k);
+    if (!v) { v = this.newVar(`${caught.name}.${key}`, kind, at); caught.fields.set(k, v); }
+    return { kind: "var", v };
+  }
+
+  /**
+   * `e.describe()`, `e.short` of a caught error: the method or getter of the class the error is, which is known only while
+   * the map is played. Every class of error it may be (the type `instanceof` narrowed `e` to, and what extends it) is
+   * asked for the member; when they all have the same one it is inlined, `this` the caught error, and when they do not,
+   * each is, behind a test of the error's code. Undefined when `e` is no caught error, or no class has the member.
+   */
+  private caughtMember(call: TS.Expression, access: TS.PropertyAccessExpression, getter: boolean): Call | null | undefined {
+    const { ts } = this;
+    const self = this.bindingOf(access.expression);
+    const caught = self && this.caughtRecords.get(self);
+    if (!self || !caught) return undefined;
+    const name = access.name.text;
+    const pick = (m: TS.ClassElement) => !this.isStatic(m) && (getter ? ts.isGetAccessorDeclaration(m) : ts.isMethodDeclaration(m)) && this.memberKey(m.name) === name;
+    const narrowed = this.classOfType(this.c.checker.getTypeAtLocation(access.expression));
+    const groups = new Map<TS.ClassElement, TS.ClassDeclaration[]>();
+    for (const cls of this.classBodies.keys()) {
+      if (!this.builtinBase(cls) || (narrowed && !this.chainOf(cls).includes(narrowed))) continue;
+      const m = this.memberOf(cls, pick);
+      if (m) groups.set(m, [...(groups.get(m) ?? []), cls]);
+    }
+    if (!groups.size) return undefined;
+    const make = (m: TS.ClassElement): Call | undefined => {
+      const owner = m.parent as TS.ClassDeclaration;
+      const target = this.classBodies.get(owner) ?? this.body;
+      const full = `${this.className(owner)}.${name}`;
+      if (getter) return this.inline(call, [], (m as TS.GetAccessorDeclaration).body, target, full, m, { self, args: [] });
+      const method = m as TS.MethodDeclaration;
+      if (!method.body) { this.c.error(call, `${full} has no body here: it is abstract.`); return undefined; }
+      return this.inline(call, method.parameters, method.body, target, full, method, { self });
+    };
+    if (groups.size === 1) return make([...groups.keys()][0]) ?? null;
+    const at = this.at(call), label = this.label(call);
+    const code = (caught.code ??= this.newVar(`${caught.name} (class)`, "number", caught.at));
+    const made = [...groups].map(([m, classes]) => ({ classes, c: make(m) }));
+    if (made.some((x) => !x.c)) return null;
+    const first = made[0].c!;
+    const result = first.result ? { decl: this.newVar(`(${name})`, first.result.decl.kind, at, first.result.decl.kind === "text" ? { text: "made" } : {}), kind: first.result.kind } : undefined;
+    let chain: Stmt[] = [];
+    for (const { classes, c } of made.reverse()) {
+      const test: Extract<BoolExpr, { kind: "or" }> = { kind: "or", items: [] };
+      this.errorFills.push(() => {
+        const codes = classes.flatMap((k) => (this.errorCodes.has(k) ? [this.errorCodes.get(k)!] : []));
+        test.items = codes.length ? codes.map((k): BoolExpr => ({ kind: "compare", op: "==", left: varRef(code), right: num(k), at, label })) : [FALSE];
+      });
+      const then: Stmt[] = [{ kind: "call", call: c!, at, label }, ...(result && c!.result ? [this.copyOf(result.decl, c!.result.decl, at, label)] : [])];
+      chain = [{ kind: "if", cond: test, then, ...(chain.length ? { else: chain } : {}), at, label }];
+    }
+    return this.mark<Call>({ name: `${caught.name}.${name}`, at, label, params: [], ...(result ? { result } : {}), body: chain }, call);
+  }
+
+  /** The start of a catch: the copies its body reads (all of it when it throws the error on), then nothing in flight. */
+  private caughtEntry(caught: Caught): Stmt[] {
+    const f = this.flight!;
+    const { at, label } = caught;
+    if (caught.rethrown) {
+      caught.code ??= this.newVar(`${caught.name} (class)`, "number", at);
+      caught.message ??= this.newVar(`${caught.name}.message`, "text", at, { text: "made" });
+      for (const [k, v] of f.fields) if (!caught.fields.has(k)) caught.fields.set(k, this.newVar(`${caught.name}.${k.split(":")[0]}`, v.kind, at));
+    }
+    const out: Stmt[] = [];
+    if (caught.code) out.push({ kind: "declare", decl: caught.code, init: varRef(f.thrown), at, label });
+    if (caught.jsName) out.push({ kind: "declare", decl: caught.jsName, init: { kind: "textOf", array: this.jsNamesArray(at).id, index: varRef(caught.code!), at }, at, label });
+    if (caught.message) out.push({ kind: "declare", decl: caught.message, init: { kind: "textVar", id: f.message.id }, at, label });
+    for (const [k, v] of caught.fields) {
+      const [key, kind] = k.split(":") as [string, VarDecl["kind"]];
+      out.push({ kind: "declare", decl: v, init: refOf(this.flightField(key, kind, at)), at, label });
+    }
+    out.push({ kind: "assign", target: f.thrown.id, value: num(0), at, label });
+    return out;
+  }
+
+  private jsNamesArray(at: At): ArrayDecl {
+    if (!this.jsNames) { this.jsNames = this.newArray("(error names)", "number", 1, at, { shared: true, values: [0] }); this.jsNames.texts = ["Error"]; }
+    return this.jsNames;
+  }
+
+  /** `e instanceof RangeError`, `e instanceof OutOfGold` of a caught error: its code is one of the class's or of a class that extends it. */
+  private caughtIs(caught: Caught, right: TS.Expression, node: TS.Node): BoolExpr {
+    const builtin = this.builtinError(right);
+    const cls = builtin ? undefined : this.classOf(right);
+    if (builtin === "Error") return TRUE;
+    if (!builtin && !(cls && this.builtinBase(cls))) { this.c.error(right, "What a catch takes is an error: instanceof tells apart Error, RangeError, TypeError and the classes that extend them."); return FALSE; }
+    const code = (caught.code ??= this.newVar(`${caught.name} (class)`, "number", caught.at));
+    const at = this.at(node), label = this.label(node);
+    const test: Extract<BoolExpr, { kind: "or" }> = { kind: "or", items: [] };
+    this.errorFills.push(() => {
+      const codes = builtin
+        ? [ERROR_CODES[builtin], ...[...this.errorCodes].filter(([c]) => this.builtinBase(c) === builtin).map(([, k]) => k)]
+        : [...this.errorCodes].filter(([c]) => this.chainOf(c).includes(cls!)).map(([, k]) => k);
+      test.items = codes.length ? codes.map((k): BoolExpr => ({ kind: "compare", op: "==", left: varRef(code), right: num(k), at, label })) : [FALSE];
+    });
+    return test;
+  }
+
+  /**
+   * `throw new Error("…")`, `throw new OutOfGold(need)`, `throw e`: the error is put in flight — its message, its class's
+   * fields, its class's code last — and goes to the nearest `try` around it, out through the calls it is in.
+   */
+  private throwStatement(s: TS.ThrowStatement) {
+    const { ts } = this;
+    const at = this.at(s), label = this.label(s);
+    const f = this.flightOf(s);
+    const e = this.unwrap(s.expression);
+    const go = (code: number, name: string) => {
+      const block: Stmt & { kind: "block" } = { kind: "block", body: [], at };
+      this.stackSites.push({ block, name, at, label });
+      this.emit(block, s);
+      this.emit({ kind: "assign", target: f.thrown.id, value: num(code), at, label }, s);
+      this.emit({ kind: "throw", at, label }, s);
+    };
+    const b = ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) || e.kind === ts.SyntaxKind.ThisKeyword ? this.bindingOf(e) : undefined;
+    const caught = b ? this.caughtRecords.get(b) : undefined;
+    if (caught) {
+      // Thrown on: the copies the catch took go back in flight, its class's code last.
+      caught.rethrown = true;
+      const restore: Stmt & { kind: "block" } = { kind: "block", body: [], at };
+      this.emit(restore, s);
+      this.errorFills.push(() => {
+        const out: Stmt[] = [this.copyOf(f.message, caught.message!, at, label)];
+        for (const [k, v] of caught.fields) { const [key, kind] = k.split(":") as [string, VarDecl["kind"]]; out.push(this.copyOf(this.flightField(key, kind, at), v, at, label)); }
+        out.push(this.copyOf(f.thrown, caught.code!, at, label));
+        restore.body = out;
+      });
+      this.emit({ kind: "throw", rethrow: true, at, label }, s);
+      return;
+    }
+    // `new Error("…")` the script made when it was built.
+    const h = !b ? this.evaluate(s.expression) : undefined;
+    if (h) {
+      const v = h.value as { name?: unknown; message?: unknown } | null;
+      if (v && typeof v === "object" && typeof v.name === "string" && Object.hasOwn(ERROR_CODES, v.name) && typeof v.message === "string") {
+        this.emit({ kind: "assignText", target: f.message.id, value: { kind: "text", text: v.message }, at, label }, s);
+        go(ERROR_CODES[v.name as BuiltinError], v.name);
+        return;
+      }
+      this.c.error(s.expression, `throw takes an error — throw new Error("…"), or an instance of a class that extends Error — and this is ${describe(h.value)}.`);
+      return;
+    }
+    const builtin = (ts.isNewExpression(e) || ts.isCallExpression(e)) ? this.builtinError(e.expression) : undefined;
+    if (builtin && (ts.isNewExpression(e) || ts.isCallExpression(e))) {
+      if (e.arguments && e.arguments.length > 1) { this.c.error(e.arguments[1], "An error carries its message and its class's fields; a cause is not kept. Put what it needs in a field of a class that extends Error."); return; }
+      const arg = e.arguments?.[0];
+      const message = arg ? this.text(arg) : { kind: "text" as const, text: "" };
+      if (!message) return;
+      this.emit({ kind: "assignText", target: f.message.id, value: message, at, label }, s);
+      go(ERROR_CODES[builtin], builtin);
+      return;
+    }
+    const cls = ts.isNewExpression(e) ? this.classOf(e.expression) : undefined;
+    const made = ts.isNewExpression(e) && cls ? this.instantiate(e, `(${this.className(cls)})`) : b;
+    if (made?.kind !== "record" || !made.cls || !this.builtinBase(made.cls)) {
+      if (made !== null) this.c.error(s.expression, "throw takes an error: throw new Error(\"…\"), new RangeError(\"…\"), or an instance of a class that extends Error.");
+      return;
+    }
+    for (const [key, field] of made.fields) {
+      if (key === "name") continue;
+      if (field.kind === "var") { this.emit(this.copyOf(key === "message" ? f.message : this.flightField(key, field.v.kind, at), field.v, at, label), s); continue; }
+      if (field.kind === "value" && (typeof field.value === "number" || typeof field.value === "boolean" || typeof field.value === "string")) {
+        const v = field.value;
+        const to = key === "message" ? f.message : this.flightField(key, typeof v === "string" ? "text" : typeof v === "number" ? "number" : "boolean", at);
+        this.emit(typeof v === "string" ? { kind: "assignText", target: to.id, value: { kind: "text", text: v }, at, label } : typeof v === "number" ? { kind: "assign", target: to.id, value: num(v), at, label } : { kind: "assignBool", target: to.id, value: { kind: "const", value: v }, at, label }, s);
+        continue;
+      }
+      this.c.error(s.expression, `${this.className(made.cls)}'s ${key} is not a number, a boolean, a unit or a text: an error carries those, which is what a catch can take.`);
+      return;
+    }
+    go(this.errorCode(made.cls), this.errorName(made.cls));
+  }
+
+  /**
+   * `try { … } catch (e) { … } finally { … }`. The finally runs on every way out: copied before each `break`, `continue`
+   * and `return` that leaves the try, after it on the way out at its end, and — on an error's way — inside a `try` around
+   * the whole, which puts the error aside, runs the finally, and throws it on.
+   */
+  private tryStatement(s: TS.TryStatement, ctx: Ctx) {
+    const at = this.at(s), label = this.label(s);
+    this.flightOf(s);
+    // A finally is walked once for every way out; what it may not do is said once, and it is then left out.
+    const leaving = s.finallyBlock && this.leavesFinally(s.finallyBlock);
+    if (leaving) this.c.error(leaving, `A finally block runs on every way out of its try, an error's way too, so it does not ${this.ts.isReturnStatement(leaving) ? "return: return after the try" : `${this.ts.isBreakStatement(leaving) ? "break" : "continue"} out of it: set a variable, and test it after the try`}.`);
+    const fin = leaving ? undefined : s.finallyBlock;
+    const inner: Ctx = fin
+      ? { ...ctx, ...(ctx.fn ? { fn: { ...ctx.fn, finallies: [...(ctx.fn.finallies ?? []), fin] } } : {}), exits: { break: [...(ctx.exits?.break ?? []), fin], continue: [...(ctx.exits?.continue ?? []), fin] } }
+      : ctx;
+    const body = this.collect(() => this.block(s.tryBlock.statements, inner));
+    const guarded: Stmt = s.catchClause ? { kind: "try", body, catch: this.catchBody(s.catchClause, inner), at, label } : { kind: "block", body, at };
+    if (!fin) { this.emit(guarded, s); return; }
+    const { save, restore } = this.keepFlight(at, label);
+    const onError = this.collect(() => {
+      this.out.push(save);
+      this.finallyBody(fin, ctx.fn);
+      this.out.push(restore);
+      this.emit({ kind: "throw", rethrow: true, at, label }, s);
+    });
+    this.emit({ kind: "try", body: [guarded], catch: onError, at, label }, s);
+    this.finallyBody(fin, ctx.fn);
+  }
+
+  /**
+   * Two blocks filled once the program is walked: `save` puts the error in flight aside — another error thrown and caught
+   * meanwhile would write over it — and leaves nothing in flight; `restore` puts it back, its class's code last.
+   */
+  private keepFlight(at: At, label: string): { save: Stmt & { kind: "block" }; restore: Stmt & { kind: "block" } } {
+    const save: Stmt & { kind: "block" } = { kind: "block", body: [], at }, restore: Stmt & { kind: "block" } = { kind: "block", body: [], at };
+    this.keepFills.push(() => {
+      const f = this.flight!;
+      const kept = [f.thrown, f.message, ...f.fields.values()].map((v) => ({ v, mine: this.newVar(`(kept ${v.name})`, v.kind, at) }));
+      save.body = [...kept.map(({ v, mine }): Stmt => ({ kind: "declare", decl: mine, init: refOf(v), at, label })), { kind: "assign", target: f.thrown.id, value: num(0), at, label }];
+      restore.body = [...kept.slice(1), kept[0]].map(({ v, mine }) => this.copyOf(v, mine, at, label));
+    });
+    return { save, restore };
+  }
+
+  /** A `return`, `break` or `continue` that would leave a finally block; undefined when there is none. */
+  private leavesFinally(f: TS.Block): TS.Statement | undefined {
+    const { ts } = this;
+    let found: TS.Statement | undefined;
+    const walk = (n: TS.Node, loop: boolean, breakable: boolean): void => {
+      if (found || (n !== f && ts.isFunctionLike(n)) || ts.isClassLike(n)) return;
+      if (ts.isReturnStatement(n) || (ts.isBreakStatement(n) && !breakable) || (ts.isContinueStatement(n) && !loop)) { found = n; return; }
+      const isLoop = ts.isIterationStatement(n, false);
+      ts.forEachChild(n, (c) => walk(c, loop || isLoop, breakable || isLoop || ts.isSwitchStatement(n)));
+    };
+    walk(f, false, false);
+    return found;
+  }
+
+  private catchBody(c: TS.CatchClause, ctx: Ctx): Stmt[] {
+    const { ts } = this;
+    const at = this.at(c), label = this.label(c);
+    const d = c.variableDeclaration;
+    const caught: Caught = { name: d && ts.isIdentifier(d.name) ? d.name.text : "(caught)", at, label, entry: { kind: "block", body: [], at }, fields: new Map(), rethrown: false };
+    const scope = new Scope(this.scope);
+    if (d) {
+      if (!ts.isIdentifier(d.name)) this.c.error(d.name, "catch takes the error whole — catch (e) { … e.message … } — not taken apart.");
+      else {
+        const record: Instance = { kind: "record", fields: new CaughtFields((key) => this.caughtField(caught, key)) };
+        this.caughtRecords.set(record, caught);
+        scope.bind(d, record);
+      }
+    }
+    this.errorFills.push(() => { caught.entry.body = this.caughtEntry(caught); });
+    return this.collect(() => {
+      this.out.push(caught.entry);
+      this.block(c.block.statements, ctx, scope);
+    });
+  }
+
+  /**
+   * `await t` of a task that ended on an error throws that error, as awaiting a promise that was rejected does. Every slot
+   * of every start keeps, beside its task, the error it ended on: the task's number (`failed`), the error's class, its
+   * message and its class's fields, in arrays a cell a slot, found from a task's number through `offsets` (where each
+   * start's slots begin). A task that ends on an error stores it there, and says it in red unless something is waiting
+   * for it (`watched`), as an unhandled rejection is said. Gives what the end of a task's body does with its error.
+   */
+  private taskFailures(program: Program, f: Flight): (at: At) => Stmt[] {
+    const at = program.at, label = "(errors)";
+    const starts: Extract<Stmt, { kind: "start" }>[] = [];
+    eachStart([program.body, program.functions ?? []], (st) => starts.push(st));
+    const top = Math.max(0, ...starts.map((st) => st.task));
+    const offsets: number[] = new Array(top + 1).fill(0);
+    let total = 0;
+    for (const st of [...starts].sort((a, b) => a.task - b.task)) { offsets[st.task] = total; total += st.max; }
+    total = Math.max(1, total);
+    const array = (name: string, values?: number[]) => this.newArray(`(task errors ${name})`, "number", values?.length ?? total, at, { shared: true, ...(values ? { values } : {}) });
+    const offsetOf = array("offsets", offsets);
+    const failedAt = array("failed"), watched = array("watched"), code = array("class");
+    const text = (name: string) => ({ addr: array(`${name} addr`), block: array(`${name} block`), chars: array(`${name} chars`) });
+    const message = text("message");
+    // Each field of the error in flight: a column, or three for a unit or a text.
+    type Columns = { cell: ArrayDecl } | { ptr: ArrayDecl; epd: ArrayDecl; uid: ArrayDecl } | { addr: ArrayDecl; block: ArrayDecl; chars: ArrayDecl };
+    const columns = [...f.fields].map(([k, v]): { v: VarDecl; cols: Columns } => ({ v, cols: v.kind === "text" ? text(k) : v.kind === "unit" ? { ptr: array(`${k} ptr`), epd: array(`${k} epd`), uid: array(`${k} uid`) } : { cell: array(k) } }));
+    const bits = (h: NumExpr, shift: number): NumExpr => ({ kind: "binary", op: "&", left: shift ? { kind: "binary", op: ">>>", left: h, right: num(shift), at, label } : h, right: num(255), at, label });
+    const indexOf = (h: NumExpr): NumExpr => ({ kind: "binary", op: "+", left: { kind: "element", array: offsetOf.id, index: bits(h, 8), at }, right: bits(h, 0), at, label });
+    const el = (a: ArrayDecl, i: VarDecl): NumExpr => ({ kind: "element", array: a.id, index: varRef(i), at });
+    for (const site of this.awaitedTasks) {
+      const i = this.newVar("(awaited slot)", "number", site.at);
+      site.watch.body = [
+        { kind: "declare", decl: i, init: indexOf(varRef(site.h)), at: site.at, label: site.label },
+        { kind: "if", cond: { kind: "running", task: varRef(site.h), at: site.at }, then: [{ kind: "store", array: watched.id, index: varRef(i), value: varRef(site.h), at: site.at, label: site.label }], at: site.at, label: site.label },
+      ];
+      const back: Stmt[] = [{ kind: "assignText", target: f.message.id, value: { kind: "textAt", addr: message.addr.id, block: message.block.id, chars: message.chars.id, index: varRef(i), at: site.at }, at: site.at, label: site.label }];
+      for (const { v, cols } of columns) {
+        if ("cell" in cols) back.push(v.kind === "boolean" ? { kind: "assignBool", target: v.id, value: { kind: "test", expr: el(cols.cell, i), at: site.at, label: site.label }, at: site.at, label: site.label } : { kind: "assign", target: v.id, value: el(cols.cell, i), at: site.at, label: site.label });
+        else if ("ptr" in cols) back.push({ kind: "assignUnit", target: v.id, value: { kind: "unitAt", ptr: el(cols.ptr, i), epd: el(cols.epd, i), uid: el(cols.uid, i), at: site.at }, at: site.at, label: site.label });
+        else back.push({ kind: "assignText", target: v.id, value: { kind: "textAt", addr: cols.addr.id, block: cols.block.id, chars: cols.chars.id, index: varRef(i), at: site.at }, at: site.at, label: site.label });
+      }
+      back.push({ kind: "assign", target: f.thrown.id, value: el(code, i), at: site.at, label: site.label }, { kind: "throw", at: site.at, label: site.label });
+      const cmp = (left: NumExpr, op: CompareOp, right: NumExpr): BoolExpr => ({ kind: "compare", op, left, right, at: site.at, label: site.label });
+      site.check.body = [{ kind: "if", cond: { kind: "and", items: [cmp(varRef(site.h), "!=", num(0)), cmp(el(failedAt, i), "==", varRef(site.h))] }, then: back, at: site.at, label: site.label }];
+    }
+    return (where: At): Stmt[] => {
+      const me = this.newVar("(this task)", "number", where);
+      const i = this.newVar("(this task's slot)", "number", where);
+      const keep: Stmt[] = [
+        { kind: "declare", decl: me, init: { kind: "taskHandle", at: where }, at: where, label },
+        { kind: "declare", decl: i, init: indexOf(varRef(me)), at: where, label },
+        { kind: "store", array: failedAt.id, index: varRef(i), value: varRef(me), at: where, label },
+        { kind: "store", array: code.id, index: varRef(i), value: varRef(f.thrown), at: where, label },
+        { kind: "storeText", addr: message.addr.id, block: message.block.id, chars: message.chars.id, index: varRef(i), value: { kind: "textVar", id: f.message.id }, at: where, label },
+      ];
+      for (const { v, cols } of columns) {
+        if ("cell" in cols) keep.push({ kind: "store", array: cols.cell.id, index: varRef(i), value: v.kind === "boolean" ? { kind: "ternary", cond: boolRef(v), whenTrue: num(1), whenFalse: num(0), at: where, label } : varRef(v), at: where, label });
+        else if ("ptr" in cols) for (const part of ["ptr", "epd", "uid"] as const) keep.push({ kind: "store", array: cols[part].id, index: varRef(i), value: { kind: "unitPart", unit: unitRef(v), part, at: where }, at: where, label });
+        else keep.push({ kind: "storeText", addr: cols.addr.id, block: cols.block.id, chars: cols.chars.id, index: varRef(i), value: { kind: "textVar", id: v.id }, at: where, label });
+      }
+      keep.push({ kind: "if", cond: { kind: "compare", op: "==", left: { kind: "element", array: watched.id, index: varRef(i), at: where }, right: varRef(me), at: where, label }, then: [{ kind: "assign", target: f.thrown.id, value: num(0), at: where, label }], else: [{ kind: "uncaught", at: where, label }], at: where, label });
+      return keep;
+    };
+  }
+
+  /** A finally block, where the walk is: nothing in it leaves it. */
+  private finallyBody(f: TS.Block, fn: Ctx["fn"]) {
+    const body = this.collect(() => this.block(f.statements, { ...(fn ? { fn: { ...fn, finallies: [], inFinally: true } } : {}), inFinally: true }));
+    this.emit({ kind: "block", body, at: this.at(f) }, f);
+  }
+
+  /** `return …` out through a try's finally: the value worked out first, as JavaScript does, then each finally, the innermost first, then the return. */
+  private returnThrough(s: TS.ReturnStatement, ctx: Ctx) {
+    const fn = ctx.fn!;
+    const through = fn.finallies ?? [];
+    const outer: Ctx = { ...ctx, fn: { ...fn, finallies: [] } };
+    const run = () => { for (let i = through.length - 1; i >= 0; i--) this.finallyBody(through[i], outer.fn); };
+    if (!s.expression || fn.instance || fn.kind === "void") { run(); this.returnStatement(s, outer); return; }
+    const at = this.at(s), label = this.label(s);
+    const kind = fn.kind;
+    const init = kind === "number" ? this.num(s.expression) : kind === "unit" ? this.unitExpr(s.expression) : kind === "text" ? this.text(s.expression) : this.boolValue(s.expression);
+    if (!init) return;
+    const v = this.newVar("(returned)", kind, at, kind === "text" ? { text: "made" } : {});
+    this.emit({ kind: "declare", decl: v, init, at, label }, s);
+    run();
+    this.emit({ kind: "return", value: refOf(v), at, label }, s);
+  }
+
+  /**
+   * Once the whole program is walked: every class that is thrown is known, and every field that goes through the error in
+   * flight. The catches' copies are filled in, the names of the classes, the variables declared at the start, and the
+   * program, every task and every handler of an event inside a `try` that says what nothing caught.
+   */
+  private finishErrors(program: Program) {
+    const f = this.flight;
+    if (!f) {
+      for (const g of this.guards) { const t = g as Extract<Stmt, { kind: "try" }>; Object.assign(g, { kind: "block", body: t.body }); delete (g as Partial<typeof t>).catch; }
+      return;
+    }
+    if (this.stackRead) {
+      // "OutOfGold: need 20 more\n    at main.ts:12": made where each error is thrown, in the field a caught one copies.
+      const stack = this.flightField("stack", "text", program.at);
+      for (const site of this.stackSites) {
+        const where = `\n    at ${site.at.file}:${site.at.line}:${site.at.column}`;
+        site.block.body = [{ kind: "assignText", target: stack.id, value: { kind: "template", parts: [{ kind: "value", text: this.errorText({ kind: "text", text: site.name }, { kind: "textVar", id: f.message.id }, site.at, site.label) }, { kind: "text", text: where }], at: site.at, label: site.label }, at: site.at, label: site.label }];
+      }
+    }
+    for (const fill of [...this.errorFills, ...this.keepFills]) fill();
+    for (const { held, cleanup } of this.unwinds) {
+      const { at } = held;
+      if (mentions(held.body, "throw") || mentions(held.body, "call")) held.body = [{ kind: "try", body: held.body, catch: [...cleanup, { kind: "throw", rethrow: true, at, label: "(errors)" }], at, label: "(errors)" }];
+    }
+    const top = Math.max(ERROR_CODES.TypeError, ...this.errorCodes.values());
+    const names = (named: (code: number) => string | undefined) => Array.from({ length: top + 1 }, (_, code) => named(code) ?? "Error");
+    const builtins = new Map<number, string>(Object.entries(ERROR_CODES).map(([k, v]) => [v, k]));
+    const byCode = new Map([...this.errorCodes].map(([c, k]) => [k, c]));
+    const fill = (a: ArrayDecl, texts: string[]) => { a.texts = texts; a.values = texts.map((_, i) => i); a.length = texts.length; };
+    fill(f.names, names((code) => builtins.get(code) ?? (byCode.get(code) ? this.className(byCode.get(code)!) : undefined)));
+    if (this.jsNames) fill(this.jsNames, names((code) => builtins.get(code) ?? (byCode.get(code) ? this.errorName(byCode.get(code)!) : undefined)));
+    // (settleFunctions kept only the arrays something named then; these are named by what was filled in since.)
+    for (const a of [f.names, this.jsNames]) if (a && !this.arrays.includes(a)) this.arrays.push(a);
+    // (newArray puts the tasks' error arrays in as they are made.)
+    const at = program.at, label = "(errors)";
+    const declares: Stmt[] = [f.thrown, f.message, ...f.fields.values()].map((v) => ({
+      kind: "declare", decl: v, at, label,
+      init: v.kind === "number" ? num(0) : v.kind === "boolean" ? FALSE : v.kind === "unit" ? NO_UNIT : { kind: "text", text: "" },
+    }));
+    const guard = (body: Stmt[], at: At, caught: Stmt[] = [{ kind: "uncaught", at, label }]): Stmt[] => [{ kind: "try", body, catch: caught, at, label }];
+    const failed = this.awaitedTasks.length ? this.taskFailures(program, f) : undefined;
+    eachStart([program.body, program.functions ?? []], (st) => { st.call.body = guard(st.call.body, st.at, failed?.(st.at)); });
+    program.body = [...declares, ...guard(program.body, at)];
+    program.errors = { thrown: f.thrown.id, message: f.message.id, names: f.names.id };
   }
 
   private declare(list: TS.VariableDeclarationList) {
@@ -4296,6 +4895,14 @@ export class Structured {
       return l && r ? [...l, ...r] : null;
     }
     if (this.isTextTyped(e)) { const t = this.text(e); return t ? this.partsOf(t) : null; }
+    // `${e}`, String(e) of an error a catch took: "RangeError: too far", as JavaScript writes one.
+    const bound = ts.isIdentifier(e) || ts.isPropertyAccessExpression(e) ? this.bindingOf(e) : undefined;
+    const caught = bound && this.caughtRecords.get(bound);
+    if (caught) {
+      const name = this.caughtField(caught, "name"), message = this.caughtField(caught, "message");
+      if (name?.kind !== "var" || message?.kind !== "var") return null;
+      return [{ kind: "value", text: this.errorText({ kind: "textVar", id: name.v.id }, { kind: "textVar", id: message.v.id }, this.at(e), this.label(e)) }];
+    }
     if (this.kindOf(this.c.checker.getTypeAtLocation(e)) === "boolean") { this.c.error(e, "A boolean has no text of its own: write flag ? \"yes\" : \"no\" with both texts known when the script is built, or show a number."); return null; }
     const value = this.num(e);
     return value ? [{ kind: "number", expr: value }] : null;
@@ -4426,11 +5033,17 @@ export class Structured {
       this.emit(into.kind === "number" ? { kind: "assign", target: into.decl.id, value, at: call.at, label: call.label } : { kind: "assignBool", target: into.decl.id, value, at: call.at, label: call.label }, node);
     };
     if (this.isTaskType(this.c.checker.getTypeAtLocation(e))) {
-      // `await t`, `await start(…)`: until the task has ended.
+      // `await t`, `await start(…)`: until the task has ended — and, when it ended on an error (B4), that error thrown here.
       const t = this.num(e);
       if (!t) return;
       const at = this.at(e), label = this.label(e);
-      this.emit({ kind: "while", cond: { kind: "running", task: t, at }, body: [{ kind: "sleep", cycles: 1, at, label }], at, label }, e);
+      const h = this.newVar("(awaited)", "number", at);
+      this.emit({ kind: "declare", decl: h, init: t, at, label }, e);
+      const site = { h, watch: { kind: "block", body: [], at } as Stmt & { kind: "block" }, check: { kind: "block", body: [], at } as Stmt & { kind: "block" }, at, label };
+      this.awaitedTasks.push(site);
+      this.emit(site.watch, e);
+      this.emit({ kind: "while", cond: { kind: "running", task: varRef(h), at }, body: [{ kind: "sleep", cycles: 1, at, label }], at, label }, e);
+      this.emit(site.check, e);
       valueless("A task");
       return;
     }
@@ -4670,6 +5283,14 @@ export class Structured {
     const at = this.at(s), label = this.label(s);
     const stop = this.newVar("(loop left)", "boolean", at);
     this.emit({ kind: "declare", decl: stop, init: FALSE, at, label }, s);
+    // A generator with a try in it (B4): an error of the loop's body is not the generator's to catch. It is put aside, the
+    // generator leaves through its finally blocks, and the error is thrown on after it, as JavaScript's return() does.
+    let tries = false;
+    const look2 = (n: TS.Node): void => { if (tries || (n !== fn && ts.isFunctionLike(n))) return; if (ts.isTryStatement(n)) { tries = true; return; } ts.forEachChild(n, look2); };
+    look2(fn);
+    const pending = tries ? this.newVar("(loop threw)", "boolean", at) : undefined;
+    const kept = tries ? (this.flightOf(s), this.keepFlight(at, label)) : undefined;
+    if (pending) this.emit({ kind: "declare", decl: pending, init: FALSE, at, label }, s);
     const kind = this.kindOf(this.c.checker.getTypeAtLocation(decl.name));
     const handler = (y: TS.YieldExpression) => {
       if (y.asteriskToken) { this.c.error(y, "yield* is not supported yet: walk the other generator with a for…of and yield each of its items."); return; }
@@ -4704,13 +5325,19 @@ export class Structured {
         this.leaveBody(saved);
       }
       const where = this.at(y), what = this.label(y);
+      if (pending && kept) body = [{ kind: "try", body, catch: [kept.save, { kind: "assignBool", target: stop.id, value: TRUE, at: where, label: what }, { kind: "assignBool", target: pending.id, value: TRUE, at: where, label: what }], at: where, label: what }];
       this.emit({ kind: "do", body, cond: FALSE, at: where, label: what, condLabel: what }, y);
-      this.emit({ kind: "if", cond: { kind: "var", id: stop.id }, then: [{ kind: "return", at: where, label: what }], at: where, label: what }, y);
+      // The loop was left: the generator returns, through the finally blocks around this yield.
+      const through = this.ctxNow.fn?.finallies ?? [];
+      const outer = this.ctxNow.fn ? { ...this.ctxNow.fn, finallies: [] } : undefined;
+      const leave = this.collect(() => { for (let i = through.length - 1; i >= 0; i--) this.finallyBody(through[i], outer); });
+      this.emit({ kind: "if", cond: { kind: "var", id: stop.id }, then: [...leave, { kind: "return", at: where, label: what }], at: where, label: what }, y);
     };
     this.yields.push(handler);
     try {
       const call = this.inline(e, fn.parameters, fn.body, this.body, fn.name?.text, fn, { generator: true, nothing: true });
       if (call) this.emit({ kind: "call", call, at: call.at, label: call.label }, s);
+      if (call && pending && kept) this.emit({ kind: "if", cond: { kind: "var", id: pending.id }, then: [kept.restore, { kind: "throw", rethrow: true, at, label }], at, label }, s);
     } finally {
       this.yields.pop();
     }
@@ -5444,7 +6071,7 @@ export class Structured {
       to = Math.min(to + 1, clauses.length);
     }
     const scope = new Scope(this.scope);
-    const cases = clauses.slice(from, to).map((c, i) => ({ value: value.kind === "const" ? value.value | 0 : values[from + i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    const cases = clauses.slice(from, to).map((c, i) => ({ value: value.kind === "const" ? value.value | 0 : values[from + i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue, exits: { break: [], continue: ctx.exits?.continue ?? [] } }, scope)) }));
     this.emit({ kind: "switch", value, cases, at: this.at(s), label: this.label(s) }, s);
   }
 
@@ -5466,7 +6093,7 @@ export class Structured {
       which = { kind: "ternary", cond: { kind: "textCompare", op: "==", left: of, right: { kind: "text", text: h.value }, at, label }, whenTrue: num(i), whenFalse: which, at, label };
     }
     const scope = new Scope(this.scope);
-    const cases = clauses.map((c, i) => ({ value: values[i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue }, scope)) }));
+    const cases = clauses.map((c, i) => ({ value: values[i], body: this.collect(() => this.block(c.statements, { fn: ctx.fn, canBreak: true, canContinue: ctx.canContinue, exits: { break: [], continue: ctx.exits?.continue ?? [] } }, scope)) }));
     this.emit({ kind: "switch", value: which, cases, at, label }, s);
   }
 
@@ -5962,7 +6589,11 @@ export class Structured {
     const run = (bound: Binding[]) => {
       if (!waits) {
         const c = this.callback(fnArg, named, bound, "void", call);
-        if (c) this.emit({ kind: "call", call: c, at, label }, call);
+        if (!c) return;
+        // An error the handler does not catch ends only this turn of it (B4): the listener goes on.
+        const g: Stmt = { kind: "try", body: [{ kind: "call", call: c, at, label }], catch: [{ kind: "uncaught", at, label }], at, label };
+        this.guards.push(g);
+        this.emit(g, call);
         return;
       }
       const params: Call["params"] = [];
@@ -6538,7 +7169,11 @@ export class Structured {
     });
     this.emit(step(h.walking, "+"), node);
     this.emit({ kind: "declare", decl: i, init: num(0), at, label }, node);
-    this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: h.keys.id, at }, at, label }, update: [step(i, "+")], body: [{ kind: "if", cond: { kind: "element", array: h.live.id, index: varRef(i), at }, then: leaving(body), at, label }], at, label }, node);
+    const loop: Stmt = { kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: { kind: "length", array: h.keys.id, at }, at, label }, update: [step(i, "+")], body: [{ kind: "if", cond: { kind: "element", array: h.live.id, index: varRef(i), at }, then: leaving(body), at, label }], at, label };
+    // An error out of the body leaves the loop too (B4): counted out on its way, once the program is known to throw.
+    const held: Stmt & { kind: "block" } = { kind: "block", body: [loop], at };
+    this.unwinds.push({ held, cleanup: [step(h.walking, "-")] });
+    this.emit(held, node);
     this.emit(step(h.walking, "-"), node);
   }
 
@@ -6614,6 +7249,8 @@ export class Structured {
     const { ts } = this;
     const clause = cls.heritageClauses?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword)?.types[0];
     if (!clause) return null;
+    // `extends Error`: an error class (B4), whose base is the language's; what super(…) makes of it is `errorFields`.
+    if (this.builtinError(clause.expression)) return null;
     const base = this.classOf(clause.expression);
     if (!base) this.c.error(clause, `${this.className(cls)} extends ${clause.expression.getText(this.body.sf)}, which is not a class declared in this program: a class of a program extends another one of it.`);
     return base;
@@ -6689,6 +7326,7 @@ export class Structured {
     if (!ctor) {
       // No constructor of its own: what it extends is made from the same arguments, then its own fields get their values.
       if (base) { if (!this.construct(base, args, self, at, name)) return false; }
+      else if (this.extendsBuiltin(cls)) { if (!this.errorFields(self, args[0], name, at)) return false; }
       else if (args.length) { this.c.error(at, `${this.className(cls)} has no constructor, so new ${this.className(cls)}() takes nothing.`); return false; }
       const scope = new Scope(target === this.c.body ? this.topScope : null);
       scope.bind(THIS, self);
@@ -6712,12 +7350,13 @@ export class Structured {
             if (field) self.fields.set(p.name.text, field);
           }
           // A class that extends another gets its fields' values when `super(…)` comes back; one that does not, before its constructor's first line.
-          if (!base) this.declareFields(cls, self, name);
+          if (!base && !this.extendsBuiltin(cls)) this.declareFields(cls, self, name);
         },
       });
       if (!call) return false;
       this.emit({ kind: "call", call, at: call.at, label: call.label }, at);
-      if (base && !this.superCalled.delete(ctor)) this.c.error(ctor, `${this.className(cls)} extends ${this.className(base)}, so its constructor calls super(…) before anything else.`);
+      const builtin = this.extendsBuiltin(cls);
+      if ((base || builtin) && !this.superCalled.delete(ctor)) this.c.error(ctor, `${this.className(cls)} extends ${base ? this.className(base) : builtin}, so its constructor calls super(…) before anything else.`);
       return true;
     } finally {
       this.constructing.pop();
@@ -6731,9 +7370,12 @@ export class Structured {
     const top = this.constructing[this.constructing.length - 1];
     const cls = this.enclosingClass(e);
     const base = cls && this.baseOf(cls);
-    if (!top || !cls || top.cls !== cls || !base) { this.c.error(e, "super(…) is the first thing the constructor of a class that extends another does."); return; }
+    const builtin = cls && this.extendsBuiltin(cls);
+    if (!top || !cls || top.cls !== cls || (!base && !builtin)) { this.c.error(e, "super(…) is the first thing the constructor of a class that extends another does."); return; }
     const ctor = cls.members.find((m) => this.ts.isConstructorDeclaration(m) && !!m.body);
     if (ctor) this.superCalled.add(ctor);
+    // `super(message)` of a class that extends Error: the message and the name, then the class's own fields.
+    if (!base) { if (this.errorFields(top.self, e.arguments[0], top.name, e)) this.declareFields(cls, top.self, top.name); return; }
     if (this.construct(base, e.arguments, top.self, e, top.name)) this.declareFields(cls, top.self, top.name);
   }
 
@@ -6784,6 +7426,8 @@ export class Structured {
     const { ts } = this;
     const callee = this.unwrap(e.expression);
     if (!ts.isPropertyAccessExpression(callee)) return undefined;
+    const ofCaught = this.caughtMember(e, callee, false);
+    if (ofCaught !== undefined) return ofCaught;
     const found = this.memberAt(callee, (m, name) => ts.isMethodDeclaration(m) && this.memberKey(m.name) === name);
     if (!found) return found;
     const method = found.member as TS.MethodDeclaration;
@@ -6796,6 +7440,8 @@ export class Structured {
     const { ts } = this;
     const e = this.unwrap(expr);
     if (!ts.isPropertyAccessExpression(e)) return undefined;
+    const ofCaught = this.caughtMember(e, e, true);
+    if (ofCaught !== undefined) return ofCaught;
     const found = this.memberAt(e, (m, name) => ts.isGetAccessorDeclaration(m) && this.memberKey(m.name) === name, true);
     if (!found) return found;
     const getter = found.member as TS.GetAccessorDeclaration;
@@ -8419,6 +9065,11 @@ export class Structured {
     }
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
+      const b = this.bindingOf(e.left);
+      const caught = b && this.caughtRecords.get(b);
+      if (caught) return this.caughtIs(caught, e.right, e);
+    }
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) return { kind: "not", expr: this.boolInner(e.operand, depth + 1) };
     if (ts.isPropertyAccessExpression(e) && e.name.text === "running" && this.isTaskType(this.c.checker.getTypeAtLocation(e.expression))) {
       const task = this.num(e.expression);

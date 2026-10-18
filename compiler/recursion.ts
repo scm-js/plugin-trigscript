@@ -380,6 +380,7 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
           case "unrolled": s.iterations = s.iterations.map((i) => body(i, returns)); break;
           case "parallel": s.branches = s.branches.map((b) => body(b, returns)); break;
           case "block": s.body = body(s.body, returns); break;
+          case "try": s.body = body(s.body, returns); s.catch = body(s.catch, returns); break;
           case "textLoop":
             errors.push({ at: s.at, message: `${f.name} calls itself, and this loop over a text holds such a call: the loop's place in the text is not something a call can keep. Walk it by place — for (let i = 0; i < s.length; i++) — which a call keeps as it keeps any number.` });
             s.body = body(s.body, returns);
@@ -404,12 +405,12 @@ export function settleRecursion(program: Program): ProgramDiagnostic[] {
         if (s.kind === "call" && s.call.fn === f.id) return true;
         if (s.kind === "if" && s.else && never(s.then) && never(s.else)) return true;
         if (s.kind === "block" && never(s.body)) return true;
-        // Anything else that holds a return (or is one) may be the way out.
-        if (s.kind !== "remark" && mentions(s, "return")) return false;
+        // Anything else that holds a return or a throw (or is one) may be the way out.
+        if (s.kind !== "remark" && (mentions(s, "return") || mentions(s, "throw"))) return false;
       }
       return false;
     };
-    if (never(f.body)) errors.push({ at: f.at, message: `${f.name} calls itself on every path through it, so no call of it ever returns: the stack would run out the first time it is called. Give it a way out — an if that returns before the call.` });
+    if (never(f.body)) errors.push({ at: f.at, message: `${f.name} calls itself on every path through it, so no call of it ever returns: the stack would run out the first time it is called. Give it a way out — an if that returns (or throws) before the call.` });
 
     // An array declared in the function is each run's own: a block of the heap, so that a frame keeps its handle.
     const local: string[] = [];

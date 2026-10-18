@@ -276,6 +276,8 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       for (const m of node.members) if (ts.isConstructorDeclaration(m) || ts.isMethodDeclaration(m) || ts.isAccessor(m)) for (const p of m.parameters) declare(p);
     }
     if (ts.isVariableDeclarationList(node) && !(node.flags & ts.NodeFlags.Const)) for (const d of node.declarations) declare(d);
+    // What `catch (e)` takes is an error thrown while the map is played: the game's.
+    if (ts.isCatchClause(node) && node.variableDeclaration) declare(node.variableDeclaration);
     // The variable of a for…of is bound per iteration when the loop is unrolled, like a parameter bound to a value.
     if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && ts.isVariableDeclarationList(node.initializer)) for (const d of node.initializer.declarations) declare(d);
     if (ts.isFunctionDeclaration(node)) { declare(node); for (const p of node.parameters) declare(p); }
@@ -558,6 +560,12 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
     if (ts.isForOfStatement(s) || ts.isForInStatement(s)) { value(s.expression, items); items.push({ kind: "block", items: block([s.statement]) }); return; }
     if (ts.isLabeledStatement(s)) { statement(s.statement, items, deferred); return; }
     if (ts.isThrowStatement(s)) { value(s.expression, items); return; }
+    if (ts.isTryStatement(s)) {
+      items.push({ kind: "block", items: block(s.tryBlock.statements) });
+      if (s.catchClause) items.push({ kind: "block", items: block(s.catchClause.block.statements) });
+      if (s.finallyBlock) items.push({ kind: "block", items: block(s.finallyBlock.statements) });
+      return;
+    }
     // break / continue / empty / types: nothing runs at build time.
   };
   // What a class of the body computes when the script is built: inside a field's first value, and inside each body, as a declared function's.
