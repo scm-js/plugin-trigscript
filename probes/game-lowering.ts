@@ -72,6 +72,20 @@ program(() => {
   big[2999] = 5;
   big[2999] -= 9;
   displayText(`F: ${big[j]} ${big[2999]}`);
+  sleep(frames(1));
+
+  // G: & and | with a constant, in a variable's own cell and as values, nested. 0 15 2 1 9 -8
+  let r = g + 12;
+  r = (r + 1) & 15;
+  let q = g;
+  q = q | 12;
+  const s2 = (g & 6) | 0;
+  let u2 = g;
+  u2 = (u2 - 10) & 7;
+  const z2 = (g + 6) | 1;
+  let neg = g - 11;
+  neg = neg & -4;
+  displayText(`G: ${r} ${q} ${s2} ${u2} ${z2} ${neg}`);
 });
 
 test("adds into the variable itself", (sim) => {
@@ -97,4 +111,8 @@ test("arrays at constant and variable indexes", (sim) => {
 test("a long array's subtract wraps", (sim) => {
   sim.frames(20);
   expect(sim).toHavePrinted("F: -7 -4");
+});
+test("& and | with a constant", (sim) => {
+  sim.frames(20);
+  expect(sim).toHavePrinted("G: 0 15 2 1 9 -8");
 });

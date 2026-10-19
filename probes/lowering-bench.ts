@@ -1,7 +1,8 @@
 // The lowering bench (TrigScript 4, cheaper lowering): one kind of statement a line, each run R times a frame, weighed
 // by line in the lifted game (`npx tsx scripts/bench-lowering.mts`, which builds this file and divides by R). Every
 // value comes from the game (deaths of Player 8, which nothing changes), so nothing folds when the script is built.
-// The bench's own loop (line LOOP) is the dial's: `for (let i = 0; i < n; i++)`.
+// The bench's own loop (line LOOP) is the dial's: `for (let i = 0; i < n; i++)`. Its jump back is eudplib's, which the
+// count puts under the line before it: TAIL, a store of a constant, takes it, so that the lines above it are their own.
 import { program, sleep, frames, deaths, unitsOf, units, P1, P8 } from "trigscript";
 
 const R = 100;
@@ -31,6 +32,7 @@ program(() => {
       x = twice(y); /* CALL */
       x = y * z; /* MULTIPLY */
       k = (k + 1) & 15; /* MASK */
+      b = 0; /* TAIL */
     }
     for (const u of unitsOf(P1)) { x += u.hp; } /* UNITS */
     sleep(frames(1));

@@ -271,6 +271,15 @@ class Storage:
             self.store -= value
         return True
 
+    def mask(self, op, c):
+        """The cell & c or | c where it is: one masked write (only a variable's own cell, not a row's)."""
+        DoActions(_mask_action(self.store, op, c))
+
+
+def _mask_action(cell, op, c):
+    """The masked write that leaves `cell & c` (clear the bits outside c) or `cell | c` (set the bits of c) in a variable."""
+    return cell.SetNumberX(0, (~c) & U32) if op == "&" else cell.SetNumberX(c, c)
+
 
 def unpack_table(table, length):
     """A table the IR carries packed (`compiler/eud.ts#packTable`): `bytes` a value, little-endian, in base64 - as a
@@ -1686,8 +1695,8 @@ PLAIN_KINDS = {"const", "var", "cast", "unary", "binary", "element", "length"}
 
 
 def plain(e):
-    if not isinstance(e, dict):
-        return True
+    if not isinstance(e, dict) or "kind" not in e:
+        return True  # (not an expression: a number, a position)
     if e.get("kind") not in PLAIN_KINDS:
         return False
     return all(plain(v) for k, v in e.items() if isinstance(v, dict))
@@ -1811,24 +1820,52 @@ class Lowering:
         return (v["op"], v["right"])
 
     def assign_in_place(self, target, st):
-        """`x = x + e`, `x = e + x`, `x = x - e` as an add where the variable is; `x = y + e` / `y - e` as a copy and an
-        add. Only where `e` reads and does nothing else and does not read x, so the order of the reads cannot matter.
-        False when it is not one of those, or the cell cannot add where it is."""
-        v, id_ = st["value"], st["target"]
-        if not isinstance(target, Storage) or target.bits or v.get("kind") != "binary" or v.get("op") not in ("+", "-"):
+        """A store worked out in the variable's own cell, step by step: `x = x + e` an add where it is (`x = e + x`,
+        `x = x - e` too), `x = y + e` a copy and an add, `x = x & c` / `x | c` a masked write of the cell, and these
+        nested (`k = (k + 1) & 15` an add and a mask). Each `e` only reads and does not read x, so the order of the
+        reads cannot matter. False when the store is not of that shape (nothing is emitted then)."""
+        if not isinstance(target, Storage) or target.bits:
             return False
-        left, right, op = v["left"], v["right"], v["op"]
+        steps = self.into_steps(target, st["value"], st["target"])
+        if not steps or steps == [("set", st["value"])]:
+            return False
+        for step in steps:
+            if step[0] == "set":
+                target.set(self.num(step[1]))
+            elif step[0] == "add":
+                target.add(self.num(step[2]), step[1])
+            else:
+                target.mask(step[1], step[2])
+        return True
+
+    def into_steps(self, target, v, id_):
+        """The steps that work `v` out in the target's own cell, or None when they cannot."""
         is_me = lambda e: e.get("kind") == "var" and e.get("id") == id_
-        if op == "+" and is_me(right) and not is_me(left):
-            left, right = right, left
-        if not plain(right) or mentions_var(right, id_):
-            return False
-        if is_me(left):
-            return target.add(self.num(right), op)
-        if target.rowed or left.get("kind") not in ("const", "var") or not plain(left):
-            return False
-        target.set(self.num(left))
-        return target.add(self.num(right), op)
+        if is_me(v):
+            return []
+        k, op = v.get("kind"), v.get("op")
+        if k in ("const", "var"):
+            return None if target.rowed else [("set", v)]
+        if k != "binary" or op not in ("+", "-", "&", "|"):
+            return None
+        left, right = v["left"], v["right"]
+        if op in ("+", "-"):
+            if op == "+" and is_me(right) and not is_me(left):
+                left, right = right, left
+            if not plain(right) or mentions_var(right, id_) or not plain(left):
+                return None
+            first = self.into_steps(target, left, id_)
+            if first is None or (target.rowed and (first or (op == "-" and right.get("kind") != "const"))):
+                return None
+            return first + [("add", op, right)]
+        # & | with a constant: a masked write of the cell (the other side worked out into it first).
+        if target.rowed:
+            return None
+        c, other = (right, left) if right.get("kind") == "const" else (left, right) if left.get("kind") == "const" else (None, None)
+        if c is None or not plain(other):
+            return None
+        first = self.into_steps(target, other, id_)
+        return None if first is None else first + [("mask", op, int(c["value"]) & U32)]
 
     def num(self, e):
         k = e["kind"]
@@ -2139,6 +2176,12 @@ class Lowering:
             return r
         if isinstance(a, int) and isinstance(b, int):
             return {"&": a & b, "|": a | b, "^": a ^ b}[op]
+        if op in ("&", "|") and (isinstance(a, int) or isinstance(b, int)):
+            # Against a constant: a copy and one masked write (eudplib's & of two variables tests a bit a trigger).
+            c, x = (a, b) if isinstance(a, int) else (b, a)
+            t = fresh(x)
+            DoActions(_mask_action(t, op, c))
+            return t
         # Copies: eudplib computes in place into an operand nothing else refers to, and ours may be a variable's own cell.
         x, y = fresh(a), fresh(b)
         return x & y if op == "&" else x | y if op == "|" else x ^ y

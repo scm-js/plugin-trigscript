@@ -2031,6 +2031,68 @@ alone (TrigScript's loop records may cost more than eudplib's; not measured).
   frame on average.
 - Not yet in the editor's game: it runs scm-sim through plugin-scm-sim, which needs a build with the new tap.
 
+### The cheaper lowering (2026-10-18)
+
+With A4 in milliseconds, each change to the lowering is weighed before and after by **the lowering bench**:
+`probes/lowering-bench.ts` runs one kind of statement a line, 100 times a frame, and `scripts/bench-lowering.mts`
+builds it, weighs it by line in the lifted game and compares with `probes/lowering-bench.baseline.json` (the lowering
+before this slice). `probes/game-lowering.ts` checks every new path in the game and the simulator.
+
+Nanoseconds a turn, before → after:
+
+| Line | Before | After | Records a turn, after |
+| --- | ---: | ---: | ---: |
+| `for (let i = 0; i < n; i++)`, the loop's own | 437 | 181 | 13 |
+| `x += 1` | 134 | 18 | 1 |
+| `x = y + z` | 177 | 124 | 8 |
+| `k = (k + 1) & 15` | 360 | 40 | 2 |
+| `x = cells[k]` | 897 | 376 | 27 |
+| `x = cells[3]` | 653 | 130 | 8 |
+| `cells[k] = y` | 157 | 204 | 15 |
+| `cells[5] = y` | 62 | 62 | 4 |
+| `if (y < z)`, both signed | 318 | 318 | 22 |
+| `x = y * z` | 555 | 555 | 39 |
+| one `for (const u of unitsOf(P1))`, a frame | 229 237 | 229 237 | 15 943 |
+
+- **Adds in place.** `x = x + 1` was lowered as eudplib's `x + 1` (a copy into a temporary, the add) and a copy back:
+  9 records and 4 triggers. A store whose value is the variable plus or minus something that only reads, and does not
+  read the variable, is now eudplib's add where the variable is (it wraps, as numbers do); `x = y + e` is a copy and
+  an add; `x = x & c` / `x | c` a masked write of the cell; and these nest, so `k = (k + 1) & 15` is an add and a
+  mask on `k` itself.
+- **A loop's counter is never below zero.** The number pass already knew which variables nothing puts below zero; an
+  add put a variable out of it, as `wave += 1` wraps in the end. A `for` whose test is `i < e` (or `e > i`) and whose
+  update adds 1 to `i` now keeps `i` in, when its other stores are never below zero and nothing in the loop's body or
+  in a function stores into it: the update runs only after `i < e` held with that `i`, so `i + 1` is at most
+  2 147 483 647. A comparison with one side never below zero is marked as reading it from 0 up, which it reads the
+  same: `i < n` is `n >= 0` and `n > i` in one trigger, where it was an addition of 2^31 a side.
+- **ANDs in one trigger.** `&&` of tests that do nothing was `EUDAnd`, a branch an item; it is one trigger's list of
+  conditions, which the game ANDs. A negated one is a light bool set by one trigger and cleared by a second.
+  `relation()` orders two variables with `>=` and `<=` too (eudplib does `<` and `>` only): `b - a`, which the game's
+  Subtract stops at 0, is 0.
+- **Cells of their own.** An array of up to 2 048 cells, and the rows of a per-player program and of a task's slots,
+  are an `EUDVArray`: a cell is a variable of 72 bytes, which a read jumps to and which writes itself out. A read at a
+  variable index is a jump by the index's bits; at a constant index two triggers. An `EUDArray` read takes the dword a
+  bit at a time either way. A write at a variable index works the cell's address out by one trigger an index bit
+  (`cell_write`; eudplib 0.81's `EUDVArray` has no add, and its own set is dearer). The map of variables says each
+  row's `stride` (72, or 4), and the readers (`gameVariables.ts`, the debugger, the names in a desync or an EUD
+  error) follow it.
+- **A fault found on the way:** `a[i] -= v` used the game's Subtract, which stops at 0, where numbers wrap: `a[i] -= 5`
+  of a 3 was 0 in the game and -2 in the simulator (`probes/game-lowering.ts` E and F failed on the lowering before).
+  It is now the add of the negative, which wraps.
+
+Not done here, and why:
+- **A loop over the units** scans the 1 700 slots of the unit table, about 135 ns a slot, 229 µs a frame whatever the
+  number of units. A condition on a unit's slot costs about 17 ns (the unit region's own read and the search), and a
+  trigger cannot run again without a second one to put its next pointer back, so a scan has a floor near 30 µs. The
+  game's lists of live units make the cost the units' own (eudplib's `f_cunitepdread_epd` follows them cheaply; the
+  events pass already does), but they give the units in another order than the slots: a choice for the language.
+- **The showpieces moved little** (weighed over 900 frames, before and after): Snake 1.73 → 1.69 ms a frame on
+  average, Tetris 0.35 → 0.33, the raycaster 1.66 → 1.55, the units probe unchanged. Their costliest lines are not
+  the bench's: Snake's HUD (`ui.lines`, its texts built again every frame) is 1.2 of its 1.7 ms; the raycaster's are
+  fixed-point products and quotients and signed comparisons of values that can be below zero (`sideX < sideY`).
+- `x * y` (555 ns), a signed comparison of two variables neither of which is known never below zero (318 ns), and a
+  write at a variable index (204 ns, 157 into an `EUDArray`) are next.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
