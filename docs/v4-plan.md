@@ -2679,6 +2679,31 @@ game's counts: `primitives-short.scx` (PHASE 4) with `exact-eud.ts --cost`; play
 `python profile.py StarCraft.exe prims1`, read with `profile_report.py <dir> <table> <cost> --short=4` (the walk's
 two mixes by their triggers a frame, which the cost's `triggers` has). To be played.
 
+**Played (2026-10-19), Remastered 1.23.10.13515, `profile.py … prims1`.** The `Native:` line is the lifted game's
+(`men 1 wrap 1 sub 1 any 1 ore 1 all 3 sum 2 mask 1 done 0`). Nanoseconds a record (`profile_report.py --short=4`):
+
+| Record | ns | Against |
+| --- | ---: | --- |
+| Set Deaths, EUD (eudplib's) | 7.8 | |
+| Set Deaths, Men / Buildings / Factories | 16.0 | twice the EUD one: the native path checks the game state |
+| Set Switch | 4.4 | |
+| **Set Resources** | **1.2** | a sixth of an EUD Set Deaths |
+| Set Deaths, masked | 11.0 | a mask costs a write about 40% |
+| Set Deaths of All Players | 35.4 | about 6 a dword written |
+| Deaths, EUD | 5.2 | |
+| Deaths, Men / Buildings / Factories | 3.6 | |
+| Switch | 3.5 | |
+| **Accumulate** | **0.85** | a sixth of an EUD Deaths |
+| Deaths, masked | 4.8 | a mask costs a condition nothing |
+
+The walk past a trigger whose "done" flag is set is about 43% of the walk past an empty one. So the native registers
+worth having are **resources**, not the death columns the reading pointed to: a counter kept as a player's ore or gas
+costs a sixth of an EUD cell to add to and to test. Only players not in the game can lend theirs (the top bar shows a
+player's own), and adds wrap where the game's subtract stops at 0 — the emitter's places add negations anyway.
+(`profile.py` stops itself now on this probe's magic too: it knew only the weights' before, and was stopped by hand.)
+
+### Value ranges and the backend, as built
+
 **As built: value ranges (2026-10-19).** `compiler/ranges.ts`, run after `numbers.ts`; IR 25 (`range` on a number).
 - The range of every number variable is the union of what is stored into it, and 0 (a cell before its first store);
   facts from tests (`if (i < n)`, a loop's own test) hold until the variable is stored into, and are dropped at a wait,
