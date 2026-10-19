@@ -3351,6 +3351,10 @@ as before.
 - *Not yet:* a function that calls itself (a stack of our own); calls inside the eudplib build's loops; the eudplib
   build's loops breaking a loop of reads once (to be measured there: its copies are routed reads already); a call in
   a `do` loop's test.
+- **Played in Remastered (2026-10-19):** `trigscript-own-calls.scx` printed all ten lines, every one "ok", in the
+  lifted game's groups (3, then 5, 7 and 10 lines about four frames apart: frames 2, 6, 10 and 14), no error, no
+  stutter seen. The first map of ours with routed copies: Remastered runs the overlapped cell triggers as the lifted
+  game does.
 
 ## Part C — the game, pushed
 
