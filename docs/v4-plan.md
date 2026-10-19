@@ -1637,7 +1637,9 @@ freely within 32 voices, each note's length and loudness baked into its file.
   object true, as in JavaScript — after every kind of the game's own (a condition, a read, a table, input) is tried.
 - **Checked**: `tests/music.test.ts` — tempo rounding, holds, chords, a kit, the voice limit, a bad note, playback on
   the right frames in the simulator, a render. **Demo** `probes/music-demo.ts` (Ode to Joy, four tracks, 33 clips,
-  1.1 MB, about 285 conditions and actions a frame): lifted game clean; awaiting play.
+  1.1 MB, about 285 conditions and actions a frame): lifted game clean. **Played 2026-10-19** (recording 13.07.38.31):
+  note by note against the same song mixed at build, onset by onset (34 of them): 7.8 ms apart on average (sd), 16 at
+  most, no drift over the song; equally loud second by second; a hit every 589.5 ms for the 588 written.
 
 ### Closures and the missing methods (built 2026-10-17)
 
