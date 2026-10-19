@@ -1845,6 +1845,87 @@ boolean.
   play in Remastered. Seen there: the centre line ("Raynor: …") is read back from the game's memory more than once
   by the lifted game; whether Remastered shows it again is the sheet's question 10.
 
+### A second sweep, and what is left (2026-10-18)
+
+After B9 and the generators, about seventy-five more lines were put through the compiler and the simulator, again over
+values only the game has. What B9 was for holds: a linked list built in a loop, a tree summed by recursion, an abstract
+class and an interface over several classes in one array, `instanceof`, an array of instances inside an instance,
+`Map<number, Enemy>`, `?.` and `??` on a reference, two-dimensional arrays, `sort` of instances with a comparison, and
+`trigscript/math`'s `Vec` given back whole (`v = v.add(w).scale(2)`) all compile and run. Data is no longer what
+stops a showpiece; what a frame costs is, and a handful of small refusals.
+
+**One fault:** a function at the top of a file that makes an instance whose field starts as `random(5)`
+(`class E { hp = random(5) }`, `function mk() { return new E() }`) was worked out when the script was built, and refused
+there ("random() is a coin toss … use them inside program()"): asking whether a function uses the game did not look
+into a constructor or the fields' first values.
+
+**The small refusals** (the next slice):
+- labelled `break` and `continue` (`outer: for …`, `continue outer`);
+- rest parameters (`function sum(...xs: number[])`);
+- a function of the script's giving back an array (one giving back a record works);
+- a function in a `namespace`, and a function with overloads, taken for helpers of the build and refused when called with
+  the program's values;
+- `find()` on an array of instances (a reference that may be none, which B9 has, rather than "take findIndex");
+- `Map` keyed by a text or a union of literal texts (`Map<"a" | "b", number>`): the keys are known when the script is
+  built, so each is a number;
+- a record of functions keyed by states, `Record<State, () => State>`, called as `table[state]()`;
+- `sort()` of texts; `${flag}` and `String(flag)`; `enum` inside `program()`;
+- `push` of a record that is one of a union's kinds chosen by `?:`.
+
+**Not worth it:** `JSON.stringify`, `Object.keys` and `for…in` over a record of the program, `WeakMap`, tagged
+templates. None of the showpieces wants them, and each needs a runtime of its own.
+
+**As built (2026-10-18).** All of the list, and the fault; no IR change (still 24). `tests/small-gaps.test.ts` (simulator,
+22) and `probes/game-small-gaps.ts` (4 tests, passing in the lifted game and the simulator, about 10 thousand a frame,
+32 thousand at the most).
+- *The fault:* asking whether a function uses the game now looks at what `new` runs (the fields' first values, the
+  constructor, the base class's) and follows a method or an accessor of the script's classes.
+- *Labelled jumps* are lowered without anything new reaching a backend. A jump to the loop it is directly in is a plain
+  one. From deeper, it sets a flag of the label's (`(break outer)`, `(continue outer)`, made only when such a jump is
+  there) and breaks out of where it is. After each loop or switch it leaves, the flag is tested: in the labelled loop's
+  own body, the loop is broken or continued and the flag cleared; further in, it is broken out of again. Each jump goes
+  through the `finally` blocks of its level, and through a generator's loop as a `break` there does. A label on a block
+  is refused.
+- *Rest parameters* were built in the inliner already; the plan of a script function refused them.
+- *A function giving back an array*: the call's own array, bound to the caller's name (`instanceCall` with `list`); a
+  `return` of one it made, one written out, or one it was handed, every return the same one. Made again each time the
+  call runs, as any declaration in it is. `for (const x of evens(n))` and `evens(n).length` take it too.
+- *Namespaces*: a function, a class or a const arrow in a `namespace` at the top of a file (as deep as they go) is the
+  file's (`atTop`). An exported const of one is registered as `Geo.mk`, since it has no name of its own once compiled.
+  *Overloads*: the declaration with the body is the one a call names.
+- *`find()` of instances or records* gives the row at the place found and a flag beside it, as `chatted()` does (`if (t)`,
+  `t ? t.hp : 0`, `t?.hp ?? -1`, `t === undefined`). That fixed a fault on the way: `x === undefined` of such a record, or
+  of what `chatted()` found, was answered "no" when the script was built.
+- *Texts of a union as keys*: a `Map` or a `Set` keyed by `"red" | "blue"` has a cell for each text, in the union's order;
+  a text of the program becomes its place by comparisons, as a `switch` over texts does. A `for…of` over one is unrolled,
+  its key a text known when built. Any text as a key is still refused.
+- *A record at a text of a union* (`cost[state]`, `NAMES[team]`, `step[state]()`): each field under its test, as a value
+  (number, function, text, boolean); a write (`=`, compound, `++`) walks the statement once for each field.
+- *`sort()` of texts*: by their characters (the game compares bytes, which is JavaScript's order for ASCII), or by a
+  function; stable; a row moves with the block it owns. `reverse()` too.
+- *`${flag}`, `String(flag)`*: `"true"` or `"false"`.
+- *`enum` inside a program*: made where the build-time parts run (a plan item of its own), so its members are values.
+- *`push(c ? { … } : { … })`*: an `if` with a push on each side.
+
+**Then, in order:**
+1. **What a frame costs, as the language's** (the fourth of the first sweep's list). Snake's first frame is 434 thousand
+   of the 500 thousand.
+   - A loop spread over frames by a budget, `for await (const e of over(enemies, { cost: 50_000 }))`: A4 knows each
+     line's cost, so the compiler knows where to stop and carry on the next frame; a program's start spread the same
+     way, which is Snake's first frame.
+   - Fields packed into one cell and written with a mask (`hp: bits<7>`): a field of a reference costs about 70 to read,
+     and a bullet hell reads many.
+   - A view printed only when what it reads changed: `computed()` and `effect()` over `Signal`, one rule for what the ui
+     kit and the fog framebuffer each do their own way now.
+   - A size per class (`@pool(512) class Bullet`): instances and closures share one pool of 1 024 rows (`CLOSURE_CAP`);
+     a size of their own gives each kind its room and its sweep a known cost.
+2. **`g.next()` by hand**: a coroutine that another calls and comes back from (the lowering set aside above). Behaviour
+   trees, dialogue trees and Part C's computer players are written in them.
+3. **`using`** for what a program holds for a while (a location, a reveal, the camera): try/`finally`, which B4 already
+   copies per exit, and `Disposable` in the editor's library (esnext).
+4. **Texts made in the game**: `String.fromCharCode`, `toFixed`, a number with thousands. Save codes (Part C) need the
+   first.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

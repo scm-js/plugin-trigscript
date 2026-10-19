@@ -141,7 +141,7 @@ interface Ctx {
    * Inside an inlined function: what it returns. `instance`: it returns an instance — which one is settled as its body is walked, and kept here.
    * `finallies`: the `finally` blocks a `return` here leaves, innermost last (B4), each run before it; `inFinally`: this is one, which nothing leaves.
    */
-  fn?: { kind: Kind | "text" | "void"; instance?: { name: string; made?: Binding }; finallies?: TS.Block[]; inFinally?: boolean };
+  fn?: { kind: Kind | "text" | "void"; instance?: { name: string; made?: Binding; list?: boolean }; finallies?: TS.Block[]; inFinally?: boolean };
   /** Inside the body of a for…of over a generator, walked where a `yield` is: `break` sets this first, and the generator then leaves. */
   breakFlag?: VarDecl;
   /** The `finally` blocks a `break` or a `continue` here leaves, innermost last (B4): a loop starts with none, a switch keeps its loop's for `continue`. */
@@ -691,9 +691,14 @@ export class Structured {
   }
 
   /** What an identifier, or a field of a record (`p.lives`, `p["lives"]`), is bound to. */
+  /** Expressions bound for the statement being walked to something else than they name: `cost[s] = 3` walked once for each field `s` may be (`fieldWrite`). */
+  private pinned = new Map<TS.Node, Binding>();
+
   private bindingOf(expr: TS.Expression): Binding | undefined {
     const { ts } = this;
     const e = this.unwrap(expr);
+    const pin = this.pinned.get(e);
+    if (pin) return pin;
     if (ts.isIdentifier(e)) {
       // A name taken out of a pattern (`for (const [k, v] of lost)`) is bound by its own element, not by the declaration it is part of.
       const raw = declarationOf(ts, this.c.checker, e);
@@ -877,7 +882,8 @@ export class Structured {
       const nothing = (x: TS.Expression) => { const u = this.unwrap(x); return u.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(u) && u.text === "undefined" && !this.bindingOf(u)); };
       const other = nothing(e.left) ? e.right : nothing(e.right) ? e.left : null;
       const b = other ? this.bindingOf(other) : undefined;
-      if (b && PRESENT_KINDS.has(b.kind)) {
+      // (Not a record that may not be there — what find() or chatted() found — nor one kept by reference.)
+      if (b && PRESENT_KINDS.has(b.kind) && !(b.kind === "record" && (b.truth || b.ref))) {
         const equal = e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken || e.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
         return { value: !equal };
       }
@@ -1025,7 +1031,7 @@ export class Structured {
     const made = this.madeHere;
     this.ctxNow = ctx;
     this.madeHere = new Map();
-    try { this.statementIn(s, ctx); } finally { this.ctxNow = was; this.madeHere = made; }
+    try { this.statementIn(s, ctx); this.afterLabelledJumps(s, ctx); } finally { this.ctxNow = was; this.madeHere = made; }
   }
 
   /** What a call that gives an instance or a record gave, in the statement being walked: `v.rotate(a).x` and `.y` of the same call make it once. */
@@ -1042,7 +1048,8 @@ export class Structured {
 
   private statementIn(s: TS.Statement, ctx: Ctx) {
     const { ts } = this;
-    if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s) || ts.isFunctionDeclaration(s)) return;
+    // (An enum's members are values the script has: the plan made it where the build-time parts run.)
+    if (ts.isEmptyStatement(s) || ts.isInterfaceDeclaration(s) || ts.isTypeAliasDeclaration(s) || ts.isFunctionDeclaration(s) || ts.isEnumDeclaration(s)) return;
     if (ts.isClassDeclaration(s)) { this.declareClass(s); return; }
     if (ts.isVariableStatement(s)) { this.declare(s.declarationList); return; }
     if (ts.isBlock(s)) { const body = this.collect(() => this.block(s.statements, ctx)); this.emit({ kind: "block", body, at: this.at(s) }, s); return; }
@@ -1052,16 +1059,23 @@ export class Structured {
     if (ts.isDoStatement(s)) { this.doStatement(s, ctx); return; }
     if (ts.isForStatement(s)) { this.forStatement(s, ctx); return; }
     if (ts.isBreakStatement(s) || ts.isContinueStatement(s)) {
-      if (s.label) { this.c.error(s, "Labelled break / continue is not supported."); return; }
-      if (ctx.inFinally && (ts.isBreakStatement(s) ? !ctx.canBreak : !ctx.canContinue)) { this.c.error(s, `A finally block runs on every way out of its try, an error's way too, so it does not ${ts.isBreakStatement(s) ? "break" : "continue"} out of it: set a variable, and test it after the try.`); return; }
-      if (ts.isBreakStatement(s) ? !ctx.canBreak : !ctx.canContinue) { this.c.error(s, `${ts.isBreakStatement(s) ? "break" : "continue"} outside a loop.`); return; }
-      // Out through a try's finally: it runs first, the innermost first.
-      const through = (ts.isBreakStatement(s) ? ctx.exits?.break : ctx.exits?.continue) ?? [];
-      for (let i = through.length - 1; i >= 0; i--) this.finallyBody(through[i], ctx.fn);
-      if (ts.isBreakStatement(s) && ctx.breakFlag) this.emit({ kind: "assignBool", target: ctx.breakFlag.id, value: TRUE, at: this.at(s), label: this.label(s) }, s);
-      this.emit({ kind: ts.isBreakStatement(s) ? "break" : "continue", at: this.at(s), label: this.label(s) }, s);
+      const kind = ts.isBreakStatement(s) ? "break" : "continue";
+      if (s.label) {
+        let frame: (typeof this.labels)[number] | undefined;
+        for (const f of this.labels) if (f.name === s.label.text) frame = f;
+        if (!frame) { this.c.error(s, `${kind} ${s.label.text} names a loop this one is not inside.`); return; }
+        // A jump to the loop it is directly in is a plain one; from deeper, a flag of the label's, and out a level at a time.
+        if (!this.labelDirect(s)) {
+          const flag = kind === "break" ? frame.brk! : frame.cont!;
+          this.emit({ kind: "assignBool", target: flag.id, value: TRUE, at: this.at(s), label: this.label(s) }, s);
+          this.jump("break", ctx, s);
+          return;
+        }
+      }
+      this.jump(kind, ctx, s);
       return;
     }
+    if (ts.isLabeledStatement(s)) { this.labelled(s, ctx); return; }
     if (ts.isReturnStatement(s)) { this.returnStatement(s, ctx); return; }
     if (ts.isSwitchStatement(s)) { this.switchStatement(s, ctx); return; }
     if (ts.isForOfStatement(s)) { this.forOfStatement(s, ctx); return; }
@@ -1071,6 +1085,97 @@ export class Structured {
     this.c.error(s, "This statement is not supported in a program.");
   }
 
+  /** A `break` or a `continue` of the loop (or, for `break`, the switch) it is in: out through the finally blocks it leaves, the innermost first. */
+  private jump(kind: "break" | "continue", ctx: Ctx, s: TS.Node) {
+    if (ctx.inFinally && (kind === "break" ? !ctx.canBreak : !ctx.canContinue)) { this.c.error(s, `A finally block runs on every way out of its try, an error's way too, so it does not ${kind} out of it: set a variable, and test it after the try.`); return; }
+    if (kind === "break" ? !ctx.canBreak : !ctx.canContinue) { this.c.error(s, `${kind} outside a loop.`); return; }
+    const through = (kind === "break" ? ctx.exits?.break : ctx.exits?.continue) ?? [];
+    for (let i = through.length - 1; i >= 0; i--) this.finallyBody(through[i], ctx.fn);
+    if (kind === "break" && ctx.breakFlag) this.emit({ kind: "assignBool", target: ctx.breakFlag.id, value: TRUE, at: this.at(s), label: this.label(s) }, s);
+    this.emit({ kind, at: this.at(s), label: this.label(s) }, s);
+  }
+
+  /**
+   * The labels around the statement being walked (`outer: for …`). A `break outer` or a `continue outer` from a loop or a
+   * switch inside the labelled loop sets the label's flag and breaks out of where it is; after each loop or switch it
+   * leaves, the flag is tested and broken out of again, until the labelled loop's own body, where it breaks or continues
+   * that loop and the flag is cleared. `brk` and `cont` are made only when such a jump is there.
+   */
+  private labels: { name: string; loop: TS.IterationStatement; jumps: (TS.BreakStatement | TS.ContinueStatement)[]; brk?: VarDecl; cont?: VarDecl }[] = [];
+
+  /** The loop or switch a statement is in (`loops` false: the loop), within its function; a label is passed through. */
+  private enclosing(n: TS.Node, loops = false): TS.Node | undefined {
+    const { ts } = this;
+    for (let p = n.parent; p; p = p.parent) {
+      if (ts.isIterationStatement(p, false) || (!loops && ts.isSwitchStatement(p))) return p;
+      if (ts.isFunctionLike(p) || ts.isClassLike(p) || ts.isSourceFile(p)) return undefined;
+    }
+    return undefined;
+  }
+
+  /** The loop a labelled statement labels: the statement under its labels (`a: b: for …`). */
+  private labelTarget(s: TS.LabeledStatement): TS.Statement {
+    let inner: TS.Statement = s.statement;
+    while (this.ts.isLabeledStatement(inner)) inner = inner.statement;
+    return inner;
+  }
+
+  /** Whether a labelled jump is to the loop it is directly in: `break` with no loop or switch between, `continue` with no loop. */
+  private labelDirect(s: TS.BreakStatement | TS.ContinueStatement): boolean {
+    let named: TS.Node | undefined = s.parent;
+    while (named && !(this.ts.isLabeledStatement(named) && named.label.text === s.label!.text)) named = named.parent;
+    if (!named) return false;
+    return this.enclosing(s, this.ts.isContinueStatement(s)) === this.labelTarget(named as TS.LabeledStatement);
+  }
+
+  private labelled(s: TS.LabeledStatement, ctx: Ctx) {
+    const { ts } = this;
+    const loop = this.labelTarget(s);
+    if (!ts.isIterationStatement(loop, false)) { this.c.error(s.label, "A label names a loop: outer: for (…) { … break outer; }. A block of its own is a function that returns."); return; }
+    const jumps: (TS.BreakStatement | TS.ContinueStatement)[] = [];
+    const scan = (n: TS.Node): void => {
+      if (ts.isFunctionLike(n) || ts.isClassLike(n)) return;
+      if ((ts.isBreakStatement(n) || ts.isContinueStatement(n)) && n.label?.text === s.label.text && !this.labelDirect(n)) jumps.push(n);
+      // A label of the same name inside names its own loop.
+      if (ts.isLabeledStatement(n) && n !== s && n.label.text === s.label.text) return;
+      ts.forEachChild(n, scan);
+    };
+    scan(s.statement);
+    const at = this.at(s), label = this.label(s);
+    const frame: (typeof this.labels)[number] = { name: s.label.text, loop, jumps };
+    if (jumps.some((j) => ts.isBreakStatement(j))) { frame.brk = this.newVar(`(break ${frame.name})`, "boolean", at); this.emit({ kind: "declare", decl: frame.brk, init: FALSE, at, label }, s); }
+    if (jumps.some((j) => ts.isContinueStatement(j))) { frame.cont = this.newVar(`(continue ${frame.name})`, "boolean", at); this.emit({ kind: "declare", decl: frame.cont, init: FALSE, at, label }, s); }
+    this.labels.push(frame);
+    try { this.statement(loop, ctx); } finally { this.labels.pop(); }
+  }
+
+  /** After a loop or a switch inside labelled loops: a labelled jump out of it goes on out, or, in the labelled loop's own body, does what it says. */
+  private afterLabelledJumps(s: TS.Statement, ctx: Ctx) {
+    const { ts } = this;
+    if (!this.labels.length || !(ts.isIterationStatement(s, false) || ts.isSwitchStatement(s))) return;
+    const inside = (j: TS.Node) => { for (let p: TS.Node | undefined = j.parent; p; p = p.parent) if (p === s) return true; return false; };
+    const near = this.enclosing(s);
+    const at = this.at(s), label = this.label(s);
+    for (const f of this.labels) {
+      if (f.loop === s) continue;
+      const out = f.jumps.filter(inside);
+      if (!out.length) continue;
+      const brk = out.some((j) => ts.isBreakStatement(j)) ? f.brk : undefined;
+      const cont = out.some((j) => ts.isContinueStatement(j)) ? f.cont : undefined;
+      if (near === f.loop) {
+        for (const [flag, kind] of [[brk, "break"], [cont, "continue"]] as const) {
+          if (!flag) continue;
+          const then = this.collect(() => { this.emit({ kind: "assignBool", target: flag.id, value: FALSE, at, label }, s); this.jump(kind, ctx, s); });
+          this.emit({ kind: "if", cond: { kind: "var", id: flag.id }, then, at, label }, s);
+        }
+      } else {
+        const flags = [brk, cont].filter((x): x is VarDecl => !!x).map((x): BoolExpr => ({ kind: "var", id: x.id }));
+        const cond: BoolExpr = flags.length === 1 ? flags[0] : { kind: "or", items: flags };
+        this.emit({ kind: "if", cond, then: this.collect(() => this.jump("break", ctx, s)), at, label }, s);
+      }
+    }
+  }
+
   private returnStatement(s: TS.ReturnStatement, ctx: Ctx) {
     if (!ctx.fn) { this.c.error(s, "return outside a function."); return; }
     const { fn } = ctx;
@@ -1078,6 +1183,17 @@ export class Structured {
     if (fn.finallies?.length) { this.returnThrough(s, ctx); return; }
     if (fn.instance || (fn.kind === "void" && s.expression && this.classOfType(this.c.checker.getTypeAtLocation(s.expression)))) {
       // `return this`, `return new Wave(n)`, `return other`: which instance the call gives, settled here. A call that does nothing with it only leaves.
+      if (fn.instance?.list && s.expression) {
+        // `return xs`: the array the call gives, one of the function's own or one it was handed; every return the same one.
+        const given = this.unwrap(s.expression);
+        const { ts } = this;
+        const made = ts.isArrayLiteralExpression(given) ? this.returnedArray(given, fn.instance.name) : ts.isCallExpression(given) ? this.listOf(given) ?? this.instanceCall(given, fn.instance.name) : this.bindingOf(given);
+        if (!made || !Structured.LIST_KINDS.has(made.kind)) { if (made !== null) this.c.error(s.expression, "A function gives an array it made (const xs: number[] = []; …; return xs), one written out, or one it was handed."); return; }
+        if (fn.instance.made && fn.instance.made !== made) { this.c.error(s, "Every return of this function has to give the same array: which one a call gives is settled when the script is built. Fill one array and return it."); return; }
+        fn.instance.made = made;
+        this.emit({ kind: "return", at: this.at(s), label: this.label(s) }, s);
+        return;
+      }
       if (fn.instance && s.expression) {
         const given = this.unwrap(s.expression);
         const made = this.madeInstance(given, fn.instance.name);
@@ -1748,6 +1864,11 @@ export class Structured {
           this.scope.bind(d, same);
           continue;
         }
+      }
+      // `const t = enemies.find((e) => e.hp > 0)`: the row found, and whether one was, as what chatted() found is.
+      if (ts.isCallExpression(init) && ts.isPropertyAccessExpression(init.expression) && (init.expression.name.text === "find" || init.expression.name.text === "findLast")) {
+        const over = this.overOf(init.expression.expression);
+        if (over?.kind === "records") { const row = this.foundRow(init, over, d.name.text, d); if (row) this.scope.bind(d, row); continue; }
       }
       if (ts.isCallExpression(init) && (this.isLibraryCall(init, "mouse") || this.isLibraryCall(init, "chatted"))) {
         const record = this.declareInput(d.name.text, init, d);
@@ -2635,18 +2756,29 @@ export class Structured {
     const label = this.label(e);
     if (method === "push") {
       if (e.arguments.length === 0) { this.c.error(e, "push() takes the record to add."); return; }
-      for (const arg of e.arguments) {
+      // `q.push(hit ? { kind: "hit", n } : { kind: "heal", h })`: the one the condition picks, each written out.
+      const pushOne = (arg: TS.Expression): boolean => {
         const literal = this.unwrap(arg);
-        if (!ts.isObjectLiteralExpression(literal) && !ts.isNewExpression(literal) && of.cls && this.needRef(this.instanceClasses(this.instanceType(of.cls)) ?? [of.cls])) { this.c.error(arg, `${of.name} is given an instance kept elsewhere: its class is kept by reference.`); return; }
-        if (!ts.isObjectLiteralExpression(literal) && !ts.isNewExpression(literal)) { this.c.error(arg, of.cls ? `${of.name}.push(new ${this.className(of.cls)}(…)) takes an instance made there: a row is the instance, so one kept in a variable would be copied, and changing it afterwards would not change the row.` : `${of.name}.push({ … }) takes a record written out.`); return; }
+        if (ts.isConditionalExpression(literal)) {
+          const cond = this.boolValue(literal.condition);
+          let ok = true;
+          const then = this.collect(() => { ok = pushOne(literal.whenTrue) && ok; });
+          const otherwise = this.collect(() => { ok = pushOne(literal.whenFalse) && ok; });
+          this.emit({ kind: "if", cond, then, else: otherwise, at, label }, e);
+          return ok;
+        }
+        if (!ts.isObjectLiteralExpression(literal) && !ts.isNewExpression(literal) && of.cls && this.needRef(this.instanceClasses(this.instanceType(of.cls)) ?? [of.cls])) { this.c.error(arg, `${of.name} is given an instance kept elsewhere: its class is kept by reference.`); return false; }
+        if (!ts.isObjectLiteralExpression(literal) && !ts.isNewExpression(literal)) { this.c.error(arg, of.cls ? `${of.name}.push(new ${this.className(of.cls)}(…)) takes an instance made there: a row is the instance, so one kept in a variable would be copied, and changing it afterwards would not change the row.` : `${of.name}.push({ … }) takes a record written out, or c ? { … } : { … }.`); return false; }
         const shape = this.rowShape(of);
         const row = ts.isNewExpression(literal) ? this.newRow(of, literal, shape, of) : this.rowValues(of.name, literal, shape);
-        if (!row) return;
+        if (!row) return false;
         const place = row.fill.length ? this.newVar(`(row of ${of.name})`, "number", at, { temp: true }) : undefined;
         if (place) this.emit({ kind: "declare", decl: place, init: { kind: "length", array: [...of.fields.values()][0].id, at }, at, label }, e);
         for (const [key, a] of of.fields) { a.dynamic = true; this.emit({ kind: "push", array: a.id, value: row.cells.get(key)!, at, label }, e); }
-        for (const fill of row.fill) if (!fill(of, varRef(place!))) return;
-      }
+        for (const fill of row.fill) if (!fill(of, varRef(place!))) return false;
+        return true;
+      };
+      for (const arg of e.arguments) if (!pushOne(arg)) return;
       return;
     }
     if (method === "shift" || method === "unshift" || method === "splice") {
@@ -2725,13 +2857,15 @@ export class Structured {
     const args = as === "record" ? [] : checker.getTypeArguments(type as TS.TypeReference);
     const keyType = as === "record" ? checker.getIndexInfosOfType(type).find((i) => this.brandOfType(i.keyType))?.keyType : args[0];
     const valueType = as === "record" ? checker.getIndexInfosOfType(type).find((i) => this.brandOfType(i.keyType))?.type : as === "map" ? args[1] : undefined;
-    const key = keyType ? this.brandOfType(keyType) : undefined;
-    const domain = key ? KEY_DOMAINS[key] : undefined;
+    // `Map<"red" | "blue", number>`: texts of a union, a cell each.
+    const literals = keyType ? this.literalTexts(keyType) : undefined;
+    const key = literals ? "text" : keyType ? this.brandOfType(keyType) : undefined;
+    const domain = literals ? { size: literals.length, what: literals.map((l) => JSON.stringify(l)).join(" | ") } : key ? KEY_DOMAINS[key] : undefined;
     // `new Set<Enemy>()` (B9): instances as keys are references, numbers.
     const instanceKeys = keyType ? this.instanceClasses(keyType) : null;
     if ((!key || !domain) && instanceKeys && this.needRef(instanceKeys)) { this.c.error(at, `${name}'s keys are instances: they are kept by reference.`); return null; }
     if (!key || !domain) {
-      this.c.error(at, `${name}'s keys have to be numbers, or ids of the game — UnitType, Player, Location, Switch, Weapon, Upgrade or Tech: ${as === "set" ? "new Set<UnitType>()" : as === "map" ? "new Map<UnitType, number>()" : "Record<UnitType, number>"}. For numbers of your own, an array does it.`);
+      this.c.error(at, `${name}'s keys have to be numbers, ids of the game — UnitType, Player, Location, Switch, Weapon, Upgrade or Tech — or texts of a union known when the script is built: ${as === "set" ? "new Set<UnitType>()" : as === "map" ? "new Map<UnitType, number>(), new Map<\"red\" | \"blue\", number>()" : "Record<UnitType, number>"}. For numbers of your own, an array does it.`);
       return null;
     }
     const kind = valueType ? this.kindOf(valueType) : null;
@@ -2743,7 +2877,7 @@ export class Structured {
     const values = as === "set" ? undefined : this.newArray(name, kind as "number" | "boolean", domain.size, where, kind === "number" ? this.widthOf(valueType!) : {});
     const present = as === "record" ? undefined : this.newArray(`${name} (has)`, "boolean", domain.size, where);
     const size = as === "record" ? undefined : this.newVar(`${name}.size`, "number", where);
-    const keyed: Keyed = { kind: "keyed", as, name, domain: domain.size, key, ...(values ? { values } : {}), ...(present ? { present } : {}), ...(size ? { size } : {}) };
+    const keyed: Keyed = { kind: "keyed", as, name, domain: domain.size, key, ...(values ? { values } : {}), ...(present ? { present } : {}), ...(size ? { size } : {}), ...(literals ? { literals } : {}) };
     if (values) this.emit({ kind: "declareArray", array: values.id, fill: values.kind === "number" ? num(0) : FALSE, at: atIr, label }, at);
     if (present) this.emit({ kind: "declareArray", array: present.id, fill: FALSE, at: atIr, label }, at);
     if (size) this.emit({ kind: "declare", decl: size, init: num(0), at: atIr, label }, at);
@@ -2827,6 +2961,11 @@ export class Structured {
 
   /** A key known when the script is built, as a cell's number; null, with a diagnostic, when it is not one of the kind's ids. */
   private keyConstant(b: Keyed, value: unknown, at: TS.Node): number | null {
+    if (b.literals) {
+      const i = typeof value === "string" ? b.literals.indexOf(value) : -1;
+      if (i < 0) { this.c.error(at, `${b.name}'s keys are ${b.literals.map((l) => JSON.stringify(l)).join(", ")}; got ${describe(value)}.`); return null; }
+      return i;
+    }
     const what = KEY_DOMAINS[b.key].what;
     if (typeof value !== "number" || !Number.isInteger(value)) { this.c.error(at, `${b.name}'s keys are ${what}; got ${describe(value)}.`); return null; }
     if (b.key === "player" && value === PlayerGroup.CurrentPlayer) { this.c.error(at, `CurrentPlayer is not a key of ${b.name}: it would be one cell for everybody. In a program of every player a plain variable is already one per player.`); return null; }
@@ -2838,7 +2977,85 @@ export class Structured {
   private keyIndex(b: Keyed, e: TS.Expression): NumExpr | null {
     const h = this.evaluate(e);
     if (h && !isGameValue(h.value)) { const k = this.keyConstant(b, h.value, e); return k === null ? null : num(k); }
+    if (b.literals) return this.literalPlace(b.literals, e);
     return this.num(e);
+  }
+
+  /** The texts of a union of string literals (`"red" | "blue"`, or one alone), in the order the type has them; undefined for any other type. */
+  private literalTexts(type: TS.Type): string[] | undefined {
+    const parts = type.isUnion() ? type.types : [type];
+    if (!parts.length || !parts.every((t) => t.isStringLiteral())) return undefined;
+    return parts.map((t) => (t as TS.StringLiteralType).value);
+  }
+
+  /**
+   * `costs[state]`, `table[state]()`, `NAMES[team]`: a record (of the program's, or one the script has) read at a text of
+   * the program whose type is a union of texts, each of them a field. Each field, and the test that picks it (the last
+   * one the field taken when none of the others is). Undefined when the expression is not of that form.
+   */
+  private fieldAtText(e: TS.Expression): { field: Binding; when?: BoolExpr }[] | null | undefined {
+    const { ts } = this;
+    if (!ts.isElementAccessExpression(e) || this.evaluate(e.argumentExpression)) return undefined;
+    const literals = this.literalTexts(this.c.checker.getTypeAtLocation(e.argumentExpression));
+    if (!literals) return undefined;
+    const b = this.bindingOf(e.expression);
+    const known = b ? undefined : this.evaluate(e.expression);
+    const obj = known && known.value && typeof known.value === "object" && !Array.isArray(known.value) && !isGameValue(known.value) ? known.value as Record<string, unknown> : undefined;
+    if (b?.kind !== "record" && !obj) return undefined;
+    const fields: Binding[] = [];
+    for (const l of literals) {
+      const f = b?.kind === "record" ? b.fields.get(l) : obj && l in obj ? { kind: "value", value: obj[l] } as Binding : undefined;
+      if (!f) { this.c.error(e, `${e.expression.getText(this.body.sf)} has no field ${JSON.stringify(l)}, which ${e.argumentExpression.getText(this.body.sf)} may be.`); return null; }
+      fields.push(f);
+    }
+    const given = this.text(e.argumentExpression);
+    if (!given) return null;
+    const of = this.textTemp(given, e);
+    const at = this.at(e), label = this.label(e);
+    return fields.map((field, i) => (i === fields.length - 1 ? { field } : { field, when: { kind: "textCompare", op: "==", left: of, right: { kind: "text", text: literals[i] }, at, label } }));
+  }
+
+  /**
+   * `cost[state] = 3`, `cost[state]++`, `open[door] = true`: the statement walked once for each field the text may be,
+   * the left side that field there, each under its test. False when the statement is not of that form.
+   */
+  private fieldWrite(e: TS.Expression, again: () => void): boolean {
+    const { ts } = this;
+    const assigns = ts.isBinaryExpression(e) && e.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && e.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+    const steps = (ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken);
+    const target = assigns ? this.unwrap((e as TS.BinaryExpression).left) : steps ? this.unwrap((e as TS.PostfixUnaryExpression).operand) : undefined;
+    if (!target || !ts.isElementAccessExpression(target) || this.pinned.has(target)) return false;
+    const picked = this.fieldAtText(target);
+    if (picked === undefined) return false;
+    if (picked === null) return true;
+    const at = this.at(e), label = this.label(e);
+    const walk = (field: Binding) => this.collect(() => { this.pinned.set(target, field); try { again(); } finally { this.pinned.delete(target); } });
+    let chain = walk(picked[picked.length - 1].field);
+    for (let i = picked.length - 2; i >= 0; i--) chain = [{ kind: "if", cond: picked[i].when!, then: walk(picked[i].field), else: chain, at, label } as Stmt];
+    for (const st of chain) this.emit(st, e);
+    return true;
+  }
+
+  /** What fieldAtText found, as one value: the fields' values chosen by their tests. */
+  private pickField<T>(picked: { field: Binding; when?: BoolExpr }[], value: (b: Binding) => T | null, choose: (cond: BoolExpr, a: T, b: T) => T): T | null {
+    let acc = value(picked[picked.length - 1].field);
+    for (let i = picked.length - 2; i >= 0 && acc !== null; i--) {
+      const v = value(picked[i].field);
+      if (v === null) return null;
+      acc = choose(picked[i].when!, v, acc);
+    }
+    return acc;
+  }
+
+  /** The place of a text of the program among a union's texts: the first it equals, worked out as a number (as a switch over texts is). */
+  private literalPlace(literals: readonly string[], e: TS.Expression): NumExpr | null {
+    const given = this.text(e);
+    if (!given) return null;
+    const of = this.textTemp(given, e);
+    const at = this.at(e), label = this.label(e);
+    let which: NumExpr = num(0);
+    for (let i = literals.length - 1; i >= 1; i--) which = { kind: "ternary", cond: { kind: "textCompare", op: "==", left: of, right: { kind: "text", text: literals[i] }, at, label }, whenTrue: num(i), whenFalse: which, at, label };
+    return which;
   }
 
   /**
@@ -3666,6 +3883,10 @@ export class Structured {
       return this.madeList(e, undefined, e) ?? { kind: "array", a: this.newArray("(not made)", "number", 1, this.sourceOf(e)) };
     }
     if (ts.isCallExpression(e) && this.copiesList(e)) return this.copiedList(e, undefined, e) ?? { kind: "array", a: this.newArray("(not made)", "number", 1, this.sourceOf(e)) };
+    if (ts.isCallExpression(e) && !this.body.plan.index.has(e)) {
+      const made = this.madeByCall(e);
+      if (made && Structured.LIST_KINDS.has(made.kind)) return made;
+    }
     return undefined;
   }
 
@@ -4433,11 +4654,11 @@ export class Structured {
    * it moved up one. It keeps the order of equals, as JavaScript's sort does, and is quick on a list nearly in order;
    * a list in no order costs its length squared, which is what the hint is about.
    */
-  private sortList(e: TS.CallExpression, list: List | Grid | Lists): boolean {
+  private sortList(e: TS.CallExpression, list: List | Grid | Lists, outOfOrder?: (before: Binding, held: Binding) => BoolExpr | null): boolean {
     const at = this.at(e);
     const label = this.label(e);
     const name = this.overName(list);
-    if (!e.arguments[0]) { this.c.error(e, `sort() wants its function — ${name}.sort((a, b) => a - b): without one JavaScript sorts numbers as text, 10 before 9.`); return false; }
+    if (!e.arguments[0] && !outOfOrder) { this.c.error(e, `sort() wants its function — ${name}.sort((a, b) => a - b): without one JavaScript sorts numbers as text, 10 before 9.`); return false; }
     const ops = this.rowOps(list, e);
     if (!ops) return false;
     const i = this.newVar(`(index of ${name})`, "number", at, { temp: true });
@@ -4449,10 +4670,17 @@ export class Structured {
       this.emit({ kind: "declare", decl: j, init: { kind: "binary", op: "-", left: varRef(i), right: num(1), at, label }, at, label }, e);
       const inner = this.collect(() => {
         const before = ops.row(varRef(j));
-        const call = this.callback(e.arguments[0], "sort", [before, held.binding], "any", e);
-        if (!call) { ok = false; return; }
-        if (call.result?.kind !== "number") { this.c.error(e.arguments[0], "sort()'s function gives a number — below 0 when a goes first, above when b does: (a, b) => a - b."); ok = false; return; }
-        const after: BoolExpr = { kind: "compare", op: ">", left: this.mark<NumExpr>({ kind: "call", call }, e), right: num(0), at, label };
+        let after: BoolExpr;
+        if (outOfOrder) {
+          const cond = outOfOrder(before, held.binding);
+          if (!cond) { ok = false; return; }
+          after = cond;
+        } else {
+          const call = this.callback(e.arguments[0], "sort", [before, held.binding], "any", e);
+          if (!call) { ok = false; return; }
+          if (call.result?.kind !== "number") { this.c.error(e.arguments[0], "sort()'s function gives a number — below 0 when a goes first, above when b does: (a, b) => a - b."); ok = false; return; }
+          after = { kind: "compare", op: ">", left: this.mark<NumExpr>({ kind: "call", call }, e), right: num(0), at, label };
+        }
         this.emit({ kind: "if", cond: { kind: "not", expr: after }, then: [{ kind: "break", at, label }], at, label }, e);
         this.out.push(...ops.move(next, varRef(j)), { kind: "assign", target: j.id, value: { kind: "binary", op: "-", left: varRef(j), right: num(1), at, label }, at, label });
       });
@@ -4859,6 +5087,16 @@ export class Structured {
    * The reference an optional chain asks about first (B9): `target` of `target?.hp`, `a.next` of `a.next?.value`. Undefined
    * when the expression is no optional chain through a reference.
    */
+  /** In `t?.hp`, `t?.pos.x`: whether there is a `t`, when it is a record that may not be there (what find() or chatted() found). */
+  private foundBase(expr: TS.Expression): VarDecl | undefined {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    const inner = ts.isCallExpression(e) ? this.unwrap(e.expression) : e;
+    if (!ts.isPropertyAccessExpression(inner) && !ts.isElementAccessExpression(inner)) return undefined;
+    if (inner.questionDotToken) { const b = this.bindingOf(inner.expression); if (b?.kind === "record" && b.truth) return b.truth; }
+    return this.foundBase(inner.expression);
+  }
+
   private optionalBase(expr: TS.Expression): TS.Expression | undefined {
     const { ts } = this;
     const e = this.unwrap(expr);
@@ -5368,6 +5606,20 @@ export class Structured {
       this.c.error(e, `Expected a text, got ${describe(v)}.`);
       return null;
     }
+    // `NAMES[team]`: the text of the field the team is.
+    const picked = this.fieldAtText(e);
+    if (picked === null) return null;
+    if (picked) {
+      const at = this.at(e), label = this.label(e);
+      const textOfField = (b: Binding): TextExpr | null => {
+        if (b.kind === "value" && typeof b.value === "string") return this.literalText(b.value, e);
+        if (b.kind === "var" && b.v.kind === "text") return { kind: "textVar", id: b.v.id };
+        if (b.kind === "textAt") return this.textAtCells(b, e);
+        this.c.error(e, `Expected a text in every field ${e.getText(this.body.sf)} may be.`);
+        return null;
+      };
+      return this.pickField<TextExpr>(picked, textOfField, (cond, whenTrue, whenFalse) => ({ kind: "textTernary", cond, whenTrue, whenFalse, at, label }));
+    }
     const got = ts.isCallExpression(e) ? this.methodCall(e) : this.getterCall(e);
     if (got !== undefined) {
       if (got && got.result?.kind !== "text") { const parts = this.textOf(e); return parts ? this.textFrom(parts, e) : null; }
@@ -5604,7 +5856,11 @@ export class Structured {
       if (name?.kind !== "var" || message?.kind !== "var") return null;
       return [{ kind: "value", text: this.errorText({ kind: "textVar", id: name.v.id }, { kind: "textVar", id: message.v.id }, this.at(e), this.label(e)) }];
     }
-    if (this.kindOf(this.c.checker.getTypeAtLocation(e)) === "boolean") { this.c.error(e, "A boolean has no text of its own: write flag ? \"yes\" : \"no\" with both texts known when the script is built, or show a number."); return null; }
+    // `${flag}`, String(flag): "true" or "false", as JavaScript writes one.
+    if (this.kindOf(this.c.checker.getTypeAtLocation(e)) === "boolean") {
+      const at = this.at(e), label = this.label(e);
+      return [{ kind: "value", text: { kind: "textTernary", cond: this.boolValue(e), whenTrue: { kind: "text", text: "true" }, whenFalse: { kind: "text", text: "false" }, at, label } }];
+    }
     const value = this.num(e);
     return value ? [{ kind: "number", expr: value }] : null;
   }
@@ -6242,6 +6498,7 @@ export class Structured {
     const { ts } = this;
     let bare = expr;
     while (ts.isParenthesizedExpression(bare)) bare = bare.expression;
+    if (this.fieldWrite(bare, () => this.expressionStatement(expr, awaited))) return;
     if (ts.isAwaitExpression(bare)) { this.task(bare.expression); return; }
     if (ts.isYieldExpression(bare)) { this.yieldStatement(bare); return; }
     // `void wave(3)`: started, and nothing waits for it — what JavaScript does with a promise nobody keeps.
@@ -6792,6 +7049,7 @@ export class Structured {
     if (table.as === "record" || !table.present) { this.c.error(s.expression, `${table.name} is a Record: it has a value for every key, so there is nothing to go through. A Map or a Set knows which keys it has.`); return true; }
     part ??= table.as === "map" ? "entries" : "keys";
     if ((part !== "keys" && table.as === "set") || (part !== "keys" && !table.values)) part = "keys";
+    if (table.literals) { this.literalKeyedLoop(s, decl, table as Keyed & { literals: readonly string[] }, part, ctx); return true; }
     const at = this.at(s);
     const label = this.label(s);
     const i = this.newVar(`(key of ${table.name})`, "number", at, { temp: true });
@@ -6821,6 +7079,35 @@ export class Structured {
     this.emit({ kind: "for", cond: { kind: "compare", op: "<", left: varRef(i), right: num(table.domain), at, label }, update: [{ kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: varRef(i), right: num(1), at, label }, at, label }],
       body: [{ kind: "if", cond: { kind: "element", array: table.present.id, index: varRef(i), at }, then: inner, at, label }], at, label }, s);
     return true;
+  }
+
+  /** `for (const [k, v] of m)` over a Map keyed by texts of a union: unrolled, a key each, its body for the keys present — the key a text known when built. */
+  private literalKeyedLoop(s: TS.ForOfStatement, decl: TS.VariableDeclaration, table: Keyed & { literals: readonly string[] }, part: "keys" | "values" | "entries", ctx: Ctx) {
+    const { ts } = this;
+    const at = this.at(s), label = this.label(s);
+    const names: { node: TS.Node; of: "key" | "value" }[] = [];
+    if (ts.isIdentifier(decl.name)) {
+      if (part === "entries") { this.c.error(decl.name, `A Map gives a key and a value a turn: for (const [key, value] of ${table.name}).`); return; }
+      names.push({ node: decl, of: part === "keys" ? "key" : "value" });
+    } else if (ts.isArrayBindingPattern(decl.name) && part === "entries") {
+      const [k, v] = decl.name.elements;
+      if (k && ts.isBindingElement(k) && ts.isIdentifier(k.name)) names.push({ node: k, of: "key" });
+      if (v && ts.isBindingElement(v) && ts.isIdentifier(v.name)) names.push({ node: v, of: "value" });
+    } else { this.c.error(decl.name, `for…of over ${table.name} takes ${table.as === "map" ? "[key, value]" : "one variable"}.`); return; }
+    const iterations: Stmt[][] = table.literals.map((text, i) => {
+      const scope = new Scope(this.scope);
+      const declared: Stmt[] = [];
+      for (const n of names) {
+        if (n.of === "key") { scope.bind(n.node, { kind: "value", value: text }); continue; }
+        const a = table.values!;
+        const v = this.newVar((n.node as TS.NamedDeclaration).name!.getText(this.body.sf), a.kind, this.sourceOf(n.node), { ...(a.bits ? { bits: a.bits } : {}), ...(a.unsigned ? { unsigned: true } : {}) });
+        declared.push({ kind: "declare", decl: v, init: { kind: "element", array: a.id, index: num(i), at }, at, label });
+        scope.bind(n.node, { kind: "var", v });
+      }
+      const body = this.collect(() => { for (const d of declared) this.emit(d, s); this.block([s.statement], { fn: ctx.fn, canBreak: true, canContinue: true }, scope); });
+      return [{ kind: "if", cond: { kind: "element", array: table.present!.id, index: num(i), at }, then: body, at, label } as Stmt];
+    });
+    this.emit({ kind: "unrolled", iterations, at, label }, s);
   }
 
   private forOfStatement(s: TS.ForOfStatement, ctx: Ctx) {
@@ -7086,6 +7373,33 @@ export class Structured {
     return this.textCells(of.rows, TEXT_FIELD, index);
   }
 
+  /**
+   * `names.sort()`: in the order of the texts' characters, as JavaScript sorts texts (by their UTF-16 code units — "B"
+   * before "a"); `names.sort((a, b) => …)` by the function. A row is moved whole, the block of the heap it owns with it.
+   */
+  private sortTexts(e: TS.CallExpression, of: Texts) {
+    const at = this.at(e), label = this.label(e);
+    const textIn = (b: Binding): Binding => (b.kind === "record" ? b.fields.get(TEXT_FIELD)! : b);
+    const textOf = (b: Binding): TextExpr | null => {
+      const t = textIn(b);
+      if (t.kind === "textAt") return this.textAtCells(t, e);
+      if (t.kind === "var" && t.v.kind === "text") return { kind: "textVar", id: t.v.id };
+      this.c.error(e, "sort() of texts: a row that is not a text.");
+      return null;
+    };
+    const fn = e.arguments[0];
+    this.sortList(e, of.rows, (before, held) => {
+      if (!fn) {
+        const a = textOf(before), b = textOf(held);
+        return a && b ? { kind: "textCompare", op: ">", left: a, right: b, at, label } : null;
+      }
+      const call = this.callback(fn, "sort", [textIn(before), textIn(held)], "any", e);
+      if (!call) return null;
+      if (call.result?.kind !== "number") { this.c.error(fn, "sort()'s function gives a number — below 0 when a goes first, above when b does."); return null; }
+      return { kind: "compare", op: ">", left: this.mark<NumExpr>({ kind: "call", call }, e), right: num(0), at, label };
+    });
+  }
+
   /** `names.push(t)`, `names.pop()` standing on their own. */
   private textsCall(e: TS.CallExpression, of: Texts, method: string) {
     const at = this.at(e);
@@ -7107,6 +7421,8 @@ export class Structured {
       return;
     }
     if (method === "pop" && e.arguments.length === 0) { this.recordsCall(e, of.rows, "pop"); return; }
+    if (method === "reverse") { this.reverseList(e, of.rows); return; }
+    if (method === "sort") { this.sortTexts(e, of); return; }
     if (method === "shift" || method === "unshift" || method === "splice") {
       const sp = this.spliceArgs(e, method);
       if (!sp) return;
@@ -7122,7 +7438,7 @@ export class Structured {
       held.forEach((v, i) => this.storeTextAt(this.textAtIndex(of, this.temp({ kind: "binary", op: "+", left: varRef(s0), right: num(i), at, label }, e, true)), { kind: "textVar", id: v.id }, e));
       return;
     }
-    this.c.error(e, `An array of texts has push(text), pop(), shift(), unshift(text), splice(…), length, [i], at(i), for…of, forEach, includes, indexOf, lastIndexOf and join; ${method}() is not one of them.`);
+    this.c.error(e, `An array of texts has push(text), pop(), shift(), unshift(text), splice(…), sort(), reverse(), length, [i], at(i), for…of, forEach, includes, indexOf, lastIndexOf and join; ${method}() is not one of them.`);
   }
 
   /** `names.includes(t)`, `names.indexOf(t)`: a function of the compiler's own, a loop over the texts that compares each. */
@@ -8398,8 +8714,10 @@ export class Structured {
   private classOf(expr: TS.Expression): TS.ClassDeclaration | undefined {
     const { ts } = this;
     const e = this.unwrap(expr);
-    if (!ts.isIdentifier(e)) return undefined;
-    const decl = declarationOf(ts, this.c.checker, e);
+    // `new Geo.Point(…)`: a class of a namespace.
+    const id = ts.isIdentifier(e) ? e : ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name) && this.isNamespace(this.unwrap(e.expression)) ? e.name : undefined;
+    if (!id) return undefined;
+    const decl = declarationOf(ts, this.c.checker, id);
     return decl && ts.isClassDeclaration(decl) && (this.body.plan.game.has(decl) || this.scriptClass(decl)) ? decl : undefined;
   }
 
@@ -8704,8 +9022,10 @@ export class Structured {
     // A reference (B9) is a number a call gives, as any number is.
     if (this.refClasses(type)) return undefined;
     const record = !this.classOfType(type) && this.plainRecordType(type);
-    if (!this.classOfType(type) && !record) return undefined;
-    const instance: { name: string; made?: Binding } = { name };
+    // `const xs = evens(n)`: an array a function of the script's makes and gives back, the call's own.
+    const list = !this.classOfType(type) && !record && (this.c.checker.isArrayType(type) || this.c.checker.isTupleType(type));
+    if (!this.classOfType(type) && !record && !list) return undefined;
+    const instance: { name: string; made?: Binding; list?: boolean } = { name, ...(list ? { list } : {}) };
     let call: Call | undefined;
     const callee = this.unwrap(e.expression);
     if (ts.isIdentifier(callee)) {
@@ -8713,9 +9033,9 @@ export class Structured {
       // `function counter() { let c = 0; return { inc: () => c++, get: () => c }; }`: a record the call makes, a call's own.
       const fn = decl && ts.isFunctionDeclaration(decl) ? undefined : this.fnValueOf(callee);
       if (fn) call = this.inline(e, fn.parameters, fn.body, fn.target as Body, this.functionName(fn), fn.decl, { instance, closure: fn.closure });
-      else if (!decl || !ts.isFunctionDeclaration(decl)) { if (record) return undefined; this.c.error(e, "A function that gives an instance is one declared in the program."); return null; }
+      else if (!decl || !ts.isFunctionDeclaration(decl)) { if (record || list) return undefined; this.c.error(e, "A function that gives an instance is one declared in the program."); return null; }
       else call = this.inline(e, decl.parameters, decl.body, this.body, decl.name?.text, decl, { instance });
-    } else if (record) {
+    } else if (record || (list && !(ts.isPropertyAccessExpression(callee) && this.classOfType(this.c.checker.getTypeAtLocation(callee.expression))))) {
       return undefined;
     } else if (ts.isPropertyAccessExpression(callee)) {
       const found = this.memberAt(callee, (m, n) => ts.isMethodDeclaration(m) && this.memberKey(m.name) === n);
@@ -8726,9 +9046,28 @@ export class Structured {
     if (!call) return null;
     // `into`: the call is part of a larger one's chain, and runs inside it; else it runs here.
     if (into) into.push(this.mark({ kind: "call", call, at: call.at, label: call.label }, e)); else this.emit({ kind: "call", call, at: call.at, label: call.label }, e);
-    if (!instance.made) { this.c.error(e, `This call gave no ${record ? "record" : "instance"}: every way through the function has to return one.`); return null; }
+    if (!instance.made) { this.c.error(e, `This call gave no ${list ? "array" : record ? "record" : "instance"}: every way through the function has to return one.`); return null; }
     return instance.made;
   }
+
+  /** `xs.find(…)` of an array of records or instances: the row at the place found (row 0 when none is, never read then), with whether one was. */
+  private foundRow(e: TS.CallExpression, over: Over & { kind: "records" }, name: string, at: TS.Node): Binding | null {
+    const method = (e.expression as TS.PropertyAccessExpression).name.text === "find" ? "findIndex" : "findLastIndex";
+    const index = this.searchCall(e, over, method, "number") as NumExpr | null;
+    if (!index) return null;
+    const where = this.at(at), label = this.label(at);
+    const found = this.newVar(`${name} (place found)`, "number", where, { temp: true });
+    this.emit({ kind: "declare", decl: found, init: index, at: where, label }, at);
+    const truth = this.newVar(`${name} (found)`, "boolean", this.sourceOf(at));
+    this.emit({ kind: "declare", decl: truth, init: { kind: "compare", op: ">=", left: varRef(found), right: num(0), at: where, label }, at: where, label }, at);
+    const place = this.newVar(`${name} (row of ${over.name})`, "number", where);
+    this.emit({ kind: "declare", decl: place, init: { kind: "intrinsic", name: "max", args: [varRef(found), num(0)], at: where, label }, at: where, label }, at);
+    const row = this.rowOf(over, varRef(place));
+    return row.kind === "record" ? { ...row, truth } : row;
+  }
+
+  /** The kinds of binding an array is. */
+  private static readonly LIST_KINDS: ReadonlySet<string> = new Set(["array", "records", "units", "texts", "grid", "lists"]);
 
   /** A type of records a function may give: an object with fields, not an array, a function, a class's instance or one of the library's. */
   private plainRecordType(type: TS.Type): boolean {
@@ -8738,6 +9077,12 @@ export class Structured {
     if (!type.getProperties().length || this.kindOf(type) || this.isTextType(type)) return false;
     const decl = type.getSymbol()?.declarations?.[0];
     return !!decl && (ts.isObjectLiteralExpression(decl) || ts.isTypeLiteralNode(decl) || (ts.isInterfaceDeclaration(decl) && !decl.getSourceFile().isDeclarationFile));
+  }
+
+  /** `return [a, b]`: an array of numbers or booleans made where the return is. */
+  private returnedArray(given: TS.ArrayLiteralExpression, name: string): Binding | null {
+    const a = this.declareArray(name, given, this.c.checker.getTypeAtLocation(given), given);
+    return a ? { kind: "array", a } : null;
   }
 
   /** What `return …` gives of a function that gives a record or an instance: one it makes, itself, or one it was handed. */
@@ -9372,6 +9717,15 @@ export class Structured {
    * function declared in the body, a const holding one, a parameter handed one. Undefined for anything else — a function
    * kept in a variable is a number of the program (`fnHeld`).
    */
+  /** Whether an expression names a namespace of the script's: `Geo`, `Geo.Deep`. */
+  private isNamespace(e: TS.Expression): boolean {
+    const { ts } = this;
+    const id = ts.isIdentifier(e) ? e : ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name) ? e.name : undefined;
+    if (!id) return false;
+    const decl = declarationOf(ts, this.c.checker, id);
+    return !!decl && this.ts.isModuleDeclaration(decl);
+  }
+
   private fnValueOf(expr: TS.Expression): FnValue | undefined {
     const { ts } = this;
     const e = this.unwrap(expr);
@@ -9381,8 +9735,10 @@ export class Structured {
     if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return undefined;
     const b = this.bindingOf(e);
     if (b) return b.kind === "fn" ? b.fn : undefined;
-    if (!ts.isIdentifier(e)) return undefined;
-    const decl = declarationOf(ts, this.c.checker, e);
+    // `Shapes.area(…)`: a function of a namespace at the top of a file.
+    const named = ts.isIdentifier(e) ? e : this.isNamespace(this.unwrap(e.expression)) ? e.name : undefined;
+    if (!named || !ts.isIdentifier(named)) return undefined;
+    const decl = declarationOf(ts, this.c.checker, named);
     if (!decl) return undefined;
     const known = this.fnValues.get(decl);
     if (known) return known;
@@ -10584,6 +10940,16 @@ export class Structured {
         return this.mark<NumExpr>({ kind: "ternary", cond: this.thereOf(b, e), whenTrue: value as NumExpr, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
       }
     }
+    // `t?.hp ?? 0` of a row find() gave, or of what chatted() found: the other value when there was none.
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const truth = this.foundBase(e.left);
+      if (truth) {
+        const value = this.num(e.left);
+        const other = value && this.num(e.right);
+        if (!value || !other) return null;
+        return this.mark<NumExpr>({ kind: "ternary", cond: boolRef(truth), whenTrue: value, whenFalse: other, at: this.at(e), label: this.label(e) }, e);
+      }
+    }
     // `target?.hp ?? 0` through a reference (B9): the other value when there is no instance.
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
       const base = this.optionalBase(e.left);
@@ -10613,6 +10979,14 @@ export class Structured {
       if (member) return this.unitField(e, member);
       const got = this.getterCall(e);
       if (got !== undefined) return this.numberOf(got, e);
+    }
+    if (ts.isElementAccessExpression(e)) {
+      const picked = this.fieldAtText(e);
+      if (picked === null) return null;
+      if (picked) {
+        const at = this.at(e), label = this.label(e);
+        return this.pickField<NumExpr>(picked, (b) => this.valueOf(b, "number", e) as NumExpr | null, (cond, whenTrue, whenFalse) => ({ kind: "ternary", cond, whenTrue, whenFalse, at, label }));
+      }
     }
     if (ts.isElementAccessExpression(e)) {
       const el = this.elementOf(e);
@@ -11276,6 +11650,10 @@ export class Structured {
     }
     const h = this.evaluate(expr);
     if (h) return this.hoistedBool(h, e);
+    // `open[door]`: the field the door is.
+    const picked = this.fieldAtText(e);
+    if (picked === null) return FALSE;
+    if (picked) return this.pickField<BoolExpr>(picked, (b) => this.valueOf(b, "boolean", e) as BoolExpr | null, (cond, a, b) => ({ kind: "or", items: [{ kind: "and", items: [cond, a] }, { kind: "and", items: [{ kind: "not", expr: cond }, b] }] })) ?? FALSE;
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword) {
       const b = this.bindingOf(e.left);
       const caught = b && this.caughtRecords.get(b);
