@@ -20,18 +20,37 @@ export type Dword =
   /** A dword of the graph's own data, by name: made once in the map, 0 when the map starts. */
   | { data: string }
   /** A field of one of the graph's triggers, by its label. */
-  | { at: string; field: Field };
+  | { at: string; field: Field }
+  /**
+   * The value of the first cell of one of the program's arrays (a list known when the map is built, which nothing
+   * writes). A condition on it whose player field is a place reads the cell that field says: its EPD.
+   */
+  | { element: string }
+  /** A parameter of one of the Python side's fixed-point functions (`FixedFn`): its cell. */
+  | { param: FixedFn; index: number };
 
-/** A field of a trigger: a condition's number, an action's number, destination or modifier, the next pointer. */
-export type Field = { cond: number } | { act: number; part: "value" | "dest" | "modifier" } | "next";
+/**
+ * One of the Python side's fixed-point functions (part 3): a product or a quotient of two variables, or of one and a
+ * constant above zero (`c`) — `fdiv_by` is c / x, `fdiv_by_const` x / c.
+ */
+export interface FixedFn { fn: "fmul_vars" | "fdiv_vars" | "fmul_by" | "fdiv_by" | "fdiv_by_const"; c?: number }
+
+/**
+ * A field of a trigger: a condition's number (or its player, the EPD of the dword it reads), an action's number,
+ * destination or modifier, the next pointer.
+ */
+export type Field = { cond: number; part?: "value" | "player" } | { act: number; part: "value" | "dest" | "modifier" } | "next";
 
 export type Compare = "atLeast" | "atMost" | "exactly";
 export type Modifier = "set" | "add" | "subtract";
 
-/** A number an action writes or a condition compares with: a constant, or where a label is (a trigger's address). */
-export type Value = number | { label: string };
+/** A number known when the map is made: a constant, or the EPD of an array's first cell's value plus a constant. */
+export type Num = number | { epdOf: string; plus: number };
 
-/** The dword compared with `value` (read from 0 up); with `mask`, only the bits of the mask, on both sides. */
+/** A number an action writes: one known when the map is made, or where a label is (a trigger's address). */
+export type Value = Num | { label: string };
+
+/** The dword compared with `value` (read from 0 up); with `mask`, the dword's bits of the mask (`value` as it is). */
 export interface Cond { dword: Dword; compare: Compare; value: number; mask?: number }
 
 /**
@@ -44,7 +63,13 @@ export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: nu
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,
  * or `END` for what follows the graph — or, unset, to the trigger after it in the list.
  */
-export interface Trigger { label: string; conds: Cond[]; acts: Act[]; next?: string; at?: At; copy?: Copy; island?: Stmt }
+export interface Trigger { label: string; conds: Cond[]; acts: Act[]; next?: string; at?: At; copy?: Copy; island?: Stmt; call?: Call }
+
+/**
+ * A call of a fixed-point function, in place of a trigger as a copy is: its parameters' cells were written by the
+ * triggers before it; the function goes back to the trigger after it, its result written into `into`.
+ */
+export interface Call extends FixedFn { into: Dword }
 
 /**
  * A copy in the middle of the graph, in place of a trigger (`conds` and `acts` empty, no `next`: the walk goes on to the
@@ -52,7 +77,7 @@ export interface Trigger { label: string; conds: Cond[]; acts: Act[]; next?: str
  * the way the Python side routes a read. What a variable whose writes cannot be laid out into all its places (one set
  * from itself, two that read each other) does after each write.
  */
-export interface Copy { from: string; into: { dword: Dword; add: number; scale?: number }[] }
+export interface Copy { from: string; into: { dword: Dword; add: Num; scale?: number }[] }
 
 /*
  * An island, in place of a trigger as a copy is: a statement the emitter does not lower, which the Python side lowers
@@ -69,9 +94,14 @@ export const END = "@end";
  * into the dword. The variables a graph reads that something else writes come in this way, once each time the walk
  * enters it (the Python side routes the variable's cell, as it does any read).
  */
-export interface Entry { from: string; into: Dword; add: number; scale?: number }
+export interface Entry { from: string; into: Dword; add: Num; scale?: number }
 
-export interface Graph { entries: Entry[]; triggers: Trigger[] }
+/**
+ * `arrays`: the arrays whose cells the graph reads where they are, each with the EPD between one cell's value and the
+ * next's as the emitter laid the reads out (the Python side's EUDVArray's 18, an EUDArray's 1): the Python side checks
+ * it is so.
+ */
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[] }
 
 /** The most conditions and actions a trigger of the game holds. */
 export const MOST_CONDS = 16;
@@ -94,7 +124,7 @@ export function checkGraph(g: Graph): string[] {
   };
   if (labels.size !== g.triggers.length) out.push("a label is used twice");
   for (const t of g.triggers) {
-    if ((t.copy || t.island) && (t.conds.length || t.acts.length || t.next !== undefined)) out.push(`${t.label}: a copy or an island with conditions, actions or a next of its own`);
+    if ((t.copy || t.island || t.call) && (t.conds.length || t.acts.length || t.next !== undefined)) out.push(`${t.label}: a copy, an island or a call with conditions, actions or a next of its own`);
     t.copy?.into.forEach((c, k) => dword(c.dword, `${t.label} copy ${k}`));
     if (t.conds.length > MOST_CONDS) out.push(`${t.label}: ${t.conds.length} conditions`);
     if (t.acts.length > MOST_ACTS) out.push(`${t.label}: ${t.acts.length} actions`);
@@ -102,7 +132,7 @@ export function checkGraph(g: Graph): string[] {
     t.conds.forEach((c, k) => dword(c.dword, `${t.label} condition ${k}`));
     t.acts.forEach((a, k) => {
       dword(a.dword, `${t.label} action ${k}`);
-      if (typeof a.value === "object" && !known(a.value.label)) out.push(`${t.label} action ${k}: no label ${a.value.label}`);
+      if (typeof a.value === "object" && "label" in a.value && !known(a.value.label)) out.push(`${t.label} action ${k}: no label ${a.value.label}`);
     });
   }
   for (const e of g.entries) dword(e.into, `entry of ${e.from}`);

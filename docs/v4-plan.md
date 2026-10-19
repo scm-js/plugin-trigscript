@@ -2743,6 +2743,83 @@ The order, each measured on the bench and the showpieces, each held by every gam
 - *Not the emitter's:* the raycaster's game test of its first picture (columns 32–41 not drawn by frame 6) fails at
   the branch's base too (45ac0d7) — the heights and faces it draws are the simulator's, number for number.
 
+**As built: E3, more of a loop the emitter's own (2026-10-19, branch emitter-e3).** Measured first: with islands the
+raycaster's column loop was taken but no faster (0.78 ms a frame against 0.77), its loop almost all islands — the
+inner loop's `cellAt(mapX, mapY)` (a call of a function that reads a cell of the maze), `Math.floor`, the products and
+quotients, the `?:` and abs of the steps, the stores. Each step below measured on the raycaster (average frame /
+frame 112) and kept only once it paid.
+- *Calls inlined.* A call of a function that is one `return` of a number — called by name, or (called once) carrying
+  its body — is that expression with the parameters replaced by the arguments, where every argument is a sum the
+  emitter lowers (`inlined`). The loop is rewritten before it is looked at; `original` stays as written.
+- *Cells of lists known when the map is built, read where they are.* `CELLS[mapY * 16 + mapX]`: the index into a
+  variable of the emitter's own (`own`, a dword of data, no cell on the Python side), the target set to 0, and a
+  trigger a bit the list's values have between them — the index inside the list (read from 0 up, so below zero is
+  past the end and reads 0) and that bit of the cell, the condition's *player field* (the EPD it reads) a place of the
+  index times the cells' spacing plus the first cell's EPD (`Num`, `{ epdOf }`): 18 for the Python side's EUDVArray, 1
+  for a list of PACK_FROM values or more, which goes packed (the Python side checks the spacing, `Graph.arrays`). The
+  index condition comes first: the game stops at a trigger's first condition that fails, so a cell past the end is
+  never read (the lifted game's memory check on a probe reading past both ends: nothing outside the map's own memory
+  and what is known allowed). Only for lists whose values have 6 bits or fewer between them (a maze's 0–2: two
+  triggers); a list with a number below 0 has 32, and is left to the Python side. A cell inside a sum is read into a
+  variable of the emitter's own first. **The raycaster: 0.77 → 0.70 ms, 1.51 → 1.36** — the inner loop is the
+  emitter's whole (91 µs of frame 112 where the call, its glue and eudplib's jumps were about 240).
+- *Fixed-point products and quotients called from the graph.* `fmul` / `fdiv` of sums the emitter lowers call part
+  3's functions (`fmul_vars`, `fdiv_vars`; with a constant above zero `fmul_by`, `fdiv_by` (c / x), `fdiv_by_const`):
+  the arguments written into the function's parameter cells by the trigger before the call (each a place of what it
+  reads), the call (`Trigger.call`) setting where the function goes back to and where its result goes — the target's
+  cell, as eudplib's call writes a return straight into a dword — and the target copied after. A constant below 0 is
+  left to the Python side (its quotient negated after is not the same bits at −2^31). Alone it was slower (0.72 /
+  1.41): `mapX` was still an island (`Math.floor`), and copying it into the places that hold it times 65 536 (the
+  fixed argument) went through eudplib's product by a constant (`_mulf`, 48 µs a frame). A copy times a power of two
+  is a shift now (0.71 / 1.39), and then:
+- *Shifts right by a constant.* `x >> k` / `x >>> k` of a sum: the sum into a variable of the emitter's own (or a
+  variable alone, read in its cell), and a trigger a bit that comes down adding its new place's worth to every place
+  of the target — so a place holding the result times 65 536 costs nothing more; for `>>` the sign bit adds its
+  weight below 0. From the top eight bits a group, a group with none set jumped over. `Math.floor` of a fixed is this.
+  **0.67 / 1.31.**
+- *`?:`, `Math.abs`, `Math.min` / `max` rewritten* (`Rewriter`): `x = c ? a : b` is `if (c) x = a; else x = b`;
+  `x = abs(e)` tests e's sign (abs of a product or quotient: the result's, in the target); min / max a comparison
+  (unsigned where the IR says); such a value inside a sum or a comparison's side computed first into a variable of
+  the emitter's own (`@t…`); a loop's test that needs one, computed at the top of each turn. A statement whose
+  rewriting the emitter would not take whole stays as it was (an island cannot read the emitter's own variables).
+  Alone it was slower again (0.71 / 1.38): `deltaX` — a call's result, then its abs — was copied into its six places
+  twice a column, where the Python side routed it once a read.
+- *Routed variables.* A variable whose writes each end in a copy (a call's result, one an island writes, one copied
+  for a loop of reads) is instead read where it is used, when that is cheaper — its reads against its writes times its
+  places, each weighed by how deep in the graph's loops it is (a loop inside counted four turns of the one outside):
+  the dwords a trigger is about to read refreshed from the cell just before it. A write's reads are refreshed before
+  its first action (`c = b - c` reads the c from before), and a write of the variable makes later reads in the same
+  run of actions stale. A trigger with conditions that reads one is entered through its refreshes (`…in`), while the
+  trigger keeps its label for the branch that sets its own next pointer. **0.67 / 1.31** — the rewritten statements
+  cost what the islands did, and are the emitter's for what comes next.
+- *Lines:* each trigger of a graph says the line of the statement it comes from (the map of triggers, the cost of a
+  line), where all said the loop's line; writes of several statements in one trigger say the first's.
+- *Found on the way:* the IR's serialization (`serializeIr`) passed a `graph` statement through as it was, so an
+  island with text in it (a `print`) would have reached the Python side with the compile's local text ids — it maps
+  `original` and every island now. `fixed_fns()` returned early whenever its table had anything in it, so a graph that
+  made `fixed_vars()` first left `fdiv_vars` without the `fdiv` it falls back to: a build that failed (the bench, with
+  the emitter on).
+
+| With the emitter (`EMITTER=1`) against without | Without | With |
+| --- | ---: | ---: |
+| Raycaster, a frame on average | 0.77 ms | **0.67 ms** |
+| Raycaster, its costliest frame (112) | 1.51 ms | **1.31 ms** |
+| Bullets, a frame | 0.20 ms | 0.20 ms |
+| Snake, a frame / its costliest (frame 2) | 0.07 / 4.17 ms | 0.07 / 4.00 ms |
+| Tetris, a frame / its costliest | 0.34 / 8.11 ms | 0.34 / 8.09 ms |
+| Lowering bench, all lines | 97.2 µs | 94.1 µs |
+| `for (let i = 0; i < m; i++) { }`, 16 turns | 1793 ns | 659 ns |
+
+With the emitter on, the bench takes its own loop, so its lines' costs are the graph's: lines whose writes share a
+trigger with the line before them are counted there ("did not run"), and only the total compares. Checked:
+`tests/emitter.test.ts`, 4000 random loops now with lists short and long (in and past their ends), calls of a
+function that is a cell, fixed products and quotients, shifts right, `?:` / abs / min / max — run as written and as
+their graphs, every variable the same; `probes/game-emitter.ts` A–I in the lifted game and the simulator; every game
+probe with the emitter on and off. **Left off by default:** everything measured is as fast or faster and every probe
+passes, but the lifted game is 1.16.1 with Remastered's EUD rules modelled — the emitter's reads through a
+condition's player field and its calls into part 3's functions should be played in Remastered first (the emitter
+probe as a map), and the cost-by-line report gives a shared trigger's cost to its first line.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

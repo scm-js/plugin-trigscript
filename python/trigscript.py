@@ -2205,7 +2205,7 @@ def chain_fdiv(a, b):
 
 def fixed_fns():
     """The fixed numbers' functions, made when the first one is met: one body each in the map, called."""
-    if _FIXED:
+    if "fdiv" in _FIXED:
         return _FIXED
 
     @EUDFunc
@@ -4578,24 +4578,42 @@ class Lowering:
         end = Forward()
         labels["@end"] = end
 
-        def addr(d):
+        def element0(id_):
+            """The EPD of the value of an array's first cell, and of the next cell's less it."""
+            store = self.array(id_, st).store
+            if is_varray(store):
+                return EPD(unProxy(store) + VARRAY_VALUE), VARRAY_STRIDE // 4
+            return store._epd, 1
+
+        # The lists the graph reads where they are: laid out as the emitter thought, or nothing is made.
+        for a in g.get("arrays", []):
+            if element0(a["id"])[1] != a["stride"]:
+                raise Fail("trigscript: the emitter read %s's cells %d EPD apart, which are %d%s" % (a["id"], a["stride"], element0(a["id"])[1], where(st)))
+
+        def epd(d):
             if "game" in d:
-                return d["game"]
+                return EPD(d["game"])
+            if "param" in d:
+                return EPD(self.graph_function(d["param"])._fargs[d["index"]].getValueAddr())
             if "var" in d:
-                return self.var(d["var"], st).get().getValueAddr()
+                return EPD(self.var(d["var"], st).get().getValueAddr())
             if "data" in d:
                 if d["data"] not in self.graph_data:
                     self.graph_data[d["data"]] = Db(4)
-                return self.graph_data[d["data"]]
+                return EPD(self.graph_data[d["data"]])
+            if "element" in d:
+                return element0(d["element"])[0]
             base, f = labels[d["at"]], d["field"]
             if f == "next":
-                return base + 4
+                return EPD(base + 4)
             if "cond" in f:
-                return base + COND_VALUE + 20 * f["cond"]
-            return base + ACT_DEST - 16 + 32 * f["act"] + {"value": 20, "dest": 16, "modifier": 24}[f["part"]]
+                return EPD(base + COND_VALUE + 20 * f["cond"] - (4 if f.get("part") == "player" else 0))
+            return EPD(base + ACT_DEST - 16 + 32 * f["act"] + {"value": 20, "dest": 16, "modifier": 24}[f["part"]])
 
         def value(v):
-            return labels[v["label"]] if isinstance(v, dict) else v
+            if isinstance(v, dict):
+                return labels[v["label"]] if "label" in v else element0(v["epdOf"])[0] + v["plus"]
+            return v
 
         def copy(id_, into):
             """The variable's cell into each dword (times its `scale`, plus its `add`): routed reads, a multiple worked
@@ -4605,14 +4623,15 @@ class Lowering:
             for e in into:
                 k = int(e.get("scale", 1)) & U32
                 if k not in times:
-                    times[k] = fresh(0 - v) if k == U32 else fresh(v * k)
+                    # (A power of two is a shift, a bit a trigger; another multiple eudplib's product by a constant.)
+                    times[k] = fresh(0 - v) if k == U32 else shift_const(v, "<<", k.bit_length() - 1) if k & (k - 1) == 0 else fresh(v * k)
             for i in range(0, len(into), 16):
                 group = []
                 for e in into[i:i + 16]:
-                    d = EPD(addr(e["into"] if "into" in e else e["dword"]))
+                    d = epd(e["into"] if "into" in e else e["dword"])
                     group.append((d, SetTo, times[int(e.get("scale", 1)) & U32]))
                     if e["add"]:
-                        group.append((d, Add, e["add"]))
+                        group.append((d, Add, value(e["add"])))
                 SeqCompute(group)
 
         entries = {}
@@ -4620,25 +4639,62 @@ class Lowering:
             entries.setdefault(e["from"], []).append(e)
         for id_, es in entries.items():
             copy(id_, es)
+        origins = globals().get("_ORIGINS")
         for t in g["triggers"]:
-            if "copy" in t:
-                # (In place of a trigger: the walk goes on to the one made after it.)
-                labels[t["label"]] << NextTrigger()
-                if t["copy"]["into"]:
-                    copy(t["copy"]["from"], t["copy"]["into"])
-                continue
-            if "island" in t:
-                # A statement the emitter left to this side, lowered here as anywhere (nothing in it leaves it).
-                labels[t["label"]] << NextTrigger()
-                self.statement(t["island"], ctx)
-                continue
-            conds = [MemoryX(addr(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"], c["mask"]) if "mask" in c else Memory(addr(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"]) for c in t["conds"]]
-            acts = [SetMemoryX(addr(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"]), a["mask"]) if "mask" in a else SetMemory(addr(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"])) for a in t["acts"]]
-            if "next" in t:
-                labels[t["label"]] << RawTrigger(nextptr=labels[t["next"]], conditions=conds, actions=acts)
-            else:
-                labels[t["label"]] << RawTrigger(conditions=conds, actions=acts)
+            # (With the map of triggers on, each trigger says the line of the statement it comes from.)
+            if origins is not None and t.get("at"):
+                origins.append(_origin_of(t["at"]))
+            try:
+                self.graph_trigger(t, labels, epd, value, copy, ctx)
+            finally:
+                if origins is not None and t.get("at"):
+                    origins.pop()
         end << NextTrigger()
+
+    def graph_trigger(self, t, labels, epd, value, copy, ctx):
+        """One trigger of a graph, or what stands in its place (a copy, an island, a call)."""
+        if "copy" in t:
+            # (In place of a trigger: the walk goes on to the one made after it.)
+            labels[t["label"]] << NextTrigger()
+            if t["copy"]["into"]:
+                copy(t["copy"]["from"], t["copy"]["into"])
+            return
+        if "island" in t:
+            # A statement the emitter left to this side, lowered here as anywhere (nothing in it leaves it).
+            labels[t["label"]] << NextTrigger()
+            self.statement(t["island"], ctx)
+            return
+        if "call" in t:
+            # A fixed-point function, its parameters written by the triggers before: it goes back to the trigger
+            # after this one, its result written where the graph says (an EPD, as a call's return is).
+            f, back = self.graph_function(t["call"]), Forward()
+            labels[t["label"]] << RawTrigger(nextptr=f._fstart, actions=[SetMemory(f._nptr, SetTo, back), SetMemoryEPD(EPD(f._frets[0].getDestAddr()), SetTo, epd(t["call"]["into"]))])
+            back << NextTrigger()
+            return
+        conds = [MemoryXEPD(epd(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"], c["mask"]) if "mask" in c else MemoryEPD(epd(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"]) for c in t["conds"]]
+        acts = [SetMemoryXEPD(epd(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"]), a["mask"]) if "mask" in a else SetMemoryEPD(epd(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"])) for a in t["acts"]]
+        if "next" in t:
+            labels[t["label"]] << RawTrigger(nextptr=labels[t["next"]], conditions=conds, actions=acts)
+        else:
+            labels[t["label"]] << RawTrigger(conditions=conds, actions=acts)
+
+    def graph_function(self, spec):
+        """The fixed-point function a graph calls (compiler/backend/graph.ts, FixedFn), its body made."""
+        fn, c = spec["fn"], int(spec.get("c", 0))
+        if fn in ("fmul_vars", "fdiv_vars"):
+            f = fixed_vars()[fn]
+        elif fn == "fdiv_by":
+            if (c, None) not in _CONST_FDIV:
+                _CONST_FDIV[(c, None)] = make_const_fdiv(c, None)
+            f = _CONST_FDIV[(c, None)]
+        else:
+            name = "fmul" if fn == "fmul_by" else "fdiv"
+            if (name, c, None) not in _FIXED_BY_CONST:
+                _FIXED_BY_CONST[(name, c, None)] = (make_fmul_by if name == "fmul" else make_fdiv_by_const)(c, 31)
+            f = _FIXED_BY_CONST[(name, c, None)]
+        if f._fstart is None:
+            f._create_func_body()
+        return f
 
     def try_(self, st, ctx):
         """The body with its catch as the place a throw goes to; the catch after it, reached only that way."""
