@@ -159,9 +159,19 @@ export function rangeNumbers(program: Program): void {
   /** After the first pass: the variables some store of the program names. One no store names is set behind its back. */
   let stored: Set<string> | null = null;
   const varRange = (id: string): Range => (wild.has(id) || (stored && !stored.has(id)) ? ANY : vars.get(id) ?? [0, 0]);
+  // (A list's lowest and highest once each: a video's table is hundreds of thousands of cells, too many to spread.)
+  const listed = new Map<string, Range>();
   const arrayRange = (a: ArrayDecl | undefined): Range => {
     if (!a) return ANY;
-    if (a.values) return withZero([Math.min(...a.values.map(signed)), Math.max(...a.values.map(signed))]);
+    if (a.values) {
+      let r = listed.get(a.id);
+      if (!r) {
+        let lo = Infinity, hi = -Infinity;
+        for (const v of a.values) { const x = signed(v); if (x < lo) lo = x; if (x > hi) hi = x; }
+        listed.set(a.id, (r = withZero(a.values.length ? [lo, hi] : [0, 0])));
+      }
+      return r;
+    }
     if (a.bits) return [0, 2 ** a.bits - 1];
     if (reached.has(a.id)) return ANY;
     return withZero(cells.get(a.id) ?? [0, 0]);

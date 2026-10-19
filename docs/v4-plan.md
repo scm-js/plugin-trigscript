@@ -2666,7 +2666,52 @@ still 0.19 ms (24%: next pointers 0.083, a cell's destination 0.052, its modifie
 failed 0.19 ms (25%). Routing is what values written where they are used takes away; the failed triggers and the walk
 are the shape of eudplib's branches and jumps. Both are the emitter's.
 
-### The emitter: a backend of our own, one statement kind at a time
+### The fog library, faster
+
+Measured first (`scripts/trace-frame.mts --wide`, frame 112 of the raycaster, every eudplib cell counted with the line
+that ran it): the fog library was about 0.56 ms of the frame's 1.51, and a brush — 292 of them that frame — about 1.2 µs,
+of which the unit made and taken away was 0.05. The rest was arithmetic around it:
+- *the location's four sides*, each a temporary made and copied (`x - 16`, then `+ 32`, …): about 0.75 µs;
+- *a product by 32* of a coordinate the game holds, `(top + r) * 32`, a test a bit (27 of them): about 0.4 µs — worked
+  out again for every brush of a bar, for the column's x as much as for the row;
+- *a `max(…, 0)`* the front end puts around every coordinate of a `centerLocation`: a signed comparison of two values
+  and a branch, about 0.17 µs a coordinate;
+- per column, `heights[i] >> 1` (a shift of 31 tests) worked out twice, and a pass over every column that a light
+  outline — all of whose depths are 0 — has nothing to do in.
+
+What changed, with nothing drawn differently:
+- *Python* (`center_location`): a location of a size known when the script is built has its four sides written in one
+  `SeqCompute`, the centre routed into the two sides that take it and the constants added where they land.
+  `clamp_const`: a `min` / `max` against a constant is a copy and one or two triggers whose conditions compare with
+  constants (signed and unsigned, at the edges: `probes/game-clamps.ts`). `forget_counts` (the Command after a
+  location moves or units are made) only in a map whose programs ask Bring at all — the fog library asks none.
+- *The library* (`stdlib/fog.ts`): brushes placed in pixels (`discPx`, `columnBarPx`), their products by 32 worked out
+  once and stepped by adds — across a bar, across the columns, from a picture's or a video frame's corner; each
+  column's half height clamped before the shift (the same number, the shift then has the clamp's few bits) and kept,
+  with its pixels, for the passes after; the pass over the groups skipped when every depth is the least; the edge pass
+  carrying the face and height before it rather than reading them again; a video word's row as `(w & 0xff00) >> 3`
+  rather than `((w >> 8) & 255) * 32`.
+- *Checked:* the fog board in the lifted game, hashed every frame for 70 frames of the raycaster (walking, turning, both
+  inks), the same as the branch's base build on its own map; every game probe; the raycaster's two tests.
+
+| | Before | After |
+| --- | ---: | ---: |
+| Raycaster, a frame on average | 0.77 ms | **0.60 ms** |
+| Raycaster, its costliest frame (112) | 1.51 ms | 1.16 ms |
+| The fog library in that frame | ~0.56 ms | ~0.27 ms |
+| A brush of a bar | ~1.2 µs | ~0.25 µs |
+| Bad Apple, a frame while it plays | 0.360 ms | 0.305 ms |
+
+What is left in a brush is the four sides' routed copies (about 55 ns each): the emitter's, when a location's sides can
+be places of the coordinates. Tried and set aside: shifts left by 5 as doublings (`shift_const`; about 66 ns a doubling
+against 14 a bit tested, but the raycaster's coordinates have few bits set, and it came out 0.01 ms slower).
+
+Two things found on the way, neither the library's: `compiler/ranges.ts` spread a list's values into `Math.min(…)`, which
+overflows the stack for a video's table (Bad Apple did not build on this branch; now a loop, kept once a list); and the
+raycaster's test of its first picture, "failing in the lifted game" with columns 32–41 undrawn, was being run on the
+default map, 96 tiles wide — the board is 128, and those columns are off it. On its own map
+(`fixtures/eud/raycaster-base.scx`, now said in the probe's header) both of its tests pass, before these changes and after.
+
 
 Parts 1–3 changed what eudplib makes from inside it. From here the lowering itself moves: a TypeScript emitter that
 lowers the IR to triggers and decides where every value lives, beside `python/trigscript.py` until it has taken all of

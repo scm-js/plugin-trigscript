@@ -3307,6 +3307,8 @@ class Lowering:
                     return a if name == "min" else b
                 if rb[1] <= ra[0]:
                     return b if name == "min" else a
+            if isinstance(a, int) or isinstance(b, int):
+                return clamp_const(b if isinstance(a, int) else a, a if isinstance(a, int) else b, name, unsigned)
             t = EUDVariable()
             if EUDIf()(self.ordered(a, "<=" if name == "min" else ">=", b, unsigned)):
                 t << a
@@ -4270,7 +4272,20 @@ class Lowering:
         if size:
             width, height = self.num(size["width"]), self.num(size["height"])
             if isinstance(width, int) and isinstance(height, int):
-                nx, ny = x - width // 2, y - height // 2
+                # Each side is the centre plus a constant: all four in one go, the centre routed into the two sides that
+                # take it, the constants added where they land (four temporaries made and copied was about 0.75 µs —
+                # every brush of the fog library is one of these).
+                sides = []
+                for i, (c, d) in enumerate(((x, -(width // 2)), (y, -(height // 2)), (x, width - width // 2), (y, height - height // 2))):
+                    if isinstance(c, int):
+                        sides.append((base + i, SetTo, (c + d) & U32))
+                    else:
+                        sides.append((base + i, SetTo, c))
+                        if d & U32:
+                            sides.append((base + i, Add, d & U32))
+                SeqCompute(sides)
+                forget_counts()
+                return
             else:
                 nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
             for i, v in enumerate((nx, ny, nx + width, ny + height)):
@@ -6253,6 +6268,37 @@ def shift_const(x, op, k, top=None):
     return r
 
 
+def clamp_const(v, c, name, unsigned):
+    """min(v, c) or max(v, c) of a variable and a constant: a copy of v, set to c by a trigger whose conditions say it
+    passes c — one or two comparisons with constants, where a comparison of two values and a branch was about 0.17 µs
+    (the front end puts a max(…, 0) around every coordinate of a centerLocation, so the fog library's every brush)."""
+    t = fresh(v)
+    c &= U32
+    if unsigned:
+        if name == "max" and c > 0:
+            RawTrigger(conditions=t.AtMost(c - 1), actions=t.SetNumber(c))
+        elif name == "min" and c < U32:
+            RawTrigger(conditions=t.AtLeast(c + 1), actions=t.SetNumber(c))
+        return t
+    # Signed: below zero is from 2^31 up, read from 0 up.
+    if name == "max":
+        if c < SIGN:
+            RawTrigger(conditions=t.AtLeast(SIGN), actions=t.SetNumber(c))
+            if c > 0:
+                RawTrigger(conditions=t.AtMost(c - 1), actions=t.SetNumber(c))
+        elif c > SIGN:
+            RawTrigger(conditions=[t.AtLeast(SIGN), t.AtMost(c - 1)], actions=t.SetNumber(c))
+    else:
+        if c < SIGN:
+            if c < SIGN - 1:
+                RawTrigger(conditions=[t.AtMost(SIGN - 1), t.AtLeast(c + 1)], actions=t.SetNumber(c))
+        else:
+            RawTrigger(conditions=t.AtMost(SIGN - 1), actions=t.SetNumber(c))
+            if c < U32:
+                RawTrigger(conditions=t.AtLeast(c + 1), actions=t.SetNumber(c))
+    return t
+
+
 def signed_order(a, op, b):
     """`a op b` of two signed variables, with no addition a side: a < b read as signed is a < b read from 0 up, turned
     over once for each side below zero (the top bits differ only when exactly one is). A count of those three is a
@@ -6281,8 +6327,29 @@ def forget_counts():
     """Bring keeps the counts it found for a location number until the trigger pass ends or a query of another kind or
     location is asked: writing a location's sides, or making units in it, leaves the next Bring of it reading the old
     counts (Remastered and the lifted game alike, probes/location-stale.py). A Command in between makes it count again
-    (about 30 ns, and the next Bring is a scan, as it would be for a location that moved)."""
-    RawTrigger(conditions=Command(P1, AtLeast, 0, 0))
+    (about 30 ns, and the next Bring is a scan, as it would be for a location that moved). Only in a map whose programs
+    ask Bring at all: the fog library moves a location and makes a unit at it for every brush, and asks nothing."""
+    if _asks_bring():
+        RawTrigger(conditions=Command(P1, AtLeast, 0, 0))
+
+
+_BRING = []
+
+
+def _asks_bring():
+    """Whether any program of the map reads a Bring condition: tests one (an `if`, an `until`) or counts with one."""
+    if not _BRING:
+        def walk(node):
+            if isinstance(node, list):
+                return any(walk(x) for x in node)
+            if not isinstance(node, dict):
+                return False
+            rec = node.get("record")
+            if isinstance(rec, dict) and (node.get("kind") == "cond" or node.get("source") == "condition") and rec.get("type") == COND_BRING:
+                return True
+            return any(walk(v) for v in node.values() if isinstance(v, (list, dict)))
+        _BRING.append(walk(IR.get("programs", [])))
+    return _BRING[0]
 
 
 # Actions that put units where a Bring already counted, or change whose they are: Create Unit with Properties, Move

@@ -3,10 +3,10 @@
  * origin from the build's map of triggers, what it ran — conditions and actions by type — and what Remastered's
  * weights say it cost. To see what a statement is made of before changing what it is made of.
  *
- *   npx tsx scripts/trace-frame.mts <built.scx> --frame=N [--origin=main.ts:12] [--most=400]
+ *   npx tsx scripts/trace-frame.mts <built.scx> --frame=N [--origin=main.ts:12] [--most=400] [--wide]
  *
  * --origin keeps the triggers whose origin starts with it and the ones run between two of them (eudplib's variables,
- * which carry no origin of their own). Needs a scm-sim checkout (SCM_SIM_DIR) with its lifted game generated.
+ * which carry no origin of their own). --wide prints each origin whole. Needs a scm-sim checkout (SCM_SIM_DIR) with its lifted game generated.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -83,6 +83,7 @@ for (const r of rows) {
   total += r.ns;
   if (!keep || shown >= most) continue;
   shown++;
-  console.log(`${r.t.toString(16)} ${(o ?? "·").padEnd(16).slice(0, 16)} ${r.ns.toFixed(1).padStart(6)}  ${r.recs.join("; ") || "(nothing)"}`);
+  const shownOrigin = process.argv.includes("--wide") ? (o ?? "·").replace(/ /g, "_").padEnd(36) : (o ?? "·").padEnd(16).slice(0, 16);
+  console.log(`${r.t.toString(16)} ${shownOrigin} ${r.ns.toFixed(1).padStart(6)}  ${r.recs.join("; ") || "(nothing)"}`);
 }
 console.log(`frame ${frame}: ${rows.length} triggers, ${(total / 1e3).toFixed(2)} µs`);
