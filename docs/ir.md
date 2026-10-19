@@ -803,7 +803,9 @@ interpreter agree on every case:
   `{ kind: "graph", graph, original }`: `compiler/backend/emit.ts` lowered it to triggers of its
   own (`compiler/backend/graph.ts`), which a backend makes as they are, where the statement was —
   its conditions and actions on dwords of the game, the program's variables' cells, data of the
-  graph's own and the fields of its own triggers, its copies of variables on the way in. `original`
+  graph's own and the fields of its own triggers (a condition's player field among them: it reads
+  the cell of a list that field says), its copies of variables on the way in, its calls of the
+  lowering's fixed-point functions and the statements it leaves to the lowering (islands). `original`
   is the loop, for what does not make triggers: the simulator runs it, and a walk over the
   statements finds the declarations in it.
 

@@ -512,6 +512,8 @@ export function serializeIr(programs: Program[], strings: readonly ScriptString[
       case "call": return { ...s, call: call(s.call) };
       case "block": return { ...s, body: s.body.map(stmt) };
       case "try": return { ...s, body: s.body.map(stmt), catch: s.catch.map(stmt) };
+      // A loop the emitter took: its islands are statements the Python side lowers, and its original one a walk reads.
+      case "graph": return { ...s, original: s.original.map(stmt), graph: { ...s.graph, triggers: s.graph.triggers.map((t) => (t.island ? { ...t, island: stmt(t.island) } : t)) } };
       default: return s;
     }
   };
