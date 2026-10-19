@@ -27,7 +27,7 @@ const source = readFileSync(script, "utf8").split("\n");
 const turns = Number(/const R = (\d+)/.exec(source.join("\n"))?.[1] ?? 1);
 const labels = new Map<number, string>();
 source.forEach((text, i) => { const m = /\/\* ([A-Z_]+) \*\/\s*$/.exec(text); if (m) labels.set(i + 1, m[1]); });
-const once = new Set(["UNITS"]);  // lines outside the bench's loop: once a frame
+const once = new Set(["UNITS", "LIST_LOOP"]);  // lines outside the bench's loop: once a frame
 
 const w = await playWeighed(built, Number(flag("frames") ?? 40));
 interface Row { records: number; triggers: number; ns: number }

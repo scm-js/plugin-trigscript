@@ -2198,6 +2198,70 @@ loop whatever the map held. Two ways to make it the units' cost were tried.
   and a unit made in it, in the game and the simulator. The guide, the README, the IR reference and the editor's
   *scans units* note say the order and the cost.
 
+### What is next: arrays at their cost, cost in the language, the explorer (2026-10-18)
+
+After the five cost slices the showpieces are well inside a frame: in the lifted game, weighed for Remastered, Snake
+costs 0.04 ms a frame (4.5 ms on its first, the screen cleared and shown whole), Tetris 0.34 ms (8.4 ms on its first,
+the view put together from nothing), the raycaster 1.30 ms (2.6 at the most). What a map that is heavy *because of
+its data* pays was not yet weighed, so `probes/bullets-bench.ts` was written: 200 bullets in an array that grows,
+each a record of five numbers, moved, bounced and aged every frame, nothing drawn.
+
+| Line (a bullet) | ns | Records |
+| --- | ---: | ---: |
+| `b.x += b.dx` | 2 730 | 190 |
+| `if (b.x >= 4000) b.dx = -3` | 1 185 | 83 |
+| `if (b.life > 0) { b.life--; alive++; }` | 2 830 | 197 |
+
+About 12 µs a bullet a frame, 2.4 ms for 200: the bookkeeping alone, before a bullet is drawn. The bench says why
+(`probes/lowering-bench.ts` gained the lines):
+
+| Line | ns | Records |
+| --- | ---: | ---: |
+| `x = cells[k]`, an array of a fixed length (cells of their own, #24) | 376 | 27 |
+| `x = list[k]`, an array that grows | 1 128 | 78 |
+| `list[k] = y` | 450 | 31 |
+| `x = pts[j].x`, a field of an instance in an array | 340 | 24 |
+| `for (const v of list) x += v`, a turn | 1 417 | 98 |
+
+An array that grows (`const bullets: Bullet[] = []` and `push`, the way TypeScript is written) lives on the heap,
+four bytes a cell, which the game can only read a bit at a time: 32 triggers a read, and a bounds check (a comparison
+of two variables, 10 triggers) before each. A record in such an array is a growing array a field, so a bullet's line
+reads two or three of them. Cells of their own (an EUDVArray, 72 bytes each, a variable the game jumps to) are read
+by a jump worked out a bit of the index at a time, as many triggers as the index has bits, and written the same way.
+
+**So the slice is, in order:**
+1. **An index worked out once.** A cell's place is 72 × the index bytes past the first; a read or a write works that
+   product out a bit at a time, for every access. A variable used as an index whose every assignment is a constant
+   or a constant added (a loop's counter, `for…of`'s own) can carry the product beside it, kept by the same additions
+   (`i++` is `off += 72`), and every read and write at it becomes the array's place plus the product: a few triggers
+   whatever the length, and the same product serves every column of a record and every array the loop reads.
+2. **Arrays that grow, in cells of their own.** A second heap for growing arrays of numbers (and the columns of
+   records), its cells EUDVArray cells; texts stay on the heap of bytes, which their copies need. With 1, a read at a
+   loop's index costs what a fixed array's does. Its size is a script setting beside the heap's, and each cell costs
+   the map 72 bytes, so the setting says it.
+3. **No bounds check at a `for…of`'s own index**, when the loop's body neither shortens the array nor calls what
+   might: the loop has just compared the index with the length.
+4. **`over(list, { per })`** in `trigscript/timers`: `for await (const b of over(bullets, { per: 50 }))`, a loop
+   spread over frames, `per` elements a frame; `spread(n, { per })` the same over 0 … n − 1. Written as an async
+   generator it compiles today; the library gives it a name, and A4's hint on a costly loop says the `per` that keeps
+   it under a millisecond, from what a turn cost in the run.
+
+**Weighed and set aside:**
+- *Fields packed into one cell* (`bits<N>`). A field of an instance in an array is 340 ns to read; taking a field
+  out of a packed cell is a shift right, about 300 ns for a byte, so two packed fields cost what two cells do. `u8`
+  and `u16` already narrow what a store keeps. Only adding to several fields at once (four counters in a cell, one
+  add) gains, and nothing written so far wants it.
+- *A whole frame's start worked out when built*: Snake's and Tetris's first frames are the screen and the view
+  made from nothing, inside the budget; the view's static parts could be made when built, later.
+
+**After this slice, offered:** fast cells (a probe of Set Resources and Set Score for the neutral players against Set
+Deaths, which Remastered sends through the emulator's region lookup); a division whose result is small worked out
+as comparisons against thresholds computed when built (the raycaster's `Math.floor(HEIGHT / distance)`, 7 µs a
+column, would be seven comparisons); the compiler explorer (the script beside its triggers, nanoseconds a line, from
+the trigger map and A4's weights) and quick fixes from the cost hint; budgets in tests (`expect(frame).toCostUnder(ms(2))`);
+the desync fuzzer, which waited for B5; per-unit behaviours over B2 and B9; then the language list above
+(`g.next()`, `using`, texts made in the game) and the 4.0 release.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

@@ -15,6 +15,11 @@ program(() => {
   let n = zero + R;
   let x = zero, y = zero + 3, z = zero + 4, b = zero, k = zero;
   const spot = new Spot();
+  const pts: Spot[] = [new Spot(), new Spot(), new Spot(), new Spot()];
+  let j = zero + 2;
+  let r: Spot = pts[1];
+  const list: number[] = [];
+  for (let i = 0; i < 16; i++) list.push(zero + i);
   let cells: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   // Fixed numbers from the game too: 1.5 and -2.25, and one to put results in.
   let fa: fixed = fixed(zero) + 1.5, fb: fixed = fixed(zero) - 2.25, fr: fixed = 0.5;
@@ -47,9 +52,16 @@ program(() => {
       if (fa < fb) b = 4; /* FIXED_LESS */
       if (fa < 0) b = 5; /* FIXED_SIGN */
       x = Math.floor(fa); /* FIXED_FLOOR */
+      x = pts[j].x; /* ELEM_FIELD_READ */
+      pts[j].y = y; /* ELEM_FIELD_WRITE */
+      x = r.x; /* REF_FIELD_READ */
+      r.y = y; /* REF_FIELD_WRITE */
+      x = list[k]; /* LIST_READ */
+      list[k] = y; /* LIST_WRITE */
       b = 0; /* TAIL */
     }
     for (const u of unitsOf(P1)) { x += u.hp; } /* UNITS */
+    for (const v of list) { x += v; } /* LIST_LOOP */
     sleep(frames(1));
   }
 });
