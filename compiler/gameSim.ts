@@ -75,13 +75,13 @@ export function variableNames(map: VariableMap | null): Map<number, string> {
     const program = p.name ? p.name : `program #${p.index}`;
     for (const v of p.vars) for (const [cell, at] of Object.entries(v.cells)) if (at !== null && at !== undefined) {
       const name = `${v.id.replace(/#\d+$/, "")}${cell === "value" ? "" : ` (${cell})`}`;
-      if (v.rowed) for (let k = 0; k < 12; k++) out.set(at + 4 * k, `${name} of P${k + 1}, in ${program}`);
+      if (v.rowed) for (let k = 0; k < 12; k++) out.set(at + (v.stride ?? 4) * k, `${name} of P${k + 1}, in ${program}`);
       else out.set(at, `${name}, in ${program}`);
     }
     for (const a of p.arrays) if (a.at !== null && a.at !== undefined && !a.dynamic) {
       const cells = a.length * (a.rowed ? 12 : 1);
       const id = a.id.replace(/#\d+$/, "");
-      for (let i = 0; i < cells && i < 4096; i++) out.set(a.at + 4 * i, `${id}[${a.rowed ? `${Math.floor(i / 12)}] of P${(i % 12) + 1}` : `${i}]`}, in ${program}`);
+      for (let i = 0; i < cells && i < 4096; i++) out.set(a.at + (a.stride ?? 4) * i, `${id}[${a.rowed ? `${Math.floor(i / 12)}] of P${(i % 12) + 1}` : `${i}]`}, in ${program}`);
     }
   }
   return out;

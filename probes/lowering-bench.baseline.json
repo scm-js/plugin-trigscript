@@ -1,0 +1,82 @@
+{
+ "LOOP": {
+  "records": 30.2,
+  "triggers": 13.09,
+  "ns": 436.8049999994992
+ },
+ "ADD_CONST": {
+  "records": 9,
+  "triggers": 4,
+  "ns": 133.70000000003574
+ },
+ "ADD_VARS": {
+  "records": 12,
+  "triggers": 5,
+  "ns": 177.39999999987486
+ },
+ "LESS_VARS": {
+  "records": 22,
+  "triggers": 10,
+  "ns": 318.4999999995375
+ },
+ "LESS_CONST": {
+  "records": 9,
+  "triggers": 5,
+  "ns": 131.4000000000106
+ },
+ "EQUALS_VARS": {
+  "records": 5,
+  "triggers": 3,
+  "ns": 75.40000000002001
+ },
+ "ARRAY_READ": {
+  "records": 61.99179487179487,
+  "triggers": 45,
+  "ns": 897.4204102585741
+ },
+ "ARRAY_WRITE": {
+  "records": 11,
+  "triggers": 5,
+  "ns": 156.79999999994592
+ },
+ "FIELD_WRITE": {
+  "records": 4,
+  "triggers": 2,
+  "ns": 62.0000000000248
+ },
+ "FIELD_READ": {
+  "records": 4,
+  "triggers": 2,
+  "ns": 62.0000000000248
+ },
+ "CALL": {
+  "records": 5,
+  "triggers": 3,
+  "ns": 80.30000000002848
+ },
+ "MULTIPLY": {
+  "records": 39,
+  "triggers": 19,
+  "ns": 555.0999999999548
+ },
+ "MASK": {
+  "records": 24,
+  "triggers": 11,
+  "ns": 360.39999999949816
+ },
+ "UNITS": {
+  "records": 15943,
+  "triggers": 7310,
+  "ns": 229236.7999992427
+ },
+ "ARRAY_READ_CONST": {
+  "records": 46.0,
+  "triggers": 37.0,
+  "ns": 653.0
+ },
+ "ARRAY_WRITE_CONST": {
+  "records": 4.0,
+  "triggers": 2.0,
+  "ns": 62.0
+ }
+}

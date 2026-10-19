@@ -128,20 +128,20 @@ export class DebugCursor {
   /** A variable's cells in a program: its own, an array's (a growing one's block as the cursor finds it). */
   private cellsOf(p: VariableMap["programs"][number], name: string): Map<number, true> {
     const out = new Map<number, true>();
-    for (const v of p.vars) if (top(v.id) === name) for (const at of Object.values(v.cells)) if (at != null) for (let r = 0; r < (v.rowed ? 12 : 1); r++) out.set(at + 4 * r, true);
+    for (const v of p.vars) if (top(v.id) === name) for (const at of Object.values(v.cells)) if (at != null) for (let r = 0; r < (v.rowed ? 12 : 1); r++) out.set(at + (v.stride ?? 4) * r, true);
     for (const a of p.arrays) if (top(a.id) === name) for (const [addr] of this.arrayCells(a)) out.set(addr, true);
     return out;
   }
 
   private arrayCells(a: GameArray): Map<number, true> {
     const out = new Map<number, true>();
-    const rows = a.rowed ? 12 : 1;
-    if (!a.dynamic && a.at != null) for (let i = 0; i < Math.min(a.length * rows, 4096); i++) out.set(a.at + 4 * i, true);
+    const rows = a.rowed ? 12 : 1, stride = a.stride ?? 4;
+    if (!a.dynamic && a.at != null) for (let i = 0; i < Math.min(a.length * rows, 4096); i++) out.set(a.at + stride * i, true);
     if (a.dynamic) {
-      for (const c of [a.ptr, a.len]) if (c != null) for (let r = 0; r < rows; r++) out.set(c + 4 * r, true);
+      for (const c of [a.ptr, a.len]) if (c != null) for (let r = 0; r < rows; r++) out.set(c + stride * r, true);
       // (The block the handle points at now, as far as its length says.)
       for (let r = 0; r < rows; r++) {
-        const ptr = a.ptr != null ? this.read32(a.ptr + 4 * r) : 0, len = a.len != null ? this.read32(a.len + 4 * r) : 0;
+        const ptr = a.ptr != null ? this.read32(a.ptr + stride * r) : 0, len = a.len != null ? this.read32(a.len + stride * r) : 0;
         if (ptr) for (let i = 0; i < Math.min(len, 4096); i++) out.set(ptr + 4 * i, true);
       }
     }

@@ -21,6 +21,8 @@ export interface GameVariable {
   rowed: boolean;
   /** The address of each of its cells (`value`; `addr` + `len`; `ptr` + `uid`), null for one nothing in the map uses. */
   cells: Record<string, number | null>;
+  /** Bytes from a row's cell to the next (4; 72 where the rows are an EUDVArray, a variable each); 4 when not said. */
+  stride?: number;
 }
 
 export interface GameArray {
@@ -35,6 +37,8 @@ export interface GameArray {
   dynamic?: boolean;
   ptr?: number | null;
   len?: number | null;
+  /** Bytes from a cell to the next, or from a row's handle to the next (4; 72 for an EUDVArray); 4 when not said. */
+  stride?: number;
 }
 
 export interface GameProgramPlaces {
@@ -92,28 +96,29 @@ export function programVariables(game: VariableReader, map: VariableMap, name: s
   }
   const who = player ?? p.owners[0] ?? 0;
   const { m, u8 } = game;
-  const raw = (at: number | null | undefined, rowed: boolean): number => (at == null ? 0 : m.getUint32(rowed ? at + 4 * who : at, true));
+  const raw = (at: number | null | undefined, rowed: boolean, stride = 4): number => (at == null ? 0 : m.getUint32(rowed ? at + stride * who : at, true));
   const num = (v: number, t: { kind: string; bits?: number | null; unsigned: boolean }): number | boolean => (t.kind === "boolean" ? v !== 0 : t.bits || t.unsigned ? v >>> 0 : v | 0);
   const cString = (at: number): string => { let end = at; while (end < u8.length && end - at < MOST_TEXT && u8[end] !== 0) end++; return utf8.decode(u8.subarray(at, end)); };
   const text = (v: GameVariable): string => {
-    if (v.text === "made") { const at = raw(v.cells.addr, v.rowed); return at ? cString(at) : ""; }
-    const id = raw(v.cells.value, v.rowed);
+    if (v.text === "made") { const at = raw(v.cells.addr, v.rowed, v.stride); return at ? cString(at) : ""; }
+    const id = raw(v.cells.value, v.rowed, v.stride);
     return id ? cString(map.strings + m.getUint32(map.strings + 4 * id, true)) : "";
   };
   const value = (v: GameVariable): unknown => {
-    if (v.kind === "unit") { const ptr = raw(v.cells.ptr, v.rowed); return ptr ? game.unitAt(ptr, raw(v.cells.uid, v.rowed)) : null; }
+    if (v.kind === "unit") { const ptr = raw(v.cells.ptr, v.rowed, v.stride); return ptr ? game.unitAt(ptr, raw(v.cells.uid, v.rowed, v.stride)) : null; }
     if (v.kind === "text") return text(v);
-    return num(raw(v.cells.value, v.rowed), v);
+    return num(raw(v.cells.value, v.rowed, v.stride), v);
   };
   const cells = (a: GameArray): (number | boolean)[] => {
     if (a.dynamic) {
       if (map.heap == null) return [];
-      const ptr = raw(a.ptr, a.rowed), n = Math.min(raw(a.len, a.rowed), MOST_TEXT);
+      const ptr = raw(a.ptr, a.rowed, a.stride), n = Math.min(raw(a.len, a.rowed, a.stride), MOST_TEXT);
       return Array.from({ length: n }, (_, i) => num(m.getUint32(map.heap! + 4 * (ptr + i), true), a));
     }
     if (a.at == null) return new Array(a.length).fill(num(0, a));
     const row = a.rowed ? who * a.length : 0;
-    return Array.from({ length: a.length }, (_, i) => num(m.getUint32(a.at! + 4 * (row + i), true), a));
+    const stride = a.stride ?? 4;
+    return Array.from({ length: a.length }, (_, i) => num(m.getUint32(a.at! + stride * (row + i), true), a));
   };
 
   // As the simulator looks a name up: a number or a boolean, a text, an array, a unit, then a record of fields.
