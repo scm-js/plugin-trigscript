@@ -6,3 +6,5 @@ fixtures/
 probes/*.video
 # The halftone probe's pictures and walks: made on the spot by probes/lib/halftone-gen.mts.
 probes/*.image
+# The sound demo's imported sound: made on the spot by probes/lib/sound-demo-gen.mts.
+probes/*.sound
