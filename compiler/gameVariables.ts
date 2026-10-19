@@ -51,8 +51,13 @@ export interface GameProgramPlaces {
 }
 
 export interface VariableMap {
-  /** The heap's first cell, where growing arrays and made texts keep theirs; null when nothing grows. */
+  /** The heap's first cell, where made texts keep theirs; null when nothing grows. */
   heap: number | null;
+  /**
+   * Where the growing arrays' first cell keeps its value: an EUDVArray as long as the heap (blocks are handed out of
+   * both alike), 72 bytes a cell; null when nothing grows (or the build kept them on the heap, as 3.x did).
+   */
+  cells?: number | null;
   /** Where the map's strings are: a text of the table is read through it. */
   strings: number;
   programs: GameProgramPlaces[];
@@ -65,14 +70,20 @@ export const isMachineLine = (line: string): boolean => /^TRIGSCRIPT-[A-Z]+ /.te
 
 /** The variable map in a build's log; null when the build did not say one (or said it cut short). */
 export function readVariableMap(lines: Iterable<string>): VariableMap | null {
-  let head: { programs: number; heap: number | null; strings: number } | null = null;
+  let head: { programs: number; heap: number | null; cells?: number | null; strings: number } | null = null;
   const programs: GameProgramPlaces[] = [];
   for (const line of lines) {
     if (line.startsWith(HEAD)) head = JSON.parse(line.slice(HEAD.length));
     else if (line.startsWith(PROGRAM)) programs.push(JSON.parse(line.slice(PROGRAM.length)));
   }
   if (!head || programs.length !== head.programs) return null;
-  return { heap: head.heap, strings: head.strings, programs: programs.sort((a, b) => a.index - b.index) };
+  return { heap: head.heap, ...(head.cells != null ? { cells: head.cells } : {}), strings: head.strings, programs: programs.sort((a, b) => a.index - b.index) };
+}
+
+/** Where cell `i` of a growing array's block (`ptr`, its place among the cells) keeps its value; null when nothing grows. */
+export function listCellAt(map: VariableMap, ptr: number, i: number): number | null {
+  if (map.cells != null) return map.cells + 72 * (ptr + i);
+  return map.heap == null ? null : map.heap + 4 * (ptr + i);
 }
 
 /** What reading needs of the game: its memory, and a unit by its pointer and the uniqueness byte kept with it. */
@@ -111,9 +122,9 @@ export function programVariables(game: VariableReader, map: VariableMap, name: s
   };
   const cells = (a: GameArray): (number | boolean)[] => {
     if (a.dynamic) {
-      if (map.heap == null) return [];
+      if (map.heap == null && map.cells == null) return [];
       const ptr = raw(a.ptr, a.rowed, a.stride), n = Math.min(raw(a.len, a.rowed, a.stride), MOST_TEXT);
-      return Array.from({ length: n }, (_, i) => num(m.getUint32(map.heap! + 4 * (ptr + i), true), a));
+      return Array.from({ length: n }, (_, i) => num(m.getUint32(listCellAt(map, ptr, i)!, true), a));
     }
     if (a.at == null) return new Array(a.length).fill(num(0, a));
     const row = a.rowed ? who * a.length : 0;

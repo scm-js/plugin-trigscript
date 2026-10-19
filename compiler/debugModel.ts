@@ -9,7 +9,7 @@
  * the same memory as before frame k + 1's first step.
  */
 import type { DebugRecording } from "./gameDebug";
-import { programVariables, type GameArray, type GameVariable, type VariableMap } from "./gameVariables";
+import { listCellAt, programVariables, type GameArray, type GameVariable, type VariableMap } from "./gameVariables";
 
 export interface DebugPlace { file: string; line: number }
 export interface DebugAt { k: number; s: number }
@@ -142,7 +142,7 @@ export class DebugCursor {
       // (The block the handle points at now, as far as its length says.)
       for (let r = 0; r < rows; r++) {
         const ptr = a.ptr != null ? this.read32(a.ptr + stride * r) : 0, len = a.len != null ? this.read32(a.len + stride * r) : 0;
-        if (ptr) for (let i = 0; i < Math.min(len, 4096); i++) out.set(ptr + 4 * i, true);
+        if (ptr) for (let i = 0; i < Math.min(len, 4096); i++) { const at = this.map ? listCellAt(this.map, ptr, i) : null; if (at !== null) out.set(at, true); }
       }
     }
     return out;

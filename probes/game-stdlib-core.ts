@@ -2,7 +2,8 @@
 //   npx tsx scripts/test-game.mts probes/game-stdlib-core.ts
 // Every value starts from a number the game holds (gas, which the program sets first).
 import { test, expect, program, displayText, setResources, gas, sleep, frames, nextFrame, P1 } from "trigscript";
-import { every, after, Cooldown } from "trigscript/timers";
+import { every, after, Cooldown, over, spread } from "trigscript/timers";
+import { memory } from "trigscript";
 import { Signal } from "trigscript/signals";
 import { Random, range } from "trigscript/random";
 import { Vec, lerp, easeOutQuad, radians, degrees } from "trigscript/math";
@@ -58,6 +59,19 @@ program(async () => {
   // D: math — lerp with easing, a vector turned and measured. 19.375 63 -200
   const v = Vec.fromAngle(radians(fixed(90)), fixed(2)).add(new Vec(fixed(1), fixed(0)));
   displayText(`D: ${lerp(fixed(10), fixed(20), easeOutQuad(fixed(g) / 4))} ${Math.round(degrees(v.angle()))} ${Math.round(v.rotate(radians(fixed(90))).x * 100)}`);
+  await sleep(frames(1));
+
+  // E: over and spread — an array that grows walked two a frame, its elements its own; a count three a frame. 10@0 11@0 12@1 13@1 14@2 | 60 | 2 12 22 33
+  const bs: Vec[] = [];
+  for (let j = 0; j < g + 2; j++) bs.push(new Vec(fixed(j), fixed(10)));
+  const from = memory.game.frame;
+  let walk = "";
+  for await (const b of over(bs, { per: 2 })) { b.x += b.y; walk += `${Math.floor(b.x)}@${memory.game.frame - from} `; }
+  let sum = 0;
+  for (const b of bs) sum += Math.floor(b.x);
+  const xs: number[] = [];
+  for await (const j of spread(g + 1, { per: 3 })) xs.push(j * 10 + memory.game.frame - from);
+  displayText(`E: ${walk}| ${sum} | ${xs.join(" ")}`);
 });
 
 test("timers", (sim) => {
@@ -75,4 +89,8 @@ test("random", (sim) => {
 test("math", (sim) => {
   sim.frames(40);
   expect(sim).toHavePrinted("D: 19.375 63 -200");
+});
+test("over and spread", (sim) => {
+  sim.frames(50);
+  expect(sim).toHavePrinted("E: 10@0 11@0 12@1 13@1 14@2 | 60 | 2 12 22 33");
 });

@@ -43,6 +43,7 @@
  */
 import { I32_MAX, UNIT_FLAGS, isTextExpr, mapText, mapTextOperands, programDeclarations, type At, type BoolExpr, type Call, type NumExpr, type Program, type Stmt, type TextExpr, type TextMap, type TextPart, type UnitExpr, type VarDecl } from "./ir";
 import type { ProgramDiagnostic } from "./eud";
+import { divisionByThresholds } from "./thresholds";
 
 /** `flex`: a constant from 0 to 2 147 483 647, which is the same whichever way it is read. `fixed`: a 16.16 number. */
 type NumType = "i32" | "u32" | "flex" | "fixed";
@@ -299,6 +300,8 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
         const t = types.reduce((a, b) => unify(a, b, e.at, `Math.${e.name}()`));
         if (t === "fixed") { e.args = e.args.map((a, i) => asFixed(a, types[i], e.at)); return [e, "fixed"]; }
         if (t === "u32") e.unsigned = true;
+        // Math.min(H, Math.floor(C / x)): comparisons with thresholds worked out now, not a division (thresholds.ts).
+        if (settled && t !== "u32") { const tree = divisionByThresholds(e); if (tree) return [tree, "i32"]; }
         return [e, t === "flex" ? "i32" : t];
       }
       case "call": call(e.call); { const d = e.call.result?.decl; return [e, d?.fixed ? "fixed" : d?.unsigned ? "u32" : "i32"]; }
