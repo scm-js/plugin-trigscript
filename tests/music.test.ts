@@ -1,0 +1,121 @@
+/**
+ * The standard library's "trigscript/music": a song's tables made when the script is built — tempo, holds, chords,
+ * a kit's letters, the voice limit — and the program that plays them, each note on its frame in the simulator; a song
+ * rendered into one clip; and `if (clip)` decided when the script is built.
+ */
+import ts from "typescript";
+import { describe, expect, it } from "vitest";
+import { compileScript, type CompileResult } from "../compiler/compiler";
+import { defaultScriptNames } from "../compiler/names";
+import { defaultLib } from "../bundle/lib.mjs";
+import { ProgramSimulation } from "../compiler/simulateIr";
+import { ActionType } from "../vendor/triggers";
+import { clipSamples, makeClip, mixdown, tone } from "../compiler/sound";
+
+const LIB = defaultLib();
+const compile = (main: string): CompileResult => compileScript(ts, { "main.ts": main }, defaultScriptNames(), { lib: LIB });
+const errors = (r: CompileResult) => r.diagnostics.map((d) => `${d.file}:${d.line}: ${d.message}`);
+
+/** A script that works a song out and checks it, throwing (a build error) when it is not what is wanted. */
+const check = (setup: string, assertion: string) => compile(`import { music } from "trigscript/music";\n${setup}\nconst fail = (what: string) => { throw new Error(what); };\n${assertion}\n`);
+
+describe("a song, when the script is built", () => {
+  it("rounds the tempo to whole frames a step and says which it plays at", () => {
+    const r = check(
+      `const lead = music.synth();\nconst s = music.song({ bpm: 120 }, music.track(lead, "C4 . . ."));`,
+      `if (s.stepFrames !== 3 || Math.abs(s.bpm - 119.05) > 0.01 || s.steps !== 4) fail(\`\${s.stepFrames} \${s.bpm} \${s.steps}\`);`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+
+  it("starts a note on its step, holds it through each -, and rests on .", () => {
+    const r = check(
+      `const lead = music.synth({ release: 0.01 });\nconst s = music.song({ bpm: 120 }, music.track(lead, "C4 - - . E4 . G4 -"));`,
+      `if (s.at.join() !== "0,12,18") fail(s.at.join());\n` +
+      `if (s.clips.length !== 3 || Math.abs(s.clips[0].seconds - 9 * 0.042) > 0.001 || Math.abs(s.clips[2].seconds - 6 * 0.042) > 0.001) fail(s.clips.map((c) => c.seconds).join());`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+
+  it("sounds chords together, and plays a note made twice as one clip", () => {
+    const r = check(
+      `const lead = music.synth();\nconst s = music.song({ bpm: 120 }, music.track(lead, "C4+E4+G4 . C4+E4+G4 ."));`,
+      `if (s.at.join() !== "0,0,0,6,6,6" || s.clips.length !== 3 || s.which.join() !== "0,1,2,0,1,2") fail(\`\${s.at.join()} / \${s.which.join()}\`);`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+
+  it("plays a kit by its letters, and says when a letter is not in it", () => {
+    const ok = check(
+      `const drums = music.kit({ k: tone(60, 0.1), h: noise(0.02) });\nconst s = music.song({ bpm: 120 }, music.track(drums, "kh h | k ."));`,
+      `if (s.at.join() !== "0,0,3,6" || s.clips.length !== 2) fail(s.at.join());`,
+    );
+    expect(errors(ok)).toEqual([]);
+    const bad = check(`const drums = music.kit({ k: tone(60, 0.1) });\nconst s = music.song({ bpm: 120 }, music.track(drums, "k s"));`, "");
+    expect(errors(bad).join("\n")).toMatch(/Step 2: the kit has no "s"/);
+  });
+
+  it("refuses a song that would sound more than the game's 32 at once", () => {
+    const chord = Array.from({ length: 33 }, (_, k) => ["C", "D", "E", "F", "G", "A", "B"][k % 7] + (2 + Math.floor(k / 7))).join("+");
+    const r = check(`const lead = music.synth();\nconst s = music.song({ bpm: 120 }, music.track(lead, "${chord} -"));`, "");
+    expect(errors(r).join("\n")).toMatch(/33 notes would sound at once; the game plays 32/);
+  });
+
+  it("says what a word that is no note is", () => {
+    const r = check(`const lead = music.synth();\nconst s = music.song({ bpm: 120 }, music.track(lead, "C4 H9"));`, "");
+    expect(errors(r).join("\n")).toMatch(/not "H9"/);
+  });
+});
+
+describe("a song played", () => {
+  it("starts each note on its frame, the clip the table says", () => {
+    const r = compile(`import { music } from "trigscript/music";
+const lead = music.synth();
+const drums = music.kit({ k: tone(60, 0.1).fade(0, 0.05), h: noise(0.03, { volume: 0.2 }) });
+export const song = music.song({ bpm: 120 }, music.track(lead, "C5 - E5 - G5 - - ."), music.track(drums, "kh h kh h kh h kh h"));
+program(async () => { await music.play(song); });
+`);
+    expect(errors(r)).toEqual([]);
+    expect(r.sounds).toHaveLength(5);
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings });
+    sim.run(80);
+    const played = sim.events.filter((e) => e.action.type === ActionType.PlayWav).map((e) => ({ frame: e.frame, path: (r.strings[e.action.wav - 1] as { text: string }).text }));
+    const start = played[0].frame;
+    // Steps of 3 frames: the lead on steps 0, 2 and 4, the kick on 0, 2, 4, 6, the hat on every step.
+    const byFrame = new Map<number, number>();
+    for (const p of played) byFrame.set(p.frame - start, (byFrame.get(p.frame - start) ?? 0) + 1);
+    expect([...byFrame]).toEqual([[0, 3], [3, 1], [6, 3], [9, 1], [12, 3], [15, 1], [18, 2], [21, 1]]);
+    for (const p of played) expect(r.sounds.map((s) => s.path)).toContain(p.path);
+  });
+
+  it("renders into one clip, every note at its time", () => {
+    const r = check(
+      `const lead = music.synth({ volume: 0.3 });\nconst s = music.song({ bpm: 120 }, music.track(lead, "A4 . . . A4 . . ."));\nconst one = music.render(s);`,
+      `if (Math.abs(one.seconds - s.seconds) > 0.001 || one.peak < 0.2 || one.peak > 0.35) fail(\`\${one.seconds} \${s.seconds} \${one.peak}\`);`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+});
+
+describe("what the library is made of", () => {
+  it("decides if (clip) when the script is built: a rest (null) plays nothing, a clip plays", () => {
+    const r = compile(`const NOTES = [tone("A4", 0.1), null, tone("B4", 0.1)];\nprogram(async () => { for (const n of NOTES) { if (n) playWav(n, 0); await nextFrame(); } });\n`);
+    expect(errors(r)).toEqual([]);
+    expect(r.sounds).toHaveLength(2);
+  });
+
+  it("shapes a clip's loudness by an envelope", () => {
+    const c = makeClip(new Float32Array(100).fill(1), 100).envelope([0, 0], [0.1, 1], [0.5, 0.5], [1, 0]);
+    const s = clipSamples(c);
+    expect([s[0], s[5], s[10], s[30], s[50], s[75]].map((v) => Math.round(v * 100) / 100)).toEqual([0, 0.5, 1, 0.75, 0.5, 0.25]);
+  });
+
+  it("mixes clips at their times into one", () => {
+    const one = makeClip(new Float32Array(10).fill(0.5), 100);
+    const m = mixdown([{ clip: one, at: 0 }, { clip: one, at: 0.05 }], 0.3);
+    const s = clipSamples(m);
+    expect([m.seconds, s[0], s[6], s[12], s[20]]).toEqual([0.3, 0.5, 1, 0.5, 0]);
+    expect(() => mixdown([])).toThrow(/one at least/);
+    expect(tone(440, 0.1).rate).toBe(22050);
+  });
+});

@@ -221,6 +221,7 @@ export interface Clip {
   then(...clips: Clip[]): Clip;
   mix(other: Clip, at?: number): Clip;
   repeat(times: number): Clip;
+  envelope(...points: readonly (readonly [number, number])[]): Clip;
 }
 
 interface ClipInside { samples: Float32Array; adpcm?: Uint8Array }
@@ -294,6 +295,22 @@ export function makeClip(samples: Float32Array, rate: number, adpcm?: Uint8Array
       for (let i = 0; i < o.length; i++) out[from + i] += o[i];
       return makeClip(out, rate);
     },
+    envelope(...points) {
+      // Loudness through the clip, a straight line between [seconds, level] points: the first level before the first,
+      // the last after the last.
+      if (points.length === 0) throw new Error("envelope() takes [seconds, level] points: envelope([0, 0], [0.01, 1], [0.3, 0]).");
+      const ps = points.map((p, k) => {
+        if (!Array.isArray(p) || p.length !== 2) throw new Error(`envelope()'s point ${k + 1} is [seconds, level].`);
+        return [num(p[0], "a point's seconds") * rate, num(p[1], "a point's level")] as const;
+      });
+      for (let k = 1; k < ps.length; k++) if (ps[k][0] < ps[k - 1][0]) throw new RangeError("envelope()'s points go forward in time.");
+      let k = 0;
+      return map((v, i) => {
+        while (k < ps.length && ps[k][0] <= i) k++;
+        const level = k === 0 ? ps[0][1] : k === ps.length ? ps[k - 1][1] : ps[k - 1][1] + ((ps[k][1] - ps[k - 1][1]) * (i - ps[k - 1][0])) / (ps[k][0] - ps[k - 1][0] || 1);
+        return v * level;
+      });
+    },
     repeat(times) {
       if (!Number.isInteger(num(times, "repeat()")) || times < 1) throw new RangeError(`repeat() takes a whole number of times, 1 or more, not ${times}.`);
       const out = new Float32Array(samples.length * times);
@@ -303,6 +320,29 @@ export function makeClip(samples: Float32Array, rate: number, adpcm?: Uint8Array
   };
   inside.set(clip, { samples, ...(adpcm ? { adpcm } : {}) });
   return Object.freeze(clip);
+}
+
+/**
+ * Many clips laid over one another, each from its own time (seconds), as one clip at the first's rate: what a song
+ * sounds like when it is mixed when the script is built. `seconds` makes it that long at least.
+ */
+export function mixdown(parts: unknown, seconds?: unknown): Clip {
+  if (!Array.isArray(parts) || parts.length === 0) throw new Error("mixdown() takes { clip, at } parts, one at least.");
+  const list = parts.map((p, k) => {
+    const c = (p as { clip?: unknown })?.clip, at = (p as { at?: unknown })?.at ?? 0;
+    if (!isClip(c)) throw new Error(`mixdown()'s part ${k + 1} has no clip.`);
+    if (num(at, "a part's time") < 0) throw new RangeError("A part's time is 0 seconds or more.");
+    return { c, at: at as number };
+  });
+  const rate = list[0].c.rate;
+  const length = Math.max(seconds === undefined ? 0 : Math.round(num(seconds, "mixdown()'s length") * rate), ...list.map((p) => Math.round(p.at * rate) + Math.round(p.c.seconds * rate)));
+  if (length / rate > MAX_SECONDS) throw new RangeError(`A clip is at most ${MAX_SECONDS / 60} minutes long.`);
+  const out = new Float32Array(length);
+  for (const p of list) {
+    const s = resample(inside.get(p.c)!.samples, p.c.rate, rate), from = Math.round(p.at * rate);
+    for (let i = 0; i < s.length && from + i < length; i++) out[from + i] += s[i];
+  }
+  return makeClip(out, rate);
 }
 
 /** A clip's samples (for the compiler's own work and the editor's player, not in the declarations). */

@@ -515,6 +515,11 @@ ${kw}interface Clip {
   mix(other: Clip, at?: number): Clip;
   /** Played \`times\` times, one after another. */
   repeat(times: number): Clip;
+  /**
+   * Its loudness through time, a straight line between [seconds, level] points — an instrument's attack,
+   * decay, sustain and release: \`tone("C4", 0.5).envelope([0, 0], [0.01, 1], [0.1, 0.6], [0.4, 0.6], [0.5, 0])\`
+   */
+  envelope(...points: readonly (readonly [number, number])[]): Clip;
 }
 /**
  * When the script is built: a tone of \`pitch\` — hertz, or a note's name: "A4" (440), "C#5", "Eb3" — for
@@ -526,6 +531,11 @@ ${kw}function tone(pitch: number | string, seconds: number, options?: { readonly
 ${kw}function noise(seconds: number, options?: { readonly volume?: number; readonly rate?: number }): Clip;
 /** When the script is built: nothing for \`seconds\`, to put a gap between clips: \`a.then(silence(0.2), b)\`. */
 ${kw}function silence(seconds: number, options?: { readonly rate?: number }): Clip;
+/**
+ * When the script is built: clips laid over one another, each from its own time in seconds, as one clip —
+ * a song mixed before the game, every note exactly in time. \`mixdown([{ clip: kick, at: 0 }, { clip: hat, at: 0.25 }])\`
+ */
+${kw}function mixdown(parts: readonly { readonly clip: Clip; readonly at: number }[], seconds?: number): Clip;
 /** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
 ${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
 /**

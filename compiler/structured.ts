@@ -11634,6 +11634,10 @@ export class Structured {
     if (isMouse(v)) { this.c.error(at, "mouse() is a place on the map, not a condition: compare its x or its y."); return FALSE; }
     if (Array.isArray(v) && v.length > 0 && v.every(isCondition)) return { kind: "and", items: v.map((c) => this.mark<BoolExpr>({ kind: "cond", record: { ...c.record } }, at)) };
     if (isAction(v)) { this.c.error(at, "This is an action, not a condition."); return FALSE; }
+    // Anything else known when the script is built is true or false as in JavaScript: a note or a rest (null) of a
+    // pattern, a clip, a picture — \`if (note) playWav(note)\` in a loop unrolled over them.
+    if (v === null || v === undefined) return FALSE;
+    if (typeof v === "object" || typeof v === "function") return TRUE;
     this.c.error(at, `Expected a condition, got ${describe(v)}.`);
     return FALSE;
   }

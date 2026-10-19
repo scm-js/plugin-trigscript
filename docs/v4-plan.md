@@ -1618,6 +1618,27 @@ freely within 32 voices, each note's length and loudness baked into its file.
 - **A gap for the music library:** `if (clip)` on a value known when the script is built (a rest as null in an
   unrolled loop) is taken as a game condition and refused; the demo plays a short silence for a rest instead.
 
+### Sounds: layer 3, "trigscript/music" (built 2026-10-19)
+
+- **Instruments**, when the script is built: `music.sampler(clip, root)` (every note the recording played faster or
+  slower), `music.synth({ wave, volume, attack, decay, sustain, release })` (a tone through `Clip.envelope`, new),
+  `music.kit({ k: kick, s: snare, … })` (a clip a letter). `instrument.note("C6", 0.1)` is a clip on its own — a sound
+  effect from an instrument. Notes are remembered, so a note played twice is one clip and one file.
+- **Patterns**: steps a word each — a note's name starts it, `+` joins a chord, `-` holds, `.` rests, `|` is for the
+  eye; a kit's step is its letters. `music.song({ bpm, steps }, ...tracks)` works it all out: a step is a whole number
+  of frames, so the tempo is the nearest that fits (`song.bpm`); the song is two tables — the frame each note starts on
+  and which clip it is — and its clips. More than 32 notes at once is refused, at the step it happens.
+- **Playing**: `music.play(song)` reads the tables while the game runs: sleep to the next note's frame, then the clip
+  by its number — a test a clip, unrolled over the song's clips, which stay values of the build (a clip is no value a
+  program holds). `music.loop(song)` repeats it; `start()` puts either beside the program. `music.render(song)` mixes
+  the song into one clip when the script is built (`mixdown`, new): exact timing, one sound, but its size — a tonal mix
+  goes in as 16-bit (Ode to Joy's 19 seconds: 832 KB).
+- **The language**: \`if (clip)\` on a value of the build is decided at build — null or undefined false, any other
+  object true, as in JavaScript — after every kind of the game's own (a condition, a read, a table, input) is tried.
+- **Checked**: `tests/music.test.ts` — tempo rounding, holds, chords, a kit, the voice limit, a bad note, playback on
+  the right frames in the simulator, a render. **Demo** `probes/music-demo.ts` (Ode to Joy, four tracks, 33 clips,
+  1.1 MB, about 285 conditions and actions a frame): lifted game clean; awaiting play.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
