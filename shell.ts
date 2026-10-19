@@ -29,6 +29,7 @@ const ICONS = {
   "new-folder": "ea80",
   "device-camera-video": "ead9",
   "file-media": "eaea",
+  unmute: "eb75",
   "debug-pause": "ead1",
   folder: "ea83",
   "folder-opened": "eaf7",

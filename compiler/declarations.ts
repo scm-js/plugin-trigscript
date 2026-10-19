@@ -483,6 +483,59 @@ ${kw}interface Image {
    */
   halftone(cellWidth: number, cellHeight?: number, options?: { readonly diffuse?: boolean }): readonly string[];
 }
+/**
+ * A sound when the script is built: imported (\`import boom from "./boom.sound"\`, made by Import Video… in
+ * the Explorer from any sound file) or made by tone(), noise() and silence(). Every method makes a new clip.
+ * A program plays one with playWav(boom); the build puts each clip it plays in the map once.
+ * In the game a sound starts within 21 ms of its frame; playing it again adds a second copy beside the
+ * first, and nothing stops one, so a clip's length and loudness are what is heard. 32 play at once, and
+ * copies add with no limiter: keep peak under 1 where they overlap. A clip goes in the map as IMA ADPCM,
+ * a quarter of 16-bit, unless that would distort it (the jumps of a square or saw wave): then as 16-bit.
+ */
+${kw}interface Clip {
+  /** How long it plays. */
+  readonly seconds: number;
+  /** Samples a second. */
+  readonly rate: number;
+  /** The loudest sample, 0 to 1; above 1 is cut off when the map's file is written. */
+  readonly peak: number;
+  /** The part from \`from\` to \`to\` seconds (the end when left out). */
+  trim(from: number, to?: number): Clip;
+  /** Louder or quieter: 0.5 is half as loud, 2 twice. The game plays it as loud as written. */
+  gain(factor: number): Clip;
+  /** Rising from silence over the first \`inSeconds\`, falling to it over the last \`outSeconds\`. */
+  fade(inSeconds: number, outSeconds?: number): Clip;
+  /** Played backwards. */
+  reverse(): Clip;
+  /** Higher or lower by semitones, as a sampler plays a note: 12 is an octave up and half as long. */
+  pitch(semitones: number): Clip;
+  /** This clip, then each of these after it. */
+  then(...clips: Clip[]): Clip;
+  /** \`other\` played over this one, starting \`at\` seconds in (0 when left out). */
+  mix(other: Clip, at?: number): Clip;
+  /** Played \`times\` times, one after another. */
+  repeat(times: number): Clip;
+  /**
+   * Its loudness through time, a straight line between [seconds, level] points — an instrument's attack,
+   * decay, sustain and release: \`tone("C4", 0.5).envelope([0, 0], [0.01, 1], [0.1, 0.6], [0.4, 0.6], [0.5, 0])\`
+   */
+  envelope(...points: readonly (readonly [number, number])[]): Clip;
+}
+/**
+ * When the script is built: a tone of \`pitch\` — hertz, or a note's name: "A4" (440), "C#5", "Eb3" — for
+ * \`seconds\`. wave: "sine" (the default), "square", "triangle" or "saw"; volume 0 to 1 (0.5).
+ *   const beep = tone("A5", 0.1, { wave: "square", volume: 0.3 }).fade(0, 0.05);
+ */
+${kw}function tone(pitch: number | string, seconds: number, options?: { readonly wave?: "sine" | "square" | "triangle" | "saw"; readonly volume?: number; readonly rate?: number }): Clip;
+/** When the script is built: noise for \`seconds\` (the same every build) — with fade(), a hit or a burst. */
+${kw}function noise(seconds: number, options?: { readonly volume?: number; readonly rate?: number }): Clip;
+/** When the script is built: nothing for \`seconds\`, to put a gap between clips: \`a.then(silence(0.2), b)\`. */
+${kw}function silence(seconds: number, options?: { readonly rate?: number }): Clip;
+/**
+ * When the script is built: clips laid over one another, each from its own time in seconds, as one clip —
+ * a song mixed before the game, every note exactly in time. \`mixdown([{ clip: kick, at: 0 }, { clip: hat, at: 0.25 }])\`
+ */
+${kw}function mixdown(parts: readonly { readonly clip: Clip; readonly at: number }[], seconds?: number): Clip;
 /** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
 ${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
 /**
@@ -1038,6 +1091,11 @@ declare module "*.video" {
 declare module "*.image" {
   const image: Image;
   export default image;
+}
+// ── A sound the script imports: import boom from "./boom.sound"; ──
+declare module "*.sound" {
+  const sound: Clip;
+  export default sound;
 }
 `;
 

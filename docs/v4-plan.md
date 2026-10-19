@@ -1572,6 +1572,75 @@ too big, kept in the archive; every operation on a known picture; a script impor
 mistake and a build-time mistake each said on their line). **In the editor** (headless Chromium, the local build): a
 PNG dropped on the Explorer, each way of keeping it previewed, imported, a script using it 0 problems, the viewer.
 
+### Sounds: the probe (played 2026-10-19)
+
+Wanted: sound effects and music from a program. Before the language: what StarCraft: Remastered does with sounds a
+program plays (`probes/sound-probe.ts`; its sounds made by `probes/lib/sound-probe-map.mts`, each a tone or click of
+its own so the audio says which played and when). Played, two rounds, recording 12.22.41.27; measured from its audio
+(48 kHz, digital silence between sounds, so a start is read to the sample). Both rounds agree to the sample.
+
+- **Timing.** A sound starts on a 21.3 ms grid — 1 024 samples at 48 kHz, the mixer's buffer — so up to one buffer
+  after its frame (12–14 ms standard deviation); the spacing over time is exact (6 frames: 252.2 ms on average).
+  One every frame plays every time (60 of 60). Good enough for music at game speeds; not for sub-buffer flams.
+- **The WAV list.** A sound named by no WAV slot starts on the same grid as a listed one, the first time too: no
+  loading delay. The list is for the editor, not for timing.
+- **Again is another.** Playing a sound that is still playing starts a second copy beside it; there is no restart,
+  and no action stops a sound — a note's length is the file's.
+- **Voices.** 32 different sounds at once, all heard to their ends: none cut, none dropped.
+- **Copies add.** Eight copies in one frame are exactly eight times as loud — summed, no limiter: a library keeps its
+  own headroom.
+- **Loudness kept.** A tone written at a quarter of another comes out at exactly a quarter: a gain made when the
+  script is built is the gain heard.
+- **Formats.** 8- and 16-bit PCM at 11, 22, 44 (stereo) and 48 kHz, IMA ADPCM and Ogg Vorbis all play; **Ogg Opus
+  is silent.** Programs are Remastered-only, so Vorbis is open to them; IMA ADPCM is a quarter of 16-bit PCM and
+  simple to write in the editor, where no Vorbis encoder is at hand.
+
+So the music library can fire notes per frame (42 ms on Fastest) from pitched copies made at build, overlapping
+freely within 32 voices, each note's length and loudness baked into its file.
+
+### Sounds: layer 2, a script's own sounds (built 2026-10-19)
+
+- **`.sound` files** (`compiler/sound.ts`): Import Video… on any sound file the browser decodes makes one — mono IMA
+  ADPCM at 11, 22 or 44 kHz, the coding the game's own sounds use, kept as decoded (`soundImport.ts`: an offline
+  render does the resampling and the mix to mono; a waveform, Play and Stop). Up to ten minutes.
+- **`Clip`, when the script is built**: `trim`, `gain`, `fade`, `reverse`, `pitch` (a sampler's: faster and higher),
+  `then`, `mix`, `repeat`, `seconds`, `rate`, `peak`; `tone(pitch | "A4", seconds, { wave, volume })` (square and
+  saw rounded off by PolyBLEP, so nothing folds back past half the rate), `noise`, `silence`.
+- **Into the map**: `playWav(clip)` puts the clip in the archive as `staredit\wav\trigscript-<hash>.wav` when the
+  script is built, once however often it is played (the runtime's text argument takes a clip, so a program and a
+  trigger both do); Apply writes them and takes out the ones no longer played (`script.ts` `withSounds`).
+- **ADPCM or 16-bit.** The sound demo (`probes/sound-demo.ts`, played 2026-10-19: "very nice, though C is a bit harsh
+  at the end of each note"): ADPCM codes each sample as a step from the last, and a square wave's jumps came back
+  at 12–17 dB of fidelity, heard as harsh; a plucked string's pitched notes at 18–24 dB sounded clean, and noise at
+  11–15 dB fine (the error is lost in it). So a clip goes in as 16-bit PCM when it is a tone (it repeats itself,
+  `periodicity` ≥ 0.5) and ADPCM would keep it under 18 dB; otherwise ADPCM, a quarter of the size. The demo: 17
+  ADPCM, 6 16-bit (the square notes), 217 KB.
+- **A gap for the music library:** `if (clip)` on a value known when the script is built (a rest as null in an
+  unrolled loop) is taken as a game condition and refused; the demo plays a short silence for a rest instead.
+
+### Sounds: layer 3, "trigscript/music" (built 2026-10-19)
+
+- **Instruments**, when the script is built: `music.sampler(clip, root)` (every note the recording played faster or
+  slower), `music.synth({ wave, volume, attack, decay, sustain, release })` (a tone through `Clip.envelope`, new),
+  `music.kit({ k: kick, s: snare, … })` (a clip a letter). `instrument.note("C6", 0.1)` is a clip on its own — a sound
+  effect from an instrument. Notes are remembered, so a note played twice is one clip and one file.
+- **Patterns**: steps a word each — a note's name starts it, `+` joins a chord, `-` holds, `.` rests, `|` is for the
+  eye; a kit's step is its letters. `music.song({ bpm, steps }, ...tracks)` works it all out: a step is a whole number
+  of frames, so the tempo is the nearest that fits (`song.bpm`); the song is two tables — the frame each note starts on
+  and which clip it is — and its clips. More than 32 notes at once is refused, at the step it happens.
+- **Playing**: `music.play(song)` reads the tables while the game runs: sleep to the next note's frame, then the clip
+  by its number — a test a clip, unrolled over the song's clips, which stay values of the build (a clip is no value a
+  program holds). `music.loop(song)` repeats it; `start()` puts either beside the program. `music.render(song)` mixes
+  the song into one clip when the script is built (`mixdown`, new): exact timing, one sound, but its size — a tonal mix
+  goes in as 16-bit (Ode to Joy's 19 seconds: 832 KB).
+- **The language**: \`if (clip)\` on a value of the build is decided at build — null or undefined false, any other
+  object true, as in JavaScript — after every kind of the game's own (a condition, a read, a table, input) is tried.
+- **Checked**: `tests/music.test.ts` — tempo rounding, holds, chords, a kit, the voice limit, a bad note, playback on
+  the right frames in the simulator, a render. **Demo** `probes/music-demo.ts` (Ode to Joy, four tracks, 33 clips,
+  1.1 MB, about 285 conditions and actions a frame): lifted game clean. **Played 2026-10-19** (recording 13.07.38.31):
+  note by note against the same song mixed at build, onset by onset (34 of them): 7.8 ms apart on average (sd), 16 at
+  most, no drift over the song; equally loud second by second; a hit every 589.5 ms for the 588 written.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
