@@ -140,10 +140,10 @@ export function pathOf(member: string): string | null {
 }
 
 /** What a file of the script ends in: TypeScript, TypeScript with JSX, or a video, an image or a sound it imports (`compiler/media.ts`). */
-const SCRIPT_FILE = /\.(?:tsx?|video|image|sound)$/i;
+const SCRIPT_FILE = /\.(?:tsx?|video|image|sound|notes)$/i;
 
-/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts` (or `.tsx`, `.video`, `.image`, `.sound`). */
-export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video|image|sound)$/;
+/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts` (or `.tsx`, `.video`, `.image`, `.sound`, `.notes`). */
+export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video|image|sound|notes)$/;
 
 function member(extras: Extras, name: string): Uint8Array | undefined {
   const key = memberKey(name);

@@ -43,7 +43,7 @@
  * `render` mixes a song into one clip when the script is built instead: every note exactly in time, one sound playing,
  * nothing to change while it plays. A program plays to its own player; a program for each player plays to each.
  */
-import { game, sleep, frames, playWav, tone, noise, fm, pluck, mixdown, type Clip } from "trigscript";
+import { game, sleep, frames, playWav, tone, noise, fm, pluck, mixdown, type Clip, type Notes } from "trigscript";
 
 /** Seconds a frame lasts on Fastest, the speed a map is played at. */
 const FRAME = 0.042;
@@ -69,7 +69,7 @@ export interface Kit {
 const SEMITONE: Readonly<Record<string, number>> = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
 
 /** A note's number, 69 for A4: "C4" is 60, "C#4" 61, "Db4" 61. */
-function midi(name: string): number {
+function noteNumber(name: string): number {
   const m = /^([A-Ga-g])([#b]?)(-?\d)$/.exec(name);
   if (!m) throw new Error(`A note is a name with its octave — "C4", "F#5", "Bb2" — not ${JSON.stringify(name)}.`);
   return 12 * (Number(m[3]) + 1) + SEMITONE[m[1].toLowerCase()] + (m[2] === "#" ? 1 : m[2] === "b" ? -1 : 0);
@@ -92,11 +92,11 @@ function remembering(make: (name: string, seconds: number, rate?: number) => Cli
  * is as long as the recording.
  */
 export function sampler(clip: Clip, root: string = "C4", options: { readonly release?: number; readonly volume?: number } = {}): Instrument {
-  const base = midi(root), release = options.release ?? 0.05, volume = options.volume ?? 1;
+  const base = noteNumber(root), release = options.release ?? 0.05, volume = options.volume ?? 1;
   return Object.freeze({
     kind: "notes" as const,
     note: remembering((name, seconds) => {
-      const pitched = clip.pitch(midi(name) - base).gain(volume);
+      const pitched = clip.pitch(noteNumber(name) - base).gain(volume);
       return pitched.trim(0, Math.min(pitched.seconds, seconds)).fade(0, Math.min(release, seconds / 2));
     }),
   });
@@ -154,7 +154,7 @@ export function synth(options: SynthOptions = {}): Instrument {
     note: remembering((name, seconds, rate) => {
       const held = Math.max(amp.attack + amp.decay, seconds - amp.release), length = held + amp.release;
       const r = rate === undefined ? {} : { rate };
-      const pitch = options.glide ? [[0, 440 * 2 ** ((midi(name) + options.glide - 69) / 12)], [options.glideTime ?? 0.06, name]] as [number, number | string][] : name;
+      const pitch = options.glide ? [[0, 440 * 2 ** ((noteNumber(name) + options.glide - 69) / 12)], [options.glideTime ?? 0.06, name]] as [number, number | string][] : name;
       let c = tone(pitch, length, { wave, volume, voices, detune, width, ...r });
       if (f) {
         const amount = f.amount ?? 0, base = f.cutoff;
@@ -273,7 +273,7 @@ function nameOf(n: number): string {
 }
 
 /** Each note of a step moved by a function of its number; holds, rests, kit letters and "@" kept. */
-const eachNote = (p: Pattern, move: (n: number) => number): string[] => wordsOf(p).map((w) => w.replace(/[A-Ga-g][#b]?-?\d/g, (name) => nameOf(move(midi(name)))));
+const eachNote = (p: Pattern, move: (n: number) => number): string[] => wordsOf(p).map((w) => w.replace(/[A-Ga-g][#b]?-?\d/g, (name) => nameOf(move(noteNumber(name)))));
 
 /** A pattern `semitones` up (or down: a negative number): `transpose(tune, 12)` is the tune an octave up. A text a bar stays a text a bar. */
 export function transpose(p: Pattern, semitones: number): Pattern {
@@ -314,12 +314,12 @@ function chordNumbers(symbol: string, octave: number, inversion: number): number
   const steps = m ? QUALITIES[m[2]] : undefined;
   if (!m || !steps) throw new Error(`A chord is a root and what kind — "Am", "C", "G7", "Fmaj7", "Dm7", "Esus4", "Bdim", "C/E" — not ${JSON.stringify(symbol)}. The kinds: ${Object.keys(QUALITIES).map((q) => `"${q}"`).join(", ")}.`);
   if (!Number.isInteger(inversion) || inversion < 0 || inversion >= steps.length) throw new Error(`${symbol} has ${steps.length} notes: its inversion is 0 to ${steps.length - 1}, not ${inversion}.`);
-  const root = midi(m[1] + octave);
+  const root = noteNumber(m[1] + octave);
   const notes = steps.map((s) => root + s);
   for (let k = 0; k < inversion; k++) notes.push(notes.shift()! + 12);
   if (m[3]) {
     // Over another bass: that note, below the rest.
-    let bass = midi(m[3] + octave);
+    let bass = noteNumber(m[3] + octave);
     while (bass >= notes[0]) bass -= 12;
     notes.unshift(bass);
   }
@@ -335,7 +335,7 @@ export function chord(symbol: string, octave: number = 4, inversion: number = 0)
 }
 
 /** Each chord's notes as numbers, lowest first: the ones written, or the symbol's at `octave`. */
-const notesOf = (c: string, octave: number): number[] => (/\d/.test(c) ? c.split("+").map(midi).sort((a, b) => a - b) : chordNumbers(c, octave, 0));
+const notesOf = (c: string, octave: number): number[] => (/\d/.test(c) ? c.split("+").map(noteNumber).sort((a, b) => a - b) : chordNumbers(c, octave, 0));
 
 /**
  * A chord played as `template` says: its steps name the chord's notes by number, 1 the lowest — "1 3 2 3", "1+2+3 - - -"
@@ -670,7 +670,7 @@ function compose(options: SongOptions, tracks: readonly Track[], sections: reado
       while (s + length < ws.length && ws[s + length] === "-") length++;
       const seconds = swing === 0 ? length * stepSeconds : (time(s + length) - time(s)) * FRAME;
       for (const name of body.split("+")) {
-        midi(name);
+        noteNumber(name);
         score.push({ at: time(s), track: t, made, velocity, ...into, name, seconds });
       }
     });
@@ -713,6 +713,65 @@ function compose(options: SongOptions, tracks: readonly Track[], sections: reado
   });
   scores.set(made, score);
   return made;
+}
+
+/** The General MIDI drums, by number, as `drums()` has them: kicks k, snares s, the clap c, hats h and o, toms t, the rim r, crashes x. */
+const GM_DRUMS: Readonly<Record<number, string>> = {
+  35: "k", 36: "k", 37: "r", 38: "s", 40: "s", 39: "c", 42: "h", 44: "h", 51: "h", 53: "h", 59: "h", 46: "o",
+  41: "t", 43: "t", 45: "t", 47: "t", 48: "t", 50: "t", 49: "x", 52: "x", 55: "x", 57: "x",
+};
+
+/** How imported notes are made a song: its grid, and which kit letter a drum's number plays. */
+export interface MidiOptions extends Omit<SongOptions, "bpm"> {
+  /** Beats a minute: the file's own when left out. */
+  readonly bpm?: number;
+  /** A drum's MIDI number to a kit's letter, over General MIDI's (36 "k", 38 "s", 42 "h", 46 "o", 49 "x", …). */
+  readonly drums?: Readonly<Record<number, string>>;
+}
+
+/**
+ * A song of imported notes (`import tune from "./tune.notes"`): each track `parts` names — by its name, or its place
+ * in `tune.tracks` from 0 — played by an instrument, a kit (the drums by their General MIDI numbers) or a `part`;
+ * the tracks not named are left out. Each note starts on the step nearest its time and lasts the steps nearest its
+ * length (`steps` a beat, 4: sixteenths); how hard it was struck is how loud it plays, 100 as written. A track whose
+ * notes overlap becomes several, so the song can hold them. At the file's first tempo unless `bpm` says.
+ */
+export function midi(notes: Notes, parts: Readonly<Record<string, Instrument | Kit | Part>>, options: MidiOptions = {}): Song {
+  const perBeat = options.steps ?? 4, map = { ...GM_DRUMS, ...(options.drums ?? {}) };
+  const names = notes.tracks.map((t) => t.name);
+  const tracks: Track[] = [];
+  for (const [key, given] of Object.entries(parts)) {
+    const index = names.indexOf(key) >= 0 ? names.indexOf(key) : /^\d+$/.test(key) ? Number(key) : -1;
+    const source = notes.tracks[index];
+    if (!source) throw new Error(`The notes have no track ${JSON.stringify(key)}: their tracks are ${names.map((n) => JSON.stringify(n)).join(", ")} (or 0 to ${names.length - 1}).`);
+    const instrument = given.kind === "part" ? given.instrument : given, how = given.kind === "part" ? given : {};
+    const kit = instrument.kind === "kit" ? instrument : null;
+    // Voices: steps that each hold one chord at a time; a note joins a chord struck with it, or the first voice free.
+    type Word = { sounds: string[]; velocity: number; length: number };
+    const voices: { words: Map<number, Word>; end: number; last: number }[] = [];
+    const placed = source.notes.map((n) => {
+      const from = Math.round(n.at * perBeat);
+      return { from, length: kit ? 1 : Math.max(1, Math.round((n.at + n.beats) * perBeat) - from), sound: kit ? map[n.pitch] : nameOf(n.pitch), velocity: Math.max(0.05, Math.round((n.velocity / 100) * 20) / 20) };
+    }).filter((n) => n.sound !== undefined && (!kit || n.sound in kit.hits)).sort((a, b) => a.from - b.from || b.length - a.length);
+    for (const n of placed) {
+      let voice = voices.find((v) => { const w = v.words.get(v.last); return v.last === n.from && w !== undefined && w.length === n.length && w.velocity === n.velocity; });
+      if (voice) { const w = voice.words.get(n.from)!; if (!w.sounds.includes(n.sound)) w.sounds.push(n.sound); continue; }
+      voice = voices.find((v) => v.end <= n.from);
+      if (!voice) { voice = { words: new Map(), end: 0, last: -1 }; voices.push(voice); }
+      voice.words.set(n.from, { sounds: [n.sound], velocity: n.velocity, length: n.length });
+      voice.end = n.from + n.length;
+      voice.last = n.from;
+    }
+    for (const v of voices) {
+      const steps: string[] = Array.from({ length: v.end }, () => ".");
+      for (const [at, w] of v.words) {
+        steps[at] = (kit ? w.sounds.join("") : w.sounds.join("+")) + (w.velocity === 1 ? "" : `@${w.velocity}`);
+        if (!kit) for (let k = 1; k < w.length; k++) steps[at + k] = "-";
+      }
+      tracks.push(track(instrument, steps, how));
+    }
+  }
+  return compose({ ...options, bpm: options.bpm ?? notes.bpm, beats: options.beats ?? notes.beats }, tracks, []);
 }
 
 /** The song's reverb in `render`, as `Clip.reverb` takes it, the dry part left out. */
@@ -800,5 +859,5 @@ export const loop = game(async (s: Song) => {
 /** Everything above as one name: import { music } from "trigscript/music"; music.play(song). */
 export const music = {
   sampler, synth, fmSynth, strings, presets, drums, kit, track, song, render, play, loop,
-  part, section, arrange, transpose, stretch, repeat, beat, chord, over, chords, bars, pump, riser, impact,
+  part, section, arrange, transpose, stretch, repeat, beat, chord, over, chords, bars, pump, riser, impact, midi,
 };

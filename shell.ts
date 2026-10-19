@@ -30,6 +30,7 @@ const ICONS = {
   "device-camera-video": "ead9",
   "file-media": "eaea",
   unmute: "eb75",
+  music: "ec1b",
   "debug-pause": "ead1",
   folder: "ea83",
   "folder-opened": "eaf7",

@@ -484,6 +484,37 @@ ${kw}interface Image {
   halftone(cellWidth: number, cellHeight?: number, options?: { readonly diffuse?: boolean }): readonly string[];
 }
 /**
+ * Notes when the script is built, imported from a MIDI file (\`import tune from "./tune.notes"\`, made by
+ * Import Video… from a .mid): each track's notes, in beats from the start. \`music.midi(tune, { Piano: keys })\`
+ * makes a song of the tracks it names, each played by an instrument.
+ */
+${kw}interface Notes {
+  /** The tempo the file starts at, beats a minute. */
+  readonly bpm: number;
+  /** Quarter notes a bar, by the file's time signature (4 for 4/4, 3 for 6/8). */
+  readonly beats: number;
+  /** How often the tempo changes later in the file: a song plays at one tempo, the first. */
+  readonly tempoChanges: number;
+  readonly tracks: readonly NotesTrack[];
+  /** The MIDI file it came from. */
+  readonly source?: string;
+}
+
+/** A track of imported notes: one channel of one track of the MIDI file. */
+${kw}interface NotesTrack {
+  /** Its name in the file (unique among the tracks), or "Track 2", "Track 1 channel 3". */
+  readonly name: string;
+  /** 1 … 16. */
+  readonly channel: number;
+  /** The General MIDI instrument the file asks for, 1 (piano) … 128. */
+  readonly program: number;
+  /** Whether it is on channel 10, the drums. */
+  readonly drums: boolean;
+  /** Its notes in the order they start: \`at\` and \`beats\` in beats (quarter notes), \`pitch\` the MIDI number (60 is C4), \`note\` its name, \`velocity\` 1 … 127. */
+  readonly notes: readonly { readonly at: number; readonly beats: number; readonly pitch: number; readonly note: string; readonly velocity: number }[];
+}
+
+/**
  * A sound when the script is built: imported (\`import boom from "./boom.sound"\`, made by Import Video… in
  * the Explorer from any sound file) or made by tone(), noise() and silence(). Every method makes a new clip.
  * A program plays one with playWav(boom); the build puts each clip it plays in the map once.
@@ -1167,6 +1198,11 @@ declare module "*.image" {
 declare module "*.sound" {
   const sound: Clip;
   export default sound;
+}
+// ── Notes the script imports, from a MIDI file: import tune from "./tune.notes"; ──
+declare module "*.notes" {
+  const notes: Notes;
+  export default notes;
 }
 `;
 
