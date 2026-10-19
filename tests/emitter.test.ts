@@ -108,6 +108,12 @@ function exec(g: Graph, env: Env): Env {
   for (let steps = 0; pc !== END; steps++) {
     if (steps > 2_000_000) throw new Error("the graph does not end");
     const t = byLabel.get(pc)!;
+    if (t.island) {
+      // As the Python side does: the statement on the variables' cells.
+      const cells: Env = new Map([...mem].filter(([k]) => k.startsWith("var:")).map(([k, x]) => [k.slice(4), x as number]));
+      run([t.island], cells, { n: 1e6 });
+      for (const [id, x] of cells) mem.set(`var:${id}`, x);
+    }
     for (const c of t.copy?.into ?? []) mem.set(key(c.dword), u(Math.imul(c.scale ?? 1, read(`var:${t.copy!.from}`) as number) + c.add));
     const holds = t.conds.every((c, k) => {
       const mask = c.mask ?? U32 - 1;
@@ -180,7 +186,11 @@ function program(seed: number) {
     for (let n = 1 + r.int(4); n > 0; n--) {
       const x = r.int(12);
       const f = free();
-      if (x < 5 && f.length) { const t = r.pick(f); out.push({ kind: "assign", target: t.id, value: value(t), at, label: "" }); }
+      if (x < 5 && f.length) {
+        const t = r.pick(f);
+        // Now and then a product of two variables: a statement the emitter leaves to the Python side.
+        out.push({ kind: "assign", target: t.id, value: r.next() < 0.15 ? bin("*", v(r.pick(vars)), v(r.pick(vars))) : value(t), at, label: "" });
+      }
       else if (x < 8 && depth < 3) out.push({ kind: "if", cond: cond(0), then: block(depth + 1, inLoop), ...(r.next() < 0.5 ? { else: block(depth + 1, inLoop) } : {}), at, label: "" });
       else if (x < 10 && depth < 2) out.push(...loop(depth + 1));
       else if (inLoop) out.push({ kind: "if", cond: cond(0), then: [{ kind: r.next() < 0.5 ? "break" : "continue", at, label: "" }], at, label: "" });

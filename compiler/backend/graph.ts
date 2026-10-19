@@ -9,7 +9,7 @@
  * a condition's number, an action's number, destination or modifier, the trigger's next pointer. The emitter decides
  * where every value lives by writing such fields, which is the point of having one.
  */
-import type { At } from "../ir";
+import type { At, Stmt } from "../ir";
 
 /** A dword the graph reads or writes. */
 export type Dword =
@@ -44,7 +44,7 @@ export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: nu
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,
  * or `END` for what follows the graph — or, unset, to the trigger after it in the list.
  */
-export interface Trigger { label: string; conds: Cond[]; acts: Act[]; next?: string; at?: At; copy?: Copy }
+export interface Trigger { label: string; conds: Cond[]; acts: Act[]; next?: string; at?: At; copy?: Copy; island?: Stmt }
 
 /**
  * A copy in the middle of the graph, in place of a trigger (`conds` and `acts` empty, no `next`: the walk goes on to the
@@ -53,6 +53,13 @@ export interface Trigger { label: string; conds: Cond[]; acts: Act[]; next?: str
  * from itself, two that read each other) does after each write.
  */
 export interface Copy { from: string; into: { dword: Dword; add: number; scale?: number }[] }
+
+/*
+ * An island, in place of a trigger as a copy is: a statement the emitter does not lower, which the Python side lowers
+ * where it is, as it would anywhere — every variable it reads is in its cell, and the graph copies what it may write
+ * back into the variable's other places after it. Nothing in it leaves it (no break of a loop outside it, no return,
+ * no wait).
+ */
 
 /** Where the walk goes when it leaves the graph: the statement after it. */
 export const END = "@end";
@@ -87,7 +94,7 @@ export function checkGraph(g: Graph): string[] {
   };
   if (labels.size !== g.triggers.length) out.push("a label is used twice");
   for (const t of g.triggers) {
-    if (t.copy && (t.conds.length || t.acts.length || t.next !== undefined)) out.push(`${t.label}: a copy with conditions, actions or a next of its own`);
+    if ((t.copy || t.island) && (t.conds.length || t.acts.length || t.next !== undefined)) out.push(`${t.label}: a copy or an island with conditions, actions or a next of its own`);
     t.copy?.into.forEach((c, k) => dword(c.dword, `${t.label} copy ${k}`));
     if (t.conds.length > MOST_CONDS) out.push(`${t.label}: ${t.conds.length} conditions`);
     if (t.acts.length > MOST_ACTS) out.push(`${t.label}: ${t.acts.length} actions`);

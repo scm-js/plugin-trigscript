@@ -2730,6 +2730,18 @@ The order, each measured on the bench and the showpieces, each held by every gam
   counter against a signed bound: the bound's sign).
 - *Measured:* the bench's `for (let i = 0; i < m; i++) { }` of 16 turns 1793 → **659 ns** (874 before the test was
   split): a turn is one failed test and the counter's add, about 32 ns. Every game probe passes with the emitter on.
+- *Islands:* a statement the emitter does not lower stays in a taken loop, lowered by the Python side where it is
+  (`Trigger.island`): every variable is in its cell (a cell is always one of its places), and what the island may
+  write — its own stores, its calls' results and parameters, what the functions it calls write — is copied back into
+  the graph's places after it. Not an island: anything that leaves it (a `break` of a loop outside it, `return`), a
+  wait, a `try`; an array read at a `for` loop's counter (the Python side's registers, part 2, are better there); a
+  store of a variable some array is indexed by (the Python side keeps such a counter's offset beside it, `Place`,
+  and steps it at each store it lowers). With islands the raycaster's column loop and four of Snake's loops are
+  taken; every game probe still passes. The raycaster is no faster (0.78 ms against 0.77): its loop is mostly islands
+  (the products, the quotients, the array stores), and the copies after them cost what the routing did. Islands are
+  what lets the emitter take a loop at all; what it gains comes as more of a loop's statements become its own (E3).
+- *Not the emitter's:* the raycaster's game test of its first picture (columns 32–41 not drawn by frame 6) fails at
+  the branch's base too (45ac0d7) — the heights and faces it draws are the simulator's, number for number.
 
 ## Part C — the game, pushed
 

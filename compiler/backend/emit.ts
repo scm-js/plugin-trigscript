@@ -133,30 +133,91 @@ class Scope {
     return list.every((s) => this.stmt(s, inLoop));
   }
 
+  /** The statements left to the Python side, inside a taken loop: what each may write. */
+  islands = new Map<Stmt, Set<string>>();
+  /** A `for` loop's counters (what its update sets), whose arrays the Python side reads through registers of its own. */
+  counters: Set<string>[] = [];
+  /**
+   * The variables some element of an array is read or stored at: the Python side may keep a counter's offset into its
+   * arrays beside it (`Place`), stepped by its own lowering of each store — so a store of one is left to it.
+   */
+  indexed = new Set<string>();
+  functions = new Map<string, Stmt[]>();
+
+  /**
+   * A statement the emitter does not lower, left to the Python side where it is (an *island*): taken when nothing in
+   * it leaves it — no `break` or `continue` of a loop outside it, no `return`, no wait — and it reads no array at a
+   * `for` loop's counter (the Python side has registers for that, part 2). What it may write is copied back into the
+   * places of the graph's after it: its own writes, those of the functions it calls.
+   */
+  island(s: Stmt): boolean {
+    let ok = true;
+    const walk = (x: unknown, loops: number): void => {
+      if (!ok || !x || typeof x !== "object") return;
+      if (Array.isArray(x)) { x.forEach((y) => walk(y, loops)); return; }
+      const o = x as Record<string, unknown>;
+      switch (o.kind) {
+        case "break": case "continue": if (loops === 0) ok = this.no(`a ${o.kind} out of a statement it cannot lower`); break;
+        case "return": case "sleep": case "parallel": case "start": case "try": case "throw": case "uncaught": case "graph":
+          ok = this.no(`a ${o.kind} in a statement it cannot lower`);
+          break;
+        case "element": case "store":
+          if (this.counters.some((c) => [...readIn(o.index as NumExpr)].some((id) => c.has(id)))) ok = this.no("an array read at the loop's counter");
+          break;
+      }
+      const inner = o.kind === "while" || o.kind === "for" || o.kind === "do" || o.kind === "unitLoop" || o.kind === "textLoop" || o.kind === "unrolled" || o.kind === "switch";
+      for (const v of Object.values(o)) if (v && typeof v === "object") walk(v, loops + (inner ? 1 : 0));
+    };
+    walk(s, 0);
+    if (!ok) return false;
+    this.islands.set(s, writes(s, this.functions));
+    return true;
+  }
+
   stmt(s: Stmt, inLoop: boolean): boolean {
     switch (s.kind) {
       case "remark": return true;
       case "block": return this.stmts(s.body, inLoop);
       case "declare": {
-        if (!this.ok(s.decl.id)) return this.no(`the variable ${s.decl.name}`);
-        if (!this.num(s.init as NumExpr)) return false;
+        if (!this.ok(s.decl.id) || !this.lowers(s.init as NumExpr) || this.indexed.has(s.decl.id)) return this.island(s);
+        this.num(s.init as NumExpr);
         this.declared.add(s.decl.id);
         this.written.add(s.decl.id);
         return true;
       }
       case "assign": {
-        if (!this.ok(s.target)) return this.no(`the variable ${this.decls.get(s.target)?.name ?? s.target}`);
-        if (!this.num(s.value)) return false;
+        if (!this.ok(s.target) || !this.lowers(s.value) || this.indexed.has(s.target)) return this.island(s);
+        this.num(s.value);
         this.written.add(s.target);
         return true;
       }
-      case "if": return this.bool(s.cond) && this.stmts(s.then, inLoop) && this.stmts(s.else ?? [], inLoop);
-      case "while": return (!s.cond || this.bool(s.cond)) && this.stmts(s.body, true);
-      case "do": return this.bool(s.cond) && this.stmts(s.body, true);
-      case "for": return (!s.cond || this.bool(s.cond)) && this.stmts(s.update, true) && this.stmts(s.body, true);
+      case "if": return this.test(s.cond) ? this.stmts(s.then, inLoop) && this.stmts(s.else ?? [], inLoop) : this.island(s);
+      case "while": return (!s.cond || this.test(s.cond)) ? this.stmts(s.body, true) : this.island(s);
+      case "do": return this.test(s.cond) ? this.stmts(s.body, true) : this.island(s);
+      case "for": {
+        if (s.cond && !this.test(s.cond)) return this.island(s);
+        this.counters.push(writtenIn(s.update));
+        const ok = this.stmts(s.update, true) && this.stmts(s.body, true);
+        this.counters.pop();
+        return ok;
+      }
       case "break": case "continue": return inLoop;
-      default: return this.no(`a ${s.kind}`);
+      default: return this.island(s);
     }
+  }
+
+  /** Whether the emitter lowers this number (without noting anything). */
+  lowers(e: NumExpr): boolean {
+    const l = linear(e);
+    return !!l && l.terms.every((t) => this.ok(t.id));
+  }
+
+  /** Whether the emitter lowers this test; its reads noted when it does. */
+  test(e: BoolExpr): boolean {
+    const why = this.why;
+    const ok = this.bool(e);
+    if (!ok) this.why = why;
+    return ok;
   }
 }
 
@@ -168,7 +229,7 @@ interface Write { target: string; value: Linear }
 interface WriteAct { into: Place; modifier: "set" | "add"; value: number; reads?: Read }
 /** What an action's or a condition's number holds: the variable times `scale`, plus `add` (wrapping). */
 interface Read { id: string; scale: number; add: number }
-type Item = { act: Act } | { write: Write } | { copy: string };
+type Item = { act: Act } | { write: Write } | { copy: string } | { island: Stmt; writes: Set<string> };
 interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At }
 
 /**
@@ -191,8 +252,10 @@ class Emitter {
   loops: { cont: string; exit: string }[] = [];
 
   readonly key: string;
-  constructor(key: string) {
+  readonly scope: Scope;
+  constructor(key: string, scope: Scope) {
     this.key = key;
+    this.scope = scope;
   }
 
   label(what: string): string {
@@ -371,6 +434,10 @@ class Emitter {
     switch (s.kind) {
       case "remark": return;
       case "block": return this.stmts(s.body);
+      case "declare": case "assign": case "if": case "while": case "for": case "do":
+        if (this.scope.islands.has(s)) return this.left(s);
+    }
+    switch (s.kind) {
       case "declare": return this.write(s.decl.id, linear(s.init as NumExpr)!);
       case "assign": return this.write(s.target, linear(s.value)!);
       case "if": {
@@ -416,8 +483,16 @@ class Emitter {
       }
       case "break": return this.goto(this.loops[this.loops.length - 1].exit);
       case "continue": return this.goto(this.loops[this.loops.length - 1].cont);
-      default: throw new Error(`emitter: ${s.kind}`);
+      default: return this.left(s);
     }
+  }
+
+  /** A statement left to the Python side, where it is; what it may write copied back into the graph's places after. */
+  left(s: Stmt): void {
+    const writes = this.scope.islands.get(s);
+    if (!writes) throw new Error(`emitter: ${s.kind}`);
+    const p = this.open();
+    p.items.push({ island: s, writes });
   }
 
   // ── the writes, once every place is known ──
@@ -529,7 +604,7 @@ class Emitter {
     const copies: { t: Trigger; id: string }[] = [];
     let n = 0;
     for (const p of kept) {
-      type Piece = { acts: (Act | WriteAct)[] } | { copy: string };
+      type Piece = { acts: (Act | WriteAct)[] } | { copy: string } | { island: Stmt };
       const pieces: Piece[] = [{ acts: [] }];
       const acts = () => {
         const last = pieces[pieces.length - 1];
@@ -542,7 +617,12 @@ class Emitter {
       for (const it of p.items) {
         if ("act" in it) acts().push({ ...it.act, value: typeof it.act.value === "object" ? { label: to(it.act.value.label) } : it.act.value });
         else if ("write" in it) acts().push(...expanded.get(it.write)!);
-        else if (copied.has(it.copy)) pieces.push({ copy: it.copy });
+        else if ("copy" in it) { if (copied.has(it.copy)) pieces.push({ copy: it.copy }); }
+        else {
+          pieces.push({ island: it.island });
+          // What it may write, back into every place but the cell.
+          for (const id of it.writes) if ((this.places.get(id)?.length ?? 0) > 1) pieces.push({ copy: id });
+        }
       }
       if (p.conds.length && (pieces.length > 1 || (pieces[0] as { acts: unknown[] }).acts.length > MOST_ACTS)) return "a branch with too many actions";
       // Each piece one trigger or more: the first takes the label and the conditions, each goes to the one after it.
@@ -550,6 +630,10 @@ class Emitter {
       for (const piece of pieces) {
         if ("copy" in piece) {
           made.push({ label: made.length ? `${this.key}.cut${n++}` : p.label, conds: [], acts: [], copy: { from: piece.copy, into: [] } });
+          continue;
+        }
+        if ("island" in piece) {
+          made.push({ label: made.length ? `${this.key}.cut${n++}` : p.label, conds: [], acts: [], island: piece.island });
           continue;
         }
         for (let i = 0; i === 0 || i < piece.acts.length; i += MOST_ACTS) {
@@ -566,10 +650,11 @@ class Emitter {
         }
       }
       // A copy goes on to the trigger after it; the others say where they go. The last goes where the proto went.
-      if (made[made.length - 1].copy) made.push({ label: `${this.key}.cut${n++}`, conds: [], acts: [] });
+      const last = made[made.length - 1];
+      if (last.copy || last.island) made.push({ label: `${this.key}.cut${n++}`, conds: [], acts: [] });
       made.forEach((t, i) => {
         if (t.copy) copies.push({ t, id: t.copy.from });
-        else t.next = i === made.length - 1 ? to(p.next!) : made[i + 1].label;
+        else if (!t.island) t.next = i === made.length - 1 ? to(p.next!) : made[i + 1].label;
       });
       triggers.push(...made);
     }
@@ -599,6 +684,27 @@ type CompareOp = "<" | "<=" | ">" | ">=" | "==" | "!=";
 const FLIP = { "<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!=" } as const;
 const INVERSE = { "<": ">=", "<=": ">", ">": "<=", ">=": "<", "==": "!=", "!=": "==" } as const;
 const notZero = (e: NumExpr): BoolExpr => ({ kind: "compare", op: "!=", left: e, right: { kind: "const", value: 0 }, at: { line: 0, column: 0 } as At, label: "" });
+
+/**
+ * Every variable a statement may write: what it sets or declares, a call's result and parameters, and what the
+ * functions it calls write, all the way down.
+ */
+function writes(s: Stmt, functions: Map<string, Stmt[]>): Set<string> {
+  const out = new Set<string>(), seen = new Set<string>();
+  const walk = (x: unknown): void => {
+    if (!x || typeof x !== "object") return;
+    if (Array.isArray(x)) { x.forEach(walk); return; }
+    const o = x as Record<string, unknown>;
+    if (typeof o.target === "string") out.add(o.target);
+    const d = o.decl as VarDecl | undefined;
+    if (d && typeof d === "object" && typeof d.id === "string") out.add(d.id);
+    if (o.was && typeof o.was === "object") out.add((o.was as VarDecl).id);
+    if (typeof o.fn === "string" && !seen.has(o.fn)) { seen.add(o.fn); walk(functions.get(o.fn)); }
+    for (const v of Object.values(o)) if (v && typeof v === "object") walk(v);
+  };
+  walk(s);
+  return out;
+}
 
 /** Every variable a statement sets or declares, those inside it included. */
 function writtenIn(list: Stmt[], into = new Set<string>()): Set<string> {
@@ -652,10 +758,15 @@ function plain(e: Extract<BoolExpr, { kind: "compare" }>): BoolExpr {
  * it took. A per-player program is not looked at yet (its variables are rows), nor a task's (its variables are slots).
  */
 /** One loop lowered to a graph, or why it is not. `decls`: every variable of the program, by id. */
-export function emitLoop(s: Stmt, decls: Map<string, VarDecl>, key: string): Graph | string {
+export function emitLoop(s: Stmt, decls: Map<string, VarDecl>, key: string, functions = new Map<string, Stmt[]>(), indexed = new Set<string>()): Graph | string {
   const scope = new Scope(decls);
-  if (!scope.stmt(s, false)) return scope.why || "?";
-  const e = new Emitter(key);
+  scope.functions = functions;
+  scope.indexed = indexed;
+  if (s.kind !== "while" && s.kind !== "for" && s.kind !== "do") return "not a loop";
+  if (!scope.stmt(s, false) || scope.islands.has(s)) return scope.why || "?";
+  // A loop that is all islands is the Python side's still.
+  if (scope.read.size === 0 && scope.written.size === 0) return "nothing in it the emitter lowers";
+  const e = new Emitter(key, scope);
   e.stmt(s);
   e.goto(END);
   return e.graph([...scope.read].filter((id) => !scope.declared.has(id)));
@@ -673,12 +784,22 @@ export function emitGraphs(program: Program, report?: (line: string) => void): n
     }
   };
   collect(program);
+  const functions = new Map((program.functions ?? []).map((f) => [f.id, f.body] as [string, Stmt[]]));
+  const indexed = new Set<string>();
+  const indexes = (x: unknown): void => {
+    if (!x || typeof x !== "object") return;
+    if (Array.isArray(x)) { x.forEach(indexes); return; }
+    const o = x as Record<string, unknown>;
+    if ((o.kind === "element" || o.kind === "store") && o.index && typeof o.index === "object" && (o.index as NumExpr).kind === "var") indexed.add((o.index as { id: string }).id);
+    for (const v of Object.values(o)) if (v && typeof v === "object") indexes(v);
+  };
+  indexes(program);
   let taken = 0;
   const visit = (list: Stmt[]): void => {
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
       if (s.kind === "while" || s.kind === "for" || s.kind === "do") {
-        const g = emitLoop(s, decls, `g${taken}`);
+        const g = emitLoop(s, decls, `g${taken}`, functions, indexed);
         if (typeof g === "string") report?.(`emitter: left the loop at line ${s.at?.line}: ${g}`);
         else {
           {

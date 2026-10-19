@@ -4558,7 +4558,7 @@ class Lowering:
         elif k == "remark":
             pass
         elif k == "graph":
-            self.graph(st)
+            self.graph(st, ctx)
         else:
             raise Fail("trigscript: unknown statement %r%s" % (k, where(st)))
 
@@ -4566,7 +4566,7 @@ class Lowering:
     GRAPH_COMPARE = {"atLeast": AtLeast, "atMost": AtMost, "exactly": Exactly}
     GRAPH_MODIFIER = {"set": SetTo, "add": Add, "subtract": Subtract}
 
-    def graph(self, st):
+    def graph(self, st, ctx):
         """A loop the emitter lowered (TrigScript 4, the backend: the emitter): its triggers made as they are, where the
         loop was. A dword of the graph is a game address, a variable's cell, a dword of the graph's own data (one in the
         map for each name), or a field of one of its triggers; the copies into it on the way in are routed reads of the
@@ -4626,6 +4626,11 @@ class Lowering:
                 labels[t["label"]] << NextTrigger()
                 if t["copy"]["into"]:
                     copy(t["copy"]["from"], t["copy"]["into"])
+                continue
+            if "island" in t:
+                # A statement the emitter left to this side, lowered here as anywhere (nothing in it leaves it).
+                labels[t["label"]] << NextTrigger()
+                self.statement(t["island"], ctx)
                 continue
             conds = [MemoryX(addr(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"], c["mask"]) if "mask" in c else Memory(addr(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"]) for c in t["conds"]]
             acts = [SetMemoryX(addr(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"]), a["mask"]) if "mask" in a else SetMemory(addr(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"])) for a in t["acts"]]
