@@ -21,11 +21,23 @@
  *
  * A pattern is steps, a word each, a quarter of a beat each by default: a note's name starts it ("C4", "F#5", "Bb2"),
  * several with + sound together ("C4+E4+G4"), "-" holds what sounds a step longer, "." is a rest, "|" is only for the
- * eye. A kit's step is its sounds' letters ("kh": kick and hat). Everything is worked out when the script is built: each
- * note an instrument plays becomes a clip once (`trigscript`'s Clip, put in the map once however often it plays), and
- * the song a table of which clip starts on which frame, which `play` reads while the game runs.
+ * eye; "@" after a step's notes says how loud ("C4@0.5"). A kit's step is its sounds' letters ("kh": kick and hat).
+ * Everything is worked out when the script is built: each note an instrument plays becomes a clip once (`trigscript`'s
+ * Clip, put in the map once however often it plays), and the song a table of which clip starts on which frame, which
+ * `play` reads while the game runs.
  *
- * What the game does with it (the sound probe, 2026-10-19): a step is a whole number of frames (42 ms on Fastest), so
+ * A longer song is written in sections — parts named once, each section saying what they play in it, a pattern played
+ * again until the section is full — and chords by name, their notes drawn by a template:
+ *
+ *   const parts = { keys: music.part(music.presets.keys()), bass: music.part(music.presets.bass()), drums: music.part(music.drums()) };
+ *   const verse = music.section(4, {
+ *     keys: music.chords("Am F C G", "1+2+3 - . 1+2+3 . . 1+2+3 -", { octave: 4, lead: true }),
+ *     bass: music.chords("Am F C G", "1 - . 1 . 1 3 -", { octave: 2 }),
+ *     drums: music.beat({ k: [0, 3, 4], s: [2, 6], h: [0, 1, 2, 3, 4, 5, 6, 7] }, 8),
+ *   });
+ *   const song = music.arrange({ bpm: 120, steps: 2 }, parts, intro, verse, verse.with({ keys: null }), outro);
+ *
+ * What the game does with it (the sound probe, 2026-10-19): a bar is a whole number of frames (42 ms on Fastest), so
  * the tempo is the nearest that fits — `song.bpm` says which; a sound starts within 21 ms of its frame; 32 sound at
  * once, and a song that would need more is refused; notes that overlap add, with no limiter, so keep the volumes down.
  * `render` mixes a song into one clip when the script is built instead: every note exactly in time, one sound playing,
@@ -209,7 +221,7 @@ export const presets = {
 };
 
 /**
- * A drum kit made from nothing, a letter a drum: k kick, s snare, c clap, h closed hat, o open hat, t tom, r rim. At
+ * A drum kit made from nothing, a letter a drum: k kick, s snare, c clap, h closed hat, o open hat, t tom, r rim, x crash. At
  * 44 100 Hz (`rate`), so the hats keep their top; `volume` 0 … 1 over the whole kit (1).
  */
 export function drums(options: { readonly rate?: number; readonly volume?: number } = {}): Kit {
@@ -225,13 +237,200 @@ export function drums(options: { readonly rate?: number; readonly volume?: numbe
   const hat = (seconds: number) => metal(seconds).mix(noise(seconds, { volume: 0.4, rate })).filter("highpass", 7200).filter("highshelf", 10000, { gain: 3 }).envelope([0, 1], [seconds * 0.25, 0.4], [seconds, 0]);
   const tom = tone([[0, 190], [0.2, 120]], 0.4, { volume: 0.8, rate }).envelope([0, 1], [0.4, 0]).mix(noise(0.01, { volume: 0.2, rate }).filter("bandpass", 2500));
   const rim = tone(1700, 0.025, { wave: "triangle", volume: 0.5, rate }).mix(noise(0.012, { volume: 0.3, rate }).filter("highpass", 4000)).envelope([0, 1], [0.025, 0]);
-  return kit({ k: kick.gain(v), s: snare.gain(v), c: clap.gain(v), h: hat(0.07).gain(0.55 * v), o: hat(0.4).gain(0.5 * v), t: tom.gain(v), r: rim.gain(v) });
+  const crash = metal(2).mix(noise(2, { volume: 0.5, rate })).filter("highpass", 4500).filter("peak", 7500, { gain: 3 }).envelope([0, 1], [0.08, 0.5], [2, 0]);
+  return kit({ k: kick.gain(v), s: snare.gain(v), c: clap.gain(v), h: hat(0.07).gain(0.55 * v), o: hat(0.4).gain(0.5 * v), t: tom.gain(v), r: rim.gain(v), x: crash.gain(0.45 * v) });
 }
 
 /** A kit: a clip a letter, played by a pattern's letters ("kh" plays k and h together). */
 export function kit(hits: Readonly<Record<string, Clip>>): Kit {
   for (const k of Object.keys(hits)) if (k.length !== 1 || k === "." || k === "-" || k === "|") throw new Error(`A kit's sounds are named by one letter each, not ${JSON.stringify(k)}.`);
   return Object.freeze({ kind: "kit" as const, hits: Object.freeze({ ...hits }) });
+}
+
+/* ── Patterns: what is written, and what writes it ── */
+
+/** A pattern: steps a word each, as one text or a text a bar. */
+export type Pattern = string | readonly string[];
+
+/** A pattern's steps, the "|" left out. */
+const wordsOf = (p: Pattern): string[] => (typeof p === "string" ? p : p.join(" ")).split(/\s+/).filter((w) => w !== "" && w !== "|");
+
+/** A step's sounds and how loud: "C4+E4@0.6" is C4 and E4 at 0.6; "kh" k and h at 1. */
+function velocityOf(word: string, step: number): { body: string; velocity: number } {
+  const at = word.indexOf("@");
+  if (at < 0) return { body: word, velocity: 1 };
+  const body = word.slice(0, at), v = Number(word.slice(at + 1));
+  if (body === "" || body === "-" || body === "." || !(v >= 0 && v <= 4)) throw new Error(`Step ${step + 1}: "@" follows a note, a chord or a kit's letters, with how loud they play, 0 to 4 (1 as written): "C4@0.6", "kh@1.3" — not ${JSON.stringify(word)}.`);
+  return { body, velocity: v };
+}
+
+const NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+/** A note's name from its number: 60 is "C4". Sharps, not flats. */
+function nameOf(n: number): string {
+  const octave = Math.floor(n / 12) - 1;
+  if (octave < -1 || octave > 9) throw new Error(`A note goes from C-1 to B9: this one would be ${NAMES[((n % 12) + 12) % 12]}${octave}.`);
+  return NAMES[((n % 12) + 12) % 12] + octave;
+}
+
+/** Each note of a step moved by a function of its number; holds, rests, kit letters and "@" kept. */
+const eachNote = (p: Pattern, move: (n: number) => number): string[] => wordsOf(p).map((w) => w.replace(/[A-Ga-g][#b]?-?\d/g, (name) => nameOf(move(midi(name)))));
+
+/** A pattern `semitones` up (or down: a negative number): `transpose(tune, 12)` is the tune an octave up. A text a bar stays a text a bar. */
+export function transpose(p: Pattern, semitones: number): Pattern {
+  if (!Number.isInteger(semitones)) throw new Error(`transpose() moves by whole semitones, not ${semitones}.`);
+  if (semitones === 0) return p;
+  return typeof p === "string" ? eachNote(p, (n) => n + semitones).join(" ") : p.map((bar) => eachNote(bar, (n) => n + semitones).join(" "));
+}
+
+/** A pattern with each step `by` steps long — eighths written as sixteenths with `stretch(p, 2)`. A text a bar stays a text a bar. */
+export function stretch(p: Pattern, by: number): Pattern {
+  if (!Number.isInteger(by) || by < 1) throw new Error(`stretch() makes each step a whole number of steps long, 1 or more — not ${by}.`);
+  const one = (text: string) => wordsOf(text).map((w) => [w, ...Array.from({ length: by - 1 }, () => (w.startsWith(".") ? "." : "-"))].join(" ")).join(" ");
+  return typeof p === "string" ? one(p) : p.map(one);
+}
+
+/** A pattern `n` times over, as one text. */
+export function repeat(p: Pattern, n: number): string {
+  if (!Number.isInteger(n) || n < 1) throw new Error(`repeat() plays a pattern a whole number of times, 1 or more — not ${n}.`);
+  return Array.from({ length: n }, () => wordsOf(p).join(" ")).join(" ");
+}
+
+/** A kit's bar: the steps (from 0) each letter plays on, `steps` steps long — `beat({ k: [0, 8], s: [4, 12] })`. */
+export function beat(hits: Readonly<Record<string, readonly number[]>>, steps: number = 16): string {
+  for (const [k, at] of Object.entries(hits)) for (const s of at) if (!Number.isInteger(s) || s < 0 || s >= steps) throw new Error(`beat(): ${k} on step ${s}, of steps 0 to ${steps - 1}.`);
+  return Array.from({ length: steps }, (_, i) => Object.keys(hits).filter((k) => hits[k].includes(i)).join("") || ".").join(" ");
+}
+
+/** A chord's notes above its root, by what follows the root's name. */
+const QUALITIES: Readonly<Record<string, readonly number[]>> = {
+  "": [0, 4, 7], m: [0, 3, 7], dim: [0, 3, 6], aug: [0, 4, 8], "+": [0, 4, 8], sus2: [0, 2, 7], sus4: [0, 5, 7], sus: [0, 5, 7], "5": [0, 7],
+  "6": [0, 4, 7, 9], m6: [0, 3, 7, 9], "7": [0, 4, 7, 10], maj7: [0, 4, 7, 11], M7: [0, 4, 7, 11], m7: [0, 3, 7, 10], dim7: [0, 3, 6, 9],
+  m7b5: [0, 3, 6, 10], "7sus4": [0, 5, 7, 10], "9": [0, 4, 7, 10, 14], maj9: [0, 4, 7, 11, 14], m9: [0, 3, 7, 10, 14], add9: [0, 4, 7, 14], madd9: [0, 3, 7, 14],
+};
+
+/** A chord's notes as numbers, lowest first. */
+function chordNumbers(symbol: string, octave: number, inversion: number): number[] {
+  const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(symbol);
+  const steps = m ? QUALITIES[m[2]] : undefined;
+  if (!m || !steps) throw new Error(`A chord is a root and what kind — "Am", "C", "G7", "Fmaj7", "Dm7", "Esus4", "Bdim", "C/E" — not ${JSON.stringify(symbol)}. The kinds: ${Object.keys(QUALITIES).map((q) => `"${q}"`).join(", ")}.`);
+  if (!Number.isInteger(inversion) || inversion < 0 || inversion >= steps.length) throw new Error(`${symbol} has ${steps.length} notes: its inversion is 0 to ${steps.length - 1}, not ${inversion}.`);
+  const root = midi(m[1] + octave);
+  const notes = steps.map((s) => root + s);
+  for (let k = 0; k < inversion; k++) notes.push(notes.shift()! + 12);
+  if (m[3]) {
+    // Over another bass: that note, below the rest.
+    let bass = midi(m[3] + octave);
+    while (bass >= notes[0]) bass -= 12;
+    notes.unshift(bass);
+  }
+  return notes;
+}
+
+/**
+ * A chord's notes, as a step plays them: `chord("Am")` is "A4+C5+E5", its root in octave 4 (`octave`); `inversion`
+ * moves its lowest notes up an octave, one each — `chord("E", 3, 1)` is "G#3+B3+E4". "C/E" is C over an E below it.
+ */
+export function chord(symbol: string, octave: number = 4, inversion: number = 0): string {
+  return chordNumbers(symbol, octave, inversion).map(nameOf).join("+");
+}
+
+/** Each chord's notes as numbers, lowest first: the ones written, or the symbol's at `octave`. */
+const notesOf = (c: string, octave: number): number[] => (/\d/.test(c) ? c.split("+").map(midi).sort((a, b) => a - b) : chordNumbers(c, octave, 0));
+
+/**
+ * A chord played as `template` says: its steps name the chord's notes by number, 1 the lowest — "1 3 2 3", "1+2+3 - - -"
+ * — past the last, round again an octave up (in a three-note chord, 4 is 1 an octave up); each ^ after a number takes it
+ * an octave higher, each _ an octave lower ("1__" the root two octaves down, for a bass). "-", "." and "@" as in any
+ * pattern. `notes` is a chord's notes ("A3+C4+E4") or its name ("Am", with its root in octave `octave`).
+ */
+export function over(notes: string, template: Pattern, octave: number = 4): string {
+  const n = notesOf(notes, octave);
+  return wordsOf(template).map((w, s) => {
+    const { body, velocity } = velocityOf(w, s);
+    if (body === "-" || body === ".") return w;
+    const named = body.split("+").map((d) => {
+      const m = /^(\d+)([\^_]*)$/.exec(d);
+      if (!m || Number(m[1]) < 1) throw new Error(`Step ${s + 1} of a chord's template: its notes are numbers from 1, the lowest, with ^ or _ for an octave up or down — "1", "3^", "1__" — not ${JSON.stringify(d)}.`);
+      const k = Number(m[1]) - 1, up = Math.floor(k / n.length) + (m[2].match(/\^/g)?.length ?? 0) - (m[2].match(/_/g)?.length ?? 0);
+      return nameOf(n[k % n.length] + 12 * up);
+    });
+    return named.join("+") + (velocity === 1 ? "" : `@${velocity}`);
+  }).join(" ");
+}
+
+/**
+ * A progression played as `template` says, a template a chord: `chords("Am Am E Am Dm C E Am", "1_ 1 2 3")` — as
+ * `over` plays one chord. Each chord's root in octave `octave` (4); `lead: true` turns each chord after the first to
+ * the inversion nearest the one before (its notes move least), as a player's hands do. A text a chord.
+ */
+export function chords(progression: string | readonly string[], template: Pattern, options: { readonly octave?: number; readonly lead?: boolean } = {}): string[] {
+  const octave = options.octave ?? 4, list = wordsOf(progression);
+  let before: number[] | null = null;
+  return list.map((c) => {
+    let n = notesOf(c, octave);
+    if (options.lead && before && !/\d/.test(c)) {
+      // Each inversion, an octave either side: the one whose notes are nearest those before.
+      const prev: number[] = before, mean = prev.reduce((a, b) => a + b, 0) / prev.length;
+      let best = n, cost = Infinity;
+      for (let inv = 0; inv < n.length; inv++) for (const shift of [-12, 0, 12]) {
+        const cand = chordNumbers(c, octave, inv).map((x) => x + shift);
+        const d = cand.length === prev.length ? cand.reduce((s, x, i) => s + Math.abs(x - prev[i]), 0) : Math.abs(cand.reduce((a, b) => a + b, 0) / cand.length - mean) * cand.length;
+        if (d < cost) { cost = d; best = cand; }
+      }
+      n = best;
+    }
+    before = n;
+    return over(n.map(nameOf).join("+"), template);
+  });
+}
+
+/** Seconds `n` bars last at `bpm` as a song plays it (its bar a whole number of frames): how long to make a riser. */
+export function bars(bpm: number, n: number = 1, beats: number = 4): number {
+  return n * Math.max(1, Math.round((60 / bpm) * beats / FRAME)) * FRAME;
+}
+
+/**
+ * What makes a part breathe with the beat, as a mix does under a kick: down to `1 − depth` on each beat (`beat`
+ * seconds apart, from the clip's start) and back over `release` of a beat — a part's fx, or a section's:
+ * `{ fx: music.pump(music.bars(143) / 4) }`.
+ */
+export function pump(beat: number, depth: number = 0.45, release: number = 0.55): (clip: Clip) => Clip {
+  if (!(beat > 0) || !(depth >= 0 && depth <= 1) || !(release > 0 && release <= 1)) throw new Error("pump() takes seconds a beat, how deep (0 … 1) and how long it takes to come back, as a part of a beat (0 … 1).");
+  return (c) => {
+    const points: [number, number][] = [];
+    for (let t = 0; t < c.seconds; t += beat) points.push([t, 1 - depth], [Math.min(c.seconds, t + release * beat), 1], [Math.min(c.seconds, t + beat - 0.004), 1]);
+    points.push([c.seconds, 1]);
+    return c.envelope(...points);
+  };
+}
+
+/* ── Sounds between sections ── */
+
+/** Noise rising for `seconds` through a filter opening, loudest at the end: what leads into a drop. */
+export function riser(seconds: number, options: { readonly volume?: number; readonly rate?: number } = {}): Clip {
+  const rate = options.rate ?? 44100, v = options.volume ?? 0.5, s = seconds;
+  const swept = noise(s, { volume: v, rate }).filter("bandpass", [[0, 350], [s * 0.6, 1800], [s, 9000]], { resonance: 0.55 });
+  const lift = tone([[0, 220], [s, 880]], s, { wave: "saw", voices: 3, detune: 25, width: 0.8, volume: v * 0.25, rate }).filter("lowpass", [[0, 500], [s, 6000]]);
+  return swept.mix(lift).envelope([0, 0], [s * 0.5, 0.25], [s * 0.9, 0.85], [s, 1]).fade(0, 0.01);
+}
+
+/** A boom to land on: a falling sine under a burst of noise, ringing `seconds` (1.5). */
+export function impact(options: { readonly seconds?: number; readonly volume?: number; readonly rate?: number } = {}): Clip {
+  const rate = options.rate ?? 44100, v = options.volume ?? 0.8, s = options.seconds ?? 1.5;
+  return tone([[0, 90], [0.4, 38], [s, 30]], s, { volume: v, rate }).envelope([0, 1], [0.15, 0.7], [s, 0])
+    .mix(noise(s, { volume: v * 0.5, rate }).filter("lowpass", [[0, 6000], [s, 300]]).envelope([0, 1], [0.05, 0.4], [s, 0])).drive(3);
+}
+
+/** How a track or a part is heard. */
+export interface PartOptions {
+  /** Where it is heard, −1 left to 1 right; 0, the middle, when left out. */
+  readonly pan?: number;
+  /** How loud, 1 as the instrument plays. */
+  readonly volume?: number;
+  /** What it goes through: its whole part in `render`, each note on its own in `play`. */
+  readonly fx?: (clip: Clip) => Clip;
+  /** How much of it goes to the song's reverb in `render`, 0 … 1 (0). */
+  readonly reverb?: number;
 }
 
 /** What an instrument plays, step by step. */
@@ -248,20 +447,133 @@ export interface Track {
   readonly reverb: number;
 }
 
+/** A part's options checked, and its defaults filled in. */
+function heard(options: PartOptions, what: string): { pan: number; volume: number; reverb: number; fx?: (clip: Clip) => Clip } {
+  const pan = options.pan ?? 0, volume = options.volume ?? 1, reverb = options.reverb ?? 0;
+  if (!(pan >= -1 && pan <= 1)) throw new Error(`A ${what}'s pan is −1 (left) to 1 (right), not ${pan}.`);
+  if (!(volume >= 0)) throw new Error(`A ${what}'s volume is 0 or more, not ${volume}.`);
+  if (!(reverb >= 0 && reverb <= 1)) throw new Error(`A ${what}'s reverb is 0 to 1, not ${reverb}.`);
+  return { pan, volume, reverb, ...(options.fx ? { fx: options.fx } : {}) };
+}
+
 /**
  * A pattern for an instrument: steps a word each — a note or notes joined by +, "-" to hold, "." to rest, "|" for the
- * eye. `pan`: where it is heard, −1 left to 1 right (a panned track's notes have two channels); `volume`: 1 as the
- * instrument plays; `fx`: what the track goes through — `(c) => c.delay(0.21).chorus()` — its whole part when the song
- * is rendered (as a mixer's insert), each note on its own when it is played note by note; `reverb`: how much goes to
- * the song's reverb when it is rendered, 0 … 1.
+ * eye; "@" after a step's notes says how loud, "C4@0.6". `pan`: where it is heard, −1 left to 1 right (a panned track's
+ * notes have two channels); `volume`: 1 as the instrument plays; `fx`: what the track goes through —
+ * `(c) => c.delay(0.21).chorus()` — its whole part when the song is rendered (as a mixer's insert), each note on its own
+ * when it is played note by note; `reverb`: how much goes to the song's reverb when it is rendered, 0 … 1.
  */
-export function track(instrument: Instrument | Kit, pattern: string | readonly string[], options: { readonly pan?: number; readonly volume?: number; readonly fx?: (clip: Clip) => Clip; readonly reverb?: number } = {}): Track {
-  const text = typeof pattern === "string" ? pattern : pattern.join(" ");
-  const pan = options.pan ?? 0, volume = options.volume ?? 1, reverb = options.reverb ?? 0;
-  if (!(pan >= -1 && pan <= 1)) throw new Error(`A track's pan is −1 (left) to 1 (right), not ${pan}.`);
-  if (!(volume >= 0)) throw new Error(`A track's volume is 0 or more, not ${volume}.`);
-  if (!(reverb >= 0 && reverb <= 1)) throw new Error(`A track's reverb is 0 to 1, not ${reverb}.`);
-  return Object.freeze({ instrument, steps: Object.freeze(text.split(/\s+/).filter((w) => w !== "" && w !== "|")), pan, volume, reverb, ...(options.fx ? { fx: options.fx } : {}) });
+export function track(instrument: Instrument | Kit, pattern: Pattern, options: PartOptions = {}): Track {
+  return Object.freeze({ instrument, steps: Object.freeze(wordsOf(pattern)), ...heard(options, "track") });
+}
+
+/** An instrument and how it is heard, which a song's sections give its notes: `arrange`. */
+export interface Part extends Omit<Track, "steps"> { readonly kind: "part" }
+
+/** An instrument as a part of a song made of sections (`arrange`), heard as `track` says. */
+export function part(instrument: Instrument | Kit, options: PartOptions = {}): Part {
+  return Object.freeze({ kind: "part" as const, instrument, ...heard(options, "part") });
+}
+
+/** How long a section lasts, as its effects need it for their points: seconds, its bars, and seconds a bar. */
+export interface SectionTime { readonly seconds: number; readonly bars: number; readonly bar: number }
+
+/** What a section is and does, besides its notes. */
+export interface SectionOptions {
+  /** What `song.sections` calls it. */
+  readonly name?: string;
+  /**
+   * What a part goes through in this section only, given how long the section is — a filter opening over a build:
+   * `{ pad: (c, t) => c.filter("lowpass", [[0, 400], [t.seconds, 8000]]) }`. Its notes from this section, tails and
+   * all, before the part's own `fx`. Mixed by `render` only: a song with one is not played note by note.
+   */
+  readonly fx?: Readonly<Record<string, (clip: Clip, time: SectionTime) => Clip>>;
+  /** How loud a part is in this section only, 1 as it is. */
+  readonly volume?: Readonly<Record<string, number>>;
+}
+
+/** Bars of a song: what each part plays in them. */
+export interface Section {
+  readonly kind: "section";
+  readonly name: string;
+  readonly bars: number;
+  readonly parts: Readonly<Record<string, Pattern>>;
+  readonly fx: Readonly<Record<string, (clip: Clip, time: SectionTime) => Clip>>;
+  readonly volume: Readonly<Record<string, number>>;
+  /** This section with some parts written again — null: that part rests — and these options over its own. */
+  with(parts: Readonly<Record<string, Pattern | null>>, options?: SectionOptions): Section;
+}
+
+/**
+ * `bars` bars of a song (`arrange`), and what each part plays in them, by the part's name: `{ lead: tune, drums: beat }`.
+ * A pattern shorter than the section plays again until it is filled, so a bar of drums fills eight; a part not named
+ * rests. `options`: its name, a part's effects or volume for this section only.
+ */
+export function section(bars: number, parts: Readonly<Record<string, Pattern>>, options: SectionOptions = {}): Section {
+  if (!Number.isInteger(bars) || bars < 1) throw new Error(`A section is a whole number of bars, 1 or more — not ${bars}.`);
+  for (const [k, v] of Object.entries(options.volume ?? {})) if (!(v >= 0)) throw new Error(`A section's volume for ${k} is 0 or more, not ${v}.`);
+  const made: Section = Object.freeze({
+    kind: "section" as const, name: options.name ?? "", bars,
+    parts: Object.freeze({ ...parts }), fx: Object.freeze({ ...(options.fx ?? {}) }), volume: Object.freeze({ ...(options.volume ?? {}) }),
+    with(changes: Readonly<Record<string, Pattern | null>>, more: SectionOptions = {}): Section {
+      const next: Record<string, Pattern> = { ...parts };
+      for (const [k, p] of Object.entries(changes)) { if (p === null) delete next[k]; else next[k] = p; }
+      return section(bars, next, { name: more.name ?? made.name, fx: { ...made.fx, ...(more.fx ?? {}) }, volume: { ...made.volume, ...(more.volume ?? {}) } });
+    },
+  });
+  return made;
+}
+
+/** A song's tempo and grid. */
+export interface SongOptions {
+  readonly bpm: number;
+  /** Steps a beat (4: sixteenths). */
+  readonly steps?: number;
+  /** Beats a bar (4). */
+  readonly beats?: number;
+  /** How late every second step starts, as a part of a step: 0 straight (as it is when left out), 1/3 a triplet's lilt. */
+  readonly swing?: number;
+}
+
+/** Where a song's section is: from bar `bar` (0 the first) for `bars`, from frame `frame`. */
+export interface SongSection { readonly name: string; readonly bar: number; readonly bars: number; readonly frame: number }
+
+/** Steps of a track that belong to one section, and what that section does to them. */
+interface Piece { readonly from: number; readonly to: number; readonly volume: number; readonly fx?: (clip: Clip, time: SectionTime) => Clip; readonly time: SectionTime }
+const piecesOf = new WeakMap<Track, readonly Piece[]>();
+
+/**
+ * A song made of sections, one after another: `parts` names each instrument and how it is heard; each section says
+ * what the parts play in it. A section can be written once and played again — `arrange(o, parts, intro, verse, verse,
+ * chorus)` — or played again changed: `verse.with({ lead: transpose(tune, 12) })`.
+ */
+export function arrange(options: SongOptions, parts: Readonly<Record<string, Part>>, ...sections: readonly Section[]): Song {
+  const { perBar, barFrames } = grid(options);
+  if (sections.length === 0) throw new Error("arrange() takes the song's sections, one at least.");
+  const names = Object.keys(parts);
+  for (const s of sections) for (const k of [...Object.keys(s.parts), ...Object.keys(s.fx), ...Object.keys(s.volume)]) {
+    if (!(k in parts)) throw new Error(`A section${s.name ? ` (${s.name})` : ""} names ${JSON.stringify(k)}, which is no part of the song: its parts are ${names.join(", ")}.`);
+  }
+  const tracks = names.map((k) => {
+    const steps: string[] = [], pieces: Piece[] = [];
+    for (const s of sections) {
+      const length = s.bars * perBar, from = steps.length, p = s.parts[k];
+      if (p === undefined) for (let i = 0; i < length; i++) steps.push(".");
+      else {
+        const words = wordsOf(p);
+        if (words.length === 0 || length % words.length !== 0) throw new Error(`${k}${s.name ? ` in ${s.name}` : ""}: a pattern of ${words.length} steps does not fill ${s.bars} bar${s.bars === 1 ? "" : "s"} of ${perBar} steps evenly.`);
+        for (let i = 0; i < length; i++) steps.push(words[i % words.length]);
+      }
+      const fx = k in s.fx ? s.fx[k] : undefined, volume = s.volume[k] ?? 1;
+      if (fx || volume !== 1) pieces.push({ from, to: from + length, volume, ...(fx ? { fx } : {}), time: { seconds: s.bars * barFrames * FRAME, bars: s.bars, bar: barFrames * FRAME } });
+    }
+    const t = track(parts[k].instrument, steps, parts[k]);
+    if (pieces.length) piecesOf.set(t, pieces);
+    return t;
+  });
+  let bar = 0;
+  const placedSections = sections.map((s) => { const at = { name: s.name, bar, bars: s.bars, frame: bar * barFrames }; bar += s.bars; return Object.freeze(at); });
+  return compose(options, tracks, placedSections);
 }
 
 /** A clip as a track plays it note by note: through its fx, at its volume and its pan, made once a clip a track. */
@@ -277,8 +589,8 @@ function placed(t: Track, made: Map<Clip, Clip>, c: Clip): Clip {
   return p;
 }
 
-/** What a song's notes are, kept for render, which makes them again at its own rate. */
-interface Score { readonly at: number; readonly track: Track; readonly made: Map<Clip, Clip>; readonly name?: string; readonly seconds?: number; readonly hit?: Clip }
+/** What a song's notes are, kept for render, which makes them again at its own rate; `piece`, the section whose effects it goes through. */
+interface Score { readonly at: number; readonly track: Track; readonly made: Map<Clip, Clip>; readonly velocity: number; readonly piece?: Piece; readonly name?: string; readonly seconds?: number; readonly hit?: Clip }
 const scores = new WeakMap<object, readonly Score[]>();
 
 /** A song, when the script is built: the tables `play` reads, and what it takes. */
@@ -295,6 +607,8 @@ export interface Song {
   readonly bpm: number;
   /** Steps, the longest track's. */
   readonly steps: number;
+  /** Its sections, made by `arrange`, in the order they play (none for a song of tracks). */
+  readonly sections: readonly SongSection[];
   /** Frames it lasts, its last note's release included. */
   readonly frames: number;
   readonly seconds: number;
@@ -307,46 +621,67 @@ export interface Song {
   readonly voices: number;
 }
 
-/**
- * Tracks played together from their first step: `bpm` beats a minute, `steps` steps a beat (4 by default). Played
- * note by note (`play`), a song is refused when more than 32 notes would sound at once; rendered, it has no limit.
- */
-export function song(options: { readonly bpm: number; readonly steps?: number; readonly beats?: number }, ...tracks: readonly Track[]): Song {
-  const perBeat = options.steps ?? 4, beats = options.beats ?? 4;
-  if (!(options.bpm > 0) || !(perBeat > 0) || !(beats > 0)) throw new Error("song() takes a tempo, { bpm: 120 }, steps a beat (4 by default) and beats a bar (4).");
+/** A song's grid: steps a bar, and frames a bar and a step. */
+function grid(options: SongOptions): { perBar: number; barFrames: number; stepFrames: number } {
+  const perBeat = options.steps ?? 4, beats = options.beats ?? 4, swing = options.swing ?? 0;
+  if (!(options.bpm > 0) || !(perBeat > 0) || !(beats > 0)) throw new Error("A song takes a tempo, { bpm: 120 }, steps a beat (4 by default) and beats a bar (4).");
+  if (!(swing >= 0 && swing < 1)) throw new Error(`A song's swing is 0 (straight) to under 1 (a step late), not ${swing}.`);
   const barFrames = Math.max(1, Math.round((60 / options.bpm) * beats / FRAME));
-  const stepFrames = barFrames / (beats * perBeat);
+  return { perBar: perBeat * beats, barFrames, stepFrames: barFrames / (beats * perBeat) };
+}
+
+/**
+ * Tracks played together from their first step: `bpm` beats a minute, `steps` steps a beat (4 by default), `swing`
+ * every second step late. Played note by note (`play`), a song is refused when more than 32 notes would sound at once;
+ * rendered, it has no limit. A song of sections: `arrange`.
+ */
+export function song(options: SongOptions, ...tracks: readonly Track[]): Song {
+  return compose(options, tracks, []);
+}
+
+function compose(options: SongOptions, tracks: readonly Track[], sections: readonly SongSection[]): Song {
+  const { barFrames, stepFrames } = grid(options), beats = options.beats ?? 4, swing = options.swing ?? 0;
   const stepSeconds = stepFrames * FRAME;
+  // Where step s starts, in frames: every second step `swing` of a step late.
+  const time = (s: number) => (s + (s % 2 === 1 ? swing : 0)) * stepFrames;
   const score: Score[] = [];
-  let steps = 0;
+  let steps = 0, effects = false;
   for (const t of tracks) {
-    const ws = t.steps, made = new Map<Clip, Clip>();
+    const ws = t.steps, made = new Map<Clip, Clip>(), pieces = piecesOf.get(t) ?? [];
+    if (pieces.some((p) => p.fx)) effects = true;
     steps = Math.max(steps, ws.length);
+    let k = 0;
     ws.forEach((w, s) => {
-      if (w === "-" || w === ".") return;
+      while (k < pieces.length && pieces[k].to <= s) k++;
+      const piece = k < pieces.length && pieces[k].from <= s ? pieces[k] : undefined;
+      const { body, velocity: v } = velocityOf(w, s);
+      if (body === "-" || body === ".") return;
+      const velocity = v * (piece?.volume ?? 1), into = piece ? { piece } : {};
       if (t.instrument.kind === "kit") {
-        for (const letter of w) {
+        for (const letter of body) {
           const hit = t.instrument.hits[letter];
           if (!hit) throw new Error(`Step ${s + 1}: the kit has no ${JSON.stringify(letter)} (it has ${Object.keys(t.instrument.hits).join(", ")}).`);
-          score.push({ at: s * stepFrames, track: t, made, hit });
+          score.push({ at: time(s), track: t, made, velocity, ...into, hit });
         }
         return;
       }
       // A note lasts its step and every "-" after it.
       let length = 1;
       while (s + length < ws.length && ws[s + length] === "-") length++;
-      for (const name of w.split("+")) {
+      const seconds = swing === 0 ? length * stepSeconds : (time(s + length) - time(s)) * FRAME;
+      for (const name of body.split("+")) {
         midi(name);
-        score.push({ at: s * stepFrames, track: t, made, name, seconds: length * stepSeconds });
+        score.push({ at: time(s), track: t, made, velocity, ...into, name, seconds });
       }
     });
   }
   score.sort((a, b) => a.at - b.at);
+  const base = (n: Score) => n.hit ?? (n.track.instrument as Instrument).note(n.name!, n.seconds!);
   // The tables `play` reads, made when they are first read: a song only rendered never makes its notes for the game.
   let table: { clips: readonly Clip[]; at: readonly number[]; which: readonly number[]; voices: number; peakStep: number; frames: number } | null = null;
   const tables = () => {
     if (table) return table;
-    const notes = score.map((n) => ({ at: Math.round(n.at), clip: placed(n.track, n.made, n.hit ?? (n.track.instrument as Instrument).note(n.name!, n.seconds!)) }));
+    const notes = score.map((n) => ({ at: Math.round(n.at), clip: placed(n.track, n.made, n.velocity === 1 ? base(n) : base(n).gain(n.velocity)) }));
     // How many sound at once: at each note's start, those started before it and not yet over.
     let voices = 0, peakStep = 0;
     notes.forEach((n, k) => {
@@ -362,12 +697,13 @@ export function song(options: { readonly bpm: number; readonly steps?: number; r
   };
   // What the game plays note by note: refused, when it is read, if more than 32 would sound at once (render has no limit).
   const playable = () => {
+    if (effects) throw new Error("A section of this song puts a part through effects of its own, which only music.render mixes: render the song, or give the part those effects for the whole song.");
     const t = tables();
     if (t.voices > VOICES) throw new Error(`At step ${t.peakStep}, ${t.voices} notes would sound at once; the game plays ${VOICES} note by note. Shorten notes or thin the chords — or music.render the song, one sound however many it mixes.`);
     return t;
   };
   const made: Song = Object.freeze({
-    stepFrames, barFrames, bpm: (60 * beats) / (barFrames * FRAME), steps,
+    stepFrames, barFrames, bpm: (60 * beats) / (barFrames * FRAME), steps, sections: Object.freeze([...sections]),
     get frames() { return tables().frames; },
     get seconds() { return tables().frames * FRAME; },
     get clips() { return playable().clips; },
@@ -385,11 +721,12 @@ export interface ReverbOptions { readonly decay?: number; readonly damping?: num
 /**
  * A song mixed into one clip when the script is built: every note exactly in time, one sound playing. Mixed as a
  * mixing desk does: each track's notes made again at `rate` (44 100 when left out: what the ear hears up to 20 kHz; a
- * note played in the game note by note is made at 22 050, to keep the map small) into its own part, through its `fx`,
- * at its volume, to its side; what each track sends (its `reverb`) into one reverb shared by them all (`reverb`, its
- * room); the whole through `master` — `(mix) => mix.compress({ threshold: -14, ratio: 2 })` — and last a limiter
- * (`Clip.limit`) so it never goes over −1.5 dB however the parts add: `limit: false` leaves it as mixed,
- * `{ ceiling, release }` sets it. A long clip a program plays goes in the map as Ogg Vorbis, two channels when it has two.
+ * note played in the game note by note is made at 22 050, to keep the map small) into its own part, through a
+ * section's effects where it has them, then its `fx`, at its volume, to its side; what each track sends (its `reverb`)
+ * into one reverb shared by them all (`reverb`, its room); the whole through `master` —
+ * `(mix) => mix.compress({ threshold: -14, ratio: 2 })` — and last a limiter (`Clip.limit`) so it never goes over
+ * −1.5 dB however the parts add: `limit: false` leaves it as mixed, `{ ceiling, release }` sets it. A long clip a
+ * program plays goes in the map as Ogg Vorbis, two channels when it has two.
  */
 export function render(s: Song, options: { readonly rate?: number; readonly limit?: boolean | { readonly ceiling?: number; readonly release?: number }; readonly reverb?: ReverbOptions; readonly master?: (mix: Clip) => Clip } = {}): Clip {
   const rate = options.rate ?? 44100, score = scores.get(s), least = s.steps * s.stepFrames * FRAME;
@@ -402,7 +739,19 @@ export function render(s: Song, options: { readonly rate?: number; readonly limi
     const byTrack = new Map<Track, Score[]>();
     for (const n of score) { const list = byTrack.get(n.track); if (list) list.push(n); else byTrack.set(n.track, [n]); }
     for (const [t, notes] of byTrack) {
-      let part = mixdown(notes.map((n) => ({ clip: n.hit ?? (t.instrument as Instrument).note(n.name!, n.seconds!, rate), at: n.at * FRAME })), least, rate);
+      const clipOf = (n: Score) => { const c = n.hit ?? (t.instrument as Instrument).note(n.name!, n.seconds!, rate); return n.velocity === 1 ? c : c.gain(n.velocity); };
+      // The notes as they are, and each section's that has effects of its own mixed apart and through them.
+      const entries: { clip: Clip; at: number }[] = [], apart = new Map<Piece, Score[]>();
+      for (const n of notes) {
+        if (n.piece?.fx) { const list = apart.get(n.piece); if (list) list.push(n); else apart.set(n.piece, [n]); }
+        else entries.push({ clip: clipOf(n), at: n.at * FRAME });
+      }
+      for (const [p, list] of apart) {
+        const from = p.from * s.stepFrames;
+        const sub = mixdown(list.map((n) => ({ clip: clipOf(n), at: (n.at - from) * FRAME })), p.time.seconds, rate);
+        entries.push({ clip: p.fx!(sub, p.time), at: from * FRAME });
+      }
+      let part = mixdown(entries, least, rate);
       if (t.fx) part = t.fx(part);
       if (t.volume !== 1) part = part.gain(t.volume);
       if (t.pan !== 0) part = part.pan(t.pan);
@@ -449,4 +798,7 @@ export const loop = game(async (s: Song) => {
 });
 
 /** Everything above as one name: import { music } from "trigscript/music"; music.play(song). */
-export const music = { sampler, synth, fmSynth, strings, presets, drums, kit, track, song, render, play, loop };
+export const music = {
+  sampler, synth, fmSynth, strings, presets, drums, kit, track, song, render, play, loop,
+  part, section, arrange, transpose, stretch, repeat, beat, chord, over, chords, bars, pump, riser, impact,
+};

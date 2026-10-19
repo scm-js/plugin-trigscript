@@ -1726,6 +1726,37 @@ User after step 1's A/B: "B sounds way better, go for step 2".
   clipping; the tail down to the recording's floor (−95 dB). User: "b sounds pretty sick yeah, maybe too strong/loud on
   the beat/drums but thats stylistic complaints only" — the kit goes down in the showpiece's mix (step 5), not here.
 
+### Sounds: step 3, writing a song (built 2026-10-19)
+
+User after step 2: "go for step 3". Nothing here makes a new sound beyond three clips; it is all for writing songs.
+
+- **Patterns.** "@" after a step's notes or letters says how loud ("C4+E4@0.6", "kh@1.3"; 0 to 4). `transpose`,
+  `stretch` (eighths written as sixteenths), `repeat`, `beat` (a kit's bar from the steps each letter plays on).
+- **Chords.** `chord("E", 3, 1)` → "G#3+B3+E4": 23 kinds ("m", "7", "maj7", "m7b5", "sus4", "add9", …), inversions,
+  "C/E" over another bass. `over(chord, template)` draws a chord's notes by number (1 the lowest, past the last round
+  again an octave up, ^ and _ an octave either way): an arpeggio, a bass line, a comp. `chords(progression, template,
+  { octave, lead })` a template a chord; `lead` turns each chord to the inversion whose notes move least from the one
+  before — "Am E Dm C" comes out as step 2's hand-written voicings.
+- **Sections.** `part(instrument, how heard)`, `section(bars, { part: pattern }, { name, fx, volume })`,
+  `arrange(options, parts, ...sections)`. A pattern shorter than its section plays again until it is full (it must
+  divide it); a part a section does not name rests; `section.with({ lead: null, saw: tune })` is the section changed.
+  `song.sections` says where each is (bar, frame) — for step 4's stems and the visualizer. A section's `fx` take its
+  length (`{ seconds, bars, bar }`) for their points; its notes are mixed apart from the section's start, tails and
+  all, and through them, before the part's own fx — so `render` only: `play` refuses a song with them, in words. A
+  section's `volume` is a velocity, so it plays either way.
+- **Swing**: every second step `swing` of a step late; a note runs to its swung end step.
+- **Between sections**: `riser(seconds)` (noise through a resonant band opening, a detuned saw rising), `impact()`,
+  the kit's crash (`x`), `pump(beat)` (a part ducking on each beat, as under a kick), `bars(bpm, n)` — seconds of n
+  bars as a song plays them, for a riser's length.
+- **Proof.** Step 2's arrangement written again with `arrange` (`probes/korobeiniki-form.ts`, A) gives the same Ogg to
+  the byte (`trigscript-120f8d218410588b.ogg`): a song of sections is a song of tracks, the same recipes.
+- **B** (73 s, 40 bars): intro (filters opening) / verse / build (riser, snare roll in crescendo, half a bar of
+  silence) / drop (four on the floor, impact, pumping) / break / the last verse a tone up / outro (the pad closing).
+  The kit at 0.6 for the user's "maybe too strong/loud on the beat/drums": before the master the drums are 2 LU under
+  everything else together (in A they matched it). Sections before the master −21 / −13.7 / −13.3 / −12.5 / −15.3 /
+  −12.4 / −15.8 LUFS; through a gentler master (threshold −12) −18.5 / −12.9 / −11.4 / −11.5 / −13.3 / −11.4 / −15.7,
+  −12.1 in all, peak −0.57 dB. The check 0.8 s. Lifted game clean. Map 2.7 MB.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):

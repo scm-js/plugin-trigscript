@@ -123,12 +123,12 @@ const s = music.song({ bpm: 120 }, music.track(lead, "A4 A4 A4 B4", { pan: 1 }),
 });
 
 describe("instruments, effects and the mix", () => {
-  it("makes every preset's notes, and the drum kit's seven drums at 44.1 kHz", () => {
+  it("makes every preset's notes, and the drum kit's eight drums at 44.1 kHz", () => {
     const r = check(
       `const ps = [music.presets.supersaw(), music.presets.pad(), music.presets.bass(), music.presets.acid(), music.presets.lead(), music.presets.chip(), music.presets.keys(), music.presets.bell(), music.presets.pluck()];
 const kit = music.drums();`,
       `for (const p of ps) { const n = p.note("A3", 0.3); if (!(n.peak > 0.01 && n.peak < 1)) fail(\`peak \${n.peak}\`); }
-for (const k of ["k", "s", "c", "h", "o", "t", "r"]) { const d = kit.hits[k]; if (!d || d.rate !== 44100 || !(d.peak > 0.05)) fail(k); }
+for (const k of ["k", "s", "c", "h", "o", "t", "r", "x"]) { const d = kit.hits[k]; if (!d || d.rate !== 44100 || !(d.peak > 0.05)) fail(k); }
 if (music.presets.supersaw().note("A3", 0.3).channels !== 2) fail("the supersaw is wide");
 if (music.presets.supersaw({ width: 0 }).note("A3", 0.3).channels !== 1) fail("its options over the preset's");`,
     );
@@ -165,6 +165,120 @@ if (Math.abs(quiet.peak - a.peak / 2) > 0.01) fail(\`master \${quiet.peak} \${a.
 const s = music.song({ bpm: 143, steps: 4 }, music.track(hat, "h h h h h h h h h h h h h h h h"));`,
       `if (s.barFrames !== 40 || s.stepFrames !== 2.5 || Math.abs(s.bpm - 142.86) > 0.01) fail(\`\${s.barFrames} \${s.stepFrames} \${s.bpm}\`);
 if (s.at.join(" ") !== "0 3 5 8 10 13 15 18 20 23 25 28 30 33 35 38") fail(s.at.join(" "));`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+});
+
+describe("writing a song", () => {
+  it("moves, stretches and repeats a pattern, and writes a kit's bar from the steps each letter plays on", () => {
+    const r = check(
+      `const t = music.transpose("A4 - C5 . E5@0.5 | kh", 3), bars = music.transpose(["B4 -", "Bb2 ."], -12) as readonly string[];`,
+      `if (t !== "C5 - D#5 . G5@0.5 kh") fail(t as string);
+if (bars.join(" / ") !== "B3 - / A#1 .") fail(bars.join(" / "));
+const s = music.stretch("C4 - . D4", 2);
+if (s !== "C4 - - - . . D4 -") fail(s as string);
+if (music.repeat("k h", 3) !== "k h k h k h") fail("repeat");
+if (music.beat({ k: [0, 2], s: [2] }, 4) !== "k . ks .") fail(music.beat({ k: [0, 2], s: [2] }, 4));`,
+    );
+    expect(errors(r)).toEqual([]);
+    expect(errors(check("", `music.transpose("B9", 1);`)).join("\n")).toMatch(/C-1 to B9/);
+  });
+
+  it("names chords, turns them over, and puts one over another bass", () => {
+    const r = check("",
+      `const got = [music.chord("Am"), music.chord("E", 3, 1), music.chord("Dm7", 3), music.chord("C/E", 4), music.chord("Bbmaj7", 3), music.chord("F#dim", 4, 2)];
+const want = ["A4+C5+E5", "G#3+B3+E4", "D3+F3+A3+C4", "E3+C4+E4+G4", "A#3+D4+F4+A4", "C5+F#5+A5"];
+if (got.join() !== want.join()) fail(got.join(" "));`,
+    );
+    expect(errors(r)).toEqual([]);
+    expect(errors(check("", `music.chord("Hm");`)).join("\n")).toMatch(/A chord is a root and what kind/);
+    expect(errors(check("", `music.chord("Am", 4, 3);`)).join("\n")).toMatch(/Am has 3 notes: its inversion is 0 to 2/);
+  });
+
+  it("plays a chord's notes by number, round again an octave up, ^ and _ an octave either way", () => {
+    const r = check("",
+      `const a = music.over("Am", "1 2 3 4 5 . 1_ 3^^ 1+3@0.5 -", 3);
+if (a !== "A3 C4 E4 A4 C5 . A2 E6 A3+E4@0.5 -") fail(a);
+const p = music.chords("Am E Dm C", "1+2+3", { octave: 3, lead: true });
+if (p.join(" / ") !== "A3+C4+E4 / G#3+B3+E4 / A3+D4+F4 / G3+C4+E4") fail(p.join(" / "));
+const plain = music.chords("Am E", "1", { octave: 3 });
+if (plain.join() !== "A3,E3") fail(plain.join());`,
+    );
+    expect(errors(r)).toEqual([]);
+    expect(errors(check("", `music.over("Am", "0 1");`)).join("\n")).toMatch(/numbers from 1, the lowest/);
+  });
+
+  it("plays a step as loud as its @ says, a kit's letters and a chord's notes alike", () => {
+    const r = check(
+      `const lead = music.synth({ volume: 0.4 });
+const drums = music.kit({ k: tone(60, 0.1) });
+const s = music.song({ bpm: 120 }, music.track(lead, "A4 A4@0.5 A4@2"), music.track(drums, "k@0.25 . ."));`,
+      `const one = lead.note("A4", 0.6).peak, hit = tone(60, 0.1).peak;
+const p = s.clips.map((c) => c.peak).sort((a, b) => a - b), want = [0.25 * hit, 0.5 * one, one, 2 * one].sort((a, b) => a - b);
+if (s.clips.length !== 4 || p.some((x, k) => Math.abs(x - want[k]) > 0.002)) fail(\`\${p.join(" ")} / \${want.join(" ")}\`);`,
+    );
+    expect(errors(r)).toEqual([]);
+    expect(errors(check(`const lead = music.synth();`, `music.song({ bpm: 120 }, music.track(lead, "A4 -@0.5")).at;`)).join("\n")).toMatch(/Step 2: "@" follows a note/);
+  });
+
+  it("swings every second step late, and lengthens and shortens the notes to their swung steps", () => {
+    const r = check(
+      `const hat = music.kit({ h: noise(0.02) }), lead = music.synth({ release: 0.01 });
+const s = music.song({ bpm: 120, steps: 2, swing: 1 / 3 }, music.track(hat, "h h h h"), music.track(lead, "A4 B4 . ."));`,
+      `if (s.stepFrames !== 6 || s.at.join(" ") !== "0 0 8 8 12 20") fail(\`\${s.stepFrames} \${s.at.join(" ")}\`);
+const lengths = s.clips.filter((c) => c.seconds > 0.1).map((c) => Math.round(c.seconds / 0.042));
+if (lengths.join() !== "8,4") fail(lengths.join());`,
+    );
+    expect(errors(r)).toEqual([]);
+    expect(errors(check(`const lead = music.synth();`, `music.song({ bpm: 120, swing: 1 }, music.track(lead, "A4"));`)).join("\n")).toMatch(/swing is 0/);
+  });
+
+  it("arranges sections: each fills the parts it names, a pattern again until it is full, the others resting", () => {
+    const r = check(
+      `const lead = music.synth(), drums = music.kit({ k: tone(60, 0.1), h: noise(0.02) });
+const parts = { lead: music.part(lead, { pan: 0.5 }), drums: music.part(drums) };
+const a = music.section(1, { lead: "C4 - E4 G4", drums: "k h" }, { name: "a" });
+const b = a.with({ lead: null }, { name: "b" });
+const s = music.arrange({ bpm: 120, steps: 1 }, parts, a, b, music.section(2, { lead: "A4 . . . . . . ." }));
+const same = music.song({ bpm: 120, steps: 1 }, music.track(lead, "C4 - E4 G4 . . . . A4 . . . . . . .", { pan: 0.5 }), music.track(drums, "k h k h k h k h . . . . . . . ."));`,
+      `if (s.at.join() !== same.at.join() || s.which.join() !== same.which.join() || s.clips.length !== same.clips.length) fail(\`\${s.at.join()} / \${same.at.join()}\`);
+if (s.steps !== 16) fail(String(s.steps));
+if (JSON.stringify(s.sections) !== JSON.stringify([{ name: "a", bar: 0, bars: 1, frame: 0 }, { name: "b", bar: 1, bars: 1, frame: 48 }, { name: "", bar: 2, bars: 2, frame: 96 }])) fail(JSON.stringify(s.sections));
+if (music.render(s).peak !== music.render(same).peak) fail("render");`,
+    );
+    expect(errors(r)).toEqual([]);
+    const parts = `const parts = { lead: music.part(music.synth()) };`;
+    expect(errors(check(parts, `music.arrange({ bpm: 120 }, parts, music.section(1, { leed: "C4" }));`)).join("\n")).toMatch(/names "leed", which is no part of the song: its parts are lead/);
+    expect(errors(check(parts, `music.arrange({ bpm: 120 }, parts, music.section(2, { lead: "C4 . ." }, { name: "verse" }));`)).join("\n")).toMatch(/lead in verse: a pattern of 3 steps does not fill 2 bars of 16 steps evenly/);
+  });
+
+  it("puts a part through a section's own effects in render only, and plays a section's volume either way", () => {
+    const setup = `const lead = music.synth({ volume: 0.4, release: 0.01 });
+const parts = { lead: music.part(lead) };
+const loud = music.section(1, { lead: "A4 . . ." }), soft = loud.with({}, { volume: { lead: 0.5 } });
+const muted = loud.with({}, { fx: { lead: (c, t) => (t.bars === 1 && Math.abs(t.seconds - t.bar) < 1e-9 ? c.gain(0) : c) } });
+const v = music.arrange({ bpm: 120, steps: 1 }, parts, loud, soft);
+const f = music.arrange({ bpm: 120, steps: 1 }, parts, loud, muted);`;
+    const r = check(setup,
+      `const p = v.which.map((k) => v.clips[k].peak);
+if (Math.abs(p[1] / p[0] - 0.5) > 0.01) fail(p.join(" "));
+const one = music.render(f, { limit: false });
+if (!(one.trim(0, 0.5).peak > 0.2) || one.trim(2, 2.5).peak !== 0) fail(\`\${one.trim(0, 0.5).peak} \${one.trim(2, 2.5).peak}\`);`,
+    );
+    expect(errors(r)).toEqual([]);
+    expect(errors(check(setup, `program(async () => { await music.play(f); });`)).join("\n")).toMatch(/effects of its own, which only music.render mixes/);
+  });
+
+  it("makes a part pump with the beat, a riser as long as asked, an impact, and a section's length in seconds", () => {
+    const r = check(
+      `const pad = tone("A3", 2, { volume: 0.5 }).pan(0), pumped = music.pump(0.5, 0.5)(pad);`,
+      `const dip = pumped.trim(0.501, 0.52).peak, back = pumped.trim(0.95, 0.99).peak;
+if (!(dip < 0.3 && back > 0.45)) fail(\`\${dip} \${back}\`);
+if (Math.abs(music.bars(143, 4) - 4 * 40 * 0.042) > 1e-9) fail(String(music.bars(143, 4)));
+const r = music.riser(music.bars(143, 2));
+if (Math.abs(r.seconds - 3.36) > 0.001 || !(r.trim(3.2, 3.3).peak > 4 * r.trim(0.2, 0.3).peak)) fail(\`\${r.seconds}\`);
+if (!(music.impact().peak > 0.3)) fail("impact");`,
     );
     expect(errors(r)).toEqual([]);
   });
