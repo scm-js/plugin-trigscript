@@ -1559,6 +1559,11 @@ A pixel under half opaque is never ink. Nothing reaches the game but what the sc
   Badlands 23778, is lit 86, fog 57, a gap of 29 there (its art averages 71; 1.16.1 takes one bright pixel of it). The
   best of the other tilesets: gaps 39–40. So a fog map for Remastered graphics wants snow (two thirds more contrast),
   one for Classic graphics Badlands 23778 — Classic's minimap is still the sharper and wider (169 against 104).
+- **Snow played in Remastered** (recording 11.54.03.26: raycaster, halftone probe, Bad Apple, built with `BOARD=snow`
+  / `BA_TILE=66`): lit 129, fog 82, as surveyed. The fine grate texture the earlier Remastered recording showed was
+  Badlands 23778's own HD art; snow is smooth. Diffused ramps climb 86 → 125 (twice Badlands' range), still smooth;
+  halftone dots show as soft blobs; the walk at 4 × 5 undiffused reads most like shading. Outlines and silhouettes
+  clean and soft-edged.
 - **Not yet:** the runtime half — an image as a table a program reads while the game runs (textures, sprites, a level
   painted as a picture) — waits for the lowering work on `backend-limits`.
 
