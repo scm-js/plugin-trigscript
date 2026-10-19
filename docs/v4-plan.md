@@ -1572,6 +1572,32 @@ too big, kept in the archive; every operation on a known picture; a script impor
 mistake and a build-time mistake each said on their line). **In the editor** (headless Chromium, the local build): a
 PNG dropped on the Explorer, each way of keeping it previewed, imported, a script using it 0 problems, the viewer.
 
+### Sounds: the probe (played 2026-10-19)
+
+Wanted: sound effects and music from a program. Before the language: what StarCraft: Remastered does with sounds a
+program plays (`probes/sound-probe.ts`; its sounds made by `probes/lib/sound-probe-map.mts`, each a tone or click of
+its own so the audio says which played and when). Played, two rounds, recording 12.22.41.27; measured from its audio
+(48 kHz, digital silence between sounds, so a start is read to the sample). Both rounds agree to the sample.
+
+- **Timing.** A sound starts on a 21.3 ms grid — 1 024 samples at 48 kHz, the mixer's buffer — so up to one buffer
+  after its frame (12–14 ms standard deviation); the spacing over time is exact (6 frames: 252.2 ms on average).
+  One every frame plays every time (60 of 60). Good enough for music at game speeds; not for sub-buffer flams.
+- **The WAV list.** A sound named by no WAV slot starts on the same grid as a listed one, the first time too: no
+  loading delay. The list is for the editor, not for timing.
+- **Again is another.** Playing a sound that is still playing starts a second copy beside it; there is no restart,
+  and no action stops a sound — a note's length is the file's.
+- **Voices.** 32 different sounds at once, all heard to their ends: none cut, none dropped.
+- **Copies add.** Eight copies in one frame are exactly eight times as loud — summed, no limiter: a library keeps its
+  own headroom.
+- **Loudness kept.** A tone written at a quarter of another comes out at exactly a quarter: a gain made when the
+  script is built is the gain heard.
+- **Formats.** 8- and 16-bit PCM at 11, 22, 44 (stereo) and 48 kHz, IMA ADPCM and Ogg Vorbis all play; **Ogg Opus
+  is silent.** Programs are Remastered-only, so Vorbis is open to them; IMA ADPCM is a quarter of 16-bit PCM and
+  simple to write in the editor, where no Vorbis encoder is at hand.
+
+So the music library can fire notes per frame (42 ms on Fastest) from pitched copies made at build, overlapping
+freely within 32 voices, each note's length and loudness baked into its file.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
