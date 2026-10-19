@@ -4708,10 +4708,11 @@ class Lowering:
             return v
 
         def graph_temp(name):
-            """A scratch cell of the graph's: a variable of this side's, one for each name."""
+            """A scratch cell of the graph's: a variable of this side's, one for each name (written before every read
+            of it, so no initial value)."""
             key = ("temp", name)
             if key not in self.graph_data:
-                self.graph_data[key] = EUDVariable(0)
+                self.graph_data[key] = EUDVariable()
             return self.graph_data[key]
 
         def copy(id_, into, top=None):
