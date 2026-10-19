@@ -22,7 +22,7 @@ import { isTestFile, listTests, runTests, TestRegistry, TESTING_NAMES, type Test
 import { DECLARATIONS_FILE, generateDeclarations } from "./declarations";
 import { isScriptClass, isScriptFunction, scriptArrow, isTopListener, libraryCallName, libraryName, planClass, planFunction, planListener, planProgram, transformer, type ProgramPlan } from "./hoist";
 import { locate, resolveModule, runModules, STDLIB_DIR, type LinkedFile } from "./link";
-import { isMediaFile, videoValue } from "./media";
+import { isMediaFile, mediaValue } from "./media";
 import { STDLIB, stdlibImports, stdlibPath } from "./stdlib";
 import { checkProgram } from "./eud";
 import { checkLocal } from "./local";
@@ -207,7 +207,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
 
   const refs: MapReference[] = [];
   const scripts = new Map<string, string>();
-  // A video among the files (`media.ts`) is no TypeScript: an import of it gives a value the linker makes.
+  // A video or an image among the files (`media.ts`) is no TypeScript: an import of it gives a value the linker makes.
   const media = new Map<string, string>();
   for (const [path, text] of Object.entries(files)) (isMediaFile(path) ? media : scripts).set(normalizePath(path), text);
   // The standard library's modules the script imports ("trigscript/fog"), as files of its own: only those, since one
@@ -387,7 +387,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const runtime = { ...createRuntime(names, collector), ...registry.library() };
   collector.running = true;
   // The entry first, so the programs are there; then the test files, which nothing imports.
-  const failure = runModules(linked, entry, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort(), media: (path) => { const text = media.get(path); return text === undefined ? undefined : videoValue(text); } });
+  const failure = runModules(linked, entry, runtime, MODULE_NAME, { imported: TESTING_NAMES, then: fileNames.filter(isTestFile).sort(), media: (path) => { const text = media.get(path); return text === undefined ? undefined : mediaValue(path, text); } });
   collector.running = false;
   if (failure) {
     const line = failure.line ?? 1;

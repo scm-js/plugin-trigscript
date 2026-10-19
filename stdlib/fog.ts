@@ -19,8 +19,13 @@
  * lit; to draw dark shapes, light around them (a picture with `{ ink: "dark" }`). Dark is also the sharper ink: a lit
  * part is at least a brush wide (3 tiles across, 4 down), while a dark line one tile wide stays exactly that. Nothing
  * else needs doing — the library writes the game's vision countdown after every frame (memory.vision.countdown), so
- * the next frame starts from a wiped board. Watch it on the minimap with Classic graphics (Options > Graphics): a tile
+ * the next frame starts from a wiped board. Watch it on the minimap. With Classic graphics (Options > Graphics) a tile
  * of the map is a pixel there, sharp; Remastered graphics blurs it a few tiles wide.
+ *
+ * What the board is made of decides how far apart lit and fog look. Remastered draws a tile on the minimap as the
+ * average of its art and fog as 0.64 of lit, whatever the tile, so the brightest art is the best board there: plain
+ * Ice snow (lit 130 against fog 82, measured 2026-10-19). Classic draws a tile as one colour of its own; Badlands
+ * tile 23778 is the widest apart there, and dim and textured in Remastered. Snow played the better of the two.
  *
  * How it draws, played in StarCraft: Remastered (2026-10-17): a brush is a unit made on a tile and taken away in the
  * same trigger pass; the tiles its sight revealed stay lit through the frame. A brush's size is the unit's sight
@@ -164,13 +169,17 @@ export interface Picture {
  *   fog.picture(["..##..", ".####.", "######"])                     // light ink: the # tiles are lit
  *   fog.picture(["..##..", ".####.", "######"], { ink: "dark" })    // dark ink: the # tiles stay dark, the rest is lit
  *
- * With light ink a lit part thinner than a brush (3 tiles across, 4 down) is drawn a tile or two thicker. With dark
+ * With light ink a lit part thinner than a brush (3 tiles across, 4 down) is drawn a tile or two thicker. An image's
+ * halftone (`fog.picture(photo.halftone(6))`) is drawn with the brushes it was made of, one a cell. With dark
  * ink every tile of the picture's rectangle that is not `#` is lit and the `#` tiles keep their shape exactly,
  * however thin — the ink for line art and silhouettes.
  */
 export function picture(rows: readonly string[], options: { readonly ink?: "light" | "dark" } = {}): Picture {
   const height = rows.length;
   const width = Math.max(0, ...rows.map((r) => r.length));
+  // An image's halftone (image.halftone(6)) comes with the brushes that drew it: a brush a cell, as they are.
+  const drawn = (rows as { readonly brushes?: readonly { readonly x: number; readonly y: number; readonly shape: number }[] }).brushes;
+  if (drawn && options.ink !== "dark") return Object.freeze({ width, height, brushes: Object.freeze(drawn.map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }))) });
   // Dark ink: the picture's rectangle lit but for the # tiles, so what is covered is the rest.
   const ink = options.ink === "dark" ? Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => (rows[y][x] === "#" ? "." : "#")).join("")) : rows;
   const brushes = cover(ink, SHAPES).map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }));

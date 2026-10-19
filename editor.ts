@@ -61,8 +61,8 @@ import type { DebugRecording } from "./compiler/gameDebug";
 import type { ScmSimDebugView } from "./vendor/scmSim";
 import type { EudplibBuildEvent, EudplibService } from "./vendor/eudplib";
 import type { Translate } from "./i18n";
-import { describeVideo, isMediaFile } from "./compiler/media";
-import { importMedia, showVideo } from "./videoImport";
+import { describeMedia, isImageFile, isMediaFile } from "./compiler/media";
+import { importMedia, showImage, showVideo } from "./videoImport";
 
 export const TEMPLATE = `// TrigScript: ordinary TypeScript that runs when you build. Every trigger() call becomes
 // one trigger of the map, in order; code inside program(() => { … }) runs in the game.
@@ -553,12 +553,12 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   const where = (s: TriggerSource | null | undefined) => (s ? (Object.keys(files).length > 1 ? `${s.file}:${s.line}` : t("Ln {line}", { line: s.line })) : "?");
 
-  /** Show a file, in a tab of its own; a video in a viewer of its own. */
+  /** Show a file, in a tab of its own; a video or an image in a viewer of its own. */
   const openFile = (path: string) => {
     if (!editor) return;
     const p = normalizePath(path);
     if (files[p] === undefined) return;
-    if (isMediaFile(p)) { showVideo(api, t, p, files[p]); return; }
+    if (isMediaFile(p)) { (isImageFile(p) ? showImage : showVideo)(api, t, p, files[p]); return; }
     if (!openTabs.includes(p)) openTabs.push(p);
     editor.show(p);
     renderFiles();
@@ -664,8 +664,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
         }
         const path = node.path;
         const fixed = path === ENTRY_FILE;
-        const row = el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: isMediaFile(path) ? `${path}\n${describeVideo(files[path])}` : path, onClick: () => openFile(path) },
-          isMediaFile(path) ? shell.icon("device-camera-video") : el("span", { className: "tsd-ts" }, "TS"),
+        const row = el("li", { className: path === active ? "tsd-row tsd-active" : "tsd-row", title: isMediaFile(path) ? `${path}\n${describeMedia(path, files[path])}` : path, onClick: () => openFile(path) },
+          isMediaFile(path) ? shell.icon(isImageFile(path) ? "file-media" : "device-camera-video") : el("span", { className: "tsd-ts" }, "TS"),
           el("span", { className: broken.has(path) ? "tsd-name tsd-problem" : "tsd-name" }, node.name),
           el("span", { className: "tsd-row-actions" },
             !fixed ? shell.iconButton({ icon: "edit", title: t("Rename or move…"), run: () => { void renameFile(path); } }).element : undefined,
@@ -1710,7 +1710,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       if (answer === null) return null;
       let name = normalizePath(answer.trim());
       if (name && folder) name = `${folder}/${name}`;
-      if (name && !/\.(?:tsx?|video)$/i.test(name)) name += ext;
+      if (name && !/\.(?:tsx?|video|image)$/i.test(name)) name += ext;
       if (!FILE_NAME.test(name) || name.split("/").some((p) => p === "." || p === "..")) { value = answer; message = t("A file name is letters, digits, _ - and ., folders with /, ending in .ts."); continue; }
       if (files[name] !== undefined) { value = answer; message = t("There is already a {name}.", { name }); continue; }
       return name;
@@ -1730,8 +1730,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
   };
 
   /**
-   * Import Video…: a video becomes a .video file of the script, a picture a .ts file of its rows (`videoImport.ts`).
-   * A picture opens in a tab; a video says how a script imports it.
+   * Import Video…: a video becomes a .video file of the script, a picture an .image file or a .ts file of its rows
+   * (`videoImport.ts`). Rows open in a tab; a video or an image says how a script imports it.
    */
   const importVideo = async (file?: File) => {
     if (!editor) return;
@@ -1739,11 +1739,13 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const got = await importMedia(api, t, { mapWidth: info?.width ?? 128, mapHeight: info?.height ?? 128, taken: (p) => files[normalizePath(p)] !== undefined, file });
     if (!got || !editor || cancelled) return;
     editor.add(got.path, got.text);
-    if (got.kind === "image") { openFile(got.path); return; }
+    if (got.kind === "rows") { openFile(got.path); return; }
     renderFiles();
-    const stem = (got.path.split("/").pop() ?? got.path).replace(/\.video$/i, "");
-    const name = stem.replace(/[^A-Za-z0-9]+(.)?/g, (_m, c: string | undefined) => (c ? c.toUpperCase() : "")).replace(/^[^A-Za-z_]+/, "") || "video";
-    setStatus("ok", t("{path} is in the script: import {name} from \"./{path}\"; then await fog.play(P1, {name}) plays it.", { path: got.path, name }));
+    const stem = (got.path.split("/").pop() ?? got.path).replace(/\.(?:video|image)$/i, "");
+    const name = stem.replace(/[^A-Za-z0-9]+(.)?/g, (_m, c: string | undefined) => (c ? c.toUpperCase() : "")).replace(/^[^A-Za-z_]+/, "") || got.kind;
+    setStatus("ok", got.kind === "image"
+      ? t("{path} is in the script: import {name} from \"./{path}\"; then fog.picture({name}.threshold(128)) makes a picture of it.", { path: got.path, name })
+      : t("{path} is in the script: import {name} from \"./{path}\"; then await fog.play(P1, {name}) plays it.", { path: got.path, name }));
   };
 
   /** An archive has no empty folder, so a folder is there while a file is in it: the folder's name, then its first file's. */
@@ -1796,7 +1798,7 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   const renameFile = async (path: string) => {
     if (!editor || path === ENTRY_FILE) return;
-    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path, "", isMediaFile(path) ? ".video" : ".ts");
+    const name = await askName(t("Rename {path} to (a folder before the name moves it):", { path }), path, "", isMediaFile(path) ? (isImageFile(path) ? ".image" : ".video") : ".ts");
     if (!name) return;
     moveTo(path, name);
   };

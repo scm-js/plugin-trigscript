@@ -73,7 +73,7 @@ export function runModules(files: ReadonlyMap<string, LinkedFile>, entry: string
         const name = spec.slice(moduleName.length + 1);
         for (const ext of [".ts", ".tsx"] as const) if (names.has(stdlibFile(name, ext))) return load(stdlibFile(name, ext));
       }
-      // A video (`media.ts`): the value its file gives, by the path the import names.
+      // A video or an image (`media.ts`): the value its file gives, by the path the import names.
       const asMedia = spec.startsWith(".") && options.media ? options.media(resolvePath(file, spec)) : undefined;
       if (asMedia !== undefined) return { __esModule: true, default: asMedia };
       const target = resolveModule(names, file, spec);

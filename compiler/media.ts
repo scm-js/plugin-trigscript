@@ -16,9 +16,15 @@
  * `fog.picture` takes. `fog.light(player, x, y, video, frame)` draws one while the game runs.
  */
 
+import { fromBase64, PROB_HALF, RangeDecoder, RangeEncoder, toBase64 } from "./rangeCoder";
+import { describeImage, IMAGE_EXTENSION, imageValue } from "./image";
+
 /** The extension of a video among a script's files. */
 export const VIDEO_EXTENSION = ".video";
-export const isMediaFile = (path: string): boolean => path.toLowerCase().endsWith(VIDEO_EXTENSION);
+/** A video or an image (`image.ts`): a file of the script that is no TypeScript, whose import gives a value. */
+export const isMediaFile = (path: string): boolean => /\.(?:video|image)$/i.test(path);
+export const isVideoFile = (path: string): boolean => path.toLowerCase().endsWith(VIDEO_EXTENSION);
+export const isImageFile = (path: string): boolean => path.toLowerCase().endsWith(IMAGE_EXTENSION);
 
 /** A game frame on Fastest, in milliseconds: what a video imported "at the game's speed" has a frame for. */
 export const FASTEST_FRAME_MS = 42;
@@ -167,10 +173,15 @@ export function describeVideo(text: string): string {
   }
 }
 
-/* ── The coding: a tile's odds by the tiles around it, and LZMA's binary range coder ── */
+/** The value an import of a media file gives: an `Image` for an `.image`, a `Video` for a `.video`. */
+export const mediaValue = (path: string, text: string): unknown => (isImageFile(path) ? imageValue(text) : videoValue(text));
+
+/** What the Explorer's hover says about a media file. */
+export const describeMedia = (path: string, text: string): string => (isImageFile(path) ? describeImage(text) : describeVideo(text));
+
+/* ── The coding: a tile's odds by the tiles around it, for LZMA's binary range coder (`rangeCoder.ts`) ── */
 
 const CONTEXT_BITS = 11;
-const PROB_BITS = 11, PROB_HALF = 1 << (PROB_BITS - 1), MOVE_BITS = 5, TOP = 1 << 24;
 
 /**
  * Which odds tile (x, y) is coded with: in this frame the two to its left and the four above (NW N NE, and N of N);
@@ -191,79 +202,4 @@ function context(now: Uint8Array, previous: Uint8Array, width: number, height: n
     | (right ? previous[i + 1] : 0) << 8
     | (up ? previous[i - width] : 0) << 9
     | (y + 1 < height ? previous[i + width] : 0) << 10;
-}
-
-/** LZMA's range encoder, a bit at a time with adaptive odds (`odds[k]`: the chance of a 0, out of 2048). */
-class RangeEncoder {
-  private low = 0;
-  private range = 0xffffffff;
-  private cache = 0;
-  private cacheSize = 1;
-  private out: number[] = [];
-
-  bit(odds: Uint16Array, k: number, bit: number): void {
-    const p = odds[k], bound = (this.range >>> PROB_BITS) * p;
-    if (bit) { this.low += bound; this.range -= bound; odds[k] = p - (p >> MOVE_BITS); }
-    else { this.range = bound; odds[k] = p + (((1 << PROB_BITS) - p) >> MOVE_BITS); }
-    while (this.range < TOP) { this.range = (this.range * 256) >>> 0; this.shiftLow(); }
-  }
-
-  private shiftLow(): void {
-    if (this.low < 0xff000000 || this.low >= 0x100000000) {
-      const carry = this.low >= 0x100000000 ? 1 : 0;
-      let byte = this.cache;
-      do { this.out.push((byte + carry) & 0xff); byte = 0xff; } while (--this.cacheSize !== 0);
-      this.cache = Math.floor(this.low / 0x1000000) & 0xff;
-    }
-    this.cacheSize++;
-    this.low = (this.low % 0x1000000) * 256;
-  }
-
-  finish(): Uint8Array {
-    for (let i = 0; i < 5; i++) this.shiftLow();
-    return Uint8Array.from(this.out);
-  }
-}
-
-class RangeDecoder {
-  private range = 0xffffffff;
-  private code = 0;
-  private at = 0;
-  /** Read past the end: the file was cut short. */
-  overrun = false;
-
-  private readonly bytes: Uint8Array;
-
-  constructor(bytes: Uint8Array) {
-    this.bytes = bytes;
-    for (let i = 0; i < 5; i++) this.code = ((this.code * 256) + this.next()) % 0x100000000;
-  }
-
-  private next(): number {
-    if (this.at < this.bytes.length) return this.bytes[this.at++];
-    this.overrun = this.at++ > this.bytes.length + 4;
-    return 0;
-  }
-
-  bit(odds: Uint16Array, k: number): number {
-    const p = odds[k], bound = (this.range >>> PROB_BITS) * p;
-    let bit: number;
-    if (this.code < bound) { this.range = bound; odds[k] = p + (((1 << PROB_BITS) - p) >> MOVE_BITS); bit = 0; }
-    else { this.code -= bound; this.range -= bound; odds[k] = p - (p >> MOVE_BITS); bit = 1; }
-    while (this.range < TOP) { this.range = (this.range * 256) >>> 0; this.code = ((this.code * 256) + this.next()) % 0x100000000; }
-    return bit;
-  }
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let s = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(s);
-}
-
-function fromBase64(text: string): Uint8Array {
-  const s = atob(text);
-  const out = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
-  return out;
 }
