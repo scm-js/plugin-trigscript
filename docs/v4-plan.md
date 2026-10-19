@@ -3052,6 +3052,9 @@ No relocation, no scrambling, no flags to flip (the map has no triggers of its o
 - In the game: the start costs 0.004 ms against eudplib's 1.07 ms (its start-up, frame 2: 82 068 records); a frame
   while the program runs 1.3 µs against 5.1; a frame once it has ended 2 records against 170 (eudplib's own work
   every frame, about 4 µs).
+- **Played in Remastered (2026-10-19):** `trigscript-own-loader.scx` printed all eight lines, every one "ok" — the
+  first TrigScript map Remastered has run with no eudplib in it. (The recording ends in the game: how a game of it
+  ends, the one moment its trigger list holding nodes outside the game's heap could matter, is still to be seen.)
 - Not yet: anything the emitter leaves to the Python side (texts with values, units, arrays it does not read, calls,
   tasks, per-player programs, `trigger()` records of the map's own), and the map's own triggers alongside (eudplib's
   stage 3 keeps them; ours drops them). The probe map is `trigscript-own-loader.scx` in the Maps folder: played in
