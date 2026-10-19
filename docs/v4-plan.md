@@ -3186,6 +3186,176 @@ No relocation, no scrambling, no flags to flip (the map has no triggers of its o
   Remastered, it says whether the start-up holds there — and whether the end of a game does, the one moment where a
   list holding nodes outside the game's heap could matter (eudplib's lists hold them too).
 
+### Past eudplib: the machine the measurements describe (2026-10-19)
+
+After the own loader played, the question was what comes next to leave eudplib entirely, and what more there is to
+have once the backend is ours. eudplib takes the trigger walk for a slow processor with memory and gives it macros,
+each lowered without seeing the next. What the probes measured is another machine, and a backend written for it does
+better than a port of eudplib's:
+
+- *Code is data.* Every condition's number, every action's number and destination, every next pointer is a dword
+  another action can write. The emitter's places are this.
+- *A next pointer is a jump that costs nothing,* and since the own loader the walk is a list the program owns.
+- *A trigger is a bundle:* up to 16 conditions that must all hold, the first that fails ending the test (a mask free),
+  then up to 64 actions.
+- *The emulator remembers one region:* an access in another region than the last costs about 7 ns more (the weights).
+- *Some records never reach the emulator:* resources (Set 1.2 ns, Accumulate 0.85), switches (4.4 / 3.5), Bring and
+  Command asked again (4.6 / 4.3).
+- *The machine has an exact copy:* the lifted game, and Remastered's emulator under Unicorn (`remastered/probe.py`),
+  so a trick is checked before anyone plays it.
+
+None of what follows runs code of our own or reaches past what the emulator lists: the rule of "The limits" holds.
+
+**Ideas, by what they would give.** Each wants a bench or a probe before it is built; a number called a guess is one.
+
+*Speed:*
+1. **Branches as places.** A boolean that changes seldom makes every `if` on it a next pointer: `else + b · (then −
+   else)`, a place with a scale, which the emitter keeps already. Cases laid out a fixed stride apart make
+   `switch (state)` the place `first + stride · state`. A state machine's dispatch, an `if (hardMode)` in a loop, cost
+   no condition; today a switch is a test a case. The rule that weighs a variable's places against its reads decides.
+2. **The walk as the scheduler.** A task asleep, or a handler with nothing to do, is not in the list: it costs nothing,
+   where today each branch's wait is tested every frame. A timer wheel (list heads, one stepped each frame) links a
+   sleeper back on the frame it wakes; a signal links its handlers in when it fires. `@wake` is the first of these. It
+   is what would make a coroutine for each of 1,700 units affordable.
+3. **The start worked out when built.** Run the program in the lifted game until it first reads what the build cannot
+   know (input, a unit, the tick), and put its own memory as it is then into the map, the walk starting there. Only the
+   payload's cells, nothing of the game's. Most of Tetris's 8 ms and Snake's 4 ms first frames should go; a table a
+   program builds is free. (Set aside on 2026-10-18 as one map's matter; with the fixed layout it is general.)
+4. **Tables instead of bits.** A read by a jump reaches a cell in a few triggers, and value ranges know domains: a pure
+   function of a small range becomes a table built with the map (the cost model against the map's size); a number as
+   text a table of 1,000 three-digit dwords written into the text (eudplib's `f_dbstr_print` divides by ten up to ten
+   times, each a bit at a time); a product of bounded numbers two reads, by quarter squares (ab = ⌊(a+b)²/4⌋ −
+   ⌊(a−b)²/4⌋). The raycaster's frame 112 is about 230 µs of fixed products and 160 of reciprocals out of 899. A
+   guess: ten times faster or more on bounded operands.
+5. **A superoptimizer, offline.** The machine is small and known: search for the cheapest records under Remastered's
+   weights for shifts, var < var, abs / min / max, signs, the fixed product and quotient, sqrt, the digits — short
+   ones enumerated, longer ones by stochastic search — each checked exhaustively at 8 bits and at 32 by the graph
+   interpreter and z3 (`z3-solver`, wasm). What it finds becomes rules of the emitter.
+6. **Scheduling.** The hot path falling through; loops pipelined (a turn's first actions in the trigger of the turn
+   before's last); accesses grouped by region; Bring and Command grouped by location and kind (4.3 ns asked again,
+   0.2–2.5 µs a scan); counts from runs in the lifted game as the profile.
+7. **Effects read from both games.** For every condition and action handler of 1.16.1 and Remastered: what it reads,
+   writes and throws away (Bring's table), and whether it goes through the emulator — a table the compiler loads. The
+   stale Bring was found by a probe; reading the handlers would have found it. Scheduling (6) may move an action past
+   another only when their effects do not meet.
+8. **Storage by cost, as registers are given out.** Hot values into the cheapest storage the map allows: resources of
+   a player who can never be in the game (the map's slots say), switches, the payload's cells, the game's memory.
+   Probe too: Highest / Lowest Score of the custom score, an argmax over players in one condition.
+9. **Bitboards.** A grid of booleans as rows of 32 bits: whether a falling piece fits is four masked conditions, the
+   shift for its column chosen by a jump. Not the `bits<N>` packing set aside on 2026-10-18 (taking numbers out of a
+   cell): testing bits, where the mask is free.
+
+*Language:*
+10. **Signals made of places.** A signal's readers are its places (texts, conditions, branch pointers), its effects
+    linked into the walk when it changes (2): a view costs nothing on a frame where nothing changed, by how it is made
+    rather than by comparing.
+11. **Units with behaviours, and entities.** `u.behave(async function* () { … })`, a coroutine a unit, keyed by its
+    slot, in the walk only while awake; `world.query(Pos, Vel)` over columns of cells with counter offsets (what took
+    the bullets from 2.38 to 0.44 ms).
+12. **Precision and units as types.** `Fixed<8>`, `Num<0, 4095>` given to value ranges, choosing table arithmetic (4);
+    pixels, tiles and frames told apart.
+13. **Input of our own.** MSQC carries a value of about 20 bits through selection commands (a typed line at most
+    three). Read the command dispatch of both games for the command that carries the most bits to every machine and
+    does nothing else; typed channels on it (`channel<{ x: u16, y: u16 }>()`), changes only, a budget a turn; the chat
+    read from the local buffer instead of chatEvent. Held first on the lifted game's play with two seated (21,394 of
+    21,394 frames on a real replay). The last of the euddraft plugins.
+
+*Tools:*
+14. **A real game's replay, debugged.** A replay of a game played in Remastered, run in the lifted game with the map of
+    triggers: A5's scrubbing, the cost by line and EUD errors at their lines on what really happened, several players
+    included, and the counts (6) from real play. A spike first: does an EUD map's replay from Remastered run true in
+    the lifted game?
+15. **Edits while it runs.** Nothing is relocated: rebuild, compare the payloads, write the triggers that changed into
+    the lifted game between frames, carry the variables over by name (A2's variable map).
+16. **The compiler explorer.** The script beside its graph, nanoseconds by line and by action, a variable's places
+    shown, `EMITTER_REPORT`'s reasons as quick fixes.
+17. **Random programs.** Whole programs made at random (as Csmith does C), run in the simulator and in the lifted game
+    built both ways, the game's state compared every frame (A3), a failure cut down to the smallest. The emitter's
+    4,000 random loops, for everything: what makes deleting the Python side safe.
+18. **A map's triggers as TrigScript.** Any UMS map's triggers opened as a script (Preserve as a loop, a switch's
+    patterns as a state machine) that builds back. Classic triggers only.
+
+**The way off eudplib.** Each step held the same way — the script built both ways says the same at the same frames in
+the lifted game, and the probe plays the same in Remastered — and each better than eudplib's way, not a copy of it:
+
+1. Calls (below).
+2. Texts with values (4's digits), and texts made in the game.
+3. Arrays and the heap in the emitter, a store at any index included.
+4. Units: loops, fields, events, the queries scheduled (6, 7).
+5. Tasks, `async`, per-player programs, on the walk as the scheduler (2).
+6. Input (13).
+7. The map's own triggers kept beside the program (eudplib's stage 3), or built into it.
+8. `python/trigscript.py` (7,100 lines) and Pyodide deleted: the own-loader probe builds in 0.7 s against 5.3.
+
+### Calls on our own backend (2026-10-19)
+
+A map of our own refuses every call the front end did not reduce to one `return` (`emitBody`). What a call is in a
+graph that holds the whole program:
+
+- **Arguments into the callee's places.** A parameter is a variable of the function; its places are the dwords of the
+  function's triggers that read it. A call writes each argument into every place of its parameter, as any write does —
+  in one trigger for all of them, where eudplib's call sets each argument's cell and the body routes it again.
+- **Back by a next pointer.** A function ends at a trigger of its own whose next pointer the call sets to the trigger
+  after it, in the same trigger as the arguments, before it goes to the function's first. (eudplib's EUDFunc goes
+  back the same way.)
+- **The result through its places.** `return e` writes the function's result variable; the call copies it into its
+  own (the IR's `Call.result`), whose places are where it is read. So the result variable's places are the actions of
+  every call's copy: a return writes them all, and each call's copy reads its own. The more calls of a function, the
+  more actions at its return — the rule that weighs places against reads applies as to any variable.
+- **Calls in expressions** made statements first (the rewriter): `x = a + f(b)` is `f(b)` into its copy, then
+  `x = a + copy`; a value to the left of a call that the function may write is first taken into a variable of the
+  emitter's own, so the order is JavaScript's. A call in a later part of `&&` / `||` is not taken (it may not run).
+- **Inlined calls** (a function called once, or one the front end cannot call): the body where the call is, `return`
+  writing the call's result and going to its end.
+- **Not yet:** a function that calls itself (its variables and where it goes back to, kept on a stack around the call:
+  the eudplib side's `Saves`, for a later part), and calls inside the eudplib build's loops (still islands there).
+
+Checked by the emitter's random programs with functions (a test of their own beside the random loops), and by
+`probes/own-calls.ts`, built through eudplib and as a map of our own: the same lines at the same frames in the lifted
+game, then played in Remastered.
+
+**As built (2026-10-19, branch `calls`).** `compiler/backend/emit.ts`: `Scope.call` / `function` / `returned` (what
+is taken), `Emitter.call` / `ret` / `functions` (the layout), the rewriter's calls (`Rewriter.call`, `before`, `each`,
+and `&&` / `||` with a call in a later part as `if`s on a variable of the emitter's own); `emitBody` rewrites each
+function's body once, the first time a call reaches it (`bodyOf`), and a function's number kept as a value is a plain
+number there (`plainFns`: the dispatcher's call lays the function out). Calls in the eudplib build's loops are islands
+as before.
+- *The first measure was worse than eudplib's:* the frame of two hundred calls (`probes/own-calls.ts`, H) cost
+  0.63 ms as a map of our own against 0.17 through eudplib. Places multiplied across calls: `pick`'s result had a place
+  in every call's copy (14), each of those actions read the parameters (so `x` had 30 places), and the counter passed
+  as `x` had as many again — a call wrote about 145 records. And a copy in a map of our own was a trigger a bit.
+- *A called function's result in its cell alone* (`Emitter.results`): each call reads it from there, so a return
+  writes one or two actions and a parameter has the places of the body only.
+- *Copies routed in a map of our own* (`layout.ts`, `expandCopies`): a variable that is copied keeps its value in the
+  number of the one action of a trigger of its own (Set Deaths, add), 72 bytes apart and overlapped as eudplib's
+  EUDVariable is; a copy into a place sets the place to its constant, points that action at it and goes through, about
+  50 ns a place against half a microsecond a copy. A multiple other than 1 is still filled a bit at a time.
+- *A loop of reads broken once:* calls make one whenever what a function gives back reaches its own parameter
+  (`pick(a, pick(b, c))`, `i = next(i)`); the eudplib build's loops copy every variable of such a loop, a map of our own
+  copies the one whose writes are fewest (weighed by the loops around them) and looks at the rest again. Copies in
+  `own-calls`: 21 → 2.
+- *Numbers* (lifted game, Remastered's weights): the frame of two hundred calls 0.63 → 0.29 → **0.11 ms** (eudplib
+  0.17); `own-loader`'s payload 636 → 484 KB (its copies routed).
+- *Found on the way, both builds:* a loop's `a && b` test was split by `writtenIn`, which saw assignments and
+  declarations only, so a part that a boolean set from a test or a call in the loop changed was tested once on the way
+  in (`while (i < 10 && go) { i++; go = i < 5; }` ran ten turns); the split now uses everything the loop may write.
+  *The eudplib build:* `y = a + bump()` read `a` after `bump()` changed it — the Python side read a variable where the
+  arithmetic ran — so a value left of a call is copied first (`Lowering.nums`: binary operators, comparisons, min /
+  max, fixed functions). `probes/own-calls.ts` C was WRONG through eudplib before.
+- *Checked:* `tests/emitter.test.ts` — 3000 random programs with functions (calls as statements, in sums and
+  comparisons, in a later part of `&&` / `||`, as arguments of calls, in loops' tests; inlined calls; returns from
+  inside ifs and loops) run as written and as their graphs, every variable the same; about 430 of them laid out and run
+  from the payload's bytes as the game walks triggers (`runOwn`: the routed cells and their overlap included); the
+  loop split, which fails without the fix. `probes/own-calls.ts`: its nine lines the same at the same frames built
+  both ways, every one ok; game-check: 327 accesses, none ending the game. Every game probe with the emitter on.
+- *Not yet:* a function that calls itself (a stack of our own); calls inside the eudplib build's loops; the eudplib
+  build's loops breaking a loop of reads once (to be measured there: its copies are routed reads already); a call in
+  a `do` loop's test.
+- **Played in Remastered (2026-10-19):** `trigscript-own-calls.scx` printed all ten lines, every one "ok", in the
+  lifted game's groups (3, then 5, 7 and 10 lines about four frames apart: frames 2, 6, 10 and 14), no error, no
+  stutter seen. The first map of ours with routed copies: Remastered runs the overlapped cell triggers as the lifted
+  game does.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
