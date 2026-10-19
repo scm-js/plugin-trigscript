@@ -2316,6 +2316,318 @@ def fixed_fns():
     return _FIXED
 
 
+# A trigger's first condition's number, and its first action's destination, number and modifier (a SetDeaths, its
+# modifier the top byte of the dword: 7 SetTo, 8 Add), from the trigger's address: 8 bytes of links, 16 conditions of
+# 20 bytes, then the actions. A cell of our own is a trigger of one action that adds its number to itself: running it
+# doubles the number, and nothing routes it while only the loop it sits in runs it (TrigScript 4, the backend, part 3).
+COND_VALUE, ACT_DEST, ACT_VALUE, ACT_MODIFIER_DWORD = 16, 344, 348, 352
+
+
+_CONST_FDIV = {}
+
+
+def const_fdiv(c, x, bound=None):
+    """fdiv(c, x) — c × 65 536 / x towards zero — for a constant c and a variable x, the very bits fixed_fns()'s fdiv
+    gives (compiler/fixedMath.ts#fixedDiv). `bound`: the most |x| can be, when ranges.ts knows. One body for each c
+    (and bound) in the map, called."""
+    c = signed(c & U32)
+    if c == 0:
+        return 0
+    key = (abs(c), bound)
+    if key not in _CONST_FDIV:
+        _CONST_FDIV[key] = make_const_fdiv(abs(c), bound)
+    q = fresh(_CONST_FDIV[key](as_var(x)))
+    if c < 0:
+        q << 0 - q
+    return q
+
+
+def make_const_fdiv(c, bound):
+    """The divisor, not the dividend, stays where it is: long division the way it is done on paper, the remainder
+    doubled a step and the divisor taken from it when it fits, so the divisor is written into the one comparison and
+    the one subtraction of a loop of four triggers, where eudplib's division writes it, doubled, into every step it
+    has (each a copy, the cost of all the rest). The dividend c × 65 536 is known: where the divisor's highest bit is
+    (a search of comparisons) says how far down the dividend the first step that can take the divisor away is, and
+    what the remainder is there (a constant), so only the steps that make a bit of the quotient are run. The quotient
+    is counted in a cell with a bit put above it, which reaches the top on the last step: the loop's test of its end.
+    Quotients of 2^31 and more (a divisor of a few 65 536ths) are fixed_fns()'s fdiv's."""
+    d = c << 16
+    top_d = d.bit_length() - 1
+    t_most = 31 if bound is None else max(0, min(31, bound.bit_length() - 1))
+
+    def plan(t):
+        """For a divisor whose highest bit is t: (steps, the remainder before them, the dividend's bits still to
+        come at the top of a cell), or None when the loop cannot (no step: the quotient is 0; too many: wraps)."""
+        n = top_d - t + 1
+        if n <= 0:
+            return "zero"
+        if n > 31:
+            return None
+        return (n, d >> n, ((d & ((1 << n) - 1)) << (32 - n)) & U32)
+
+    plans = {t: plan(t) for t in range(t_most + 1)}
+    with_bits = any(isinstance(v, tuple) and v[2] for v in plans.values())
+
+    @EUDFunc
+    def fdiv_by(x):
+        out = EUDVariable()
+        if EUDIf()(x == 0):
+            EUDReturn(0)
+        EUDEndIf()
+        neg = fresh(0)
+        if EUDIf()(x >= SIGN):
+            x << 0 - x
+            neg << 1
+        EUDEndIf()
+        # The quotient, the remainder and the dividend's bits still to come: three cells of our own in one trigger, the
+        # three numbers doubled by one run of it.
+        cells, take_bit, test, end, leave, after = Forward(), Forward(), Forward(), Forward(), Forward(), Forward()
+        q, r, bits = cells + ACT_VALUE, cells + ACT_VALUE + 32, cells + ACT_VALUE + 64
+        # The divisor, where the loop compares and subtracts.
+        SeqCompute([(EPD(test + COND_VALUE), SetTo, x), (EPD(test + ACT_VALUE), SetTo, x)])
+        # The quotient's cell back to doubling itself (the last call sent it to `out`).
+        DoActions([SetMemory(cells + ACT_DEST, SetTo, EPD(q)),
+                   SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 8 << 24, 0xFF000000),
+                   SetNextPtr(cells, take_bit if with_bits else test)])
+        how = fresh(0)  # 0: the loop, 1: the quotient is 0, 2: fdiv's own way
+
+        def leaf(t):
+            p = plans[t]
+            if p is None:
+                DoActions(how.SetNumber(2))
+            elif p == "zero":
+                DoActions(how.SetNumber(1))
+            else:
+                n, r0, rest = p
+                # (The dividend's bits a place lower than where they are tested: the cells double them first.)
+                acts = [SetMemory(r, SetTo, r0), SetMemory(q, SetTo, 1 << (31 - n))]
+                if with_bits:
+                    acts.append(SetMemory(bits, SetTo, rest >> 1))
+                DoActions(acts)
+
+        def tree(lo, hi):
+            if lo == hi:
+                leaf(lo)
+                return
+            mid = (lo + hi + 1) // 2
+            if EUDIf()(x >= (1 << mid)):
+                tree(mid, hi)
+            if EUDElse()():
+                tree(lo, mid - 1)
+            EUDEndIf()
+
+        tree(0, t_most)
+        if EUDIf()(how == 0):
+            cells << RawTrigger(actions=[SetMemory(q, Add, 0), SetMemory(r, Add, 0)] + ([SetMemory(bits, Add, 0)] if with_bits else []))
+            if with_bits:
+                # The dividend's next bit into the remainder, from the top of its cell.
+                take_bit << RawTrigger(conditions=Memory(bits, AtLeast, SIGN), actions=SetMemory(r, Add, 1))
+            test << RawTrigger(conditions=Memory(r, AtLeast, 0), actions=[SetMemory(r, Subtract, 0), SetMemory(q, Add, 1)])
+            end << RawTrigger(nextptr=cells, conditions=Memory(q, AtLeast, SIGN), actions=SetNextPtr(end, leave))
+            # The quotient's cell run once more, its number written into `out`; the bit above it taken off after.
+            leave << RawTrigger(nextptr=cells, actions=[
+                SetNextPtr(end, cells),
+                SetMemory(cells + ACT_DEST, SetTo, EPD(out.getValueAddr())),
+                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 7 << 24, 0xFF000000),
+                SetNextPtr(cells, after),
+            ])
+            after << RawTrigger(actions=out.AddNumber(SIGN))
+        if EUDElseIf()(how == 1):
+            out << 0
+        if EUDElse()():
+            out << fixed_fns()["fdiv"](c, x)
+        EUDEndIf()
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    return fdiv_by
+
+
+_FIXED_BY_CONST = {}
+
+
+def fixed_by_const(name, x, c, bound=None):
+    """fmul(x, c) or fdiv(x, c) of a variable x and a constant c: the very bits fixed_fns()'s give
+    (compiler/fixedMath.ts), from comparisons with constants and constants added — nothing copied. `bound`: the most
+    |x| can be, when ranges.ts knows. One body for each constant (and bound) in the map, called."""
+    c = signed(c & U32)
+    if c == 0:
+        return 0
+    key = (name, abs(c), bound)
+    if key not in _FIXED_BY_CONST:
+        _FIXED_BY_CONST[key] = (make_fmul_by if name == "fmul" else make_fdiv_by_const)(abs(c), 31 if bound is None else max(0, min(31, bound.bit_length() - 1)))
+    q = fresh(_FIXED_BY_CONST[key](as_var(x)))
+    if c < 0:
+        q << 0 - q
+    return q
+
+
+def magnitude_of(x):
+    """x made its distance from 0 in place; 1 when it was below 0."""
+    neg = fresh(0)
+    if EUDIf()(x >= SIGN):
+        x << 0 - x
+        neg << 1
+    EUDEndIf()
+    return neg
+
+
+def make_fmul_by(c, top):
+    """x × c / 65 536 towards zero: each bit of |x| adds c times its place, split at the point — the whole part added
+    into the result and the part below it gathered apart, whose whole part is added at the end (so the result is the
+    product's, not a sum of rounded parts). `top`: the highest bit |x| can have."""
+    parts = [((c << j) >> 16, (c << j) & 0xFFFF) for j in range(top + 1)]
+    low_bits = sum(lo for _, lo in parts).bit_length()
+
+    @EUDFunc
+    def fmul_by(x):
+        neg = magnitude_of(x)
+        out, low = fresh(0), fresh(0)
+        for j, (hi, lo) in enumerate(parts):
+            acts = ([out.AddNumber(hi & U32)] if hi & U32 else []) + ([low.AddNumber(lo)] if lo else [])
+            if acts:
+                RawTrigger(conditions=x.AtLeastX(1, 1 << j), actions=acts)
+        for k in range(16, low_bits):
+            RawTrigger(conditions=low.AtLeastX(1, 1 << k), actions=out.AddNumber(1 << (k - 16)))
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    return fmul_by
+
+
+def make_fdiv_by_const(c, top):
+    """x × 65 536 / c towards zero: long division with the divisor doubled into each step when the map is built, so a
+    step is one comparison with a constant. The whole part's quotient bits go straight to their place 16 higher; the
+    remainder, below c, is then moved up as far as stays under 2^32 (a bit tested, its new place added) and divided
+    again, until the sixteen bits below the point are found. `top`: the highest bit |x| can have."""
+    c_top = c.bit_length() - 1
+    chunk = max(1, 31 - c_top)
+
+    @EUDFunc
+    def fdiv_by_const(x):
+        neg = magnitude_of(x)
+        out = fresh(0)
+        # The whole part: steps from the highest multiple of c that |x| can reach.
+        for i in range(min(31 - c_top, top - c_top) if top >= c_top else -1, -1, -1):
+            add = (1 << (i + 16)) & U32
+            RawTrigger(conditions=x.AtLeast(c << i), actions=[x.SubtractNumber(c << i)] + ([out.AddNumber(add)] if add else []))
+        # Below the point: x < c now.
+        done = 0
+        while done < 16:
+            k = min(chunk, 16 - done)
+            for bit in range(c_top, -1, -1):  # x <<= k, from its top bit down (each lands where nothing is yet)
+                RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=x.AddNumber(((1 << (bit + k)) - (1 << bit)) & U32))
+            done += k
+            for i in range(k - 1, -1, -1):
+                RawTrigger(conditions=x.AtLeast(c << i), actions=[x.SubtractNumber(c << i), out.AddNumber(1 << (i + 16 - done))])
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    return fdiv_by_const
+
+
+def fixed_vars():
+    """fmul and fdiv of two variables (TrigScript 4, the backend, part 3): loops over cells of our own, the other side
+    written once into the step that adds or subtracts it, where eudplib's ways write it, shifted, into every step.
+    One body each in the map, called."""
+    if "fmul_vars" in _FIXED:
+        return _FIXED
+
+    def take_out(cells, out, after):
+        """The actions that send the first cell of `cells` into `out` when the trigger runs next, and go on to
+        `after`; the cell is put back to doubling itself when its loop starts again."""
+        return [SetMemory(cells + ACT_DEST, SetTo, EPD(out.getValueAddr())),
+                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 7 << 24, 0xFF000000),
+                SetNextPtr(cells, after)]
+
+    def put_back(cells, nxt):
+        return [SetMemory(cells + ACT_DEST, SetTo, EPD(cells + ACT_VALUE)),
+                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 8 << 24, 0xFF000000),
+                SetNextPtr(cells, nxt)]
+
+    @EUDFunc
+    def fmul_vars(a, b):
+        """a × b / 65 536 towards zero. With the 16-bit halves of the magnitudes, a × b / 65 536 is ah × b + al × bh
+        plus al × bl / 65 536: one loop of sixteen steps reads a bit of ah and the same bit of al (a doubled a step,
+        its bits 31 and 15 tested), and doubles two sums — w gathering ah × b + al × bh, z gathering al × bl, whose
+        bits from 16 up are added to w at the end."""
+        neg = magnitudes(a, b)
+        bh = shift_const(b, ">>>", 16)
+        bl = fresh(b)
+        DoActions(bl.SetNumberX(0, 0xFFFF0000))
+        out, count = EUDVariable(), EUDVariable()
+        cells, high, low, end, leave, after = (Forward() for _ in range(6))
+        w, z, x = cells + ACT_VALUE, cells + ACT_VALUE + 32, cells + ACT_VALUE + 64
+        SeqCompute([(EPD(high + ACT_VALUE), SetTo, b), (EPD(low + ACT_VALUE), SetTo, bh), (EPD(low + ACT_VALUE + 32), SetTo, bl), (EPD(x), SetTo, a)])
+        DoActions(put_back(cells, high) + [SetMemory(w, SetTo, 0), SetMemory(z, SetTo, 0), count.SetNumber(15)])
+        # A step: the bits added, then (but on the last step) the sums and a doubled.
+        high << RawTrigger(conditions=Memory(x, AtLeast, SIGN), actions=SetMemory(w, Add, 0))
+        low << RawTrigger(conditions=MemoryX(x, AtLeast, 1, 0x8000), actions=[SetMemory(w, Add, 0), SetMemory(z, Add, 0)])
+        end << RawTrigger(conditions=count.Exactly(0), actions=SetNextPtr(end, leave))
+        cells << RawTrigger(nextptr=high, actions=[SetMemory(w, Add, 0), SetMemory(z, Add, 0), SetMemory(x, Add, 0), count.SubtractNumber(1)])
+        leave << RawTrigger(actions=SetNextPtr(end, cells))
+        for k in range(16, 32):
+            RawTrigger(conditions=MemoryX(z, AtLeast, 1, 1 << k), actions=SetMemory(w, Add, 1 << (k - 16)))
+        RawTrigger(nextptr=cells, actions=take_out(cells, out, after))
+        after << NextTrigger()
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    @EUDFunc
+    def fdiv_vars(a, b):
+        """a × 65 536 / b towards zero; a divisor of 0 gives 0. Long division the way it is done on paper: the dividend's
+        bits shifted into the remainder from the top, the divisor taken away when it fits, the quotient doubled a step
+        (wrapping, as fdiv's does). The divisor is written into the one comparison and the one subtraction of the loop.
+        The dividend's leading zeros first: the loop's cells run on their own until its top bit is in place, each run
+        a step with nothing in it (the quotient and remainder are 0, and stay so)."""
+        if EUDIf()([b == 0]):
+            EUDReturn(0)
+        EUDEndIf()
+        if EUDIf()([a == 0]):
+            EUDReturn(0)
+        EUDEndIf()
+        neg = magnitudes(a, b)
+        out, count = EUDVariable(), EUDVariable()
+        if EUDIf()(a >= SIGN):
+            # (2^31, the magnitude of -2^31 only: its top bit is past where the loop starts.)
+            # (fdiv's own way reads it as -2^31, and b as -2^31 too when it is 2^31: the quotient of the magnitudes is
+            # its quotient, negated when only a read below zero.)
+            out << fixed_fns()["fdiv"](a, b)
+            if EUDIf()(b <= 0x7FFFFFFF):
+                out << 0 - out
+            EUDEndIf()
+        if EUDElse()():
+            cells, ready, take_bit, test, end, leave, after = (Forward() for _ in range(7))
+            q, r, d = cells + ACT_VALUE, cells + ACT_VALUE + 32, cells + ACT_VALUE + 64
+            SeqCompute([(EPD(test + COND_VALUE), SetTo, b), (EPD(test + ACT_VALUE), SetTo, b), (EPD(d), SetTo, a)])
+            # 47 steps: the dividend's bits 30 … 0 and sixteen 0s.
+            DoActions(put_back(cells, ready) + [SetMemory(q, SetTo, 0), SetMemory(r, SetTo, 0), count.SetNumber(47)])
+            # Until the dividend's top bit is at bit 30: then a run of the cells brings it to 31, where it is taken.
+            ready << RawTrigger(nextptr=cells, conditions=Memory(d, AtLeast, 1 << 30), actions=SetNextPtr(cells, take_bit))
+            cells << RawTrigger(nextptr=ready, actions=[SetMemory(q, Add, 0), SetMemory(r, Add, 0), SetMemory(d, Add, 0), count.SubtractNumber(1)])
+            take_bit << RawTrigger(conditions=Memory(d, AtLeast, SIGN), actions=SetMemory(r, Add, 1))
+            test << RawTrigger(conditions=Memory(r, AtLeast, 0), actions=[SetMemory(r, Subtract, 0), SetMemory(q, Add, 1)])
+            end << RawTrigger(nextptr=cells, conditions=count.Exactly(0), actions=SetNextPtr(end, leave))
+            leave << RawTrigger(nextptr=cells, actions=[SetNextPtr(end, cells)] + take_out(cells, out, after))
+            after << NextTrigger()
+        EUDEndIf()
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    _FIXED.update(fmul_vars=fmul_vars, fdiv_vars=fdiv_vars)
+    return _FIXED
+
+
 def as_var(value):
     if isinstance(value, int):
         return EUDVariable(value & U32)  # initial: a constant, never written
@@ -3014,10 +3326,19 @@ class Lowering:
         if all(isinstance(x, int) for x in args):
             return fixed_const(name, [signed(x) for x in args], e.get("unsigned"), [signed(v) for v in self.array(e["table"], e).values] if name in ("atan2", "sin", "cos") else None) & U32
         fns = fixed_fns()
+        bound = lambda i: (lambda r: None if r is None else max(abs(r[0]), abs(r[1])))(rng(e["args"][i]))
         if name == "fmul":
-            return fresh(fns["fmul"](*[as_var(x) for x in args]))
+            if isinstance(args[1], int):
+                return fixed_by_const("fmul", args[0], args[1], bound(0))
+            if isinstance(args[0], int):
+                return fixed_by_const("fmul", args[1], args[0], bound(1))
+            return fresh(fixed_vars()["fmul_vars"](*[as_var(x) for x in args]))
         if name == "fdiv":
-            return fresh(fns["fdiv"](*[as_var(x) for x in args]))
+            if isinstance(args[0], int):
+                return const_fdiv(args[0], args[1], bound(1))
+            if isinstance(args[1], int):
+                return fixed_by_const("fdiv", args[0], args[1], bound(0))
+            return fresh(fixed_vars()["fdiv_vars"](*[as_var(x) for x in args]))
         if name == "sqrt":
             return fresh(fns["sqrt_whole" if e.get("unsigned") else "sqrt_fixed"](as_var(args[0])))
         if name in ("sin", "cos"):

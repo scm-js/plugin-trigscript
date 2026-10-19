@@ -2612,11 +2612,7 @@ left, in the order the measurements put it:
    loop (4.70 → 5.08) and the bench's own turn (108 → 128 ns) lost — the opposite comparison reads its two sides another
    way (`floored_zero` where `<` used eudplib's own), which static routing then serves less well. It needs the
    comparison lowered so that both directions read their sides alike first.
-2. *Arithmetic of our own* (part 3). The raycaster's time is in `fdiv` (0.41 ms of its 1.06), eudplib's product (0.16)
-   and `fmul` (0.15): bit-serial routines inside functions whose variables eudplib made and shares between calls, so
-   no routing of ours reaches them. They have to stay exact (the simulator agrees bit for bit), so the work is in how the
-   shifted divisor and multiplicand are made — the division chain copies the doubled divisor into two or six fields at
-   each of 32 steps, each a routed read — not in approximating.
+2. *Arithmetic of our own* (part 3). **Built — below.**
 3. *Values written where they are used* — the end of the road routing starts on. A variable is one action whose amount
    is its value, and every use of it elsewhere is a copy made by routing it there. In a block of straight-line code the
    uses are known when the map is built, so each value can live in the amount fields of the actions that use it: the
@@ -2624,6 +2620,88 @@ left, in the order the measurements put it:
    used three times is y's trigger setting three fields and z's adding to them — no setup, no routing, a trigger a
    producer. Copies for a loop's reads (part 1b) are the first case of it. Straight-line expressions first, then
    variables across a loop's turns, then the bit-serial arithmetic of 2 written that way.
+
+**As built: the backend, part 3 — arithmetic of our own (2026-10-19).** Measured first (`scripts/trace-frame.mts`, frame
+112 of the raycaster, each eudplib cell counted with the line that ran it): `fdiv` was 0.60 ms of the frame's 2.10, and
+81% of it was copies — the doubled divisor written into two or six fields at each step of eudplib's division chain,
+each a routed run of a variable (about 46 ns) — against 16% for the comparisons that do the dividing. A copy cannot be
+made much cheaper (a value is in one action, so each place it goes is one run of that action), so the work is fewer of
+them:
+- *Cells of our own.* A trigger of one or more actions each adding its own amount to itself: one run doubles every
+  number in it, nothing routes it, and conditions and actions elsewhere read and change the amounts where they are
+  (`COND_VALUE`, `ACT_VALUE`, … in `python/trigscript.py`). A quotient, a remainder and the dividend's bits still to
+  come are three actions of one trigger.
+- *The divisor stays where it is.* Long division as on paper — the remainder doubled a step, the divisor taken away
+  when it fits — so the divisor is copied into the one comparison and the one subtraction of a loop of four triggers
+  (cells, the dividend's next bit, the test, the end), not into every step. `fdiv_vars`: 47 steps, the dividend's
+  leading zeros run first by the cells alone (a step with nothing in it each). `fmul_vars`: the 16-bit halves,
+  `ah × b + al × bh + al × bl / 65 536`, one loop of 16 steps reading bit 31 and bit 15 of a doubled `a`.
+- *One side known when the map is built.* `c / x` (`make_const_fdiv`): where the divisor's top bit is (a search of
+  comparisons) says how far down the known dividend the first step that can take the divisor away is, and what the
+  remainder is there — a constant per leaf — so only the steps that make quotient bits run; the quotient carries a bit
+  above it that reaches the top on the last step (the loop's end test). `x / c` and `x * c` (`fixed_by_const`): no
+  copies at all — the doubled divisor is constants in the steps, and a product is each bit of `|x|` adding `c` times
+  its place, split at the point so the rounding is the product's.
+- Exact: `probes/game-fdiv.ts` (written by `scripts/gen-fixed-probe.mjs`) holds 960 results — `c / x`, `x / c`, `x * c`
+  for six constants each and `x * y`, `x / y` over 32 × 12 values, at the edges (1, 2^31 − 1, −2^31, 0) — against the
+  compiler's own arithmetic as literals: the same bits in the lifted game and the simulator. It found one: −2^31 / −2^31
+  through fdiv's own way, which reads both as −2^31.
+
+| Lowering bench, ns a turn | Before | After |
+| --- | ---: | ---: |
+| `fa * fb` | 4520 | 3027 |
+| `fa / fb` | 7174 | 5116 |
+| `fa * 0.66` | 4520 | 818 |
+| `fa / 2.5` | 7174 | 1380 |
+| `1 / fa` | 7174 | 1821 |
+| `Math.floor(78 / fa)` | ~7400 | 2262 |
+
+The raycaster: 1.06 → **0.77 ms** a frame on average, its costliest frame 2.10 → 1.51 (division 0.60 → 0.16, products
+0.40 → 0.23). What is left in it: the fog library's drawing (0.56 ms, now the most), then the products of two variables
+(`(mapX + 1 - x) * deltaX` — ranges cannot see that the left side is 0 … 1, which would halve it). Not done yet:
+`Math.sqrt` (10.1 µs, the same treatment would apply), integer `*` and `/` of two variables (eudplib's still).
+
+**Where a raycaster frame goes now** (`scripts/trigger-shapes.mts`, frames 10–120, 0.78 ms): the walk itself 39%; routing
+still 0.19 ms (24%: next pointers 0.083, a cell's destination 0.052, its modifier 0.053); triggers whose conditions
+failed 0.19 ms (25%). Routing is what values written where they are used takes away; the failed triggers and the walk
+are the shape of eudplib's branches and jumps. Both are the emitter's.
+
+### The emitter: a backend of our own, one statement kind at a time
+
+Parts 1–3 changed what eudplib makes from inside it. From here the lowering itself moves: a TypeScript emitter that
+lowers the IR to triggers and decides where every value lives, beside `python/trigscript.py` until it has taken all of
+it, then the layout and the loader, then the input plugins — and then no Python at all.
+
+**E1 — the graph, and the splice.** `compiler/backend/`:
+- *The graph*: triggers (≤ 16 conditions, ≤ 64 actions, a label, where the walk goes next) whose conditions compare a
+  dword with a number (a mask optional) and whose actions write one (set, add, subtract, a mask optional), plus the
+  game's own records passed through. A dword is a game address, a field of one of the graph's triggers (a condition's
+  or an action's number, an action's destination or modifier, a next pointer), or a variable of the Python side's,
+  named by id. Labels resolve when the Python side makes the triggers.
+- *The splice*: a statement the emitter takes becomes `{ kind: "graph", graph, original }` (IR 26). The Python side
+  makes `graph`'s triggers where the statement was (a small materializer: labels to `Forward`s, variables to their
+  cells' addresses, through `Lowering.var`); the simulator runs `original`. So every game probe holds the emitter
+  against the IR's meaning — the lifted game running the graph, the simulator the statements it replaced.
+
+**Values written where they are used** — what the emitter is for. A number has *places*: every amount field that
+reads it (the number an action adds, sets or compares with), and a home that conditions read as memory. A write to the
+number writes all of its places — a constant one action each (`i += 1` with i read in four places is one trigger of
+five actions, where eudplib adds to i's cell and then routes the cell to each of the four, about 46 ns each). `x = y + z`
+with x in three places is six actions — y set into each place, z added — and so y's places include those three
+actions' amounts, which y's own writes keep. A comparison with a constant reads any place as memory; `x < y` reads x as
+memory against y placed (less one) in the condition. In a straight-line block or a loop every place is known when the
+map is built; where it is not — an element read at a variable index, a function's result, a per-player variable — a
+value comes from a cell, routed once into its places, as now.
+
+The order, each measured on the bench and the showpieces, each held by every game probe:
+1. E1's graph, the materializer, the splice, the differential check (the simulator against the lifted game) wired in.
+2. Numbers whose every write the emitter makes (a variable written only by taken statements, temporaries always):
+   `declare`, `assign`, `if`, `while`, `for`, `break`, `continue` of numbers and their comparisons. Branches laid out
+   as the emitter likes — the fall-through on the likely way, a failed condition costing 13.4 ns rather than a jump.
+3. The rest of the numbers: arrays and records (part 2's registers), function calls (parameters written into the
+   body's places; results through a cell), the arithmetic of part 3 as graph code.
+4. The layout and the loader of our own (the payload, its relocation, the start), proved on the lifted game and the
+   allowlist; then units, text and the input plugins; then the Python side goes, and Pyodide with it.
 
 ## Part C — the game, pushed
 
