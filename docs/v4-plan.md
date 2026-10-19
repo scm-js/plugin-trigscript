@@ -1875,6 +1875,38 @@ into a constructor or the fields' first values.
 **Not worth it:** `JSON.stringify`, `Object.keys` and `for…in` over a record of the program, `WeakMap`, tagged
 templates. None of the showpieces wants them, and each needs a runtime of its own.
 
+**As built (2026-10-18).** All of the list, and the fault; no IR change (still 24). `tests/small-gaps.test.ts` (simulator,
+22) and `probes/game-small-gaps.ts` (4 tests, passing in the lifted game and the simulator, about 10 thousand a frame,
+32 thousand at the most).
+- *The fault:* asking whether a function uses the game now looks at what `new` runs (the fields' first values, the
+  constructor, the base class's) and follows a method or an accessor of the script's classes.
+- *Labelled jumps* are lowered without anything new reaching a backend. A jump to the loop it is directly in is a plain
+  one. From deeper, it sets a flag of the label's (`(break outer)`, `(continue outer)`, made only when such a jump is
+  there) and breaks out of where it is. After each loop or switch it leaves, the flag is tested: in the labelled loop's
+  own body, the loop is broken or continued and the flag cleared; further in, it is broken out of again. Each jump goes
+  through the `finally` blocks of its level, and through a generator's loop as a `break` there does. A label on a block
+  is refused.
+- *Rest parameters* were built in the inliner already; the plan of a script function refused them.
+- *A function giving back an array*: the call's own array, bound to the caller's name (`instanceCall` with `list`); a
+  `return` of one it made, one written out, or one it was handed, every return the same one. Made again each time the
+  call runs, as any declaration in it is. `for (const x of evens(n))` and `evens(n).length` take it too.
+- *Namespaces*: a function, a class or a const arrow in a `namespace` at the top of a file (as deep as they go) is the
+  file's (`atTop`). An exported const of one is registered as `Geo.mk`, since it has no name of its own once compiled.
+  *Overloads*: the declaration with the body is the one a call names.
+- *`find()` of instances or records* gives the row at the place found and a flag beside it, as `chatted()` does (`if (t)`,
+  `t ? t.hp : 0`, `t?.hp ?? -1`, `t === undefined`). That fixed a fault on the way: `x === undefined` of such a record, or
+  of what `chatted()` found, was answered "no" when the script was built.
+- *Texts of a union as keys*: a `Map` or a `Set` keyed by `"red" | "blue"` has a cell for each text, in the union's order;
+  a text of the program becomes its place by comparisons, as a `switch` over texts does. A `for…of` over one is unrolled,
+  its key a text known when built. Any text as a key is still refused.
+- *A record at a text of a union* (`cost[state]`, `NAMES[team]`, `step[state]()`): each field under its test, as a value
+  (number, function, text, boolean); a write (`=`, compound, `++`) walks the statement once for each field.
+- *`sort()` of texts*: by their characters (the game compares bytes, which is JavaScript's order for ASCII), or by a
+  function; stable; a row moves with the block it owns. `reverse()` too.
+- *`${flag}`, `String(flag)`*: `"true"` or `"false"`.
+- *`enum` inside a program*: made where the build-time parts run (a plan item of its own), so its members are values.
+- *`push(c ? { … } : { … })`*: an `if` with a push on each side.
+
 **Then, in order:**
 1. **What a frame costs, as the language's** (the fourth of the first sweep's list). Snake's first frame is 434 thousand
    of the 500 thousand.

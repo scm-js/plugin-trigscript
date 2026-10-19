@@ -175,7 +175,7 @@ describe("what is refused", () => {
   it("says what a text of a program can do", () => {
     expect(messages("let n = 1; let s = `a${n}`; let t = s.normalize();").join("\n")).toMatch(/normalize\(\) is not something a text of a program does/);
     expect(messages("let n = 1; let s = `a${n}`; let k = parseFloat(s);").join("\n")).toMatch(/parseFloat\(\)/);
-    expect(messages("let names: string[] = []; names.push(\"a\"); names.sort();").join("\n")).toMatch(/An array of texts has push\(text\), pop\(\)/);
+    expect(messages("let names: string[] = []; names.push(\"a\"); names.fill(\"b\");").join("\n")).toMatch(/An array of texts has push\(text\), pop\(\)/);
     // A function that calls itself may hold a text since 3.9 (tests/leftovers.test.ts); a loop over one around such a call may not.
     expect(messages("function f(n: number): number { let s = `x${n}`; print(s); if (n <= 0) return 0; return f(n - 1) + f(n - 2); } let k = 3; k = f(k);")).toEqual([]);
     expect(messages("let n = 1; let s = `map ${n}`; setNextScenario(s);").join("\n")).toMatch(/setNextScenario's text is one the game looks up by number/);

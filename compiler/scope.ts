@@ -30,7 +30,7 @@ export type Binding =
    * array with a cell for every id there is. `values` is absent for a Set; `present` says which keys were set (absent for
    * a Record, whose every key reads its value or 0); `size` counts them. `as` is how the source reaches it.
    */
-  | { kind: "keyed"; as: "record" | "map" | "set"; name: string; domain: number; key: string; values?: ArrayDecl; present?: ArrayDecl; size?: VarDecl }
+  | { kind: "keyed"; as: "record" | "map" | "set"; name: string; domain: number; key: string; values?: ArrayDecl; present?: ArrayDecl; size?: VarDecl; /** Keys that are texts of a union known when the script is built (`Map<"red" | "blue", number>`): each the cell at its place here. */ literals?: readonly string[] }
   /**
    * A `Map` or a `Set` over any number: the entries in the order they went in — `keys`, `values` (a Map's), `live` (false
    * once deleted) — and `slots`, the table a key is found through: a power of two of cells, each 0 or an entry's place

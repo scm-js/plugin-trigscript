@@ -195,7 +195,8 @@ describe("text with the program's values in it", () => {
   it("what a text cannot hold is said", () => {
     const errors = (src: string) => compileScript(ts, { "main.ts": src }, NAMES, { lib: LIB }).diagnostics.map((d) => `${d.line}:${d.message}`);
     expect(errors("trigger(P1, [always()], [displayText(`${name(P1)} wins`)]);")[0]).toMatch(/^1:name\(\) and color\(\) are filled in by a program while the game runs/);
-    expect(errors("program(() => {\n  let flag = true;\n  displayText(`${flag}`);\n});")[0]).toMatch(/^3:A boolean has no text of its own/);
+    // A boolean is "true" or "false" (tests/small-gaps.test.ts).
+    expect(errors("program(() => {\n  let flag = true;\n  displayText(`${flag}`);\n});")).toEqual([]);
     // The objectives take a text that is made (3.9); the name of the next scenario is looked up by the game, and does not.
     expect(errors("program(() => {\n  let n = 1;\n  setMissionObjectives(`${n} left`);\n});")).toEqual([]);
     expect(errors("program(() => {\n  let n = 1;\n  setNextScenario(`map ${n}`);\n});")[0]).toMatch(/^3:setNextScenario's text is one the game looks up by number/);

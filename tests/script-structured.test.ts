@@ -932,8 +932,8 @@ describe("structured: game functions, returns and records", () => {
     const sim = run(r, 1);
     expect(value(sim, "a")).toBe(2);
     expect(value(sim, "b")).toBe(3);
-    // A missing return in a function typed to return a number is TypeScript's error; a rest parameter is ours.
-    expect(files({ "main.ts": 'const f = game((...n: number[]) => 1); program(() => { let a = 0; a = f(1); });' }).diagnostics.map((d) => d.message)).toContain("Rest parameters are not supported in a game function.");
+    // A rest parameter is the call's arguments in an array of its own (tests/small-gaps.test.ts).
+    expect(files({ "main.ts": 'const f = game((...n: number[]) => n.length); program(() => { let a = 0; a = f(1, 2); });' }).diagnostics).toEqual([]);
   });
 
   it("records: a let holding an object literal is a variable per field", () => {

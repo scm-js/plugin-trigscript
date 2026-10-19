@@ -39,7 +39,9 @@ export interface PlanError { node: TS.Node; message: string }
 export type PlanItem =
   | { kind: "const"; decl: TS.VariableDeclaration }
   | { kind: "hoist"; index: number; expr: TS.Expression }
-  | { kind: "block"; items: PlanItem[] };
+  | { kind: "block"; items: PlanItem[] }
+  /** A declaration the build-time parts after it name, made where it stands: an `enum` of the body. */
+  | { kind: "statement"; node: TS.Statement };
 
 export interface ProgramPlan {
   /** The program's or the game function's arrow; unset for a class's plan (`planClass`). */
@@ -78,6 +80,11 @@ export function isGameCall(checker: TS.TypeChecker, call: TS.CallExpression): bo
 export function declarationOf(ts: typeof TS, checker: TS.TypeChecker, id: TS.Identifier): TS.Declaration | undefined {
   let sym = ts.isShorthandPropertyAssignment(id.parent) && id.parent.name === id ? checker.getShorthandAssignmentValueSymbol(id.parent) : checker.getSymbolAtLocation(id);
   if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+  // A function with overloads: the declaration with the body is the one that runs.
+  if (sym && sym.flags & ts.SymbolFlags.Function && (sym.declarations?.length ?? 0) > 1) {
+    const body = sym.declarations!.find((d) => ts.isFunctionDeclaration(d) && !!d.body);
+    if (body) return body;
+  }
   return sym?.valueDeclaration ?? sym?.declarations?.[0];
 }
 
@@ -246,9 +253,25 @@ export function planListener(ts: typeof TS, checker: TS.TypeChecker, stmt: TS.Ex
  * call it with its own values, as it calls a `game()` function, and use it as a JSX component. Called with values the
  * script knows, it still runs when the script is built.
  */
+/**
+ * Whether a statement is at the top of one of the script's files: in the file itself, or in a `namespace` there (as deep
+ * as namespaces go), which is the file's too, under a name.
+ */
+export function atTop(ts: typeof TS, node: TS.Node): boolean {
+  let p = node.parent;
+  while (p && ts.isModuleBlock(p)) {
+    let ns: TS.Node = p.parent;
+    if ((ns as TS.ModuleDeclaration).modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)) return false;
+    // `namespace A.B { … }` is B inside A.
+    while (ns.parent && ts.isModuleDeclaration(ns.parent)) ns = ns.parent;
+    p = ns.parent;
+  }
+  return !!p && ts.isSourceFile(p) && !p.isDeclarationFile;
+}
+
 export function isScriptFunction(ts: typeof TS, decl: TS.Node): decl is TS.FunctionDeclaration {
   // A generator and an async function too (TrigScript 4): a library's `walkTo(u, at)` waits, `waves()` yields.
-  return ts.isFunctionDeclaration(decl) && !!decl.name && !!decl.body && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
+  return ts.isFunctionDeclaration(decl) && !!decl.name && !!decl.body && atTop(ts, decl) && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
 }
 
 /** `const Title = (props: …) => <line>…</line>` at the top of a file: the arrow, a function of the script's own as a declared one is. */
@@ -257,7 +280,7 @@ export function scriptArrow(ts: typeof TS, decl: TS.Node): TS.ArrowFunction | TS
   const list = decl.parent;
   if (!ts.isVariableDeclarationList(list) || !(list.flags & ts.NodeFlags.Const)) return undefined;
   const stmt = list.parent;
-  if (!ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent) || stmt.parent.isDeclarationFile) return undefined;
+  if (!ts.isVariableStatement(stmt) || !atTop(ts, stmt)) return undefined;
   let init = decl.initializer;
   while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
   if (!ts.isArrowFunction(init) && !ts.isFunctionExpression(init)) return undefined;
@@ -290,21 +313,40 @@ export function usesGame(ts: typeof TS, checker: TS.TypeChecker, fn: TS.Node, se
       const lib = libraryName(ts, checker, n);
       if (lib && (GAME_CALLS.has(lib) || READ_CALLS.has(lib) || READ_ARITY.has(lib) || GAME_CELL_ROOTS.has(lib))) { found = true; return; }
       const decl = declarationOf(ts, checker, n);
-      const other = decl && decl !== fn && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl));
+      const other = decl && decl !== fn && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl) ?? (classMember(ts, decl) ? decl : undefined));
       if (other && usesGame(ts, checker, other, seen)) { found = true; return; }
       return;
     }
+    // `new E()`: its fields' first values and its constructor run where the instance is made, its base class's before them.
+    if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) {
+      const cls = declarationOf(ts, checker, n.expression);
+      if (cls && isScriptClass(ts, cls) && usesGame(ts, checker, cls, seen)) { found = true; return; }
+    }
     ts.forEachChild(n, look);
   };
-  const body = (fn as TS.FunctionLikeDeclaration).body;
-  if (body) look(body);
+  if (ts.isClassDeclaration(fn)) {
+    for (const m of fn.members) {
+      if ((ts.isPropertyDeclaration(m) && m.initializer && !m.modifiers?.some((x) => x.kind === ts.SyntaxKind.StaticKeyword)) || ts.isConstructorDeclaration(m)) look(m);
+    }
+    const base = fn.heritageClauses?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword)?.types[0]?.expression;
+    const baseDecl = base && ts.isIdentifier(base) ? declarationOf(ts, checker, base) : undefined;
+    if (!found && baseDecl && isScriptClass(ts, baseDecl)) found = usesGame(ts, checker, baseDecl, seen);
+  } else {
+    const body = (fn as TS.FunctionLikeDeclaration).body;
+    if (body) look(body);
+  }
   usesGameMemo.set(fn, found);
   return found;
 }
 
+/** A method, an accessor or a constructor of one of the script's classes: what a call through an instance runs. */
+function classMember(ts: typeof TS, decl: TS.Node): boolean {
+  return (ts.isMethodDeclaration(decl) || ts.isGetAccessorDeclaration(decl) || ts.isSetAccessorDeclaration(decl) || ts.isConstructorDeclaration(decl)) && !!decl.body && isScriptClass(ts, decl.parent);
+}
+
 /** Whether a class is one of the script's own, declared at the top of one of its files: a program may make instances of it. */
 export function isScriptClass(ts: typeof TS, decl: TS.Node): decl is TS.ClassDeclaration {
-  return ts.isClassDeclaration(decl) && !!decl.name && ts.isSourceFile(decl.parent) && !decl.parent.isDeclarationFile && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
+  return ts.isClassDeclaration(decl) && !!decl.name && atTop(ts, decl) && !decl.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword);
 }
 
 function planOnce(ts: typeof TS, checker: TS.TypeChecker, of: TS.ArrowFunction | TS.FunctionExpression | TS.ClassDeclaration | TS.ExpressionStatement, options: PlanOptions, forced: Set<TS.Node>): ProgramPlan {
@@ -340,13 +382,14 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   }
   if (arrow && arrow.parameters.length && !options.parameters) error(arrow.parameters[0], "The program's arrow takes no parameters.");
   // A function at the top of a file may be a generator (TrigScript 4): a for…of in a program walks it there.
-  if (arrow?.asteriskToken && !(ts.isFunctionDeclaration(arrow as TS.Node) && ts.isSourceFile((arrow as TS.Node).parent))) error(arrow, `A ${what} body cannot be a generator.`);
+  if (arrow?.asteriskToken && !(ts.isFunctionDeclaration(arrow as TS.Node) && atTop(ts, arrow as TS.Node))) error(arrow, `A ${what} body cannot be a generator.`);
 
   /* ── Bindings ── */
   const declare = (node: TS.Node) => plan.game.add(node);
   for (const p of arrow?.parameters ?? []) {
     if (!options.parameters) break;
-    if (p.dotDotDotToken) error(p, "Rest parameters are not supported in a game function.");
+    // `...xs`: the rest of a call's arguments, an array the call makes (structured.ts, inlineWith).
+    if (p.dotDotDotToken && !ts.isIdentifier(p.name)) error(p, "The rest of the arguments takes a name: ...xs: number[].");
     else if (!ts.isIdentifier(p.name)) {
       // `({ label, value }: Props)`: each name taken out is the game's, as a parameter is (a component's props).
       const names = (n: TS.BindingName): void => { if (ts.isIdentifier(n)) return; for (const el of n.elements) if (!ts.isOmittedExpression(el)) { declare(el); names(el.name); } };
@@ -712,6 +755,8 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       return;
     }
     if (ts.isClassDeclaration(s)) { deferred.push({ kind: "block", items: classItems(s) }); return; }
+    // `enum Phase { Wait, Fight }` in the body: its members are known when the script is built, as at the top of a file.
+    if (ts.isEnumDeclaration(s)) { items.push({ kind: "statement", node: s }); return; }
     if (ts.isReturnStatement(s)) { value(s.expression, items); return; }
     if (ts.isSwitchStatement(s)) { value(s.expression, items); for (const c of s.caseBlock.clauses) { if (ts.isCaseClause(c)) value(c.expression, items); items.push({ kind: "block", items: block(c.statements) }); } return; }
     if (ts.isForOfStatement(s) || ts.isForInStatement(s)) { value(s.expression, items); items.push({ kind: "block", items: block([s.statement]) }); return; }
@@ -851,6 +896,7 @@ export function hoistedFunction(ts: typeof TS, checker: TS.TypeChecker, plan: Pr
       }
       case "hoist": return f.createExpressionStatement(f.createAssignment(f.createElementAccessExpression(h, f.createNumericLiteral(item.index)), thunk(item.expr)));
       case "block": return f.createBlock(emit(item.items), true);
+      case "statement": return ts.visitNode(item.node, rewrite) as TS.Statement;
     }
   });
   // const __m = (i, g) => { let d = false, v; return () => { if (d) return v; try { v = g(); } catch (e) { if (e instanceof Object && e.__trigscriptConst === undefined) e.__trigscriptConst = i; throw e; } d = true; return v; }; };
@@ -955,7 +1001,7 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
       }
       // `class Squad { … }` at the top of a file: the class as it is, and after it what its bodies compute when the script is
       // built, handed to the run (`__class`), for a program that makes an instance of it.
-      if (ts.isClassDeclaration(node) && node.name && ts.isSourceFile(node.parent)) {
+      if (ts.isClassDeclaration(node) && node.name && atTop(ts, node)) {
         const plan = ctx.planForClass?.(node);
         const visited = ts.visitEachChild(node, visit, context);
         if (!plan) return visited;
@@ -981,11 +1027,14 @@ export function transformer(ts: typeof TS, checker: TS.TypeChecker, ctx: Transfo
         ], true);
         return [visited, f.createExpressionStatement(f.createCallExpression(f.createIdentifier("__fn"), undefined, [f.createIdentifier(node.name!.text), descriptor]))];
       }
-      if (ts.isVariableStatement(node) && ts.isSourceFile(node.parent)) {
+      if (ts.isVariableStatement(node) && atTop(ts, node)) {
         const arrows = node.declarationList.declarations.map((d) => [d, scriptArrow(ts, d)] as const).filter(([, a]) => a && ctx.planForFunction?.(a));
         if (arrows.length) {
           const visited = ts.visitEachChild(node, visit, context);
-          return [visited, ...arrows.map(([d, a]) => f.createExpressionStatement(f.createCallExpression(f.createIdentifier("__fn"), undefined, [f.createIdentifier((d.name as TS.Identifier).text), f.createObjectLiteralExpression([
+          // An exported const of a namespace has no name of its own once compiled (`Geo.mk = …`): it is the namespace's.
+          const ns = ts.isModuleBlock(node.parent) && node.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ? (node.parent.parent as TS.ModuleDeclaration).name : undefined;
+          const named = (d: TS.VariableDeclaration) => ns && ts.isIdentifier(ns) ? f.createPropertyAccessExpression(f.createIdentifier(ns.text), (d.name as TS.Identifier).text) : f.createIdentifier((d.name as TS.Identifier).text);
+          return [visited, ...arrows.map(([d, a]) => f.createExpressionStatement(f.createCallExpression(f.createIdentifier("__fn"), undefined, [named(d), f.createObjectLiteralExpression([
             f.createPropertyAssignment("__trigscript", f.createStringLiteral("function")),
             f.createPropertyAssignment("at", at(a!)),
             f.createPropertyAssignment("pos", f.createNumericLiteral(a!.getStart(sf))),
