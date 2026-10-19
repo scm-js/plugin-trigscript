@@ -119,7 +119,7 @@ describe("units: in the simulated game", () => {
     const sim = run(`let kept = first({ owner: P2 }); let before = 0; let after = 9; let there = true; if (kept) before = kept.hp; if (kept) kept.kill(); sleep(frames(1)); if (kept) { there = true; } else { there = false; } after = kept ? kept.hp : 0; if (kept) kept.hp = 99;`, 3);
     expect([sim.value("before"), sim.value("after"), sim.value("there")]).toEqual([35, 0, false]);
     expect(sim.units[2]).toMatchObject({ alive: false, hp: 35 });
-    expect(sim.events.map((e) => e.text)).toEqual(["unit 2 (type 37, P2)"]);
+    expect(sim.events.map((e) => e.text)).toEqual(["unit 1698 (type 37, P2)"]);
   });
   it("first() after a kill is the next one: a loop that ends", () => {
     const sim = run(`let n = 0; let u = first({ owner: P2 }); while (u) { u.kill(); n++; u = first({ owner: P2 }); }`);
@@ -139,7 +139,7 @@ describe("units: in the simulated game", () => {
     expect(sim.locations.get(2)).toEqual({ left: 100, top: 90, right: 140, bottom: 130 });
     // The box, moved onto the Zergling, holds it and the Marine beside it.
     expect(sim.value("n")).toBe(2);
-    expect(sim.events.map((e) => e.text)).toEqual(["attack: unit 2 (type 37, P1)"]);
+    expect(sim.events.map((e) => e.text)).toEqual(["attack: unit 1698 (type 37, P1)"]);
   });
   it("functions take and return units; == says whether two are one", () => {
     const sim = run(`function weakest(): Unit | null { let best: Unit | null = null; let least = 9999; for (const u of unitsOf(P1, { type: units.Men })) { if (u.hp < least) { least = u.hp; best = u; } } return best; }

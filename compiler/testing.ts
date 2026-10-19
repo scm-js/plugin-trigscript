@@ -412,7 +412,7 @@ export class TestSim implements TestWorldLike {
   /** What a fight is in a test. `by`: the player the kill is counted for. */
   kill(unit: SimUnit, by?: number): this { this.world.game.gone(unit, true, by); return this; }
   remove(unit: SimUnit): this { this.world.game.gone(unit, false); return this; }
-  give(unit: SimUnit, to: number): this { if (unit.alive) unit.owner = to; return this; }
+  give(unit: SimUnit, to: number): this { this.world.game.setOwner(unit, to); return this; }
   /** A unit turns into another type and stays the same unit: the new type's hit points and shields, in the same part of them. */
   morph(unit: SimUnit, type: number): this {
     if (!unit.alive) return this;

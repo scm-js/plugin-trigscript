@@ -541,7 +541,7 @@ class ProgramRun {
     if (!u) return;
     switch (verb.do) {
       case "kill": case "remove": this.sim.game.gone(u, verb.do === "kill", undefined, false); this.sim.unitEvent(this, verb.do === "kill" ? ActionType.KillUnit : ActionType.RemoveUnit, u, at); break;
-      case "give": { const to = this.sim.slotOf(verb.to); if (to < 12) u.owner = to; break; }
+      case "give": { const to = this.sim.slotOf(verb.to); if (to < 12) this.sim.game.setOwner(u, to); break; }
       // (The unit takes up the order and keeps it here: the simulator moves nothing, so it never arrives.)
       case "order": u.orderId = ORDER_OF_VERB[verb.order]; this.sim.unitEvent(this, ActionType.Order, u, at, { location: verb.target, text: verb.order }); break;
       case "locate": this.sim.centre(verb.location, u.x, u.y); break;
@@ -1623,9 +1623,9 @@ export class ProgramSimulation {
 
   /* ── units and tables ── */
 
-  /** The living units a filter matches, in table order. */
+  /** The living units a filter matches, in the order a program's loop comes to them (the players' lists: `World.listed`). */
   matching(f: UnitFilter): SimUnit[] {
-    return this.game.matching(f.owner === undefined ? undefined : this.slotsOf(f.owner), f.type, f.at);
+    return this.game.listed(f.owner === undefined ? undefined : this.slotsOf(f.owner), f.type, f.at);
   }
 
   /** One of the matching units: the first, the nearest to a location's centre by |dx| + |dy| (the first of equals), or one at random. */
