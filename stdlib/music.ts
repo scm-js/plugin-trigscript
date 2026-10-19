@@ -41,8 +41,11 @@ const VOICES = 32;
 /** What plays a pattern's notes: each note a clip, made when the script is built. */
 export interface Instrument {
   readonly kind: "notes";
-  /** Note `name` ("C4", "F#5") lasting `seconds`, release and all: a clip to play on its own, too. */
-  note(name: string, seconds: number): Clip;
+  /**
+   * Note `name` ("C4", "F#5") lasting `seconds`, release and all: a clip to play on its own, too. `rate`: samples a
+   * second, for an instrument that makes its notes (render asks for 44 100).
+   */
+  note(name: string, seconds: number, rate?: number): Clip;
 }
 
 /** What plays a pattern's letters: a clip a letter. */
@@ -61,12 +64,12 @@ function midi(name: string): number {
 }
 
 /** Notes kept as they are made, so a note played many times is the same clip (and the same file in the map). */
-function remembering(make: (name: string, seconds: number) => Clip): (name: string, seconds: number) => Clip {
+function remembering(make: (name: string, seconds: number, rate?: number) => Clip): (name: string, seconds: number, rate?: number) => Clip {
   const made = new Map<string, Clip>();
-  return (name, seconds) => {
-    const key = `${name} ${seconds.toFixed(4)}`;
+  return (name, seconds, rate) => {
+    const key = `${name} ${seconds.toFixed(4)} ${rate ?? ""}`;
     let c = made.get(key);
-    if (!c) { c = make(name, seconds); made.set(key, c); }
+    if (!c) { c = make(name, seconds, rate); made.set(key, c); }
     return c;
   };
 }
@@ -96,9 +99,9 @@ export function synth(options: { readonly wave?: "sine" | "square" | "triangle" 
   const attack = options.attack ?? 0.005, decay = options.decay ?? 0.08, sustain = options.sustain ?? 0.7, release = options.release ?? 0.06;
   return Object.freeze({
     kind: "notes" as const,
-    note: remembering((name, seconds) => {
+    note: remembering((name, seconds, rate) => {
       const held = Math.max(attack + decay, seconds - release);
-      return tone(name, held + release, { wave, volume }).envelope([0, 0], [attack, 1], [attack + decay, sustain], [held, sustain], [held + release, 0]);
+      return tone(name, held + release, { wave, volume, ...(rate === undefined ? {} : { rate }) }).envelope([0, 0], [attack, 1], [attack + decay, sustain], [held, sustain], [held + release, 0]);
     }),
   });
 }
@@ -113,13 +116,40 @@ export function kit(hits: Readonly<Record<string, Clip>>): Kit {
 export interface Track {
   readonly instrument: Instrument | Kit;
   readonly steps: readonly string[];
+  /** Where it is heard, −1 left to 1 right; 0, the middle, when left out. */
+  readonly pan: number;
+  /** How loud, 1 as the instrument plays. */
+  readonly volume: number;
 }
 
-/** A pattern for an instrument: steps a word each — a note or notes joined by +, "-" to hold, "." to rest, "|" for the eye. */
-export function track(instrument: Instrument | Kit, pattern: string | readonly string[]): Track {
+/**
+ * A pattern for an instrument: steps a word each — a note or notes joined by +, "-" to hold, "." to rest, "|" for the
+ * eye. `pan`: where it is heard, −1 left to 1 right (a panned track's notes have two channels); `volume`: 1 as the
+ * instrument plays.
+ */
+export function track(instrument: Instrument | Kit, pattern: string | readonly string[], options: { readonly pan?: number; readonly volume?: number } = {}): Track {
   const text = typeof pattern === "string" ? pattern : pattern.join(" ");
-  return Object.freeze({ instrument, steps: Object.freeze(text.split(/\s+/).filter((w) => w !== "" && w !== "|")) });
+  const pan = options.pan ?? 0, volume = options.volume ?? 1;
+  if (!(pan >= -1 && pan <= 1)) throw new Error(`A track's pan is −1 (left) to 1 (right), not ${pan}.`);
+  if (!(volume >= 0)) throw new Error(`A track's volume is 0 or more, not ${volume}.`);
+  return Object.freeze({ instrument, steps: Object.freeze(text.split(/\s+/).filter((w) => w !== "" && w !== "|")), pan, volume });
 }
+
+/** A clip as a track plays it: its volume and its pan, made once a clip a track. */
+function placed(t: Track, made: Map<Clip, Clip>, c: Clip): Clip {
+  if (t.pan === 0 && t.volume === 1) return c;
+  let p = made.get(c);
+  if (!p) {
+    p = t.volume === 1 ? c : c.gain(t.volume);
+    if (t.pan !== 0) p = p.pan(t.pan);
+    made.set(c, p);
+  }
+  return p;
+}
+
+/** What a song's notes are, kept for render, which makes them again at its own rate. */
+interface Score { readonly at: number; readonly track: Track; readonly made: Map<Clip, Clip>; readonly name?: string; readonly seconds?: number; readonly hit?: Clip }
+const scores = new WeakMap<object, readonly Score[]>();
 
 /** A song, when the script is built: the tables `play` reads, and what it takes. */
 export interface Song {
@@ -151,9 +181,10 @@ export function song(options: { readonly bpm: number; readonly steps?: number },
   const stepFrames = Math.max(1, Math.round(60 / options.bpm / perBeat / FRAME));
   const stepSeconds = stepFrames * FRAME;
   const notes: { at: number; clip: Clip }[] = [];
+  const score: Score[] = [];
   let steps = 0;
   for (const t of tracks) {
-    const ws = t.steps;
+    const ws = t.steps, made = new Map<Clip, Clip>();
     steps = Math.max(steps, ws.length);
     ws.forEach((w, s) => {
       if (w === "-" || w === ".") return;
@@ -161,7 +192,8 @@ export function song(options: { readonly bpm: number; readonly steps?: number },
         for (const letter of w) {
           const hit = t.instrument.hits[letter];
           if (!hit) throw new Error(`Step ${s + 1}: the kit has no ${JSON.stringify(letter)} (it has ${Object.keys(t.instrument.hits).join(", ")}).`);
-          notes.push({ at: s * stepFrames, clip: hit });
+          notes.push({ at: s * stepFrames, clip: placed(t, made, hit) });
+          score.push({ at: s * stepFrames, track: t, made, hit });
         }
         return;
       }
@@ -170,7 +202,8 @@ export function song(options: { readonly bpm: number; readonly steps?: number },
       while (s + length < ws.length && ws[s + length] === "-") length++;
       for (const name of w.split("+")) {
         midi(name);
-        notes.push({ at: s * stepFrames, clip: t.instrument.note(name, length * stepSeconds) });
+        notes.push({ at: s * stepFrames, clip: placed(t, made, t.instrument.note(name, length * stepSeconds)) });
+        score.push({ at: s * stepFrames, track: t, made, name, seconds: length * stepSeconds });
       }
     });
   }
@@ -186,15 +219,47 @@ export function song(options: { readonly bpm: number; readonly steps?: number },
   const clips: Clip[] = [];
   const which = notes.map((n) => { let k = clips.indexOf(n.clip); if (k < 0) { clips.push(n.clip); k = clips.length - 1; } return k; });
   const length = Math.max(steps * stepFrames, ...notes.map((n) => n.at + Math.ceil(n.clip.seconds / FRAME)));
-  return Object.freeze({
+  const made: Song = Object.freeze({
     stepFrames, bpm: 60 / (stepFrames * FRAME * perBeat), steps, frames: length, seconds: length * FRAME,
     clips: Object.freeze(clips), at: Object.freeze(notes.map((n) => n.at)), which: Object.freeze(which), voices,
   });
+  scores.set(made, score);
+  return made;
 }
 
-/** A song mixed into one clip when the script is built: every note exactly in time, one sound playing. */
-export function render(s: Song): Clip {
-  return mixdown(s.at.map((at, k) => ({ clip: s.clips[s.which[k]], at: at * FRAME })), s.seconds);
+/**
+ * A song mixed into one clip when the script is built: every note exactly in time, one sound playing. The notes are
+ * made again at `rate` (44 100 when left out: what the ear hears up to 20 kHz; a note played in the game note by note
+ * is made at 22 050, to keep the map small), and the mix goes through a limiter (`Clip.limit`) so that it never goes
+ * over −1.5 dB however the parts add: `limit: false` leaves it as mixed, `{ ceiling, release }` sets it. A long clip a
+ * program plays goes in the map as Ogg Vorbis, two channels when a track is panned.
+ */
+export function render(s: Song, options: { readonly rate?: number; readonly limit?: boolean | { readonly ceiling?: number; readonly release?: number } } = {}): Clip {
+  const rate = options.rate ?? 44100, score = scores.get(s);
+  // (A song from elsewhere, without its score: its own clips, at their rate.)
+  const parts = score
+    ? score.map((n) => ({ clip: n.hit ? placed(n.track, n.made, n.hit) : placedAt(n, rate), at: n.at * FRAME }))
+    : s.at.map((at, k) => ({ clip: s.clips[s.which[k]], at: at * FRAME }));
+  const mixed = mixdown(parts, s.seconds, rate);
+  const limit = options.limit ?? true;
+  return limit === false ? mixed : mixed.limit(limit === true ? {} : limit);
+}
+
+/** A note of a score made at `rate`, as its track plays it: once a note, rate and track. */
+const atRate = new WeakMap<Map<Clip, Clip>, Map<string, Clip>>();
+function placedAt(n: Score, rate: number): Clip {
+  let byNote = atRate.get(n.made);
+  if (!byNote) { byNote = new Map(); atRate.set(n.made, byNote); }
+  const key = `${n.name} ${n.seconds!.toFixed(4)} ${rate}`;
+  let c = byNote.get(key);
+  if (!c) {
+    const note = (n.track.instrument as Instrument).note(n.name!, n.seconds!, rate);
+    c = note;
+    if (n.track.volume !== 1) c = c.gain(n.track.volume);
+    if (n.track.pan !== 0) c = c.pan(n.track.pan);
+    byNote.set(key, c);
+  }
+  return c;
 }
 
 /**

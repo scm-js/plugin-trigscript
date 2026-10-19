@@ -381,14 +381,15 @@ export class ScriptService {
   /**
    * Compile into an artifact `install` can check: the files as they are now, against the
    * map in front and its names as they are now (`map`, when the caller already has them —
-   * the editor keeps a copy that follows the map's events).
+   * the editor keeps a copy that follows the map's events). With `sounds`, a build's: its
+   * long clips encoded as Ogg Vorbis for the map, which a check as the user types does not wait for.
    */
-  async prepare(input: ScriptInput, map: MapNames | null = this.names(), tests?: TestRunOptions): Promise<ScriptArtifact> {
+  async prepare(input: ScriptInput, map: MapNames | null = this.names(), tests?: TestRunOptions, sounds = false): Promise<ScriptArtifact> {
     if (!map) throw new Error("No map is open.");
     const files = this.filesOf(input);
     const document = this.documentId();
     const archived = hashFiles(this.state()?.files ?? {});
-    const compiled = await this.compiler({ files, names: map.names, ...(tests ? { tests } : {}) }, this.dist());
+    const compiled = await this.compiler({ files, names: map.names, ...(tests ? { tests } : {}), ...(sounds ? { sounds } : {}) }, this.dist());
     const artifact = { files, compiled, document, context: map.context, archived };
     this.lastArtifact = artifact;
     return artifact;
@@ -439,7 +440,7 @@ export class ScriptService {
    */
   async build(input: ScriptInput, options: BuildOptions = {}): Promise<ScriptBuildResult> {
     for (let attempt = 0; ; attempt++) {
-      const out = this.install(await this.prepare(input), options);
+      const out = this.install(await this.prepare(input, undefined, undefined, true), options);
       if (out.refused !== "changed" || attempt >= 2) return out;
     }
   }

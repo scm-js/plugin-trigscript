@@ -29,7 +29,7 @@ import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField,
 import { LOCAL_FIELDS, localName, MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
 import { coverValue } from "./cover";
 import { isVideo } from "./media";
-import { clipFile, isClip, mixdown, noise, silence, tone } from "./sound";
+import { clipFile, isClip, mixdown, noise, silence, tone, type ClipFile } from "./sound";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -217,8 +217,8 @@ export class Collector {
   /** The functions at the top of the script's files, by where they are: what their bodies compute when the script is built. */
   readonly functions = new Map<string, { hoisted: () => HoistedThunks }>();
   readonly strings: ScriptString[] = [];
-  /** The clips the script plays, as the WAVs the map's archive gets, by their names there (`sound.ts`). */
-  readonly sounds = new Map<string, Uint8Array>();
+  /** The clips the script plays, as the files the map's archive gets, by their names there (`sound.ts`). */
+  readonly sounds = new Map<string, ClipFile>();
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
   /** Locations a library took with reserveLocation(), by the reason it gave: the location's number. */
@@ -303,8 +303,10 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
     switch (kind) {
       case "text": case "wav":
         if (builtText(v) !== undefined) v = builtText(v);
-        // A clip (`sound.ts`): its WAV goes in the map's archive, and the action plays it by the name it goes under.
-        if (kind === "wav" && isClip(v)) { const file = clipFile(v); collector.sounds.set(file.path, file.bytes); v = file.path; }
+        // A clip (`sound.ts`): its file goes in the map's archive, and the action plays it by the name it goes under. A
+        // trigger's is a WAV whatever its length — the triggers play in 1.16.1 too, which plays no Ogg; a program's
+        // (Remastered) is Ogg Vorbis when it is long.
+        if (kind === "wav" && isClip(v)) { const file = clipFile(collector.running ? v.wav() : v); collector.sounds.set(file.path, file); v = file.path; }
         if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
         if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
         throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);

@@ -1641,6 +1641,45 @@ freely within 32 voices, each note's length and loudness baked into its file.
   note by note against the same song mixed at build, onset by onset (34 of them): 7.8 ms apart on average (sd), 16 at
   most, no drift over the song; equally loud second by second; a hit every 589.5 ms for the 588 written.
 
+### Sounds: step 1 of the quality work, the format and the master (built 2026-10-19)
+
+The user's direction after the music demo: make the instruments and the sound good enough for a showpiece — an
+arrangement of Korobeiniki (the folk song is in the public domain; the Tetris arrangements and look are not, so the
+parts around the melody are our own). Step 1 is what every later step sounds through: the file the map gets, the rate
+a mix is made at, two channels, and a limiter. Steps after it: the instruments themselves (filters, detune, FM,
+reverb, delay, drive), song structure, music that follows the game.
+
+- **Ogg Vorbis** (`compiler/vorbis.ts`): libvorbis + libogg compiled to WebAssembly by wasm-media-encoders 0.7.0 (MIT;
+  BSD), its `ogg.wasm` copied to `dist/vorbis.wasm` by the build with a LEGAL file; our own glue, a few calls into its
+  exports, instantiated synchronously (the package's JavaScript carries both its encoders inline and only
+  instantiates asynchronously). A clip a program plays that lasts 2 seconds or more goes in as Ogg Vorbis at
+  quality 5; a shorter one stays a WAV (they start on their frame — Ogg's start is not measured yet), as does an
+  untouched import (its own ADPCM), one made `wav()`, and any clip a `trigger()` plays (1.16.1 plays those triggers and
+  no Ogg). The fixed stream serial makes the file the same for the same samples — in Node and in the browser alike.
+- **Encoded only for a build.** A compile names an Ogg clip by a hash of its samples; the compile worker encodes it
+  when the request says `sounds` (Apply, `service.build`), fetching `dist/vorbis.wasm` once, and keeps 32 encoded files
+  by name. A check as the user types leaves the name alone and does not send the samples back. `withSounds` refuses a
+  sound with no bytes that the map does not already hold. Three minutes of two channels encode in about 1.5 s.
+- **Two channels**: `Clip.channels`, `pan(position)` (a balance, so 0 is the clip as it was), `mono()`; a mix, a join
+  or a mixdown with a two-channel part is two channels. A short two-channel clip is 16-bit WAV. Tracks take
+  `{ pan, volume }`, each clip a track plays made once.
+- **Resampling** by a windowed sinc (Blackman, 16 each side, cutoff at the lower rate's half) in place of straight
+  lines, which dulled the top and folded a pitched-up note's harmonics back down (a 3 kHz sine an octave up: images
+  under 0.2 % now).
+- **The limiter** (`Clip.limit`, `normalize`): look-ahead 5 ms (the lowest need over the next 5 ms, averaged over 5 ms,
+  so the gain is down smoothly before the peak and never above what it needs), release 0.1 s, the two sides together.
+  Ceiling −1.5 dB: Ogg Vorbis comes back up to a dB louder at its peaks (a song limited to −1 dB decoded at −0.16 dB;
+  at −1.5 dB, −0.45).
+- **`music.render(song, { rate, limit })`**: the notes made again at 44 100 Hz (a song's own clips, for play, stay at
+  22 050), through the limiter unless `limit: false`.
+- **Measured** on `probes/korobeiniki-ab.ts` (32 s, seven tracks; A as before: 22 050 Hz, one channel, ADPCM WAV,
+  turned down to fit; B: 44 100 Hz, panned, limited, Ogg): above 11 kHz A has nothing (−56 dB), B −36 dB; B's sides
+  (L − R) −27 dB; B 2.1 dB louder at the same peak; A 355 KB, B 559 KB. Compile with both renders 1.1 s, encode 0.3 s.
+  Lifted game clean (0 ending, A at frame 98, B at 930). Headless Chromium through the real compile worker: a check
+  returns the name only, a build the Ogg (558 554 bytes, as Node), a second build from the cache.
+- **Found on the way:** `ranges.ts` read `process.env` in the browser's worker, where there is none — every program
+  failed to compile in the editor. Guarded (its own commit).
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):

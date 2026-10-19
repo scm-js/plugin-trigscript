@@ -489,14 +489,18 @@ ${kw}interface Image {
  * A program plays one with playWav(boom); the build puts each clip it plays in the map once.
  * In the game a sound starts within 21 ms of its frame; playing it again adds a second copy beside the
  * first, and nothing stops one, so a clip's length and loudness are what is heard. 32 play at once, and
- * copies add with no limiter: keep peak under 1 where they overlap. A clip goes in the map as IMA ADPCM,
- * a quarter of 16-bit, unless that would distort it (the jumps of a square or saw wave): then as 16-bit.
+ * copies add with no limiter: keep peak under 1 where they overlap. A clip of 2 seconds or more that a
+ * program plays goes in the map as Ogg Vorbis (Remastered plays it). A shorter one, or one a trigger()
+ * plays (which 1.16.1 plays too, and it plays no Ogg), is a WAV: IMA ADPCM, a quarter of 16-bit, unless
+ * that would distort it (the jumps of a square or saw wave) or it has two channels: then 16-bit.
  */
 ${kw}interface Clip {
   /** How long it plays. */
   readonly seconds: number;
   /** Samples a second. */
   readonly rate: number;
+  /** 1, or 2 for a clip with a left and a right (pan(), or a mix with one). */
+  readonly channels: 1 | 2;
   /** The loudest sample, 0 to 1; above 1 is cut off when the map's file is written. */
   readonly peak: number;
   /** The part from \`from\` to \`to\` seconds (the end when left out). */
@@ -520,6 +524,23 @@ ${kw}interface Clip {
    * decay, sustain and release: \`tone("C4", 0.5).envelope([0, 0], [0.01, 1], [0.1, 0.6], [0.4, 0.6], [0.5, 0])\`
    */
   envelope(...points: readonly (readonly [number, number])[]): Clip;
+  /**
+   * Where it is heard, −1 left to 1 right: a balance, the far side turned down, so 0 is the clip as it
+   * was. The clip then has two channels.
+   */
+  pan(position: number): Clip;
+  /** Its two channels as one. */
+  mono(): Clip;
+  /**
+   * Never louder than \`ceiling\` (0.84, −1.5 dB, when left out): turned down smoothly over the 5 ms before
+   * each peak that would go over, and back up over \`release\` seconds (0.1). What a mix goes through last,
+   * so that the parts can add up without cutting off: \`mixdown(parts).limit()\`.
+   */
+  limit(options?: { readonly ceiling?: number; readonly release?: number }): Clip;
+  /** Louder or quieter, so its loudest sample is \`peak\` (0.84, −1.5 dB, when left out). */
+  normalize(peak?: number): Clip;
+  /** In the map as a WAV however long it is, for StarCraft 1.16.1, which plays no Ogg. */
+  wav(): Clip;
 }
 /**
  * When the script is built: a tone of \`pitch\` — hertz, or a note's name: "A4" (440), "C#5", "Eb3" — for
@@ -534,8 +555,9 @@ ${kw}function silence(seconds: number, options?: { readonly rate?: number }): Cl
 /**
  * When the script is built: clips laid over one another, each from its own time in seconds, as one clip —
  * a song mixed before the game, every note exactly in time. \`mixdown([{ clip: kick, at: 0 }, { clip: hat, at: 0.25 }])\`
+ * At the first part's rate, or \`rate\`; two channels when a part has two. \`seconds\`: that long at least.
  */
-${kw}function mixdown(parts: readonly { readonly clip: Clip; readonly at: number }[], seconds?: number): Clip;
+${kw}function mixdown(parts: readonly { readonly clip: Clip; readonly at: number }[], seconds?: number, rate?: number): Clip;
 /** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
 ${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
 /**

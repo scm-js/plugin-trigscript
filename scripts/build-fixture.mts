@@ -22,6 +22,7 @@ import { serializeIr } from "../compiler/eud";
 import { buildPlugins } from "../compiler/input";
 import { readTriggerMap, readVariableMap } from "../compiler/gameVariables";
 import { resolveStrings } from "../script";
+import { finishSounds, vorbisEncoder } from "../compiler/vorbis";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 import { scriptFiles } from "./script-files.mts";
@@ -97,8 +98,10 @@ if (home && scn.locations?.[0] && !scn.locations[0].nameIndex && scn.locations[0
 markDirty(scn, "TRIG", "UNIT");
 const ir = serializeIr(r.ir, r.strings, r.input);
 const extras = loaded.archive ? await readExtras(loaded.archive, loaded.files) : new Map();
-// The clips the script plays (compiler/sound.ts), as the editor's Apply writes them.
-for (const s of r.sounds) extras.set(s.path, s.bytes);
+// The clips the script plays (compiler/sound.ts), as the editor's Apply writes them: the long ones Ogg Vorbis, encoded
+// here as a build in the editor encodes them (compiler/vorbis.ts).
+if (r.sounds.some((s) => s.vorbis)) finishSounds(r.sounds, vorbisEncoder(readFileSync(resolve(import.meta.dirname, "..", "node_modules", "wasm-media-encoders", "wasm", "ogg.wasm"))));
+for (const s of r.sounds) extras.set(s.path, s.bytes!);
 const withStrings = await saveMap(serializeScenario(scn), { extras, compress: "pkware", listfile: true });
 // PREP_ONLY=1: the prepared map as it is, not built: what the editor opens in a run end to end, and builds itself.
 if (process.env.PREP_ONLY) { writeFileSync(resolve(outPath), withStrings); process.exit(0); }

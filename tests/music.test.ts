@@ -95,6 +95,29 @@ program(async () => { await music.play(song); });
     );
     expect(errors(r)).toEqual([]);
   });
+
+  it("renders at 44.1 kHz, its notes made again at that rate, panned tracks on their sides, limited under −1.5 dB", () => {
+    const r = check(
+      `const lead = music.synth({ wave: "saw", volume: 0.5 });
+const pad = music.synth({ wave: "triangle", volume: 0.5 });
+const s = music.song({ bpm: 120 }, music.track(lead, "A4 - E5 - A5 - - -", { pan: -0.5 }), music.track(pad, "A3+C4+E4 - - - - - - -", { pan: 0.5, volume: 0.8 }));
+const one = music.render(s), raw = music.render(s, { limit: false }), low = music.render(s, { rate: 22050 });`,
+      `if (one.rate !== 44100 || one.channels !== 2 || low.rate !== 22050) fail(\`\${one.rate} \${one.channels} \${low.rate}\`);
+if (!(raw.peak > 1) || one.peak > 0.8401) fail(\`\${raw.peak} \${one.peak}\`);
+if (s.clips.some((c) => c.channels !== 2 || c.rate !== 22050)) fail("the song's own clips: two sides, at 22 050");`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+
+  it("plays a panned track's notes, each once, with two sides", () => {
+    const r = check(
+      `const lead = music.synth();
+const s = music.song({ bpm: 120 }, music.track(lead, "A4 A4 A4 B4", { pan: 1 }), music.track(lead, "A4 . . .", { volume: 0.5 }));`,
+      `if (s.clips.length !== 3 || s.clips.filter((c) => c.channels === 2).length !== 2) fail(\`\${s.clips.length} \${s.clips.map((c) => c.channels)}\`);`,
+    );
+    expect(errors(r)).toEqual([]);
+    expect(errors(check(`const lead = music.synth();`, `music.track(lead, "A4", { pan: 3 });`)).join("\n")).toMatch(/−1 \(left\) to 1/);
+  });
 });
 
 describe("what the library is made of", () => {

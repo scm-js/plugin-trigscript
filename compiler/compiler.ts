@@ -37,6 +37,7 @@ import { allTables, type ScriptNames } from "./names";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
 import { newBody, Structured, type Body } from "./structured";
 import { english, type Translate } from "../i18n";
+import type { ClipFile } from "./sound";
 
 export type { ScriptString } from "./runtime";
 export { DEATHS_TABLE_ADDRESS } from "./runtime";
@@ -145,8 +146,12 @@ export interface CompileResult {
   sources: (TriggerSource | null)[];
   /** Local string table: a record's `text` / `wav` field `k > 0` means `strings[k - 1]`. */
   strings: ScriptString[];
-  /** The clips the script plays (`sound.ts`), as the WAVs the map's archive gets, by their names there: once each. */
-  sounds: { path: string; bytes: Uint8Array }[];
+  /**
+   * The clips the script plays (`sound.ts`), as the files the map's archive gets, by their names there: once each. An
+   * Ogg Vorbis one has its samples instead of bytes until `finishSounds` (`vorbis.ts`) encodes it, and neither after a
+   * check that did not ask for it: the map is to get it from a build.
+   */
+  sounds: ClipFile[];
   diagnostics: ScriptDiagnostic[];
   /** The programs' variables, in declaration order; a function's copies and results are left out. */
   variables: VariableInfo[];
@@ -540,7 +545,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests)
       : { list: listTests(registry).list, results: [], only: [], ms: 0 };
   }
-  return result({ ir, input, triggers, sources, strings: collector.strings, sounds: [...collector.sounds].map(([path, bytes]) => ({ path, bytes })), variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }) });
+  return result({ ir, input, triggers, sources, strings: collector.strings, sounds: [...collector.sounds.values()], variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }) });
 }
 
 /**

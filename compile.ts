@@ -52,6 +52,10 @@ export const gametestUrl = (dist: string = DEFAULT_DIST) =>
 export const allowlistUrl = (dist: string = DEFAULT_DIST) =>
   dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/allowlist.json` : `${dist.replace(/\/+$/, "")}/allowlist.json`;
 
+/** The Ogg Vorbis encoder (`compiler/vorbis.ts`, `dist/vorbis.wasm`), at this release's own tag: fetched only by a build that has a long clip to put in the map. */
+export const vorbisUrl = (dist: string = DEFAULT_DIST) =>
+  dist === DEFAULT_DIST ? `https://cdn.jsdelivr.net/gh/scm-js/plugin-trigscript@v${VERSION}/dist/vorbis.wasm` : `${dist.replace(/\/+$/, "")}/vorbis.wasm`;
+
 /**
  * What the worker is told to import. The editor's loader turns a fetched plugin into
  * `blob:` modules, and the compiler's own blob URL is the compiler the main thread would
@@ -68,12 +72,15 @@ export interface CompileInput {
   names: ScriptNames;
   /** Run the script's tests after the compile: the world they start from, and which of them. */
   tests?: TestRunOptions;
+  /** Encode the sounds the map is to get (a build): a check leaves an Ogg Vorbis one as its name (`compiler/vorbis.ts`). */
+  sounds?: boolean;
 }
 
 interface CompileRequest extends CompileInput {
   id: number;
   moduleUrl: string;
   libUrl: string;
+  vorbisUrl?: string;
 }
 
 interface CompileResponse {
@@ -89,7 +96,7 @@ importScripts(${JSON.stringify(TS_URL)});
 let loading = null;
 let lib = null;
 self.onmessage = async (e) => {
-  const { id, moduleUrl, libUrl, files, names, tests } = e.data;
+  const { id, moduleUrl, libUrl, vorbisUrl, files, names, tests } = e.data;
   try {
     if (!loading) loading = import(moduleUrl);
     let mod;
@@ -101,7 +108,13 @@ self.onmessage = async (e) => {
       if (!r.ok) throw new Error("Could not load the standard library from " + libUrl + " (" + r.status + ").");
       lib = await r.text();
     }
-    postMessage({ id, result: mod.compileScript(self.ts, files, names, { lib, tests }) });
+    const result = mod.compileScript(self.ts, files, names, { lib, tests });
+    // A build's long clips encoded as Ogg Vorbis; a check's left as names, their samples not sent.
+    if (typeof mod.finishSounds === "function") {
+      const encoder = vorbisUrl && result.sounds.some((s) => s.vorbis) ? await mod.loadVorbis(vorbisUrl) : null;
+      mod.finishSounds(result.sounds, encoder);
+    }
+    postMessage({ id, result });
   } catch (err) {
     postMessage({ id, error: String((err && err.message) || err) });
   }
@@ -259,7 +272,7 @@ export function compileInBackground(input: CompileInput, dist: string = DEFAULT_
   }
   return new Promise<CompileResult>((resolve, reject) => {
     pending.set(id, { resolve, reject, timer: setTimeout(() => timeOut(id), COMPILE_TIMEOUT_MS) });
-    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}) };
+    const req: CompileRequest = { id, moduleUrl: workerModuleUrl(dist), libUrl: libUrl(dist), files: input.files, names: input.names, ...(input.tests ? { tests: input.tests } : {}), ...(input.sounds ? { vorbisUrl: vorbisUrl(dist) } : {}) };
     w.postMessage(req);
   }).catch((err: Error) => {
     if (err.message === RETRY) return compileInBackground(input, dist);

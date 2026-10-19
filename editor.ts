@@ -1396,12 +1396,12 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
    * A keystroke during the compile supersedes it with the newer text's check; the newer
    * text is what the user wants built, so it is compiled again — a few times at most.
    */
-  const compileNow = async (asked: TestRunOptions = automaticTests()): Promise<ScriptArtifact | null> => {
+  const compileNow = async (asked: TestRunOptions = automaticTests(), sounds = false): Promise<ScriptArtifact | null> => {
     if (timer !== null) { clearTimeout(timer); timer = null; }
     for (let attempt = 0; attempt < 3; attempt++) {
       if (cancelled || !generated) return null;
       try {
-        const a = await svc.prepare(files, generated, asked);
+        const a = await svc.prepare(files, generated, asked, sounds);
         applyResult(a.compiled, asked);
         return a;
       } catch (err) {
@@ -1433,7 +1433,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     setStatus("busy", t("Running the script…"));
     try {
       for (let attempt = 0; ; attempt++) {
-        const a = await compileNow();
+        // (A build: the map gets its sounds, the long ones encoded now.)
+        const a = await compileNow(automaticTests(), true);
         if (!a || cancelled) return false;
         if (!a.compiled.ok || diagnostics.length) {
           const n = diagnostics.length || a.compiled.diagnostics.length;
