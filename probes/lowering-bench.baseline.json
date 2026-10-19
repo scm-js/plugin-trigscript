@@ -1,58 +1,68 @@
 {
  "LOOP": {
-  "records": 30.2,
-  "triggers": 13.09,
-  "ns": 436.8049999994992
+  "records": 6.9394871794871795,
+  "triggers": 5.77,
+  "ns": 103.25602564099502
  },
  "ADD_CONST": {
-  "records": 9,
-  "triggers": 4,
-  "ns": 133.70000000003574
+  "records": 1,
+  "triggers": 1,
+  "ns": 18.299999999998192
  },
  "ADD_VARS": {
-  "records": 12,
-  "triggers": 5,
-  "ns": 177.39999999987486
+  "records": 2,
+  "triggers": 0,
+  "ns": 19.399999999997146
  },
  "LESS_VARS": {
-  "records": 22,
-  "triggers": 10,
-  "ns": 318.4999999995375
+  "records": 3,
+  "triggers": 3,
+  "ns": 50.00000000001299
  },
  "LESS_CONST": {
-  "records": 9,
-  "triggers": 5,
-  "ns": 131.4000000000106
+  "records": 3,
+  "triggers": 3,
+  "ns": 50.00000000001299
  },
  "EQUALS_VARS": {
-  "records": 5,
-  "triggers": 3,
-  "ns": 75.40000000002001
+  "records": 3,
+  "triggers": 1,
+  "ns": 27.900000000003576
  },
  "ARRAY_READ": {
-  "records": 61.99179487179487,
-  "triggers": 45,
-  "ns": 897.4204102585741
+  "records": 15,
+  "triggers": 10,
+  "ns": 238.5999999996402
  },
  "ARRAY_WRITE": {
-  "records": 11,
-  "triggers": 5,
-  "ns": 156.79999999994592
+  "records": 2,
+  "triggers": 1,
+  "ns": 23.10000000000084
+ },
+ "ARRAY_READ_CONST": {
+  "records": 15,
+  "triggers": 10,
+  "ns": 238.5999999996402
+ },
+ "ARRAY_WRITE_CONST": {
+  "records": 4,
+  "triggers": 1,
+  "ns": 42.50000000000474
  },
  "FIELD_WRITE": {
-  "records": 4,
-  "triggers": 2,
-  "ns": 62.0000000000248
+  "records": 2,
+  "triggers": 1,
+  "ns": 27.999999999997943
  },
  "FIELD_READ": {
-  "records": 4,
-  "triggers": 2,
-  "ns": 62.0000000000248
+  "records": 1,
+  "triggers": 0,
+  "ns": 9.700000000000056
  },
  "CALL": {
-  "records": 5,
-  "triggers": 3,
-  "ns": 80.30000000002848
+  "records": 1,
+  "triggers": 0,
+  "ns": 9.700000000000056
  },
  "MULTIPLY": {
   "records": 39,
@@ -60,83 +70,218 @@
   "ns": 555.0999999999548
  },
  "MASK": {
-  "records": 24,
-  "triggers": 11,
-  "ns": 360.39999999949816
- },
- "UNITS": {
-  "records": 15943,
-  "triggers": 7310,
-  "ns": 229236.7999992427
- },
- "ARRAY_READ_CONST": {
-  "records": 46.0,
-  "triggers": 37.0,
-  "ns": 653.0
- },
- "ARRAY_WRITE_CONST": {
-  "records": 4.0,
-  "triggers": 2.0,
-  "ns": 62.0
+  "records": 19.99897435897436,
+  "triggers": 16,
+  "ns": 301.39005128188893
  },
  "MUL_CONST": {
-  "records": 39.0,
-  "triggers": 19.0,
-  "ns": 555.0
+  "records": 1,
+  "triggers": 1,
+  "ns": 18.299999999998192
  },
  "SHIFT_LEFT": {
-  "records": 30.0,
-  "triggers": 20.0,
-  "ns": 505.0
+  "records": 1,
+  "triggers": 0,
+  "ns": 9.700000000000056
  },
  "SHIFT_RIGHT": {
-  "records": 50.0,
-  "triggers": 12.0,
-  "ns": 695.0
+  "records": 22,
+  "triggers": 14,
+  "ns": 284.7999999998142
  },
  "DIV_CONST": {
-  "records": 76.0,
-  "triggers": 53.0,
-  "ns": 1074.0
+  "records": 73,
+  "triggers": 53,
+  "ns": 1042.300000003804
  },
  "MOD_CONST": {
-  "records": 76.0,
-  "triggers": 53.0,
-  "ns": 1074.0
+  "records": 73,
+  "triggers": 53,
+  "ns": 1042.300000003804
  },
  "FIXED_MUL": {
-  "records": 398.0,
-  "triggers": 250.0,
-  "ns": 5801.0
+  "records": 217,
+  "triggers": 131,
+  "ns": 2929.1999999658906
  },
  "FIXED_DIV": {
-  "records": 596.0,
-  "triggers": 319.0,
-  "ns": 8976.0
+  "records": 395,
+  "triggers": 199,
+  "ns": 5017.89999994021
  },
  "FIXED_MUL_INT": {
-  "records": 114.0,
-  "triggers": 79.0,
-  "ns": 1697.0
+  "records": 1,
+  "triggers": 1,
+  "ns": 18.299999999998192
+ },
+ "FIXED_MUL_CONST": {
+  "records": 52,
+  "triggers": 47,
+  "ns": 731.4000000018799
+ },
+ "FIXED_DIV_CONST": {
+  "records": 99,
+  "triggers": 77,
+  "ns": 1293.3999999956652
+ },
+ "FIXED_RECIP": {
+  "records": 116,
+  "triggers": 68,
+  "ns": 1513.199999999318
  },
  "FIXED_SQRT": {
-  "records": 993.0,
-  "triggers": 532.0,
-  "ns": 15218.0
+  "records": 682,
+  "triggers": 361,
+  "ns": 10117.30000026812
  },
  "FIXED_LESS": {
-  "records": 19.0,
-  "triggers": 8.0,
-  "ns": 272.0
+  "records": 3,
+  "triggers": 2,
+  "ns": 41.40000000000661
  },
  "FIXED_SIGN": {
-  "records": 6.0,
-  "triggers": 3.0,
-  "ns": 85.0
+  "records": 2,
+  "triggers": 1,
+  "ns": 23.10000000000084
  },
  "FIXED_FLOOR": {
-  "records": 36.0,
-  "triggers": 12.0,
-  "ns": 518.0
+  "records": 21,
+  "triggers": 13,
+  "ns": 266.4999999997683
+ },
+ "ELEM_FIELD_READ": {
+  "records": 11,
+  "triggers": 9,
+  "ns": 191.1999999998047
+ },
+ "ELEM_FIELD_WRITE": {
+  "records": 2,
+  "triggers": 1,
+  "ns": 23.10000000000084
+ },
+ "REF_FIELD_READ": {
+  "records": 15,
+  "triggers": 10,
+  "ns": 238.5999999996402
+ },
+ "REF_FIELD_WRITE": {
+  "records": 4,
+  "triggers": 1,
+  "ns": 42.50000000000474
+ },
+ "DIV_THRESHOLDS": {
+  "records": 30,
+  "triggers": 23,
+  "ns": 479.6000000002924
+ },
+ "DIV_FLOOR": {
+  "records": 166,
+  "triggers": 112,
+  "ns": 2293.8999999840576
+ },
+ "DIV_VAR_THRESHOLDS": {
+  "records": 29,
+  "triggers": 23,
+  "ns": 468.8000000002339
+ },
+ "DIV_VAR": {
+  "records": 267,
+  "triggers": 119,
+  "ns": 3402.199999943714
+ },
+ "LIST_READ": {
+  "records": 51.81205128205128,
+  "triggers": 31,
+  "ns": 729.7768974380244
+ },
+ "LIST_WRITE": {
+  "records": 41.81205128205128,
+  "triggers": 25,
+  "ns": 577.0768974367378
+ },
+ "MUL_CONST_R": {
+  "records": 1,
+  "triggers": 1,
+  "ns": 18.299999999998192
+ },
+ "MULTIPLY_R": {
+  "records": 49,
+  "triggers": 25,
+  "ns": 699.9000000019383
+ },
+ "DIV_CONST_R": {
+  "records": 19,
+  "triggers": 13,
+  "ns": 260.99999999977064
+ },
+ "MOD_CONST_R": {
+  "records": 17,
+  "triggers": 11,
+  "ns": 234.199999999785
+ },
+ "DIV_VAR_R": {
+  "records": 110,
+  "triggers": 61,
+  "ns": 1637.0000000042105
+ },
+ "DIV_VARS_R": {
+  "records": 107,
+  "triggers": 62,
+  "ns": 1619.5000000039145
+ },
+ "SHIFT_RIGHT_R": {
+  "records": 19,
+  "triggers": 11,
+  "ns": 234.79999999981493
+ },
+ "SHIFT_LEFT_R": {
+  "records": 1,
+  "triggers": 0,
+  "ns": 9.700000000000056
+ },
+ "LESS_VARS_R": {
+  "records": 3,
+  "triggers": 2,
+  "ns": 41.40000000000661
+ },
+ "LESS_CONST_R": {
+  "records": 2,
+  "triggers": 2,
+  "ns": 31.70000000000438
+ },
+ "TAIL": {
+  "records": 2,
+  "triggers": 1,
+  "ns": 27.999999999997943
+ },
+ "UNITS": {
+  "records": 1615,
+  "triggers": 1111,
+  "ns": 28117.399999973615
+ },
+ "LIST_LOOP": {
+  "records": 251,
+  "triggers": 168,
+  "ns": 4051.2000000005614
+ },
+ "ARRAY_LOOP": {
+  "records": 338,
+  "triggers": 238,
+  "ns": 5229.700000001467
+ },
+ "ARRAY_LOOP_WRITE": {
+  "records": 265,
+  "triggers": 167,
+  "ns": 3962.7000000004914
+ },
+ "LIST_LOOP_WRITE": {
+  "records": 653,
+  "triggers": 278,
+  "ns": 9211.900000002759
+ },
+ "EMPTY_LOOP": {
+  "records": 41,
+  "triggers": 40,
+  "ns": 659.4999999999878
  }
 }

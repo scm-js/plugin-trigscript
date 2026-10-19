@@ -17,7 +17,9 @@ const cases = [
 ];
 const ys = [1, 3, 655, 32768, 65536, 98304, 1000000, 2147483647, -1, -65536, -1000000, -2147483648];
 const want = (c, op) => xs.map((x) => (op === "c/x" ? fdiv(c, x) : op === "x/c" ? fdiv(x, c) : fmul(x, c)));
-const expr = (name, op) => (op === "c/x" ? `${name} / (xs[i] + zero)` : op === "x/c" ? `(xs[i] + zero) / ${name}` : `(xs[i] + zero) * ${name}`);
+// (x first into a variable of its own: the cell of the list is read by the Python side, the quotient or the product
+// worked out by whatever the build gives it — the emitter's own triggers when the loop is the emitter's.)
+const expr = (name, op) => (op === "c/x" ? `${name} / xv` : op === "x/c" ? `xv / ${name}` : `xv * ${name}`);
 let src = `// TrigScript 4, the backend, part 3: fixed products and quotients with one side known when the map is built — \`c / x\`,
 // \`x / c\`, \`x * c\` (python/trigscript.py, make_const_fdiv and fixed_by_const) — held against the arithmetic the compiler
 // does when the map is built (compiler/fixedMath.ts): every result the same bits, for x at the edges (1 to 2^31, both
@@ -34,6 +36,7 @@ program(() => {
   setResources(P1, "set", 3, "gas");
   sleep(frames(2));
   const zero = fixed(gas(P1)) - 3; // 0, read in the game
+  const none = gas(P1) - 3; // 0 too: the loops' counts are not known when the map is built, so they stay loops
 `;
 for (const group of ["c/x", "x/c", "x*c"]) {
   src += `  {
@@ -43,9 +46,13 @@ for (const group of ["c/x", "x/c", "x*c"]) {
     if (op !== group) return;
     src += `    {
       let bad = 0, first = -1;
-      for (let i = 0; i < xs.length; i++) {
+      // (A while loop: a for loop's reads at its counter are the Python side's registers', and the loop with them.)
+      let i = none;
+      while (i < xs.length + none) {
+        const xv: Fixed = xs[i] + zero;
         const q: Fixed = ${expr(name, op)};
         if (q != want${k}[i]) { bad++; if (first < 0) first = i; }
+        i++;
       }
       out += \` \${bad}/\${first}\`;
     }
@@ -60,11 +67,43 @@ for (const [group, f, e] of [["x*y", fmul, "*"], ["x/y", fdiv, "/"]]) {
   src += `  {
     const want: Fixed[] = [${xs.flatMap((x) => ys.map((y) => lit(f(x, y)))).join(", ")}];
     let bad = 0, first = -1;
-    for (let i = 0; i < xs.length; i++) {
-      for (let j = 0; j < ys.length; j++) {
-        const q: Fixed = (xs[i] + zero) ${e} (ys[j] + zero);
+    let i = none;
+    while (i < xs.length + none) {
+      let j = none;
+      while (j < ys.length + none) {
+        const xv: Fixed = xs[i] + zero, yv: Fixed = ys[j] + zero;
+        const q: Fixed = xv ${e} yv;
         if (q != want[i * ys.length + j]) { bad++; if (first < 0) first = i * ys.length + j; }
+        j++;
       }
+      i++;
+    }
+    displayText(\`${group}: \${bad}/\${first}\`);
+    sleep(frames(1));
+  }
+`;
+}
+// Whole numbers, a / b and a % b of two variables (towards zero, the remainder with the dividend's sign).
+const as = [0, 1, -1, 2, 7, -7, 100, 1000, -1000, 65536, 2147483647, -2147483648, -2147483647, 123456789];
+const bs = [1, -1, 2, 3, 7, -7, 1000, 65537, 2147483647, -2147483648];
+const idiv = (a, b) => Number(BigInt.asIntN(32, BigInt(a) / BigInt(b)));
+const imod = (a, b) => Number(BigInt.asIntN(32, BigInt(a) % BigInt(b)));
+for (const [group, f, e] of [["a/b", idiv, "/"], ["a%b", imod, "%"]]) {
+  src += `  {
+    const as: number[] = [${as.join(", ")}];
+    const bs: number[] = [${bs.join(", ")}];
+    const want: number[] = [${as.flatMap((a) => bs.map((b) => f(a, b))).join(", ")}];
+    let bad = 0, first = -1;
+    let i = none;
+    while (i < as.length + none) {
+      let j = none;
+      while (j < bs.length + none) {
+        const av = as[i] + none, bv = bs[j] + none;
+        const q = av ${e} bv;
+        if (q != want[i * bs.length + j]) { bad++; if (first < 0) first = i * bs.length + j; }
+        j++;
+      }
+      i++;
     }
     displayText(\`${group}: \${bad}/\${first}\`);
     sleep(frames(1));
@@ -79,6 +118,14 @@ for (const group of ["c/x", "x/c", "x*c"]) {
 test("${group}, the same bits as the compiler's", (sim) => {
   sim.frames(12);
   expect(sim).toHavePrinted("${group}:${" 0/-1".repeat(n)}");
+});
+`;
+}
+for (const group of ["a/b", "a%b"]) {
+  src += `
+test("${group} of whole numbers, as the compiler's", (sim) => {
+  sim.frames(20);
+  expect(sim).toHavePrinted("${group}: 0/-1");
 });
 `;
 }

@@ -5,13 +5,14 @@
  *
  *   npx tsx scripts/bench-lowering.mts [--frames=N] [--save]
  *
- * Built with the emitter off unless EMITTER=1 is given: a trigger the emitter makes may hold several lines' work, and
- * the count gives it to the first, so the bench's numbers by line are the Python side's.
+ * Built as a build is (the emitter on; EMITTER=0 for the Python side's lowering alone): a trigger of the emitter's that
+ * holds several lines' work says each action's line, so a line's number is its own.
  *
  * --save writes this run's numbers as the new baseline. Needs a plugin-eudplib checkout and a scm-sim checkout beside
  * this repository (or EUDPLIB_DIR / SCM_SIM_DIR), as build-fixture and the lifted game do.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { playWeighed } from "./lifted-weigh.mts";
@@ -19,10 +20,11 @@ import { playWeighed } from "./lifted-weigh.mts";
 const root = resolve(import.meta.dirname, "..");
 const flag = (n: string) => process.argv.slice(2).find((a) => a === `--${n}` || a.startsWith(`--${n}=`))?.split("=")[1] ?? (process.argv.includes(`--${n}`) ? "" : undefined);
 const script = join(root, "probes", "lowering-bench.ts");
-const built = join(root, "fixtures", "eud", "lowering-bench.scx");
+// (Built into a folder of its own: fixtures/ holds the base maps everything shares.)
+const built = join(mkdtempSync(join(tmpdir(), "lowering-bench-")), "lowering-bench.scx");
 const baselinePath = join(root, "probes", "lowering-bench.baseline.json");
 
-const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), script, built], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { EMITTER: "0", ...process.env, TRIGGER_MAP: "1" } });
+const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), script, built], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, TRIGGER_MAP: "1" } });
 if (b.status !== 0) { console.error(b.stdout.split("\n").slice(-20).join("\n"), b.stderr); process.exit(1); }
 
 // The lines and what they are: a /* LABEL */ at a line's end; R, the turns a frame of the loop.

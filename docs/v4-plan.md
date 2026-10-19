@@ -2635,6 +2635,75 @@ Not on the list: anything that runs outside the trigger walk, and threads (the g
   table, had it right, so the two disagreed). Fixed in the lowering: `centerLocation()`, `unit.locate()`, `unit.give()`
   and the actions Create Unit (with Properties), Move Unit and Give Units are followed by a Command (`forget_counts`).
 
+### What Remastered offers past eudplib
+
+Read in Ghidra (1.23.10.13515, 2026-10-19): the condition and action tables (+0xDAFB50, +0xDAF970), every handler,
+the walk (+0x41B350) and the emulator's entry points. What eudplib does not use, by what it would give the backend:
+1. **Registers the game keeps natively.** Set Deaths (+0x285410 → set +0x288240, add +0x2868F0, subtract +0x288E30)
+   and the Deaths condition (+0x28A2C0 → +0x28AB30) take three unit columns apart *before* the EUD emulator: 230, 231
+   and 232 (Men, Buildings, Factories) of Players 1–8 are tables in the game state (+0x2D84, +0x2ED4, +0x2FF4),
+   written and read with no region found, no virtual call — 24 dwords. 229 (Any unit) reads Men plus Buildings: a
+   sum in one condition; it is never written. Set Switch / Switch (+0x285600 / +0x28A1A0: bit operations on +0xEB50,
+   256 bits) and Set Resources / Accumulate (+0x2859F0 / +0x289D50: ore and gas of Players 1–8, an add wrapping;
+   "ore and gas" reads their sum) are native too. Everything else in an EUD map, the deaths table included, goes
+   through the emulator (+0x2E18F0, +0x2E1450). For the emitter: a home (a dword conditions read as memory) can be
+   one of these — a loop counter's add and its test both native. Not a place an action reads its number from (those
+   are fields of our own triggers). Caveats: a player's Men, Buildings and Factories count their units' deaths — use
+   a player that owns none (Player 8 in the probe); resources show in that player's own top bar; switches are the
+   map's. The weights probe put Set Switch at 3.2 ns against Set Deaths' 9.7: the primitives probe weighs the rest.
+2. **The walk passes a trigger marked done without looking at it.** A trigger whose flags (2376 bytes in) have bit 3
+   set is skipped before its conditions (the flag a trigger without Preserve gets after it ran); bit 0 (conditions
+   already held) makes it run its actions without testing them. A branch the emitter knows to be dead, or a block
+   switched off and on by writing one dword, costs the walk alone.
+3. **A mask costs nothing.** A masked Deaths / Set Deaths ("SC" at bytes 18–19 of the condition, 30–31 of the
+   action, the mask where the location is) is the emulator's same path and an AND (+0x2E1890 sets it up per action).
+   eudplib uses it already; the backend can test or set any bits of any dword in one record.
+4. **A player group is a loop in one record.** All Players (17) runs the handler for each player in the game among
+   1–8 and then always for 9–12 (+0x28A680); a force (18–21) for its members; Allies, Foes, Neutral Players (22–25)
+   do nothing here. One Set Deaths writes each of them (consecutive dwords, 4 bytes apart); one Deaths condition
+   compares their *sum*. Which players are in the game is the game's, so only 9–12 are certain: a write of four
+   dwords in one action, a sum of four in one condition. Current Player (13) is the game's own variable
+   (+0x10B0D34), eudplib's address register.
+5. **What is not there.** No action copies a dword from one address to another, or writes more than one value: every
+   way a value moves is eudplib's (a cell routed) or the emitter's (written where it is used). The emulator's
+   subtract stops at 0 (+0x2E7A20), the native adds wrap. An unaligned write is two reads and two writes; an EPD's
+   never is. The walk finds every trigger's region by address (+0x2E1940, a cache, then a tree): a program whose
+   triggers sit in one region (the payload) stays in the cache.
+
+`probes/primitives.py` (eudplib, the weights probe's schedule; `python3 probes/primitives.py --json` for the table)
+weighs each against the EUD record it would replace — native Set Deaths, Set Switch, Set Resources, a masked Set
+Deaths, All Players' Set Deaths; native Deaths, Any unit, Switch, Accumulate, a masked Deaths; the walk over empty
+triggers and over done ones — and says on its first second what they do (the lifted game: `Native: men 1 wrap 1 sub
+1 any 1 ore 1 all 3 sum 2 mask 1 done 0` — All Players reached Players 1 and 2, the two in the game). The lifted
+game's counts: `primitives-short.scx` (PHASE 4) with `exact-eud.ts --cost`; played with
+`python profile.py StarCraft.exe prims1`, read with `profile_report.py <dir> <table> <cost> --short=4` (the walk's
+two mixes by their triggers a frame, which the cost's `triggers` has). To be played.
+
+**Played (2026-10-19), Remastered 1.23.10.13515, `profile.py … prims1`.** The `Native:` line is the lifted game's
+(`men 1 wrap 1 sub 1 any 1 ore 1 all 3 sum 2 mask 1 done 0`). Nanoseconds a record (`profile_report.py --short=4`):
+
+| Record | ns | Against |
+| --- | ---: | --- |
+| Set Deaths, EUD (eudplib's) | 7.8 | |
+| Set Deaths, Men / Buildings / Factories | 16.0 | twice the EUD one: the native path checks the game state |
+| Set Switch | 4.4 | |
+| **Set Resources** | **1.2** | a sixth of an EUD Set Deaths |
+| Set Deaths, masked | 11.0 | a mask costs a write about 40% |
+| Set Deaths of All Players | 35.4 | about 6 a dword written |
+| Deaths, EUD | 5.2 | |
+| Deaths, Men / Buildings / Factories | 3.6 | |
+| Switch | 3.5 | |
+| **Accumulate** | **0.85** | a sixth of an EUD Deaths |
+| Deaths, masked | 4.8 | a mask costs a condition nothing |
+
+The walk past a trigger whose "done" flag is set is about 43% of the walk past an empty one. So the native registers
+worth having are **resources**, not the death columns the reading pointed to: a counter kept as a player's ore or gas
+costs a sixth of an EUD cell to add to and to test. Only players not in the game can lend theirs (the top bar shows a
+player's own), and adds wrap where the game's subtract stops at 0 — the emitter's places add negations anyway.
+(`profile.py` stops itself now on this probe's magic too: it knew only the weights' before, and was stopped by hand.)
+
+### Value ranges and the backend, as built
+
 **As built: value ranges (2026-10-19).** `compiler/ranges.ts`, run after `numbers.ts`; IR 25 (`range` on a number).
 - The range of every number variable is the union of what is stored into it, and 0 (a cell before its first store);
   facts from tests (`if (i < n)`, a loop's own test) hold until the variable is stored into, and are dropped at a wait,
@@ -3006,9 +3075,116 @@ probe as a map), and the cost-by-line report gives a shared trigger's cost to it
 loops taken), played in Remastered 1.23.10.13515: its nine lines (A–I) are the lifted game's, number for number — the
 cells of a known list read through a condition's player field and the fixed products and quotients called straight
 from the graph included. The emitter is now on by default; `emitter: false` / `EMITTER=0` turns it off. The lowering
-bench builds with it off: a trigger of the emitter's may hold several lines' work and the count gives it to the first,
-so the bench's numbers by line are the Python side's. With both of today's branches the raycaster is 0.50 ms a frame
-(0.60 with the emitter off; 1.13 when this section began).
+bench built with it off at first (a trigger of the emitter's may hold several lines' work, and the count gave it to
+the first); since the next paragraph's per-action lines it builds with it on. With both of today's branches the
+raycaster is 0.50 ms a frame (0.60 with the emitter off; 1.13 when this section began).
+
+**The emitter owns more of the loop (2026-10-19, branch emitter-e4).** What was added, each checked by the fuzz test
+(4000 random loops, every kind below in them, the interpreter modelling each exactly), by `probes/game-emitter.ts` (a
+tenth section, J) and `probes/game-fdiv.ts` (two more groups) in the lifted game and the simulator, and by every
+`probes/game-*.ts` with the emitter on and off:
+
+- *Stores.* `a[i] = v` into an array the program writes (EUDVArray, 72-byte cells, at most 2048) is one trigger: a
+  guard on the index, and a Set Deaths whose destination is a place of the index (× 18 dwords plus the array) and whose
+  number a place of the value. A counter that indexes an array has its byte and dword offsets (the ones the Python side
+  keeps beside it) as places too, so a loop with `heights[col] = …` no longer leaves the counter to the Python side.
+- *Values computed once.* A shift by a constant, a fixed product or quotient, or a list's cell, that reads nothing the
+  loop writes, is computed ahead of the loop (352 of the fuzz's loops; the raycaster's per-column constants).
+- *Masks.* A comparison of `x & K` against a constant is a masked condition; an ordered signed one with the sign bit in
+  K is split in two by the sign.
+- *The reciprocal natively.* `c / x` with a constant c (part 3's `fdiv_by`) is the emitter's own: the shifts picked
+  per top bit of |x| from a tree of jumps, the loop's cells routed straight into the result's place; x's zero and
+  sign handled; a quotient past 31 bits goes on to the Python side's function as before.
+- *Integer `/` and `%` of two variables* on the Python side: a 31-step loop of the program's own cells (`udivmod_vars`,
+  both quotient and remainder sent out in one run), eudplib's `f_div` only for a dividend at 2^31 or more. Signs as
+  JavaScript's: the quotient towards zero, the remainder the dividend's sign.
+- *`switch`, loops the front end unrolled, booleans.* A switch is tests of its value and its bodies one after the
+  other (a break ends it, a continue is the loop's); a boolean is a cell of 1 or 0.
+- *Reads by a jump into the cell.* A cell of an array the program writes, or of a list too wide to read a bit at a
+  time (wider than 6 bits, fewer than 256 cells), at an index the loop computes: eudplib's getter pointed at a scratch
+  cell and back, then a trigger whose next pointer is a place of the index (× 72 plus the array's address). The jump
+  lands on the cell's trigger, which writes its value to the scratch cell and returns. This is eudplib's own way of
+  reading an EUDVArray, driven from the graph instead of through a call.
+- *Shifts and copies by value ranges.* A shift of a number value ranges know is never below zero tests only the bits
+  it can have; a variable a statement left to the Python side stores is copied into the emitter's places with its
+  multiples worked out over only its bits.
+- *Each action's line.* A trigger of the emitter's carries the line of each of its actions (the trigger map's fifth
+  column); the cost by line splits a trigger's time by its actions. So the bench builds as a build does, emitter on.
+
+Numbers, the lifted game's weights. The raycaster on its base map: 0.50 → 0.47 ms a frame (0.60 with the emitter off);
+its frame 112, 963 → 899 µs. Line 97's floors 43.6 → 14.4 µs; the faces store 25.4 → 1.0 µs. What is left of that
+frame is the fixed products (`fmul_vars`, about 230 µs) and the reciprocals (about 160 µs). Bullets 0.20, snake 0.07,
+tetris 0.33 ms: unchanged, their time is in statements the emitter leaves (a sleep or a return in the loop, unit loops)
+or in eudplib's library code. The bench (`probes/lowering-bench.ts`, its baseline saved again with the emitter on):
+all lines 93 387 ns off, 90 559 ns on; by line, with the emitter on: an array store 172 → 23 ns, a product by a
+constant 492 → 18, a shift left 421 → 10, a record field written 136 → 23, an empty loop 1 793 → 659, the reciprocal
+1 821 → 1 513. An integer quotient of two variables, 7 189 → 3 402 ns either way (the Python side's new loop).
+
+Set aside:
+
+- *`Math.sqrt` natively.* Each step compares two variables, which a condition cannot do; done as the reciprocal is,
+  about twice as fast at best, and no showpiece has it in a hot loop.
+- *The fixed product natively.* Built (the bits of `fmul_vars` as the emitter's triggers, its cell routed into the
+  result), exact on 751 fuzz loops and on game-fdiv's 384 pairs. The raycaster went 0.47 → 0.51 ms: making the
+  magnitudes and halves as the emitter's own variables costs more than the call it replaces. Taken out.
+- *Mask lines.* `k = (k + 1) & 15` is still 301 ns with the emitter on against 40 off: the mask is the Python
+  side's, and its result is copied back into the emitter's places.
+
+Nothing here needs a new trick in Remastered: a store is a Set Deaths whose destination another action wrote (what
+every routed read already is), and a read by a jump is eudplib's EUDVArray getter. Still, game-emitter with its J is
+built into the maps folder as `trigscript-emitter-2.scx`, its answer sheet beside it. **Played (2026-10-19):** its ten
+lines (A–J) in Remastered are the lifted game's, number for number — the stores and the reads by a jump included.
+
+### Our own layout and start-up
+
+The second step past eudplib: a map made with no eudplib and no Python, for a program the emitter lowers whole.
+
+**What eudplib does to start a map** (read in `~/.cache/eudplib-src`, `maprw/injector/`):
+- *Where the payload is.* Remastered keeps the string section at 0x191943C8, so eudplib appends its payload to the
+  strings (`STRx`) and relocates every pointer in it when the map is built (`payload_init.py`: `payload_offset` is
+  0x191943C8 plus the strings' length). Nothing is relocated in the game. (Its in-game relocator,
+  `payload_reloc.py`, is the other mode, not the default.)
+- *Stage 1, in TRIG.* A few of the game's own triggers per player: the current player (0x6509B0) set to the EPD of
+  the player's list's last node (0x51A284 + 12 × player), its 30 address bits read into a scratch death count, the
+  current player made the EPD of that node's next pointer, and that pointer set to the payload. A Set Deaths through
+  0x6509B0 is out of range, so the map is an EUD map when it loads. The map's own triggers are turned off for a while.
+- *Stage 3, in the payload* (`inj_finalizer.py`): the next pointer put back, the map's locations put back (eudplib
+  scrambles MRGN against copying), the map's triggers' flags flipped back on and inline code dispatched, then every
+  player's list re-linked to a runner of its own — first node in the payload, last node ending at the list's own end
+  `~(0x51A280 + 12 × player + 4)` — and the main loop run once a game tick (0x57F23C changed). eudTurbo sets the game's
+  wait between passes (0x6509A0) to 0 every pass, so triggers run every frame.
+
+**The minimum, as built** (`compiler/backend/layout.ts`, `scripts/build-own.mts`): stage 1 for the program's owner
+only (63 triggers, run once each); then the payload, at a fixed address after the strings:
+- `@wake` heads the owner's list on every pass: "the game's tick is at least W → go to R". W and R are fields of its
+  own condition and action. First W is 0 and R the start.
+- `@init`, once: the owner's list made the payload alone (first `@wake`, last `@stop`, as eudplib's runner is linked),
+  the current player set to the owner.
+- the program's graph (`emitBody`: the whole body the emitter's — a print of a known text is the game's Display Text;
+  a loop the front end unrolled is laid out a turn at a time; a variable's copy, which the Python side routes
+  elsewhere, is a trigger a bit adding into its places).
+- `sleep(frames(n))`: W set to the game's tick (0x57F23C, read a bit at a time) plus n, R to the statement after, and
+  the pass ends; there `@wake`'s next pointer is put back. The program's end sets W to a tick never reached.
+- `@stop`: 0x6509A0 set to 0 (eudTurbo's write), then the list's end.
+No relocation, no scrambling, no flags to flip (the map has no triggers of its own), no inline code.
+
+**Results** (`probes/own-loader.ts`: loops of numbers checking themselves, sleeps, a loop across frames):
+- The lifted game prints its eight lines at frames 2, 2, 6, 6, 10, 10, 15, 15 — the frames the same script built
+  through eudplib prints them at. Every access is one Remastered allows (`scripts/game-check.mts`: 72 distinct, 63 of
+  them the map's own memory, none ending the game, none never seen).
+- Built in **0.7 s** (compile 0.45 s, the emitter 0.01 s, the map 0.3 s) against 5.3 s through eudplib (in Node, its
+  Python native; the editor's build also loads Pyodide).
+- In the game: the start costs 0.004 ms against eudplib's 1.07 ms (its start-up, frame 2: 82 068 records); a frame
+  while the program runs 1.3 µs against 5.1; a frame once it has ended 2 records against 170 (eudplib's own work
+  every frame, about 4 µs).
+- **Played in Remastered (2026-10-19):** `trigscript-own-loader.scx` printed all eight lines, every one "ok" — the
+  first TrigScript map Remastered has run with no eudplib in it. Quitting was clean: the recording ends on the Single
+  Player menu, no error — the end of a game, when the owner's list still holds nodes outside the game's heap, is fine.
+- Not yet: anything the emitter leaves to the Python side (texts with values, units, arrays it does not read, calls,
+  tasks, per-player programs, `trigger()` records of the map's own), and the map's own triggers alongside (eudplib's
+  stage 3 keeps them; ours drops them). The probe map is `trigscript-own-loader.scx` in the Maps folder: played in
+  Remastered, it says whether the start-up holds there — and whether the end of a game does, the one moment where a
+  list holding nodes outside the game's heap could matter (eudplib's lists hold them too).
 
 ## Part C — the game, pushed
 

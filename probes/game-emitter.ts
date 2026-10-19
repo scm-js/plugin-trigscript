@@ -125,6 +125,35 @@ program(() => {
     if (Math.min(u32(i), big2) == u32(i)) q5 = q5 + 10;
   }
   displayText(`I: ${q1} ${q2} ${q3} ${q4} ${q5}`);
+  sleep(frames(1));
+
+  // J: stores into an array and reads of it at computed indexes (a jump into the cell), a list of wide values read at
+  // a sum, past either end too; a switch, falling through; booleans; a test of bits under a mask.
+  const cells: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
+  const WIDE = [100000, -7, 2147483647, -2147483648, 65537, 3, -1, 123456789];
+  let j1 = 0, j2 = 0, j3 = 0, j4 = 0;
+  let odd = false;
+  // (A while loop, its counter stepped by hand: a for loop's reads at its counter are the Python side's registers'. A
+  // read or a store past either end is guarded: the simulator calls it a fault.)
+  let i = 0;
+  while (i < ten) {
+    cells[(i * 3) & 7] = i * 1000 - 3;
+    if (i < 2) cells[i + 6] = i;
+    const at = (i + 5) & 7, wat = (i * 5) & 7;
+    j1 = j1 + cells[at] + WIDE[wat];
+    if (i >= 1 && i <= 8) j2 = j2 + WIDE[i - 1];
+    i++;
+    const turn = (i - 1) & 3;
+    switch (turn) {
+      case 0: j3 = j3 + 1;
+      case 1: j3 = j3 + 10; break;
+      case 2: j3 = j3 + 100; continue;
+      default: j3 = j3 + 1000;
+    }
+    odd = !odd;
+    if (odd && ((i - 1) & 6) != 0) j4 = j4 + i - 1;
+  }
+  displayText(`J: ${j1} ${j2} ${j3} ${j4} ${cells.join(",")}`);
 });
 
 const SHORT = [5, 3, 60, 2, 9, 1, 0, 4, 8, 11, 6, 13];
@@ -162,6 +191,10 @@ test("fixed products and quotients through the Python side's functions", (sim) =
 test("?:, abs, min and max", (sim) => {
   sim.frames(20);
   expect(sim).toHavePrinted("I: 635 79 32 7.1087 103");
+});
+test("arrays, wide lists, a switch, booleans, masks", (sim) => {
+  sim.frames(30);
+  expect(sim).toHavePrinted("J: 123739306 123622320 2263 8 7997,2997,5997,8997,3997,6997,1997,4997");
 });
 test("variables set from themselves and read by each other", (sim) => {
   sim.frames(12);
