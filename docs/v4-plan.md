@@ -3314,6 +3314,44 @@ Checked by the emitter's random programs with functions (a test of their own bes
 `probes/own-calls.ts`, built through eudplib and as a map of our own: the same lines at the same frames in the lifted
 game, then played in Remastered.
 
+**As built (2026-10-19, branch `calls`).** `compiler/backend/emit.ts`: `Scope.call` / `function` / `returned` (what
+is taken), `Emitter.call` / `ret` / `functions` (the layout), the rewriter's calls (`Rewriter.call`, `before`, `each`,
+and `&&` / `||` with a call in a later part as `if`s on a variable of the emitter's own); `emitBody` rewrites each
+function's body once, the first time a call reaches it (`bodyOf`), and a function's number kept as a value is a plain
+number there (`plainFns`: the dispatcher's call lays the function out). Calls in the eudplib build's loops are islands
+as before.
+- *The first measure was worse than eudplib's:* the frame of two hundred calls (`probes/own-calls.ts`, H) cost
+  0.63 ms as a map of our own against 0.17 through eudplib. Places multiplied across calls: `pick`'s result had a place
+  in every call's copy (14), each of those actions read the parameters (so `x` had 30 places), and the counter passed
+  as `x` had as many again — a call wrote about 145 records. And a copy in a map of our own was a trigger a bit.
+- *A called function's result in its cell alone* (`Emitter.results`): each call reads it from there, so a return
+  writes one or two actions and a parameter has the places of the body only.
+- *Copies routed in a map of our own* (`layout.ts`, `expandCopies`): a variable that is copied keeps its value in the
+  number of the one action of a trigger of its own (Set Deaths, add), 72 bytes apart and overlapped as eudplib's
+  EUDVariable is; a copy into a place sets the place to its constant, points that action at it and goes through, about
+  50 ns a place against half a microsecond a copy. A multiple other than 1 is still filled a bit at a time.
+- *A loop of reads broken once:* calls make one whenever what a function gives back reaches its own parameter
+  (`pick(a, pick(b, c))`, `i = next(i)`); the eudplib build's loops copy every variable of such a loop, a map of our own
+  copies the one whose writes are fewest (weighed by the loops around them) and looks at the rest again. Copies in
+  `own-calls`: 21 → 2.
+- *Numbers* (lifted game, Remastered's weights): the frame of two hundred calls 0.63 → 0.29 → **0.11 ms** (eudplib
+  0.17); `own-loader`'s payload 636 → 484 KB (its copies routed).
+- *Found on the way, both builds:* a loop's `a && b` test was split by `writtenIn`, which saw assignments and
+  declarations only, so a part that a boolean set from a test or a call in the loop changed was tested once on the way
+  in (`while (i < 10 && go) { i++; go = i < 5; }` ran ten turns); the split now uses everything the loop may write.
+  *The eudplib build:* `y = a + bump()` read `a` after `bump()` changed it — the Python side read a variable where the
+  arithmetic ran — so a value left of a call is copied first (`Lowering.nums`: binary operators, comparisons, min /
+  max, fixed functions). `probes/own-calls.ts` C was WRONG through eudplib before.
+- *Checked:* `tests/emitter.test.ts` — 3000 random programs with functions (calls as statements, in sums and
+  comparisons, in a later part of `&&` / `||`, as arguments of calls, in loops' tests; inlined calls; returns from
+  inside ifs and loops) run as written and as their graphs, every variable the same; about 430 of them laid out and run
+  from the payload's bytes as the game walks triggers (`runOwn`: the routed cells and their overlap included); the
+  loop split, which fails without the fix. `probes/own-calls.ts`: its nine lines the same at the same frames built
+  both ways, every one ok; game-check: 327 accesses, none ending the game. Every game probe with the emitter on.
+- *Not yet:* a function that calls itself (a stack of our own); calls inside the eudplib build's loops; the eudplib
+  build's loops breaking a loop of reads once (to be measured there: its copies are routed reads already); a call in
+  a `do` loop's test.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
