@@ -1926,6 +1926,111 @@ templates. None of the showpieces wants them, and each needs a runtime of its ow
 4. **Texts made in the game**: `String.fromCharCode`, `toFixed`, a number with thousands. Save codes (Part C) need the
    first.
 
+### What Remastered charges (cost step 1, 2026-10-18)
+
+A4 counts conditions and actions, and the dial put the budget at 500 thousand of them. But the dial's loop is the
+cheapest kind of work there is, and A4's count is a number of records, not a time. Before making the language
+cheaper, step 1 finds what each kind of record costs Remastered. Read in the Ghidra project (1.23.10.13515):
+
+- **Every Deaths and Set Deaths of an EUD map goes through the emulator**, even one in the real deaths table: the
+  handlers (+0x28AB30, +0x288240) take the emulator's way whenever the map is an EUD map (+0x105423C), with no fast
+  path. Inside (+0x2E1450, +0x2E18F0): a one-entry cache of the last region read (+0x80) and another of the last
+  written (+0x88), else a search of a tree (+0x2DA5A0), then the region's own read or write through its vtable.
+- **The tree holds about 12,300 regions**: every unit (336 bytes), sprite, image and bullet is a region of its own.
+  So a read of a field of another unit than the last always misses the cache, and so does a read of a payload
+  variable between two reads of a unit.
+- **A masked Set Deaths is a read and a write** (+0x2E7DB0); an unaligned one two of each (+0x2E7A20). A masked
+  Deaths condition costs only an AND.
+- **A trigger costs something of its own.** The walk (+0x41B350) finds each trigger through the caches or the tree
+  (+0x2E1940) and reads its next pointer through the emulator (+0x2E4540), and checks the game's state (+0x33D7C0,
+  five instructions) after each condition and action. A4 counts none of that: an empty trigger counts 0.
+- The game speed table (0x5124D8, backed by image+0xDCF050) and 0x51CE8C (image+0x1067BE8) are regions the emulator
+  reads and writes; whether the game paces its frames from that copy is a probe of its own, later.
+
+**The probe** (`probes/frame-weights.py`, hand-written eudplib, beside `probes/frame-weights.ts`): 13 mixes, each 8
+game seconds at 200 thousand and at 800 thousand records a frame, idle stretches between, 32 phases in all
+(`python3 probes/frame-weights.py` prints them). It writes its phase and frame as deaths of Player 12 (units
+220–222), which the profiler reads from the game's own deaths array. The mixes: the dial's loop as eudplib writes it;
+payload Set Deaths 64, 8 and 1 to a trigger; empty triggers; payload Deaths conditions; Set Deaths in the deaths
+table; alternating payload and deaths table (the write cache misses every time); masked Set Deaths; conditions on one
+unit's fields, on 256 different units, and alternating one unit with the payload; Set Switch.
+
+In the lifted game every mix lands on its design count (201,741 and 806,494 a frame; empty: 781 and 3,125 turns of
+256 triggers, 1,807 and 6,494 records, the loop's own). game-check: 0 accesses Remastered ends the game on, 0
+ignored, 0 never seen. One number from the count already: **eudplib's own loop is 13 records a turn; TrigScript's
+lowering of the same loop is 39** — the first thing the cheaper lowering should match.
+
+**The profiler** (scm-sim-reader `remastered/profile.py`, Windows Python, read-only, not shipped): every 50 ms each
+thread's CPU cycles (QueryThreadCycleTime) with the probe's marks, and ~1,000 stack samples a second of the busiest
+threads: the instruction pointer and the stack's words that point into StarCraft.exe. A return address of the walk
+among them says which of its calls the thread was under. `remastered/profile_report.py` takes the profile, the
+probe's table and the lifted count, and gives cycles a record for each mix (between its two amounts, and against
+idle), the trigger's own cost and an action's (from 64 to a trigger against 1), and where the samples were. Checked
+on a synthetic profile first.
+
+**Played 2026-10-18** (single player, Fastest; Ryzen 9 7900X, TSC 4.58 GHz; 266,178 samples). The game thread
+spends 5.4 ms of CPU a frame with no trigger work, the same in every idle phase from the first to the last. Every
+phase held 42 ms a frame; the most any took was 20.6 ms of CPU (act1 at 800 thousand). Cost a record, from the slope
+between the two amounts (against idle agrees within 3 cycles everywhere, so the cost is linear):
+
+| Mix | ns a record | What it says |
+| --- | ---: | --- |
+| switch64 | 3.2 | Set Switch: an action outside the emulator costs a third of a Set Deaths |
+| cond16 | 5.4 | a payload Deaths condition, 16 to a trigger |
+| empty | 9.0 a trigger | the walk alone, per trigger |
+| act64 / deaths64 | 9.8 | Set Deaths, cache held; the deaths table costs the same as the payload |
+| act8 | 10.0 | |
+| mask64 | 12.8 | a masked write: +3 ns |
+| unitSame | 13.1 | a unit field, the same unit: the unit region's read costs +8 ns over a plain one |
+| loop | 14.6 | eudplib's loop, 13 records (190 ns) a turn |
+| unitAlt | 16.5 | |
+| alt64 | 17.1 | Set Deaths changing region every time: +7 ns, a quarter of the samples in the tree search |
+| unitWalk | 17.5 | 256 different units: the tree search is a quarter of all samples |
+| act1 | 18.3 | Set Deaths, 1 to a trigger |
+
+From act1 against act64: **a trigger costs 8.6 ns of its own** (the empty triggers say 9.0), a Set Deaths 9.7 and a
+Deaths condition 4.8. So a trigger with one action costs nearly twice what its action does, and eudplib's code is
+mostly small triggers.
+
+What the budget is, in time: the dial's 500 thousand loop records are 7.3 ms, its flicker at a million 14.6 ms, and
+its slowdown between 2 and 5 million: with 5.4 ms of the game's own, 42 ms runs out at about 36 ms of trigger work
+(2.5 million loop records), which fits. The flicker most likely comes from a drawn frame (16.7 ms at 60 Hz) missed
+while a trigger pass holds the thread, so the smooth budget is about 7–11 ms of trigger work a frame on this
+computer, and the hard one about 36 ms. A record count can't say either: 500 thousand records are 2.7 ms of
+conditions or 9 ms of one-action triggers.
+
+Asked afterwards, the player saw no flicker in any phase, the costliest 15 ms of trigger work (act1 at 800 thousand).
+So the smooth budget on that computer is at least 15 ms; the dial's flicker at a million is not explained by its time
+alone (TrigScript's loop records may cost more than eudplib's; not measured).
+
+**As built: the weights in A4.**
+- scm-sim's tap (`src/exact/cost.ts`) counts triggers. The lifted walk stores the trigger it stands at in 0x6509AC
+  before running it, so each record says its trigger; a record whose slot is not past the last one's starts a new
+  visit (a loop through one trigger). The triggers the walk passed without running anything (eudplib's jumps are
+  empty triggers) are found by following next pointers from the trigger before, up to 4,096, and counted only when
+  the chain reaches the record's trigger. Triggers before a frame's first record and after its last are not seen.
+  On the probe every phase's count matches its design (the empty mix 201,815 a frame against ~201,700).
+- The tap takes a `weigh` (`CostWeigh`: `trigger`, `record`, `reset`) and adds its nanoseconds by frame and by group
+  beside the counts, with each group's costliest frame.
+- TrigScript's `compiler/remasteredCost.ts`: `WEIGHTS` (the table above, as a model: trigger 8.6, Deaths condition
+  4.8, Set Deaths 9.7, masked +3.0, a unit's field +7.5, a search +7.3, from one unit to the next +4.7, other actions
+  3.1, other conditions counted as Deaths), `RegionMap` over `data/remastered-regions.json` (made from the dump by
+  scm-sim-reader `remastered/regions.py`: 6 pools, units 1,700 × 336 among them, and 729 regions), and
+  `RemasteredWeigh`, which keeps the two caches as the emulator does: a Deaths record's address (Current Player
+  resolved, masks read), a trigger found through either cache, its next pointer read through the read cache before
+  the next trigger.
+- **Checked against the played run** (`scripts/weigh-map.mts` on the probe built with 4-frame phases): at 800
+  thousand every mix is within 1.5–7.5% of what Remastered took; eudplib's loop, which no weight was fitted to,
+  4% low. The model reads 0.2–0.5 ms low whenever there is work at all, an offset rather than a share.
+- `gameTests.ts` sets a `RemasteredWeigh` on the host's tap where it has `weigh`; `CostLines.read` gives
+  `TestCost.ms` (the script's milliseconds a frame, the rest apart, the peak) and `LineCost.ms`, lines in order of
+  milliseconds. A host from before this change counts only, and everything shows counts as before.
+- The editor: a line's hint is "2.7 ms a frame" from 0.3 ms (2% of 15 ms); the cost row says milliseconds on
+  average and at the most as a share of the 15 ms, with the counts in its title; the graph is in milliseconds.
+  `scripts/test-game.mts` prints the same. On Snake: the first frame's 440 thousand records are 6.5 ms, 1.4 ms a
+  frame on average.
+- Not yet in the editor's game: it runs scm-sim through plugin-scm-sim, which needs a build with the new tap.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

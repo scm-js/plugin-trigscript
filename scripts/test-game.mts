@@ -28,6 +28,8 @@ import type { GameTestReport } from "../compiler/gameTests";
 import type { TestReport, TestWorld } from "../compiler/testing";
 import { defaultLib } from "../bundle/lib.mjs";
 import { scriptFiles } from "./script-files.mts";
+import { shortMs } from "../compiler/gameCost";
+import { MOST_MS, SMOOTH_MS } from "../compiler/remasteredCost";
 
 const root = resolve(import.meta.dirname, "..");
 const args = process.argv.slice(2);
@@ -113,7 +115,12 @@ try {
     if (r.cost && process.env.COST !== "0") {
       const ran = r.cost.perFrame.filter((n) => n > 0), avg = ran.length ? Math.round(ran.reduce((a, b) => a + b, 0) / ran.length) : 0;
       console.log(`    cost: ${avg} conditions and actions a frame on average, ${r.cost.peak} at the most (frame ${r.cost.peakFrame})`);
-      for (const l of r.cost.lines.slice(0, Number(process.env.COST_LINES ?? 3))) console.log(`      ${l.file}:${l.line}: ${l.peak} at the most (frame ${l.peakFrame}), ran in ${l.frames} frames`);
+      const ms = r.cost.ms;
+      if (ms) {
+        const ranMs = ms.perFrame.filter((x) => x > 0);
+        console.log(`    in Remastered's time: ${shortMs(ranMs.reduce((a, b) => a + b, 0) / Math.max(1, ranMs.length))} ms a frame on average, ${shortMs(ms.peak)} ms at the most (frame ${ms.peakFrame}) of the ~${SMOOTH_MS} ms smooth / ${Math.round(MOST_MS)} ms before it slows on a fast computer`);
+      }
+      for (const l of r.cost.lines.slice(0, Number(process.env.COST_LINES ?? 3))) console.log(`      ${l.file}:${l.line}: ${l.ms ? `${shortMs(l.ms.peak)} ms, ` : ""}${l.peak} records at the most (frame ${l.ms?.peakFrame ?? l.peakFrame}), ran in ${l.frames} frames`);
       if (process.env.COST_FRAMES) console.log(`      frames from ${r.cost.from}: ${r.cost.perFrame.join(" ")}\n      other: ${r.cost.other.join(" ")}`);
     }
   }
@@ -146,7 +153,7 @@ try {
         const mark = (st: string | undefined) => (st === "passed" ? "✓" : st === "failed" ? "✗" : st === "skipped" ? "–" : "?");
         if (r.status === "failed") failed++;
         console.log(`${mark(r.status)} game ×${g.players.length}  ${mark(s?.status)} simulator  ${r.id.replace(/^.*?::/, "")}  (${r.frames} frames, ${r.ms} ms)`);
-        if (r.cost && process.env.COST !== "0") console.log(`    cost: ${r.cost.peak} conditions and actions at the most in a frame (frame ${r.cost.peakFrame})`);
+        if (r.cost && process.env.COST !== "0") console.log(`    cost: ${r.cost.peak} conditions and actions at the most in a frame (frame ${r.cost.peakFrame})${r.cost.ms ? `, ${shortMs(r.cost.ms.peak)} ms` : ""}`);
         if (r.status === "failed") console.log(`    in the game: ${r.message}${r.at ? ` — line ${r.at.line}` : ""}`);
         if (s?.status === "failed") console.log(`    in the simulator: ${s.message}${s.at ? ` — line ${s.at.line}` : ""}`);
         if (s && s.status !== r.status) console.log("    the two disagree: one of them is wrong");

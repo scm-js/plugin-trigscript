@@ -12,6 +12,7 @@ import { MODULE_NAME } from "./api";
 import { GameSim, readLocations, type GameHandle } from "./gameSim";
 import type { TriggerMap, VariableMap } from "./gameVariables";
 import { CostLines } from "./gameCost";
+import { RemasteredWeigh } from "./remasteredCost";
 import { EudTracer, type EudTraceHost, type EudTraceRow } from "./eudError";
 import { RecordingHandle, type DebugHost, type DebugLimits, type DebugRecording } from "./gameDebug";
 import { here, locate, runModules, type LinkedFile } from "./link";
@@ -63,6 +64,8 @@ export function runGameTests(game: GameHandle, payload: GameTestPayload): GameTe
   // (What a frame costs, where the host counts it and knows where the payload is.)
   const costLines = payload.triggers && game.cost && game.payloadEnd ? new CostLines(payload.triggers, game.payloadEnd) : null;
   if (costLines && game.cost) game.cost.group = costLines.group;
+  // (… and in time, where the host's tap can weigh: what Remastered spends on each trigger and record.)
+  if (costLines && game.cost && "weigh" in game.cost) game.cost.weigh = new RemasteredWeigh(game.m);
   const host = game as GameHandle & EudTraceHost;
   const traceError = !payload.trace ? undefined : !costLines ? "the build said nothing of where its triggers are" : !EudTracer.can(host) ? "the engine's page is from before EUD traces" : undefined;
   const tracer = payload.trace && !traceError ? new EudTracer(host, costLines) : null;
@@ -122,6 +125,8 @@ export function debugGameTest<K, P>(game: DebugHost<K, P>, payload: GameDebugPay
   const locations = payload.locations ?? readLocations(game);
   const costLines = payload.triggers && game.cost && game.payloadEnd ? new CostLines(payload.triggers, game.payloadEnd) : null;
   if (costLines && game.cost) game.cost.group = costLines.group;
+  // (… and in time, where the host's tap can weigh: what Remastered spends on each trigger and record.)
+  if (costLines && game.cost && "weigh" in game.cost) game.cost.weigh = new RemasteredWeigh(game.m);
   // (The test's line from inside a step: the stack's innermost line of a file of the script.)
   const recorder = new RecordingHandle<K, P>(game, () => here(linked), payload.limits);
   const report = runTests(registry, { triggers: [], sources: [], ir: [], strings: [], locate: where }, { ids: [info.id], makeWorld: (_as, test) => new GameSim(recorder, { locations, variables: payload.variables, test, costLines }) });
