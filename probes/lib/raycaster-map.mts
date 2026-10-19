@@ -1,12 +1,13 @@
-// The raycaster's base map (TrigScript 4, S5): 128 × 128, the top 96 rows the board — Badlands tile 23778, white lit,
-// grey in fog, black never seen, the widest apart of every tile's minimap colours (S4's survey) — and the 32 rows below
+// The raycaster's base map (TrigScript 4, S5): 128 × 128, the top 96 rows the board — one tile, chosen below for how
+// far apart lit and fog look on the minimap — and the 32 rows below
 // the start locations and the parked camera, whose box the minimap draws over what is under it. As bad-apple-map.mts,
 // without a song. Other fog probes take it too, with a name and description of their own (MAP_NAME, MAP_DESCRIPTION).
-// BOARD=snow lays Ice's plain snow (tile 66) instead: Remastered's minimap draws a tile as its art's average and fog as
-// 0.64 of lit (the tile survey, 2026-10-19), so the brightest art is the board there — snow, lit 130 against fog 82,
-// where 23778 is 86 against 57. Badlands 23778 stays the board for Classic graphics, whose minimap is sharper.
+// The board is Ice's plain snow (tile 66): Remastered's minimap draws a tile as its art's average and fog as 0.64 of
+// lit (the tile survey, 2026-10-19), so the brightest art is the board there — snow, lit 130 against fog 82, where
+// Badlands 23778 is 86 against 57 and textured. Played, snow was the better (2026-10-19). BOARD=badlands lays 23778,
+// the widest apart in Classic graphics, whose minimap is sharper.
 //
-//   [BOARD=snow] npx tsx probes/lib/raycaster-map.mts <out.scx>
+//   [BOARD=badlands] npx tsx probes/lib/raycaster-map.mts <out.scx>
 //
 // Needs a scm-js checkout beside this one with its tileset data (npm run extract).
 import { writeFileSync } from "node:fs";
@@ -23,7 +24,7 @@ const { baseTerrain, flatTerrain } = await import(join(E, "src/formats/tileset/t
 
 const [out] = process.argv.slice(2);
 if (!out) { console.error("usage: raycaster-map.mts <out.scx>"); process.exit(2); }
-const SNOW = process.env.BOARD === "snow";
+const SNOW = process.env.BOARD !== "badlands";
 const ERA = SNOW ? 6 : 0, TILE = SNOW ? 66 : 23778, W = 128, H = 128;
 const part = (ext: string) => new Uint8Array(readFileSync(join(E, "public/tileset", `${TILESET_FILENAMES[ERA]}.${ext}`)));
 const ts = loadTileset({ cv5: part("cv5"), vf4: part("vf4"), vr4: part("vr4"), vx4: part("vx4"), wpe: part("wpe") });
@@ -39,7 +40,7 @@ for (let y = 112; y < H; y++) for (let x = 104; x < W; x++) tiles[y * W + x] = g
 const scn = createScenario({
   width: W, height: H, era: ERA, tiles, isom: flat.isom,
   name: process.env.MAP_NAME ?? "TrigScript raycaster",
-  description: process.env.MAP_DESCRIPTION ?? "A 3D maze drawn on the minimap with fog of war. Switch to Classic graphics (Options > Graphics) for a sharp minimap. W A S D to walk. Host as multiplayer, alone.",
+  description: process.env.MAP_DESCRIPTION ?? "A 3D maze drawn on the minimap with fog of war. W A S D to walk. Host as multiplayer, alone.",
 });
 scn.playerTypes = scn.playerTypes.map((t: number, i: number) => (i === 0 ? 6 : i === 1 ? 5 : i < 8 ? 0 : t));
 scn.editorPlayerTypes = [...scn.playerTypes];

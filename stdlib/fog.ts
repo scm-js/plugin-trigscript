@@ -19,8 +19,13 @@
  * lit; to draw dark shapes, light around them (a picture with `{ ink: "dark" }`). Dark is also the sharper ink: a lit
  * part is at least a brush wide (3 tiles across, 4 down), while a dark line one tile wide stays exactly that. Nothing
  * else needs doing — the library writes the game's vision countdown after every frame (memory.vision.countdown), so
- * the next frame starts from a wiped board. Watch it on the minimap with Classic graphics (Options > Graphics): a tile
+ * the next frame starts from a wiped board. Watch it on the minimap. With Classic graphics (Options > Graphics) a tile
  * of the map is a pixel there, sharp; Remastered graphics blurs it a few tiles wide.
+ *
+ * What the board is made of decides how far apart lit and fog look. Remastered draws a tile on the minimap as the
+ * average of its art and fog as 0.64 of lit, whatever the tile, so the brightest art is the best board there: plain
+ * Ice snow (lit 130 against fog 82, measured 2026-10-19). Classic draws a tile as one colour of its own; Badlands
+ * tile 23778 is the widest apart there, and dim and textured in Remastered. Snow played the better of the two.
  *
  * How it draws, played in StarCraft: Remastered (2026-10-17): a brush is a unit made on a tile and taken away in the
  * same trigger pass; the tiles its sight revealed stay lit through the frame. A brush's size is the unit's sight
