@@ -2635,6 +2635,50 @@ Not on the list: anything that runs outside the trigger walk, and threads (the g
   table, had it right, so the two disagreed). Fixed in the lowering: `centerLocation()`, `unit.locate()`, `unit.give()`
   and the actions Create Unit (with Properties), Move Unit and Give Units are followed by a Command (`forget_counts`).
 
+### What Remastered offers past eudplib
+
+Read in Ghidra (1.23.10.13515, 2026-10-19): the condition and action tables (+0xDAFB50, +0xDAF970), every handler,
+the walk (+0x41B350) and the emulator's entry points. What eudplib does not use, by what it would give the backend:
+1. **Registers the game keeps natively.** Set Deaths (+0x285410 → set +0x288240, add +0x2868F0, subtract +0x288E30)
+   and the Deaths condition (+0x28A2C0 → +0x28AB30) take three unit columns apart *before* the EUD emulator: 230, 231
+   and 232 (Men, Buildings, Factories) of Players 1–8 are tables in the game state (+0x2D84, +0x2ED4, +0x2FF4),
+   written and read with no region found, no virtual call — 24 dwords. 229 (Any unit) reads Men plus Buildings: a
+   sum in one condition; it is never written. Set Switch / Switch (+0x285600 / +0x28A1A0: bit operations on +0xEB50,
+   256 bits) and Set Resources / Accumulate (+0x2859F0 / +0x289D50: ore and gas of Players 1–8, an add wrapping;
+   "ore and gas" reads their sum) are native too. Everything else in an EUD map, the deaths table included, goes
+   through the emulator (+0x2E18F0, +0x2E1450). For the emitter: a home (a dword conditions read as memory) can be
+   one of these — a loop counter's add and its test both native. Not a place an action reads its number from (those
+   are fields of our own triggers). Caveats: a player's Men, Buildings and Factories count their units' deaths — use
+   a player that owns none (Player 8 in the probe); resources show in that player's own top bar; switches are the
+   map's. The weights probe put Set Switch at 3.2 ns against Set Deaths' 9.7: the primitives probe weighs the rest.
+2. **The walk passes a trigger marked done without looking at it.** A trigger whose flags (2376 bytes in) have bit 3
+   set is skipped before its conditions (the flag a trigger without Preserve gets after it ran); bit 0 (conditions
+   already held) makes it run its actions without testing them. A branch the emitter knows to be dead, or a block
+   switched off and on by writing one dword, costs the walk alone.
+3. **A mask costs nothing.** A masked Deaths / Set Deaths ("SC" at bytes 18–19 of the condition, 30–31 of the
+   action, the mask where the location is) is the emulator's same path and an AND (+0x2E1890 sets it up per action).
+   eudplib uses it already; the backend can test or set any bits of any dword in one record.
+4. **A player group is a loop in one record.** All Players (17) runs the handler for each player in the game among
+   1–8 and then always for 9–12 (+0x28A680); a force (18–21) for its members; Allies, Foes, Neutral Players (22–25)
+   do nothing here. One Set Deaths writes each of them (consecutive dwords, 4 bytes apart); one Deaths condition
+   compares their *sum*. Which players are in the game is the game's, so only 9–12 are certain: a write of four
+   dwords in one action, a sum of four in one condition. Current Player (13) is the game's own variable
+   (+0x10B0D34), eudplib's address register.
+5. **What is not there.** No action copies a dword from one address to another, or writes more than one value: every
+   way a value moves is eudplib's (a cell routed) or the emitter's (written where it is used). The emulator's
+   subtract stops at 0 (+0x2E7A20), the native adds wrap. An unaligned write is two reads and two writes; an EPD's
+   never is. The walk finds every trigger's region by address (+0x2E1940, a cache, then a tree): a program whose
+   triggers sit in one region (the payload) stays in the cache.
+
+`probes/primitives.py` (eudplib, the weights probe's schedule; `python3 probes/primitives.py --json` for the table)
+weighs each against the EUD record it would replace — native Set Deaths, Set Switch, Set Resources, a masked Set
+Deaths, All Players' Set Deaths; native Deaths, Any unit, Switch, Accumulate, a masked Deaths; the walk over empty
+triggers and over done ones — and says on its first second what they do (the lifted game: `Native: men 1 wrap 1 sub
+1 any 1 ore 1 all 3 sum 2 mask 1 done 0` — All Players reached Players 1 and 2, the two in the game). The lifted
+game's counts: `primitives-short.scx` (PHASE 4) with `exact-eud.ts --cost`; played with
+`python profile.py StarCraft.exe prims1`, read with `profile_report.py <dir> <table> <cost> --short=4` (the walk's
+two mixes by their triggers a frame, which the cost's `triggers` has). To be played.
+
 **As built: value ranges (2026-10-19).** `compiler/ranges.ts`, run after `numbers.ts`; IR 25 (`range` on a number).
 - The range of every number variable is the union of what is stored into it, and 0 (a cell before its first store);
   facts from tests (`if (i < n)`, a loop's own test) hold until the variable is stored into, and are dropped at a wait,
