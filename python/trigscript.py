@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 25
+IR_VERSION = 26
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -4557,8 +4557,83 @@ class Lowering:
             self.uncaught(st)
         elif k == "remark":
             pass
+        elif k == "graph":
+            self.graph(st)
         else:
             raise Fail("trigscript: unknown statement %r%s" % (k, where(st)))
+
+    # ── the emitter's graphs (compiler/backend/graph.ts) ──
+    GRAPH_COMPARE = {"atLeast": AtLeast, "atMost": AtMost, "exactly": Exactly}
+    GRAPH_MODIFIER = {"set": SetTo, "add": Add, "subtract": Subtract}
+
+    def graph(self, st):
+        """A loop the emitter lowered (TrigScript 4, the backend: the emitter): its triggers made as they are, where the
+        loop was. A dword of the graph is a game address, a variable's cell, a dword of the graph's own data (one in the
+        map for each name), or a field of one of its triggers; the copies into it on the way in are routed reads of the
+        variables, as any read is. A statement lowered twice (a `finally` copied to each way out) makes it twice."""
+        g = st["graph"]
+        if not hasattr(self, "graph_data"):
+            self.graph_data = {}
+        labels = {t["label"]: Forward() for t in g["triggers"]}
+        end = Forward()
+        labels["@end"] = end
+
+        def addr(d):
+            if "game" in d:
+                return d["game"]
+            if "var" in d:
+                return self.var(d["var"], st).get().getValueAddr()
+            if "data" in d:
+                if d["data"] not in self.graph_data:
+                    self.graph_data[d["data"]] = Db(4)
+                return self.graph_data[d["data"]]
+            base, f = labels[d["at"]], d["field"]
+            if f == "next":
+                return base + 4
+            if "cond" in f:
+                return base + COND_VALUE + 20 * f["cond"]
+            return base + ACT_DEST - 16 + 32 * f["act"] + {"value": 20, "dest": 16, "modifier": 24}[f["part"]]
+
+        def value(v):
+            return labels[v["label"]] if isinstance(v, dict) else v
+
+        def copy(id_, into):
+            """The variable's cell into each dword (times its `scale`, plus its `add`): routed reads, a multiple worked
+            out once for all the dwords that take it."""
+            v = self.var(id_, st).get()
+            times = {1: v}
+            for e in into:
+                k = int(e.get("scale", 1)) & U32
+                if k not in times:
+                    times[k] = fresh(0 - v) if k == U32 else fresh(v * k)
+            for i in range(0, len(into), 16):
+                group = []
+                for e in into[i:i + 16]:
+                    d = EPD(addr(e["into"] if "into" in e else e["dword"]))
+                    group.append((d, SetTo, times[int(e.get("scale", 1)) & U32]))
+                    if e["add"]:
+                        group.append((d, Add, e["add"]))
+                SeqCompute(group)
+
+        entries = {}
+        for e in g["entries"]:
+            entries.setdefault(e["from"], []).append(e)
+        for id_, es in entries.items():
+            copy(id_, es)
+        for t in g["triggers"]:
+            if "copy" in t:
+                # (In place of a trigger: the walk goes on to the one made after it.)
+                labels[t["label"]] << NextTrigger()
+                if t["copy"]["into"]:
+                    copy(t["copy"]["from"], t["copy"]["into"])
+                continue
+            conds = [MemoryX(addr(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"], c["mask"]) if "mask" in c else Memory(addr(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"]) for c in t["conds"]]
+            acts = [SetMemoryX(addr(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"]), a["mask"]) if "mask" in a else SetMemory(addr(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"])) for a in t["acts"]]
+            if "next" in t:
+                labels[t["label"]] << RawTrigger(nextptr=labels[t["next"]], conditions=conds, actions=acts)
+            else:
+                labels[t["label"]] << RawTrigger(conditions=conds, actions=acts)
+        end << NextTrigger()
 
     def try_(self, st, ctx):
         """The body with its catch as the place a throw goes to; the catch after it, reached only that way."""

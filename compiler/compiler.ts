@@ -28,6 +28,7 @@ import { checkProgram } from "./eud";
 import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
 import { rangeNumbers } from "./ranges";
+import { emitGraphs } from "./backend/emit";
 import { markRecursion, settleRecursion } from "./recursion";
 import { inputPlan, inputsOf, numberSyncSlots, type InputPlan } from "./input";
 import { declarations, programDeclarations, type Program } from "./ir";
@@ -176,6 +177,10 @@ export interface CompileOptions {
   tests?: TestRunOptions;
   /** false: no value ranges (`ranges.ts`) — what a test compares a program with them against. */
   ranges?: boolean;
+  /** true: the loops the emitter can lower are lowered by it (`backend/emit.ts`) — while it is being proved. */
+  emitter?: boolean;
+  /** Told which loops the emitter took and which it left, and why. */
+  emitterReport?: (line: string) => void;
 }
 
 export { LowerError };
@@ -510,6 +515,8 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const local = checkLocal(emitted.program);
     // Checked as the script wrote it; only then is a function that calls itself taken apart into what a backend can re-enter.
     const recursion = settleRecursion(emitted.program);
+    // The loops the emitter takes, lowered to triggers of its own (the statements kept for the simulator).
+    if (options.emitter) emitGraphs(emitted.program, options.emitterReport);
     for (const d of [...mixes, ...check.errors, ...local.errors, ...recursion]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });

@@ -2703,6 +2703,34 @@ The order, each measured on the bench and the showpieces, each held by every gam
 4. The layout and the loader of our own (the payload, its relocation, the start), proved on the lifted game and the
    allowlist; then units, text and the input plugins; then the Python side goes, and Pyodide with it.
 
+**As built: E1 and the start of E2 (2026-10-19).** `compiler/backend/graph.ts` (the triggers), `compiler/backend/emit.ts`
+(the emitter), `Lowering.graph` in `python/trigscript.py` (the materializer), IR 26 (`graph`, `original`), on with
+`CompileOptions.emitter` / `EMITTER=1` (`EMITTER_REPORT=1` says which loops it took and why it left the others).
+- *Taken:* a `while`, `for` or `do` whose every statement is a number declared, set or added to from constants and
+  variables (`+`, `-`, negation), `if` / `else` on comparisons (`and`, `or`, `!`, a number tested), `break`,
+  `continue`, loops inside — of variables that are plain cells (not a per-player program's, not a task's, no `u8` /
+  `u16`). A loop the front end unrolled (a known count) never reaches it; neither does anything with an element,
+  a call, a product.
+- *Places, signed:* a place holds the variable or its negation, plus a constant: the game's subtract stops at 0, so a
+  variable is taken away by adding its negation, and every write is sets and adds. Comparisons read a home holding the
+  variable plus 2^31 when signed (an unsigned comparison then), `x < y` of two variables reads y less one with a
+  second condition keeping y off 0; a `u32` against a signed number is two comparisons (`plain`).
+- *Copied variables:* a variable set from itself other than by adding (`x = y - x`), and the variables of a loop of
+  reads (`x` from `y`, `y` from `x`: Fibonacci, a swap) would need places without end; their writes go to their
+  cells alone and a copy (`Copy`, a routed read per place, as eudplib's) follows each write.
+- *Layout:* a branch sets its own next pointer and the trigger it goes to puts it back; a loop's test is the way out,
+  which fails on every turn but the last; every fall-through is said, so an empty trigger is dropped.
+- *Checked:* `tests/emitter.test.ts` — 4000 random loops (nested, `break` / `continue` under random conditions,
+  signed, unsigned and mixed comparisons at the edges, variables set from themselves and from each other) run as
+  written and as their graphs by a small interpreter of the triggers: every variable the same. `probes/game-emitter.ts`
+  in the lifted game against the simulator (which runs `original`).
+- *Scaled places:* a place holds any constant times the variable plus a constant, so a product by a constant and a
+  shift left by one are as linear as a sum: `g = g * 3 + 1` with g in four places is four sets of its multiples.
+- *Tested once:* the part of a loop's test that reads nothing the loop writes is tested on the way in (a `u32`
+  counter against a signed bound: the bound's sign).
+- *Measured:* the bench's `for (let i = 0; i < m; i++) { }` of 16 turns 1793 → **659 ns** (874 before the test was
+  split): a turn is one failed test and the counter's add, about 32 ns. Every game probe passes with the emitter on.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

@@ -799,6 +799,13 @@ interpreter agree on every case:
   which always wins — and may ignore it. The same pass reads a comparison whose sides are
   never below zero as `unsigned`, and turns one whose ranges settle it (wherever it is met,
   its sides doing nothing but give a value) into a constant: the program means what it did.
+- **Graphs** (version 26). With the emitter on (`CompileOptions.emitter`), a loop may arrive as
+  `{ kind: "graph", graph, original }`: `compiler/backend/emit.ts` lowered it to triggers of its
+  own (`compiler/backend/graph.ts`), which a backend makes as they are, where the statement was —
+  its conditions and actions on dwords of the game, the program's variables' cells, data of the
+  graph's own and the fields of its own triggers, its copies of variables on the way in. `original`
+  is the loop, for what does not make triggers: the simulator runs it, and a walk over the
+  statements finds the declarations in it.
 
 ## Records
 
