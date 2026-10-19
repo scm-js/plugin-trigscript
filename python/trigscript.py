@@ -149,6 +149,59 @@ class Leave(Exception):
     """Raised through the lowering when a statement ends the straight line (break / continue / return)."""
 
 
+# Cells read at an index the game works out (an array, a row of a per-player program or of a task) are an EUDVArray
+# where they fit: a cell is a variable of its own, 72 bytes, which a read jumps to and which writes itself out — a
+# read at a variable index is a jump by the index's bits (4 triggers for 16 cells) where an EUDArray reads the dword
+# a bit at a time (45 triggers), and one at a constant index two triggers where an EUDArray takes as many. Past
+# VARRAY_MOST cells an array stays an EUDArray, 4 bytes a cell (a long table, a video's brushes).
+VARRAY_MOST = 2048
+VARRAY_STRIDE, VARRAY_VALUE = 72, 348  # a cell's size, and where its value is in it
+_VARRAYS = {}  # id → the EUDVArray, for the map of variables (which says a cell's place by stride)
+
+
+def cell_array(values):
+    """`values` as cells: an EUDVArray up to VARRAY_MOST of them, else an EUDArray."""
+    values = list(values)
+    if len(values) > VARRAY_MOST:
+        return EUDArray(values)
+    v = EUDVArray(len(values))(values)
+    _VARRAYS[id(v)] = v
+    return v
+
+
+def is_varray(store):
+    return id(store) in _VARRAYS
+
+
+def cell_write(store, index, value, modifier):
+    """`store[index]` set to (`SetTo`) or added to (`Add`) `value`, the store an EUDArray or one of cell_array's
+    EUDVArrays. Into an EUDVArray at a variable index: a Set Deaths whose destination, the cell's value at
+    EPD + 87 + 18 i, is worked out by one trigger an index bit, as eudplib's own get does (eudplib 0.81's EUDVArray
+    has no add, and its set is a third dearer)."""
+    if not is_varray(store):
+        if modifier == Add:
+            store.iadditem(index, value)
+        else:
+            store[index] = value
+        return
+    if isinstance(index, int):
+        if modifier == SetTo:
+            store[index] = value  # (eudplib's own: a variable's value writes itself into the cell)
+        else:
+            Trigger(actions=SetMemoryEPD(store._epd + VARRAY_VALUE // 4 + VARRAY_STRIDE // 4 * index, modifier, value))
+        return
+    act = Forward()
+    start = [SetMemory(act + 16, SetTo, store._epd + VARRAY_VALUE // 4)]
+    if isinstance(unProxy(value), EUDVariable):
+        VProc(value, start + list(value.QueueAssignTo(EPD(act) + 5)))
+        value = 0
+    else:
+        RawTrigger(actions=start)
+    for b in reversed(range(max((store._size - 1).bit_length(), 1))):
+        RawTrigger(conditions=index.AtLeastX(1, 1 << b), actions=SetMemory(act + 16, Add, VARRAY_STRIDE // 4 << b))
+    RawTrigger(actions=[act << SetMemoryEPD(0, modifier, value)])
+
+
 class Rows:
     """Which of a cell's copies is the one in use: a per-player program has one a player, a task's body one a slot of its
     start (`Pool`), and a task's in a per-player program one a slot within each player's. Called, it is the index."""
@@ -168,14 +221,14 @@ class RowCell:
 
     def __init__(self, rows, initial=0):
         self.rows = rows
-        self.store = EUDArray([initial] * rows.count) if rows else EUDVariable(initial)  # initial: the lowering's own state
+        self.store = cell_array([initial] * rows.count) if rows else EUDVariable(initial)  # initial: the lowering's own state
 
     def get(self):
         return self.store[self.rows()] if self.rows else self.store
 
     def set(self, value):
         if self.rows:
-            self.store[self.rows()] = value
+            cell_write(self.store, self.rows(), value, SetTo)
         else:
             self.store << value
 
@@ -188,7 +241,7 @@ class Storage:
         self.bits = decl.get("bits")
         self.rowed = rows is not None
         self.player_of = rows
-        self.store = EUDArray([0] * rows.count) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
+        self.store = cell_array([0] * rows.count) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
 
     def get(self):
         return self.store[self.player_of()] if self.rowed else self.store
@@ -197,7 +250,7 @@ class Storage:
         if self.bits:
             value = saturate(value, self.bits)
         if self.rowed:
-            self.store[self.player_of()] = value
+            cell_write(self.store, self.player_of(), value, SetTo)
         else:
             self.store << value
 
@@ -210,7 +263,7 @@ class Storage:
         if self.rowed:
             if op == "-" and not isinstance(value, int):
                 return False
-            self.store.iadditem(self.player_of(), value if op == "+" else (-value) & U32)
+            cell_write(self.store, self.player_of(), value if op == "+" else (-value) & U32, Add)
             return True
         if op == "+":
             self.store += value
@@ -257,7 +310,7 @@ class ArrayStorage:
             self.values = [int.from_bytes(raw[i:i + 4], "little") for i in range(0, len(raw), 4)]
             self.store = EUDArray(_from=EPD(Db(raw)))
         else:
-            self.store = EUDArray([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (rows.count if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
+            self.store = cell_array([int(v) & U32 for v in values] if values is not None else [0] * (self.length * (rows.count if self.rowed else 1)))  # initial: a table's values, or cells declareArray sets
 
     def at(self, index):
         """The cell's place among the store's: the row first (the player's, the task's)."""
@@ -272,7 +325,10 @@ class ArrayStorage:
             return self.store[self.at(index)] if index < self.length else 0
         out = fresh(0)
         if EUDIf()(index <= self.length - 1):
-            out << self.store[self.at(index)]
+            if is_varray(self.store):
+                self.store.get(self.at(index), ret=[out])  # (the cell writes itself into out: no copy through another)
+            else:
+                out << self.store[self.at(index)]
         EUDEndIf()
         return out
 
@@ -281,16 +337,20 @@ class ArrayStorage:
             value = saturate(value, self.bits)
         if isinstance(index, int):
             if index < self.length:
-                self.store[self.at(index)] = value
+                cell_write(self.store, self.at(index), value, SetTo)
             return
         if EUDIf()(index <= self.length - 1):
-            self.store[self.at(index)] = value
+            cell_write(self.store, self.at(index), value, SetTo)
         EUDEndIf()
 
     def add(self, index, value, op):
-        """The cell plus (`op` "+") or minus ("-") the value, by the game's own Add / Subtract: nothing read. Past
-        either end, nothing, as a store."""
-        act = self.store.iadditem if op == "+" else self.store.isubtractitem
+        """The cell plus (`op` "+") or minus ("-") the value, by the game's own Add: nothing read. Past either end,
+        nothing, as a store."""
+        # A subtract is the add of the value's negative, which wraps as numbers do: the game's Subtract stops at 0
+        # (`a[i] -= 5` of a 3 was 0 in the game and -2 in the simulator).
+        if op == "-":
+            value = (-value) & U32 if isinstance(value, int) else 0 - value
+        act = lambda i, v: cell_write(self.store, i, v, Add)
         if isinstance(index, int):
             if index < self.length:
                 act(self.at(index), value)
@@ -521,7 +581,7 @@ class ListStorage:
         self.bits = decl.get("bits")
         self.rowed = rows is not None
         self.player_of = rows
-        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no block
+        make = (lambda: cell_array([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no block
         self.handle = {name: make() for name in ("ptr", "len", "room", "k")}
         self.heap = heap()
 
@@ -1038,7 +1098,7 @@ class TextStorage:
         self.decl = decl
         self.rowed = rows is not None
         self.player_of = rows
-        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no text yet, and no block
+        make = (lambda: cell_array([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no text yet, and no block
         self.addr, self.block, self.len = make(), make(), make()
 
     def cell(self, cell):
@@ -1090,7 +1150,7 @@ class UnitStorage:
         self.decl = decl
         self.rowed = rows is not None
         self.player_of = rows
-        make = (lambda: EUDArray([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
+        make = (lambda: cell_array([0] * rows.count)) if self.rowed else (lambda: EUDVariable(0))  # initial: no unit
         self.ptr, self.epd, self.uid = make(), make(), make()
 
     def get(self):
@@ -4721,6 +4781,12 @@ if settings.get("variableMap"):
 
     def _place(obj):
         """Where a variable's value or an array's first cell is in the payload; None for what it left out."""
+        if is_varray(obj):
+            try:
+                at = _offset(_unproxy(obj))
+            except Exception:
+                return None
+            return None if at is None else at + VARRAY_VALUE
         if isinstance(obj, EUDVariable):
             vb = _varbuffer()
             if vb is None or obj.GetVTable() not in vb._vdict:
@@ -4750,17 +4816,19 @@ if settings.get("variableMap"):
             d = getattr(s, "decl", None)
             if d is None or d.get("temp") or d.get("task") is not None:
                 continue  # (a task's variable is a row a slot: nothing a test reads by name)
+            cells_ = _cells_of(s)
             out["vars"].append({"id": id_, "kind": d.get("kind"), "text": d.get("text"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")),
-                                "rowed": bool(s.rowed), "cells": {name: _place(cell) for name, cell in _cells_of(s).items()}})
+                                "rowed": bool(s.rowed), "cells": {name: _place(cell) for name, cell in cells_.items()},
+                                "stride": VARRAY_STRIDE if any(is_varray(c) for c in cells_.values()) else 4})
         for id_, a in low.arrays.items():
             if isinstance(a, (InnerListStorage, SliceStorage)) or a.decl.get("task") is not None:
                 continue  # (a row of another's cells, or a list inside one: read through what it is in, not here)
             d = a.decl
             row = {"id": id_, "kind": d.get("kind"), "bits": d.get("bits"), "unsigned": bool(d.get("unsigned")), "length": int(d.get("length", 0)), "rowed": bool(a.rowed)}
             if isinstance(a, ListStorage):
-                row.update(dynamic=True, ptr=_place(a.handle["ptr"]), len=_place(a.handle["len"]))
+                row.update(dynamic=True, ptr=_place(a.handle["ptr"]), len=_place(a.handle["len"]), stride=VARRAY_STRIDE if is_varray(a.handle["ptr"]) else 4)
             else:
-                row.update(at=_place(a.store))
+                row.update(at=_place(a.store), stride=VARRAY_STRIDE if is_varray(a.store) else 4)
             out["arrays"].append(row)
         return out
 

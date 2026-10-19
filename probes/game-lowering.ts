@@ -50,6 +50,28 @@ program(() => {
   let moved = 0;
   for (let i = 0; i < n; i++) { if (i == 1) i = 2; moved += i; }
   displayText(`D: ${hits} ${moved}`);
+  sleep(frames(1));
+
+  // E: arrays, read and written at a constant and at a variable index; a cell added to and taken from, below zero. 3 9 -2 7 4 -4 8
+  const cells = [0, 0, 0, 0, 0, 0, 0, 0];
+  const j = g + 1;
+  cells[2] = g;
+  cells[j] = g * 3;
+  cells[5] = g;
+  cells[5] -= 5;
+  cells[j - 1] += 4;
+  cells[1] = cells[2] + cells[j] - 5;
+  cells[j] -= 13;
+  cells[7] = 8;
+  displayText(`E: ${cells[2]} ${cells[j] + 13} ${cells[5]} ${cells[1]} ${cells[3]} ${cells[j - 1] - 8} ${cells[7]}`);
+  sleep(frames(1));
+
+  // F: an array too long to be cells of their own (4 bytes a cell): a subtract wraps there too. -7 -4
+  const big: number[] = new Array(3000).fill(0);
+  big[j] -= 7;
+  big[2999] = 5;
+  big[2999] -= 9;
+  displayText(`F: ${big[j]} ${big[2999]}`);
 });
 
 test("adds into the variable itself", (sim) => {
@@ -67,4 +89,12 @@ test("a side never below zero against a signed one", (sim) => {
 test("&& in one trigger, and a counter the body moves", (sim) => {
   sim.frames(20);
   expect(sim).toHavePrinted("D: 101 5");
+});
+test("arrays at constant and variable indexes", (sim) => {
+  sim.frames(20);
+  expect(sim).toHavePrinted("E: 3 9 -2 7 4 -4 8");
+});
+test("a long array's subtract wraps", (sim) => {
+  sim.frames(20);
+  expect(sim).toHavePrinted("F: -7 -4");
 });

@@ -24,6 +24,8 @@ program(() => {
       if (y == z) b = 3; /* EQUALS_VARS */
       x = cells[k]; /* ARRAY_READ */
       cells[k] = y; /* ARRAY_WRITE */
+      x = cells[3]; /* ARRAY_READ_CONST */
+      cells[5] = y; /* ARRAY_WRITE_CONST */
       spot.x = y; /* FIELD_WRITE */
       x = spot.x; /* FIELD_READ */
       x = twice(y); /* CALL */

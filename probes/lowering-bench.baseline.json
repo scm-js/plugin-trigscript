@@ -68,5 +68,15 @@
   "records": 15943,
   "triggers": 7310,
   "ns": 229236.7999992427
+ },
+ "ARRAY_READ_CONST": {
+  "records": 46.0,
+  "triggers": 37.0,
+  "ns": 653.0
+ },
+ "ARRAY_WRITE_CONST": {
+  "records": 4.0,
+  "triggers": 2.0,
+  "ns": 62.0
  }
 }
