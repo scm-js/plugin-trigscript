@@ -34,7 +34,8 @@ const eudplib = resolve(eudplibArg ?? process.env.EUDPLIB_DIR ?? join(root, ".."
 if (!existsSync(map)) { console.error(`no map at ${map}`); process.exit(2); }
 if (!existsSync(join(eudplib, "scripts", "build-map.mts"))) { console.error(`no plugin-eudplib checkout at ${eudplib}`); process.exit(2); }
 
-const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib() });
+// RANGES=0: built without value ranges (compiler/ranges.ts), to weigh what they give.
+const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib(), ranges: process.env.RANGES !== "0" });
 if (r.diagnostics.length) { for (const d of r.diagnostics) console.error(`${d.file}:${d.line}:${d.column} ${d.message}`); process.exit(1); }
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));

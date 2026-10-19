@@ -2438,6 +2438,72 @@ is, and a jump as an empty trigger. Remastered charges a trigger 8.3 ns of its o
 
 Not on the list: anything that runs outside the trigger walk, and threads (the game has one for triggers).
 
+**The two probes, built (2026-10-19), waiting to be played.** Read in Ghidra first (1.23.10.13515):
+- *A map is an EUD map when it loads with one.* +0x358C0A goes over every trigger of the map (0x960 bytes apart) and
+  +0x2E17E0 sets bit 1 of +0x105423C for a Deaths condition, bit 2 for a Set Deaths action, whose player is above 26 or
+  is 12, or whose unit is above 232. Nothing sets it later. Without it the walk (+0x41B350) follows the game's own list
+  of triggers, and Set Deaths (+0x288240) writes the deaths table straight — refusing a player above 8 or a unit above
+  227 — so a map that is not EUD cannot reach past the deaths table at all. There is no mixing the two in one map.
+- *Bring and Command never touch the emulator.* Both read a table of counts, a cell for each player and unit type (0x540
+  bytes): Command copies the game's own counts into it (+0x28AF60); Bring counts the units in its location (+0x28BBD0).
+  The table is kept while the queries stay of one kind and, for Bring, of one location number: it is thrown away at the
+  start of every trigger pass (+0x41C007) and by the actions that kill or remove units (+0x28A960). **Moving a location
+  does not throw it away**: a Bring of a location moved since the last Bring of it reads the old counts. A library that
+  moves a location to ask about a place must ask another location in between.
+- `probes/classic-weights.mts` (no eudplib: the editor's own code writes 5,017 triggers) — blocks turned on by phase:
+  16 conditions a trigger with the last failing, the same with 62 Set Deaths after, 62 Set Switch; marks as Player 8's
+  deaths (a map that is not EUD writes none of Players 9–12), `remastered/profile.py --marks-player=8`. A pass comes
+  every other frame (hyper triggers), as the lifted game shows.
+- `probes/native-queries.py` (eudplib, the weights probe's schedule): Bring of one location (one scan a frame, the rest
+  lookups), Command, Bring alternating two locations with 0, 16 and about 64 marines in them (a scan each time),
+  Bring alternating with Command, and a location's four sides written and Bring of it, two in turn. 160 marines in
+  boxes around Home; the lifted game finds 16, 16, 67 and 71 (the two big boxes take a few of each other's).
+
+**As built: value ranges (2026-10-19).** `compiler/ranges.ts`, run after `numbers.ts`; IR 25 (`range` on a number).
+- The range of every number variable is the union of what is stored into it, and 0 (a cell before its first store);
+  facts from tests (`if (i < n)`, a loop's own test) hold until the variable is stored into, and are dropped at a wait,
+  a call, a statement holding a call, the top of a loop for what it stores. A loop's counter whose only stores are its
+  declaration and the update keeps its test's fact through waits and calls in the body (not in a task, whose slots
+  share the code, nor a per-player program's shared variable). A variable something stores into behind the program's
+  back — a task's handle, the error in flight, a loop's `was` — is any number. Ranges that still grow after eight
+  passes go to their end on that side, then narrowing passes bring them back (`k = (k + 1) & 15` creeps one a pass).
+- Arrays take a range only when nothing else reaches their cells: tables known when built, `u8` / `u16`, fixed arrays
+  that are no window, row, text row or heap array.
+- In the lowering (`python/trigscript.py`): a product by a constant of a side known 0 … top is a trigger a bit of top
+  (`mul_bits`, where it beats eudplib's by the weights); a quotient or remainder by a constant (`div_bits`) or by a
+  variable (`div_var_bits`: eudplib's chain, as many steps as the dividend has bits, started as soon as the next
+  doubling would pass the dividend's top) when both sides are never below zero, and no zero check when the divisor's
+  range says so; a shift moves only the bits a value has, and needs no group jumps under eight of them; eudplib's
+  product takes the side with fewer bits first; `min` / `max` / `abs` one side of which always wins are that side.
+- The pass also reads comparisons whose sides are never below zero as unsigned, and turns one the ranges settle into a
+  constant when its sides do nothing but give a value, and wherever it is met.
+- Checked: `tests/ranges.test.ts` (the shapes, and every game probe simulated with and without ranges: the same lines
+  and faults — it found a task handle the pass had kept as 0), `probes/game-ranges.ts` 5/5 in the lifted game and the
+  simulator, every game probe as before (game-debug's one failure is meant), vitest 1123.
+
+| Line (values known 0 … 1023 and 0 … 63, not their values) | Before | After |
+| --- | ---: | ---: |
+| `sv * 12` | 721 ns | 243 |
+| `sv * tv` | 1 080 | 700 |
+| `sv / 3` | 1 094 | 302 |
+| `sv % 10` | 1 067 | 275 |
+| `1000 / (tv + 1)` | 7 026 | 1 751 |
+| `sv / (tv + 1)` | 7 011 | 1 692 |
+| `sv >> 2` | 327 | 217 |
+
+The showpieces hardly move (raycaster 1.15 → 1.13 ms, snake's first frame 4.41 → 4.33, Tetris and the bullets the same):
+their time is not in products and quotients of bounded values. Where it is, `scripts/trigger-shapes.mts` says:
+
+| A frame of | ms | the walk alone | routing | data actions | failed bit tests |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| bullets (200, moved and aged) | 0.46 | 30% | **51%** (next pointers 0.10, a cell's destination 0.07, its modifier 0.06) | 16% | 2% |
+| raycaster | 1.37 | 36% | **35%** | 21% | 18% |
+
+*Routing* is eudplib's way of reading a variable: a variable is a trigger of one action whose amount is its value, and a
+read sets that action's destination and modifier and the trigger's next pointer — three Set Deaths — before the walk
+goes through it. `x = y + z` is four triggers, 124 ns, of which the reading is two setups of three actions each. That is
+the part a backend of our own takes first (below).
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

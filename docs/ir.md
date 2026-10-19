@@ -792,6 +792,13 @@ interpreter agree on every case:
 - An action's variable `modifier` (a unit count) means that many units: the lowering does
   the action once for each, so 0 is none and 300 is 300.
 - A `switch` compares bits: a case of −1 is 0xFFFFFFFF.
+- **Ranges** (version 25). Any number may carry `range: [lo, hi]`: `compiler/ranges.ts` found its
+  signed reading never below `lo` nor above `hi`. A backend may use it to take only the bits a
+  value can have — the Python lowering does for a product by a constant, a quotient and a
+  remainder by a constant or by a variable, a shift, and a `min` / `max` / `abs` one side of
+  which always wins — and may ignore it. The same pass reads a comparison whose sides are
+  never below zero as `unsigned`, and turns one whose ranges settle it (wherever it is met,
+  its sides doing nothing but give a value) into a constant: the program means what it did.
 
 ## Records
 

@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 24
+IR_VERSION = 25
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -2451,6 +2451,8 @@ class Lowering:
             x = self.num(e["args"][0])
             if isinstance(x, int):
                 return abs(signed(x)) & U32
+            if top_of(e["args"][0]) is not None:
+                return x
             t = fresh(x)
             if EUDIf()(t >= SIGN):
                 t << 0 - t
@@ -2465,6 +2467,13 @@ class Lowering:
             if isinstance(a, int) and isinstance(b, int):
                 key = (lambda v: v) if unsigned else signed
                 return min(a, b, key=key) if name == "min" else max(a, b, key=key)
+            # One side always the smaller (ranges.ts): no comparison. Read unsigned, only when both are never below zero.
+            ra, rb = rng(e["args"][0]), rng(e["args"][1])
+            if ra is not None and rb is not None and (not unsigned or (ra[0] >= 0 and rb[0] >= 0)):
+                if ra[1] <= rb[0]:
+                    return a if name == "min" else b
+                if rb[1] <= ra[0]:
+                    return b if name == "min" else a
             t = EUDVariable()
             if EUDIf()(self.ordered(a, "<=" if name == "min" else ">=", b, unsigned)):
                 t << a
@@ -2607,7 +2616,7 @@ class Lowering:
         a, b = self.num(e["left"]), self.num(e["right"])
         op = e["op"]
         if op in BITWISE:
-            return self.bitwise(op, a, b)
+            return self.bitwise(op, a, b, top_of(e["left"]))
         both = isinstance(a, int) and isinstance(b, int)
         if op == "+":
             return (a + b) & U32 if both else a + b
@@ -2618,8 +2627,12 @@ class Lowering:
                 return (a * b) & U32
             # By a power of two, a shift: x * 32 is x << 5, a fifth of the cost of eudplib's general product.
             k, v = (b, a) if isinstance(b, int) else (a, b) if isinstance(a, int) else (None, None)
+            vtop = top_of(e["left"] if k is b else e["right"]) if k is not None else None
             if k is not None and k > 0 and k & (k - 1) == 0:
-                return v if k == 1 else shift_const(v, "<<", k.bit_length() - 1)
+                return v if k == 1 else shift_const(v, "<<", k.bit_length() - 1, vtop)
+            if k is not None and vtop is not None and mul_bits_pays(vtop, k):
+                # The other side known to be 0 ... vtop (ranges.ts): a trigger a bit it can have.
+                return mul_bits(as_var(v), vtop, k)
             if k is not None:
                 # eudplib's product goes over its first operand's bits and stops past the highest that is set: whichever
                 # of the two is smaller first, the constant by its distance from 0 (a number below zero has every top
@@ -2633,10 +2646,22 @@ class Lowering:
                     f_mul(kv, v, ret=[r])
                 EUDEndIf()
                 return 0 - r if m < 0 else r
+            # eudplib's product goes over its first operand's bits, up to the highest set: the side with fewer first.
+            ta, tb = top_of(e["left"]), top_of(e["right"])
+            if tb is not None and (ta is None or tb < ta):
+                a, b = b, a
             return f_mul(as_var(a), as_var(b))
         # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
         unsigned = bool(e.get("unsigned"))
         pick = (lambda q, r: q) if op == "/" else (lambda q, r: r)
+        # Both sides known never below zero (ranges.ts): the division is the same read either way, and takes only the
+        # bits the dividend can have. A dividend that is a constant is its own top.
+        atop = a if isinstance(a, int) and a < SIGN else top_of(e["left"])
+        brange = (signed(b), signed(b)) if isinstance(b, int) else rng(e["right"])
+        if atop is not None and not both and brange is not None and brange[0] >= 1 and (atop >> 1).bit_length() <= 24:
+            if isinstance(b, int):
+                return pick(*div_bits(as_var(a), b, atop))
+            return pick(*div_var_bits(as_var(a), b, atop))
         if isinstance(b, int):
             if b == 0:
                 raise Fail("trigscript: division by zero%s" % where(e))
@@ -2649,7 +2674,10 @@ class Lowering:
             return pick(*(f_div(a, b) if unsigned else f_div_towards_zero(fresh(a), signed(b))))
         out = fresh(0)
         if EUDIf()(b >= 1):
-            q, r = f_div(as_var(a), b) if unsigned else f_div_towards_zero(fresh(a), fresh(b))
+            if atop is not None and brange is not None and brange[0] >= 0 and (atop >> 1).bit_length() <= 24:
+                q, r = div_var_bits(as_var(a), b, atop)
+            else:
+                q, r = f_div(as_var(a), b) if unsigned else f_div_towards_zero(fresh(a), fresh(b))
             out << pick(q, r)
         EUDEndIf()
         return out
@@ -2682,11 +2710,11 @@ class Lowering:
         return relation(a + SIGN, op, (b + SIGN) & U32 if isinstance(b, int) else b + SIGN)
 
     @staticmethod
-    def bitwise(op, a, b):
+    def bitwise(op, a, b, atop=None):
         """& | ^ << >> >>> over 32 bits. `>>` keeps the sign of what it shifts and `>>>` does not; a shift by 32 or
-        more leaves nothing but that sign."""
+        more leaves nothing but that sign. `atop`: the left side is known to be 0 ... atop (ranges.ts)."""
         if op in ("<<", ">>", ">>>") and isinstance(b, int) and not isinstance(a, int) and 0 < b < 32:
-            return shift_const(a, op, b)
+            return shift_const(a, op, b, atop)
         if op in ("<<", ">>", ">>>"):
             if isinstance(a, int) and isinstance(b, int):
                 if op == "<<":
@@ -4999,9 +5027,97 @@ def fixed_const(name, args, unsigned=False, table=None):
     return t
 
 
-def shift_const(x, op, k):
+def rng(node):
+    """The range compiler/ranges.ts found for a number of the IR - its signed reading, lowest and highest - or None."""
+    if not isinstance(node, dict):
+        return None
+    if node.get("kind") == "const":
+        v = signed(int(node["value"]) & U32)
+        return (v, v)
+    r = node.get("range")
+    return (int(r[0]), int(r[1])) if r else None
+
+
+def top_of(node):
+    """The most a number of the IR can be, when ranges.ts found it never below zero; None otherwise."""
+    r = rng(node)
+    return r[1] if r is not None and r[0] >= 0 else None
+
+
+def mul_bits(v, top, k):
+    """v * k, wrapping, of a variable known to be 0 ... top and a constant k of either sign: a trigger a bit v can have,
+    each adding k shifted to that bit (eudplib's product by a constant goes over all 32, through a call)."""
+    r = EUDVariable()
+    RawTrigger(actions=r.SetNumber(0))
+    for bit in range(top.bit_length()):
+        add = (k << bit) & U32
+        if add:
+            RawTrigger(conditions=v.AtLeastX(1, 1 << bit), actions=r.AddNumber(add))
+    return r
+
+
+def mul_bits_pays(top, k):
+    """Whether mul_bits beats eudplib's product for a side of 0 ... top and the constant k, by Remastered's weights: about
+    18 ns a bit of top, against a call (80 ns) and about 95 ns a bit of the smaller side for eudplib's."""
+    m = abs(signed(k))
+    return 18 * top.bit_length() < 80 + 95 * min(m.bit_length(), top.bit_length())
+
+
+def div_bits(a, d, top):
+    """(a // d, a % d) of a value known to be 0 ... top and a constant d >= 1: a trigger a bit the quotient can have,
+    where eudplib's goes over every bit a 32-bit dividend could give, through a call. `a` is copied, not used up."""
+    if d == 1:
+        return a, 0
+    if d & (d - 1) == 0:
+        k = d.bit_length() - 1
+        rem = fresh(a)
+        DoActions(rem.SetNumberX(0, (~(d - 1)) & U32))
+        return shift_const(as_var(a), ">>>", k, top), rem
+    rem, q = fresh(a), EUDVariable()
+    RawTrigger(actions=q.SetNumber(0))
+    for i in range((top // d).bit_length() - 1, -1, -1):
+        RawTrigger(conditions=rem.AtLeast(d << i), actions=[rem.SubtractNumber(d << i), q.AddNumber(1 << i)])
+    return q, rem
+
+
+def div_var_bits(a, b, top):
+    """(a // b, a % b) of a value known to be 0 ... top and a variable b >= 1, both read from 0 up: eudplib's division
+    chain (the divisor doubled into each step's condition and action, then the steps from the highest down), with only
+    as many steps as top has bits, and the chain started as soon as the next doubling would pass top - where eudplib's
+    doubles the divisor until it would pass 2^31 and keeps 32 steps."""
+    n = max(1, top.bit_length())
+    q, x, rem = EUDVariable(), EUDVariable(), fresh(a)
+    SeqCompute([(q, SetTo, 0), (x, SetTo, b)])
+    cells = [(Forward(), Forward()) for _ in range(n)]
+    chain = [Forward() for _ in range(n)]
+    half = (top >> 1) + 1
+    for i in range(n):
+        SeqCompute([(EPD(c), SetTo, x) for c in cells[i]])
+        if i == n - 1:
+            break
+        # Past top / 2 the next doubling is past top, whose steps take nothing: the chain starts here.
+        p1, p2, p3 = Forward(), Forward(), Forward()
+        p1 << RawTrigger(nextptr=p2, conditions=x.AtLeast(half), actions=SetNextPtr(p1, p3))
+        p3 << RawTrigger(nextptr=chain[i], actions=SetNextPtr(p1, p2))
+        p2 << NextTrigger()
+        SeqCompute([(x, Add, x)])
+    for i in range(n - 1, -1, -1):
+        c, act = Forward(), Forward()
+        chain[i] << RawTrigger(conditions=[c << rem.AtLeast(0)], actions=[act << rem.SubtractNumber(0), q.AddNumber(1 << i)])
+        cells[i][0] << c + 8
+        cells[i][1] << act + 20
+    return q, rem
+
+
+def shift_const(x, op, k, top=None):
     """x << k, x >> k (the sign kept) or x >>> k for a constant k from 1 to 31, one trigger a bit that moves: a bit of x
-    tested, its place in the result added. A short shift left is doublings instead (a doubling is about two triggers)."""
+    tested, its place in the result added. A short shift left is doublings instead (a doubling is about two triggers).
+    `top`: x is known to be 0 ... top (ranges.ts), so only its bits move - and `>>` is `>>>`, the sign bit being 0."""
+    if top is not None:
+        if op == ">>":
+            op = ">>>"
+        if op == ">>>" and top >> k == 0:
+            return 0
     if op == "<<" and k <= 4:
         t = fresh(x)
         for _ in range(k):
@@ -5010,11 +5126,20 @@ def shift_const(x, op, k):
     r = EUDVariable()
     RawTrigger(actions=r.SetNumber(0))
     if op == "<<":
-        for bit in range(32 - k):
+        for bit in range(32 - k if top is None else min(32 - k, top.bit_length())):
             RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=r.AddNumber(1 << (bit + k)))
         return r
     # From the top, eight bits a group: a group with none of its bits set is jumped over (a small number skips most).
-    for top in range(31, k - 1, -8):
+    # Known to be at most `top`, the bits above it are never set, and a group of eight or fewer needs no jump.
+    highest = 31 if top is None else top.bit_length() - 1
+    if highest - k < 8:
+        for bit in range(highest, k - 1, -1):
+            add = 1 << (bit - k)
+            if op == ">>" and bit == 31:
+                add = (add - (1 << (32 - k))) & U32
+            RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=r.AddNumber(add))
+        return r
+    for top in range(highest, k - 1, -8):
         bits = range(top, max(k, top - 7) - 1, -1)
         group = sum(1 << bit for bit in bits)
         past = Forward()
