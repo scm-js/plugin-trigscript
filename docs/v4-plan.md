@@ -2504,6 +2504,41 @@ read sets that action's destination and modifier and the trigger's next pointer 
 goes through it. `x = y + z` is four triggers, 124 ns, of which the reading is two setups of three actions each. That is
 the part a backend of our own takes first (below).
 
+**As built: the backend, part 1 — routing decided once the program is whole (2026-10-19).** In `python/trigscript.py`
+(*Static routing*), between eudplib's macros and its allocator; `staticRouting` "0" turns it off (`STATIC_ROUTING=0` in
+build-fixture), `routingReport` says why each read inside a loop keeps its routing (`ROUTING_REPORT=1`).
+- Every copy `SeqCompute` makes of a variable this file made (and everything eudplib does through it — `<<`, `+=`, a call's
+  arguments; every eudplib module that took `SeqCompute` by name is pointed at the new one) is lowered as a *site*: what
+  came before jumps to a Forward; behind it the setup trigger (the constant stores before it, then the routing of each
+  cell, chained) and a bare way in (the constants alone). Everything else that asks a cell for a routing field — its
+  vtable, its destination, its mask, its modifier — is recorded with where it was asked, and so is every request for
+  its value's address that is not a condition's (a write). The array helpers that routed a value by hand (`cell_write`,
+  `varray_write`) go through `SeqCompute` too.
+- Code is lowered in *regions*: the loops of the IR, and code that runs apart — a coroutine (a program's body, a task, a
+  branch), a function's body, a scope apart. A loop records whether it waits, the functions it calls, and whether it
+  calls one whose body cannot be followed (a function that calls itself).
+- At the end of `afterTriggerExec` each group goes in bare when every cell in it is one of: read at that one site and
+  touched nowhere else — its routing written into eudplib's variable buffer as the map is built (`EUDVarBuffer.WritePayload`
+  patched: next pointer at 72·i, destination at 340 + 72·i, modifier byte at 351 + 72·i); the only read inside some loop
+  that nothing else in it (nor a function it calls, nor — when it waits — another coroutine) routes — its routing set
+  once in triggers in front of the loop; read at several sites of a loop that never writes it — each site reads a copy
+  of its own, routed for good, which the loop's way in fills. Otherwise the group keeps its setup, as eudplib had it.
+- Checked: every game probe in the lifted game and the simulator (game-debug's one failure is meant), vitest.
+
+| | Before | Routed for good | + loops (copies, hoisting) |
+| --- | ---: | ---: | ---: |
+| bench, one turn of every inner line | 53.1 µs | 51.3 | 49.6 |
+| bench, the loops over arrays and units | 64.8 µs | 61.4 | 54.8 |
+| a loop's own turn (`for (…; i < n; i++)`) | 181 ns | 108 | 108 |
+| an empty loop's turn | 189 ns | 189 | 112 |
+| raycaster, a frame | 1.13 ms | 1.08 | 1.06 |
+| bullets, a frame | 0.46 ms | 0.44 | 0.44 |
+
+The showpieces move little: what they spend is in two places routing cannot reach from outside. The bullets' fields are
+read through `varray_read`, which works the place out at every access (part 2, *record loops*, below); the raycaster's
+time is fixed-point arithmetic inside eudplib-made functions (`fdiv` 0.41 ms of its 1.06, eudplib's product 0.16, `fmul`
+0.15), whose own variables eudplib shares between calls (part 3, *arithmetic of our own*).
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

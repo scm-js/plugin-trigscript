@@ -116,6 +116,8 @@ const sections = buildPlugins(r.input, "/work/files/trigscript.json");
 if (process.env.TRIGGER_MAP) (sections.trigscript as Record<string, string>).triggerMap = "1";
 // STATIC_ROUTING=0: every variable read routed as eudplib routes it (python/trigscript.py, static routing), to weigh what it gives.
 if (process.env.STATIC_ROUTING === "0") (sections.trigscript as Record<string, string>).staticRouting = "0";
+// ROUTING_REPORT=1: why each variable read inside a loop keeps its routing (python/trigscript.py, static routing).
+if (process.env.ROUTING_REPORT) (sections.trigscript as Record<string, string>).routingReport = "1";
 // VARIABLE_MAP=1: the same for where each program's variables are (TRIGSCRIPT-VARS), as <out>.variables.json, for a
 // test in the lifted game to read them (`sim.program()`).
 if (process.env.VARIABLE_MAP) (sections.trigscript as Record<string, string>).variableMap = "1";

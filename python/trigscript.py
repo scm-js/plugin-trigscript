@@ -152,42 +152,213 @@ import eudplib.core.variable.vbuf as _vbuf
 from eudplib.utils import unProxy as _unproxy_r
 
 
+class _Region:
+    """Where code is being lowered: a loop of the IR (`loop`), or code that runs apart from what is around it — a
+    coroutine (a program's body, a task, a branch of a parallel), a function's body, a scope of triggers apart."""
+
+    def __init__(self, kind):
+        self.kind = kind
+        self.waits = False  # a loop that sleeps or waits: anything else may run before it goes on
+        self.unknown = False  # a loop that calls something whose body this cannot see (a function that calls itself)
+        self.calls = set()  # the functions (EUDFuncN ids) called from here
+        self.entry = self.after = None  # a loop's way in, which the hoisted routing goes in front of
+        self.hoist = []
+        self.copies = []  # (variable, its copy for one site of the loop), filled on the way in
+
+
 class _Routing:
     def __init__(self, enabled):
         self.enabled = enabled
         self.on = False
         self.emitting = 0
+        self.reading = 0  # inside a condition's own making: a value read, not written
         self.ours = {}  # id -> the variable, for the variables this file made while lowering
-        self.refs = {}  # id -> how often something other than a site asked for one of its routing fields
+        self.touches = {}  # id -> where something other than a site asked for one of its routing fields
+        self.writes = {}  # id -> where its value's address was asked for other than to read it in a condition
         self.sites = {}  # id -> the groups it is read in
         self.groups = []
         self.static = {}  # a cell's VariableTriggerForward -> (dest, modifier byte, next)
-        self.stats = {"groups": 0, "static groups": 0, "cells": 0, "static cells": 0}
+        self.stack = []  # (barrier or loop regions) innermost last
+        self.main = _Region("main")
+        self.functions = {}  # id of an EUDFuncN -> the region of its body
+        self.loops = []
+        self.names = {}  # id -> the name of the script's variable it is, for the report
+        self.why_touched = {}  # id -> where it was touched, for the report
+        self.made_at = {}  # id -> where it was made, for the report
+        self.stats = {"groups": 0, "bare groups": 0, "cells": 0, "static": 0, "hoisted": 0, "replicas": 0, "loops": 0}
+
+    def where(self):
+        """(the region the code runs in apart from the rest, the loops around it in that region, outermost first)."""
+        loops = []
+        for r in reversed(self.stack):
+            if r.kind != "loop":
+                return r, tuple(reversed(loops))
+            loops.append(r)
+        return self.main, tuple(reversed(loops))
 
     def touched(self, v):
         if self.on and not self.emitting:
             k = id(v)
             if k in self.ours:
-                self.refs[k] = self.refs.get(k, 0) + 1
+                self.touches.setdefault(k, []).append(self.where())
+                if settings.get("routingReport") and k in self.names:
+                    f, chain = _sys._getframe(2), []
+                    while f is not None and len(chain) < 6:
+                        chain.append("%s:%d" % (f.f_code.co_name, f.f_lineno))
+                        f = f.f_back
+                    self.why_touched.setdefault(k, set()).add(" < ".join(chain))
+
+    def wrote(self, v):
+        if self.on and not self.emitting and not self.reading:
+            k = id(v)
+            if k in self.ours:
+                self.writes.setdefault(k, []).append(self.where())
+
+    def called(self, fn):
+        if self.on:
+            apart, loops = self.where()
+            apart.calls.add(id(fn))
+            for r in loops:
+                r.calls.add(id(fn))
+
+    def waited(self):
+        if self.on:
+            for r in self.where()[1]:
+                r.waits = True
+
+    def unknown_call(self):
+        if self.on:
+            for r in self.where()[1]:
+                r.unknown = True
+
+    def reached(self, calls):
+        """The regions of the functions these calls reach, those they call in turn included."""
+        out, todo = [], list(calls)
+        seen = set()
+        while todo:
+            f = todo.pop()
+            if f in seen:
+                continue
+            seen.add(f)
+            r = self.functions.get(f)
+            if r is not None:
+                out.append(r)
+                todo.extend(r.calls)
+        return out
+
+    def plan_for(self, v, r):
+        """What loop r can do for v's reads in it: "hoist" (one site in it: its routing set once in front of it),
+        "replicas" (several sites, and nothing in it writes v: a copy of v a site, each copy routed for good and filled
+        in front of it), or why not. Nothing that runs between the loop's way in and its way out may route v (or, for
+        copies, write it) but those sites: not the loop's own code, not a function it calls, and — when it waits —
+        nothing outside it in another coroutine, since anything may run while it waits."""
+        k = id(v)
+        groups, touches, writes = self.sites[k], self.touches.get(k, []), self.writes.get(k, [])
+        if r.unknown:
+            return "calls a function that calls itself"
+        inside = [h for h in groups if r in h["ctx"][1]]
+        if any(r in t[1] for t in touches):
+            return "touched in the loop"
+        fns = self.reached(r.calls)
+        if any(h["ctx"][0] in fns for h in groups) or any(t[0] in fns for t in touches):
+            return "a function the loop calls routes it"
+        if r.waits:
+            apart = inside[0]["ctx"][0]
+            if any(h["ctx"][0] is not apart for h in groups) or any(t[0] is not apart for t in touches):
+                return "waits, and other code routes it"
+        if len(inside) == 1:
+            return "hoist"
+        if any(r in w[1] for w in writes) or any(w[0] in fns for w in writes):
+            return "read at %d sites and written in the loop" % len(inside)
+        if r.waits and any(w[0] is not inside[0]["ctx"][0] for w in writes):
+            return "waits, and other code writes it"
+        return "replicas"
+
+    def choice(self, v, g):
+        """For v in group g: ("static", None), (\"hoist\" or "replicas", the outermost loop that can), or (None, why not)."""
+        k = id(v)
+        if len(self.sites[k]) == 1 and not self.touches.get(k):
+            return "static", None
+        whys = []
+        for r in g["ctx"][1]:
+            how = self.plan_for(v, r)
+            if how in ("hoist", "replicas"):
+                return how, r
+            whys.append(how)
+        return None, "; ".join(whys) if whys else "read at %d sites, outside any loop" % len(self.sites[k])
 
     def decide(self):
-        """Every group whose cells are each read there and nowhere else jumps straight into them; the rest keep setup."""
+        """Each group whose cells all need no routing at its site goes in bare: a cell read there and nowhere else is
+        routed in the variable buffer for good; one that is the only read inside a loop has its routing set once in
+        front of the loop; one read at several sites of a loop that never writes it is read from a copy of its own,
+        routed for good, which the loop's way in fills. Every other group keeps its setup."""
         if not self.on:
             return
         self.on = False
+        report = settings.get("routingReport")
         for g in self.groups:
-            alone = all(len(self.sites[id(v)]) == 1 and not self.refs.get(id(v)) for v, _, _, _ in g["cells"])
             self.stats["groups"] += 1
             self.stats["cells"] += len(g["cells"])
-            if alone:
-                self.stats["static groups"] += 1
-                self.stats["static cells"] += len(g["cells"])
-                g["entry"] << g["bare"]
-                for v, dest, mod, nxt in g["cells"]:
-                    self.static[v.GetVTable()] = (dest, mod, nxt)
-            else:
+            plan = []
+            for v, dest, mod, nxt, slot in g["cells"]:
+                how, where = self.choice(v, g)
+                if how is None:
+                    if report and g["ctx"][1]:
+                        print("trigscript: routing kept in a loop: %s: %s" % (self.names.get(id(v)) or "a temporary made at " + self.made_at.get(id(v), "?"), where))
+                        for w in sorted(self.why_touched.get(id(v), ()))[:3]:
+                            print("trigscript:   touched at " + w)
+                    plan = None
+                    break
+                plan.append((how, where))
+            if plan is None:
                 g["entry"] << g["setup"]
-        print("trigscript: static routing, %(static cells)d of %(cells)d cells read at one site in %(static groups)d of %(groups)d groups" % self.stats)
+                for v, _, _, _, slot in g["cells"]:
+                    slot << v.GetVTable()
+                continue
+            self.stats["bare groups"] += 1
+            g["entry"] << g["bare"]
+            for (v, dest, mod, nxt, slot), (how, r) in zip(g["cells"], plan):
+                self.stats[{"static": "static", "hoist": "hoisted", "replicas": "replicas"}[how]] += 1
+                if how == "static":
+                    slot << v.GetVTable()
+                    self.static[v.GetVTable()] = (dest, mod, nxt)
+                elif how == "hoist":
+                    slot << v.GetVTable()
+                    r.hoist.append((v, dest, mod, nxt))
+                else:
+                    copy = EUDVariable()
+                    slot << copy.GetVTable()
+                    self.static[copy.GetVTable()] = (dest, mod, nxt)
+                    r.copies.append((v, copy))
+        # Each loop's way in: straight on, or through triggers that set the routing hoisted in front of it and fill its
+        # copies (made here, out of the way of the code being made: what is pending is put aside and handed on after).
+        held = Forward()
+        SetNextTrigger(held)
+        for r in self.loops:
+            if not r.hoist and not r.copies:
+                r.entry << r.after
+                continue
+            self.stats["loops"] += 1
+            steps = []  # (actions, the cell the trigger goes on to, or None for the next step)
+            acts = []
+            for v, dest, mod, nxt in r.hoist:
+                acts += [SetDeaths(EPD(v.getDestAddr()), SetTo, dest, 0), SetDeathsX(EPD(v.getDestAddr()) + 2, SetTo, mod << 24, 0, 0xFF000000), SetNextPtr(v.GetVTable(), nxt)]
+            for i in range(0, len(acts), 63):
+                steps.append((acts[i:i + 63], None))
+            # A copy is filled by the variable's own cell, routed into the copy and back each time (it may be routed
+            # otherwise outside the loop, so nothing of it is assumed).
+            for v, copy in r.copies:
+                steps.append(([SetDeaths(EPD(v.getDestAddr()), SetTo, EPD(copy.getValueAddr()), 0), SetDeathsX(EPD(v.getDestAddr()) + 2, SetTo, 7 << 24, 0, 0xFF000000)], v))
+            firsts = [Forward() for _ in steps]
+            for i, (acts_i, cell) in enumerate(steps):
+                after = firsts[i + 1] if i + 1 < len(steps) else r.after
+                if cell is None:
+                    firsts[i] << RawTrigger(nextptr=after, actions=acts_i)
+                else:
+                    firsts[i] << RawTrigger(nextptr=cell.GetVTable(), actions=acts_i + [SetNextPtr(cell.GetVTable(), after)])
+            r.entry << firsts[0]
+        held << NextTrigger()
+        print("trigscript: static routing — %(bare groups)d of %(groups)d reads without routing: %(static)d cells routed for good, %(hoisted)d routed once in front of a loop, %(replicas)d read from a copy (%(loops)d loops)" % self.stats)
 
 
 ROUTE = _Routing(settings.get("staticRouting", "1") != "0")
@@ -199,8 +370,11 @@ if ROUTE.enabled:
     def _routed_init(self, *args, **kwargs):
         _var_init(self, *args, **kwargs)
         # Made by a line of this file itself (not by eudplib on its behalf): ours to route.
-        if ROUTE.on and _sys._getframe(1).f_globals is _MODULE:
+        f = _sys._getframe(1)
+        if ROUTE.on and f.f_globals is _MODULE:
             ROUTE.ours[id(self)] = self
+            if settings.get("routingReport"):
+                ROUTE.made_at[id(self)] = "%s:%d < %s:%d" % (f.f_code.co_name, f.f_lineno, f.f_back.f_code.co_name, f.f_back.f_lineno)
 
     _eudv.EUDVariable.__init__ = _routed_init
 
@@ -217,21 +391,49 @@ if ROUTE.enabled:
     for _name in ("GetVTable", "getDestAddr", "getMaskAddr", "SetModifier", "SetDest", "AddDest", "SubtractDest", "SetDestX", "AddDestX", "SubtractDestX"):
         _watched(_name)
 
+    # Its value's address asked for is a write unless a condition asks it (a condition only reads the value).
+    _value_addr = _eudv.EUDVariable.getValueAddr
+
+    def _routed_value_addr(self):
+        ROUTE.wrote(self)
+        return _value_addr(self)
+
+    _eudv.EUDVariable.getValueAddr = _routed_value_addr
+    import eudplib.core.variable.vbase as _vbase
+
+    def _reading(name):
+        method = getattr(_vbase.VariableBase, name)
+
+        def wrapper(self, *args, **kwargs):
+            ROUTE.reading += 1
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                ROUTE.reading -= 1
+
+        wrapper.__name__ = name
+        setattr(_vbase.VariableBase, name, wrapper)
+
+    for _name in ("AtLeast", "AtMost", "Exactly", "AtLeastX", "AtMostX", "ExactlyX"):
+        _reading(_name)
+
     _seqcompute = _eudv.SeqCompute
     _MODS = {id(SetTo): 7, id(Add): 8, id(Subtract): 9}
 
     def _emit_group(cells, consts, memo):
         """A site: what came before jumps to `entry`; the setup does the constant stores before it (as eudplib's own
-        SeqCompute does, in the same trigger) and routes the cells in a chain, the last back to `after`. When the cells
-        need no routing, `entry` is the constants alone, or the first cell."""
+        SeqCompute does, in the same trigger) and routes the cells in a chain, the last back to `after`. The bare way in
+        (no routing: `decide` chose) does the constants alone and goes through `slot`s — each the cell itself, or a
+        copy of it a loop keeps — whose routing is set elsewhere."""
         ROUTE.emitting += 1
         try:
             entry, after = Forward(), Forward()
             SetNextTrigger(entry)
             first = cells[0][0].GetVTable()
+            slots = [Forward() for _ in cells]
             # (An action belongs to one trigger: the constants are made twice, for the setup and for the bare way in.)
             const_acts = lambda: [SetDeaths(_eudv._get_computedest(EncodePlayer(_unproxy_r(dst))), mdt, src, 0) for dst, mdt, src in consts]
-            bare = RawTrigger(nextptr=first, actions=const_acts()) if consts else first
+            bare = RawTrigger(nextptr=slots[0], actions=const_acts()) if consts else slots[0]
             acts, plan = const_acts(), []
             for i, (v, dest, mod) in enumerate(cells):
                 nxt = cells[i + 1][0].GetVTable() if i + 1 < len(cells) else after
@@ -244,14 +446,14 @@ if ROUTE.enabled:
                     acts.append(v.SetModifier(mod))
                 acts.append(SetNextPtr(v.GetVTable(), nxt))
                 memo[id(v)] = (dest, mod)
-                plan.append((v, dest, _MODS[id(mod)], nxt))
+                plan.append((v, dest, _MODS[id(mod)], slots[i + 1] if i + 1 < len(cells) else after, slots[i]))
             setup = RawTrigger(nextptr=first, actions=acts)
             after << NextTrigger()
         finally:
             ROUTE.emitting -= 1
-        g = {"entry": entry, "setup": setup, "bare": bare, "cells": plan}
+        g = {"entry": entry, "setup": setup, "bare": bare, "cells": plan, "ctx": ROUTE.where()}
         ROUTE.groups.append(g)
-        for v, _, _, _ in plan:
+        for v, _, _, _, _ in plan:
             ROUTE.sites.setdefault(id(v), []).append(g)
 
     def _routed_seqcompute(assignpairs):
@@ -290,8 +492,40 @@ if ROUTE.enabled:
         flush_group()
         flush_plain()
 
-    _eudv.SeqCompute = _routed_seqcompute
+    # Every eudplib module that took SeqCompute by name (a call's arguments go through eudplib.core.variable's) calls this one.
+    for _mod in list(_sys.modules.values()):
+        if getattr(_mod, "__name__", "").startswith("eudplib") and getattr(_mod, "SeqCompute", None) is _seqcompute:
+            _mod.SeqCompute = _routed_seqcompute
     SeqCompute = _routed_seqcompute
+
+    # Where code runs apart: a function's body (eudplib's and this file's), a scope of triggers this file sets apart.
+    from eudplib.core.eudfunc.eudfuncn import EUDFuncN as _EUDFuncN_r
+    _fn_call = _EUDFuncN_r.__call__
+    _fn_body = _EUDFuncN_r._create_func_body
+
+    def _routed_call(self, *args, **kwargs):
+        ROUTE.called(self)
+        return _fn_call(self, *args, **kwargs)
+
+    def _routed_body(self):
+        r = ROUTE.functions.setdefault(id(self), _Region("fn"))
+        ROUTE.stack.append(r)
+        try:
+            return _fn_body(self)
+        finally:
+            ROUTE.stack.pop()
+
+    _EUDFuncN_r.__call__ = _routed_call
+    _EUDFuncN_r._create_func_body = _routed_body
+    _push_scope, _pop_scope = PushTriggerScope, PopTriggerScope
+
+    def PushTriggerScope():  # noqa: N802 (this file's own scopes apart: a function that calls itself)
+        ROUTE.stack.append(_Region("scope"))
+        return _push_scope()
+
+    def PopTriggerScope():  # noqa: N802
+        ROUTE.stack.pop()
+        return _pop_scope()
 
     # The variable buffer writes the cells a decided group reads with their routing in place.
     _create_vartrigger = _vbuf.EUDVarBuffer.create_vartrigger
@@ -452,17 +686,18 @@ def cell_write(store, index, value, modifier):
         return
     if isinstance(index, int):
         if modifier == SetTo:
-            store[index] = value  # (eudplib's own: a variable's value writes itself into the cell)
+            # The variable's value written into the cell (through SeqCompute: a site of static routing).
+            SeqCompute([(store._epd + VARRAY_VALUE // 4 + VARRAY_STRIDE // 4 * index, SetTo, value)])
         else:
             Trigger(actions=SetMemoryEPD(store._epd + VARRAY_VALUE // 4 + VARRAY_STRIDE // 4 * index, modifier, value))
         return
     act = Forward()
-    start = [SetMemory(act + 16, SetTo, store._epd + VARRAY_VALUE // 4)]
+    # (Through SeqCompute, so that a variable's copy into the action is a site of static routing.)
+    pairs = [(EPD(act) + 4, SetTo, store._epd + VARRAY_VALUE // 4)]
     if isinstance(unProxy(value), EUDVariable):
-        VProc(value, start + list(value.QueueAssignTo(EPD(act) + 5)))
+        pairs.append((EPD(act) + 5, SetTo, value))
         value = 0
-    else:
-        RawTrigger(actions=start)
+    SeqCompute(pairs)
     for b in reversed(range(max((store._size - 1).bit_length(), 1))):
         RawTrigger(conditions=index.AtLeastX(1, 1 << b), actions=SetMemory(act + 16, Add, VARRAY_STRIDE // 4 << b))
     RawTrigger(actions=[act << SetMemoryEPD(0, modifier, value)])
@@ -659,19 +894,12 @@ def varray_write(value_epd, place, value, modifier):
     """The cell whose value is at EPD `value_epd` + the place's dwords set to (or added to) `value`: `value_epd` a
     constant, or a variable holding it."""
     act = Forward()
-    vs, acts = [], []
-    if isinstance(value_epd, EUDVariable):
-        vs.append(value_epd)
-        acts += value_epd.QueueAssignTo(EPD(act) + 4)
-    else:
-        acts.append(SetMemory(act + 16, SetTo, value_epd))
-    vs.append(place.dwords)
-    acts += place.dwords.QueueAddTo(EPD(act) + 4)
+    # (Through SeqCompute, so that each variable's copy into the action is a site of static routing.)
+    pairs = [(EPD(act) + 4, SetTo, value_epd), (EPD(act) + 4, Add, place.dwords)]
     if isinstance(unProxy(value), EUDVariable):
-        vs.append(value)
-        acts += value.QueueAssignTo(EPD(act) + 5)
+        pairs.append((EPD(act) + 5, SetTo, value))
         value = 0
-    VProc(vs, acts)
+    SeqCompute(pairs)
     RawTrigger(actions=[act << SetMemoryEPD(0, modifier, value)])
 
 
@@ -715,6 +943,8 @@ class Storage:
         self.rowed = rows is not None
         self.player_of = rows
         self.store = cell_array([0] * rows.count) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
+        if not self.rowed:
+            ROUTE.names[id(self.store)] = decl.get("name", "?")
 
     def get(self):
         return self.store[self.player_of()] if self.rowed else self.store
@@ -4669,6 +4899,7 @@ class Lowering:
         back = EUDVariable()
 
         def body():
+            ROUTE.unknown_call()
             after = Forward()
             DoActions([SetNextPtr(tail, after), back.SetNumber(after)])
             EUDJump(start)
@@ -5932,6 +6163,43 @@ if settings.get("variableMap"):
 
     _injector.initialize_payload = _initialize_and_say
 
+
+# The loops of the IR and the code that runs apart from them, for static routing (above): a loop is a region with a way
+# in (`entry`, what came before jumps there; `after`, the loop's first trigger), a sleep or a parallel makes the loops
+# around it wait, a coroutine (a program's body, a task, a branch) runs apart, and a call of a function that calls itself
+# is one whose body this cannot follow.
+if ROUTE.enabled:
+    _ROUTED_LOOPS = ("while", "do", "for", "unitLoop", "textLoop")
+    _lower_statement = Lowering.statement
+
+    def _routed_statement(self, st, ctx):
+        k = st["kind"]
+        if k in ("sleep", "parallel"):
+            ROUTE.waited()
+        if k not in _ROUTED_LOOPS or not ROUTE.on:
+            return _lower_statement(self, st, ctx)
+        r = _Region("loop")
+        r.entry, r.after = Forward(), Forward()
+        SetNextTrigger(r.entry)
+        r.after << NextTrigger()
+        ROUTE.loops.append(r)
+        ROUTE.stack.append(r)
+        try:
+            return _lower_statement(self, st, ctx)
+        finally:
+            ROUTE.stack.pop()
+
+    Lowering.statement = _routed_statement
+    _lower_coroutine = Lowering.coroutine
+
+    def _routed_coroutine(self, *args, **kwargs):
+        ROUTE.stack.append(_Region("coroutine"))
+        try:
+            return _lower_coroutine(self, *args, **kwargs)
+        finally:
+            ROUTE.stack.pop()
+
+    Lowering.coroutine = _routed_coroutine
 
 INPUT = Input(IR.get("input"))
 _SOURCES = {s: uses_source(IR.get("programs", []), s) for s in ("created", "died", "killed", "ordered", "morphed")}
