@@ -2713,6 +2713,8 @@ default map, 96 tiles wide — the board is 128, and those columns are off it. O
 (`fixtures/eud/raycaster-base.scx`, now said in the probe's header) both of its tests pass, before these changes and after.
 
 
+### The emitter: a backend of our own, one statement kind at a time
+
 Parts 1–3 changed what eudplib makes from inside it. From here the lowering itself moves: a TypeScript emitter that
 lowers the IR to triggers and decides where every value lives, beside `python/trigscript.py` until it has taken all of
 it, then the layout and the loader, then the input plugins — and then no Python at all.
@@ -2864,6 +2866,14 @@ probe with the emitter on and off. **Left off by default:** everything measured 
 passes, but the lifted game is 1.16.1 with Remastered's EUD rules modelled — the emitter's reads through a
 condition's player field and its calls into part 3's functions should be played in Remastered first (the emitter
 probe as a map), and the cost-by-line report gives a shared trigger's cost to its first line.
+
+**Played in Remastered and switched on (2026-10-19).** `probes/game-emitter.ts`, built with the emitter (all 11 of its
+loops taken), played in Remastered 1.23.10.13515: its nine lines (A–I) are the lifted game's, number for number — the
+cells of a known list read through a condition's player field and the fixed products and quotients called straight
+from the graph included. The emitter is now on by default; `emitter: false` / `EMITTER=0` turns it off. The lowering
+bench builds with it off: a trigger of the emitter's may hold several lines' work and the count gives it to the first,
+so the bench's numbers by line are the Python side's. With both of today's branches the raycaster is 0.50 ms a frame
+(0.60 with the emitter off; 1.13 when this section began).
 
 ## Part C — the game, pushed
 
