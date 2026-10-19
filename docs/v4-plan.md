@@ -1542,6 +1542,14 @@ A pixel under half opaque is never ink. Nothing reaches the game but what the sc
   and side (whole, 4 diffused / even, 6 diffused / even; at most 558 brushes a frame). Played once in Classic and once
   in Remastered graphics: does Remastered's blur melt the dots into grey, which cell size, and do diffused dots
   shimmer when the picture moves.
+- **Played 2026-10-19** (one round, F5 switching graphics, recording 11.06.27.24; minimap crops Classic 388 wide at
+  (338, 1040), Remastered 386 at (17, 1042) in 2560 × 1440): everything drew where built in both. **Classic:** dots,
+  sharp — tile to tile 9–13 apart — though a diffused ramp's averages climb steadily (108 → 164). **Remastered: the
+  dots melt** (tile to tile about 2) and a diffused ramp climbs 73 → 93; the ball at 6 × 7 undiffused reads as real
+  shading. But Remastered's minimap has a third of Classic's contrast — lit 97 against fog 71, Classic 169 against
+  104 — so every grey there is dim. Undiffused ramps show steps (in Remastered not even climbing evenly); diffused
+  leaves a dot texture at 4 × 5 in Remastered. Walks: walls read as grey in Remastered, near against far faintly.
+  Open: shimmer while walking, and whether to use it in the raycaster — the player's eye.
 - **Not yet:** the runtime half — an image as a table a program reads while the game runs (textures, sprites, a level
   painted as a picture) — waits for the lowering work on `backend-limits`.
 
