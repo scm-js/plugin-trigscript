@@ -2337,7 +2337,7 @@ final pass of `numbers.ts` on a `min` of a constant (1 … 256) and `fdiv(C, x) 
   board (they need the 128-wide map, `fixtures/eud/raycaster-base.scx`: on test-game's default 96-wide map the last ten
   columns are off the map, which once looked like a fault).
 
-### Fast cells, the probe (2026-10-18, awaiting play)
+### Fast cells, the probe (2026-10-18, played the same day)
 
 `probes/fast-cells.py` + `.ts`: the weights probe's schedule and marks (so `profile.py` and `profile_report.py` read it
 unchanged) with its own mixes — the yardsticks again (`loop` first, act64, act1, cond16, switch64), then Set Resources
@@ -2356,6 +2356,30 @@ flag kept in such a cell is set, added to and compared with a constant without t
 Resources whose number a variable writes (the copy itself is a Set Deaths into the action). There is no copy out
 short of reading it a bit at a time, so only what is compared with constants belongs there: loop counters against a
 constant bound, states, countdowns.
+
+**Played 2026-10-18** (single player, Fastest, the 7900X; `cells1/`; `profile_report.py` against the PHASE=4 lifted
+count). No phase slowed: every one held 42 ms a frame at 800 thousand records. Nanoseconds a record:
+
+| Mix | ns | Yardstick |
+| --- | ---: | --- |
+| Set Resources, ore / gas of P9–12, add | 4.19 / 3.68 | Set Deaths (act64) 9.47 |
+| Set Resources, ore set to a number | 3.69 | |
+| Set Score, custom, P9–12 / Player 1 | 3.84 / 4.16 | |
+| Accumulate / Score (custom), P9–12 | 3.81 / 3.74 | Deaths condition (cond16) 6.20 |
+| Score, Player 1's custom | 3.69 | |
+| Switch condition / Set Switch | 3.01 / 3.31 | |
+
+Derived again from act1 and act64: a trigger 8.27 ns (8.6 before), Set Deaths 9.34 (9.7), a Deaths condition 5.69
+(4.8). So the tables outside the emulator are about 2.5 times cheaper an action and 1.6 times a condition — and the
+neutral players' cost the same as Player 1's, whose custom score certainly holds (whether Remastered keeps the
+neutral players' values was the screen's line, not in the profile).
+
+**Set aside.** A trigger costs 8.6 ns before its records, and the lowering's statements are triggers: a counter's
+`i++` kept in a custom score is 12.4 ns where it is 18.3, its comparison with a constant 3.7 where it is 4.8 — about 7
+ns of a 181 ns loop turn, 4%, for at most twelve cells (eight if Remastered too refuses Players 9–12). Not worth a
+second kind of variable. What the run did give: A4's weights for actions and conditions outside the emulator, which
+were Set Switch's and a guess — `otherAction` 3.8, `otherCondition` 3.6 (was 4.8, a Deaths condition's) — so a
+script's `trigger()` records and the classic backend's resources, scores and switches weigh what they cost.
 
 ## Part C — the game, pushed
 

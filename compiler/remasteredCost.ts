@@ -17,7 +17,8 @@
 import regionsData from "../data/remastered-regions.json";
 
 /**
- * Nanoseconds, from probes/frame-weights played 2026-10-18 (the slopes between 200 and 800 thousand records a frame).
+ * Nanoseconds, from probes/frame-weights and probes/fast-cells played 2026-10-18 (the slopes between 200 and 800
+ * thousand records a frame).
  * A kind the probe did not measure is counted as the measured kind closest to it, said beside each.
  */
 export const WEIGHTS = {
@@ -35,10 +36,14 @@ export const WEIGHTS = {
   search: 7.3,
   /** The search from one unit to another: the two lie close in the tree (unitWalk against unitSame). */
   searchNextUnit: 4.7,
-  /** An action outside the emulator (Set Switch measured; Display Text, Create Unit and the rest not, and likely more). */
-  otherAction: 3.1,
-  /** A condition outside the emulator (not measured: counted as a Deaths condition). */
-  otherCondition: 4.8,
+  /**
+   * An action outside the emulator: probes/fast-cells (2026-10-18) measured Set Switch 3.3, Set Resources 3.7–4.2 and
+   * Set Score 3.8–4.2 (frame-weights had Set Switch 3.1). Display Text, Create Unit and the rest are not measured, and
+   * likely more.
+   */
+  otherAction: 3.8,
+  /** A condition outside the emulator: Switch 3.0, Accumulate 3.8, Score 3.7 (probes/fast-cells). */
+  otherCondition: 3.6,
 } as const;
 
 /** Remastered's frame on that computer: what the game takes of 42 ms (Fastest) before the triggers, and what is left. */
