@@ -21,7 +21,8 @@
  * A screen is a grid of pixels, each 0 (empty) or a colour from 1 to 7; drawing changes the grid, and `present()`
  * shows it: a pixel is a unit on the map, owned by the player whose colour it is, so the minimap shows the picture —
  * neighbouring pixels of one colour join into a solid block there. Only the pixels that changed since the last
- * `present()` are made or taken away, so a still picture costs nothing to show. The same grid can be shown in a
+ * `present()` are made or taken away, and only the pixels drawn since are looked at, so a still picture costs nothing to
+ * show. Draw through the methods (`set`, `clear`, `rect`, …): a pixel written into `pixels` directly is not seen. The same grid can be shown in a
  * player's text lines too, as squares (`ScreenView` in a `ui.lines` view): one game, two screens, as the Tetris probe has it.
  *
  * A player sees the pixels only where they have vision: `screen.reveal(P1)` once gives them Map Revealers over it.
@@ -79,6 +80,13 @@ export class Screen {
   pixels: number[] = new Array(MAX_PIXELS).fill(0);
   /** What the map shows now: the picture as it was at the last `present()`. */
   shown: number[] = new Array(MAX_PIXELS).fill(0);
+  /** The pixels drawn a colour they were not since the last `present()`, in order: each one's place and its x and y. */
+  drawnAt: number[] = new Array(MAX_PIXELS).fill(0);
+  drawnX: number[] = new Array(MAX_PIXELS).fill(0);
+  drawnY: number[] = new Array(MAX_PIXELS).fill(0);
+  drawn = 0;
+  /** More drawn than the list holds: `present()` looks at every pixel instead. */
+  overflow = false;
   x: number;
   y: number;
   width: number;
@@ -106,14 +114,30 @@ export class Screen {
 
   /** Every pixel the colour (0, empty, unless it says). */
   clear(color: number = 0) {
-    const n = this.width * this.height;
     let i = 0;
-    while (i < n) { this.pixels[i] = color; i++; }
+    let y = 0;
+    while (y < this.height) {
+      let x = 0;
+      while (x < this.width) { this.put(i, x, y, color); i++; x++; }
+      y++;
+    }
   }
 
   /** One pixel; nothing happens outside the screen. */
   set(x: number, y: number, color: number) {
-    if (x >= 0 && y >= 0 && x < this.width && y < this.height) this.pixels[y * this.width + x] = color;
+    if (x >= 0 && y >= 0 && x < this.width && y < this.height) this.put(y * this.width + x, x, y, color);
+  }
+
+  /** A pixel written, and listed for `present()` when its colour changed. */
+  private put(i: number, x: number, y: number, color: number) {
+    if (this.pixels[i] === color) return;
+    this.pixels[i] = color;
+    if (this.drawn < MAX_PIXELS) {
+      this.drawnAt[this.drawn] = i;
+      this.drawnX[this.drawn] = x;
+      this.drawnY[this.drawn] = y;
+      this.drawn++;
+    } else this.overflow = true;
   }
 
   /** The colour of a pixel; 0 outside the screen. */
@@ -208,20 +232,37 @@ export class Screen {
     }
   }
 
-  /** The picture on the map: each pixel that changed since the last time taken away and made again in its colour. */
+  /**
+   * The picture on the map: each pixel that changed since the last time taken away and made again in its colour. Only
+   * the pixels drawn since are looked at (one drawn and drawn back is passed over), unless more were drawn than the list
+   * holds.
+   */
   present() {
-    const half = Math.floor(this.cell / 2);
-    const n = this.width * this.height;
-    for (let i = 0; i < n; i++) {
-      const now = this.pixels[i];
-      const was = this.shown[i];
-      if (now !== was) {
-        centerLocation(SPOT, this.x * 32 + (i % this.width) * this.cell + half, this.y * 32 + Math.floor(i / this.width) * this.cell + half, 32, 32);
-        OWNERS.forEach((owner, k) => { if (was === k + 1) removeUnitAt(owner, this.unit, 1, SPOT); });
-        OWNERS.forEach((owner, k) => { if (now === k + 1) createUnit(owner, this.unit, 1, SPOT); });
-        this.shown[i] = now;
+    if (this.overflow) {
+      let i = 0;
+      let y = 0;
+      while (y < this.height) {
+        let x = 0;
+        while (x < this.width) { this.show(i, x, y); i++; x++; }
+        y++;
       }
+      this.overflow = false;
+    } else {
+      for (let k = 0; k < this.drawn; k++) this.show(this.drawnAt[k], this.drawnX[k], this.drawnY[k]);
     }
+    this.drawn = 0;
+  }
+
+  /** One pixel on the map as it is in the picture, when it is not already. */
+  private show(i: number, x: number, y: number) {
+    const now = this.pixels[i];
+    const was = this.shown[i];
+    if (now === was) return;
+    const half = this.cell >> 1;
+    centerLocation(SPOT, this.x * 32 + x * this.cell + half, this.y * 32 + y * this.cell + half, 32, 32);
+    OWNERS.forEach((owner, k) => { if (was === k + 1) removeUnitAt(owner, this.unit, 1, SPOT); });
+    OWNERS.forEach((owner, k) => { if (now === k + 1) createUnit(owner, this.unit, 1, SPOT); });
+    this.shown[i] = now;
   }
 }
 

@@ -78,6 +78,38 @@ describe("trigscript/screen", () => {
     run.run(2);
     expect(made(run)).toHaveLength(4);
   });
+  it("present looks only at what was drawn: a pixel drawn and drawn back makes nothing, and the places are right", () => {
+    const r = compile(`
+      import { Screen } from "trigscript/screen";
+      program(async () => {
+        const s = new Screen(4, 4, 5, 3);
+        s.set(1, 2, 3); s.set(4, 0, 3); s.set(4, 0, 0); s.clear(); s.set(3, 1, 5);
+        s.present();
+      });`);
+    const run = sim(r).run(1);
+    // Only (3, 1) is made, colour 5 (P6, slot 5), at its centre: tile 4 + 3 pixels of two tiles, plus half a pixel.
+    expect(made(run).map((e) => [e.action.player, e.action.unitId])).toEqual([[5, 42]]);
+    expect(taken(run)).toEqual([]);
+  });
+
+  it("more drawn than the list holds: present looks at every pixel, and the picture is still right", () => {
+    const r = compile(`
+      import { Screen, MAX_PIXELS } from "trigscript/screen";
+      program(async () => {
+        const s = new Screen(0, 0, 64, 32);
+        s.clear(2); s.clear(0); s.set(5, 5, 1);
+        s.present();
+        await sleep(frames(1));
+        s.set(5, 5, 0);
+        s.present();
+      });`);
+    const run = sim(r).run(1);
+    expect(made(run).map((e) => e.action.player)).toEqual([2]);
+    run.run(1);
+    expect(taken(run).map((e) => e.action.player)).toEqual([2]);
+    expect(made(run)).toHaveLength(1);
+  });
+
   it("reveal gives the player Map Revealers over the screen, so the pixels show through the fog", () => {
     const r = compile(`
       import { Screen } from "trigscript/screen";
