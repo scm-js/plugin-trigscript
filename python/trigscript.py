@@ -3876,6 +3876,7 @@ class Lowering:
             elif do == "give":
                 to = int(verb["to"])
                 cu.cgive(self.current() if to == CURRENT_PLAYER else to)
+                forget_counts()
             elif do == "order":
                 self.order(cu, verb, st)
             elif do == "locate":
@@ -3909,6 +3910,7 @@ class Lowering:
         x, y = cu.posX - f_div(width, 2)[0], cu.posY - f_div(height, 2)[0]
         for i, v in enumerate((x, y, x + width, y + height)):
             f_dwwrite_epd(base + i, v)
+        forget_counts()
 
     def select(self, st):
         """select() (B5): on the player's own computer the selection becomes the units still there — the twelve slots
@@ -3952,12 +3954,14 @@ class Lowering:
                 nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
             for i, v in enumerate((nx, ny, nx + width, ny + height)):
                 f_dwwrite_epd(base + i, v)
+            forget_counts()
             return
         left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
         width, height = right - left, bottom - top
         nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
         for i, v in enumerate((nx, ny, nx + width, ny + height)):
             f_dwwrite_epd(base + i, v)
+        forget_counts()
 
     def adjust(self, cu, do, amount, percent):
         """Hit points down — at 0 the unit dies — or up to the type's maximum, in the game's own units (256 to a point)."""
@@ -4632,12 +4636,17 @@ class Lowering:
                     value << 228
                 EUDEndIf()
             fields[name] = value
+        moves = int(r["type"]) in MOVES_UNITS
         if count is None:
             DoActions(Action(**fields))
+            if moves:
+                forget_counts()
             return
         fields["amount"] = 1
         for _ in EUDLoopRange(0, count):
             DoActions(Action(**fields))
+        if moves:
+            forget_counts()
 
     def print_(self, st):
         """Text with values in it: every value first, then the text, shown only on the screen of the player it is for."""
@@ -5865,6 +5874,19 @@ def not_all(conds):
     # (Trigger, not RawTrigger: a condition whose amount is a variable is patched before, as EUDIf does.)
     Trigger(conditions=conds, actions=v.Clear())
     return v
+
+
+def forget_counts():
+    """Bring keeps the counts it found for a location number until the trigger pass ends or a query of another kind or
+    location is asked: writing a location's sides, or making units in it, leaves the next Bring of it reading the old
+    counts (Remastered and the lifted game alike, probes/location-stale.py). A Command in between makes it count again
+    (about 30 ns, and the next Bring is a scan, as it would be for a location that moved)."""
+    RawTrigger(conditions=Command(P1, AtLeast, 0, 0))
+
+
+# Actions that put units where a Bring already counted, or change whose they are: Create Unit with Properties, Move
+# Unit, Create Unit, Give Units to Player.
+MOVES_UNITS = {11, 39, 44, 48}
 
 
 def always(truth):

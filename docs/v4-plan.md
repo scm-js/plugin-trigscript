@@ -2495,6 +2495,10 @@ Not on the list: anything that runs outside the trigger walk, and threads (the g
   query of another location, or a Command, in between when L was asked earlier in the same pass and the answer must be
   new. The cheapest is a Command (about 30 ns, from the Bring-and-Command row; the next Bring of L is a scan either way). The same after
   making units in a location that is asked again.
+  **TrigScript had this bug** (`probes/game-location-stale.ts`: `countUnits(P1, marine, spot)` after `centerLocation(spot,
+  …)` printed `4 4 4 4,4,4,4,` in the lifted game where `4 0 4 4,0,4,0,` is right; the simulator, which keeps no such
+  table, had it right, so the two disagreed). Fixed in the lowering: `centerLocation()`, `unit.locate()`, `unit.give()`
+  and the actions Create Unit (with Properties), Move Unit and Give Units are followed by a Command (`forget_counts`).
 
 **As built: value ranges (2026-10-19).** `compiler/ranges.ts`, run after `numbers.ts`; IR 25 (`range` on a number).
 - The range of every number variable is the union of what is stored into it, and 0 (a cell before its first store);
