@@ -21,8 +21,9 @@
  *     const pick = await choose(P1, ITEMS.length, shop);
  *   });
  *
- * The text lines are one player's: a view is shown to that player only, rebuilt when what it reads changes (and once a
- * second besides), so a menu, a dialog and a meter cost nothing while nothing changes. Give a player one `ui.lines` and
+ * The text lines are one player's: a view is shown to that player only, rebuilt when what it reads changes (a function
+ * it calls included) and shown again once a second as it was, so a menu, a dialog and a meter cost nothing while nothing
+ * changes. Give a player one `ui.lines` and
  * put everything in it, as the example does: the components are pieces of one view, and the state they show is a
  * record of yours (`shop`, `talk`) that the functions here change.
  *

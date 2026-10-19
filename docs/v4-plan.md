@@ -2093,6 +2093,35 @@ Not done here, and why:
 - `x * y` (555 ns), a signed comparison of two variables neither of which is known never below zero (318 ns), and a
   write at a variable index (204 ns, 157 into an `EUDArray`) are next.
 
+### A view put together only when it changes (2026-10-18)
+
+The cheaper lowering's showpiece check left Snake at 1.7 ms a frame, 1.2 of it under its `ui.lines` line. `views.ts`
+already put a view together again only after a write to what it reads, but it gave up on a view that called a
+function of the script's own and put that view together every frame: a call might read the game. Snake's view calls
+`thousands()` twice, and a function called twice is kept as one rather than written out where it is called (a view
+calling it once was followed, which is what hid this). In the simulator Snake's HUD was shown on 60 of 60 frames.
+
+- **A call is followed into the function**: what the function reads of the program is what the view reads, its
+  parameters and its own variables aside; a function that reads the game still makes the view one that does
+  (`readsOf` with the program's functions, each worked out once, one that calls itself adding nothing while it is
+  being worked out).
+- **Shown again from the text it last put together.** The once-a-second showing, before the game's lines fade, put
+  the view together again "in case". A followed view changes only when its flag is set, and a view that reads the
+  game sets its flag every frame anyway, so the showing now prints the buffer as it is; counting the lines to fill
+  moved into the putting together. In the lifted game the showing costs 6.9 thousand records, the putting together
+  and showing 24 thousand, for a one-line view of two numbers.
+- **Snake: 1.69 → 0.05 ms a frame on average** (900 frames weighed in the lifted game). What is left of it is the
+  screen's `present()`, about 83 thousand records every move: it walks all the screen's pixels to find the changed
+  ones.
+- `probes/game-ui.tsx` checks the view in the game and the simulator; `tests/ui.test.ts` that a view calling kept
+  functions is followed, and that one whose function reads the game is not. The lifted game does not tell a line
+  shown again unchanged from the one before it, so the probe reads the texts in order with repeats taken out.
+
+Found on the way: a line's cost in A4 takes in the eudplib work that runs after it with no line of its own (its
+functions, its variables), so a task that runs every frame collects whatever follows it. `scripts/weigh-map.mts
+--by-origin` weighs by each trigger's own origin instead, eudplib's functions among them, which is what showed that
+the per-frame work was number-to-text and text functions.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

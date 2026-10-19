@@ -7956,7 +7956,8 @@ export class Structured {
     const task = ++this.taskCount;
     const shown = view;
     // Put together again when something it reads was written (`views.ts` sets the flag after every such write), and shown
-    // again once a second whatever happens, before the game's lines fade — put together then too, in case.
+    // again once a second whatever happens, before the game's lines fade: the text it last put together, which stays in
+    // its buffer (put together again each time, a view of eleven lines was tens of thousands of records a second).
     // Declared at the top of the program (`views.ts`): a write before this line already sets it.
     const dirty = this.newVar("(redraw)", "number", at, { temp: true });
     // The lines after the view, each a space, so that every showing is all the text lines there are: the one before is
@@ -7970,11 +7971,14 @@ export class Structured {
       const age = this.newVar("(frames since shown)", "number", at, { temp: true });
       this.emit({ kind: "declare", decl: age, init: num(REFRESH_FRAMES), at, label }, call);
       const loop = this.collect(() => {
-        const due: BoolExpr = { kind: "or", items: [{ kind: "test", expr: varRef(dirty), at, label }, { kind: "compare", op: ">=", left: varRef(age), right: num(REFRESH_FRAMES - 1), at, label }] };
-        this.emit({ kind: "if", cond: due, then: [
+        // Put together, and then shown this frame.
+        this.emit({ kind: "if", cond: { kind: "test", expr: varRef(dirty), at, label }, then: [
           { kind: "assign", target: dirty.id, value: num(0), at, label },
           { kind: "block", body: build, at },
           ...this.fillLines(text!, at, label),
+          { kind: "assign", target: age.id, value: num(REFRESH_FRAMES - 1), at, label },
+        ], at, label }, call);
+        this.emit({ kind: "if", cond: { kind: "compare", op: ">=", left: varRef(age), right: num(REFRESH_FRAMES - 1), at, label }, then: [
           { kind: "print", parts: [{ kind: "value", text: text! }, { kind: "value", text: { kind: "textRepeat", of: { kind: "text", text: "\n " }, count: varRef(fill), at, label } }], to, position: "chat", at, label },
           { kind: "assign", target: age.id, value: num(0), at, label },
         ], else: [{ kind: "assign", target: age.id, value: { kind: "binary", op: "+", left: varRef(age), right: num(1), at, label }, at, label }], at, label }, call);
