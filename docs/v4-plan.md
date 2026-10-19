@@ -3010,6 +3010,54 @@ bench builds with it off: a trigger of the emitter's may hold several lines' wor
 so the bench's numbers by line are the Python side's. With both of today's branches the raycaster is 0.50 ms a frame
 (0.60 with the emitter off; 1.13 when this section began).
 
+### Our own layout and start-up
+
+The second step past eudplib: a map made with no eudplib and no Python, for a program the emitter lowers whole.
+
+**What eudplib does to start a map** (read in `~/.cache/eudplib-src`, `maprw/injector/`):
+- *Where the payload is.* Remastered keeps the string section at 0x191943C8, so eudplib appends its payload to the
+  strings (`STRx`) and relocates every pointer in it when the map is built (`payload_init.py`: `payload_offset` is
+  0x191943C8 plus the strings' length). Nothing is relocated in the game. (Its in-game relocator,
+  `payload_reloc.py`, is the other mode, not the default.)
+- *Stage 1, in TRIG.* A few of the game's own triggers per player: the current player (0x6509B0) set to the EPD of
+  the player's list's last node (0x51A284 + 12 × player), its 30 address bits read into a scratch death count, the
+  current player made the EPD of that node's next pointer, and that pointer set to the payload. A Set Deaths through
+  0x6509B0 is out of range, so the map is an EUD map when it loads. The map's own triggers are turned off for a while.
+- *Stage 3, in the payload* (`inj_finalizer.py`): the next pointer put back, the map's locations put back (eudplib
+  scrambles MRGN against copying), the map's triggers' flags flipped back on and inline code dispatched, then every
+  player's list re-linked to a runner of its own — first node in the payload, last node ending at the list's own end
+  `~(0x51A280 + 12 × player + 4)` — and the main loop run once a game tick (0x57F23C changed). eudTurbo sets the game's
+  wait between passes (0x6509A0) to 0 every pass, so triggers run every frame.
+
+**The minimum, as built** (`compiler/backend/layout.ts`, `scripts/build-own.mts`): stage 1 for the program's owner
+only (63 triggers, run once each); then the payload, at a fixed address after the strings:
+- `@wake` heads the owner's list on every pass: "the game's tick is at least W → go to R". W and R are fields of its
+  own condition and action. First W is 0 and R the start.
+- `@init`, once: the owner's list made the payload alone (first `@wake`, last `@stop`, as eudplib's runner is linked),
+  the current player set to the owner.
+- the program's graph (`emitBody`: the whole body the emitter's — a print of a known text is the game's Display Text;
+  a loop the front end unrolled is laid out a turn at a time; a variable's copy, which the Python side routes
+  elsewhere, is a trigger a bit adding into its places).
+- `sleep(frames(n))`: W set to the game's tick (0x57F23C, read a bit at a time) plus n, R to the statement after, and
+  the pass ends; there `@wake`'s next pointer is put back. The program's end sets W to a tick never reached.
+- `@stop`: 0x6509A0 set to 0 (eudTurbo's write), then the list's end.
+No relocation, no scrambling, no flags to flip (the map has no triggers of its own), no inline code.
+
+**Results** (`probes/own-loader.ts`: loops of numbers checking themselves, sleeps, a loop across frames):
+- The lifted game prints its eight lines at frames 2, 2, 6, 6, 10, 10, 15, 15 — the frames the same script built
+  through eudplib prints them at. Every access is one Remastered allows (`scripts/game-check.mts`: 72 distinct, 63 of
+  them the map's own memory, none ending the game, none never seen).
+- Built in **0.7 s** (compile 0.45 s, the emitter 0.01 s, the map 0.3 s) against 5.3 s through eudplib (in Node, its
+  Python native; the editor's build also loads Pyodide).
+- In the game: the start costs 0.004 ms against eudplib's 1.07 ms (its start-up, frame 2: 82 068 records); a frame
+  while the program runs 1.3 µs against 5.1; a frame once it has ended 2 records against 170 (eudplib's own work
+  every frame, about 4 µs).
+- Not yet: anything the emitter leaves to the Python side (texts with values, units, arrays it does not read, calls,
+  tasks, per-player programs, `trigger()` records of the map's own), and the map's own triggers alongside (eudplib's
+  stage 3 keeps them; ours drops them). The probe map is `trigscript-own-loader.scx` in the Maps folder: played in
+  Remastered, it says whether the start-up holds there — and whether the end of a game does, the one moment where a
+  list holding nodes outside the game's heap could matter (eudplib's lists hold them too).
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

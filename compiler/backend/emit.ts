@@ -22,6 +22,10 @@ import type { ArrayDecl, BoolExpr, FuncDecl, NumExpr, Program, Stmt, VarDecl, At
 import { PACK_FROM } from "../eud";
 import { END, MOST_ACTS, MOST_CONDS, checkGraph, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Trigger } from "./graph";
 
+/** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
+export const GAME_TICK = 0x57f23c;
+export const WAKE_TICK = "@wake.tick", WAKE_AT = "@wake.at", WAKE_NEXT = "@wake.next";
+const FRAMES_PER_SECOND = 24;
 const U32 = 2 ** 32;
 const SIGN = 2 ** 31;
 const MAX = U32 - 1;
@@ -147,6 +151,8 @@ class Scope {
 
   /** The statements left to the Python side, inside a taken loop: what each may write. */
   islands = new Map<Stmt, Set<string>>();
+  /** A map of our own (`emitBody`): a print of a text known when the map is built is the game's Display Text. */
+  native = false;
   /** A `for` loop's counters (what its update sets), whose arrays the Python side reads through registers of its own. */
   counters: Set<string>[] = [];
   /**
@@ -301,6 +307,11 @@ class Scope {
         return ok;
       }
       case "break": case "continue": return inLoop;
+      case "unrolled": return s.iterations.every((it) => this.stmts(it, true)) || this.island(s);
+      case "sleep": return this.native || this.island(s);
+      case "print":
+        if (this.native && s.position === "chat" && s.parts.every((p) => p.kind === "text")) return true;
+        return this.island(s);
       default: return this.island(s);
     }
   }
@@ -653,6 +664,39 @@ class Emitter {
         this.land(exit);
         return;
       }
+      case "unrolled": {
+        if (this.scope.islands.has(s)) return this.left(s);
+        // Each turn the loop had, one after another: a break leaves them all, a continue goes on to the next.
+        const exit = this.label("exit");
+        for (const it of s.iterations) {
+          const cont = this.label("cont");
+          this.loops.push({ cont, exit });
+          this.stmts(it);
+          this.loops.pop();
+          this.land(cont);
+        }
+        this.land(exit);
+        return;
+      }
+      case "sleep": {
+        if (!this.scope.native) return this.left(s);
+        // A map of our own (layout.ts): the tick the program wakes at (the game's tick now, a bit at a time, plus the
+        // frames) and where it goes on, written into the trigger that heads the owner's list every pass; then this
+        // pass ends. Where it goes on puts that trigger back to ending the pass.
+        const frames = s.cycles ?? Math.max(1, Math.round(((s.ms ?? 0) * FRAMES_PER_SECOND) / 1000));
+        const resume = this.label("wake");
+        this.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: frames } }, { act: { dword: { data: WAKE_AT }, modifier: "set", value: { label: resume } } });
+        for (let bit = 0; bit < 32; bit++) this.push({ conds: [{ dword: { game: GAME_TICK }, compare: "atLeast", value: 1, mask: 2 ** bit }], items: [{ act: { dword: { data: WAKE_TICK }, modifier: "add", value: 2 ** bit } }] });
+        this.goto(END);
+        this.push({ label: resume, conds: [], items: [{ act: { dword: { data: WAKE_NEXT }, modifier: "set", value: { label: END } } }] });
+        return;
+      }
+      case "print":
+        if (this.scope.native && !this.scope.islands.has(s)) {
+          this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, display: s.parts.map((p) => (p.kind === "text" ? p.text : "")).join("") } });
+          return;
+        }
+        return this.left(s);
       case "break": return this.goto(this.loops[this.loops.length - 1].exit);
       case "continue": return this.goto(this.loops[this.loops.length - 1].cont);
       default: return this.left(s);
@@ -1261,6 +1305,46 @@ function inlined(x: unknown, functions: Map<string, FuncDecl>, depth = 0): unkno
  * The loops the emitter takes, replaced by `graph` statements: `{ kind: "graph", graph, original }`. Returns how many
  * it took. A per-player program is not looked at yet (its variables are rows), nor a task's (its variables are slots).
  */
+/**
+ * A whole body of statements lowered to one graph, for a map of our own (no Python side, no eudplib): every statement
+ * must be the emitter's — a print of a known text is the game's Display Text — with nothing left to an island, no
+ * call of a function of the Python side's, and nothing read that the body did not write first (there is no one to
+ * copy it in; a copy within the body is made of triggers by the layout). Returns the graph, or why it cannot be.
+ */
+export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>()): Graph | string {
+  const rules = (scope: Scope) => {
+    scope.native = true;
+    scope.functions = functions;
+    scope.arrays = arrays;
+  };
+  const take = (list: Stmt[]): boolean => {
+    const trial = new Scope(decls);
+    rules(trial);
+    return trial.stmts(list, true) && trial.islands.size === 0;
+  };
+  const block = new Rewriter(key, take).stmt(inlined({ kind: "block", body, at: body[0]?.at } as Stmt, functions) as Stmt);
+  const s: Stmt = block.length === 1 ? block[0] : ({ kind: "block", body: block, at: body[0]?.at } as Stmt);
+  const scope = new Scope(decls);
+  rules(scope);
+  if (!scope.stmt(s, false)) return scope.why || "?";
+  if (scope.islands.size) return `a ${[...scope.islands.keys()][0].kind} it does not lower (${scope.why || "no reason given"})`;
+  if (scope.calls.size) return "a fixed product or quotient (a function of the Python side's)";
+  const make = (forced: Set<string>): { e: Emitter; g: Graph | string } => {
+    const e = new Emitter(key, scope);
+    e.forced = forced;
+    e.stmt(s);
+    // At its end the program wakes no more.
+    e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } });
+    e.goto(END);
+    return { e, g: e.graph([...scope.read].filter((id) => !scope.declared.has(id) && !isTemp(id))) };
+  };
+  const g = make(new Set()).g;
+  if (typeof g === "string") return g;
+  if (g.entries.length) return `${g.entries[0].from} is read before the body writes it`;
+  if (g.triggers.some((t) => t.island || t.call)) return "an island or a call";
+  return g;
+}
+
 /** One loop lowered to a graph, or why it is not. `decls`: every variable of the program, by id. */
 export function emitLoop(loop: Stmt, decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), indexed = new Set<string>(), arrays = new Map<string, ArrayDecl>()): Graph | string {
   const scope = new Scope(decls);
