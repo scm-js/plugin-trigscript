@@ -20,7 +20,7 @@ program(async () => {
   centerLocation(PARK, 64 * 32, 112 * 32);
   centerView(PARK);
   displayText("\x04Bad Apple!! in the fog of war. The video plays on the MINIMAP.");
-  displayText("\x11Switch to Classic graphics now (Options > Graphics) for a sharp minimap.");
+  displayText("\x11Classic graphics (Options > Graphics) draws the minimap sharp, Remastered soft; a snow board is brighter in Remastered.");
   await nextFrame();
   // The whole board lit once, so a dark part of a frame is fog grey, not the black of a tile never seen.
   fog.reveal(P1);

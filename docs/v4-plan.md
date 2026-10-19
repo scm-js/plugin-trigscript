@@ -1506,6 +1506,72 @@ video, both said to start at 0 — the recorder's, not the map's. **Not yet:** g
 renderer that needs them — the raycaster's textures — will say which); the game's own tables (`ground.distance`,
 `atBuild`), the rest of B8.
 
+**Images (built 2026-10-19, the build-time half).** A picture can now be kept as pixels rather than as ink: Import
+Video… on a picture asks how to keep it — pixels in colour or in grey (an `.image` file), or rows of ink to edit (the
+`.ts` as before) — and `import logo from "./logo.image"` gives an `Image` worked on when the script is built:
+`width`, `height`, `color`, `transparent`, `grey/rgb/alpha(x, y)`, `crop`, `scale` (each pixel the average of what it
+covers, colour weighted by alpha; a block of itself growing by a whole number), `flip`, `rotate`, `invert`, and at the
+end `threshold(level, { ink })` (rows for `fog.picture`) or `tones(n)` (rows of digits for a library's own renderer).
+A pixel under half opaque is never ink. Nothing reaches the game but what the script makes of it.
+- **The file** (`compiler/image.ts`): one line of JSON, 1 to 1024 pixels each way, planes grey or green / red − green /
+  blue − green, then alpha if any pixel is less than opaque; each plane predicted pixel by pixel by JPEG-LS's median
+  edge detector, the miss coded with LZMA's range coder (now `compiler/rangeCoder.ts`, shared with `.video`) under odds
+  chosen by how busy the neighbourhood is. Real pictures at 128 and 256 pixels came back exact and 15–40% smaller than
+  PNG at its strongest, both in base64. The decoded pixels are kept, not the PNG or JPEG, for the reason a video's are.
+- **The editor:** the dialog's preview shows the pixels (in grey when grey is chosen); its size defaults to the
+  picture's own, 256 the longer way at most, 1024 at most typed. An `.image` in the Explorer has its own icon and hover;
+  clicking it opens a viewer — the image, or a threshold as the fog draws it (brushes, tiles off in red) with the
+  `fog.picture(logo.threshold(…))` line that makes it — from the same `Image` the build has.
+- **Left out:** a dither. Floyd–Steinberg made 4,066 brushes of a 256 × 192 logo (the game creates about 950 in a
+  frame), and scattered single tiles are thinner than the smallest sight shape, so the fog cannot draw them.
+- **Halftone instead** (`image.halftone(cellWidth, cellHeight = width + 1, { diffuse })`): the fog's own way of
+  showing grey. Each cell gets one brush or none — the fog's shapes that fit, the largest a tile past the cell so
+  neighbours run together into white, moved in from the picture's edges, never past them — chosen by the light it
+  adds that nothing lit before (spill into a neighbour counts for the cell that made it), what it misses diffused
+  to the next cells; `diffuse: false` is an even grid. The rows carry their brushes and `fog.picture` draws those, so
+  it is a brush a cell at most (covering the union again took a fifth to a half more where discs merge). Two first
+  tries were worse: mixing "lit whole" cells with discs made ragged ink at 2.4 brushes a cell, and choosing by the
+  cell's own share alone came out 10% light where discs spilled into cells already chosen.
+- **The third tone, answered without a play:** whether a map can mark tiles never seen again (black, below fog grey).
+  Remastered's own EUD emulator run on the dump (scm-sim-reader `remastered/probe.py`): 0x6D1260 reads 0xAF1080 and
+  is writable, but reads at that address give 0 and writes change only the emulator's cache — the fog tile array is
+  not the map's to write in Remastered. Two tones it is.
+- **Probe built** (`probes/halftone.ts`, pictures from `probes/lib/halftone-gen.mts`, base map
+  `probes/lib/raycaster-map.mts` with `MAP_NAME`): A ramps at 4 × 5, 6 × 7, 8 × 9 diffused; B the same even; C a lit
+  ball in two tones and five halftones; D five pre-rendered walks of the raycaster's maze with walls greyer by distance
+  and side (whole, 4 diffused / even, 6 diffused / even; at most 558 brushes a frame). Played once in Classic and once
+  in Remastered graphics: does Remastered's blur melt the dots into grey, which cell size, and do diffused dots
+  shimmer when the picture moves.
+- **Played 2026-10-19** (one round, F5 switching graphics, recording 11.06.27.24; minimap crops Classic 388 wide at
+  (338, 1040), Remastered 386 at (17, 1042) in 2560 × 1440): everything drew where built in both. **Classic:** dots,
+  sharp — tile to tile 9–13 apart — though a diffused ramp's averages climb steadily (108 → 164). **Remastered: the
+  dots melt** (tile to tile about 2) and a diffused ramp climbs 73 → 93; the ball at 6 × 7 undiffused reads as real
+  shading. But Remastered's minimap has a third of Classic's contrast — lit 97 against fog 71, Classic 169 against
+  104 — so every grey there is dim. Undiffused ramps show steps (in Remastered not even climbing evenly); diffused
+  leaves a dot texture at 4 × 5 in Remastered. Walks: walls read as grey in Remastered, near against far faintly.
+  Open: shimmer while walking, and whether to use it in the raycaster — the player's eye. The player: the two-tone ball still
+  looks best; D2's dots are distracting, D4 better but not great.
+- **Remastered's minimap, surveyed** (`probes/tile-survey.ts`, `probes/lib/tile-survey-map.mts`: six tilesets, 88 tiles
+  each lit and in fog; recording 11.37.09.25, minimap at (18, 1041), 3.03 pixels a tile). Remastered draws a tile on
+  the minimap as its art's average — the art's average luminance and the minimap's agree at 0.96–0.99 in every
+  tileset — and draws fog as **0.64 of lit, for every tile**: the contrast's ratio is fixed, only brightness can be
+  chosen. The brightest is **Ice snow** (tile 66, group 4, walkable): lit 130, fog 82, a gap of 48 — the board we used,
+  Badlands 23778, is lit 86, fog 57, a gap of 29 there (its art averages 71; 1.16.1 takes one bright pixel of it). The
+  best of the other tilesets: gaps 39–40. So a fog map for Remastered graphics wants snow (two thirds more contrast),
+  one for Classic graphics Badlands 23778 — Classic's minimap is still the sharper and wider (169 against 104).
+- **Snow played in Remastered** (recording 11.54.03.26: raycaster, halftone probe, Bad Apple, built with `BOARD=snow`
+  / `BA_TILE=66`): lit 129, fog 82, as surveyed. The fine grate texture the earlier Remastered recording showed was
+  Badlands 23778's own HD art; snow is smooth. Diffused ramps climb 86 → 125 (twice Badlands' range), still smooth;
+  halftone dots show as soft blobs; the walk at 4 × 5 undiffused reads most like shading. Outlines and silhouettes
+  clean and soft-edged.
+- **Not yet:** the runtime half — an image as a table a program reads while the game runs (textures, sprites, a level
+  painted as a picture) — waits for the lowering work on `backend-limits`.
+
+**Checked:** `tests/image.test.ts` (the format both ways — grey, colour, transparency, noise, one pixel — cut short,
+too big, kept in the archive; every operation on a known picture; a script importing one, drawing it in the fog, a type
+mistake and a build-time mistake each said on their line). **In the editor** (headless Chromium, the local build): a
+PNG dropped on the Explorer, each way of keeping it previewed, imported, a script using it 0 problems, the viewer.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
