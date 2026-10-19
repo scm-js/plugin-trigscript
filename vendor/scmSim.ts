@@ -64,7 +64,7 @@ export interface ScmSimEngine {
    * running the module's `drive(game, payload)`; `triggers` the build's map of them, for the lines of a desync.
    * Resolves with each copy's answer, in the order of `players`. Absent from the plugin before 0.11.0.
    */
-  testCopies?(scenario: Uint8Array, module: string, payload: unknown, options: { players: number[]; triggers?: { payload: number; triggers: [number, number, number, string][] } | null; signal?: AbortSignal; onProgress?: (p: { stage: "starting" }) => void }): Promise<TestCopyResult[]>;
+  testCopies?(scenario: Uint8Array, module: string, payload: unknown, options: { players: number[]; triggers?: { payload: number; triggers: [number, number, number, string, string[]?][] } | null; signal?: AbortSignal; onProgress?: (p: { stage: "starting" }) => void }): Promise<TestCopyResult[]>;
   /**
    * One test recorded for the debugger (TrigScript 4, A5): the module's `debugGameTest(game, payload)` runs it once
    * with everything written down, and the run's game stays with the page for pictures. Absent before 0.11.0.

@@ -27,7 +27,20 @@ export type Dword =
    */
   | { element: string }
   /** A parameter of one of the Python side's fixed-point functions (`FixedFn`): its cell. */
-  | { param: FixedFn; index: number };
+  | { param: FixedFn; index: number }
+  /**
+   * The offset the Python side may keep beside a counter some array is indexed by (`Place`): 72 times it in bytes,
+   * 18 times it in EPD — stepped by the Python side's own stores of the counter, by the graph's writes when the graph
+   * writes it. A dword that is never read when the Python side keeps no such offset.
+   */
+  | { counter: string; part: "bytes" | "dwords" }
+  /**
+   * eudplib's getter, which an EUDVArray's cell goes to after writing its value into it: the dword its action writes
+   * (`dest`, an EPD) and where it goes after (`next`) — set before the walk is sent into a cell.
+   */
+  | { getter: "dest" | "next" }
+  /** A scratch cell of the graph's (a variable of the Python side's it makes): where a cell's value comes out. */
+  | { temp: string };
 
 /**
  * One of the Python side's fixed-point functions (part 3): a product or a quotient of two variables, or of one and a
@@ -44,11 +57,17 @@ export type Field = { cond: number; part?: "value" | "player" } | { act: number;
 export type Compare = "atLeast" | "atMost" | "exactly";
 export type Modifier = "set" | "add" | "subtract";
 
-/** A number known when the map is made: a constant, or the EPD of an array's first cell's value plus a constant. */
-export type Num = number | { epdOf: string; plus: number };
+/**
+ * A number known when the map is made: a constant, or the EPD of an array's first cell's value plus a constant, or the
+ * address of an EUDVArray's first cell (a trigger: what a jump into a cell goes to) plus a constant.
+ */
+export type Num = number | { epdOf: string; plus: number } | { addrOf: string; plus: number };
 
-/** A number an action writes: one known when the map is made, or where a label is (a trigger's address). */
-export type Value = Num | { label: string };
+/**
+ * A number an action writes: one known when the map is made, where a label is (a trigger's address), or the EPD of a
+ * dword (what an action's destination holds: a cell of the graph's own routed to write somewhere else).
+ */
+export type Value = Num | { label: string } | { epd: Dword };
 
 /** The dword compared with `value` (read from 0 up); with `mask`, the dword's bits of the mask (`value` as it is). */
 export interface Cond { dword: Dword; compare: Compare; value: number; mask?: number }
@@ -57,7 +76,8 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * `value` written into the dword, added to it or taken from it; with `mask`, only the mask's bits change. An add wraps;
  * the game's subtract stops at 0, so it is no way to take a variable away (add its negation).
  */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number }
+/** `at`: the statement the action is for, when a trigger holds the work of several (the cost of a line, action by action). */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At }
 
 /**
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,
@@ -77,7 +97,11 @@ export interface Call extends FixedFn { into: Dword }
  * the way the Python side routes a read. What a variable whose writes cannot be laid out into all its places (one set
  * from itself, two that read each other) does after each write.
  */
-export interface Copy { from: string; into: { dword: Dword; add: Num; scale?: number }[] }
+/**
+ * `from`: a variable's id, or (`@…`) a scratch cell of the graph's (`{ temp }`). `top`: the most the copied value can
+ * be, when value ranges know it never below zero (a multiple of it is then worked out over only the bits it can have).
+ */
+export interface Copy { from: string; into: { dword: Dword; add: Num; scale?: number }[]; top?: number }
 
 /*
  * An island, in place of a trigger as a copy is: a statement the emitter does not lower, which the Python side lowers

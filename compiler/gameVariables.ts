@@ -159,8 +159,11 @@ export function programVariables(game: VariableReader, map: VariableMap, name: s
 export interface TriggerMap {
   /** The payload's length in bytes: it ends where the strings section does. */
   payload: number;
-  /** Offset in the payload, conditions, actions, origin ("line:column", "file:line:column", "fn:<name>", "eudplib"). */
-  triggers: [number, number, number, string][];
+  /**
+   * Offset in the payload, conditions, actions, origin ("line:column", "file:line:column", "fn:<name>", "eudplib") —
+   * and, for a trigger of the emitter's that holds several statements' work, each action's origin.
+   */
+  triggers: [number, number, number, string, string[]?][];
 }
 
 /** The trigger map in a build's log (TRIGSCRIPT-MAP and its TRIGSCRIPT-ROWS); null when there is none or it is cut short. */
