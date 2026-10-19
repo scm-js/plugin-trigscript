@@ -13,6 +13,7 @@ program(() => {
   // Values the build cannot know: deaths nobody changes are 0 in the game.
   const zero = deaths(P8, units.TerranMarine);
   let n = zero + R;
+  const m = zero + 16;
   let x = zero, y = zero + 3, z = zero + 4, b = zero, k = zero;
   const spot = new Spot();
   const pts: Spot[] = [new Spot(), new Spot(), new Spot(), new Spot()];
@@ -62,6 +63,10 @@ program(() => {
     }
     for (const u of unitsOf(P1)) { x += u.hp; } /* UNITS */
     for (const v of list) { x += v; } /* LIST_LOOP */
+    for (let i = 0; i < m; i++) { x += cells[i]; } /* ARRAY_LOOP */
+    for (let i = 0; i < m; i++) { cells[i] = y; } /* ARRAY_LOOP_WRITE */
+    for (let i = 0; i < m; i++) { list[i] = y; } /* LIST_LOOP_WRITE */
+    for (let i = 0; i < m; i++) { } /* EMPTY_LOOP */
     sleep(frames(1));
   }
 });

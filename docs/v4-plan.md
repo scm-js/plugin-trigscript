@@ -2262,6 +2262,58 @@ the trigger map and A4's weights) and quick fixes from the cost hint; budgets in
 the desync fuzzer, which waited for B5; per-unit behaviours over B2 and B9; then the language list above
 (`g.next()`, `using`, texts made in the game) and the 4.0 release.
 
+**As built (2026-10-18).** Steps 1–4; no IR change (still 24). Measured with the bench and `probes/bullets-bench.ts`
+before and after, in the lifted game, weighed for Remastered.
+
+- *Arrays that grow, in cells of their own* (`list_heap` in `python/trigscript.py`). Blocks are handed out exactly as
+  before — the same allocator, the same count — so a text and an array still run out at the same push in the game and
+  in the simulator, and the heap setting means what it did. What changed is where an array's cells are: an EUDVArray as
+  long as the heap, made only when some array grows, beside the bytes texts keep. A block moving on a push is copied a
+  cell at a time, both blocks walked by address (about 7 triggers a cell, where reading and writing at an index was 40).
+  Costs: 72 bytes a cell while the map is played (1.2 MB at the default 16 384 cells; the Settings line says so), about
+  22 KB of the saved file, which compresses the cells away. Past 65 536 heap cells (`CELL_HEAP_MOST`; the setting goes to
+  a million) that would be too much memory, and arrays keep the heap's dwords as in 3.x: the probes pass both ways.
+- *An index worked out once* (`Place`, `find_counters`). A number variable whose every store is a constant or itself
+  plus or minus a constant, named nowhere else but in reads (not a call's result, not a function's saved frame, not a
+  loop's own variable), and which indexes an array of cells, keeps two offsets beside it (72 bytes and 18 dwords a
+  step) by the same stores: `i++` is one trigger with two adds more. A read at it is a jump to the array's first cell
+  plus the offset (the offset's variable adds itself into its own next pointer); a write a Set Deaths whose
+  destination is the first cell's plus the offset. A growing array keeps where its block starts, again when it moves.
+  Per-player programs' variables are rows, and are left as they were.
+- *No bounds check at a loop's own index* (`unchecked_loop`). For `for (…; i < xs.length; …)` at a counter, over a
+  growing array, whose body has nothing that changes a length, calls, or waits (`lengths_fixed_in`), and stores nothing
+  into `i`: a read or write of `xs[i]` is unchecked — the condition has just compared — and every other growing array
+  the body reads or writes at `i` is checked once on the way in, its length against `xs`'s, into a flag the access
+  tests instead of comparing two variables (a shorter array goes the checked way, so `b[i]` past `b`'s end still reads
+  0 and a store at its length still pushes). A store at the index into the loop's own array cannot be a push there.
+- *A push with room* is a write at where the next one goes, kept beside the block, and two adds; a push with none calls
+  one function of the array's own (the heap's grow, the handle put back, the next place worked out again). Inlined
+  whole at each push, a script that pushes in a loop the compiler unrolls came out 1.9 MB bigger; as a function, 0.3.
+- *`over` and `spread`* in `trigscript/timers`, as async generators: the elements are the list's own, the length read
+  as it goes, the next frame only between elements. The cost hint does not yet say a `per`: that wants a loop's turns a
+  frame, and the cost tap counts by line.
+
+| Line | Before | After |
+| --- | ---: | ---: |
+| `x = list[k]`, any index | 1 128 ns | 749 |
+| `list[k] = y`, any index | 450 | 639 (the place worked out a bit at a time over 14 bits, where the heap's dword was 2 triggers) |
+| a turn of `for (const v of list) x += v` | 1 417 | 564 |
+| a turn of `for (let i = 0; i < m; i++) list[i] = y` (not the list's length: checked) | 829 | 625 |
+| a turn of `for (let i = 0; i < m; i++) x += cells[i]`, 16 cells | 566 | 462 |
+| a turn of `for (let i = 0; i < m; i++) cells[i] = y`, 16 cells | 394 | 404 (four bits of index were cheaper than the place's two variables; at 2 048 cells it is eleven) |
+| bullets: `b.x += b.dx` | 2 730 | 410 |
+| bullets: `if (b.life > 0) { b.life--; alive++; }` | 2 830 | 530 |
+| bullets: 200 a frame, the loop | 2.38 ms | 0.44 ms |
+| bullets: the frame that makes them (1 000 pushes) | 2.93 ms | 1.09 ms |
+| bullets: the costliest frame | 6.60 ms | 3.26 ms |
+
+`probes/game-arrays-cost.ts` (7 tests) checks every path in the game and the simulator: pushes past several block
+sizes, other arrays read at a loop's index shorter and longer, loops that push and pop, `+=` in place, records in a
+growing array, a counter counting down, an array declared again on each turn of a loop, shortened, and booleans;
+`probes/game-stdlib-core.ts` gained `over` and `spread`.
+
+**Left:** a write at an index that is not a counter (above); a counter in a per-player program; the hint's `per`.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

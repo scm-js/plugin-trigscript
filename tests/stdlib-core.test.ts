@@ -44,6 +44,34 @@ describe("trigscript/timers", () => {
       import { after } from "trigscript/timers";
       program(async () => { let n = 0; const t = after(10, () => { n = 1; }); await sleep(frames(3)); t.cancel(); await sleep(frames(20)); print(\`\${n}\`); });`, 30)).toEqual(["0"]);
   });
+  it("over walks an array per frames, its elements its own, and spread walks a count", () => {
+    expect(shown(`
+      import { over, spread } from "trigscript/timers";
+      import { memory } from "trigscript";
+      class B { constructor(public x: number, public dx: number) {} }
+      program(async () => {
+        const bs: B[] = [];
+        for (let i = 0; i < random(1) + 5; i++) bs.push(new B(i, 10));
+        const start = memory.game.frame;
+        let log = "";
+        for await (const b of over(bs, { per: 2 })) { b.x += b.dx; log += \`\${b.x}@\${memory.game.frame - start} \`; }
+        let sum = 0;
+        for (const b of bs) sum += b.x;
+        const xs: number[] = [];
+        for await (const i of spread(random(1) + 4, { per: 3 })) xs.push(i * 10 + memory.game.frame - start);
+        print(\`\${log}| \${sum} | \${xs.join(" ")}\`);
+      });`, 12)).toEqual(["10@0 11@0 12@1 13@1 14@2 | 60 | 2 12 22 33"]);
+  });
+  it("over reaches what is pushed while it walks, and per below 1 is 1", () => {
+    expect(shown(`
+      import { over } from "trigscript/timers";
+      program(async () => {
+        const xs: number[] = [1, 2];
+        let log = "";
+        for await (const v of over(xs, { per: 0 })) { if (v < 3) xs.push(v + 2); log += \`\${v} \`; }
+        print(log);
+      });`, 12)).toEqual(["1 2 3 4 "]);
+  });
   it("Cooldown, Countdown and Stopwatch read the game's frames", () => {
     expect(shown(`
       import { Cooldown, Countdown, Stopwatch } from "trigscript/timers";

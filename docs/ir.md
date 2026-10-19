@@ -123,6 +123,15 @@ size class — a cell each, or a row of twelve each in a per-player program.
   (`xs.pop() ?? d` arrives as a `ternary` on the length). `setLength` only cuts.
 - `length` of an array that does not grow never reaches a backend: `numbers.ts` makes it a constant on
   its final pass, when every push has been met.
+- **Where the eudplib backend keeps an array's cells.** Blocks are counted and handed out as above, but a growing
+  array's cells are not the heap's dwords: they are an EUDVArray as long as the heap (a variable a cell, 72 bytes,
+  which a read jumps to), made when the first array grows; the dwords are left to texts, whose copies need bytes. A
+  block that moves is copied a cell at a time. Past `CELL_HEAP_MOST` (65 536) heap cells, 72 bytes a cell is too much
+  memory and arrays keep the dwords, read a bit at a time, as before. A variable whose every store is a constant or
+  itself plus or minus one, read anywhere else only as a value, keeps its offset into such cells beside it, so a read
+  or a store at it costs a few triggers whatever the array's length; and inside `for (…; i < xs.length; …)` whose body
+  changes no length, calls nothing and does not wait, `xs[i]` is not checked again, and another growing array at `i`
+  is checked once on the way in. None of this is in the IR: the simulator counts blocks and bounds as it always did.
 - The heap is the arrays' alone. Until version 11 its top was set aside for recursion's stack, growing down
   towards the blocks; the stack is an array of its own now (*Recursion*, below), so that how deep a
   function may go does not depend on what the arrays hold at that moment.

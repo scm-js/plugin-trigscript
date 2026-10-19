@@ -127,6 +127,12 @@ export interface ArrayDecl {
 export const HEAP_CELLS = 16384;
 export const HEAP_CELLS_MIN = 1024;
 export const HEAP_CELLS_MAX = 1 << 20;
+/**
+ * Up to this many heap cells, growing arrays keep cells of their own beside the heap's (72 bytes each while the map is
+ * played, read and written in a few triggers: `python/trigscript.py#list_heap`); past it they share the heap's four-byte
+ * cells, as in 3.x, and a read takes about three times as long. The lowering has the same number.
+ */
+export const CELL_HEAP_MOST = 1 << 16;
 /** A heap size as the build takes it: whole, within the limits; the default for anything that is not a number. */
 export function heapCells(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(HEAP_CELLS_MAX, Math.max(HEAP_CELLS_MIN, Math.floor(value))) : HEAP_CELLS;

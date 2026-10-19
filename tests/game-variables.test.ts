@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMachineLine, programVariables, readVariableMap, type VariableMap } from "../compiler/gameVariables";
+import { isMachineLine, listCellAt, programVariables, readVariableMap, type VariableMap } from "../compiler/gameVariables";
 
 // A memory of 64 KB standing in for the game's, with the cells where a map says they are.
 const memory = () => { const u8 = new Uint8Array(1 << 16); return { u8, m: new DataView(u8.buffer) }; };
@@ -84,6 +84,18 @@ describe("a program's variables read out of the game", () => {
     expect(() => programVariables(g, MAP, "each", 1)).toThrow(/runs for P2/);
     expect(() => programVariables(g, MAP, "waves")).toThrow(/Named: kinds, each/);
     expect(() => programVariables(g, MAP, 5)).toThrow(/the script has 2/);
+  });
+
+  it("an array that grows, from the growing arrays' own cells when the build names them (72 bytes a cell)", () => {
+    const g = filled();
+    const CELLS = 0xc000;
+    g.m.setUint32(CELLS + 72 * 8, 7, true); g.m.setUint32(CELLS + 72 * 9, 8, true);
+    expect(programVariables(g, { ...MAP, cells: CELLS }, "kinds").queue).toEqual([7, 8]);
+    expect(listCellAt({ ...MAP, cells: CELLS }, 8, 1)).toBe(CELLS + 72 * 9);
+    expect(listCellAt(MAP, 8, 1)).toBe(HEAP + 4 * 9);
+    const head = `TRIGSCRIPT-VARS {"programs":2,"heap":${HEAP},"cells":${CELLS},"strings":${STRINGS}}`;
+    const programs = MAP.programs.map((p) => `TRIGSCRIPT-PROGRAM ${JSON.stringify(p)}`);
+    expect(readVariableMap([head, ...programs])?.cells).toBe(CELLS);
   });
 
   it("a unit that is gone is null; nothing held is null", () => {

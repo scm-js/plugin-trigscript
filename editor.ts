@@ -32,7 +32,7 @@ import type { Allowlist } from "./compiler/allowlist";
 import { addressOfEudError, findEudError, type EudErrorAnswer } from "./compiler/eudError";
 import type { GameTestReport } from "./compiler/gameTests";
 import { ENTRY_FILE, normalizePath, type CompileResult, type LineHint, type ScriptDiagnostic, type ScriptFiles, type TriggerSource } from "./compiler/compiler";
-import { HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_CELLS_MAX, STACK_DEPTH, STACK_DEPTH_MAX, STACK_DEPTH_MIN, heapCells, stackDepth } from "./compiler/ir";
+import { CELL_HEAP_MOST, HEAP_CELLS, HEAP_CELLS_MAX, HEAP_CELLS_MIN, STACK_CELLS_MAX, STACK_DEPTH, STACK_DEPTH_MAX, STACK_DEPTH_MIN, heapCells, stackDepth } from "./compiler/ir";
 import { largestFrame } from "./compiler/recursion";
 import { entryFor } from "./compiler/names";
 import { printScript } from "./compiler/print";
@@ -446,8 +446,8 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     settingsView.body.replaceChildren(el("div", { className: "tsd-settings" },
       el("h4", {}, t("Memory for arrays that grow")),
       el("p", {}, t("Arrays a program pushes to share one pool of cells; this is its size. A single array can reach between a quarter and a half of it. When the pool runs out, nothing more is pushed and the game says so once.")),
-      row({ key: "heapCells", min: HEAP_CELLS_MIN, max: HEAP_CELLS_MAX, step: 1024, normal: HEAP_CELLS, fit: heapCells, said: (now) => t("cells — {size} of the built map", { size: size(now) }) }),
-      el("p", {}, t("{min} to {max} cells, four bytes each. A larger pool does not slow the game and hardly grows the saved file; it takes more memory while the map is played. Kept in the map, so it builds the same on any computer.", { min: count(HEAP_CELLS_MIN), max: count(HEAP_CELLS_MAX) })),
+      row({ key: "heapCells", min: HEAP_CELLS_MIN, max: HEAP_CELLS_MAX, step: 1024, normal: HEAP_CELLS, fit: heapCells, said: (now) => t("cells — {size} while the map is played", { size: size(now <= CELL_HEAP_MOST ? now * 19 : now) }) }),
+      el("p", {}, t("{min} to {max} cells. Up to {most}, a cell is 76 bytes while the map is played: four for texts, and 72 for the arrays' own cells, which a loop reads and writes in a few steps. Past that, arrays share the texts' four bytes and a read takes about three times as long. A larger pool does not slow the game and hardly grows the saved file. Kept in the map, so it builds the same on any computer.", { min: count(HEAP_CELLS_MIN), max: count(HEAP_CELLS_MAX), most: count(CELL_HEAP_MOST) })),
       el("h4", {}, t("Recursion depth")),
       el("p", {}, t("How many calls deep a function that calls itself may go. Around each such call the function's variables are kept on a stack, which is only in the built map when some function calls itself. A call past the limit stops the program, and the game says where; Simulate stops at the same call.")),
       row({ key: "stackDepth", min: STACK_DEPTH_MIN, max: STACK_DEPTH_MAX, step: 256, normal: STACK_DEPTH, fit: stackDepth, said: stack }),

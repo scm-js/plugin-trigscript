@@ -1755,7 +1755,8 @@ stored label. Arithmetic is 32 bits that wrap, and each comparison, division, sh
 right, `min`, `max` and printed number reads them signed or unsigned as `numbers.ts`
 marked it. An array that grows is a block of one heap the programs share — sizes double,
 a block given back serves the next array of its size — and a made text is such a block
-of bytes. A function that is called is one body with its parameters as variables; one
+of bytes; an array's own cells sit beside the heap's bytes, a variable each, so that a
+loop's counter reads and writes them in a few triggers. A function that is called is one body with its parameters as variables; one
 that calls itself keeps what a call would overwrite on a stack of its own, an array
 beside the heap whose depth the script's Settings give. `docs/ir.md` says what each node
 means to both backends. A per-player program loops over the

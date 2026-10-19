@@ -14,6 +14,8 @@
  *     }
  *   });
  *
+ *   for await (const b of over(bullets, { per: 50 })) b.x += b.dx;   // fifty a frame, on to the next frame after each fifty
+ *
  * Time is counted in frames of the game, 24 a second on Fastest (`SECOND`). `every` and `after` run their function in a
  * task beside the program, so the program goes on at once; the Task they give back stops it (`cancel()`) and says
  * whether it still runs (`running`). Their function is kept for the task, with what it uses of the block it was written
@@ -21,7 +23,7 @@
  * does not wait). Sixteen of one `every` or `after` written once can run at a time. `Cooldown`, `Countdown` and
  * `Stopwatch` read the game's frame counter: no task, nothing to stop.
  */
-import { game, start, sleep, frames, memory, type Task } from "trigscript";
+import { game, start, sleep, frames, nextFrame, memory, type Task } from "trigscript";
 
 /** Frames a second of game time on Fastest, the speed a map is played at. */
 export const SECOND = 24;
@@ -62,6 +64,51 @@ export const every = game((period: number, fn: (count: number) => void, times: n
  * @returns The task: `cancel()` before then and it never runs.
  */
 export const after = game((delay: number, fn: () => void): Task => start(later(delay, fn)));
+
+/**
+ * The elements of `list`, `per` of them a frame: a loop spread over frames, for work that need not be done in one —
+ * a thousand bullets moved, a map's cells looked at. What a frame costs stays what `per` turns cost.
+ *
+ *   for await (const b of over(bullets, { per: 50 })) b.x += b.dx;
+ *
+ * It reads the list's length as it goes, as `for…of` does: what is pushed meanwhile is reached too, and an element
+ * removed before it is reached moves the rest up, so one is passed over, as with an index. Each element is the list's
+ * own: what is written to it stays. The loop goes on to the next frame only between elements, never after the last.
+ * @param list The array to walk.
+ * @param options `per`: how many elements a frame (1 at least).
+ */
+export async function* over<T>(list: T[], options: { per: number }) {
+  const per = options.per < 1 ? 1 : options.per;
+  let n = 0;
+  for (let i = 0; i < list.length; i++) {
+    yield list[i];
+    n++;
+    if (n >= per && i + 1 < list.length) {
+      n = 0;
+      await nextFrame();
+    }
+  }
+}
+
+/**
+ * 0, 1, … `count` − 1, `per` of them a frame: `over` for a count rather than an array.
+ *
+ *   for await (const y of spread(96, { per: 8 })) drawRow(y);   // twelve frames for 96 rows
+ * @param count How many numbers, from 0.
+ * @param options `per`: how many a frame (1 at least).
+ */
+export async function* spread(count: number, options: { per: number }) {
+  const per = options.per < 1 ? 1 : options.per;
+  let n = 0;
+  for (let i = 0; i < count; i++) {
+    yield i;
+    n++;
+    if (n >= per && i + 1 < count) {
+      n = 0;
+      await nextFrame();
+    }
+  }
+}
 
 /**
  * Something that can be done once every so many frames: a weapon's reload, a spell's cooldown.
