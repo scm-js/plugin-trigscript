@@ -1677,6 +1677,11 @@ reverb, delay, drive), song structure, music that follows the game.
   (L − R) −27 dB; B 2.1 dB louder at the same peak; A 355 KB, B 559 KB. Compile with both renders 1.1 s, encode 0.3 s.
   Lifted game clean (0 ending, A at frame 98, B at 930). Headless Chromium through the real compile worker: a check
   returns the name only, a build the Ogg (558 554 bytes, as Node), a second build from the cache.
+- **Played 2026-10-19** (recording 13.59.06.34): A at 6.771 s, B at 41.715 s, A again at 76.659 s — 34.944 s apart
+  both times, the 832 frames written: the Ogg starts as the WAV does and costs the game no time. B as heard against
+  the file: 31.9 dB over all 32 s (the recording's AAC; the WAV A came back at 24.5), the worst 100 ms 19.5 dB — no
+  dropout; L − R follows the file's at 0.996; peaks back at 0.97 of full scale (the whole 1.08×, the peaks 1.00–1.05×:
+  something after the game rounds the top off gently) — no clipping.
 - **Found on the way:** `ranges.ts` read `process.env` in the browser's worker, where there is none — every program
   failed to compile in the editor. Guarded (its own commit).
 
