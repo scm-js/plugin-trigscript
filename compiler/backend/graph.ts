@@ -76,8 +76,13 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * `value` written into the dword, added to it or taken from it; with `mask`, only the mask's bits change. An add wraps;
  * the game's subtract stops at 0, so it is no way to take a variable away (add its negation).
  */
-/** `at`: the statement the action is for, when a trigger holds the work of several (the cost of a line, action by action). */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At }
+/**
+ * `at`: the statement the action is for, when a trigger holds the work of several (the cost of a line, action by
+ * action). `display`: instead of a write, the game's own Display Text of that text (to the current player, as a
+ * trigger of theirs shows it); only a graph made for a map of our own has one (`emitBody`): its text is put in the
+ * map's strings when the map is made.
+ */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string }
 
 /**
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,
