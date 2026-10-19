@@ -571,25 +571,64 @@ function lazyClip(rate: number, frames: number, channels: 1 | 2, compute: () => 
   return Object.freeze(clip);
 }
 
-/** The level `limit` keeps a clip under unless told otherwise, and `normalize` brings it to: −1.5 dB. Ogg Vorbis comes
- * back up to a dB louder at its peaks than what went in (a song limited to −1 dB peaked at −0.16 dB, decoded), so the
- * margin keeps a limited song from clipping in the game. */
+/** The level `limit` keeps a clip under unless told otherwise, and `normalize` brings it to: −1.5 dB. `limit` keeps
+ * the wave between the samples under it too (its true peak), and Ogg Vorbis comes back a little louder at its peaks
+ * than what went in, so the margin keeps a limited song from clipping in the game. (Judged by the samples alone, a
+ * song limited to 0.84 peaked at 0.95 between them, and a dense one decoded at 0.99.) */
 export const LIMIT_CEILING = 0.84;
 /** How far ahead the limiter looks, in seconds: it turns down this long before a peak, so the peak is never over. */
 const LOOKAHEAD = 0.005;
 
+/** Samples a side the wave between two samples is worked out from. */
+const SIDE = 16;
+/** How loud the wave is each eighth of the way from a sample to the next: windowed sinc, 16 a side. (A quarter's steps
+ * miss the top of a wave near 20 kHz by half a dB; 8 a side miss a wave near 22 kHz by as much.) */
+const BETWEEN = [1, 2, 3, 4, 5, 6, 7].map((k) => k / 8).map((f) => {
+  const taps = new Float32Array(2 * SIDE);
+  let sum = 0;
+  for (let k = 0; k < 2 * SIDE; k++) {
+    const x = k - (SIDE - 1) - f, w = 0.42 + 0.5 * Math.cos((Math.PI * x) / (SIDE + 0.5)) + 0.08 * Math.cos((2 * Math.PI * x) / (SIDE + 0.5));
+    taps[k] = (x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x)) * w;
+    sum += taps[k];
+  }
+  return taps.map((t) => t / sum);
+});
+
 /**
- * The limiter's gain each sample, the same for both sides: under the ceiling everywhere. What each sample needs (the
- * ceiling over its loudest side, 1 at most) is taken at its lowest over the next 5 ms, then averaged over 5 ms — each
+ * How loud each sample is with the wave around it: itself, or higher where the wave rises between it and a sample
+ * beside it (its true peak, as a converter plays it back). Worked out only near the loud ones: the wave goes no higher
+ * than twice its samples around it, so a sample and its neighbours under half `over` cannot reach it.
+ */
+function truePeaks(s: Float32Array, over: number): Float32Array {
+  const n = s.length, out = new Float32Array(n), half = over / 2;
+  for (let i = 0; i < n; i++) out[i] = s[i] < 0 ? -s[i] : s[i];
+  for (let i = 0; i + 1 < n; i++) {
+    if (out[i] < half && out[i + 1] < half) continue;
+    for (const taps of BETWEEN) {
+      let v = 0;
+      const from = i - (SIDE - 1);
+      if (from >= 0 && from + 2 * SIDE <= n) for (let k = 0; k < 2 * SIDE; k++) v += taps[k] * s[from + k];
+      else for (let k = 0; k < 2 * SIDE; k++) { const j = from + k; if (j >= 0 && j < n) v += taps[k] * s[j]; }
+      if (v < 0) v = -v;
+      if (v > out[i]) out[i] = v;
+      if (v > out[i + 1]) out[i + 1] = v;
+    }
+  }
+  return out;
+}
+
+/**
+ * The limiter's gain each sample, the same for both sides: under the ceiling everywhere, between the samples too. What
+ * each sample needs (the ceiling over its loudest side's true peak, 1 at most) is taken at its lowest over the next 5 ms, then averaged over 5 ms — each
  * average covers the window of every sample before the peak, so it is no higher than the peak needs, and the gain
  * goes down smoothly over the 5 ms before it — and it comes back up over `release` seconds.
  */
 function limiterGain(chans: readonly Float32Array[], rate: number, ceiling: number, release: number): Float32Array {
   const n = chans[0].length, L = Math.max(1, Math.round(LOOKAHEAD * rate));
-  const need = new Float32Array(n);
+  const need = new Float32Array(n), peaks = chans.map((s) => truePeaks(s, ceiling));
   for (let i = 0; i < n; i++) {
     let m = 0;
-    for (const s of chans) m = Math.max(m, Math.abs(s[i]));
+    for (const p of peaks) if (p[i] > m) m = p[i];
     need[i] = m > ceiling ? ceiling / m : 1;
   }
   // The lowest over [i, i + L): a queue of indices whose needs rise, the front the lowest.
@@ -673,7 +712,7 @@ export const VORBIS_QUALITY = 5;
  * Goes into every file's name with the clip's key: a clip made the same way is the same file, so a map keeps the bytes
  * of one it already has (`withSounds`). When what a method does changes, this changes, and a map's files are made again.
  */
-const ENGINE = "sound 2";
+const ENGINE = "sound 3";
 
 /** What the map's archive gets for a clip: a WAV's bytes now, or the samples of an Ogg Vorbis encoded when the map is built. */
 export interface ClipFile {

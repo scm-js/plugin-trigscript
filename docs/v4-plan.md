@@ -1757,6 +1757,23 @@ User after step 2: "go for step 3". Nothing here makes a new sound beyond three 
   −12.4 / −15.8 LUFS; through a gentler master (threshold −12) −18.5 / −12.9 / −11.4 / −11.5 / −13.3 / −11.4 / −15.7,
   −12.1 in all, peak −0.57 dB. The check 0.8 s. Lifted game clean. Map 2.7 MB.
 
+- **MIDI** (3e669dc). Import Video… takes a `.mid`: `compiler/notes.ts` reads formats 0 and 1 (running status, a
+  note struck again ending the first, the first tempo, the time signature as quarter notes a bar, names, programs,
+  channel 10 the drums) into a `.notes` file of the script — a note four numbers in 960ths of a beat, the MIDI file not
+  kept. Clicking one shows a roll, a colour a track, and plays it roughly (a sine a note). `music.midi(notes, parts,
+  { steps, bpm, swing, drums })` makes a song of the tracks `parts` names (by name, or place from 0): notes to the
+  nearest step, velocity / 100 as "@" in twentieths, overlapping notes split into voices (a note joins a chord struck
+  with it, of its length and velocity, else the first voice free), a kit's letters by General MIDI number. Windows'
+  own town.mid (11 tracks, 2,121 notes, never committed): check 0.7 s, build 3.2 s. The dialog and the viewer are
+  type-checked, not yet run in a browser.
+- **The limiter judged by its samples let the wave between them over** — found with town.mid, decoded at 0.99. The
+  limited PCM's samples peaked at −2.0 dB and its true peak at −0.4: the overshoot was ours, not Vorbis's. `limit` now
+  takes each sample's need from its true peak (windowed sinc, 16 a side, each eighth of a sample; computed only near
+  samples over half the ceiling), the ceiling back at −1.5 dB: true peaks −1.5, decoded sample peaks −0.7 (town),
+  −0.9 (step 2's mix), −1.1 (step 3's B). 8 a side under-read a wave near 22 kHz by 0.4 dB. `ENGINE` is "sound 3": a
+  file's name says how it was made, and a map keeps a file whose name it has, so a change in what a method does must
+  change it. The map played for step 3 was built before this (edb73ee).
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):

@@ -784,7 +784,7 @@ export interface ReverbOptions { readonly decay?: number; readonly damping?: num
  * section's effects where it has them, then its `fx`, at its volume, to its side; what each track sends (its `reverb`)
  * into one reverb shared by them all (`reverb`, its room); the whole through `master` —
  * `(mix) => mix.compress({ threshold: -14, ratio: 2 })` — and last a limiter (`Clip.limit`) so it never goes over
- * −1.5 dB however the parts add: `limit: false` leaves it as mixed, `{ ceiling, release }` sets it. A long clip a
+ * −1.5 dB however the parts add, between the samples too: `limit: false` leaves it as mixed, `{ ceiling, release }` sets it. A long clip a
  * program plays goes in the map as Ogg Vorbis, two channels when it has two.
  */
 export function render(s: Song, options: { readonly rate?: number; readonly limit?: boolean | { readonly ceiling?: number; readonly release?: number }; readonly reverb?: ReverbOptions; readonly master?: (mix: Clip) => Clip } = {}): Clip {

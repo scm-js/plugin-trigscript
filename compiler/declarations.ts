@@ -563,7 +563,7 @@ ${kw}interface Clip {
   /** Its two channels as one. */
   mono(): Clip;
   /**
-   * Never louder than \`ceiling\` (0.84, −1.5 dB, when left out): turned down smoothly over the 5 ms before
+   * Never louder than \`ceiling\` (0.84, −1.5 dB, when left out), between the samples too: turned down smoothly over the 5 ms before
    * each peak that would go over, and back up over \`release\` seconds (0.1). What a mix goes through last,
    * so that the parts can add up without cutting off: \`mixdown(parts).limit()\`.
    */

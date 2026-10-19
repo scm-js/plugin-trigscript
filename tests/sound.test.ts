@@ -181,6 +181,16 @@ describe("two channels, the limiter and resampling", () => {
     const quiet = tone("A4", 0.3, { volume: 0.3 });
     expect(Array.from(clipSamples(quiet.limit()))).toEqual(Array.from(clipSamples(quiet)));
     expect(quiet.normalize().peak).toBeCloseTo(LIMIT_CEILING, 3);
+    // Between the samples too: a tone near the top of hearing whose samples fall either side of its peaks.
+    const high = tone(19_000, 0.2, { volume: 1, rate: 44100 }).limit(), hs = clipSamples(high);
+    let between = 0;
+    for (let i = 64; i < hs.length - 64; i++) for (let p = 1; p < 16; p++) {
+      let v = 0;
+      for (let k = -48; k < 48; k++) { const t = k - p / 16, w = 0.42 + 0.5 * Math.cos((Math.PI * t) / 49) + 0.08 * Math.cos((2 * Math.PI * t) / 49); v += hs[i + k] * (Math.sin(Math.PI * t) / (Math.PI * t)) * w; }
+      between = Math.max(between, Math.abs(v));
+    }
+    expect(between).toBeGreaterThan(0.8);
+    expect(between).toBeLessThanOrEqual(LIMIT_CEILING * 1.01);
     // Both sides turned down together, so the balance stays.
     const [l, r] = clipChannels(loud.pan(0.5).limit());
     expect(Math.max(...l) / Math.max(...r)).toBeCloseTo(0.5, 1);
