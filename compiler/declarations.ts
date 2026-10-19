@@ -434,6 +434,46 @@ ${kw}interface Video {
   /** Frame i as rows of text, # ink and . not: what fog.picture takes. When the script is built. */
   frame(i: number): readonly string[];
 }
+/**
+ * An image the script imports, when the script is built: \`import logo from "./logo.image"\`.
+ * An .image file is made by Import Video… in the Explorer from a picture — its pixels at the size
+ * chosen, in grey or in colour, with its transparency — and kept in the map with the script.
+ * Everything here is worked out when the script is built; what reaches the game is what the
+ * script makes of it: \`fog.picture(logo.scale(64).threshold(140))\`.
+ */
+${kw}interface Image {
+  /** Pixels across. */
+  readonly width: number;
+  /** Pixels down. */
+  readonly height: number;
+  /** Whether it was kept in colour; when not, a pixel's red, green and blue are its grey. */
+  readonly color: boolean;
+  /** Whether any pixel is less than opaque. */
+  readonly transparent: boolean;
+  /** Pixel (x, y)'s grey, 0 black to 255 white. (0, 0) is the top left. */
+  grey(x: number, y: number): number;
+  /** Pixel (x, y)'s colour, each 0 to 255. */
+  rgb(x: number, y: number): { readonly r: number; readonly g: number; readonly b: number };
+  /** How opaque pixel (x, y) is: 0 transparent to 255. A pixel under 128 is never ink. */
+  alpha(x: number, y: number): number;
+  /** The part of the image width × height pixels in size whose top left is (x, y). */
+  crop(x: number, y: number, width: number, height: number): Image;
+  /** The image at another size (up to 1024 each way), each pixel the average of what it covers; height kept in shape when left out. */
+  scale(width: number, height?: number): Image;
+  /** The image mirrored: "horizontal" swaps left and right, "vertical" top and bottom. */
+  flip(axis: "horizontal" | "vertical"): Image;
+  /** The image turned clockwise. */
+  rotate(turn: 90 | 180 | 270): Image;
+  /** Light for dark: each colour 255 minus itself. */
+  invert(): Image;
+  /**
+   * Rows of text for fog.picture, # the ink: with light ink (the default) a pixel whose grey is
+   * level or more, with dark ink one under it. \`logo.threshold(100, { ink: "dark" })\`
+   */
+  threshold(level?: number, options?: { readonly ink?: "light" | "dark" }): readonly string[];
+  /** Rows of digits, a pixel each from 0 (darkest) to count − 1 (lightest), . where it is transparent: 2 to 10 tones. */
+  tones(count: number): readonly string[];
+}
 /** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
 ${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
 /**
@@ -984,6 +1024,11 @@ const MEDIA_MODULES = `// ── A video the script imports: import badApple fro
 declare module "*.video" {
   const video: Video;
   export default video;
+}
+// ── An image the script imports: import logo from "./logo.image"; ──
+declare module "*.image" {
+  const image: Image;
+  export default image;
 }
 `;
 

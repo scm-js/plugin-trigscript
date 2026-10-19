@@ -428,4 +428,17 @@ export const KO: Record<string, string> = {
   "The video": "동영상",
   "As the fog draws it": "안개가 그리는 모습",
   "{w} × {h} tiles, {n} frames of {ms} ms ({time}){from}. Import it with import name from \"./{file}\".": "{w} × {h} 타일, {ms} ms 프레임 {n}개 ({time}){from}. import name from \"./{file}\"로 가져옵니다.",
+  // An image (.image), imported and shown.
+  "Keep as": "저장 형식",
+  "Pixels in colour (.image)": "컬러 픽셀 (.image)",
+  "Pixels in grey (.image)": "회색 픽셀 (.image)",
+  "Rows of ink to edit (.ts)": "편집할 잉크 줄 (.ts)",
+  "{w} × {h} pixels, a tile each when the fog draws them.": "{w} × {h} 픽셀, 안개가 그릴 때 픽셀 하나가 타일 하나입니다.",
+  "The pixels are kept for the script to work on when it is built — crop, scale, flip, threshold — and draw: fog.picture(logo.threshold(128)).": "픽셀을 그대로 저장해, 스크립트가 빌드할 때 다루고(crop, scale, flip, threshold) 그릴 수 있습니다: fog.picture(logo.threshold(128)).",
+  "Light tiles are the ink: what fog.light lights. The rows are a .ts file to edit, which fog.picture takes.": "밝은 타일이 잉크입니다: fog.light가 밝히는 곳입니다. 줄은 편집할 수 있는 .ts 파일이 되고, fog.picture가 받습니다.",
+  "{path} is in the script: import {name} from \"./{path}\"; then fog.picture({name}.threshold(128)) makes a picture of it.": "{path}이(가) 스크립트에 들어갔습니다: import {name} from \"./{path}\"; 다음 fog.picture({name}.threshold(128))로 그림을 만듭니다.",
+  "Show": "보기",
+  "The image": "그림",
+  "Threshold, as the fog draws it": "임계값, 안개가 그리는 모습",
+  "{w} × {h} pixels{from}. Import it with import {name} from \"./{file}\".": "{w} × {h} 픽셀{from}. import {name} from \"./{file}\"로 가져옵니다.",
 };

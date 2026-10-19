@@ -1506,6 +1506,33 @@ video, both said to start at 0 — the recorder's, not the map's. **Not yet:** g
 renderer that needs them — the raycaster's textures — will say which); the game's own tables (`ground.distance`,
 `atBuild`), the rest of B8.
 
+**Images (built 2026-10-19, the build-time half).** A picture can now be kept as pixels rather than as ink: Import
+Video… on a picture asks how to keep it — pixels in colour or in grey (an `.image` file), or rows of ink to edit (the
+`.ts` as before) — and `import logo from "./logo.image"` gives an `Image` worked on when the script is built:
+`width`, `height`, `color`, `transparent`, `grey/rgb/alpha(x, y)`, `crop`, `scale` (each pixel the average of what it
+covers, colour weighted by alpha; a block of itself growing by a whole number), `flip`, `rotate`, `invert`, and at the
+end `threshold(level, { ink })` (rows for `fog.picture`) or `tones(n)` (rows of digits for a library's own renderer).
+A pixel under half opaque is never ink. Nothing reaches the game but what the script makes of it.
+- **The file** (`compiler/image.ts`): one line of JSON, 1 to 1024 pixels each way, planes grey or green / red − green /
+  blue − green, then alpha if any pixel is less than opaque; each plane predicted pixel by pixel by JPEG-LS's median
+  edge detector, the miss coded with LZMA's range coder (now `compiler/rangeCoder.ts`, shared with `.video`) under odds
+  chosen by how busy the neighbourhood is. Real pictures at 128 and 256 pixels came back exact and 15–40% smaller than
+  PNG at its strongest, both in base64. The decoded pixels are kept, not the PNG or JPEG, for the reason a video's are.
+- **The editor:** the dialog's preview shows the pixels (in grey when grey is chosen); its size defaults to the
+  picture's own, 256 the longer way at most, 1024 at most typed. An `.image` in the Explorer has its own icon and hover;
+  clicking it opens a viewer — the image, or a threshold as the fog draws it (brushes, tiles off in red) with the
+  `fog.picture(logo.threshold(…))` line that makes it — from the same `Image` the build has.
+- **Left out:** a dither. Floyd–Steinberg made 4,066 brushes of a 256 × 192 logo (the game creates about 950 in a
+  frame), and scattered single tiles are thinner than the smallest sight shape, so the fog cannot draw them. A
+  halftone — a disc a cell, its size the cell's grey — is the fog's own way of showing grey, and comes next if wanted.
+- **Not yet:** the runtime half — an image as a table a program reads while the game runs (textures, sprites, a level
+  painted as a picture) — waits for the lowering work on `backend-limits`.
+
+**Checked:** `tests/image.test.ts` (the format both ways — grey, colour, transparency, noise, one pixel — cut short,
+too big, kept in the archive; every operation on a known picture; a script importing one, drawing it in the fog, a type
+mistake and a build-time mistake each said on their line). **In the editor** (headless Chromium, the local build): a
+PNG dropped on the Explorer, each way of keeping it previewed, imported, a script using it 0 problems, the viewer.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
