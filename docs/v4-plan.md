@@ -1757,6 +1757,11 @@ User after step 2: "go for step 3". Nothing here makes a new sound beyond three 
   −12.4 / −15.8 LUFS; through a gentler master (threshold −12) −18.5 / −12.9 / −11.4 / −11.5 / −13.3 / −11.4 / −15.7,
   −12.1 in all, peak −0.57 dB. The check 0.8 s. Lifted game clean. Map 2.7 MB.
 
+- **Played 2026-10-19** (recording 16.56.34.39): A at 7.631 s, B at 73.488 s — 65.857 s apart, the 1,568 frames
+  the program waits (A's 1,496 and 72). B against the file: the same level within 0.3 dB second by second; the lag
+  −34 samples at every 10 s, so no drift over 71 s; 27 dB below 6 kHz, 9.5 above (the recording's AAC, as before); the
+  worst second 12.9 dB — no dropout; L − R follows the file's at 0.990; peaks 0.94 — no clipping; the outro's tail
+  followed down to −79 dB, under the recording's floor after. User: "B sounds amazing".
 - **MIDI** (3e669dc). Import Video… takes a `.mid`: `compiler/notes.ts` reads formats 0 and 1 (running status, a
   note struck again ending the first, the first tempo, the time signature as quarter notes a bar, names, programs,
   channel 10 the drums) into a `.notes` file of the script — a note four numbers in 960ths of a beat, the MIDI file not
