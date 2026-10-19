@@ -78,5 +78,65 @@
   "records": 4.0,
   "triggers": 2.0,
   "ns": 62.0
+ },
+ "MUL_CONST": {
+  "records": 39.0,
+  "triggers": 19.0,
+  "ns": 555.0
+ },
+ "SHIFT_LEFT": {
+  "records": 30.0,
+  "triggers": 20.0,
+  "ns": 505.0
+ },
+ "SHIFT_RIGHT": {
+  "records": 50.0,
+  "triggers": 12.0,
+  "ns": 695.0
+ },
+ "DIV_CONST": {
+  "records": 76.0,
+  "triggers": 53.0,
+  "ns": 1074.0
+ },
+ "MOD_CONST": {
+  "records": 76.0,
+  "triggers": 53.0,
+  "ns": 1074.0
+ },
+ "FIXED_MUL": {
+  "records": 398.0,
+  "triggers": 250.0,
+  "ns": 5801.0
+ },
+ "FIXED_DIV": {
+  "records": 596.0,
+  "triggers": 319.0,
+  "ns": 8976.0
+ },
+ "FIXED_MUL_INT": {
+  "records": 114.0,
+  "triggers": 79.0,
+  "ns": 1697.0
+ },
+ "FIXED_SQRT": {
+  "records": 993.0,
+  "triggers": 532.0,
+  "ns": 15218.0
+ },
+ "FIXED_LESS": {
+  "records": 19.0,
+  "triggers": 8.0,
+  "ns": 272.0
+ },
+ "FIXED_SIGN": {
+  "records": 6.0,
+  "triggers": 3.0,
+  "ns": 85.0
+ },
+ "FIXED_FLOOR": {
+  "records": 36.0,
+  "triggers": 12.0,
+  "ns": 518.0
  }
 }

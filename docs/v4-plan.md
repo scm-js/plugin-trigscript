@@ -2122,6 +2122,54 @@ functions, its variables), so a task that runs every frame collects whatever fol
 --by-origin` weighs by each trigger's own origin instead, eudplib's functions among them, which is what showed that
 the per-frame work was number-to-text and text functions.
 
+### present() and arrays filled (2026-10-18)
+
+What was left of Snake after the view was the screen's `present()`, which walked every pixel to find the changed ones
+(about 83 thousand records a move). Drawing now lists each pixel it changes, with its place, through one private
+`put()`; `present()` goes over the list and passes over a pixel drawn and drawn back, and falls back to every pixel
+when more was drawn than the list holds (2 048). `new Array(n).fill(v)` on an array of cells wrote a cell at a time,
+each working its address out a bit a trigger (~250 ns); `varray_fill` writes eight a trigger at addresses that move
+on by themselves (~23 ns). Snake: 0.05 → 0.03 ms a frame, its first frame 7.58 → 4.61 ms.
+
+### Fixed numbers, shifts, products by a constant, signed comparisons (2026-10-18)
+
+Nanoseconds a turn on the bench, before → after:
+
+| Line | Before | After |
+| --- | ---: | ---: |
+| `fr = fa * fb` (fixed) | 5 801 | 4 698 |
+| `fr = fa / fb` | 8 976 | 7 384 |
+| `Math.sqrt(fa)` | 15 218 | 10 130 |
+| `fa * 3` | 1 697 | 569 |
+| `Math.floor(fa)` | 518 | 252 |
+| `z >> 2` | 695 | 308 |
+| `y << 5` | 505 | 462 |
+| `y < z`, both signed | 318 | 243 |
+| `fa < fb` | 272 | 207 |
+| `y * 12` (y is 3) | 555 | 597 |
+
+- **Signed comparison of two variables**: `a < b` read from 0 up, turned over once for each side below zero, counted
+  into a variable whose low bit is the answer (`signed_order`); no addition of 2^31 a side.
+- **Shifts by a constant** (`shift_const`): a bit tested a trigger, its place in the result added; from the top, a
+  group of eight bits none of which is set is jumped over; a short shift left is doublings.
+- **A product by a constant**: eudplib's product goes over its first operand's bits and stops past the highest set,
+  so the smaller of the two goes first, the constant by its distance from 0, the result negated after. It costs a
+  comparison more when the variable was already the smaller (`y * 12` above), and saves most when it is large or
+  below zero (`fa * 3`).
+- **fmul**: the 16-bit halves are a masked copy and a shift, not divisions by 65 536; the products have their
+  smaller side first.
+- **fdiv** (`chain_fdiv`), for a divisor below 256.0: eudplib's division chain set up once and run for the whole part
+  and twice more for eight bits of the fraction each; the same digits as the sixteen steps it replaces, which stay for
+  larger divisors.
+- **sqrt**: the input's bits read where they are instead of doubling it twice a step, and the fixed root kept as four
+  times itself so a step's trial is one comparison.
+- `probes/game-math.ts` checks every one of these over values the game gives (below zero, tiny, past the fixed range,
+  divisors on both sides of 256, equal values) against the simulator's answers, in the lifted game.
+
+The raycaster: 1.55 → 1.30 ms a frame on average, its costliest frame 3.09 → 2.58 ms (1.66 and 3.31 before the
+cheaper lowering). A fixed product and quotient are still several microseconds: eudplib's own product and division
+are the floor under them, and the raycaster does a few of each a column.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
