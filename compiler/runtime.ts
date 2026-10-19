@@ -29,7 +29,7 @@ import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField,
 import { LOCAL_FIELDS, localName, MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
 import { coverValue } from "./cover";
 import { isVideo } from "./media";
-import { clipFile, isClip, mixdown, noise, silence, tone, type ClipFile } from "./sound";
+import { clipFile, fm, isClip, mixdown, noise, pluck, silence, tone, type ClipFile } from "./sound";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -219,6 +219,8 @@ export class Collector {
   readonly strings: ScriptString[] = [];
   /** The clips the script plays, as the files the map's archive gets, by their names there (`sound.ts`). */
   readonly sounds = new Map<string, ClipFile>();
+  /** Whether those files are made (a build), or only named (a check: `CompileOptions.sounds`). */
+  soundContents = true;
   /** The script emitted hyper triggers: the trigger loop runs twelve times a second, not once in two. */
   hyper = false;
   /** Locations a library took with reserveLocation(), by the reason it gave: the location's number. */
@@ -306,7 +308,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
         // A clip (`sound.ts`): its file goes in the map's archive, and the action plays it by the name it goes under. A
         // trigger's is a WAV whatever its length — the triggers play in 1.16.1 too, which plays no Ogg; a program's
         // (Remastered) is Ogg Vorbis when it is long.
-        if (kind === "wav" && isClip(v)) { const file = clipFile(collector.running ? v.wav() : v); collector.sounds.set(file.path, file); v = file.path; }
+        if (kind === "wav" && isClip(v)) { const file = clipFile(collector.running ? v.wav() : v, collector.soundContents); collector.sounds.set(file.path, file); v = file.path; }
         if (typeof v === "string") return v === "" ? 0 : collector.localString({ text: v });
         if (typeof v === "number") return v === 0 ? 0 : collector.localString({ index: integer(v, what) });
         throw new ScriptError(`${what}: expected text, got ${describe(v)}.`);
@@ -630,6 +632,8 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.noise = built(noise);
   rt.silence = built(silence);
   rt.mixdown = built(mixdown);
+  rt.fm = built(fm);
+  rt.pluck = built(pluck);
   rt.centerLocation = () => { throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement — centerLocation(locations.Cursor, x, y)."); };
 
   /* ── The game's tables ── */
@@ -808,6 +812,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "sync", "select", "local", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
-  out.push("textColors", "ui", "on", "reserveLocation", "cover", "tone", "noise", "silence", "mixdown", "__jsx", "__fragment", "__class", "__fn", "__listen");
+  out.push("textColors", "ui", "on", "reserveLocation", "cover", "tone", "noise", "silence", "mixdown", "fm", "pluck", "__jsx", "__fragment", "__class", "__fn", "__listen");
   return out;
 }

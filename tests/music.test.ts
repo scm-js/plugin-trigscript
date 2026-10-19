@@ -55,9 +55,11 @@ describe("a song, when the script is built", () => {
     expect(errors(bad).join("\n")).toMatch(/Step 2: the kit has no "s"/);
   });
 
-  it("refuses a song that would sound more than the game's 32 at once", () => {
+  it("refuses to play note by note a song that would sound more than the game's 32 at once, and renders it", () => {
     const chord = Array.from({ length: 33 }, (_, k) => ["C", "D", "E", "F", "G", "A", "B"][k % 7] + (2 + Math.floor(k / 7))).join("+");
-    const r = check(`const lead = music.synth();\nconst s = music.song({ bpm: 120 }, music.track(lead, "${chord} -"));`, "");
+    const setup = `const lead = music.synth();\nconst s = music.song({ bpm: 120 }, music.track(lead, "${chord} -"));`;
+    expect(errors(check(setup, `if (s.voices !== 33) fail(String(s.voices));\nconst one = music.render(s);`))).toEqual([]);
+    const r = check(setup, `program(async () => { await music.play(s); });`);
     expect(errors(r).join("\n")).toMatch(/33 notes would sound at once; the game plays 32/);
   });
 
@@ -117,6 +119,54 @@ const s = music.song({ bpm: 120 }, music.track(lead, "A4 A4 A4 B4", { pan: 1 }),
     );
     expect(errors(r)).toEqual([]);
     expect(errors(check(`const lead = music.synth();`, `music.track(lead, "A4", { pan: 3 });`)).join("\n")).toMatch(/−1 \(left\) to 1/);
+  });
+});
+
+describe("instruments, effects and the mix", () => {
+  it("makes every preset's notes, and the drum kit's seven drums at 44.1 kHz", () => {
+    const r = check(
+      `const ps = [music.presets.supersaw(), music.presets.pad(), music.presets.bass(), music.presets.acid(), music.presets.lead(), music.presets.chip(), music.presets.keys(), music.presets.bell(), music.presets.pluck()];
+const kit = music.drums();`,
+      `for (const p of ps) { const n = p.note("A3", 0.3); if (!(n.peak > 0.01 && n.peak < 1)) fail(\`peak \${n.peak}\`); }
+for (const k of ["k", "s", "c", "h", "o", "t", "r"]) { const d = kit.hits[k]; if (!d || d.rate !== 44100 || !(d.peak > 0.05)) fail(k); }
+if (music.presets.supersaw().note("A3", 0.3).channels !== 2) fail("the supersaw is wide");
+if (music.presets.supersaw({ width: 0 }).note("A3", 0.3).channels !== 1) fail("its options over the preset's");`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+
+  it("opens a synth's filter with each note: the top of a note brighter at its start than its end", () => {
+    const r = check(
+      `const s = music.synth({ wave: "saw", volume: 0.5, filter: { cutoff: 300, amount: 4, envelope: { decay: 0.2, sustain: 0 } } });
+const n = s.note("A2", 1, 44100);`,
+      `const early = n.trim(0.02, 0.07).fade(0.01, 0.01).filter("highpass", 2000).peak, late = n.trim(0.8, 0.85).fade(0.01, 0.01).filter("highpass", 2000).peak;
+if (!(early > 4 * late)) fail(\`\${early} \${late}\`);`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+
+  it("puts a track through its fx and the reverb its send asks for, and the whole through the master", () => {
+    const r = check(
+      `const lead = music.synth({ volume: 0.3 });
+const dry = music.song({ bpm: 120 }, music.track(lead, "A4 . . . . . . ."));
+const wet = music.song({ bpm: 120 }, music.track(lead, "A4 . . . . . . .", { reverb: 0.8 }));
+const echoed = music.song({ bpm: 120 }, music.track(lead, "A4 . . . . . . .", { fx: (c) => c.delay(0.25, { mix: 1 }) }));`,
+      `const a = music.render(dry), b = music.render(wet), c = music.render(echoed), quiet = music.render(dry, { master: (m) => m.gain(0.5) });
+if (!(b.seconds > a.seconds + 0.5)) fail(\`reverb tail \${a.seconds} \${b.seconds}\`);
+if (!(c.seconds > a.seconds)) fail("echo");
+if (Math.abs(quiet.peak - a.peak / 2) > 0.01) fail(\`master \${quiet.peak} \${a.peak}\`);`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+
+  it("keeps a bar a whole number of frames, a step need not be: sixteenths at 143 beats a minute", () => {
+    const r = check(
+      `const hat = music.kit({ h: noise(0.02) });
+const s = music.song({ bpm: 143, steps: 4 }, music.track(hat, "h h h h h h h h h h h h h h h h"));`,
+      `if (s.barFrames !== 40 || s.stepFrames !== 2.5 || Math.abs(s.bpm - 142.86) > 0.01) fail(\`\${s.barFrames} \${s.stepFrames} \${s.bpm}\`);
+if (s.at.join(" ") !== "0 3 5 8 10 13 15 18 20 23 25 28 30 33 35 38") fail(s.at.join(" "));`,
+    );
+    expect(errors(r)).toEqual([]);
   });
 });
 

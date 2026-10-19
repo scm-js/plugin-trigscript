@@ -541,13 +541,62 @@ ${kw}interface Clip {
   normalize(peak?: number): Clip;
   /** In the map as a WAV however long it is, for StarCraft 1.16.1, which plays no Ogg. */
   wav(): Clip;
+  /**
+   * A filter. "lowpass" keeps what is below \`cutoff\` hertz, "highpass" what is above, "bandpass" what is
+   * near it, "notch" all but it — \`cutoff\` a number, or [seconds, hertz] points to sweep it (a synth's
+   * filter opening: \`saw.filter("lowpass", [[0, 300], [0.1, 4000], [0.6, 800]], { resonance: 0.6 })\`);
+   * \`resonance\` 0 to 1 rings at the cutoff. "lowshelf" and "highshelf" turn everything below or above
+   * \`cutoff\` up or down by \`gain\` dB, "peak" what is around it, \`q\` wide (0.707).
+   */
+  filter(type: "lowpass" | "highpass" | "bandpass" | "notch" | "lowshelf" | "highshelf" | "peak", cutoff: number | readonly (readonly [number, number])[], options?: { readonly resonance?: number; readonly gain?: number; readonly q?: number }): Clip;
+  /**
+   * Saturation, \`dB\` of push (6 warm, 18 gritty, 30 fuzz): quiet parts as they were, loud ones rounded
+   * off toward a square — the harmonics a guitar amp or a tape adds.
+   */
+  drive(dB: number): Clip;
+  /**
+   * An echo \`seconds\` later (a beat's worth: 60 / bpm), each repeat \`feedback\` as loud (0.35) and a little
+   * duller (\`tone\`, the hertz kept, 5 000), \`mix\` its level (0.35). \`pingPong\`: left, right, left (two
+   * channels). The clip gets longer by the repeats.
+   */
+  delay(seconds: number, options?: { readonly feedback?: number; readonly mix?: number; readonly tone?: number; readonly pingPong?: boolean }): Clip;
+  /**
+   * A plate reverb: the room around the sound, different left and right (two channels), the clip longer
+   * by its tail. \`decay\` 0 to 1 (0.6; 0.3 a small room, 0.9 a hall), \`damping\` 0 to 1 (0.4: how fast the
+   * top dies), \`predelay\` seconds before it starts (0.015), \`mix\` the reverb's level (0.3), \`dry\` the
+   * clip's (1), \`width\` 0 to 1 (1).
+   */
+  reverb(options?: { readonly decay?: number; readonly damping?: number; readonly predelay?: number; readonly mix?: number; readonly dry?: number; readonly width?: number }): Clip;
+  /** A chorus: copies a few ms late and wobbling, left and right apart (two channels). \`speed\` Hz (0.8), \`depth\` seconds (0.003), \`mix\` (0.5). */
+  chorus(options?: { readonly speed?: number; readonly depth?: number; readonly mix?: number }): Clip;
+  /**
+   * A compressor: above \`threshold\` dB (−18), every \`ratio\` dB louder (4) comes out one, turned down
+   * over \`attack\` seconds (0.005) and back over \`release\` (0.12), eased over a \`knee\` dB wide (6);
+   * \`makeup\` dB after (0). Evens a part out, or glues a mix.
+   */
+  compress(options?: { readonly threshold?: number; readonly ratio?: number; readonly attack?: number; readonly release?: number; readonly knee?: number; readonly makeup?: number }): Clip;
 }
 /**
  * When the script is built: a tone of \`pitch\` — hertz, or a note's name: "A4" (440), "C#5", "Eb3" — for
- * \`seconds\`. wave: "sine" (the default), "square", "triangle" or "saw"; volume 0 to 1 (0.5).
+ * \`seconds\`, or [seconds, pitch] points to glide (a kick's drop: [[0, 150], [0.08, 45]]). wave: "sine"
+ * (the default), "square", "triangle" or "saw"; volume 0 to 1 (0.5). \`voices\` copies (1 to 16) spread
+ * \`detune\` cents apart from lowest to highest (20), and \`width\` 0 to 1 across left and right: a
+ * supersaw is \`tone("A3", 1, { wave: "saw", voices: 7, detune: 30, width: 0.8 })\`.
  *   const beep = tone("A5", 0.1, { wave: "square", volume: 0.3 }).fade(0, 0.05);
  */
-${kw}function tone(pitch: number | string, seconds: number, options?: { readonly wave?: "sine" | "square" | "triangle" | "saw"; readonly volume?: number; readonly rate?: number }): Clip;
+${kw}function tone(pitch: number | string | readonly (readonly [number, number | string])[], seconds: number, options?: { readonly wave?: "sine" | "square" | "triangle" | "saw"; readonly volume?: number; readonly rate?: number; readonly voices?: number; readonly detune?: number; readonly width?: number }): Clip;
+/**
+ * When the script is built: two-operator FM — a sine whose phase another, \`ratio\` times its pitch,
+ * pushes by \`index\` (2; or [seconds, index] points, bright at the start and mellow after). ratio 1 a
+ * reed or an electric piano, 3.5 or 7 a bell, 0.5 a bass; \`feedback\` 0 to 2 gives the push an edge.
+ *   const bell = fm("E5", 2, { ratio: 3.5, index: [[0, 6], [2, 0.3]], volume: 0.3 }).fade(0, 1.5);
+ */
+${kw}function fm(pitch: number | string | readonly (readonly [number, number | string])[], seconds: number, options?: { readonly ratio?: number; readonly index?: number | readonly (readonly [number, number])[]; readonly feedback?: number; readonly volume?: number; readonly rate?: number }): Clip;
+/**
+ * When the script is built: a plucked string (Karplus–Strong) — a guitar, a harp, a koto. \`brightness\`
+ * 0 to 1 (0.5), \`decay\` seconds to fade away (2).
+ */
+${kw}function pluck(pitch: number | string, seconds: number, options?: { readonly brightness?: number; readonly decay?: number; readonly volume?: number; readonly rate?: number }): Clip;
 /** When the script is built: noise for \`seconds\` (the same every build) — with fade(), a hit or a burst. */
 ${kw}function noise(seconds: number, options?: { readonly volume?: number; readonly rate?: number }): Clip;
 /** When the script is built: nothing for \`seconds\`, to put a gap between clips: \`a.then(silence(0.2), b)\`. */

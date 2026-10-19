@@ -369,6 +369,15 @@ export interface Emitted {
   refs?: TS.ClassDeclaration[];
 }
 
+/** A field of a value of the build, read as the program is lowered: a getter that refuses says why, as a call would. */
+function readField(value: unknown, name: string): unknown {
+  try {
+    return (value as Record<string, unknown>)[name];
+  } catch (err) {
+    throw new LowerError(err instanceof Error ? err.message : String(err));
+  }
+}
+
 export class Structured {
   private readonly c: StructuredContext;
   private readonly ts: typeof TS;
@@ -799,13 +808,13 @@ export class Structured {
       if (!obj || obj.value === null || obj.value === undefined) return undefined;
       // A field of the unit selected (\`local.selected.hp\`) is read when the map is played, as any unit's is.
       if (isSelected(obj.value) || isSelectionCount(obj.value)) return undefined;
-      return { value: (obj.value as Record<string, unknown>)[e.name.text] };
+      return { value: readField(obj.value, e.name.text) };
     }
     if (ts.isElementAccessExpression(e)) {
       const obj = sub(e.expression);
       const key = sub(e.argumentExpression);
       if (!obj || !key || obj.value === null || obj.value === undefined) return undefined;
-      return { value: (obj.value as Record<string, unknown>)[String(key.value)] };
+      return { value: readField(obj.value, String(key.value)) };
     }
     if (ts.isCallExpression(e)) {
       const callee = sub(e.expression);

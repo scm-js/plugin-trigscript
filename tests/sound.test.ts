@@ -9,7 +9,7 @@ import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { adpcmFidelity, adpcmWav, clipChannels, clipFile, periodicity, clipSamples, decodeAdpcm, describeSound, encodeAdpcm, hertz, LIMIT_CEILING, makeClip, mixdown, noise, readSound, silence, tone, writeSound } from "../compiler/sound";
+import { adpcmFidelity, adpcmWav, clipChannels, clipFile, fm, periodicity, pluck, clipSamples, decodeAdpcm, describeSound, encodeAdpcm, hertz, LIMIT_CEILING, makeClip, mixdown, noise, readSound, silence, tone, writeSound } from "../compiler/sound";
 import { finishSounds, vorbisEncoder } from "../compiler/vorbis";
 import { describeMedia, isMediaFile } from "../compiler/media";
 import { buildScript, isBuiltSound, readFiles, withFiles, withSounds } from "../script";
@@ -135,7 +135,7 @@ describe("a Clip when the script is built", () => {
 
   it("gives the map one WAV a clip, named by what it holds", () => {
     const a = clipFile(tone("A4", 0.2)), b = clipFile(tone("A4", 0.2)), c = clipFile(tone("B4", 0.2));
-    expect(a.path).toMatch(/^staredit\\wav\\trigscript-[0-9a-f]{8}\.wav$/);
+    expect(a.path).toMatch(/^staredit\\wav\\trigscript-[0-9a-f]{16}\.wav$/);
     expect(a.path).toBe(b.path);
     expect(c.path).not.toBe(a.path);
   });
@@ -205,9 +205,9 @@ describe("what the map gets for a clip", () => {
   const wasm = readFileSync(resolve(import.meta.dirname, "..", "node_modules", "wasm-media-encoders", "wasm", "ogg.wasm"));
   const encoder = vorbisEncoder(wasm);
 
-  it("a long clip as Ogg Vorbis, named by its samples before it is encoded; a short one or wav() as a WAV", () => {
+  it("a long clip as Ogg Vorbis, named by how it was made before it is encoded; a short one or wav() as a WAV", () => {
     const long = tone("A4", 2.5), f = clipFile(long);
-    expect(f.path).toMatch(/^staredit\\wav\\trigscript-[0-9a-f]{8}\.ogg$/);
+    expect(f.path).toMatch(/^staredit\\wav\\trigscript-[0-9a-f]{16}\.ogg$/);
     expect(f.bytes).toBeUndefined();
     expect(f.vorbis?.rate).toBe(22050);
     expect(clipFile(tone("A4", 2.5)).path).toBe(f.path);
@@ -235,6 +235,14 @@ describe("what the map gets for a clip", () => {
     expect(Number(new DataView(a.buffer, a.byteOffset).getBigUint64(last + 6, true))).toBe(Math.round(song.seconds * song.rate));
   });
 
+  it("makes no sample in a check: five minutes through a reverb is named at once, and its length known", () => {
+    const files = { "main.ts": `const long = noise(300, { rate: 44100 }).filter("lowpass", 2000).reverb({ decay: 0.9 }).limit();\nprogram(async () => { playWav(long, 0); await sleep(frames(Math.ceil(long.seconds / 0.042))); });\n` };
+    const t = performance.now(), r = compileScript(ts, files, defaultScriptNames(), { lib: LIB, sounds: false });
+    expect(r.diagnostics).toEqual([]);
+    expect(r.sounds).toEqual([{ path: expect.stringMatching(/\.ogg$/) }]);
+    expect(performance.now() - t).toBeLessThan(3000);
+  });
+
   it("is encoded by a build, and only named by a check; a trigger's long clip is a WAV", () => {
     const files = { "main.ts": `const long = tone("A4", 3).pan(0.4);
 trigger(P1, [always()], [playWav(tone("C5", 3), 0)]);
@@ -245,12 +253,11 @@ program(async () => { playWav(long, 0); });
     const ogg = built.sounds.find((s) => s.path.endsWith(".ogg"))!, wav = built.sounds.find((s) => s.path.endsWith(".wav"))!;
     // The trigger's: a WAV, ADPCM as a sine allows.
     expect([ogg.vorbis?.channels.length, new DataView(wav.bytes!.buffer).getUint16(20, true)]).toEqual([2, 0x11]);
-    const check = compileScript(ts, files, defaultScriptNames(), { lib: LIB });
-    finishSounds(check.sounds, null);
-    expect(check.sounds.find((s) => s.path === ogg.path)).toEqual({ path: ogg.path });
+    const check = compileScript(ts, files, defaultScriptNames(), { lib: LIB, sounds: false });
+    expect(check.sounds).toEqual([{ path: ogg.path }, { path: wav.path }].sort((a, b) => (a.path === built.sounds[0].path ? -1 : b.path === built.sounds[0].path ? 1 : 0)));
     // A check's unencoded clip is refused unless the map has it already.
     expect(() => withSounds(new Map(), check.sounds)).toThrow(/was not encoded/);
-    expect(withSounds(new Map([[ogg.path, new Uint8Array([1])]]), check.sounds).get(ogg.path)).toEqual(new Uint8Array([1]));
+    expect(withSounds(new Map([[ogg.path, new Uint8Array([1])], [wav.path, new Uint8Array([2])]]), check.sounds).get(ogg.path)).toEqual(new Uint8Array([1]));
     finishSounds(built.sounds, encoder);
     expect(built.sounds.every((s) => s.bytes && !s.vorbis)).toBe(true);
     expect(String.fromCharCode(...ogg.bytes!.slice(0, 4))).toBe("OggS");
@@ -300,5 +307,93 @@ program(async () => { playWav(boom, 0); await nextFrame(); playWav(both, 0); pla
 
   it("is typed: playWav takes a clip, and a clip's methods are checked", () => {
     expect(errors(compile(`import boom from "./sfx/boom.sound";\nboom.pitch("up");\n`)).join("\n")).toMatch(/main\.ts:2: .*string/);
+  });
+});
+
+describe("what a clip goes through, and the sources beside tone", () => {
+  const R = 44100;
+  const amp = (s: Float32Array, hz: number, rate = R) => { let re = 0, im = 0; for (let i = 0; i < s.length; i++) { re += s[i] * Math.cos((2 * Math.PI * hz * i) / rate); im += s[i] * Math.sin((2 * Math.PI * hz * i) / rate); } return (2 * Math.hypot(re, im)) / s.length; };
+  const db = (x: number) => 20 * Math.log10(x);
+  const sine = (hz: number) => tone(hz, 0.5, { rate: R, volume: 1 });
+
+  it("filters: a lowpass 3 dB down at its cutoff, resonance ringing there, a shelf by its gain", () => {
+    expect(db(amp(clipSamples(sine(250).filter("lowpass", 1000)), 250))).toBeGreaterThan(-1);
+    expect(db(amp(clipSamples(sine(1000).filter("lowpass", 1000, { resonance: 0.3 })), 1000))).toBeCloseTo(-3, 0);
+    expect(db(amp(clipSamples(sine(4000).filter("lowpass", 1000)), 4000))).toBeLessThan(-20);
+    expect(db(amp(clipSamples(sine(250).filter("highpass", 1000)), 250))).toBeLessThan(-20);
+    expect(db(amp(clipSamples(sine(1000).filter("lowpass", 1000, { resonance: 0.9 })), 1000))).toBeGreaterThan(10);
+    expect(db(amp(clipSamples(sine(10000).filter("highshelf", 3000, { gain: 6 })), 10000))).toBeCloseTo(6, 0);
+    // A sweep: closed, open, closed — the top of a saw louder in the middle than at the ends.
+    const swept = clipSamples(tone(110, 1, { wave: "saw", rate: R }).filter("lowpass", [[0, 200], [0.5, 8000], [1, 200]]));
+    const top = (from: number) => { let e = 0; for (let i = from; i < from + 2205; i++) e += (swept[i] - swept[i - 1]) ** 2; return e; };
+    expect(top(R / 2 - 1100)).toBeGreaterThan(20 * top(2205));
+    expect(() => sine(440).filter("lowpass", -5)).toThrow(/more than 0/);
+    expect(() => sine(440).filter("wobble" as never, 100)).toThrow(/"lowpass"/);
+  });
+
+  it("drives: quiet as it was, loud rounded off, at two channels' worth of harmonics", () => {
+    const quiet = tone(220, 0.3, { rate: R, volume: 0.01 }), loud = tone(220, 0.3, { rate: R, volume: 1 });
+    expect(quiet.drive(18).peak).toBeCloseTo(quiet.peak, 3);
+    const d = clipSamples(loud.drive(18));
+    expect(amp(d, 660) / amp(d, 220)).toBeGreaterThan(0.1);
+    expect(loud.drive(0)).toBe(loud);
+  });
+
+  it("echoes: each repeat later and quieter, the clip longer by them; ping-pong left then right", () => {
+    const click = makeClip(Float32Array.from({ length: 4410 }, (_, i) => (i < 10 ? 1 : 0)), R);
+    const e = click.delay(0.25, { feedback: 0.5, mix: 1, tone: 20000 }), s = clipSamples(e);
+    expect(e.seconds).toBeGreaterThan(2);
+    const at = (t: number) => Math.max(...s.slice(Math.round(t * R) - 50, Math.round(t * R) + 60).map(Math.abs));
+    expect(at(0.25)).toBeGreaterThan(0.5);
+    expect(at(0.5) / at(0.25)).toBeCloseTo(0.5, 1);
+    const [l, r] = clipChannels(click.delay(0.25, { pingPong: true, mix: 1, feedback: 0.5 }));
+    const near = (c: Float32Array, t: number) => Math.max(...c.slice(Math.round(t * R) - 50, Math.round(t * R) + 60).map(Math.abs));
+    expect(near(l, 0.25)).toBeGreaterThan(5 * near(r, 0.25));
+    expect(near(r, 0.5)).toBeGreaterThan(5 * near(l, 0.5));
+  });
+
+  it("reverbs: two different sides, a tail as long as its decay, quiet at the end, the same every build", () => {
+    const click = makeClip(Float32Array.from({ length: 4410 }, (_, i) => (i === 0 ? 1 : 0)), R);
+    const short = click.reverb({ decay: 0.3, mix: 1, dry: 0 }), long = click.reverb({ decay: 0.9, mix: 1, dry: 0 });
+    expect(long.seconds).toBeGreaterThan(3 * short.seconds);
+    const [l, r] = clipChannels(long);
+    let lr = 0, ll = 0, rr = 0;
+    for (let i = 0; i < l.length; i++) { lr += l[i] * r[i]; ll += l[i] ** 2; rr += r[i] ** 2; }
+    expect(Math.abs(lr / Math.sqrt(ll * rr))).toBeLessThan(0.2);
+    expect(Math.max(...l.slice(-2205).map(Math.abs))).toBeLessThan(1e-3);
+    expect(Array.from(clipSamples(click.reverb()))).toEqual(Array.from(clipSamples(makeClip(clipSamples(click).slice(), R).reverb())));
+  });
+
+  it("chorus and compress: a chorus two-sided; a compressor turning loud parts down by its ratio", () => {
+    expect(tone(220, 0.3, { rate: R }).chorus().channels).toBe(2);
+    // A sine at 0 dB through −20 dB, 4:1 settles 15 dB down.
+    const c = clipSamples(tone(220, 1, { rate: R, volume: 1 }).compress({ threshold: -20, ratio: 4, knee: 0, attack: 0.001, release: 0.05 }));
+    expect(db(Math.max(...c.slice(-4410)))).toBeCloseTo(-15, 0);
+  });
+
+  it("glides, stacks detuned voices across both sides, FM and plucked strings in tune", () => {
+    const drop = clipSamples(tone([[0, 200], [0.5, 50]], 0.5, { rate: R }));
+    const crossings = (s: Float32Array) => { let n = 0; for (let i = 1; i < s.length; i++) if (s[i - 1] < 0 !== s[i] < 0) n++; return n; };
+    expect(crossings(drop.slice(0, 2205))).toBeGreaterThan(2 * crossings(drop.slice(-2205)));
+    const wide = tone("A3", 0.5, { wave: "saw", voices: 7, detune: 30, width: 0.8, rate: R });
+    expect(wide.channels).toBe(2);
+    expect(tone("A3", 0.5, { wave: "saw", voices: 7 }).channels).toBe(1);
+    expect(() => tone("A3", 0.5, { voices: 40 })).toThrow(/1 to 16/);
+    const bell = clipSamples(fm(440, 0.5, { ratio: 3.5, index: 4, rate: R, volume: 1 }));
+    expect(amp(bell, 440 + 3.5 * 440)).toBeGreaterThan(0.05);
+    for (const hz of [110, 440]) {
+      const s = clipSamples(pluck(hz, 1, { rate: R })), from = 4410, n = 8192, cc = (L: number) => { let c = 0; for (let i = from; i < from + n; i++) c += s[i] * s[i + L]; return c; };
+      let lag = 0, best = -Infinity;
+      for (let L = Math.floor((R / hz) * 0.9); L < (R / hz) * 1.1; L++) { const c = cc(L); if (c > best) { best = c; lag = L; } }
+      const a = cc(lag - 1), b = cc(lag), c2 = cc(lag + 1), period = lag + (0.5 * (a - c2)) / (a - 2 * b + c2);
+      expect(Math.abs(1200 * Math.log2(R / period / hz)), `${hz}`).toBeLessThan(2);
+    }
+  });
+
+  it("keeps the costly work by how a clip was made: the same reverb twice is one clip", () => {
+    const a = tone("A4", 0.5).gain(0.5).reverb(), b = tone("A4", 0.5).gain(0.5).reverb();
+    expect(a).toBe(b);
+    expect(tone("A4", 0.5).gain(0.6).reverb()).not.toBe(a);
+    expect(tone("A4", 0.5).wav().reverb()).not.toBe(a);
   });
 });

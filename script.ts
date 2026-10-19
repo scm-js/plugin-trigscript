@@ -108,8 +108,8 @@ export function isScriptMember(name: string): boolean {
   return memberKey(name).startsWith(memberKey(SCRIPT_FOLDER));
 }
 
-/** A file a build wrote for a clip the script plays (`compiler/sound.ts`): `staredit\wav\trigscript-<hash>.wav`, or `.ogg`. */
-export const isBuiltSound = (name: string): boolean => /^staredit\\wav\\trigscript-[0-9a-f]{8}\.(wav|ogg)$/.test(memberKey(name));
+/** A file a build wrote for a clip the script plays (`compiler/sound.ts`): `staredit\wav\trigscript-<hash>.wav`, or `.ogg` (8 hex digits before 3.13, 16 since). */
+export const isBuiltSound = (name: string): boolean => /^staredit\\wav\\trigscript-(?:[0-9a-f]{8}|[0-9a-f]{16})\.(wav|ogg)$/.test(memberKey(name));
 
 /**
  * The members with the clips of this build in place of the last one's. A clip already in the map keeps its bytes as

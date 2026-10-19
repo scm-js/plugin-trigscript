@@ -1685,6 +1685,41 @@ reverb, delay, drive), song structure, music that follows the game.
 - **Found on the way:** `ranges.ts` read `process.env` in the browser's worker, where there is none — every program
   failed to compile in the editor. Guarded (its own commit).
 
+### Sounds: step 2, the instruments and the effects (built 2026-10-19)
+
+User after step 1's A/B: "B sounds way better, go for step 2".
+
+- **Effects** (`compiler/dsp.ts`, as `Clip` methods): `filter` — a trapezoidal state-variable filter (lowpass, highpass,
+  bandpass, notch; cutoff a number or [seconds, hertz] points swept log-linearly; resonance 0 … 1) and cookbook
+  biquads (lowshelf, highshelf, peak); `drive(dB)` — tanh at twice the rate; `delay` — feedback with a lowpass in the
+  loop, ping-pong; `reverb` — a plate after Dattorro (four diffusers, a figure-eight tank with modulated allpasses,
+  seven taps a side: L/R correlation 0.00); `chorus`; `compress` (soft knee, linked). Measured: the 1 kHz lowpass
+  −3.1 dB at its cutoff, the +6 dB shelf +5.9, plucks within 0.1 cent.
+- **Sources**: `tone` takes [seconds, pitch] points (glides) and `voices`/`detune`/`width` (supersaw, two channels);
+  `fm()` two operators, index points, feedback; `pluck()` Karplus–Strong, tuned by a fractional delay.
+- **The library**: `music.synth` gets a filter with its own envelope (octaves above the cutoff), unison, drive, glide;
+  `music.fmSynth`, `music.strings`; `music.presets` (supersaw, pad, bass, acid, lead, chip, keys, bell, pluck) and
+  `music.drums()` (k s c h o t r, 44.1 kHz) written in TrigScript itself on the public API. Tracks take `fx` (on the
+  whole part in `render`, on each note in `play`) and `reverb` (a send); `render` takes `reverb` (the shared room) and
+  `master`. A song's bar is a whole number of frames, a step need not be (sixteenths at 143 bpm are 2.5): `play` puts
+  a note on its nearest frame (the mixer's own grid is 21 ms). The 32-voice limit moved from `song()` to `play` (the
+  note tables are made when first read; a getter that refuses is a build error now — `structured.ts`'s `readField`).
+- **Lazy clips.** The first arrangement took 8 s to compile, every check as the user types: a check reruns the whole
+  script, renders and all. A cache by recipe did not help — the song's intermediate parts are ~125M samples against a
+  32M budget, so LRU thrashed and the second compile missed everything. What fixed it: a clip knows its length,
+  channels and recipe key at once and works its samples out only when asked (`peak`, a build's file). A check
+  (`CompileOptions.sounds: false`, the worker's default without `sounds`) names each clip's file by its key — with an
+  `ENGINE` tag so changed DSP never keeps a map's old bytes — and makes no sample. Reverb and echo tails are formulas
+  (a plate's: 1.24 / −ln decay s) so lengths need no samples. Clips made the same way are one object (a weak-reference
+  map). Hot loops are plain loops (typed-array `map()` and a closure a sample were most of the 8 s). Builds get 60 s.
+- **Measured** (`probes/korobeiniki.ts`: 34 bars, nine tracks, intro / A1 / A2 / break / A3 / outro, 63 s; A = step 1's
+  mix): check 0.6 s cold, 0.4 warm in Node; headless Chromium worker check 1.1 s, build 3.6 s, re-check after an edit
+  0.26 s, second build 0.24 s, the Ogg bytes as Node's. Stems balanced by LUFS (supersaw +6 dB, bell −6, keys −3, …);
+  the mix −11.8 LUFS (A −10.9), sections −22 → −12.5 → −12 → −13.5 → −11.8, peak −0.27 dB decoded; 1.25 MB Ogg. Lifted
+  game clean. Map 1.8 MB.
+- **Found on the way:** the key hash's second half could go negative (`b ^ (b >>> 15)` is signed), putting a minus
+  in a file's name that `isBuiltSound` would not know — fixed, and every name of 200 checked.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
