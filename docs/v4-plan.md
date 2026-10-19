@@ -1719,6 +1719,12 @@ User after step 1's A/B: "B sounds way better, go for step 2".
   game clean. Map 1.8 MB.
 - **Found on the way:** the key hash's second half could go negative (`b ^ (b >>> 15)` is signed), putting a minus
   in a file's name that `isBuiltSound` would not know — fixed, and every name of 200 checked.
+- **Played 2026-10-19** (recording 16.08.43.37): A at 4.894 s, B at 39.859 s — 34.965 s apart. B as heard against the
+  file: the same level within 0.2 dB, second by second; no drift over 63 s (the best lag 0 samples in every 10 s);
+  27 dB below 6 kHz and 8.5 dB above it (hats and air, 14% of the energy: the recording's AAC, A's sparser top came back
+  at 31.9 dB as before), the worst second 14 dB — no dropout; L − R follows the file's at 0.990; peaks 0.94 — no
+  clipping; the tail down to the recording's floor (−95 dB). User: "b sounds pretty sick yeah, maybe too strong/loud on
+  the beat/drums but thats stylistic complaints only" — the kit goes down in the showpiece's mix (step 5), not here.
 
 ### Closures and the missing methods (built 2026-10-17)
 
