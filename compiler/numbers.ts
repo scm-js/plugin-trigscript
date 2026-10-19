@@ -81,6 +81,17 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   /** The signed variables nothing ever puts below zero, and every store the program makes, from which they are found. */
   const never = new Set<string>();
   const stores: [string, NumExpr][] = [];
+  /**
+   * Loop counters (cheaper lowering): `for (…; i < e; i++)` adds 1 to `i` only after `i < e` held with that same `i`, so
+   * from a start that is never below zero it never reaches past 2 147 483 647. The update's stored value, so that the
+   * search below takes it as never below zero while `i` is; the counters of the loops being walked; and the counters
+   * that cannot be trusted that way — stored into inside their loop, or by a function, which could put them anywhere.
+   */
+  const counted = new WeakSet<NumExpr>();
+  let counter: string | null = null;
+  const counting: string[] = [];
+  const spoiled = new Set<string>();
+  let inFunction = false;
   let settled = false;
   /** Whether a pass found another variable or array fixed: the passes before the last go on until one finds none. */
   let grew = false;
@@ -329,6 +340,10 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
         else if (leftU) e.unsigned = nonNegative(right) ? true : "left";
         else if (rightU) e.unsigned = nonNegative(left) ? true : "right";
         else if (nonNegative(left) && nonNegative(right)) e.unsigned = true;
+        // One side never below zero reads the same from 0 up: marked so, the lowering compares without an addition a side
+        // (a loop's `i < n`). Not for a constant beside a signed value, which has a cheaper way of its own.
+        else if (nonNegative(left) && right.kind !== "const" && left.kind !== "const") e.unsigned = "left";
+        else if (nonNegative(right) && left.kind !== "const" && right.kind !== "const") e.unsigned = "right";
         return e;
       }
       case "and": case "or": e.items = e.items.map(bool); return e;
@@ -385,7 +400,11 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       if (!decl.unsigned && t === "u32") errors.push({ at, message: `${decl.name} is a number, which holds −2 147 483 648 … 2 147 483 647, not ${out.value}. Declare it a u32 (let ${decl.name}: u32 = …), or write i32(${out.value}) for the signed number with those bits.` });
       if (decl.unsigned && out.value < 0) errors.push({ at, message: `${decl.name} is a u32, which holds 0 … 4 294 967 295, not ${out.value}. Write u32(${out.value}) for the u32 with those bits.` });
     }
-    if (!settled && decl && !decl.unsigned) stores.push([decl.id, out]);
+    if (!settled && decl && !decl.unsigned) {
+      if (counter === decl.id && isIncrement(value, decl.id)) counted.add(out);
+      else if (inFunction || counting.includes(decl.id)) spoiled.add(decl.id);
+      stores.push([decl.id, out]);
+    }
     return out;
   };
 
@@ -457,7 +476,17 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
       case "if": s.cond = bool(s.cond); s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": if (s.cond) s.cond = bool(s.cond); s.body.forEach(stmt); break;
       case "do": s.body.forEach(stmt); s.cond = bool(s.cond); break;
-      case "for": if (s.cond) s.cond = bool(s.cond); s.update.forEach(stmt); s.body.forEach(stmt); break;
+      case "for": {
+        if (s.cond) s.cond = bool(s.cond);
+        const i = settled ? null : counterOf(s);
+        counter = i;
+        s.update.forEach(stmt);
+        counter = null;
+        if (i) counting.push(i);
+        s.body.forEach(stmt);
+        if (i) counting.pop();
+        break;
+      }
       case "unrolled": s.iterations.forEach((i) => i.forEach(stmt)); break;
       case "parallel": s.branches.forEach((b) => b.forEach(stmt)); break;
       case "start": call(s.call); break;
@@ -479,7 +508,9 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   // casts are kept until the last time — to see every store, then for good.
   const everything = () => {
     program.body.forEach(stmt);
+    inFunction = true;
     for (const f of program.functions ?? []) { result = f.result?.decl; f.body.forEach(stmt); result = undefined; }
+    inFunction = false;
   };
   for (let passes = 0; passes < 64; passes++) {
     grew = false;
@@ -489,10 +520,28 @@ export function typeNumbers(program: Program): ProgramDiagnostic[] {
   for (const [id] of stores) never.add(id);
   for (let changed = true; changed;) {
     changed = false;
-    for (const [id, value] of stores) if (never.has(id) && !nonNegative(value)) { never.delete(id); changed = true; }
+    for (const [id, value] of stores) if (never.has(id) && !(counted.has(value) && !spoiled.has(id)) && !nonNegative(value)) { never.delete(id); changed = true; }
   }
   settled = true;
   errors.length = 0;
   everything();
   return errors;
+}
+
+/** `i = i + 1` (or `1 + i`) as a stored value. */
+function isIncrement(value: NumExpr, id: string): boolean {
+  if (value.kind !== "binary" || value.op !== "+") return false;
+  const me = (e: NumExpr) => e.kind === "var" && e.id === id, one = (e: NumExpr) => e.kind === "const" && e.value === 1;
+  return (me(value.left) && one(value.right)) || (one(value.left) && me(value.right));
+}
+
+/** The counter of a `for` whose test is `i < e` (or `e > i`, alone or one of an `&&`) and whose update adds 1 to it; null for any other. */
+function counterOf(s: Extract<Stmt, { kind: "for" }>): string | null {
+  const tests = !s.cond ? [] : s.cond.kind === "and" ? s.cond.items : [s.cond];
+  for (const t of tests) {
+    if (t.kind !== "compare" || t.unsigned) continue;
+    const id = t.op === "<" && t.left.kind === "var" ? t.left.id : t.op === ">" && t.right.kind === "var" ? t.right.id : null;
+    if (id && s.update.some((u) => u.kind === "assign" && u.target === id && isIncrement(u.value, id))) return id;
+  }
+  return null;
 }

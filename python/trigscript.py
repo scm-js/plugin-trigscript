@@ -201,6 +201,23 @@ class Storage:
         else:
             self.store << value
 
+    def add(self, value, op):
+        """The cell plus (`op` "+") or minus ("-") `value` where it is, wrapping as numbers do: eudplib's own add, with
+        no copy through a temporary (`x = x + 1` was 9 records and 4 triggers through one, and is 1 action). False
+        where it cannot: a saturated cell, or a row's cell less a variable (the game's Subtract stops at 0)."""
+        if self.bits:
+            return False
+        if self.rowed:
+            if op == "-" and not isinstance(value, int):
+                return False
+            self.store.iadditem(self.player_of(), value if op == "+" else (-value) & U32)
+            return True
+        if op == "+":
+            self.store += value
+        else:
+            self.store -= value
+        return True
+
 
 def unpack_table(table, length):
     """A table the IR carries packed (`compiler/eud.ts#packTable`): `bytes` a value, little-endian, in base64 - as a
@@ -1593,6 +1610,29 @@ def mentions_array(e, array):
     return False
 
 
+def mentions_var(e, id_):
+    """Whether an expression reads the variable anywhere in it."""
+    if isinstance(e, dict):
+        if e.get("kind") == "var" and e.get("id") == id_:
+            return True
+        return any(mentions_var(x, id_) for x in e.values())
+    if isinstance(e, list):
+        return any(mentions_var(x, id_) for x in e)
+    return False
+
+
+# Expressions that read and do nothing else: worked out at any point of a statement, they give the same answer.
+PLAIN_KINDS = {"const", "var", "cast", "unary", "binary", "element", "length"}
+
+
+def plain(e):
+    if not isinstance(e, dict):
+        return True
+    if e.get("kind") not in PLAIN_KINDS:
+        return False
+    return all(plain(v) for k, v in e.items() if isinstance(v, dict))
+
+
 class Lowering:
     def __init__(self, program):
         self.p = program
@@ -1709,6 +1749,26 @@ class Lowering:
         if mentions_array(v["right"], st["array"]):
             return None
         return (v["op"], v["right"])
+
+    def assign_in_place(self, target, st):
+        """`x = x + e`, `x = e + x`, `x = x - e` as an add where the variable is; `x = y + e` / `y - e` as a copy and an
+        add. Only where `e` reads and does nothing else and does not read x, so the order of the reads cannot matter.
+        False when it is not one of those, or the cell cannot add where it is."""
+        v, id_ = st["value"], st["target"]
+        if not isinstance(target, Storage) or target.bits or v.get("kind") != "binary" or v.get("op") not in ("+", "-"):
+            return False
+        left, right, op = v["left"], v["right"], v["op"]
+        is_me = lambda e: e.get("kind") == "var" and e.get("id") == id_
+        if op == "+" and is_me(right) and not is_me(left):
+            left, right = right, left
+        if not plain(right) or mentions_var(right, id_):
+            return False
+        if is_me(left):
+            return target.add(self.num(right), op)
+        if target.rowed or left.get("kind") not in ("const", "var") or not plain(left):
+            return False
+        target.set(self.num(left))
+        return target.add(self.num(right), op)
 
     def num(self, e):
         k = e["kind"]
@@ -1976,9 +2036,11 @@ class Lowering:
                     return always(op in ("<", "<=", "!="))
                 return self.ordered(s_, op, u_, True)
             sv = as_var(s_)
+            # The signed side at or above zero, and the order between the two read from 0 up: one trigger's conditions,
+            # ANDed by the game (EUDAnd is a branch an item). < <= != are the other three turned round and negated.
             if op in ("<", "<=", "!="):
-                return EUDOr(sv >= SIGN, relation(sv, op, u_))
-            return EUDAnd(sv <= SIGN - 1, relation(sv, op, u_))
+                return not_all([sv <= SIGN - 1, relation(sv, {"<": ">=", "<=": ">", "!=": "=="}[op], u_)])
+            return [sv <= SIGN - 1, relation(sv, op, u_)]
         if isinstance(a, int):
             a, b, op = b, a, FLIPPED[op]
         if unsigned or op in ("==", "!="):
@@ -2146,7 +2208,10 @@ class Lowering:
                 t = fresh(0)
                 self.short_circuit(items, k == "and", t)
                 return t >= 1
-            return (EUDAnd if k == "and" else EUDOr)(*[self.cond(c) for c in items])
+            if k == "and":
+                # Every item is worked out either way (none of them does anything): one trigger's conditions, ANDed by the game.
+                return [self.cond(c) for c in items]
+            return EUDOr(*[self.cond(c) for c in items])
         if k == "not":
             return EUDNot(self.cond(e["expr"]))
         if k == "random":
@@ -2840,7 +2905,9 @@ class Lowering:
         elif k == "tableWrite":
             self.table_write(st)
         elif k == "assign":
-            self.var(st["target"], st).set(self.num(st["value"]))
+            target = self.var(st["target"], st)
+            if not self.assign_in_place(target, st):
+                target.set(self.num(st["value"]))
         elif k == "assignBool":
             self.var(st["target"], st).set(self.truth(st["value"]))
         elif k == "declareArray":
@@ -4221,6 +4288,16 @@ def fixed_const(name, args, unsigned=False, table=None):
     return t
 
 
+def not_all(conds):
+    """!(c1 && c2 && ...) as a light bool: set by one trigger, cleared by a second that has the conditions. (EUDNot of a
+    list takes an if around the second, a third trigger.)"""
+    v = EUDLightBool()
+    RawTrigger(actions=v.Set())
+    # (Trigger, not RawTrigger: a condition whose amount is a variable is patched before, as EUDIf does.)
+    Trigger(conditions=conds, actions=v.Clear())
+    return v
+
+
 def always(truth):
     """A condition that is known when the map is built."""
     return EUDVariable(1 if truth else 0) >= 1  # initial: a constant, never written
@@ -4234,11 +4311,24 @@ def relation(av, op, b):
         return av != b
     if op == "<":
         return av < b
-    if op == "<=":
-        return av <= b
     if op == ">":
         return av > b
+    if isinstance(unProxy(b), EUDVariable):
+        # eudplib orders two variables with < and > only: a >= b is b - a, which the game's Subtract stops at 0, being
+        # 0 - worked out into the condition's own first dword, as eudplib's < does it.
+        return floored_zero(b, av) if op == ">=" else floored_zero(av, b)
+    if op == "<=":
+        return av <= b
     return av >= b
+
+
+def floored_zero(x, y):
+    """x - y, stopped at 0, is 0: x <= y read from 0 up, one condition and a sum written into it."""
+    cell = Forward()
+    cond = MemoryEPD(cell, Exactly, 0)
+    cell << EPD(cond)
+    SeqCompute(((cell, SetTo, x), (cell, Subtract, y)))
+    return cond
 
 
 def compare(a, op, b):
