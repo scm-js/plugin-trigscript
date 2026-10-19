@@ -114,6 +114,8 @@ const sections = buildPlugins(r.input, "/work/files/trigscript.json");
 // TRIGGER_MAP=1: the Python says where each trigger it made sits in the payload (a TRIGSCRIPT-MAP line in the
 // log), and that line is written beside the map as <out>.triggers.json, for scm-sim's run in the lifted game.
 if (process.env.TRIGGER_MAP) (sections.trigscript as Record<string, string>).triggerMap = "1";
+// STATIC_ROUTING=0: every variable read routed as eudplib routes it (python/trigscript.py, static routing), to weigh what it gives.
+if (process.env.STATIC_ROUTING === "0") (sections.trigscript as Record<string, string>).staticRouting = "0";
 // VARIABLE_MAP=1: the same for where each program's variables are (TRIGSCRIPT-VARS), as <out>.variables.json, for a
 // test in the lifted game to read them (`sim.program()`).
 if (process.env.VARIABLE_MAP) (sections.trigscript as Record<string, string>).variableMap = "1";

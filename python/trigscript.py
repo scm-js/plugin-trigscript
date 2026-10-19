@@ -133,6 +133,245 @@ if IR.get("version") != IR_VERSION:
     raise RuntimeError("trigscript: the IR is version %r; this plugin reads version %d" % (IR.get("version"), IR_VERSION))
 
 
+# ── Static routing (TrigScript 4, the backend's first part) ──
+# eudplib keeps a variable as a trigger of one action, SetDeaths(dest, modifier, value), and reads it by routing:
+# three actions set that action's destination and modifier and the trigger's next pointer, then the walk goes through
+# it. In a played frame of the bullets bench that routing was half the time (scripts/trigger-shapes.mts). Here every
+# copy of a variable this file made (SeqCompute, and everything eudplib does through it: <<, +=, a call's arguments)
+# is lowered as a *site* — whatever came before jumps to a Forward, then a setup trigger with the routing, then the
+# cells, then what follows — and what eudplib itself does to a cell (its vtable, its destination, its mask, its
+# modifier asked for anywhere else) is counted. Once the whole program is lowered (`decide`, at the end of
+# afterTriggerExec), a cell read at exactly one site and touched nowhere else needs no routing at all: its destination,
+# modifier and next pointer are written into the variable buffer as the map is built (they never change), and the site
+# jumps straight into its cells. Any other site keeps its setup. Only variables this file made directly take part:
+# eudplib's own (a function's parameters and results, its pooled temporaries) are shared by many places it cannot see.
+# The `staticRouting` setting "0" leaves everything to eudplib, to weigh what this gives.
+import sys as _sys
+import eudplib.core.variable.eudv as _eudv
+import eudplib.core.variable.vbuf as _vbuf
+from eudplib.utils import unProxy as _unproxy_r
+
+
+class _Routing:
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.on = False
+        self.emitting = 0
+        self.ours = {}  # id -> the variable, for the variables this file made while lowering
+        self.refs = {}  # id -> how often something other than a site asked for one of its routing fields
+        self.sites = {}  # id -> the groups it is read in
+        self.groups = []
+        self.static = {}  # a cell's VariableTriggerForward -> (dest, modifier byte, next)
+        self.stats = {"groups": 0, "static groups": 0, "cells": 0, "static cells": 0}
+
+    def touched(self, v):
+        if self.on and not self.emitting:
+            k = id(v)
+            if k in self.ours:
+                self.refs[k] = self.refs.get(k, 0) + 1
+
+    def decide(self):
+        """Every group whose cells are each read there and nowhere else jumps straight into them; the rest keep setup."""
+        if not self.on:
+            return
+        self.on = False
+        for g in self.groups:
+            alone = all(len(self.sites[id(v)]) == 1 and not self.refs.get(id(v)) for v, _, _, _ in g["cells"])
+            self.stats["groups"] += 1
+            self.stats["cells"] += len(g["cells"])
+            if alone:
+                self.stats["static groups"] += 1
+                self.stats["static cells"] += len(g["cells"])
+                g["entry"] << g["bare"]
+                for v, dest, mod, nxt in g["cells"]:
+                    self.static[v.GetVTable()] = (dest, mod, nxt)
+            else:
+                g["entry"] << g["setup"]
+        print("trigscript: static routing, %(static cells)d of %(cells)d cells read at one site in %(static groups)d of %(groups)d groups" % self.stats)
+
+
+ROUTE = _Routing(settings.get("staticRouting", "1") != "0")
+
+if ROUTE.enabled:
+    _var_init = _eudv.EUDVariable.__init__
+    _MODULE = globals()
+
+    def _routed_init(self, *args, **kwargs):
+        _var_init(self, *args, **kwargs)
+        # Made by a line of this file itself (not by eudplib on its behalf): ours to route.
+        if ROUTE.on and _sys._getframe(1).f_globals is _MODULE:
+            ROUTE.ours[id(self)] = self
+
+    _eudv.EUDVariable.__init__ = _routed_init
+
+    def _watched(name):
+        method = getattr(_eudv.EUDVariable, name)
+
+        def wrapper(self, *args, **kwargs):
+            ROUTE.touched(self)
+            return method(self, *args, **kwargs)
+
+        wrapper.__name__ = name
+        setattr(_eudv.EUDVariable, name, wrapper)
+
+    for _name in ("GetVTable", "getDestAddr", "getMaskAddr", "SetModifier", "SetDest", "AddDest", "SubtractDest", "SetDestX", "AddDestX", "SubtractDestX"):
+        _watched(_name)
+
+    _seqcompute = _eudv.SeqCompute
+    _MODS = {id(SetTo): 7, id(Add): 8, id(Subtract): 9}
+
+    def _emit_group(cells, consts, memo):
+        """A site: what came before jumps to `entry`; the setup does the constant stores before it (as eudplib's own
+        SeqCompute does, in the same trigger) and routes the cells in a chain, the last back to `after`. When the cells
+        need no routing, `entry` is the constants alone, or the first cell."""
+        ROUTE.emitting += 1
+        try:
+            entry, after = Forward(), Forward()
+            SetNextTrigger(entry)
+            first = cells[0][0].GetVTable()
+            # (An action belongs to one trigger: the constants are made twice, for the setup and for the bare way in.)
+            const_acts = lambda: [SetDeaths(_eudv._get_computedest(EncodePlayer(_unproxy_r(dst))), mdt, src, 0) for dst, mdt, src in consts]
+            bare = RawTrigger(nextptr=first, actions=const_acts()) if consts else first
+            acts, plan = const_acts(), []
+            for i, (v, dest, mod) in enumerate(cells):
+                nxt = cells[i + 1][0].GetVTable() if i + 1 < len(cells) else after
+                # A cell this same SeqCompute routed already keeps what was set then (eudplib's own does the same): it is
+                # read at two sites, so neither goes without its setup.
+                was = memo.get(id(v))
+                if not was or was[0] is not dest:
+                    acts.append(v.SetDest(dest))
+                if not was or was[1] is not mod:
+                    acts.append(v.SetModifier(mod))
+                acts.append(SetNextPtr(v.GetVTable(), nxt))
+                memo[id(v)] = (dest, mod)
+                plan.append((v, dest, _MODS[id(mod)], nxt))
+            setup = RawTrigger(nextptr=first, actions=acts)
+            after << NextTrigger()
+        finally:
+            ROUTE.emitting -= 1
+        g = {"entry": entry, "setup": setup, "bare": bare, "cells": plan}
+        ROUTE.groups.append(g)
+        for v, _, _, _ in plan:
+            ROUTE.sites.setdefault(id(v), []).append(g)
+
+    def _routed_seqcompute(assignpairs):
+        if not ROUTE.on or ROUTE.emitting:
+            return _seqcompute(assignpairs)
+        plain, group = [], []
+
+        def flush_plain():
+            if plain:
+                _seqcompute(list(plain))
+                plain.clear()
+
+        consts, memo = [], {}
+
+        def flush_group():
+            if group:
+                _emit_group(list(group), list(consts), memo)
+                group.clear()
+                consts.clear()
+
+        for dst, mdt, src in assignpairs:
+            s = _unproxy_r(src)
+            if isinstance(s, EUDVariable) and id(s) in ROUTE.ours and id(mdt) in _MODS:
+                if any(v is s for v, _, _ in group) or len(group) * 3 + len(consts) >= 61:
+                    flush_group()
+                if not group:
+                    # The constant stores just before it go with it, as eudplib keeps them in one trigger.
+                    k = max([i for i, (_, _, x) in enumerate(plain) if isinstance(_unproxy_r(x), EUDVariable)], default=-1)
+                    consts.extend(plain[k + 1:])
+                    del plain[k + 1:]
+                    flush_plain()
+                group.append((s, _eudv._get_computedest(EncodePlayer(_unproxy_r(dst))), mdt))
+            else:
+                flush_group()
+                plain.append((dst, mdt, src))
+        flush_group()
+        flush_plain()
+
+    _eudv.SeqCompute = _routed_seqcompute
+    SeqCompute = _routed_seqcompute
+
+    # The variable buffer writes the cells a decided group reads with their routing in place.
+    _create_vartrigger = _vbuf.EUDVarBuffer.create_vartrigger
+
+    def _indexed_vartrigger(self, v, initval):
+        idx = getattr(self, "_ts_index", None)
+        if idx is None:
+            idx = self._ts_index = {}
+        idx[v] = len(self._initvals)
+        return _create_vartrigger(self, v, initval)
+
+    _vbuf.EUDVarBuffer.create_vartrigger = _indexed_vartrigger
+
+    def _static_of(buf):
+        return [(i, ROUTE.static[v]) for v, i in getattr(buf, "_ts_index", {}).items() if v in ROUTE.static]
+
+    _collect_vars = _vbuf.EUDVarBuffer.CollectDependency
+
+    def _collect_routed(self, emitbuffer):
+        _collect_vars(self, emitbuffer)
+        for _, (dest, _, nxt) in _static_of(self):
+            for x in (dest, nxt):
+                if type(x) is not int:
+                    emitbuffer.WriteDword(x)
+
+    _vbuf.EUDVarBuffer.CollectDependency = _collect_routed
+
+    _write_vars = _vbuf.EUDVarBuffer.WritePayload
+
+    def _write_routed(self, emitbuffer):
+        static = _static_of(self)
+        if not static:
+            return _write_vars(self, emitbuffer)
+        # The buffer as eudplib lays it out (vbuf.py): 324 bytes before the first cell, then 72 a variable — variable i's
+        # trigger starts 4 bytes before the buffer plus 72·i, so its next pointer is at 72·i, its action's destination at
+        # 340 + 72·i, its value at 344 + 72·i and its modifier byte at 351 + 72·i — then the last triggers' tails.
+        n = len(self._initvals)
+        blob = bytearray(324)
+        block = bytearray(72)
+        block[0:4] = b"\xFF\xFF\xFF\xFF"
+        block[24:36] = b"\0\0\x2D\x07\0\0SC\x04\0\0\0"
+        blob += block * n
+        sym = {}
+
+        def put(off, x):
+            if isinstance(x, int):
+                blob[off:off + 4] = (x & 0xFFFFFFFF).to_bytes(4, "little")
+            else:
+                sym[off] = x
+
+        for i, iv in enumerate(self._initvals):
+            if isinstance(iv, int):
+                if iv:
+                    put(344 + 72 * i, iv)
+            else:
+                put(344 + 72 * i, iv)
+        for i, (dest, mod, nxt) in static:
+            put(340 + 72 * i, dest)
+            blob[351 + 72 * i] = mod
+            put(72 * i, nxt)
+        pos = 0
+        for off in sorted(sym):
+            emitbuffer.WriteBytes(bytes(blob[pos:off]))
+            emitbuffer.WriteDword(sym[off])
+            pos = off + 4
+        emitbuffer.WriteBytes(bytes(blob[pos:]))
+        emitbuffer.WriteSpace(32)
+        emitbuffer.WriteDword(4)  # flags
+        emitbuffer.WriteSpace(27)
+        emitbuffer.WriteByte(0)  # currentAction
+        for _i in range(27):
+            emitbuffer.WriteSpace(40)
+            emitbuffer.WriteDword(4)
+            emitbuffer.WriteSpace(27)
+            emitbuffer.WriteByte(0)
+
+    _vbuf.EUDVarBuffer.WritePayload = _write_routed
+    ROUTE.on = True
+
+
 def where(node):
     """" at main.ts:12:5" for a node with a position — what the editor parses back into a marker."""
     at = node.get("at") if isinstance(node, dict) else None
@@ -5720,3 +5959,5 @@ def afterTriggerExec():
         EVENTS.run()
     for prog in PROGRAMS:
         prog.run()
+    # Everything this file makes is made by now: which reads need no routing (above).
+    ROUTE.decide()
