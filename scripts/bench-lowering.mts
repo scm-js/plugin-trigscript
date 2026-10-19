@@ -5,6 +5,9 @@
  *
  *   npx tsx scripts/bench-lowering.mts [--frames=N] [--save]
  *
+ * Built with the emitter off unless EMITTER=1 is given: a trigger the emitter makes may hold several lines' work, and
+ * the count gives it to the first, so the bench's numbers by line are the Python side's.
+ *
  * --save writes this run's numbers as the new baseline. Needs a plugin-eudplib checkout and a scm-sim checkout beside
  * this repository (or EUDPLIB_DIR / SCM_SIM_DIR), as build-fixture and the lifted game do.
  */
@@ -19,7 +22,7 @@ const script = join(root, "probes", "lowering-bench.ts");
 const built = join(root, "fixtures", "eud", "lowering-bench.scx");
 const baselinePath = join(root, "probes", "lowering-bench.baseline.json");
 
-const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), script, built], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { ...process.env, TRIGGER_MAP: "1" } });
+const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), script, built], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { EMITTER: "0", ...process.env, TRIGGER_MAP: "1" } });
 if (b.status !== 0) { console.error(b.stdout.split("\n").slice(-20).join("\n"), b.stderr); process.exit(1); }
 
 // The lines and what they are: a /* LABEL */ at a line's end; R, the turns a frame of the loop.
