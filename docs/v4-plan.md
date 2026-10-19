@@ -2438,7 +2438,7 @@ is, and a jump as an empty trigger. Remastered charges a trigger 8.3 ns of its o
 
 Not on the list: anything that runs outside the trigger walk, and threads (the game has one for triggers).
 
-**The two probes, built (2026-10-19), waiting to be played.** Read in Ghidra first (1.23.10.13515):
+**The two probes, built and played (2026-10-19).** Read in Ghidra first (1.23.10.13515):
 - *A map is an EUD map when it loads with one.* +0x358C0A goes over every trigger of the map (0x960 bytes apart) and
   +0x2E17E0 sets bit 1 of +0x105423C for a Deaths condition, bit 2 for a Set Deaths action, whose player is above 26 or
   is 12, or whose unit is above 232. Nothing sets it later. Without it the walk (+0x41B350) follows the game's own list
@@ -2458,6 +2458,32 @@ Not on the list: anything that runs outside the trigger walk, and threads (the g
   lookups), Command, Bring alternating two locations with 0, 16 and about 64 marines in them (a scan each time),
   Bring alternating with Command, and a location's four sides written and Bring of it, two in turn. 160 marines in
   boxes around Home; the lifted game finds 16, 16, 67 and 71 (the two big boxes take a few of each other's).
+
+**Played (2026-10-19), Remastered 1.23.10.13515, the same computer as the weights.**
+- *classic-weights* (`remastered/classic_report.py`, and the samples under the walk counted by phase): the game thread's
+  own work moves by about 1 ms a pass from one idle phase to the next, as much as the probe's biggest block, so the
+  fit is loose. The samples under the walk put a Set Deaths at about 5–7 ns (an EUD map's: 8.4 in the same session) and
+  a Deaths condition at 7–10 ns, no cheaper than an EUD map's 5.4. A map that is not EUD saves perhaps a third on its
+  actions and nothing on its conditions, and gives up every loop and every address: **nothing to win there.** Settled.
+- *native-queries* (`profile_report.py … --short=4`), ns each:
+
+  | Query | ns |
+  | --- | ---: |
+  | Bring of one location, asked again | 4.6 |
+  | Command, asked again | 4.3 |
+  | Deaths condition (the same run) | 5.4 |
+  | Bring, a new location, nothing in it | 191 |
+  | Bring, a new location, 16 marines | 1,582 |
+  | Bring, a new location, about 64 marines | 2,450 |
+  | Bring and Command in turn, one location (half of them a scan) | 808 |
+
+  A query asked again is cheaper than a Deaths condition; a new location is a scan, 0.2–2.5 µs by what is in it, and
+  turning from Bring to Command (or back) throws the table away too, as Ghidra said. For a library: ask one location
+  many times in a row, all of its Commands together and all of its Brings together, and never alternate. The moving
+  pair (four sides written, then Bring, two locations in turn) is a scan each time, 1.6 µs a Bring, as expected.
+  Remastered's own counts match the lifted game's exactly (Home at 128 2512; same 16, empty 0 0, 16s 16 16, 64s 67 71,
+  moving 16 16), so each row measured the boxes it says. Whether a moved location is read stale is still Ghidra's word
+  alone: the moving pair is placed before the marines exist, so this line does not test it.
 
 **As built: value ranges (2026-10-19).** `compiler/ranges.ts`, run after `numbers.ts`; IR 25 (`range` on a number).
 - The range of every number variable is the union of what is stored into it, and 0 (a cell before its first store);
