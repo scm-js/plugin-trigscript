@@ -1267,6 +1267,43 @@ def magnitudes(a, b):
     return neg
 
 
+def chain_fdiv(a, b):
+    """a * 65536 / b, both read from 0 up and b below 2^24: eudplib's division chain (the divisor doubled into each step's
+    condition and action, set up once), run for the whole part and then twice more for eight bits of the fraction each:
+    what is left is less than b, so 256 times it still fits, and its quotient is below 256. The same digits as sixteen
+    steps of a bit each, which cost a dozen triggers a step. `a` is the caller's own copy, used up."""
+    whole, frac, x = EUDVariable(), EUDVariable(), EUDVariable()
+    SeqCompute([(whole, SetTo, 0), (frac, SetTo, 0), (x, SetTo, b)])
+    main = [(Forward(), Forward()) for _ in range(32)]
+    parts = [[(Forward(), Forward()) for _ in range(8)] for _ in range(2)]
+    start = [Forward() for _ in range(32)]
+    for i in range(32):
+        cells = [main[i]] + ([parts[0][i], parts[1][i]] if i < 8 else [])
+        SeqCompute([(EPD(c), SetTo, x) for pair in cells for c in pair])
+        # Past 2^31 the next doubling would wrap: the chain starts here.
+        p1, p2, p3 = Forward(), Forward(), Forward()
+        p1 << RawTrigger(nextptr=p2, conditions=x.AtLeastX(1, 0x80000000), actions=SetNextPtr(p1, p3))
+        p3 << RawTrigger(nextptr=start[i], actions=SetNextPtr(p1, p2))
+        p2 << NextTrigger()
+        SeqCompute([(x, Add, x)])
+
+    def steps(chain, top, into, scale):
+        for i in range(top, -1, -1):
+            c, act = Forward(), Forward()
+            t = RawTrigger(conditions=[c << a.AtLeast(0)], actions=[act << a.SubtractNumber(0), into.AddNumber((1 << i) * scale)])
+            if chain is main:
+                start[i] << t
+            chain[i][0] << c + 8
+            chain[i][1] << act + 20
+
+    steps(main, 31, whole, 1)
+    for part, scale in ((parts[0], 256), (parts[1], 1)):
+        for _ in range(8):
+            a += a
+        steps(part, 7, frac, scale)
+    return shift_const(whole, "<<", 16) + frac
+
+
 def fixed_fns():
     """The fixed numbers' functions, made when the first one is met: one body each in the map, called."""
     if _FIXED:
@@ -1274,16 +1311,17 @@ def fixed_fns():
 
     @EUDFunc
     def fmul(a, b):
-        """a * b / 65536 towards zero, wrapping: the four products of the 16-bit halves of the magnitudes."""
+        """a * b / 65536 towards zero, wrapping: the four products of the 16-bit halves of the magnitudes. A half is a
+        masked copy (the low) or a bit a trigger (the high), where a division by 65 536 was a 32-step loop; each product
+        has its smaller side first, which eudplib's goes over the bits of and stops past the highest."""
         neg = magnitudes(a, b)
-        ah, al = [fresh(x) for x in f_div(a, FIXED_ONE)]
-        bh, bl = [fresh(x) for x in f_div(b, FIXED_ONE)]
-        r = fresh(f_mul(ah, bh))
-        r << f_mul(r, FIXED_ONE)
+        al, bl = fresh(a), fresh(b)
+        DoActions([al.SetNumberX(0, 0xFFFF0000), bl.SetNumberX(0, 0xFFFF0000)])
+        ah, bh = shift_const(a, ">>>", 16), shift_const(b, ">>>", 16)
+        r = shift_const(f_mul(ah, bh), "<<", 16)
         r += f_mul(ah, bl)
         r += f_mul(bh, al)
-        low = fresh(f_mul(al, bl))
-        r += f_div(low, FIXED_ONE)[0]
+        r += shift_const(f_mul(al, bl), ">>>", 16)
         if EUDIf()(neg == 1):
             r << 0 - r
         EUDEndIf()
@@ -1297,18 +1335,45 @@ def fixed_fns():
             EUDReturn(0)
         EUDEndIf()
         neg = magnitudes(a, b)
-        q, r = [fresh(x) for x in f_div(a, b)]
-        for _ in range(16):
-            r += r
-            q += q
-            if EUDIf()(r >= b):
-                r -= b
-                q += 1
-            EUDEndIf()
+        q = EUDVariable()
+        if EUDIf()(b <= (1 << 24) - 1):
+            q << chain_fdiv(a, b)
+        if EUDElse()():
+            # (A divisor of 256 or more: the quotient's sixteen bits past the point one a step, from what is left over.)
+            w, r = [fresh(x) for x in f_div(a, b)]
+            for _ in range(16):
+                r += r
+                w += w
+                if EUDIf()(r >= b):
+                    r -= b
+                    w += 1
+                EUDEndIf()
+            q << w
+        EUDEndIf()
         if EUDIf()(neg == 1):
             q << 0 - q
         EUDEndIf()
         EUDReturn(q)
+
+    def root4(x, pairs, zeros):
+        """root() kept as four times the root found so far, t: the step's trial 4r + 1 is then rem > t, no copy of r
+        made a step. Only while 4r fits in 32 bits: sqrt_fixed's root is below 2^24."""
+        t, rem = fresh(0), fresh(0)
+        for i in range(pairs + zeros):
+            rem += rem
+            rem += rem
+            if i < pairs:
+                for weight, bit in ((2, 31 - 2 * i), (1, 30 - 2 * i)):
+                    RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=rem.AddNumber(weight))
+            if EUDIf()(rem > t):
+                rem -= t
+                rem -= 1
+                t += t
+                t += 4
+            if EUDElse()():
+                t += t
+            EUDEndIf()
+        return shift_const(t, ">>>", 2)
 
     def root(x, pairs, zeros):
         """The largest r with r * r <= x * 4 ** zeros, x read as `pairs` pairs of bits from the top: two bits a step."""
@@ -1317,12 +1382,9 @@ def fixed_fns():
             rem += rem
             rem += rem
             if i < pairs:
-                # The two bits at the top of x, shifted out of it.
-                for weight in (2, 1):
-                    if EUDIf()(x >= SIGN):
-                        rem += weight
-                    EUDEndIf()
-                    x += x
+                # The next two bits of x, read where they are (x was doubled twice a step to bring them to the top).
+                for weight, bit in ((2, 31 - 2 * i), (1, 30 - 2 * i)):
+                    RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=rem.AddNumber(weight))
             trial = fresh(r)
             trial += trial
             trial += trial
@@ -1340,7 +1402,7 @@ def fixed_fns():
         if EUDIf()(x >= SIGN):
             EUDReturn(0)
         EUDEndIf()
-        EUDReturn(root(x, 16, 8))
+        EUDReturn(root4(x, 16, 8))
 
     @EUDFunc
     def sqrt_whole(x):
@@ -2125,7 +2187,20 @@ class Lowering:
             # By a power of two, a shift: x * 32 is x << 5, a fifth of the cost of eudplib's general product.
             k, v = (b, a) if isinstance(b, int) else (a, b) if isinstance(a, int) else (None, None)
             if k is not None and k > 0 and k & (k - 1) == 0:
-                return v if k == 1 else f_bitlshift(fresh(v), k.bit_length() - 1)
+                return v if k == 1 else shift_const(v, "<<", k.bit_length() - 1)
+            if k is not None:
+                # eudplib's product goes over its first operand's bits and stops past the highest that is set: whichever
+                # of the two is smaller first, the constant by its distance from 0 (a number below zero has every top
+                # bit set), negated after.
+                m = signed(k)
+                kv = EUDVariable(abs(m))  # initial: a constant, never written
+                r = EUDVariable()
+                if EUDIf()(v <= abs(m) - 1):
+                    f_mul(v, kv, ret=[r])
+                if EUDElse()():
+                    f_mul(kv, v, ret=[r])
+                EUDEndIf()
+                return 0 - r if m < 0 else r
             return f_mul(as_var(a), as_var(b))
         # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
         unsigned = bool(e.get("unsigned"))
@@ -2170,12 +2245,16 @@ class Lowering:
             a, b, op = b, a, FLIPPED[op]
         if unsigned or op in ("==", "!="):
             return relation(as_var(a), op, b)
+        if not isinstance(b, int):
+            return signed_order(as_var(a), op, as_var(b))
         return relation(a + SIGN, op, (b + SIGN) & U32 if isinstance(b, int) else b + SIGN)
 
     @staticmethod
     def bitwise(op, a, b):
         """& | ^ << >> >>> over 32 bits. `>>` keeps the sign of what it shifts and `>>>` does not; a shift by 32 or
         more leaves nothing but that sign."""
+        if op in ("<<", ">>", ">>>") and isinstance(b, int) and not isinstance(a, int) and 0 < b < 32:
+            return shift_const(a, op, b)
         if op in ("<<", ">>", ">>>"):
             if isinstance(a, int) and isinstance(b, int):
                 if op == "<<":
@@ -4417,6 +4496,49 @@ def fixed_const(name, args, unsigned=False, table=None):
     if y < 0:
         t = -t
     return t
+
+
+def shift_const(x, op, k):
+    """x << k, x >> k (the sign kept) or x >>> k for a constant k from 1 to 31, one trigger a bit that moves: a bit of x
+    tested, its place in the result added. A short shift left is doublings instead (a doubling is about two triggers)."""
+    if op == "<<" and k <= 4:
+        t = fresh(x)
+        for _ in range(k):
+            t += t
+        return t
+    r = EUDVariable()
+    RawTrigger(actions=r.SetNumber(0))
+    if op == "<<":
+        for bit in range(32 - k):
+            RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=r.AddNumber(1 << (bit + k)))
+        return r
+    # From the top, eight bits a group: a group with none of its bits set is jumped over (a small number skips most).
+    for top in range(31, k - 1, -8):
+        bits = range(top, max(k, top - 7) - 1, -1)
+        group = sum(1 << bit for bit in bits)
+        past = Forward()
+        EUDJumpIf(x.ExactlyX(0, group), past)
+        for bit in bits:
+            add = 1 << (bit - k)
+            if op == ">>" and bit == 31:
+                add = (add - (1 << (32 - k))) & U32  # the sign bit: its place, and every bit above the result's top
+            RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=r.AddNumber(add))
+        past << NextTrigger()
+    return r
+
+
+def signed_order(a, op, b):
+    """`a op b` of two signed variables, with no addition a side: a < b read as signed is a < b read from 0 up, turned
+    over once for each side below zero (the top bits differ only when exactly one is). A count of those three is a
+    condition on its low bit; > <= >= are < with the sides swapped, or the count's other answer."""
+    x, y, holds = (a, b, 1) if op == "<" else (b, a, 1) if op == ">" else (b, a, 0) if op == "<=" else (a, b, 0)
+    n = EUDVariable()
+    lt = relation(x, "<", y)
+    RawTrigger(actions=n.SetNumber(0))
+    RawTrigger(conditions=lt, actions=n.AddNumber(1))
+    RawTrigger(conditions=x.AtLeast(SIGN), actions=n.AddNumber(1))
+    RawTrigger(conditions=y.AtLeast(SIGN), actions=n.AddNumber(1))
+    return n.ExactlyX(holds, 1)
 
 
 def not_all(conds):
