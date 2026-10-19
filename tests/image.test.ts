@@ -9,6 +9,8 @@ import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 import { describeImage, makeImage, readImage, writeImage } from "../compiler/image";
 import { describeMedia, isMediaFile } from "../compiler/media";
+import { covers, prepareShapes } from "../compiler/cover";
+import { FOG_SHAPES } from "../compiler/fogShapes";
 import { readFiles, withFiles } from "../script";
 
 const LIB = defaultLib();
@@ -128,6 +130,28 @@ describe("an Image when the script is built", () => {
     expect(edge.threshold(256, { ink: "dark" })).toEqual(["#."]);
   });
 
+  it("halftones: an area's share of lit tiles is its grey, at a brush a cell at most", () => {
+    const flat = (g: number) => makeImage({ width: 120, height: 98, color: false, alpha: false, rgba: pixels(120, 98, () => [g, g, g, 255]) });
+    const lit = (rows: readonly string[]) => rows.join("").split("").filter((c) => c === "#").length / (120 * 98);
+    expect(lit(flat(0).halftone(6))).toBe(0);
+    // White is lit whole but its top row: a brush's top row is narrower than the rest, and none lights past the picture.
+    const white = flat(255).halftone(6);
+    expect(white.slice(1).every((r) => r === "#".repeat(120))).toBe(true);
+    const shapes = prepareShapes(FOG_SHAPES);
+    for (const cell of [4, 6, 8]) for (const g of [40, 100, 160, 220]) {
+      const rows = flat(g).halftone(cell);
+      expect(Math.abs(lit(rows) - g / 255), `${cell} at ${g}`).toBeLessThan(0.03);
+      // The brushes it carries light exactly its rows, one a cell at most.
+      const brushes = (rows as unknown as { brushes: { x: number; y: number; shape: number }[] }).brushes;
+      expect(covers(brushes, 120, 98, shapes)).toEqual(Uint8Array.from(rows.join(""), (c) => (c === "#" ? 1 : 0)));
+      const cells = (size: number, c: number, least: number) => Math.floor(size / c) + (size % c >= least ? 1 : 0);
+      expect(brushes.length).toBeLessThanOrEqual(cells(120, cell, 3) * cells(98, cell + 1, 4));
+      // Nothing lit in a strip too thin for a brush: what is left over at an edge belongs to the cell before it.
+      expect(rows.every((r) => !/(^|\.)#{1,2}$/.test(r)), `${cell} at ${g}`).toBe(true);
+    }
+    expect(() => flat(9).halftone(2)).toThrow(/3 to 32 tiles across/);
+  });
+
   it("makes tones", () => {
     expect(ramp.tones(4)).toEqual(["0123", "0303"]);
     expect(() => ramp.tones(11)).toThrow(/2 to 10 tones/);
@@ -149,6 +173,11 @@ describe("a script that imports an image", () => {
     const r = compile(`import { fog } from "trigscript/fog";\nimport logo from "./art/logo.image";\nconst disc = fog.picture(logo.flip("vertical").threshold(100, { ink: "dark" }));\nprogram(async () => { fog.reveal(P1); while (true) { fog.light(P1, 10, 10, disc); await nextFrame(); } });\n`);
     expect(errors(r)).toEqual([]);
     expect(r.programs.length).toBeGreaterThan(0);
+  });
+
+  it("draws a halftone with the brushes it was made of, a brush a cell at most", () => {
+    const r = compile(`import { fog } from "trigscript/fog";\nimport logo from "./art/logo.image";\nconst rows = logo.halftone(4);\nconst made = (rows as unknown as { brushes: unknown[] }).brushes;\nconst p = fog.picture(rows);\nif (made.length === 0 || made.length > 10 * 6 || p.brushes.length !== made.length) throw new Error(\`\${p.brushes.length} of \${made.length}\`);\n`);
+    expect(errors(r)).toEqual([]);
   });
 
   it("is typed: a mistake is the checker's message", () => {

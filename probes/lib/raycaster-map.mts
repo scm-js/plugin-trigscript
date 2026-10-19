@@ -1,7 +1,7 @@
 // The raycaster's base map (TrigScript 4, S5): 128 × 128, the top 96 rows the board — Badlands tile 23778, white lit,
 // grey in fog, black never seen, the widest apart of every tile's minimap colours (S4's survey) — and the 32 rows below
 // the start locations and the parked camera, whose box the minimap draws over what is under it. As bad-apple-map.mts,
-// without a song.
+// without a song. Other fog probes take it too, with a name and description of their own (MAP_NAME, MAP_DESCRIPTION).
 //
 //   npx tsx probes/lib/raycaster-map.mts <out.scx>
 //
@@ -34,8 +34,8 @@ tiles.fill(TILE);
 for (let y = 112; y < H; y++) for (let x = 104; x < W; x++) tiles[y * W + x] = ground[y * W + x];
 const scn = createScenario({
   width: W, height: H, era: ERA, tiles, isom: flat.isom,
-  name: "TrigScript raycaster",
-  description: "A 3D maze drawn on the minimap with fog of war. Switch to Classic graphics (Options > Graphics) for a sharp minimap. W A S D to walk. Host as multiplayer, alone.",
+  name: process.env.MAP_NAME ?? "TrigScript raycaster",
+  description: process.env.MAP_DESCRIPTION ?? "A 3D maze drawn on the minimap with fog of war. Switch to Classic graphics (Options > Graphics) for a sharp minimap. W A S D to walk. Host as multiplayer, alone.",
 });
 scn.playerTypes = scn.playerTypes.map((t: number, i: number) => (i === 0 ? 6 : i === 1 ? 5 : i < 8 ? 0 : t));
 scn.editorPlayerTypes = [...scn.playerTypes];

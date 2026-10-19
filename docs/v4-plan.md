@@ -1523,8 +1523,25 @@ A pixel under half opaque is never ink. Nothing reaches the game but what the sc
   clicking it opens a viewer — the image, or a threshold as the fog draws it (brushes, tiles off in red) with the
   `fog.picture(logo.threshold(…))` line that makes it — from the same `Image` the build has.
 - **Left out:** a dither. Floyd–Steinberg made 4,066 brushes of a 256 × 192 logo (the game creates about 950 in a
-  frame), and scattered single tiles are thinner than the smallest sight shape, so the fog cannot draw them. A
-  halftone — a disc a cell, its size the cell's grey — is the fog's own way of showing grey, and comes next if wanted.
+  frame), and scattered single tiles are thinner than the smallest sight shape, so the fog cannot draw them.
+- **Halftone instead** (`image.halftone(cellWidth, cellHeight = width + 1, { diffuse })`): the fog's own way of
+  showing grey. Each cell gets one brush or none — the fog's shapes that fit, the largest a tile past the cell so
+  neighbours run together into white, moved in from the picture's edges, never past them — chosen by the light it
+  adds that nothing lit before (spill into a neighbour counts for the cell that made it), what it misses diffused
+  to the next cells; `diffuse: false` is an even grid. The rows carry their brushes and `fog.picture` draws those, so
+  it is a brush a cell at most (covering the union again took a fifth to a half more where discs merge). Two first
+  tries were worse: mixing "lit whole" cells with discs made ragged ink at 2.4 brushes a cell, and choosing by the
+  cell's own share alone came out 10% light where discs spilled into cells already chosen.
+- **The third tone, answered without a play:** whether a map can mark tiles never seen again (black, below fog grey).
+  Remastered's own EUD emulator run on the dump (scm-sim-reader `remastered/probe.py`): 0x6D1260 reads 0xAF1080 and
+  is writable, but reads at that address give 0 and writes change only the emulator's cache — the fog tile array is
+  not the map's to write in Remastered. Two tones it is.
+- **Probe built** (`probes/halftone.ts`, pictures from `probes/lib/halftone-gen.mts`, base map
+  `probes/lib/raycaster-map.mts` with `MAP_NAME`): A ramps at 4 × 5, 6 × 7, 8 × 9 diffused; B the same even; C a lit
+  ball in two tones and five halftones; D five pre-rendered walks of the raycaster's maze with walls greyer by distance
+  and side (whole, 4 diffused / even, 6 diffused / even; at most 558 brushes a frame). Played once in Classic and once
+  in Remastered graphics: does Remastered's blur melt the dots into grey, which cell size, and do diffused dots
+  shimmer when the picture moves.
 - **Not yet:** the runtime half — an image as a table a program reads while the game runs (textures, sprites, a level
   painted as a picture) — waits for the lowering work on `backend-limits`.
 

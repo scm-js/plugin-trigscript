@@ -156,13 +156,17 @@ export interface Picture {
  *   fog.picture(["..##..", ".####.", "######"])                     // light ink: the # tiles are lit
  *   fog.picture(["..##..", ".####.", "######"], { ink: "dark" })    // dark ink: the # tiles stay dark, the rest is lit
  *
- * With light ink a lit part thinner than a brush (3 tiles across, 4 down) is drawn a tile or two thicker. With dark
+ * With light ink a lit part thinner than a brush (3 tiles across, 4 down) is drawn a tile or two thicker. An image's
+ * halftone (`fog.picture(photo.halftone(6))`) is drawn with the brushes it was made of, one a cell. With dark
  * ink every tile of the picture's rectangle that is not `#` is lit and the `#` tiles keep their shape exactly,
  * however thin — the ink for line art and silhouettes.
  */
 export function picture(rows: readonly string[], options: { readonly ink?: "light" | "dark" } = {}): Picture {
   const height = rows.length;
   const width = Math.max(0, ...rows.map((r) => r.length));
+  // An image's halftone (image.halftone(6)) comes with the brushes that drew it: a brush a cell, as they are.
+  const drawn = (rows as { readonly brushes?: readonly { readonly x: number; readonly y: number; readonly shape: number }[] }).brushes;
+  if (drawn && options.ink !== "dark") return Object.freeze({ width, height, brushes: Object.freeze(drawn.map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }))) });
   // Dark ink: the picture's rectangle lit but for the # tiles, so what is covered is the rest.
   const ink = options.ink === "dark" ? Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => (rows[y][x] === "#" ? "." : "#")).join("")) : rows;
   const brushes = cover(ink, SHAPES).map((b) => ({ x: b.x, y: b.y, size: b.shape + 1 }));

@@ -7,7 +7,7 @@
  *
  * What a script gets is an `Image` (below), worked on when the script is built: its pixels read one by one, and new
  * images made from it — cropped, scaled, flipped, turned, inverted — and, at the end, rows of text for `fog.picture`
- * (`threshold`) or rows of tones a library draws its own way (`tones`). None of it reaches the game but what
+ * (`threshold`, or `halftone` for greys the fog can show) or rows of tones a library draws its own way (`tones`). None of it reaches the game but what
  * the script makes of it.
  *
  * The file is text, one line of JSON: the sizes, which planes it has, and the planes in base64. Each plane is coded the
@@ -16,6 +16,7 @@
  * busy the neighbourhood is. Colour is coded as green, and red and blue as their differences from green, which are
  * small wherever a picture is near grey.
  */
+import { FOG_SHAPES } from "./fogShapes";
 import { fromBase64, PROB_HALF, RangeDecoder, RangeEncoder, toBase64 } from "./rangeCoder";
 
 /** The extension of an image among a script's files. */
@@ -180,6 +181,9 @@ function codePlane(plane: Uint8Array, width: number, height: number, code: (busy
 /** Rows of text, as `fog.picture` takes them. */
 type Rows = readonly string[];
 
+/** A brush of a halftone: which of the fog's shapes (0 the first), centred on tile (x, y) of the picture. */
+export interface HalftoneBrush { readonly x: number; readonly y: number; readonly shape: number }
+
 /** What a script imports: `import logo from "./logo.image"`. Every method is worked out when the script is built. */
 export interface Image {
   readonly __trigscript: "image";
@@ -199,6 +203,7 @@ export interface Image {
   invert(): Image;
   threshold(level?: number, options?: { readonly ink?: "light" | "dark" }): Rows;
   tones(count: number): Rows;
+  halftone(cellWidth: number, cellHeight?: number, options?: { readonly diffuse?: boolean }): Rows;
 }
 
 export const isImage = (v: unknown): v is Image => typeof v === "object" && v !== null && (v as Image).__trigscript === "image";
@@ -294,8 +299,89 @@ export function makeImage(d: ImageData): Image {
       if (count < 2 || count > 10) throw new RangeError(`tones() makes 2 to 10 tones, a digit each, not ${count}.`);
       return rows((g) => String(Math.min(count - 1, Math.floor((g * count) / 256))));
     },
+    halftone(cw, ch, options) {
+      whole(cw, "halftone()'s cell width");
+      const cellH = ch === undefined ? cw + 1 : whole(ch, "halftone()'s cell height");
+      if (cw < 3 || cellH < 4 || cw > 32 || cellH > 32) throw new RangeError(`halftone() takes cells 3 to 32 tiles across and 4 to 32 down (the smallest brush is 3 × 4), not ${cw} × ${cellH}.`);
+      return halftone(w, h, (i) => (rgba[i * 4 + 3] < OPAQUE ? -1 : greyAt(i * 4)), cw, cellH, options?.diffuse !== false);
+    },
   };
   return Object.freeze(image);
+}
+
+/**
+ * Grey in the fog: the picture cut into cells, each lit by one of the fog's own brushes or none — a larger one for a
+ * lighter cell, the largest a tile past the cell on each side so that neighbours run together into white. Cells are
+ * taken row by row: each chooses, of none and each brush centred on it, the one whose new light — the tiles it lights
+ * that nothing lit before, wherever they are — is nearest the cell's grey times its size; what that missed by is
+ * handed on to the cells after it (Floyd–Steinberg, a cell a step), so an area's share of light is its grey. Without
+ * `diffuse`, each cell's brush is the nearest to its own grey alone: an even grid of dots, the greys in steps. One brush a cell at
+ * most, each drawn exactly as the game lights it and inside the picture; the rows carry them as `brushes`. `grey(i)` is pixel i's grey, or −1 where it is not opaque enough;
+ * a cell mostly of those is left dark.
+ */
+function halftone(w: number, h: number, grey: (i: number) => number, cw: number, ch: number, diffuse: boolean): Rows {
+  const lit = new Uint8Array(w * h), brushes: HalftoneBrush[] = [];
+  // Where the cells start, each way; what is left over at the end, too thin for a brush, goes to the cell before it.
+  const starts = (size: number, cell: number, least: number) => {
+    const at: number[] = [];
+    for (let p = 0; p < size; p += cell) at.push(p);
+    if (at.length > 1 && size - at[at.length - 1] < least) at.pop();
+    return [...at, size];
+  };
+  const xs = starts(w, cw, 3), ys = starts(h, ch, 4);
+  const cols = xs.length - 1, rowsOfCells = ys.length - 1;
+  const err = new Float32Array(cols * rowsOfCells);
+  for (let cy = 0; cy < rowsOfCells; cy++) for (let cx = 0; cx < cols; cx++) {
+    const x0 = xs[cx], y0 = ys[cy], x1 = xs[cx + 1], y1 = ys[cy + 1];
+    const area = (x1 - x0) * (y1 - y0);
+    let sum = 0, seen = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const g = grey(y * w + x); if (g >= 0) { sum += g; seen++; } }
+    if (seen * 2 < area) continue;
+    // A brush centred on the cell — moved in from an edge of the picture, which it never lights past — the tiles it
+    // lights and the tile it is centred on; null for one larger than the picture.
+    const place = (shape: readonly string[]) => {
+      const fit = (at: number, size: number, room: number) => Math.max(0, Math.min(room - size, at));
+      const sx = fit(x0 + ((x1 - x0 - shape[0].length) >> 1), shape[0].length, w), sy = fit(y0 + ((y1 - y0 - shape.length) >> 1), shape.length, h), tiles: number[] = [];
+      let centre = { x: 0, y: 0 }, inside = true;
+      shape.forEach((row, dy) => {
+        for (let dx = 0; dx < row.length; dx++) {
+          const x = sx + dx, y = sy + dy;
+          if (row[dx] === "@") centre = { x, y };
+          if (row[dx] === ".") continue;
+          if (x < 0 || y < 0 || x >= w || y >= h) inside = false;
+          else tiles.push(y * w + x);
+        }
+      });
+      return inside ? { tiles, centre } : null;
+    };
+    // What a brush gives, as a share of the cell: every tile it lights that nothing lit before, in this cell or past
+    // it — what spills into a neighbour is light this cell put there, and the neighbour counts only its own.
+    const share = (tiles: readonly number[]) => tiles.reduce((n, i) => n + (lit[i] ? 0 : 1), 0) / area;
+    const want = sum / seen / 255 + err[cy * cols + cx];
+    let best: { tiles: number[]; centre: { x: number; y: number }; shape: number } | null = null, bestShare = 0;
+    for (const [k, shape] of FOG_SHAPES.entries()) {
+      if (shape[0].length > x1 - x0 + 2 || shape.length > y1 - y0 + 2) break;
+      const at = place(shape);
+      if (!at) continue;
+      const s = share(at.tiles);
+      if (Math.abs(s - want) < Math.abs(bestShare - want)) { best = { ...at, shape: k }; bestShare = s; }
+    }
+    if (best) {
+      for (const i of best.tiles) lit[i] = 1;
+      brushes.push(Object.freeze({ ...best.centre, shape: best.shape }));
+    }
+    const miss = diffuse ? want - bestShare : 0;
+    const give = (dx: number, dy: number, part: number) => {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx >= 0 && nx < cols && ny < rowsOfCells) err[ny * cols + nx] += (miss * part) / 16;
+    };
+    give(1, 0, 7); give(-1, 1, 3); give(0, 1, 5); give(1, 1, 1);
+  }
+  const out: string[] = [];
+  for (let y = 0; y < h; y++) { let row = ""; for (let x = 0; x < w; x++) row += lit[y * w + x] ? "#" : "."; out.push(row); }
+  // The rows carry the brushes that drew them, which fog.picture takes as they are: covering their union again could
+  // take more, where discs run together.
+  return Object.freeze(Object.assign(out, { brushes: Object.freeze(brushes) }));
 }
 
 /**

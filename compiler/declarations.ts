@@ -473,6 +473,15 @@ ${kw}interface Image {
   threshold(level?: number, options?: { readonly ink?: "light" | "dark" }): readonly string[];
   /** Rows of digits, a pixel each from 0 (darkest) to count − 1 (lightest), . where it is transparent: 2 to 10 tones. */
   tones(count: number): readonly string[];
+  /**
+   * Rows of text for fog.picture that show grey: the image cut into cells (cellHeight one more than the width
+   * when left out, as the fog's brushes are), each lit by one brush or none — larger for lighter, the largest
+   * running into its neighbours — what one cell misses handed on to the next so an area's share of light is
+   * its grey. fog.picture draws it a brush a cell at most: 6 × 7 cells over 128 × 96 tiles are about 300.
+   * { diffuse: false }: each cell by its own grey alone, an even grid whose greys come in steps.
+   * \`fog.picture(photo.halftone(6))\`
+   */
+  halftone(cellWidth: number, cellHeight?: number, options?: { readonly diffuse?: boolean }): readonly string[];
 }
 /** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
 ${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }

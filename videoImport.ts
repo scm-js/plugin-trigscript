@@ -490,7 +490,7 @@ export function showVideo(api: PluginApi, t: Translate, path: string, text: stri
 }
 
 /**
- * An `.image` file of the script, shown: its pixels, or what `threshold` makes of them as the fog would
+ * An `.image` file of the script, shown: its pixels, or what `threshold` or `halftone` makes of them as the fog would
  * light it (the brushes `fog.light` makes, the tiles off the picture marked red), with the line that makes it — the
  * same `Image` the build has (`compiler/image.ts`), so what is seen here is what the script gets.
  */
@@ -511,16 +511,20 @@ export function showImage(api: PluginApi, t: Translate, path: string, text: stri
   levelField.style.width = "100%";
   const draw = () => {
     levelField.disabled = view !== "threshold";
+    inkField.disabled = view !== "threshold";
     if (view === "pixels") { paintPixels(canvas, data.rgba, data.width, data.height); info.textContent = ""; return; }
     const ink = dark ? `{ ink: "dark" }` : "";
-    const rows = image.threshold(level, { ink: dark ? "dark" : "light" });
-    const call = `${name}.threshold(${level}${ink ? `, ${ink}` : ""})`;
+    const cell = Number(view.replace("halftone", ""));
+    const rows = cell ? image.halftone(cell) : image.threshold(level, { ink: dark ? "dark" : "light" });
+    const call = cell ? `${name}.halftone(${cell})` : `${name}.threshold(${level}${ink ? `, ${ink}` : ""})`;
     const tiles = Uint8Array.from(rows.join(""), (c) => (c === "#" ? 1 : 0));
-    const brushes = cover(tiles, data.width, data.height, shapes);
+    // A halftone carries the brushes that drew it, which fog.picture draws as they are.
+    const brushes = cell ? (rows as unknown as { brushes: { x: number; y: number; shape: number }[] }).brushes : cover(tiles, data.width, data.height, shapes);
     paint(canvas, covers(brushes, data.width, data.height, shapes), data.width, data.height, tiles);
     info.textContent = `fog.picture(${call}) · ${t("{n} brushes", { n: brushes.length })}`;
   };
   levelField.addEventListener("input", () => { level = Number(levelField.value); draw(); });
+  const inkField = w.select([{ value: "light", label: t("Light parts") }, { value: "dark", label: t("Dark parts") }], { value: "light", onChange: (v) => { dark = v === "dark"; draw(); } });
   api.ui.dialog({
     title: path,
     size: "md",
@@ -528,9 +532,9 @@ export function showImage(api: PluginApi, t: Translate, path: string, text: stri
       body.append(
         canvas,
         w.form([
-          { label: t("Show"), field: w.select([{ value: "pixels", label: t("The image") }, { value: "threshold", label: t("Threshold, as the fog draws it") }], { value: view, onChange: (v) => { view = v; draw(); } }) },
+          { label: t("Show"), field: w.select([{ value: "pixels", label: t("The image") }, { value: "threshold", label: t("Threshold, as the fog draws it") }, ...[4, 6, 8].map((c) => ({ value: `halftone${c}`, label: t("Halftone, {w} × {h} cells, as the fog draws it", { w: c, h: c + 1 }) }))], { value: view, onChange: (v) => { view = v; draw(); } }) },
           { label: t("Threshold"), field: levelField },
-          { label: t("Ink"), field: w.select([{ value: "light", label: t("Light parts") }, { value: "dark", label: t("Dark parts") }], { value: "light", onChange: (v) => { dark = v === "dark"; draw(); } }) },
+          { label: t("Ink"), field: inkField },
         ]),
         info,
         w.hint(t("{w} × {h} pixels{from}. Import it with import {name} from \"./{file}\".", { w: data.width, h: data.height, from: data.source ? ` · ${data.source}` : "", name, file: path.split("/").pop() ?? path })),

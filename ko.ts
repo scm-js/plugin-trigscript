@@ -440,5 +440,6 @@ export const KO: Record<string, string> = {
   "Show": "보기",
   "The image": "그림",
   "Threshold, as the fog draws it": "임계값, 안개가 그리는 모습",
+  "Halftone, {w} × {h} cells, as the fog draws it": "하프톤, {w} × {h} 칸, 안개가 그리는 모습",
   "{w} × {h} pixels{from}. Import it with import {name} from \"./{file}\".": "{w} × {h} 픽셀{from}. import {name} from \"./{file}\"로 가져옵니다.",
 };
