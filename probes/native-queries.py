@@ -11,8 +11,9 @@ What Remastered 1.23.10.13515 does (read in Ghidra, 2026-10-19):
   for each player and unit type (0x540 bytes), that the last query filled: Command copies the game's own counts into it
   (+0x28AF60), Bring counts the units in its location into it (+0x28BBD0).
 - The table is kept while the queries stay the same kind and, for Bring, the same location number. It is thrown away
-  at the start of every trigger pass (+0x41C007) and by the actions that kill or remove units (+0x28A960). Moving the
-  location does not throw it away: a Bring of a location that moved since the last Bring of it reads the old counts.
+  at the start of every trigger pass (+0x41C007) and by the actions that kill or remove units (+0x28A960). Writing a
+  location's sides does not throw it away: a Bring of a location moved that way since its last Bring reads the old
+  counts (played: probes/location-stale.py).
 - So the cost is a scan each time the location changes and a lookup otherwise; the mixes take the two apart, and the
   scan at 0, 16 and 64 units in the location.
 

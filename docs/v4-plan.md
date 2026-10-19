@@ -2447,9 +2447,10 @@ Not on the list: anything that runs outside the trigger walk, and threads (the g
 - *Bring and Command never touch the emulator.* Both read a table of counts, a cell for each player and unit type (0x540
   bytes): Command copies the game's own counts into it (+0x28AF60); Bring counts the units in its location (+0x28BBD0).
   The table is kept while the queries stay of one kind and, for Bring, of one location number: it is thrown away at the
-  start of every trigger pass (+0x41C007) and by the actions that kill or remove units (+0x28A960). **Moving a location
-  does not throw it away**: a Bring of a location moved since the last Bring of it reads the old counts. A library that
-  moves a location to ask about a place must ask another location in between.
+  start of every trigger pass (+0x41C007) and by the actions that kill or remove units (+0x28A960). **Writing a location's
+  sides does not throw it away**: a Bring of a location moved that way since the last Bring of it reads the old counts
+  (played: `probes/location-stale.py`, below). A library that moves a location to ask about a place must ask something
+  else in between.
 - `probes/classic-weights.mts` (no eudplib: the editor's own code writes 5,017 triggers) — blocks turned on by phase:
   16 conditions a trigger with the last failing, the same with 62 Set Deaths after, 62 Set Switch; marks as Player 8's
   deaths (a map that is not EUD writes none of Players 9–12), `remastered/profile.py --marks-player=8`. A pass comes
@@ -2482,8 +2483,18 @@ Not on the list: anything that runs outside the trigger walk, and threads (the g
   many times in a row, all of its Commands together and all of its Brings together, and never alternate. The moving
   pair (four sides written, then Bring, two locations in turn) is a scan each time, 1.6 µs a Bring, as expected.
   Remastered's own counts match the lifted game's exactly (Home at 128 2512; same 16, empty 0 0, 16s 16 16, 64s 67 71,
-  moving 16 16), so each row measured the boxes it says. Whether a moved location is read stale is still Ghidra's word
-  alone: the moving pair is placed before the marines exist, so this line does not test it.
+  moving 16 16), so each row measured the boxes it says. (The moving pair is placed before the marines exist, so
+  this line does not test staleness; the next probe does.)
+- *location-stale* (`probes/location-stale.py`, no profiler: nine lines on the screen), Remastered the same as the
+  lifted 1.16.1 game, line for line. In one pass, after a Bring of location L:
+  - L's sides written (A to B, and B to A): the next Bring of L reads **the old counts**.
+  - A unit made in L by Create Unit: **the old counts** too (the next frame sees it).
+  - The Move Location action: fresh (not read in Ghidra; likely its search for the unit to centre on).
+  - A Bring of another location, a Command, or a Remove Unit action in between: fresh. So does the next frame.
+  For the backend: a library that writes a location's sides (every `at(x, y)` query) and then asks Bring must put a
+  query of another location, or a Command, in between when L was asked earlier in the same pass and the answer must be
+  new. The cheapest is a Command (about 30 ns, from the Bring-and-Command row; the next Bring of L is a scan either way). The same after
+  making units in a location that is asked again.
 
 **As built: value ranges (2026-10-19).** `compiler/ranges.ts`, run after `numbers.ts`; IR 25 (`range` on a number).
 - The range of every number variable is the union of what is stored into it, and 0 (a cell before its first store);
