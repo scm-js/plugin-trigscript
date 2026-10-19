@@ -27,7 +27,7 @@ import { simulate, type SimulationEvent } from "./compiler/simulate";
 import type { TestResult, TestRunOptions, TestWorld } from "./compiler/testing";
 import { DEFAULT_DIST, DIST_STORAGE_KEY } from "./monaco";
 import {
-  DEFAULT_SETTINGS, buildScript, findBlock, hashFiles, hashText, isScriptMember, readManifest, readSettings, relocateManifest, scriptState, triggerAtLine, withFiles, withSettings, type ScriptSettings,
+  DEFAULT_SETTINGS, buildScript, findBlock, hashFiles, hashText, isBuiltSound, isScriptMember, readManifest, readSettings, relocateManifest, scriptState, triggerAtLine, withFiles, withSettings, type ScriptSettings,
   type BuildOptions, type Extras, type ScriptBlock, type ScriptState,
 } from "./script";
 import { english, msg, type Translate } from "./i18n";
@@ -114,11 +114,11 @@ export interface MapNames {
 /** What compiles a script: `compileInBackground`, or something synchronous in a test. */
 export type Compiler = (input: CompileInput, dist: string) => Promise<CompileResult>;
 
-/** The script's members as the map holds them, by their stored names. */
+/** The script's members as the map holds them, by their stored names, and the WAVs its last build wrote for its clips. */
 export function snapshotExtras(api: PluginApi): Map<string, Uint8Array> {
   const out = new Map<string, Uint8Array>();
   for (const name of api.document.extras.list()) {
-    if (!isScriptMember(name)) continue;
+    if (!isScriptMember(name) && !isBuiltSound(name)) continue;
     const bytes = api.document.extras.get(name);
     if (bytes) out.set(name, bytes);
   }

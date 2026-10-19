@@ -95,6 +95,8 @@ if (home && scn.locations?.[0] && !scn.locations[0].nameIndex && scn.locations[0
 markDirty(scn, "TRIG", "UNIT");
 const ir = serializeIr(r.ir, r.strings, r.input);
 const extras = loaded.archive ? await readExtras(loaded.archive, loaded.files) : new Map();
+// The clips the script plays (compiler/sound.ts), as the editor's Apply writes them.
+for (const s of r.sounds) extras.set(s.path, s.bytes);
 const withStrings = await saveMap(serializeScenario(scn), { extras, compress: "pkware", listfile: true });
 // PREP_ONLY=1: the prepared map as it is, not built: what the editor opens in a run end to end, and builds itself.
 if (process.env.PREP_ONLY) { writeFileSync(resolve(outPath), withStrings); process.exit(0); }

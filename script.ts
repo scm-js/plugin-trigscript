@@ -108,6 +108,18 @@ export function isScriptMember(name: string): boolean {
   return memberKey(name).startsWith(memberKey(SCRIPT_FOLDER));
 }
 
+/** A WAV a build wrote for a clip the script plays (`compiler/sound.ts`): `staredit\wav\trigscript-<hash>.wav`. */
+export const isBuiltSound = (name: string): boolean => /^staredit\\wav\\trigscript-[0-9a-f]{8}\.wav$/.test(memberKey(name));
+
+/** The members with the clips of this build in place of the last one's. */
+export function withSounds(extras: Extras, sounds: readonly { path: string; bytes: Uint8Array }[]): Map<string, Uint8Array> {
+  const next = new Map<string, Uint8Array>();
+  for (const [name, bytes] of extras) if (!isBuiltSound(name)) next.set(name, bytes);
+  // A clip already in the map keeps its bytes as they are: the name says what it holds.
+  for (const s of sounds) next.set(s.path, [...extras].find(([name]) => memberKey(name) === memberKey(s.path))?.[1] ?? s.bytes);
+  return next;
+}
+
 /** The member name of a script file (`ai/waves.ts` → `trigscript\ai\waves.ts`). */
 export function memberOf(path: string): string {
   return `${SCRIPT_FOLDER}${normalizePath(path).replace(/\//g, "\\")}`;
@@ -120,11 +132,11 @@ export function pathOf(member: string): string | null {
   return SCRIPT_FILE.test(rest) ? rest.replace(/\\/g, "/") : null;
 }
 
-/** What a file of the script ends in: TypeScript, TypeScript with JSX, or a video or an image it imports (`compiler/media.ts`). */
-const SCRIPT_FILE = /\.(?:tsx?|video|image)$/i;
+/** What a file of the script ends in: TypeScript, TypeScript with JSX, or a video, an image or a sound it imports (`compiler/media.ts`). */
+const SCRIPT_FILE = /\.(?:tsx?|video|image|sound)$/i;
 
-/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts` (or `.tsx`, `.video`, `.image`). */
-export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video|image)$/;
+/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts` (or `.tsx`, `.video`, `.image`, `.sound`). */
+export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video|image|sound)$/;
 
 function member(extras: Extras, name: string): Uint8Array | undefined {
   const key = memberKey(name);
@@ -366,7 +378,7 @@ export function buildScript(triggers: TriggerRecord[], extras: Extras, files: Sc
     start = triggers.length; before = triggers.slice(); after = [];
   }
   const manifest: ScriptManifest = { version: 2, programs: compiled.ir.length, start, count: records.length, hash: hashTriggers(records), sources: compiled.sources, files: Object.keys(files).map(normalizePath).sort(), sourceHash: hashFiles(files), records: records.map(hashRecord) };
-  return { list: [...before, ...records, ...after], extras: withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
+  return { list: [...before, ...records, ...after], extras: withSounds(withManifest(options.keepFiles ? extras : withFiles(extras, files), manifest), compiled.sounds ?? []), block: { start, count: records.length, sources: manifest.sources }, ...(replaced ? { replaced } : {}) };
 }
 
 /** Which trigger a source line of a file belongs to (the trigger whose source starts at or before the line), if any. */

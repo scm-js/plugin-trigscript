@@ -143,6 +143,8 @@ export interface CompileResult {
   sources: (TriggerSource | null)[];
   /** Local string table: a record's `text` / `wav` field `k > 0` means `strings[k - 1]`. */
   strings: ScriptString[];
+  /** The clips the script plays (`sound.ts`), as the WAVs the map's archive gets, by their names there: once each. */
+  sounds: { path: string; bytes: Uint8Array }[];
   diagnostics: ScriptDiagnostic[];
   /** The programs' variables, in declaration order; a function's copies and results are left out. */
   variables: VariableInfo[];
@@ -194,12 +196,12 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
-    return { triggers: [], sources: [], strings: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, tests: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
+    return { triggers: [], sources: [], strings: [], sounds: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, tests: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 
   const refs: MapReference[] = [];
   const scripts = new Map<string, string>();
-  // A video or an image among the files (`media.ts`) is no TypeScript: an import of it gives a value the linker makes.
+  // A video, an image or a sound among the files (`media.ts`) is no TypeScript: an import of it gives a value the linker makes.
   const media = new Map<string, string>();
   for (const [path, text] of Object.entries(files)) (isMediaFile(path) ? media : scripts).set(normalizePath(path), text);
   // The standard library's modules the script imports ("trigscript/fog"), as files of its own: only those, since one
@@ -526,7 +528,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests)
       : { list: listTests(registry).list, results: [], only: [], ms: 0 };
   }
-  return result({ ir, input, triggers, sources, strings: collector.strings, variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }) });
+  return result({ ir, input, triggers, sources, strings: collector.strings, sounds: [...collector.sounds].map(([path, bytes]) => ({ path, bytes })), variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }) });
 }
 
 /**
