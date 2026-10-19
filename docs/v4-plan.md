@@ -3132,7 +3132,8 @@ Set aside:
 
 Nothing here needs a new trick in Remastered: a store is a Set Deaths whose destination another action wrote (what
 every routed read already is), and a read by a jump is eudplib's EUDVArray getter. Still, game-emitter with its J is
-built into the maps folder as `trigscript-emitter-2.scx`, its answer sheet beside it, to play.
+built into the maps folder as `trigscript-emitter-2.scx`, its answer sheet beside it. **Played (2026-10-19):** its ten
+lines (A–J) in Remastered are the lifted game's, number for number — the stores and the reads by a jump included.
 
 ### Our own layout and start-up
 
