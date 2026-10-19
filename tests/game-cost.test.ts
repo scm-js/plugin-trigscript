@@ -1,7 +1,7 @@
 // What a frame costs (TrigScript 4, A4), without a game: the build's map of triggers turns records into lines, and a
 // tap shaped like scm-sim's CostTap is read back as a test's cost.
 import { describe, expect, it } from "vitest";
-import { CostLines, costByLine, shortCount, type GameCostTap } from "../compiler/gameCost";
+import { CostLines, costByLine, shortCount, shortMs, type GameCostTap } from "../compiler/gameCost";
 import type { TriggerMap } from "../compiler/gameVariables";
 
 const END = 0x19200000;
@@ -73,6 +73,39 @@ describe("CostLines", () => {
   });
 });
 
+describe("CostLines, weighed", () => {
+  it("carries the weigher's milliseconds by frame and by line, and puts the lines in order of them", () => {
+    const lines = new CostLines(MAP, END);
+    const ids: number[] = [];
+    const t: GameCostTap = {
+      group: null,
+      weigh: { trigger: () => 0, record: () => 0 },
+      report() {
+        // Line 12 ran more records, line 30 took longer.
+        const [a, b] = ids;
+        return {
+          from: 0, conditions: [0, 3], actions: [2, 3], ungrouped: [2, 0], triggers: [5, 4], ns: [1e6, 9e6], ungroupedNs: [1e6, 0],
+          groups: new Map([[a, { conditions: 3, actions: 1, frames: 1, peak: 4, peakFrame: 1, ns: 2e6, peakNs: 2e6, peakNsFrame: 1 }], [b, { conditions: 0, actions: 2, frames: 1, peak: 2, peakFrame: 1, ns: 7e6, peakNs: 7e6, peakNsFrame: 1 }]]),
+        };
+      },
+    };
+    ids.push(lines.group(cond(0, 0)), lines.group(act(1200, 0)));
+    const cost = lines.read(t);
+    expect(cost.ms).toEqual({ perFrame: [0, 9], other: [1, 0], peak: 9, peakFrame: 1 });
+    expect(cost.triggers).toEqual([5, 4]);
+    expect(cost.lines.map((l) => [l.line, l.ms])).toEqual([[30, { total: 7, peak: 7, peakFrame: 1 }], [12, { total: 2, peak: 2, peakFrame: 1 }]]);
+  });
+
+  it("counts only, from a host whose tap does not weigh", () => {
+    const lines = new CostLines(MAP, END);
+    const t = tap([[cond(0, 0)]]);
+    t.group = lines.group;
+    const cost = lines.read(t);
+    expect(cost.ms).toBeUndefined();
+    expect(cost.lines[0].ms).toBeUndefined();
+  });
+});
+
 describe("costByLine", () => {
   it("keeps each line's most in a frame over every test, and the test it was in", () => {
     const line = (l: number, peak: number) => ({ file: "main.ts", line: l, total: peak, peak, peakFrame: 1, frames: 1 });
@@ -86,5 +119,11 @@ describe("costByLine", () => {
 describe("shortCount", () => {
   it("writes a count short", () => {
     expect([640, 1234, 30708, 1004714].map(shortCount)).toEqual(["640", "1.2k", "31k", "1.0M"]);
+  });
+});
+
+describe("shortMs", () => {
+  it("says milliseconds with as many places as they need", () => {
+    expect([0.0044, 0.31, 2.71, 15.4].map(shortMs)).toEqual(["0.004", "0.31", "2.7", "15"]);
   });
 });

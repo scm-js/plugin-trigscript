@@ -47,7 +47,8 @@ import { renamedKeys, renamesInUse, replaceReferences, type Renamed } from "./re
 import { FILE_NAME } from "./script";
 import { isMachineLine, readTriggerMap, readVariableMap } from "./compiler/gameVariables";
 import { mergeCopies } from "./compiler/gameCopies";
-import { costByLine, shortCount, type TestCost } from "./compiler/gameCost";
+import { costByLine, shortCount, shortMs, type TestCost } from "./compiler/gameCost";
+import { MOST_MS, SMOOTH_MS } from "./compiler/remasteredCost";
 import { isTestFile, type TestInfo, type TestReport, type TestResult, type TestRunOptions } from "./compiler/testing";
 import { countTests, foldPlayers, idsUnder, marksOf, mergeReport, NO_TESTS, notesOf, playersLabel, stateOf, stateOfCounts, summary, testTree, warningsOf, type TestNode, type TestState, type TestStateName } from "./testState";
 import { testName } from "./service";
@@ -140,6 +141,11 @@ const TESTS_SLOW_MS = 2_000;
 const COST_SEEN = 500_000;
 /** A line that ran this many conditions and actions in one frame of a test in the game says so beside it: 2% of COST_SEEN. */
 const COST_HINT = 10_000;
+/**
+ * Where the host weighs (cost step 1), a line that took this many milliseconds of Remastered's in one frame says so
+ * instead: 2% of SMOOTH_MS, the trigger work a frame took with no flicker seen (probes/frame-weights, 2026-10-18).
+ */
+const COST_HINT_MS = 0.3;
 /** Frames the map is played with nobody at it when an EUD error is looked up, before the tests: two minutes of game time at Fastest. */
 const EUD_TRACE_FRAMES = 3_000;
 /** The costliest lines a test's results name. */
@@ -970,12 +976,16 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
     const seen = costFiles;
     const costs = [...gameResults.values()].flatMap((r) => (r.cost ? [{ id: r.id, cost: r.cost }] : []));
     return costByLine(costs)
-      .filter((l) => l.peak >= COST_HINT && seen[normalizePath(l.file)] === files[normalizePath(l.file)])
-      .map((l) => ({
+      .filter((l) => (l.ms ? l.ms.peak >= COST_HINT_MS : l.peak >= COST_HINT) && seen[normalizePath(l.file)] === files[normalizePath(l.file)])
+      .map((l) => l.ms ? {
+        file: l.file, line: l.line,
+        label: t("{ms} ms a frame", { ms: shortMs(l.ms.peak) }),
+        note: t("In the game, this line took {ms} ms of Remastered's time in one frame at the most ({n} conditions and actions): frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran {smooth} ms of triggers a frame with no flicker seen, and slows past {most} ms; a slower computer gets there sooner. This is {share} of the {smooth} ms.", { ms: shortMs(l.ms.peak), n: l.peak.toLocaleString(), frame: l.ms.peakFrame, test: testName({ id: l.test }), frames: l.frames, smooth: SMOOTH_MS, most: Math.round(MOST_MS), share: shareOfMs(l.ms.peak) }),
+      } : {
         file: l.file, line: l.line,
         label: t("{n} a frame", { n: shortCount(l.peak) }),
         note: t("In the game, this line ran {n} conditions and actions in one frame at the most: frame {frame} of the test “{test}”, which it ran in for {frames, plural, one {# frame} other {# frames}}. On a fast computer Remastered ran 500 thousand a frame with no visible effect; its screen flickers from a million and the game slows at 5 million. This is {share} of the 500 thousand.", { n: l.peak.toLocaleString(), frame: l.peakFrame, test: testName({ id: l.test }), frames: l.frames, share: shareOf(l.peak) }),
-      }));
+      });
   };
 
   /** The lines of the last EUD error looked up, while their file is the text that was traced. */
@@ -1057,20 +1067,25 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
 
   /** "0.2%", "31%": a count as a share of what Remastered was seen to run in a frame. */
   const shareOf = (n: number) => `${(n / COST_SEEN * 100).toFixed(n < COST_SEEN / 10 ? 1 : 0)}%`;
+  /** The same for milliseconds, of SMOOTH_MS. */
+  const shareOfMs = (ms: number) => `${(ms / SMOOTH_MS * 100).toFixed(ms < SMOOTH_MS / 10 ? 1 : 0)}%`;
 
-  /** The test's conditions and actions a frame in the game, as a small graph; eudplib's own work is not in it. */
+  /** The test's frames in the game as a small graph, in milliseconds where the host weighs; eudplib's own work is not in it. */
   const costGraph = (cost: TestCost): Element => {
-    const NS = "http://www.w3.org/2000/svg", n = Math.max(cost.perFrame.length, 2), top = Math.max(cost.peak, 1);
+    const series = cost.ms?.perFrame ?? cost.perFrame, peak = cost.ms?.peak ?? cost.peak;
+    const NS = "http://www.w3.org/2000/svg", n = Math.max(series.length, 2), top = cost.ms ? Math.max(peak, 0.001) : Math.max(peak, 1);
     const svg = document.createElementNS(NS, "svg");
     svg.setAttribute("class", "tsd-cost-graph");
     svg.setAttribute("viewBox", `0 0 ${n - 1} 100`);
     svg.setAttribute("preserveAspectRatio", "none");
-    const points = cost.perFrame.map((v, i) => `${i},${(100 - (v / top) * 96).toFixed(2)}`);
+    const points = series.map((v, i) => `${i},${(100 - (v / top) * 96).toFixed(2)}`);
     const area = document.createElementNS(NS, "path");
-    area.setAttribute("d", `M0,100 L${points.join(" L")} L${cost.perFrame.length - 1},100 Z`);
+    area.setAttribute("d", `M0,100 L${points.join(" L")} L${series.length - 1},100 Z`);
     svg.append(area);
     const title = document.createElementNS(NS, "title");
-    title.textContent = t("Conditions and actions a frame, frame {from} to {to}: {peak} at the most, at frame {frame}", { from: cost.from, to: cost.from + cost.perFrame.length - 1, peak: cost.peak.toLocaleString(), frame: cost.peakFrame });
+    title.textContent = cost.ms
+      ? t("Remastered's time a frame, frame {from} to {to}: {ms} ms at the most, at frame {frame}", { from: cost.from, to: cost.from + series.length - 1, ms: shortMs(cost.ms.peak), frame: cost.ms.peakFrame })
+      : t("Conditions and actions a frame, frame {from} to {to}: {peak} at the most, at frame {frame}", { from: cost.from, to: cost.from + cost.perFrame.length - 1, peak: cost.peak.toLocaleString(), frame: cost.peakFrame });
     svg.append(title);
     return svg;
   };
@@ -1108,13 +1123,23 @@ function createWorkspace(svc: ScriptService, options: OpenOptions, mode: Workspa
       if (cost) {
         const ran = cost.perFrame.filter((x) => x > 0), average = ran.length ? Math.round(ran.reduce((a, b) => a + b, 0) / ran.length) : 0;
         const other = cost.other.slice(3), runtime = other.length ? Math.round(other.reduce((a, b) => a + b, 0) / other.length) : 0;
-        list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game: the script's own triggers and the variables they go through. eudplib's work at the top of each frame is apart: {n} a frame.", { n: runtime.toLocaleString() }) },
-          el("span", { className: "frame" }, t("cost")),
-          el("span", { className: "msg" }, t("{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), frame: cost.peakFrame, share: shareOf(cost.peak) }))));
+        if (cost.ms) {
+          const ranMs = cost.ms.perFrame.filter((x) => x > 0), averageMs = ranMs.length ? ranMs.reduce((a, b) => a + b, 0) / ranMs.length : 0;
+          const otherMs = cost.ms.other.slice(3), runtimeMs = otherMs.length ? otherMs.reduce((a, b) => a + b, 0) / otherMs.length : 0;
+          list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game and weighed by what Remastered was measured spending on each trigger, condition and action on a fast computer (Ryzen 9 7900X): the script's own triggers and the variables they go through, {average} conditions and actions a frame on average and {peak} at the most. eudplib's work at the top of each frame is apart: {ms} ms a frame. Remastered slows past {most} ms of triggers a frame there, and a slower computer sooner.", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), ms: shortMs(runtimeMs), most: Math.round(MOST_MS) }) },
+            el("span", { className: "frame" }, t("cost")),
+            el("span", { className: "msg" }, t("{average} ms a frame on average, {peak} ms at the most (frame {frame}): {share} of the {smooth} ms of triggers a frame Remastered ran with no flicker seen", { average: shortMs(averageMs), peak: shortMs(cost.ms.peak), frame: cost.ms.peakFrame, share: shareOfMs(cost.ms.peak), smooth: SMOOTH_MS }))));
+        } else {
+          list.append(el("li", { className: "tsd-plain", title: t("Counted in the lifted game: the script's own triggers and the variables they go through. eudplib's work at the top of each frame is apart: {n} a frame.", { n: runtime.toLocaleString() }) },
+            el("span", { className: "frame" }, t("cost")),
+            el("span", { className: "msg" }, t("{average} conditions and actions a frame on average, {peak} at the most (frame {frame}): {share} of the 500 thousand a frame Remastered has run with no visible effect", { average: average.toLocaleString(), peak: cost.peak.toLocaleString(), frame: cost.peakFrame, share: shareOf(cost.peak) }))));
+        }
         if (cost.perFrame.length > 1) list.append(el("li", { className: "tsd-plain tsd-cost" }, el("span", { className: "frame" }), costGraph(cost)));
         for (const l of cost.lines.slice(0, COST_LINES)) {
           list.append(el("li", { title: t("Go to the line"), onClick: () => goTo(l.file, l.line) },
-            el("span", { className: "frame" }), el("span", { className: "msg note" }, t("{peak} a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}", { peak: l.peak.toLocaleString(), frame: l.peakFrame, frames: l.frames })),
+            el("span", { className: "frame" }), el("span", { className: "msg note" }, l.ms
+              ? t("{ms} ms a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}", { ms: shortMs(l.ms.peak), frame: l.ms.peakFrame, frames: l.frames })
+              : t("{peak} a frame at the most (frame {frame}), in {frames, plural, one {# frame} other {# frames}}", { peak: l.peak.toLocaleString(), frame: l.peakFrame, frames: l.frames })),
             el("span", { className: "where" }, where({ file: l.file, line: l.line }))));
         }
       }

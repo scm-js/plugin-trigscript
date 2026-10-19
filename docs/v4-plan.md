@@ -1999,6 +1999,38 @@ while a trigger pass holds the thread, so the smooth budget is about 7–11 ms o
 computer, and the hard one about 36 ms. A record count can't say either: 500 thousand records are 2.7 ms of
 conditions or 9 ms of one-action triggers.
 
+Asked afterwards, the player saw no flicker in any phase, the costliest 15 ms of trigger work (act1 at 800 thousand).
+So the smooth budget on that computer is at least 15 ms; the dial's flicker at a million is not explained by its time
+alone (TrigScript's loop records may cost more than eudplib's; not measured).
+
+**As built: the weights in A4.**
+- scm-sim's tap (`src/exact/cost.ts`) counts triggers. The lifted walk stores the trigger it stands at in 0x6509AC
+  before running it, so each record says its trigger; a record whose slot is not past the last one's starts a new
+  visit (a loop through one trigger). The triggers the walk passed without running anything (eudplib's jumps are
+  empty triggers) are found by following next pointers from the trigger before, up to 4,096, and counted only when
+  the chain reaches the record's trigger. Triggers before a frame's first record and after its last are not seen.
+  On the probe every phase's count matches its design (the empty mix 201,815 a frame against ~201,700).
+- The tap takes a `weigh` (`CostWeigh`: `trigger`, `record`, `reset`) and adds its nanoseconds by frame and by group
+  beside the counts, with each group's costliest frame.
+- TrigScript's `compiler/remasteredCost.ts`: `WEIGHTS` (the table above, as a model: trigger 8.6, Deaths condition
+  4.8, Set Deaths 9.7, masked +3.0, a unit's field +7.5, a search +7.3, from one unit to the next +4.7, other actions
+  3.1, other conditions counted as Deaths), `RegionMap` over `data/remastered-regions.json` (made from the dump by
+  scm-sim-reader `remastered/regions.py`: 6 pools, units 1,700 × 336 among them, and 729 regions), and
+  `RemasteredWeigh`, which keeps the two caches as the emulator does: a Deaths record's address (Current Player
+  resolved, masks read), a trigger found through either cache, its next pointer read through the read cache before
+  the next trigger.
+- **Checked against the played run** (`scripts/weigh-map.mts` on the probe built with 4-frame phases): at 800
+  thousand every mix is within 1.5–7.5% of what Remastered took; eudplib's loop, which no weight was fitted to,
+  4% low. The model reads 0.2–0.5 ms low whenever there is work at all, an offset rather than a share.
+- `gameTests.ts` sets a `RemasteredWeigh` on the host's tap where it has `weigh`; `CostLines.read` gives
+  `TestCost.ms` (the script's milliseconds a frame, the rest apart, the peak) and `LineCost.ms`, lines in order of
+  milliseconds. A host from before this change counts only, and everything shows counts as before.
+- The editor: a line's hint is "2.7 ms a frame" from 0.3 ms (2% of 15 ms); the cost row says milliseconds on
+  average and at the most as a share of the 15 ms, with the counts in its title; the graph is in milliseconds.
+  `scripts/test-game.mts` prints the same. On Snake: the first frame's 440 thousand records are 6.5 ms, 1.4 ms a
+  frame on average.
+- Not yet in the editor's game: it runs scm-sim through plugin-scm-sim, which needs a build with the new tap.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

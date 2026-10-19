@@ -10,6 +10,10 @@
  * loop: `x += 1` is 7 actions of its own and 2 more in eudplib's variables). What eudplib runs before any line in a
  * frame (its start, once, and its work at the top of every frame) and the map's triggers outside the payload are
  * counted under no line: `TestCost.other`.
+ *
+ * Where the host's tap can weigh (scm-sim's frame-weights change: it counts triggers too and asks a weigher what each
+ * costs), every count also comes as time: `RemasteredWeigh` says what Remastered spends on each trigger and record
+ * (`compiler/remasteredCost.ts`), and `TestCost.ms` / `LineCost.ms` hold the milliseconds. Without it, counts alone.
  */
 import { ENTRY_FILE } from "./compiler";
 import type { TriggerMap } from "./gameVariables";
@@ -21,13 +25,19 @@ export interface GameCostTap {
    * group counted just before it in the frame, or none when it is the first".
    */
   group: ((record: number) => number) | null;
+  /** What each trigger and record costs (a host from before frame-weights has no such field, and counts only). */
+  weigh?: { trigger(trigger: number): number; record(record: number, type: number, action: boolean): number; reset?(): void } | null;
   report(from?: number): {
     from: number;
     conditions: number[];
     actions: number[];
     /** Of those, the records under no group. */
     ungrouped: number[];
-    groups: Map<number, { conditions: number; actions: number; frames: number; peak: number; peakFrame: number }>;
+    groups: Map<number, { conditions: number; actions: number; frames: number; peak: number; peakFrame: number; ns?: number; peakNs?: number; peakNsFrame?: number }>;
+    /** Triggers passed, and what the weigher said each frame cost (nanoseconds), all and under no group: a weighing host's. */
+    triggers?: number[];
+    ns?: number[];
+    ungroupedNs?: number[];
   };
 }
 
@@ -42,6 +52,18 @@ export interface LineCost {
   peakFrame: number;
   /** Frames the line ran in. */
   frames: number;
+  /** The same as time in Remastered, when the host weighs: milliseconds over the run, the most in one frame and that frame. */
+  ms?: { total: number; peak: number; peakFrame: number };
+}
+
+/** A test's frames as time in Remastered (milliseconds), beside the counts, when the host weighs. */
+export interface TestCostMs {
+  /** The script's build, a frame: its lines and eudplib's variables and functions, as `perFrame` counts them. */
+  perFrame: number[];
+  /** The map's other triggers a frame, as `other`. */
+  other: number[];
+  peak: number;
+  peakFrame: number;
 }
 
 /** What a test's run in the game cost. */
@@ -60,6 +82,10 @@ export interface TestCost {
   peakFrame: number;
   /** By line, the costliest first. */
   lines: LineCost[];
+  /** Triggers the walk passed a frame, the map's other triggers included; when the host counts them. */
+  triggers?: number[];
+  /** The frames as time, when the host weighs. */
+  ms?: TestCostMs;
 }
 
 /** What `GameCostTap.group` answers for a record counted under the record before it (scm-sim's `CARRY`). */
@@ -109,14 +135,23 @@ export class CostLines {
     const perFrame = r.conditions.map((c, i) => c + r.actions[i] - r.ungrouped[i]);
     let peak = 0, peakFrame = r.from;
     perFrame.forEach((n, i) => { if (n > peak) { peak = n; peakFrame = r.from + i; } });
+    const weighed = !!tap.weigh && !!r.ns && !!r.ungroupedNs;
     const lines: LineCost[] = [];
     for (const [g, k] of r.groups) {
       const where = this.at[g];
       if (!where) continue;
-      lines.push({ file: where.file, line: where.line, total: k.conditions + k.actions, peak: k.peak, peakFrame: k.peakFrame, frames: k.frames });
+      lines.push({ file: where.file, line: where.line, total: k.conditions + k.actions, peak: k.peak, peakFrame: k.peakFrame, frames: k.frames,
+        ...(weighed ? { ms: { total: (k.ns ?? 0) / 1e6, peak: (k.peakNs ?? 0) / 1e6, peakFrame: k.peakNsFrame ?? k.peakFrame } } : {}) });
     }
-    lines.sort((a, b) => b.peak - a.peak || b.total - a.total);
-    return { from: r.from, perFrame, other: [...r.ungrouped], peak, peakFrame, lines };
+    lines.sort(weighed ? (a, b) => b.ms!.peak - a.ms!.peak || b.ms!.total - a.ms!.total : (a, b) => b.peak - a.peak || b.total - a.total);
+    const cost: TestCost = { from: r.from, perFrame, other: [...r.ungrouped], peak, peakFrame, lines, ...(r.triggers ? { triggers: [...r.triggers] } : {}) };
+    if (weighed) {
+      const other = r.ungroupedNs!.map((n) => n / 1e6), mine = r.ns!.map((n, i) => (n - r.ungroupedNs![i]) / 1e6);
+      let top = 0, topFrame = r.from;
+      mine.forEach((x, i) => { if (x > top) { top = x; topFrame = r.from + i; } });
+      cost.ms = { perFrame: mine, other, peak: top, peakFrame: topFrame };
+    }
+    return cost;
   }
 }
 
@@ -133,6 +168,11 @@ export function shortCount(n: number): string {
   return `${(n / 1e6).toFixed(1)}M`;
 }
 
+/** Milliseconds, short: 0.004, 0.31, 2.7, 15. */
+export function shortMs(ms: number): string {
+  return ms < 0.1 ? ms.toFixed(3) : ms < 1 ? ms.toFixed(2) : ms < 10 ? ms.toFixed(1) : ms.toFixed(0);
+}
+
 /**
  * Every test's cost folded into one per line: the most a frame the line ran in any test, and the test it was in.
  * What the editor puts beside each line after a run in the game.
@@ -141,7 +181,7 @@ export function costByLine(costs: { id: string; cost: TestCost }[]): (LineCost &
   const out = new Map<string, LineCost & { test: string }>();
   for (const { id, cost } of costs) for (const l of cost.lines) {
     const key = `${l.file}:${l.line}`, was = out.get(key);
-    if (!was || l.peak > was.peak) out.set(key, { ...l, test: id });
+    if (!was || (l.ms && was.ms ? l.ms.peak > was.ms.peak : l.peak > was.peak)) out.set(key, { ...l, test: id });
   }
   return [...out.values()];
 }
