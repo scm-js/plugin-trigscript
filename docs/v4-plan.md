@@ -1549,7 +1549,16 @@ A pixel under half opaque is never ink. Nothing reaches the game but what the sc
   shading. But Remastered's minimap has a third of Classic's contrast — lit 97 against fog 71, Classic 169 against
   104 — so every grey there is dim. Undiffused ramps show steps (in Remastered not even climbing evenly); diffused
   leaves a dot texture at 4 × 5 in Remastered. Walks: walls read as grey in Remastered, near against far faintly.
-  Open: shimmer while walking, and whether to use it in the raycaster — the player's eye.
+  Open: shimmer while walking, and whether to use it in the raycaster — the player's eye. The player: the two-tone ball still
+  looks best; D2's dots are distracting, D4 better but not great.
+- **Remastered's minimap, surveyed** (`probes/tile-survey.ts`, `probes/lib/tile-survey-map.mts`: six tilesets, 88 tiles
+  each lit and in fog; recording 11.37.09.25, minimap at (18, 1041), 3.03 pixels a tile). Remastered draws a tile on
+  the minimap as its art's average — the art's average luminance and the minimap's agree at 0.96–0.99 in every
+  tileset — and draws fog as **0.64 of lit, for every tile**: the contrast's ratio is fixed, only brightness can be
+  chosen. The brightest is **Ice snow** (tile 66, group 4, walkable): lit 130, fog 82, a gap of 48 — the board we used,
+  Badlands 23778, is lit 86, fog 57, a gap of 29 there (its art averages 71; 1.16.1 takes one bright pixel of it). The
+  best of the other tilesets: gaps 39–40. So a fog map for Remastered graphics wants snow (two thirds more contrast),
+  one for Classic graphics Badlands 23778 — Classic's minimap is still the sharper and wider (169 against 104).
 - **Not yet:** the runtime half — an image as a table a program reads while the game runs (textures, sprites, a level
   painted as a picture) — waits for the lowering work on `backend-limits`.
 
