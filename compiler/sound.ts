@@ -6,9 +6,11 @@
  *
  * What a script gets is a `Clip` (below), worked on when the script is built — trimmed, made louder or quieter,
  * faded, reversed, pitched, joined, mixed, repeated — or made from nothing by `tone`, `noise` and `silence`. A clip a
- * program plays (`playWav(boom)`) is written into the map's archive when the script is built, as an IMA ADPCM WAV
- * named by what it holds (`staredit\wav\trigscript-<hash>.wav`), once however often it is played; nothing else of it
- * reaches the game.
+ * program plays (`playWav(boom)`) is written into the map's archive when the script is built, as a WAV named by what
+ * it holds (`staredit\wav\trigscript-<hash>.wav`), once however often it is played; nothing else of it reaches the
+ * game. The WAV is IMA ADPCM, a quarter of 16-bit, but for a tone the coding would make harsh, which goes in as
+ * 16-bit PCM: ADPCM codes each sample as a step from the last, and the jumps of a square or a saw wave come back
+ * ringing — 8 dB, heard as a harsh end to every note of the first sound demo (2026-10-19). See `adpcmWillDo`.
  *
  * What StarCraft: Remastered does with them (the sound probe, 2026-10-19): a sound starts on its mixer's 21.3 ms grid,
  * up to one buffer after its frame; playing one again starts a second copy beside the first, and nothing stops one,
@@ -107,6 +109,54 @@ export function adpcmWav(data: Uint8Array, rate: number, frames: number): Uint8A
   out.set(data, 60);
   return out;
 }
+
+/** A WAV of 16-bit PCM: what the map gets for a clip ADPCM would distort. */
+export function pcmWav(samples: Float32Array, rate: number): Uint8Array {
+  const out = new Uint8Array(44 + samples.length * 2), v = new DataView(out.buffer);
+  const text = (at: number, s: string) => { for (let i = 0; i < s.length; i++) out[at + i] = s.charCodeAt(i); };
+  text(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); text(8, "WAVE");
+  text(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  text(36, "data"); v.setUint32(40, samples.length * 2, true);
+  samples.forEach((x, i) => v.setInt16(44 + i * 2, Math.round(Math.max(-1, Math.min(1, x)) * 32767), true));
+  return out;
+}
+
+/** How close ADPCM keeps samples to themselves, in dB: the samples' power over the error's. */
+export function adpcmFidelity(samples: Float32Array, rate: number, adpcm = encodeAdpcm(samples, rate)): number {
+  const back = decodeAdpcm(adpcm, rate, samples.length);
+  let signal = 0, error = 0;
+  for (let i = 0; i < samples.length; i++) { const c = Math.max(-1, Math.min(1, samples[i])); signal += c * c; error += (back[i] - c) ** 2; }
+  return error === 0 ? Infinity : signal === 0 ? -Infinity : 10 * Math.log10(signal / error);
+}
+
+/**
+ * How much a clip repeats itself, 0 … 1: the best match of its middle with itself a period later, for periods from
+ * 4 samples to a 40 Hz note's. A tone is near 1; noise near 0.
+ */
+export function periodicity(samples: Float32Array, rate: number): number {
+  const n = Math.min(4096, samples.length), from = Math.max(0, (samples.length - n) >> 1), most = Math.min(Math.floor(rate / 40), n >> 1);
+  let best = 0;
+  for (let lag = 4; lag <= most; lag++) {
+    let xy = 0, xx = 0, yy = 0;
+    for (let i = from; i < from + n - lag; i++) { const a = samples[i], b = samples[i + lag]; xy += a * b; xx += a * a; yy += b * b; }
+    if (xx > 0 && yy > 0) best = Math.max(best, xy / Math.sqrt(xx * yy));
+  }
+  return best;
+}
+
+/**
+ * Below this, a tonal clip goes in the map as 16-bit. Played 2026-10-19: square-wave notes at 11.8–16.6 dB were heard
+ * as harsh, a plucked string's notes at 18.2–23.6 dB as clean; over noise the error is lost in the noise (a snare at
+ * 14.7 dB and a hat at 11.2 dB sounded fine), so noise keeps ADPCM whatever its figure.
+ */
+export const ADPCM_FIDELITY = 18;
+/** A clip that repeats itself this much is a tone for ADPCM_FIDELITY. */
+export const TONAL = 0.5;
+
+/** Whether a clip goes in the map as ADPCM: unless it is a tone the coding would make harsh. */
+export const adpcmWillDo = (samples: Float32Array, rate: number, adpcm?: Uint8Array): boolean =>
+  adpcmFidelity(samples, rate, adpcm) >= ADPCM_FIDELITY || periodicity(samples, rate) < TONAL;
 
 /* ── The .sound file ── */
 
@@ -261,7 +311,9 @@ export const clipSamples = (c: Clip): Float32Array => inside.get(c)!.samples;
 /** The WAV the map's archive gets for a clip, and the name it goes under: named by what it holds, so it goes in once. */
 export function clipFile(c: Clip): { path: string; bytes: Uint8Array } {
   const { samples, adpcm } = inside.get(c)!;
-  const bytes = adpcmWav(adpcm ?? encodeAdpcm(samples, c.rate), c.rate, samples.length);
+  // An import as it was keeps its own ADPCM; anything else is ADPCM where that is faithful, 16-bit where not.
+  const coded = adpcm ?? encodeAdpcm(samples, c.rate);
+  const bytes = adpcm || adpcmWillDo(samples, c.rate, coded) ? adpcmWav(coded, c.rate, samples.length) : pcmWav(samples, c.rate);
   // FNV-1a over the file: two clips that are the same file share it.
   let h = 0x811c9dc5;
   for (const b of bytes) h = Math.imul(h ^ b, 0x01000193) >>> 0;
@@ -311,7 +363,15 @@ const length = (seconds: unknown, what: string, rate: number) => {
 export function tone(pitch: unknown, seconds: unknown, options?: MakeOptions & { readonly wave?: "sine" | "square" | "triangle" | "saw" }): Clip {
   const { volume, rate } = optionsOf(options, "tone()"), hz = hertz(pitch), n = length(seconds, "tone()", rate);
   const wave = options?.wave ?? "sine";
-  const shape = { sine: (p: number) => Math.sin(2 * Math.PI * p), square: (p: number) => (p < 0.5 ? 1 : -1), triangle: (p: number) => 1 - 4 * Math.abs(p - 0.5), saw: (p: number) => 2 * p - 1 }[wave];
+  // Square and saw with their jumps rounded off by PolyBLEP, so nothing above half the rate folds back as other pitches.
+  const dt = hz / rate;
+  const blep = (t: number) => (t < dt ? ((t /= dt), t + t - t * t - 1) : t > 1 - dt ? ((t = (t - 1) / dt), t * t + t + t + 1) : 0);
+  const shape = {
+    sine: (p: number) => Math.sin(2 * Math.PI * p),
+    square: (p: number) => (p < 0.5 ? 1 : -1) + blep(p) - blep((p + 0.5) % 1),
+    triangle: (p: number) => 1 - 4 * Math.abs(p - 0.5),
+    saw: (p: number) => 2 * p - 1 - blep(p),
+  }[wave];
   if (!shape) throw new Error(`tone()'s wave is "sine", "square", "triangle" or "saw", not ${JSON.stringify(wave)}.`);
   const out = new Float32Array(n), ramp = 0.005 * rate;
   for (let i = 0; i < n; i++) out[i] = volume * shape((i * hz / rate) % 1) * Math.min(1, i / ramp, (n - 1 - i) / ramp);

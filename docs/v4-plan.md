@@ -1598,6 +1598,26 @@ its own so the audio says which played and when). Played, two rounds, recording 
 So the music library can fire notes per frame (42 ms on Fastest) from pitched copies made at build, overlapping
 freely within 32 voices, each note's length and loudness baked into its file.
 
+### Sounds: layer 2, a script's own sounds (built 2026-10-19)
+
+- **`.sound` files** (`compiler/sound.ts`): Import Video… on any sound file the browser decodes makes one — mono IMA
+  ADPCM at 11, 22 or 44 kHz, the coding the game's own sounds use, kept as decoded (`soundImport.ts`: an offline
+  render does the resampling and the mix to mono; a waveform, Play and Stop). Up to ten minutes.
+- **`Clip`, when the script is built**: `trim`, `gain`, `fade`, `reverse`, `pitch` (a sampler's: faster and higher),
+  `then`, `mix`, `repeat`, `seconds`, `rate`, `peak`; `tone(pitch | "A4", seconds, { wave, volume })` (square and
+  saw rounded off by PolyBLEP, so nothing folds back past half the rate), `noise`, `silence`.
+- **Into the map**: `playWav(clip)` puts the clip in the archive as `staredit\wav\trigscript-<hash>.wav` when the
+  script is built, once however often it is played (the runtime's text argument takes a clip, so a program and a
+  trigger both do); Apply writes them and takes out the ones no longer played (`script.ts` `withSounds`).
+- **ADPCM or 16-bit.** The sound demo (`probes/sound-demo.ts`, played 2026-10-19: "very nice, though C is a bit harsh
+  at the end of each note"): ADPCM codes each sample as a step from the last, and a square wave's jumps came back
+  at 12–17 dB of fidelity, heard as harsh; a plucked string's pitched notes at 18–24 dB sounded clean, and noise at
+  11–15 dB fine (the error is lost in it). So a clip goes in as 16-bit PCM when it is a tone (it repeats itself,
+  `periodicity` ≥ 0.5) and ADPCM would keep it under 18 dB; otherwise ADPCM, a quarter of the size. The demo: 17
+  ADPCM, 6 16-bit (the square notes), 217 KB.
+- **A gap for the music library:** `if (clip)` on a value known when the script is built (a rest as null in an
+  unrolled loop) is taken as a game condition and refused; the demo plays a short silence for a rest instead.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):

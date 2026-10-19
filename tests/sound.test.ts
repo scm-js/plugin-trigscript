@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { compileScript } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
-import { adpcmWav, clipFile, clipSamples, decodeAdpcm, describeSound, encodeAdpcm, hertz, makeClip, noise, readSound, silence, tone, writeSound } from "../compiler/sound";
+import { adpcmFidelity, adpcmWav, clipFile, periodicity, clipSamples, decodeAdpcm, describeSound, encodeAdpcm, hertz, makeClip, noise, readSound, silence, tone, writeSound } from "../compiler/sound";
 import { describeMedia, isMediaFile } from "../compiler/media";
 import { buildScript, readFiles, withFiles } from "../script";
 
@@ -108,6 +108,26 @@ describe("a Clip when the script is built", () => {
     expect(Array.from(clipSamples(noise(0.1)))).toEqual(Array.from(clipSamples(noise(0.1))));
     expect(silence(0.2).peak).toBe(0);
     expect(() => tone(440, 0)).toThrow(/more than 0/);
+  });
+
+  it("gives the map ADPCM but for a tone it would make harsh, which goes in as 16-bit", () => {
+    const format = (c: ReturnType<typeof tone>) => new DataView(clipFile(c).bytes.buffer).getUint16(20, true);
+    expect(format(tone("C5", 0.3))).toBe(0x11);
+    expect(format(tone("C5", 0.3, { wave: "square", volume: 0.25 }).fade(0.005, 0.12))).toBe(1);
+    expect(adpcmFidelity(clipSamples(tone("C5", 0.3)), 22050)).toBeGreaterThan(30);
+    // Noise keeps ADPCM, however far the coding is from it: the error is lost in the noise.
+    expect(format(noise(0.2).fade(0, 0.15))).toBe(0x11);
+    expect(periodicity(clipSamples(noise(0.2)), 22050)).toBeLessThan(0.3);
+    expect(periodicity(clipSamples(tone("C5", 0.2, { wave: "square" })), 22050)).toBeGreaterThan(0.9);
+    const pcm = clipFile(tone("C5", 0.3, { wave: "square" })).bytes;
+    expect(pcm.length).toBe(44 + Math.round(0.3 * 22050) * 2);
+  });
+
+  it("rounds off a square wave's jumps, so nothing folds back past half the rate", () => {
+    // A naive square at 3 kHz and 22 kHz folds its 5th harmonic (15 kHz) down to 7 050 Hz; PolyBLEP leaves little there.
+    const s = clipSamples(tone(3000, 0.5, { wave: "square" })), rate = 22050;
+    const amp = (hz: number) => { let re = 0, im = 0; for (let i = 0; i < s.length; i++) { re += s[i] * Math.cos((2 * Math.PI * hz * i) / rate); im += s[i] * Math.sin((2 * Math.PI * hz * i) / rate); } return (2 * Math.hypot(re, im)) / s.length; };
+    expect(amp(7050) / amp(3000)).toBeLessThan(0.05);
   });
 
   it("gives the map one WAV a clip, named by what it holds", () => {

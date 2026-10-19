@@ -489,7 +489,8 @@ ${kw}interface Image {
  * A program plays one with playWav(boom); the build puts each clip it plays in the map once.
  * In the game a sound starts within 21 ms of its frame; playing it again adds a second copy beside the
  * first, and nothing stops one, so a clip's length and loudness are what is heard. 32 play at once, and
- * copies add with no limiter: keep peak under 1 where they overlap.
+ * copies add with no limiter: keep peak under 1 where they overlap. A clip goes in the map as IMA ADPCM,
+ * a quarter of 16-bit, unless that would distort it (the jumps of a square or saw wave): then as 16-bit.
  */
 ${kw}interface Clip {
   /** How long it plays. */
