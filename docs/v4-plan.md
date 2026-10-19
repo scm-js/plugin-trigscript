@@ -2314,6 +2314,49 @@ growing array, a counter counting down, an array declared again on each turn of 
 
 **Left:** a write at an index that is not a counter (above); a counter in a per-player program; the hint's `per`.
 
+### A division whose result is small, as comparisons (2026-10-18)
+
+`Math.min(H, Math.floor(C / x))` — the raycaster's wall height, a bar's length from a distance — divides by a
+variable, which the game does a bit at a time: 7.2 µs for a fixed quotient, 7.3 for a whole one. For `x` above zero
+the quotient only falls as `x` grows and the `min` caps it, so the result is the largest `h` of 0 … H with
+`x ≤ T(h)`: a tree of comparisons with constants, as deep as H has bits. `compiler/thresholds.ts`, called from the
+final pass of `numbers.ts` on a `min` of a constant (1 … 256) and `fdiv(C, x) >> 16` (Math.floor), `(fdiv(C, x) + c) >> 16`
+(Math.round, Math.ceil) or a whole `C / x`, `C` above zero and `x` a variable. No IR change: the tree is `ternary` and
+`compare`.
+
+- *Exact.* The thresholds are found with `fixedMath.ts` — the arithmetic the game does, which the simulator shares —
+  and each is checked on both sides when built. Near zero `C × 65 536 / x` passes 31 bits and the game's quotient
+  wraps (78 / 0.0023 is −31 683 in the game), so below the first `x` where it cannot (156 raw for 78), and at or below
+  zero, the division is kept, behind one signed comparison. Past it, the tree's comparisons read `x` from 0 up: one
+  condition each.
+- *Cost* (the bench): `Math.min(78, Math.floor(78 / fa))` 7 213 → 805 ns; `Math.min(40, 1000 / y)` 7 335 → 786. The
+  raycaster 1.30 → 1.15 ms a frame (peak 2.58 → 2.27), its height line out of the top ten.
+- *Checked:* `tests/thresholds.test.ts` holds six shapes' trees against the division at every threshold's two sides,
+  around zero and the wrap, and 20 000 divisors at random; `probes/game-thresholds.ts` prints each beside the division
+  worked out without a `min` (`q < H ? q : H`), equal in the game and the simulator; the raycaster's tests pass on its
+  board (they need the 128-wide map, `fixtures/eud/raycaster-base.scx`: on test-game's default 96-wide map the last ten
+  columns are off the map, which once looked like a fault).
+
+### Fast cells, the probe (2026-10-18, awaiting play)
+
+`probes/fast-cells.py` + `.ts`: the weights probe's schedule and marks (so `profile.py` and `profile_report.py` read it
+unchanged) with its own mixes — the yardsticks again (`loop` first, act64, act1, cond16, switch64), then Set Resources
+(ore, gas, a number set), Set Score (custom) on Player 9–12, Accumulate and Score conditions on them, Switch
+conditions, and Player 1's own custom score (action and condition). Before the schedule it sets the cells and reads
+them back by condition and through memory, on the screen. Map and answer sheet in `Maps/TrigScript/trigscript-fast-cells*`;
+the lifted count of a PHASE=4 build in `fixtures/eud/fast-cells-short-cost.json`, the table beside it.
+
+**The lifted game already says something:** 1.16.1 ignores Set Resources and Set Score for Player 9–12 (every value
+reads back 0, by condition and in memory), as its Create Unit refuses those players; Player 1's and Player 8's custom
+score read back right. Remastered allows Create Unit for them, so the played run decides; the fallback is the players'
+own custom score, which nothing shows without a leaderboard.
+
+**What it would give the language** (if they are as cheap as a switch, 3.2 ns against Set Deaths' 9.7): a counter or a
+flag kept in such a cell is set, added to and compared with a constant without the emulator; a copy into one is a Set
+Resources whose number a variable writes (the copy itself is a Set Deaths into the action). There is no copy out
+short of reading it a bit at a time, so only what is compared with constants belongs there: loop counters against a
+constant bound, states, countdowns.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
