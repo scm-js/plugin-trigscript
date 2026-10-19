@@ -121,6 +121,30 @@ describe("ui.lines", () => {
     expect(printed(r, 50)).toEqual(["0:□□□", "4:□■□", "28:□■□", "40:□■■"]);
   });
 
+  it("a call of the script's own function is followed into it: the view is put together when what it reads changes", () => {
+    const r = compile(`
+      function padded(n: number): string { let s = String(n); while (s.length < 3) s = "0" + s; return s; }
+      ${program(`
+        let factor = 2;
+        function scaled(n: number): number { return n * factor; }
+        let score = 0;
+        let unrelated = 0;
+        let best = 0;
+        ui.lines(P1, () => <line>{padded(score)} {padded(best)} {scaled(score)} {scaled(best)}</line>);
+        for (let i = 0; i < 40; i++) { unrelated++; if (i == 5) score = 7; if (i == 30) factor = 3; await sleep(frames(1)); }`)}`);
+    // (Each called twice, so each is kept as a function rather than written out where it is called: Snake's thousands().)
+    expect(r.ir[0].functions?.length).toBeGreaterThan(0);
+    // Put together at 0; again when score is written (frame 5), shown again 24 frames later, and when factor is (30).
+    expect(printed(r, 40)).toEqual(["0:000 000 0 0", "5:007 000 14 0", "29:007 000 14 0", "30:007 000 21 0"]);
+  });
+
+  it("a function that reads the game makes the view one that does", () => {
+    const r = compile(`
+      function roll(): number { return random(1); }
+      ${program(`ui.lines(P1, () => <line>{roll()}{roll()}</line>);`)}`);
+    expect(printed(r, 3)).toEqual(["0:00", "1:00", "2:00"]);
+  });
+
   it("a view that reads the game is put together every frame", () => {
     const r = compile(program(`
       ui.lines(P1, () => <line>{random(1)}</line>);`));

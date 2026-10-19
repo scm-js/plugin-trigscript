@@ -4,8 +4,11 @@
  * the program's variables and arrays — and sets the flag after every statement that writes one of them, wherever it is:
  * the program's body, its tasks, its functions. A view that reads the game itself (units, the players' input, a random
  * number, the game's tables) cannot be followed this way and is put together every frame, as it would be without the flag.
+ * A call of a function of the script's own (`thousands(score)`, `clock(t)`) is followed into the function: what it reads
+ * of the program is what the view reads (its parameters and its own variables aside), and a function that reads the
+ * game makes the view one that does.
  */
-import type { ArrayDecl, Program, Stmt } from "./ir";
+import type { ArrayDecl, FuncDecl, Program, Stmt } from "./ir";
 
 /** A view as the structured compiler leaves it: its flag, and the statements that put its text together. */
 export interface View { dirty: string; declare: Stmt; build: Stmt[] }
@@ -24,11 +27,25 @@ function rootOf(arrays: Map<string, ArrayDecl>, id: string): string {
   return a?.id ?? id;
 }
 
-/** The variables and arrays a view reads (arrays by their whole), or null when it reads the game or calls a function of its own. */
-function readsOf(build: Stmt[], arrays: Map<string, ArrayDecl>): Set<string> | null {
+/** What a function reads of the program, by its id: the same as a view's, its parameters left out; null when it reads the game. */
+type FunctionReads = Map<string, Set<string> | null>;
+
+/** The variables and arrays a view reads (arrays by their whole), or null when it reads the game or calls a function that does. */
+function readsOf(build: Stmt[], arrays: Map<string, ArrayDecl>, functions: Map<string, FuncDecl> = new Map(), known: FunctionReads = new Map()): Set<string> | null {
   const reads = new Set<string>();
   const declared = new Set<string>();
   let game = false;
+  /** A called function's reads, worked out once; one that calls itself, while it is being worked out, adds nothing more. */
+  const ofFunction = (id: string): Set<string> | null => {
+    if (known.has(id)) return known.get(id)!;
+    const f = functions.get(id);
+    if (!f) return null;
+    known.set(id, new Set());
+    const r = readsOf(f.body, arrays, functions, known);
+    if (r) { for (const p of f.params) r.delete(p.id); if (f.result) r.delete(f.result.decl.id); }
+    known.set(id, r);
+    return r;
+  };
   const visit = (o: unknown): void => {
     if (game || !o || typeof o !== "object") return;
     if (Array.isArray(o)) { o.forEach(visit); return; }
@@ -36,7 +53,12 @@ function readsOf(build: Stmt[], arrays: Map<string, ArrayDecl>): Set<string> | n
     const kind = n.kind;
     if (typeof kind === "string") {
       if (GAME_READS.has(kind)) { game = true; return; }
-      if ((kind === "call" || kind === "textCall") && (n.call as { fn?: string } | undefined)?.fn) { game = true; return; }
+      const fn = (kind === "call" || kind === "textCall") ? (n.call as { fn?: string } | undefined)?.fn : undefined;
+      if (fn) {
+        const r = ofFunction(fn);
+        if (!r) { game = true; return; }
+        for (const id of r) reads.add(id);
+      }
       if ((kind === "var" || kind === "textVar" || kind === "unitVar") && typeof n.id === "string") reads.add(n.id);
       if (typeof n.array === "string") reads.add(rootOf(arrays, n.array));
       for (const f of ["addr", "block", "chars"]) if (kind === "textAt" && typeof n[f] === "string") reads.add(rootOf(arrays, n[f] as string));
@@ -93,8 +115,10 @@ export function markViewWrites(program: Program, views: View[]): void {
   // The flags first of all, set: a write anywhere before the ui.lines line already sets one.
   program.body.unshift(...views.map((v) => v.declare));
   const arrays = new Map(program.arrays.map((a) => [a.id, a]));
+  const functions = new Map((program.functions ?? []).map((f) => [f.id, f]));
+  const known: FunctionReads = new Map();
   const followed = views.flatMap((v) => {
-    const reads = readsOf(v.build, arrays);
+    const reads = readsOf(v.build, arrays, functions, known);
     return reads ? [{ dirty: v.dirty, reads }] : [];
   });
   // A view that reads the game is put together every frame: its flag stays set.
