@@ -1966,7 +1966,38 @@ threads: the instruction pointer and the stack's words that point into StarCraft
 among them says which of its calls the thread was under. `remastered/profile_report.py` takes the profile, the
 probe's table and the lifted count, and gives cycles a record for each mix (between its two amounts, and against
 idle), the trigger's own cost and an action's (from 64 to a trigger against 1), and where the samples were. Checked
-on a synthetic profile; awaiting a played run.
+on a synthetic profile first.
+
+**Played 2026-10-18** (single player, Fastest; Ryzen 9 7900X, TSC 4.58 GHz; 266,178 samples). The game thread
+spends 5.4 ms of CPU a frame with no trigger work, the same in every idle phase from the first to the last. Every
+phase held 42 ms a frame; the most any took was 20.6 ms of CPU (act1 at 800 thousand). Cost a record, from the slope
+between the two amounts (against idle agrees within 3 cycles everywhere, so the cost is linear):
+
+| Mix | ns a record | What it says |
+| --- | ---: | --- |
+| switch64 | 3.2 | Set Switch: an action outside the emulator costs a third of a Set Deaths |
+| cond16 | 5.4 | a payload Deaths condition, 16 to a trigger |
+| empty | 9.0 a trigger | the walk alone, per trigger |
+| act64 / deaths64 | 9.8 | Set Deaths, cache held; the deaths table costs the same as the payload |
+| act8 | 10.0 | |
+| mask64 | 12.8 | a masked write: +3 ns |
+| unitSame | 13.1 | a unit field, the same unit: the unit region's read costs +8 ns over a plain one |
+| loop | 14.6 | eudplib's loop, 13 records (190 ns) a turn |
+| unitAlt | 16.5 | |
+| alt64 | 17.1 | Set Deaths changing region every time: +7 ns, a quarter of the samples in the tree search |
+| unitWalk | 17.5 | 256 different units: the tree search is a quarter of all samples |
+| act1 | 18.3 | Set Deaths, 1 to a trigger |
+
+From act1 against act64: **a trigger costs 8.6 ns of its own** (the empty triggers say 9.0), a Set Deaths 9.7 and a
+Deaths condition 4.8. So a trigger with one action costs nearly twice what its action does, and eudplib's code is
+mostly small triggers.
+
+What the budget is, in time: the dial's 500 thousand loop records are 7.3 ms, its flicker at a million 14.6 ms, and
+its slowdown between 2 and 5 million: with 5.4 ms of the game's own, 42 ms runs out at about 36 ms of trigger work
+(2.5 million loop records), which fits. The flicker most likely comes from a drawn frame (16.7 ms at 60 Hz) missed
+while a trigger pass holds the thread, so the smooth budget is about 7–11 ms of trigger work a frame on this
+computer, and the hard one about 36 ms. A record count can't say either: 500 thousand records are 2.7 ms of
+conditions or 9 ms of one-action triggers.
 
 ## Part C — the game, pushed
 
