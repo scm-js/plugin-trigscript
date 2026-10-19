@@ -3006,9 +3006,64 @@ probe as a map), and the cost-by-line report gives a shared trigger's cost to it
 loops taken), played in Remastered 1.23.10.13515: its nine lines (A–I) are the lifted game's, number for number — the
 cells of a known list read through a condition's player field and the fixed products and quotients called straight
 from the graph included. The emitter is now on by default; `emitter: false` / `EMITTER=0` turns it off. The lowering
-bench builds with it off: a trigger of the emitter's may hold several lines' work and the count gives it to the first,
-so the bench's numbers by line are the Python side's. With both of today's branches the raycaster is 0.50 ms a frame
-(0.60 with the emitter off; 1.13 when this section began).
+bench built with it off at first (a trigger of the emitter's may hold several lines' work, and the count gave it to
+the first); since the next paragraph's per-action lines it builds with it on. With both of today's branches the
+raycaster is 0.50 ms a frame (0.60 with the emitter off; 1.13 when this section began).
+
+**The emitter owns more of the loop (2026-10-19, branch emitter-e4).** What was added, each checked by the fuzz test
+(4000 random loops, every kind below in them, the interpreter modelling each exactly), by `probes/game-emitter.ts` (a
+tenth section, J) and `probes/game-fdiv.ts` (two more groups) in the lifted game and the simulator, and by every
+`probes/game-*.ts` with the emitter on and off:
+
+- *Stores.* `a[i] = v` into an array the program writes (EUDVArray, 72-byte cells, at most 2048) is one trigger: a
+  guard on the index, and a Set Deaths whose destination is a place of the index (× 18 dwords plus the array) and whose
+  number a place of the value. A counter that indexes an array has its byte and dword offsets (the ones the Python side
+  keeps beside it) as places too, so a loop with `heights[col] = …` no longer leaves the counter to the Python side.
+- *Values computed once.* A shift by a constant, a fixed product or quotient, or a list's cell, that reads nothing the
+  loop writes, is computed ahead of the loop (352 of the fuzz's loops; the raycaster's per-column constants).
+- *Masks.* A comparison of `x & K` against a constant is a masked condition; an ordered signed one with the sign bit in
+  K is split in two by the sign.
+- *The reciprocal natively.* `c / x` with a constant c (part 3's `fdiv_by`) is the emitter's own: the shifts picked
+  per top bit of |x| from a tree of jumps, the loop's cells routed straight into the result's place; x's zero and
+  sign handled; a quotient past 31 bits goes on to the Python side's function as before.
+- *Integer `/` and `%` of two variables* on the Python side: a 31-step loop of the program's own cells (`udivmod_vars`,
+  both quotient and remainder sent out in one run), eudplib's `f_div` only for a dividend at 2^31 or more. Signs as
+  JavaScript's: the quotient towards zero, the remainder the dividend's sign.
+- *`switch`, loops the front end unrolled, booleans.* A switch is tests of its value and its bodies one after the
+  other (a break ends it, a continue is the loop's); a boolean is a cell of 1 or 0.
+- *Reads by a jump into the cell.* A cell of an array the program writes, or of a list too wide to read a bit at a
+  time (wider than 6 bits, fewer than 256 cells), at an index the loop computes: eudplib's getter pointed at a scratch
+  cell and back, then a trigger whose next pointer is a place of the index (× 72 plus the array's address). The jump
+  lands on the cell's trigger, which writes its value to the scratch cell and returns. This is eudplib's own way of
+  reading an EUDVArray, driven from the graph instead of through a call.
+- *Shifts and copies by value ranges.* A shift of a number value ranges know is never below zero tests only the bits
+  it can have; a variable a statement left to the Python side stores is copied into the emitter's places with its
+  multiples worked out over only its bits.
+- *Each action's line.* A trigger of the emitter's carries the line of each of its actions (the trigger map's fifth
+  column); the cost by line splits a trigger's time by its actions. So the bench builds as a build does, emitter on.
+
+Numbers, the lifted game's weights. The raycaster on its base map: 0.50 → 0.47 ms a frame (0.60 with the emitter off);
+its frame 112, 963 → 899 µs. Line 97's floors 43.6 → 14.4 µs; the faces store 25.4 → 1.0 µs. What is left of that
+frame is the fixed products (`fmul_vars`, about 230 µs) and the reciprocals (about 160 µs). Bullets 0.20, snake 0.07,
+tetris 0.33 ms: unchanged, their time is in statements the emitter leaves (a sleep or a return in the loop, unit loops)
+or in eudplib's library code. The bench (`probes/lowering-bench.ts`, its baseline saved again with the emitter on):
+all lines 93 387 ns off, 90 559 ns on; by line, with the emitter on: an array store 172 → 23 ns, a product by a
+constant 492 → 18, a shift left 421 → 10, a record field written 136 → 23, an empty loop 1 793 → 659, the reciprocal
+1 821 → 1 513. An integer quotient of two variables, 7 189 → 3 402 ns either way (the Python side's new loop).
+
+Set aside:
+
+- *`Math.sqrt` natively.* Each step compares two variables, which a condition cannot do; done as the reciprocal is,
+  about twice as fast at best, and no showpiece has it in a hot loop.
+- *The fixed product natively.* Built (the bits of `fmul_vars` as the emitter's triggers, its cell routed into the
+  result), exact on 751 fuzz loops and on game-fdiv's 384 pairs. The raycaster went 0.47 → 0.51 ms: making the
+  magnitudes and halves as the emitter's own variables costs more than the call it replaces. Taken out.
+- *Mask lines.* `k = (k + 1) & 15` is still 301 ns with the emitter on against 40 off: the mask is the Python
+  side's, and its result is copied back into the emitter's places.
+
+Nothing here needs a new trick in Remastered: a store is a Set Deaths whose destination another action wrote (what
+every routed read already is), and a read by a jump is eudplib's EUDVArray getter. Still, game-emitter with its J is
+built into the maps folder as `trigscript-emitter-2.scx`, its answer sheet beside it, to play.
 
 ## Part C — the game, pushed
 
