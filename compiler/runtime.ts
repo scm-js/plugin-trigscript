@@ -29,7 +29,7 @@ import { PLAYER_COLORS, TABLE_FIELDS, TABLE_SIZE, tableOfBrand, type TableField,
 import { LOCAL_FIELDS, localName, MEMORY_FIELDS, MEMORY_GROUPS, memoryTableField } from "./memory";
 import { coverValue } from "./cover";
 import { isVideo } from "./media";
-import { clipFile, fm, isClip, mixdown, noise, pluck, silence, tone, type ClipFile } from "./sound";
+import { clipFile, fm, isClip, mixdown, noise, pluck, silence, together, tone, type ClipFile } from "./sound";
 
 /** `memory(address, …)` reads `deaths` at player `EPD(address)`, unit 0: the deaths table starts here in 1.16.1's memory. */
 export const DEATHS_TABLE_ADDRESS = 0x58a364;
@@ -632,6 +632,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
   rt.noise = built(noise);
   rt.silence = built(silence);
   rt.mixdown = built(mixdown);
+  rt.together = built(together);
   rt.fm = built(fm);
   rt.pluck = built(pluck);
   rt.centerLocation = () => { throw new ScriptError("centerLocation() moves a location while the game runs: use it inside program(), as a statement — centerLocation(locations.Cursor, x, y)."); };
@@ -812,6 +813,6 @@ export function runtimeNames(names: ScriptNames): string[] {
   out.push("seconds", "minutes", "frames", "cycles", "sleep", "nextFrame", "until", "sync", "select", "local", "start", "rose", "once", "shared", "clamp", "u32", "i32", "fixed");
   out.push(...READER_NAMES, "races", "slots", "name", "color", "print");
   out.push(...UNIT_CALL_NAMES, "colors", ...INPUT_CALL_NAMES);
-  out.push("textColors", "ui", "on", "reserveLocation", "cover", "tone", "noise", "silence", "mixdown", "fm", "pluck", "__jsx", "__fragment", "__class", "__fn", "__listen");
+  out.push("textColors", "ui", "on", "reserveLocation", "cover", "tone", "noise", "silence", "mixdown", "together", "fm", "pluck", "__jsx", "__fragment", "__class", "__fn", "__listen");
   return out;
 }

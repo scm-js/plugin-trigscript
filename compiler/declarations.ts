@@ -567,6 +567,12 @@ ${kw}interface Clip {
    * each peak that would go over, and back up over \`release\` seconds (0.1). What a mix goes through last,
    * so that the parts can add up without cutting off: \`mixdown(parts).limit()\`.
    */
+  /**
+   * The same clip, put in the map as Ogg Vorbis at \`quality\`, −1 … 10 (5, about 160 kbit/s for two channels, when
+   * left out): 4 is about 130, 3 about 110 — smaller files, for clips many of which play at once. However short it is
+   * (a clip shorter than two seconds is otherwise a WAV).
+   */
+  ogg(quality?: number): Clip;
   limit(options?: { readonly ceiling?: number; readonly release?: number }): Clip;
   /** Louder or quieter, so its loudest sample is \`peak\` (0.84, −1.5 dB, when left out). */
   normalize(peak?: number): Clip;
@@ -638,6 +644,13 @@ ${kw}function silence(seconds: number, options?: { readonly rate?: number }): Cl
  * At the first part's rate, or \`rate\`; two channels when a part has two. \`seconds\`: that long at least.
  */
 ${kw}function mixdown(parts: readonly { readonly clip: Clip; readonly at: number }[], seconds?: number, rate?: number): Clip;
+/**
+ * Clips the game will play together, each from its time — the bars of a song played one after another and the layers
+ * over them — each turned down by one gain, so what they add up to never goes over \`peak\` (0.84, −1.5 dB), between
+ * the samples too: what a limiter does for a mix, for sounds the game adds up itself. Never turned up. The same clip
+ * given twice comes back as one. When the script is built: \`const [a, b] = together([{ clip: x, at: 0 }, { clip: y, at: 1 }])\`
+ */
+${kw}function together(parts: readonly { readonly clip: Clip; readonly at: number }[], options?: { readonly peak?: number }): Clip[];
 /** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
 ${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
 /**

@@ -99,7 +99,7 @@ export function finishSounds(sounds: ClipFile[], encoder: VorbisEncoder | null):
     if (encoder) {
       let bytes = encoded.get(s.path);
       if (!bytes) {
-        bytes = encoder.encode(s.vorbis.channels, s.vorbis.rate);
+        bytes = encoder.encode(s.vorbis.channels, s.vorbis.rate, s.vorbis.quality);
         if (encoded.size >= KEEP) encoded.delete(encoded.keys().next().value!);
         encoded.set(s.path, bytes);
       }

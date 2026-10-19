@@ -9,7 +9,7 @@ import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { adpcmFidelity, adpcmWav, clipChannels, clipFile, fm, periodicity, pluck, clipSamples, decodeAdpcm, describeSound, encodeAdpcm, hertz, LIMIT_CEILING, makeClip, mixdown, noise, readSound, silence, tone, writeSound } from "../compiler/sound";
+import { adpcmFidelity, adpcmWav, clipChannels, clipFile, fm, periodicity, pluck, clipSamples, decodeAdpcm, describeSound, encodeAdpcm, hertz, LIMIT_CEILING, makeClip, mixdown, noise, readSound, silence, together, tone, writeSound } from "../compiler/sound";
 import { finishSounds, vorbisEncoder } from "../compiler/vorbis";
 import { describeMedia, isMediaFile } from "../compiler/media";
 import { buildScript, isBuiltSound, readFiles, withFiles, withSounds } from "../script";
@@ -165,6 +165,30 @@ describe("two channels, the limiter and resampling", () => {
     expect(Array.from(l)).toEqual(Array.from(clipSamples(mono)));
     // The methods keep both sides.
     expect([right.gain(0.5), right.fade(0.01, 0.01), right.trim(0, 0.1), right.reverse(), right.pitch(3), right.repeat(2), right.envelope([0, 1], [0.2, 0])].map((c) => c.channels)).toEqual([2, 2, 2, 2, 2, 2, 2]);
+  });
+
+  it("turns clips that play together down by one gain, the same clip one clip, and never up", () => {
+    const a = tone("A3", 1, { volume: 0.7 }), b = tone("E4", 1, { volume: 0.7 });
+    const [x, y, z] = together([{ clip: a, at: 0 }, { clip: b, at: 0.5 }, { clip: a, at: 1 }]);
+    expect(x).toBe(z);
+    const sum = mixdown([{ clip: x, at: 0 }, { clip: y, at: 0.5 }, { clip: z, at: 1 }]);
+    expect(sum.peak).toBeLessThanOrEqual(LIMIT_CEILING + 1e-6);
+    expect(sum.peak).toBeGreaterThan(0.8);
+    expect(y.peak / b.peak).toBeCloseTo(x.peak / a.peak, 5);
+    const [quiet] = together([{ clip: tone("A3", 1, { volume: 0.1 }), at: 0 }]);
+    expect(quiet.peak).toBeCloseTo(0.1, 3);
+  });
+
+  it("puts a clip made ogg() in the map as Ogg Vorbis at its quality, however short", () => {
+    const short = tone("A4", 0.5);
+    expect(clipFile(short, false).path).toMatch(/\.wav$/);
+    const q4 = clipFile(short.ogg(4)), q5 = clipFile(short.ogg());
+    expect(q4.path).toMatch(/\.ogg$/);
+    expect(q4.vorbis?.quality).toBe(4);
+    expect(q5.vorbis?.quality).toBe(5);
+    expect(q4.path).not.toBe(q5.path);
+    expect(() => short.ogg(11)).toThrow(/−1 to 10/);
+    expect(() => short.wav().ogg()).toThrow(/a WAV/);
   });
 
   it("limits a mix under its ceiling, smoothly, and leaves a quiet one alone", () => {

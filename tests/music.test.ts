@@ -284,6 +284,73 @@ if (!(music.impact().peak > 0.3)) fail("impact");`,
   });
 });
 
+describe("music that follows the game", () => {
+  const SONG = `const lead = music.synth({ volume: 0.5, release: 0.05 }), kit = music.kit({ k: tone(60, 0.1, { volume: 0.9 }), h: noise(0.02, { volume: 0.2 }) });
+const parts = { lead: music.part(lead, { reverb: 0.3 }), drums: music.part(kit), pad: music.part(music.synth({ volume: 0.3, release: 0.5 })) };
+const a = music.section(1, { lead: "C4 . E4 . G4 . . .", drums: "k h k h", pad: "A3+C4+E4 - - - - - - -" }, { name: "a" });
+const b = music.section(2, { lead: "A4 - - - . . . .", drums: "k k h h" }, { name: "b" });
+const song = music.arrange({ bpm: 120, steps: 2 }, parts, a, b);
+const st = music.stems(song, { layers: { drums: ["drums"], tunes: ["lead", "pad"] }, stingers: { crash: noise(0.5) } });`;
+
+  it("cuts a song into a clip a bar a layer, the same bar one clip, its tail kept, and names what it holds", () => {
+    const r = check(SONG,
+      `if (st.barFrames !== 48 || st.layers.join() !== "drums,tunes" || st.sections.map((x) => x.name).join() !== "a,b") fail(\`\${st.barFrames} \${st.layers} \${st.sections.map((x) => x.name)}\`);
+if (st.bars.length !== 2 || st.bars[1].length !== 2 || st.bars[1][0][0] !== st.bars[1][1][0]) fail("a bar the same as another is the same clip");
+// The tunes' last bar rings out whole; the one before is cut two seconds after the bar (its notes end in it).
+const before = st.bars[1][0][1]!, lastBar = st.bars[1][1][1]!;
+if (!(lastBar.seconds > before.seconds) || Math.abs(before.seconds - (48 * 0.042 + 2)) > 1e-3) fail(\`\${before.seconds} \${lastBar.seconds}\`);
+if (st.bars[0][0][1] === st.bars[1][0][1]) fail("different bars");
+const bar = 48 * 0.042;
+if (!(st.bars[0][0][1]!.seconds > bar)) fail(\`a tail: \${st.bars[0][0][1]!.seconds}\`);
+if (st.section("b") !== 1 || st.layer("tunes") !== 1 || st.stinger("crash") !== 0) fail("by name");
+if (st.voices < 2 || st.voices > 6) fail(String(st.voices));`,
+    );
+    expect(errors(r)).toEqual([]);
+    expect(errors(check(SONG, `st.section("c");`)).join("\n")).toMatch(/There is no section "c": there are "a", "b"/);
+    expect(errors(check(SONG, `music.stems(song, { layers: { x: ["lede"] } });`)).join("\n")).toMatch(/The layer x names "lede", which is no part of the song: its parts are lead, drums, pad/);
+    expect(errors(check(SONG, `music.stems(music.song({ bpm: 120 }, music.track(lead, "C4")), { layers: { x: ["lead"] } });`)).join("\n")).toMatch(/a song made of sections, by music.arrange/);
+  });
+
+  it("turns every bar down together, so the song played through stays under its peak", () => {
+    const r = check(SONG,
+      `const pieces: { clip: Clip; at: number }[] = [];
+let g = 0;
+for (const sec of st.bars) for (const row of sec) { for (const c of row) if (c) pieces.push({ clip: c, at: g * 48 * 0.042 }); g++; }
+const sum = mixdown(pieces), loud = music.stems(song, { layers: { drums: ["drums"], tunes: ["lead", "pad"] }, peak: 1 });
+if (!(sum.peak <= 0.8401 && sum.peak > 0.6)) fail(\`\${sum.peak}\`);
+if (!(loud.bars[0][0][0]!.peak > st.bars[0][0][0]!.peak)) fail("peak");`,
+    );
+    expect(errors(r)).toEqual([]);
+  });
+
+  it("plays a bar at each bar line as the band says: through the song, to a section, a layer off, a stinger, again and again", () => {
+    const r = compile(`import { music, Band } from "trigscript/music";
+${SONG}
+program(async () => {
+  const band = new Band();
+  start(music.conduct(st, band));
+  await sleep(frames(100));
+  band.go(st.section("a"));
+  band.mute(st.layer("drums"));
+  band.sting(st.stinger("crash"));
+  await sleep(frames(100));
+  band.loop = true;
+  band.unmute(st.layer("drums"));
+});
+`);
+    expect(errors(r)).toEqual([]);
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings });
+    sim.run(400);
+    const paths = r.sounds.map((s) => s.path);
+    const played = sim.events.filter((e) => e.action.type === ActionType.PlayWav).map((e) => [e.frame, paths.indexOf((r.strings[e.action.wav - 1] as { text: string }).text)]);
+    // Clips: 0 a's drums, 1 a's tunes, 2 b's drums, 3 and 4 b's tunes (its last bar rings out whole), 5 the crash.
+    // Bars every 48 frames from frame 1.
+    expect(played).toEqual([[1, 0], [1, 1], [49, 2], [49, 3], [97, 2], [97, 4], [145, 1], [145, 5], [193, 3], [241, 2], [241, 4], [289, 2], [289, 3], [337, 2], [337, 4], [385, 2], [385, 3]]);
+    // The bars Ogg Vorbis however short; the crash, half a second, a WAV.
+    expect(r.sounds.map((s) => s.path.slice(-3))).toEqual(["ogg", "ogg", "ogg", "ogg", "ogg", "wav"]);
+  });
+});
+
 describe("what the library is made of", () => {
   it("decides if (clip) when the script is built: a rest (null) plays nothing, a clip plays", () => {
     const r = compile(`const NOTES = [tone("A4", 0.1), null, tone("B4", 0.1)];\nprogram(async () => { for (const n of NOTES) { if (n) playWav(n, 0); await nextFrame(); } });\n`);

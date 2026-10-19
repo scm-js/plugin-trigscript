@@ -236,6 +236,7 @@ export interface Clip {
   limit(options?: { readonly ceiling?: number; readonly release?: number }): Clip;
   normalize(peak?: number): Clip;
   wav(): Clip;
+  ogg(quality?: number): Clip;
   filter(type: FilterType, cutoff: number | Points, options?: { readonly resonance?: number; readonly gain?: number; readonly q?: number }): Clip;
   drive(dB: number): Clip;
   delay(seconds: number, options?: { readonly feedback?: number; readonly mix?: number; readonly tone?: number; readonly pingPong?: boolean }): Clip;
@@ -252,6 +253,8 @@ interface ClipInside {
   peak?: number;
   adpcm?: Uint8Array;
   wav?: boolean;
+  /** The Ogg Vorbis quality it goes in the map at, when it is one (`VORBIS_QUALITY` when not said). */
+  quality?: number;
   /** What the clip is (`keyOf`). */
   key?: string;
 }
@@ -502,6 +505,11 @@ function lazyClip(rate: number, frames: number, channels: 1 | 2, compute: () => 
       if (!(num(to, "normalize()") > 0 && to <= 1)) throw new RangeError(`normalize() makes the loudest sample more than 0 and at most 1, not ${to}.`);
       return same("normalize", [to], (cs) => { const p = clip.peak; return p === 0 ? cs : cs.map((s) => scale(s, to / p)); });
     },
+    ogg(quality = VORBIS_QUALITY) {
+      if (!(num(quality, "ogg()'s quality") >= -1 && quality <= 10)) throw new RangeError(`ogg()'s quality is −1 to 10, not ${quality}.`);
+      if (wav) throw new Error("This clip was made a WAV (wav()): it cannot be an Ogg as well.");
+      return made(`${keyOf(clip)}|ogg ${quality}`, () => lazyClip(rate, frames, channels, () => samplesOf(clip), { quality }));
+    },
     wav() {
       if (wav) return clip;
       const own = inside.get(clip)!;
@@ -691,6 +699,48 @@ export function mixdown(parts: unknown, seconds?: unknown, rate?: number): Clip 
   }));
 }
 
+/**
+ * Clips that play together, each from its time — the bars of a song the game plays one after another and the layers
+ * over them — each turned down by one gain, so what they add up to never goes over `peak` (0.84, −1.5 dB), between the
+ * samples too, however loud each is: what a limiter does for a mix, for sounds the game adds up itself. Never turned
+ * up. A clip given several times is one clip back, and one file in the map. The gain is worked out when a build needs
+ * the samples, from the whole mix.
+ */
+export function together(parts: unknown, options?: { readonly peak?: number }): Clip[] {
+  if (!Array.isArray(parts) || parts.length === 0) throw new Error("together() takes { clip, at } parts, one at least.");
+  const list = parts.map((p, k) => {
+    const c = (p as { clip?: unknown })?.clip, at = (p as { at?: unknown })?.at ?? 0;
+    if (!isClip(c)) throw new Error(`together()'s part ${k + 1} has no clip.`);
+    if (num(at, "a part's time") < 0) throw new RangeError("A part's time is 0 seconds or more.");
+    return { clip: c, at: at as number };
+  });
+  const peak = options?.peak ?? LIMIT_CEILING;
+  if (!(num(peak, "together()'s peak") > 0 && peak <= 1)) throw new RangeError(`together()'s peak is above 0 and 1 at most, not ${peak}.`);
+  const whole = recipe("together", [list.map((p) => [p.clip, p.at]), peak]);
+  let gain: number | undefined;
+  const turn = () => {
+    if (gain === undefined) {
+      const sum = samplesOf(mixdown(list));
+      let top = 0;
+      for (const side of sum) for (let i = 0; i < side.length; i++) { const x = side[i] < 0 ? -side[i] : side[i]; if (x > top) top = x; }
+      // The wave between the samples, near the loudest ones.
+      for (const side of sum) { const tp = truePeaks(side, top); for (let i = 0; i < tp.length; i++) if (tp[i] > top) top = tp[i]; }
+      gain = top > peak ? peak / top : 1;
+    }
+    return gain;
+  };
+  const back = new Map<Clip, Clip>();
+  return list.map(({ clip }) => {
+    let c = back.get(clip);
+    if (!c) {
+      const own = inside.get(clip)!;
+      c = made(recipe("together part", [whole, clip]), () => lazyClip(clip.rate, own.frames, clip.channels, () => { const g = turn(); return samplesOf(clip).map((side) => { const out = new Float32Array(side.length); for (let i = 0; i < side.length; i++) out[i] = side[i] * g; return out; }); }));
+      back.set(clip, c);
+    }
+    return c;
+  });
+}
+
 /** A clip's samples, mono (for the compiler's own work and the editor's player, not in the declarations). */
 export const clipSamples = (c: Clip): Float32Array => {
   const ch = samplesOf(c);
@@ -703,7 +753,7 @@ export const clipChannels = (c: Clip): readonly Float32Array[] => samplesOf(c);
  * At this length or more a clip a program plays goes in the map as Ogg Vorbis (Remastered plays it; 1.16.1 plays only
  * WAVs): a song, mixed, is a tenth the size and keeps its top and its two sides. Shorter ones stay WAVs, which start on
  * their frame (the sound probe), as do an import as it was (its own ADPCM), a clip a trigger plays (`runtime.ts`), and
- * one made `wav()`.
+ * one made `wav()`. One made `ogg()` is an Ogg however short.
  */
 export const VORBIS_SECONDS = 2;
 /** libvorbis's quality, −1 … 10: 5 is about 160 kbit/s for two channels at 44.1 kHz. */
@@ -718,7 +768,7 @@ const ENGINE = "sound 3";
 export interface ClipFile {
   path: string;
   bytes?: Uint8Array;
-  vorbis?: { rate: number; channels: readonly Float32Array[] };
+  vorbis?: { rate: number; channels: readonly Float32Array[]; quality: number };
 }
 
 /**
@@ -728,9 +778,10 @@ export interface ClipFile {
  */
 export function clipFile(c: Clip, contents = true): ClipFile {
   const own = inside.get(c)!;
-  if (!own.wav && !own.adpcm && c.seconds >= VORBIS_SECONDS) {
-    const path = `staredit\\wav\\trigscript-${hashText(`${ENGINE}|vorbis ${VORBIS_QUALITY}|${keyOf(c)}`)}.ogg`;
-    return contents ? { path, vorbis: { rate: c.rate, channels: samplesOf(c) } } : { path };
+  if (!own.wav && !own.adpcm && (c.seconds >= VORBIS_SECONDS || own.quality !== undefined)) {
+    const quality = own.quality ?? VORBIS_QUALITY;
+    const path = `staredit\\wav\\trigscript-${hashText(`${ENGINE}|vorbis ${quality}|${keyOf(c)}`)}.ogg`;
+    return contents ? { path, vorbis: { rate: c.rate, channels: samplesOf(c), quality } } : { path };
   }
   const path = `staredit\\wav\\trigscript-${hashText(`${ENGINE}|wav|${keyOf(c)}`)}.wav`;
   if (!contents) return { path };

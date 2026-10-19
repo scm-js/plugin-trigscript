@@ -1779,6 +1779,39 @@ User after step 2: "go for step 3". Nothing here makes a new sound beyond three 
   file's name says how it was made, and a map keeps a file whose name it has, so a change in what a method does must
   change it. The map played for step 3 was built before this (edb73ee).
 
+### Sounds: step 4, music that follows the game (built 2026-10-19)
+
+User after step 3 ("B sounds amazing"): "go for step 4".
+
+- **What the game allows.** No sound stops; a sound starts on the mixer's 21.3 ms grid after its frame; 32 at once,
+  added with no limiter. So the unit is a bar: `music.stems(song, { layers, tail, quality, peak, stingers })` cuts a
+  song of sections into a clip a bar a layer — the notes that start in the bar with their releases, echoes and reverb
+  (each bar its own reverb from its own sends), so a bar overlaps what follows whatever follows it. A bar the same as
+  another is the same clip. A bar under a section's effects is mixed where it falls in the whole section, then cut out,
+  so a sweep or a pump is where it was.
+- **Tails.** A bar's clip keeps `tail` (2 s) after its last note ends, faded over the last second — the bars after
+  cover the rest; a layer's last bar keeps all of it (the outro rings out). From the bar line instead of the last note
+  cut the build's four-bar riser before its top (−3.7 dB of highs): measured, fixed. 3 s → 2 s: 7.2 → 6.5 MB.
+- **Level.** The game adds the clips up, so there is no master compressor or limiter over them: `together(parts)`
+  (sound.ts, new) turns every bar down by one gain until the song played through stays under 0.84 between samples,
+  worked out when a build needs it. Played through, every layer on: −16.3 LUFS, sample peak −1.9 dB, true −1.2 (B was
+  −12.1 through its master). Baking the master's gain curve into each bar would make it as loud, but a bar played twice
+  would then be two files, and a check must name files without samples — not done.
+- **Size.** `Clip.ogg(quality)` (new): Ogg Vorbis at its own quality, however short. Bars at 4 (70% of 5's bytes, by
+  ffmpeg's encoder on 20 of them). Korobeiniki, 40 bars × 4 layers: 114 distinct clips, all Ogg, 5.4 MB (8.0 MB before
+  the section-effect bars stopped running to their section's end and the tails were cut). The bass bars, 1.7 s, are
+  the first short Oggs a map plays: the recording says whether they start on time.
+- **Faithful.** Every bar summed at its time against the continuous render (no master) scaled by one gain: the
+  samples differ (10 dB: chorus and the plate's modulation start again each bar) but lows, mids and highs match second
+  by second within 0–0.5 / −0.1–1.0 / 0–1.5 dB (the highs the bars' master shelf, +1.5 dB at 9 kHz).
+- **The game side.** `class Band` (made inside the program; fields the game holds: section, bar, count, at, next/now,
+  loop, on[8], stung, playing; `go`, `queue`, `mute`, `unmute`, `sting`, `stop`) and `conduct(stems, band)`, a task
+  sleeping a bar at a time: on the bar line a pending section, then each layer's clip by unrolled test (a clip is no
+  value a program holds — `const c = s.bars[k][b][l]` in game code is refused; written inline it folds), the stinger,
+  then on, wrapping a section or the song. Simulated in the tests: jump, mute, stinger, loop at the bar lines.
+- **Probe** `probes/korobeiniki-band.ts` (step 3's B as stems, 4 layers; keys 1–7 sections, D B H M layers, L loop,
+  Space crash): build 18 s, map 5.6 MB, check 1.1 s, lifted game clean.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):
