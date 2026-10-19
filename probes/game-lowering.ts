@@ -86,6 +86,18 @@ program(() => {
   let neg = g - 11;
   neg = neg & -4;
   displayText(`G: ${r} ${q} ${s2} ${u2} ${z2} ${neg}`);
+  sleep(frames(1));
+
+  // H: an array of cells filled with a value the game gives (eight a trigger, and the four left over), and with a constant. 300 3 3 3 70 7
+  const filled: number[] = new Array(100).fill(g);
+  let total = 0;
+  for (let i = 0; i < 100; i++) total += filled[i];
+  const sevens: number[] = new Array(10).fill(7);
+  const more: number[] = new Array(20).fill(0);
+  more.fill(7);
+  let sevenSum = 0;
+  for (let i = 0; i < 10; i++) sevenSum += sevens[i];
+  displayText(`H: ${total} ${filled[0]} ${filled[96]} ${filled[99]} ${sevenSum} ${more[19]}`);
 });
 
 test("adds into the variable itself", (sim) => {
@@ -115,4 +127,8 @@ test("a long array's subtract wraps", (sim) => {
 test("& and | with a constant", (sim) => {
   sim.frames(20);
   expect(sim).toHavePrinted("G: 0 15 2 1 9 -8");
+});
+test("arrays filled", (sim) => {
+  sim.frames(20);
+  expect(sim).toHavePrinted("H: 300 3 3 3 70 7");
 });
