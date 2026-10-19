@@ -3351,7 +3351,7 @@ class Lowering:
         if k == "intrinsic" and e["name"] in ("fmul", "fdiv", "sqrt", "atan2", "sin", "cos"):
             return self.fixed_op(e)
         if k == "intrinsic":
-            a, b = [self.num(x) for x in e["args"]]
+            a, b = self.nums(e["args"])
             name = e["name"]
             unsigned = bool(e.get("unsigned"))
             if isinstance(a, int) and isinstance(b, int):
@@ -3381,7 +3381,7 @@ class Lowering:
         """fmul / fdiv / sqrt / atan2 of fixed numbers (raw cells): worked out here when every argument is known, else a
         call of the function fixed_fns() makes. compiler/fixedMath.ts is the same arithmetic for the simulator."""
         name = e["name"]
-        args = [self.num(x) for x in e["args"]]
+        args = self.nums(e["args"])
         if all(isinstance(x, int) for x in args):
             return fixed_const(name, [signed(x) for x in args], e.get("unsigned"), [signed(v) for v in self.array(e["table"], e).values] if name in ("atan2", "sin", "cos") else None) & U32
         fns = fixed_fns()
@@ -3513,8 +3513,19 @@ class Lowering:
         EUDEndIf()
         return [ptr2s(sign), whole, ptr2s(dot)] + [ptr2s(t) for t in texts]
 
+    def nums(self, exprs):
+        """Numbers worked out left to right, as JavaScript does: a value that is not a constant is copied when an
+        expression after it holds a call, which may change what it reads (`a + bump()` read a after bump() did)."""
+        out = []
+        for i, x in enumerate(exprs):
+            v = self.num(x)
+            if not isinstance(v, int) and has_call(exprs[i + 1:]):
+                v = fresh(v)
+            out.append(v)
+        return out
+
     def binary(self, e):
-        a, b = self.num(e["left"]), self.num(e["right"])
+        a, b = self.nums([e["left"], e["right"]])
         op = e["op"]
         if op in BITWISE:
             return self.bitwise(op, a, b, top_of(e["left"]))
@@ -3762,7 +3773,7 @@ class Lowering:
         if k == "test":
             return as_var(self.num(e["expr"])) >= 1
         if k == "compare":
-            a, b = self.num(e["left"]), self.num(e["right"])
+            a, b = self.nums([e["left"], e["right"]])
             op, unsigned = e["op"], e.get("unsigned", False)
             if isinstance(a, int) and isinstance(b, int):
                 x = a if unsigned in (True, "left") else signed(a)

@@ -39,6 +39,8 @@ export interface OwnMap {
   trig: Uint8Array;
   /** Where the payload's first trigger is in the game. */
   address: number;
+  /** Where each variable's cell is, by id. */
+  vars: Map<string, number>;
 }
 
 export interface LayoutInput {
@@ -54,31 +56,58 @@ export interface LayoutInput {
 }
 
 /**
- * A graph's copies made of triggers: there is no Python side to route a variable's cell. Each place set to its
- * constant, then one trigger a bit of the cell adding that bit times the place's multiple to every place — the
- * variable times the multiple, wrapping, for any multiple. (About half a microsecond a copy: only a variable set from
- * itself, or two read by each other, has one.)
+ * The dwords of a variable's cell trigger (below) a routing writes — its action's destination, where it goes after —
+ * and the label the walk is sent to it by.
  */
-function expandCopies(graph: Graph): Graph {
+const ROUTE_DEST = "@route.dest:", ROUTE_NEXT = "@route.next:", ROUTE_CELL = "@route:";
+
+/**
+ * A graph's copies made of triggers: there is no Python side to route a variable's cell, so the layout routes it as
+ * eudplib does. A variable that is copied keeps its value in the number of the one action of a trigger of its own —
+ * Set Deaths, add — and a copy into a place is a trigger that sets the place to its constant, points that action at
+ * the place and its trigger back here, and goes to it: the value added in, about 50 ns a place. A place that holds a
+ * multiple of the variable other than 1 is filled a bit at a time instead: set to its constant, then one trigger a bit
+ * of the cell adding that bit times the multiple (about half a microsecond a copy). Returns the variables routed.
+ */
+function expandCopies(graph: Graph): { graph: Graph; routed: Set<string> } {
   const out: Graph["triggers"] = [];
-  graph.triggers.forEach((t) => {
+  const routed = new Set<string>();
+  graph.triggers.forEach((t, i) => {
     if (!t.copy) { out.push(t); return; }
-    const from: Dword = { var: t.copy.from };
-    const into = t.copy.into;
-    const chunks = <X,>(xs: X[]) => Array.from({ length: Math.ceil(xs.length / 64) || 1 }, (_, i) => xs.slice(64 * i, 64 * i + 64));
-    chunks(into).forEach((part, i) => out.push({ label: i === 0 ? t.label : `${t.label}.clear${i}`, conds: [], acts: part.map((p) => ({ dword: p.dword, modifier: "set", value: p.add })) }));
-    for (let bit = 0; bit < 32; bit++) chunks(into).forEach((part, i) => out.push({
-      label: `${t.label}.bit${bit}.${i}`,
+    const id = t.copy.from;
+    const from: Dword = { var: id };
+    const plain = t.copy.into.filter((p) => (p.scale ?? 1) === 1), scaled = t.copy.into.filter((p) => (p.scale ?? 1) !== 1);
+    const after = graph.triggers[i + 1]?.label ?? END;
+    const route = (j: number) => (j === 0 ? t.label : `${t.label}.route${j}`);
+    const bits = (k: number) => (k === 0 && !plain.length ? t.label : `${t.label}.clear${k}`);
+    if (!plain.length && !scaled.length) out.push({ label: t.label, conds: [], acts: [] });
+    if (plain.length) routed.add(id);
+    plain.forEach((p, j) => out.push({
+      label: route(j),
+      conds: [],
+      acts: [
+        { dword: p.dword, modifier: "set", value: p.add },
+        { dword: { data: ROUTE_DEST + id }, modifier: "set", value: { epd: p.dword } },
+        { dword: { data: ROUTE_NEXT + id }, modifier: "set", value: { label: j + 1 < plain.length ? route(j + 1) : scaled.length ? bits(0) : after } },
+      ],
+      next: ROUTE_CELL + id,
+    }));
+    if (!scaled.length) return;
+    const chunks = <X,>(xs: X[]) => Array.from({ length: Math.ceil(xs.length / 64) || 1 }, (_, k) => xs.slice(64 * k, 64 * k + 64));
+    chunks(scaled).forEach((part, k) => out.push({ label: bits(k), conds: [], acts: part.map((p) => ({ dword: p.dword, modifier: "set", value: p.add })) }));
+    for (let bit = 0; bit < 32; bit++) chunks(scaled).forEach((part, k) => out.push({
+      label: `${t.label}.bit${bit}.${k}`,
       conds: [{ dword: from, compare: "atLeast", value: 1, mask: 2 ** bit }],
       acts: part.map((p) => ({ dword: p.dword, modifier: "add", value: u((p.scale ?? 1) * 2 ** bit) })),
     }));
+    // (The last bit's trigger falls through to what follows the copy.)
   });
-  return { ...graph, triggers: out };
+  return { graph: { ...graph, triggers: out }, routed };
 }
 
 export function layout(input: LayoutInput): OwnMap {
   const { owner } = input;
-  const graph = expandCopies(input.graph);
+  const { graph, routed } = expandCopies(input.graph);
   const pad = -input.strings & 3;
   const base = STRINGS + input.strings + pad;
   // The payload's triggers. `@wake` heads the owner's trigger list every pass: when the game's tick has reached the
@@ -99,8 +128,15 @@ export function layout(input: LayoutInput): OwnMap {
   ];
   for (const t of graph.triggers) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
   const at = new Map<string, number>(triggers.map((t, i) => [t.label, base + NODE * i]));
-  // The data after the triggers: the variables' cells, the graph's dwords, the lists it reads (each cell `stride` EPD apart).
-  let next = base + NODE * triggers.length;
+  // The cell triggers of the variables routed, after the triggers: eudplib's EUDVariable, 72 bytes each — a trigger
+  // whose conditions end at once, its action at +328 (destination +344, number +348), the next action's kind 0. They
+  // overlap: what one trigger reads of its node is bytes the others never read (eudplib lays its variables out so).
+  const cellBase = base + NODE * triggers.length;
+  const routes = [...routed];
+  routes.forEach((id, k) => at.set(ROUTE_CELL + id, cellBase + 72 * k));
+  const routeOf = (id: string) => at.get(ROUTE_CELL + id);
+  // The data after them: the variables' cells, the graph's dwords, the lists it reads (each cell `stride` EPD apart).
+  let next = routes.length ? cellBase + 72 * routes.length + NODE : cellBase;
   const cells = new Map<string, number>();
   const cell = (name: string) => {
     if (!cells.has(name)) { cells.set(name, next); next += 4; }
@@ -125,7 +161,9 @@ export function layout(input: LayoutInput): OwnMap {
   };
   const address = (d: Dword): number => {
     if ("game" in d) return d.game;
-    if ("var" in d) return cell(`var:${d.var}`);
+    if ("var" in d) return routeOf(d.var) !== undefined ? routeOf(d.var)! + 348 : cell(`var:${d.var}`);
+    if ("data" in d && d.data.startsWith(ROUTE_DEST)) return routeOf(d.data.slice(ROUTE_DEST.length))! + 344;
+    if ("data" in d && d.data.startsWith(ROUTE_NEXT)) return routeOf(d.data.slice(ROUTE_NEXT.length))! + 4;
     // (The fields of `@wake` a sleep writes: the tick its condition compares the game's with, where it goes, its next.)
     if ("data" in d && d.data === WAKE_TICK) return at.get(wake)! + 8 + 8;
     if ("data" in d && d.data === WAKE_AT) return at.get(wake)! + 328 + 20;
@@ -141,11 +179,13 @@ export function layout(input: LayoutInput): OwnMap {
   };
   const value = (v: Value): number => {
     if (typeof v === "number") return u(v);
+    if ("epd" in v) return epd(address(v.epd));
     if ("label" in v) {
       const t = at.get(v.label === END ? stop : v.label);
       if (t === undefined) throw new Error(`no trigger ${v.label}`);
       return t;
     }
+    if ("addrOf" in v) throw new Error(`a jump into ${v.addrOf}'s cells, which a map of our own does not lay out`);
     const l = lists.get(v.epdOf);
     if (l === undefined) throw new Error(`no list ${v.epdOf}`);
     return u(epd(l) + v.plus);
@@ -193,7 +233,17 @@ export function layout(input: LayoutInput): OwnMap {
     w32(n + 2376, 4); // preserved
   });
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
-  return { payload: out, trig: startUp(owner, base), address: base };
+  // Each cell trigger: Set Deaths, add (its destination and next pointer written by every routing), preserved.
+  routes.forEach((_, k) => {
+    const c = cellBase + 72 * k;
+    dv.setUint8(pad + c + 328 + 26 - base, 45);
+    dv.setUint8(pad + c + 328 + 27 - base, MODIFIER.add);
+    dv.setUint8(pad + c + 328 + 28 - base, 20);
+    w32(c + 2376, 4);
+  });
+  const vars = new Map<string, number>([...cells].filter(([k]) => k.startsWith("var:")).map(([k, a]) => [k.slice(4), a]));
+  routes.forEach((id, k) => vars.set(id, cellBase + 72 * k + 348));
+  return { payload: out, trig: startUp(owner, base), address: base, vars };
 }
 
 /**

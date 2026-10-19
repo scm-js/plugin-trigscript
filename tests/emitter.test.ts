@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, VarDecl } from "../compiler/ir";
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
 import { END, type Dword, type Graph, type Num } from "../compiler/backend/graph";
+import { layout } from "../compiler/backend/layout";
 import { fixedDiv, fixedMul } from "../compiler/fixedMath";
 
 const U32 = 2 ** 32;
@@ -685,5 +686,77 @@ describe("the emitter, a loop's test", () => {
       const got = exec(g as Graph, start);
       expect(got.get(i.id)).toBe(want.get(i.id));
     }
+  });
+});
+
+// ── a map of our own, as the game walks its triggers ──
+
+/**
+ * A graph laid out as a map of our own (compiler/backend/layout.ts) and its payload run as the game runs triggers, from
+ * the bytes: from the trigger that heads the owner's list, each trigger's conditions until one of kind 0 (Deaths, read
+ * where its player field says, a mask when 'SC' marks it), its actions until one of kind 0 (Set Deaths: set, add, or
+ * subtract stopping at 0; Display Text passed over), then its next pointer — as read after its actions — until one
+ * with the top bit set. One pass: the programs sleep nowhere. Returns each variable's cell as the pass left it.
+ */
+function runOwn(g: Graph): Env {
+  const own = layout({ graph: g, strings: 0, owner: 0, text: () => 1, arrays: new Map() });
+  const DEATHS = 0x58a364;
+  const bytes = own.payload.slice();
+  const dv = new DataView(bytes.buffer);
+  // (The payload follows strings of no length: no padding before its first trigger.)
+  const base = own.address;
+  const inside = (a: number) => a >= base && a + 4 <= base + bytes.length;
+  const game = new Map<number, number>();
+  const rd = (a: number) => (inside(a) ? dv.getUint32(a - base, true) : game.get(a) ?? 0);
+  const wr = (a: number, v: number) => (inside(a) ? dv.setUint32(a - base, u(v), true) : game.set(a, u(v)));
+  const byte = (a: number) => dv.getUint8(a - base);
+  const at = (epd: number) => u(DEATHS + 4 * epd);
+  let pc = own.address;
+  for (let steps = 0; !(pc & 0x80000000); steps++) {
+    if (steps > 5_000_000) throw new Error("the payload does not end");
+    if (!inside(pc)) throw new Error(`the walk left the payload: 0x${pc.toString(16)}`);
+    let holds = (rd(pc + 2376) & 8) === 0;
+    for (let k = 0; holds && k < 16; k++) {
+      const o = pc + 8 + 20 * k, kind = byte(o + 15);
+      if (kind === 0) break;
+      if (kind !== 15) throw new Error(`condition kind ${kind}`);
+      const masked = dv.getUint16(o + 18 - base, true) === 0x4353;
+      const x = masked ? (rd(at(rd(o + 4))) & rd(o)) >>> 0 : rd(at(rd(o + 4))), y = rd(o + 8), compare = byte(o + 14);
+      holds = compare === 0 ? x >= y : compare === 1 ? x <= y : x === y;
+    }
+    for (let k = 0; holds && k < 64; k++) {
+      const o = pc + 328 + 32 * k, kind = byte(o + 26);
+      if (kind === 0) break;
+      if (kind === 9) continue;
+      if (kind !== 45) throw new Error(`action kind ${kind}`);
+      const dest = at(rd(o + 16)), value = rd(o + 20), modifier = byte(o + 27), old = rd(dest);
+      const v = modifier === 7 ? value : modifier === 8 ? u(old + value) : Math.max(0, old - value);
+      wr(dest, dv.getUint16(o + 30 - base, true) === 0x4353 ? Number((BigInt(old) & ~BigInt(rd(o)) & 0xffffffffn) | (BigInt(v) & BigInt(rd(o)))) : v);
+    }
+    pc = rd(pc + 4);
+  }
+  return new Map([...own.vars].map(([id, a]) => [id, rd(a)]));
+}
+
+describe("a map of our own, laid out", () => {
+  it("runs random programs with functions as their graphs do, from the payload's bytes", () => {
+    CALLS.whole = true;
+    let ran = 0;
+    try {
+      for (let seed = 1; seed <= 3000; seed += 7) {
+        const { decls, body, inner } = programWithCalls(seed);
+        const g = emitBody(body, decls, `c${seed}`, FUNCTIONS);
+        if (typeof g === "string") continue;
+        const want: Env = new Map();
+        run(body, want, { n: 1e6 });
+        let got: Env;
+        try { got = runOwn(g); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
+        for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
+        ran++;
+      }
+    } finally {
+      CALLS.whole = false;
+    }
+    expect(ran).toBeGreaterThan(400);
   });
 });

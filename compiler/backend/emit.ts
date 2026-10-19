@@ -1099,7 +1099,13 @@ class Emitter {
       this.open().items.push({ act: { dword: nextOf(fn.exit), modifier: "set", value: { label: back } } });
       this.goto(fn.entry);
       this.land(back);
-      if (c.result && f.result) this.write(c.result.decl.id, { c: 0, terms: [{ id: f.result.decl.id, k: 1 }] });
+      if (c.result && f.result) {
+        // What the function gives back goes into its cell alone, and each call reads it from there: as places, a
+        // return would write every call's, and each of those actions would be a place of what the return reads —
+        // the parameters, then what every call passes them — so places would multiply from call to call.
+        this.results.add(f.result.decl.id);
+        this.write(c.result.decl.id, { c: 0, terms: [{ id: f.result.decl.id, k: 1 }] });
+      }
       return;
     }
     const end = this.label("iend");
@@ -1330,24 +1336,45 @@ class Emitter {
         readers.get(t.id)!.add(target);
       }
     }
-    // Every loop of the graph of reads (Tarjan's strongly connected parts of more than one variable) copied.
-    const index = new Map<string, number>(), low = new Map<string, number>(), stack: string[] = [], on = new Set<string>();
-    let n = 0;
-    const connect = (v: string): void => {
-      index.set(v, n); low.set(v, n++); stack.push(v); on.add(v);
-      for (const w of readers.get(v) ?? []) {
-        if (!index.has(w)) { connect(w); low.set(v, Math.min(low.get(v)!, low.get(w)!)); }
-        else if (on.has(w)) low.set(v, Math.min(low.get(v)!, index.get(w)!));
-      }
-      if (low.get(v) === index.get(v)) {
-        const part: string[] = [];
-        for (let w = stack.pop()!; ; w = stack.pop()!) { on.delete(w); part.push(w); if (w === v) break; }
+    // Every loop of the graph of reads (Tarjan's strongly connected parts of more than one variable) broken by copies.
+    // The Python side's loops copy every variable of a part (a copy there is a routed read a place). A map of our own
+    // copies as few as it can — a copy there is a trigger a bit — the variable whose writes are fewest, each weighed by
+    // the loops around it, and then the part again without it: calls make such loops whenever what a function gives
+    // back reaches its own parameters (`pick(a, pick(b, c))`, `i = next(i)`), and one copy breaks each.
+    const strong = (nodes: Set<string>): string[][] => {
+      const index = new Map<string, number>(), low = new Map<string, number>(), stack: string[] = [], on = new Set<string>(), out: string[][] = [];
+      let n = 0;
+      const connect = (v: string): void => {
+        index.set(v, n); low.set(v, n++); stack.push(v); on.add(v);
+        for (const w of readers.get(v) ?? []) {
+          if (!nodes.has(w)) continue;
+          if (!index.has(w)) { connect(w); low.set(v, Math.min(low.get(v)!, low.get(w)!)); }
+          else if (on.has(w)) low.set(v, Math.min(low.get(v)!, index.get(w)!));
+        }
+        if (low.get(v) === index.get(v)) {
+          const part: string[] = [];
+          for (let w = stack.pop()!; ; w = stack.pop()!) { on.delete(w); part.push(w); if (w === v) break; }
+          out.push(part);
+        }
+      };
+      for (const v of nodes) if (!index.has(v)) connect(v);
+      return out;
+    };
+    const weight = new Map<string, number>();
+    for (const p of this.protos) for (const it of p.items) if ("write" in it) weight.set(it.write.target, (weight.get(it.write.target) ?? 0) + 4 ** (p.depth ?? 0));
+    const breakUp = (nodes: Set<string>): void => {
+      for (const part of strong(nodes)) {
+        if (part.length < 2) continue;
         // (Copying the program's variables of a loop breaks it: the emitter's own have no cell to copy from.)
         const real = part.filter((x) => !this.own.has(x) && !isTemp(x));
-        if (part.length > 1) (real.length ? real : part).forEach((x) => copied.add(x));
+        const candidates = real.length ? real : part;
+        if (!this.scope.native) { candidates.forEach((x) => copied.add(x)); continue; }
+        const pick = candidates.reduce((a, b) => ((weight.get(b) ?? 0) < (weight.get(a) ?? 0) ? b : a));
+        copied.add(pick);
+        breakUp(new Set(part.filter((x) => x !== pick)));
       }
     };
-    for (const v of new Set([...this.writes.keys(), ...readers.keys()])) if (!index.has(v)) connect(v);
+    breakUp(new Set([...this.writes.keys(), ...readers.keys()].filter((v) => !this.scope.native || !copied.has(v))));
     // The rest in order: a variable after every target whose writes read it, the copied ones being no target (their
     // writes have one place each, whatever their places are).
     const out: string[] = [...copied].filter((v) => this.writes.has(v)), done = new Set<string>(out);
