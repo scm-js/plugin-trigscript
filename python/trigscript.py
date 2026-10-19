@@ -837,6 +837,53 @@ def lists_at(body, index_id, lists):
     return out
 
 
+class Cursors:
+    """Reads and writes at a loop's counter through registers of their own (the backend's second part): a read is a
+    trigger whose next pointer is the cell's address — so it jumps straight to the cell, which writes itself out
+    through eudplib's getter — and a write an action whose destination is the cell's value. Each register is set once on
+    the way into the loop (the array's first cell plus the counter's place) and moved on by the counter's step at the
+    loop's update, one add each, where `varray_read` / `varray_write` work the place out at every access (two variables
+    routed into a jump, or into an action, each time). Only for a loop whose body stores nothing into the counter, waits
+    for nothing, calls nothing and changes no array's length (`lengths_fixed_in`): the arrays' blocks stay where they
+    are, and nothing but the update moves the counter."""
+
+    def __init__(self, counter, place, step):
+        self.counter, self.place, self.step = counter, place, step
+        self.reads = []  # (the trigger whose next pointer is the register, the first cell: a constant or a variable)
+        self.writes = []  # (the action whose destination is the register, the first cell's value's EPD)
+
+    def read(self, base, out):
+        from eudplib.core.eudstruct.vararray import _getter, _getter_dst
+        after = Forward()
+        t = RawTrigger(nextptr=0, actions=[SetNextPtr(_getter, after), SetMemoryEPD(_getter_dst, SetTo, EPD(out.getValueAddr()))])
+        after << NextTrigger()
+        self.reads.append((t, base))
+
+    def write(self, base_epd, value, modifier):
+        act = Forward()
+        if isinstance(unProxy(value), EUDVariable):
+            SeqCompute([(EPD(act) + 5, SetTo, value)])
+            value = 0
+        RawTrigger(actions=[act << SetMemoryEPD(0, modifier, value)])
+        self.writes.append((act, base_epd))
+
+    def init(self):
+        """The registers set from where each array's block starts and the counter's place (on the way in)."""
+        pairs = []
+        for t, base in self.reads:
+            pairs += [(EPD(t) + 1, SetTo, base), (EPD(t) + 1, Add, self.place.bytes)]
+        for act, base_epd in self.writes:
+            pairs += [(EPD(act) + 4, SetTo, base_epd), (EPD(act) + 4, Add, self.place.dwords)]
+        SeqCompute(pairs)
+
+    def advance(self):
+        """The registers moved on by the counter's step (at the loop's update)."""
+        acts = [SetMemory(t + 4, Add, (VARRAY_STRIDE * self.step) & U32) for t, _ in self.reads]
+        acts += [SetMemory(act + 16, Add, (VARRAY_STRIDE // 4 * self.step) & U32) for act, _ in self.writes]
+        if acts:
+            DoActions(acts)
+
+
 class Place:
     """A counter's offset into EUDVArrays, kept by its stores: in bytes (72 a step, for a read's jump) and in dwords
     (18 a step, for a write's destination)."""
@@ -2681,6 +2728,8 @@ class Lowering:
         # Inside a loop over a growing array at a counter, the arrays read there unchecked: index id → {array id: True,
         # or the flag the loop set on the way in}.
         self.inside = {}
+        # The loops whose accesses at their counter go through registers (`Cursors`), by the counter's id.
+        self.cursors = {}
         counters, saved = find_counters(program), saved_arrays(program)
 
         def find_places(node):
@@ -2868,6 +2917,9 @@ class Lowering:
             a = self.array(e["array"], e)
             place = self.place_of(e["index"], a)
             if place is not None:
+                cur = self.cursor_at(e["index"], a)
+                if cur is not None:
+                    return self.cursor_read(cur, a, e)
                 return a.get_placed(self.num(e["index"]), place, self.bound_of(e["index"], e["array"]))
             return a.get(self.num(e["index"]))
         if k == "length":
@@ -4098,12 +4150,20 @@ class Lowering:
                     v = self.num(step[1])
                     if step[0] == "-":
                         v = (-v) & U32 if isinstance(v, int) else 0 - v
+                    cur = self.cursor_at(st["index"], a)
+                    if cur is not None:
+                        self.cursor_write(cur, a, st, v, Add)
+                        return
                     a.set_placed(self.num(st["index"]), place, v, Add, self.bound_of(st["index"], st["array"]))
                     return
                 a.add(self.num(st["index"]), self.num(step[1]), step[0])
                 return
             value = (self.num if a.decl["kind"] == "number" else self.truth)(st["value"])
             if place is not None:
+                cur = self.cursor_at(st["index"], a)
+                if cur is not None:
+                    self.cursor_write(cur, a, st, value, SetTo)
+                    return
                 a.set_placed(self.num(st["index"]), place, value, SetTo, self.bound_of(st["index"], st["array"]))
                 return
             a.set(self.num(st["index"]), value)
@@ -4276,30 +4336,190 @@ class Lowering:
         return left["id"], out
 
     def for_(self, st, ctx):
-        head, update, exit_ = Forward(), Forward(), Forward()
         unchecked = self.unchecked_loop(st)
-        if unchecked is not None:
-            was = self.inside.get(unchecked[0])
-            self.inside[unchecked[0]] = unchecked[1]
+        cursor = self.cursors_for(st)
+        flags = [] if unchecked is None else [f for f in unchecked[1].values() if f is not True]
+        if unchecked is not None and cursor is not None and flags and len(flags) <= 16:
+            # Unswitched: every other array the body reads at the counter found as long as the loop's own on the way in
+            # (the usual case: a record's fields grow together) runs a copy of the loop that knows it, with no flag
+            # tested at each access; otherwise the copy that tests them.
+            self._copies = getattr(self, "_copies", 0) + 1
             try:
-                self.for_body(st, ctx, head, update, exit_)
+                if EUDIf()([f >= 1 for f in flags]):
+                    self.for_copy(st, ctx, (unchecked[0], {k: True for k in unchecked[1]}), True)
+                if EUDElse()():
+                    self.for_copy(st, ctx, unchecked, True)
+                EUDEndIf()
             finally:
-                if was is None:
-                    self.inside.pop(unchecked[0], None)
-                else:
-                    self.inside[unchecked[0]] = was
+                self._copies -= 1
             return
-        self.for_body(st, ctx, head, update, exit_)
+        self.for_copy(st, ctx, unchecked, cursor is not None)
 
-    def for_body(self, st, ctx, head, update, exit_):
+    def for_copy(self, st, ctx, unchecked, cursors):
+        """One copy of a `for` loop: `unchecked` what `unchecked_loop` found (or the same with every flag known true),
+        `cursors` whether its accesses at the counter go through registers (`Cursors`). An unswitched loop has two, each
+        a region of its own for static routing, with a way in of its own."""
+        head, update, exit_ = Forward(), Forward(), Forward()
+        region = None
+        if ROUTE.enabled and ROUTE.on and ROUTE.stack and ROUTE.stack[-1].kind == "loop" and getattr(self, "_copies", 0):
+            region = _Region("loop")
+            region.entry, region.after = Forward(), Forward()
+            SetNextTrigger(region.entry)
+            region.after << NextTrigger()
+            ROUTE.loops.append(region)
+        cursor = self.cursors_for(st) if cursors else None
+        if cursor is not None:
+            # The way in, which the registers' setting goes in front of once the body has said which there are.
+            pre, pre_after = Forward(), Forward()
+            SetNextTrigger(pre)
+            pre_after << NextTrigger()
+            self.cursors[cursor.counter] = cursor
+        if region is not None:
+            ROUTE.stack.append(region)
+        try:
+            if unchecked is not None:
+                was = self.inside.get(unchecked[0])
+                self.inside[unchecked[0]] = unchecked[1]
+                try:
+                    self.for_body(st, ctx, head, update, exit_, cursor)
+                finally:
+                    if was is None:
+                        self.inside.pop(unchecked[0], None)
+                    else:
+                        self.inside[unchecked[0]] = was
+            else:
+                self.for_body(st, ctx, head, update, exit_, cursor)
+        finally:
+            if region is not None:
+                ROUTE.stack.pop()
+            if cursor is not None:
+                del self.cursors[cursor.counter]
+        if cursor is not None:
+            # Made out of the way of the code being made (what is pending is put aside and handed on after), and as
+            # code in front of the loop, not in it.
+            outer = ROUTE.stack.pop() if ROUTE.enabled and ROUTE.stack and ROUTE.stack[-1].kind == "loop" else None
+            held = Forward()
+            SetNextTrigger(held)
+            if cursor.reads or cursor.writes:
+                pre << NextTrigger()
+                cursor.init()
+                SetNextTrigger(pre_after)
+            else:
+                pre << pre_after
+            held << NextTrigger()
+            if outer is not None:
+                ROUTE.stack.append(outer)
+
+    def cursors_for(self, st):
+        """`Cursors` for a loop `for (…; …; i = i ± c)` at a counter with a place, when that store is its whole update and
+        its body is as `lengths_fixed_in` wants it (no wait, no call, no length changed, nothing stored into i)."""
+        upd = st.get("update") or []
+        if len(upd) != 1 or upd[0].get("kind") != "assign":
+            return None
+        i = upd[0].get("target")
+        if i not in self.places:
+            return None
+        step = counter_step(upd[0].get("value"), i)
+        if step is None or step[0] != "add":
+            return None
+        lists = {a["id"] for a in self.p.get("arrays", []) if a.get("dynamic") or a.get("through")}
+        if not lengths_fixed_in(st["body"], i, lists):
+            return None
+        return Cursors(i, self.places[i], step[1])
+
+    def cursor_at(self, index, a):
+        """The loop's `Cursors` an access at `index` of `a` can go through, or None: the index is a cursor loop's counter,
+        and the array keeps its block where it is — a fixed one, or a growing one the loop found at least as long as its
+        own (`inside`: known, or a flag set on the way in)."""
+        if index.get("kind") != "var":
+            return None
+        cur = self.cursors.get(index.get("id"))
+        if cur is None or self.places.get(cur.counter) is not cur.place:
+            return None
+        if type(a) is ArrayStorage and a.placeable():
+            return cur
+        if type(a) is ListStorage and a.placeable() and self.bound_of(index, a.decl["id"]) is not None:
+            return cur
+        return None
+
+    def cursor_read(self, cur, a, e):
+        # (A read that always happens fills its temporary whole: it need not start from 0, as `fresh` does.)
+        if type(a) is ArrayStorage:
+            r = rng(e["index"])
+            if r is not None and r[0] >= 0 and r[1] <= a.length - 1:
+                out = EUDVariable()
+                cur.read(unProxy(a.store), out)  # (inside, the ranges say)
+                return out
+            out = fresh(0)
+            if EUDIf()(as_var(self.num(e["index"])) <= a.length - 1):
+                cur.read(unProxy(a.store), out)
+            EUDEndIf()
+            return out
+        bound = self.bound_of(e["index"], e["array"])
+        if bound is True:
+            out = EUDVariable()
+            cur.read(a.base[0], out)
+            return out
+        out = fresh(0)
+        if EUDIf()(bound >= 1):
+            cur.read(a.base[0], out)
+        if EUDElseIf()(as_var(self.num(e["index"])) < as_var(a.field("len"))):
+            varray_read(a.base[0], cur.place, out)
+        EUDEndIf()
+        return out
+
+    def cursor_write(self, cur, a, st, value, modifier):
+        if a.bits and modifier == SetTo:
+            value = saturate(value, a.bits)
+        v = fresh(value) if modifier == SetTo and not isinstance(value, int) else value
+        if type(a) is ArrayStorage:
+            r = rng(st["index"])
+            if r is not None and r[0] >= 0 and r[1] <= a.length - 1:
+                cur.write(a.store._epd + VARRAY_VALUE // 4, v, modifier)
+            else:
+                if EUDIf()(as_var(self.num(st["index"])) <= a.length - 1):
+                    cur.write(a.store._epd + VARRAY_VALUE // 4, v, modifier)
+                EUDEndIf()
+            return
+        bound = self.bound_of(st["index"], st["array"])
+        if bound is True:
+            cur.write(a.base[1], v, modifier)
+            return
+        i, n = as_var(self.num(st["index"])), as_var(a.field("len"))
+        if EUDIf()(bound >= 1):
+            cur.write(a.base[1], v, modifier)
+        if EUDElseIf()(i < n):
+            varray_write(a.base[1], cur.place, v, modifier)
+        if EUDElseIf()(i == n):
+            a.push(v)
+        EUDEndIf()
+
+    def for_body(self, st, ctx, head, update, exit_, cursor=None):
         head << NextTrigger()
         if st.get("cond") is not None:
             EUDJumpIfNot(self.cond(st["cond"]), exit_)
         self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": update}))
         update << NextTrigger()
-        if self.straight(st["update"], ctx):
+        if cursor is not None and self.cursor_update(st, cursor):
+            EUDJump(head)
+        elif self.straight(st["update"], ctx):
+            if cursor is not None:
+                cursor.advance()
             EUDJump(head)
         exit_ << NextTrigger()
+
+    def cursor_update(self, st, cursor):
+        """A cursor loop's update `i = i ± c` of a variable of the program's own: the counter, its place and every
+        register moved on in one trigger, where they were three. False when the counter is kept otherwise (a row)."""
+        target = self.vars.get(cursor.counter)
+        if not isinstance(target, Storage) or target.rowed or target.bits:
+            return False
+        c = cursor.step
+        acts = [target.store.AddNumber(c & U32), cursor.place.bytes.AddNumber((VARRAY_STRIDE * c) & U32), cursor.place.dwords.AddNumber((VARRAY_STRIDE // 4 * c) & U32)]
+        acts += [SetMemory(t + 4, Add, (VARRAY_STRIDE * c) & U32) for t, _ in cursor.reads]
+        acts += [SetMemory(act + 16, Add, (VARRAY_STRIDE // 4 * c) & U32) for act, _ in cursor.writes]
+        DoActions(acts)
+        return True
 
     def unrolled(self, st, ctx):
         exit_ = Forward()

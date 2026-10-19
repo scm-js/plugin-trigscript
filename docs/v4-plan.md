@@ -2539,6 +2539,47 @@ read through `varray_read`, which works the place out at every access (part 2, *
 time is fixed-point arithmetic inside eudplib-made functions (`fdiv` 0.41 ms of its 1.06, eudplib's product 0.16, `fmul`
 0.15), whose own variables eudplib shares between calls (part 3, *arithmetic of our own*).
 
+**As built: the backend, part 2 — record loops (2026-10-19).** A `for` loop whose update is `i = i ± c` at a counter with a
+place, and whose body is as `lengths_fixed_in` wants it (no wait, no call, no length changed, nothing stored into `i`),
+reads and writes its arrays at `i` through registers of their own (`Cursors`): a read is a trigger whose own next
+pointer is the cell's address, so it jumps straight into the cell (which writes itself out through eudplib's getter);
+a write is an action whose own destination is the cell's value. Each register is set once on the way in (the array's
+first cell plus the counter's place, out of the way of the loop's code, as static routing's are) and moved on by the
+counter's step at the update — the counter, its place and every register in one trigger. `varray_read` and
+`varray_write` worked the place out at every access: two variables routed into a jump or an action each time.
+- Fixed arrays go through registers too, checked against their length unless the ranges prove the index inside.
+- A loop over a growing array whose body reads other growing arrays at its counter tested a flag at every access (were
+  they at least as long as its own when it began?). It is now *unswitched*: the flags are tested once on the way in, and
+  a copy of the loop that knows them all true runs — the usual case, a record's fields grow together — or the copy that
+  tests them. Each copy is a region of static routing of its own.
+- A read that always happens fills its temporary whole, so it no longer starts from 0.
+- `probes/game-cursors.ts`: records moved and aged, other lists longer and shorter at the counter, fixed arrays with the
+  bound proved and not, steps of 2 and −1, `continue` / `break`, a loop inside reading at the outer counter — 4/4 in the
+  lifted game and the simulator.
+
+| bullets bench (200 records, moved, bounced, aged) | Before this work | Part 1 | Part 2 |
+| --- | ---: | ---: | ---: |
+| a frame | 0.46 ms | 0.44 | 0.20 |
+| `b.x += b.dx`, a bullet | 410 ns | ~400 | 107 |
+
+**What is next for the backend.** Parts 1 and 2 took routing away where a read's routing can be decided ahead. What is
+left, in the order the measurements put it:
+1. *A loop's test turned round.* eudplib's branch spends two triggers and two actions on the way its conditions hold
+   and one trigger on the other; a loop's test holds on every turn but the last. Testing the opposite and leaving when
+   it holds makes the way on one trigger whose condition fails (about 28 ns a turn on every loop with a comparison).
+2. *Arithmetic of our own* (part 3). The raycaster's time is in `fdiv` (0.41 ms of its 1.06), eudplib's product (0.16)
+   and `fmul` (0.15): bit-serial routines inside functions whose variables eudplib made and shares between calls, so
+   no routing of ours reaches them. They have to stay exact (the simulator agrees bit for bit), so the work is in how the
+   shifted divisor and multiplicand are made — the division chain copies the doubled divisor into two or six fields at
+   each of 32 steps, each a routed read — not in approximating.
+3. *Values written where they are used* — the end of the road routing starts on. A variable is one action whose amount
+   is its value, and every use of it elsewhere is a copy made by routing it there. In a block of straight-line code the
+   uses are known when the map is built, so each value can live in the amount fields of the actions that use it: the
+   producer's trigger has an action for each of them and writes them all when the walk passes it. `x = y + z` with x
+   used three times is y's trigger setting three fields and z's adding to them — no setup, no routing, a trigger a
+   producer. Copies for a loop's reads (part 1b) are the first case of it. Straight-line expressions first, then
+   variables across a loop's turns, then the bit-serial arithmetic of 2 written that way.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
