@@ -2539,17 +2539,18 @@ def fixed_vars():
     if "fmul_vars" in _FIXED:
         return _FIXED
 
-    def take_out(cells, out, after):
-        """The actions that send the first cell of `cells` into `out` when the trigger runs next, and go on to
-        `after`; the cell is put back to doubling itself when its loop starts again."""
-        return [SetMemory(cells + ACT_DEST, SetTo, EPD(out.getValueAddr())),
-                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 7 << 24, 0xFF000000),
+    def take_out(cells, out, after, k=0):
+        """The actions that send the cell `k` of `cells` (its first, by default) into `out` when the trigger runs next,
+        and go on to `after`; the cell is put back to doubling itself when its loop starts again."""
+        return [SetMemory(cells + ACT_DEST + 32 * k, SetTo, EPD(out.getValueAddr())),
+                SetMemoryX(cells + ACT_MODIFIER_DWORD + 32 * k, SetTo, 7 << 24, 0xFF000000),
                 SetNextPtr(cells, after)]
 
     def put_back(cells, nxt):
+        """The cell (the first action from `cells`, an action's offset from the trigger added) back to doubling itself;
+        with `nxt`, the trigger going on to it."""
         return [SetMemory(cells + ACT_DEST, SetTo, EPD(cells + ACT_VALUE)),
-                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 8 << 24, 0xFF000000),
-                SetNextPtr(cells, nxt)]
+                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 8 << 24, 0xFF000000)] + ([SetNextPtr(cells, nxt)] if nxt is not None else [])
 
     @EUDFunc
     def fmul_vars(a, b):
@@ -2624,8 +2625,64 @@ def fixed_vars():
         EUDEndIf()
         EUDReturn(out)
 
-    _FIXED.update(fmul_vars=fmul_vars, fdiv_vars=fdiv_vars)
+    @EUDFunc
+    def udivmod_vars(a, b):
+        """a // b and a % b of two numbers read from 0 up, b not 0: fdiv_vars' loop with no bits past the point, the
+        quotient and the remainder each sent out by its cell's own action. A dividend from 2^31 up (its top bit is past
+        where the loop starts) is eudplib's division."""
+        q_out, r_out, count = EUDVariable(), EUDVariable(), EUDVariable()
+        if EUDIf()(a >= SIGN):
+            q_, r_ = f_div(a, b)
+            SeqCompute([(q_out, SetTo, q_), (r_out, SetTo, r_)])
+        if EUDElseIf()(a == 0):
+            # (No top bit for the loop's start to wait for.)
+            DoActions([q_out.SetNumber(0), r_out.SetNumber(0)])
+        if EUDElse()():
+            cells, ready, take_bit, test, end, leave, after = (Forward() for _ in range(7))
+            q, r, d = cells + ACT_VALUE, cells + ACT_VALUE + 32, cells + ACT_VALUE + 64
+            SeqCompute([(EPD(test + COND_VALUE), SetTo, b), (EPD(test + ACT_VALUE), SetTo, b), (EPD(d), SetTo, a)])
+            # 31 steps: the dividend's bits 30 … 0, its leading zeros run off by the cells alone.
+            DoActions(put_back(cells, ready) + put_back(cells + 32, None) + [SetMemory(q, SetTo, 0), SetMemory(r, SetTo, 0), count.SetNumber(31)])
+            ready << RawTrigger(nextptr=cells, conditions=Memory(d, AtLeast, 1 << 30), actions=SetNextPtr(cells, take_bit))
+            cells << RawTrigger(nextptr=ready, actions=[SetMemory(q, Add, 0), SetMemory(r, Add, 0), SetMemory(d, Add, 0), count.SubtractNumber(1)])
+            take_bit << RawTrigger(conditions=Memory(d, AtLeast, SIGN), actions=SetMemory(r, Add, 1))
+            test << RawTrigger(conditions=Memory(r, AtLeast, 0), actions=[SetMemory(r, Subtract, 0), SetMemory(q, Add, 1)])
+            end << RawTrigger(nextptr=cells, conditions=count.Exactly(0), actions=SetNextPtr(end, leave))
+            # The quotient's cell into q_out and the remainder's into r_out, by one run of the cells (another would
+            # double the one not sent out yet).
+            leave << RawTrigger(nextptr=cells, actions=[SetNextPtr(end, cells)] + take_out(cells, q_out, after) + take_out(cells, r_out, after, 1)[:2])
+            after << NextTrigger()
+        EUDEndIf()
+        EUDReturn(q_out, r_out)
+
+    _FIXED.update(fmul_vars=fmul_vars, fdiv_vars=fdiv_vars, udivmod_vars=udivmod_vars)
     return _FIXED
+
+
+def divmod_vars(a, b, unsigned):
+    """(a / b, a % b) of two variables, b not 0: read from 0 up, or (`unsigned` false) towards zero, the remainder with
+    the dividend's sign — udivmod_vars of the magnitudes, the signs after."""
+    f = fixed_vars()["udivmod_vars"]
+    if unsigned:
+        return [fresh(x) for x in f(a, b)]
+    x, y = fresh(a), fresh(b)
+    neg_x, neg_q = fresh(0), fresh(0)
+    if EUDIf()(x >= SIGN):
+        x << 0 - x
+        DoActions([neg_x.SetNumber(1), neg_q.SetNumber(1)])
+    EUDEndIf()
+    if EUDIf()(y >= SIGN):
+        y << 0 - y
+        neg_q << 1 - neg_q
+    EUDEndIf()
+    q, r = [fresh(v) for v in f(x, y)]
+    if EUDIf()(neg_q == 1):
+        q << 0 - q
+    EUDEndIf()
+    if EUDIf()(neg_x == 1):
+        r << 0 - r
+    EUDEndIf()
+    return q, r
 
 
 def as_var(value):
@@ -3521,7 +3578,7 @@ class Lowering:
             if atop is not None and brange is not None and brange[0] >= 0 and (atop >> 1).bit_length() <= 24:
                 q, r = div_var_bits(as_var(a), b, atop)
             else:
-                q, r = f_div(as_var(a), b) if unsigned else f_div_towards_zero(fresh(a), fresh(b))
+                q, r = divmod_vars(as_var(a), b, unsigned)
             out << pick(q, r)
         EUDEndIf()
         return out
@@ -4635,7 +4692,11 @@ class Lowering:
 
         def value(v):
             if isinstance(v, dict):
-                return labels[v["label"]] if "label" in v else element0(v["epdOf"])[0] + v["plus"]
+                if "label" in v:
+                    return labels[v["label"]]
+                if "epd" in v:
+                    return epd(v["epd"])
+                return element0(v["epdOf"])[0] + v["plus"]
             return v
 
         def copy(id_, into):
@@ -4697,9 +4758,15 @@ class Lowering:
         conds = [MemoryXEPD(epd(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"], c["mask"]) if "mask" in c else MemoryEPD(epd(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"]) for c in t["conds"]]
         acts = [SetMemoryXEPD(epd(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"]), a["mask"]) if "mask" in a else SetMemoryEPD(epd(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"])) for a in t["acts"]]
         if "next" in t:
-            labels[t["label"]] << RawTrigger(nextptr=labels[t["next"]], conditions=conds, actions=acts)
+            trg = RawTrigger(nextptr=labels[t["next"]], conditions=conds, actions=acts)
         else:
-            labels[t["label"]] << RawTrigger(conditions=conds, actions=acts)
+            trg = RawTrigger(conditions=conds, actions=acts)
+        labels[t["label"]] << trg
+        # (With the map of triggers on, the line of each action whose statement is not the trigger's.)
+        made = globals().get("_ACT_ORIGINS")
+        if made is not None and any(a.get("at") for a in t["acts"]):
+            mine = _origin_of(t.get("at"))
+            made[trg] = [_origin_of(a["at"]) if a.get("at") else mine for a in t["acts"]]
 
     def graph_function(self, spec):
         """The fixed-point function a graph calls (compiler/backend/graph.ts, FixedFn), its body made."""
@@ -6752,6 +6819,7 @@ if settings.get("triggerMap"):
 
     _ORIGINS = []
     _MADE = {}
+    _ACT_ORIGINS = {}
 
     def _origin_of(at):
         if not at:
@@ -6802,7 +6870,11 @@ if settings.get("triggerMap"):
             if not isinstance(trg, _RawTrigger):
                 continue
             origin = _MADE.get(trg, "eudplib")
-            rows.append([_payload._payload_builder.get_object_addr(i).offset, len(trg._conditions), len(trg._actions), origin])
+            row = [_payload._payload_builder.get_object_addr(i).offset, len(trg._conditions), len(trg._actions), origin]
+            # (A trigger of the emitter's holding several statements' work: each action's line.)
+            if trg in _ACT_ORIGINS:
+                row.append(_ACT_ORIGINS[trg])
+            rows.append(row)
         rows.sort()
         # (In parts, so that no one line of the log runs to megabytes.)
         print("TRIGSCRIPT-MAP " + json.dumps({"payload": len(built.data), "count": len(rows)}, separators=(",", ":")))

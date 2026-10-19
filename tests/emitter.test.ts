@@ -164,7 +164,7 @@ function exec(g: Graph, env: Env): Env {
       if ("element" in c.dword) mem.set(`${t.label}|cond:${k}:player`, TABLE_EPD(c.dword.element));
     });
     t.acts.forEach((a, k) => {
-      mem.set(`${t.label}|act:${k}:value`, typeof a.value === "object" && "label" in a.value ? a.value.label : numOf(a.value));
+      mem.set(`${t.label}|act:${k}:value`, typeof a.value === "object" && "label" in a.value ? a.value.label : typeof a.value === "object" && "epd" in a.value ? `@${key(a.value.epd)}` : numOf(a.value));
       // (A store's destination: an EPD its index's writes keep.)
       if ("element" in a.dword) mem.set(`${t.label}|act:${k}:dest`, TABLE_EPD(a.dword.element));
     });
@@ -212,11 +212,16 @@ function exec(g: Graph, env: Env): Env {
     });
     if (holds) t.acts.forEach((a, k) => {
       const v = read(`${t.label}|act:${k}:value`);
-      const d = "element" in a.dword ? `epd:${read(`${t.label}|act:${k}:dest`)}` : key(a.dword);
+      // The destination and the modifier as the fields hold them now: a cell routed elsewhere, a store's EPD.
+      const dest = mem.get(`${t.label}|act:${k}:dest`);
+      const d = typeof dest === "string" && dest.startsWith("@") ? dest.slice(1) : "element" in a.dword ? `epd:${dest}` : key(a.dword);
       if ("element" in a.dword && !mem.has(d)) throw new Error(`a store outside the array: ${d}`);
       if (typeof v === "string") { mem.set(d, v); return; }
+      const mf = mem.get(`${t.label}|act:${k}:modifier`);
+      const modifier = typeof mf === "number" ? ({ 7: "set", 8: "add", 9: "subtract" } as Record<number, string>)[(mf >>> 24) & 0xff] : a.modifier;
       const old = read(d) as number;
-      mem.set(d, a.modifier === "set" ? v : a.modifier === "add" ? u(old + v) : Math.max(0, old - v));
+      if (a.mask !== undefined && modifier === "set") { mem.set(d, Number((BigInt(old) & ~BigInt(a.mask) & 0xffffffffn) | (BigInt(v) & BigInt(a.mask)))); return; }
+      mem.set(d, modifier === "set" ? v : modifier === "add" ? u(old + v) : Math.max(0, old - v));
     });
     pc = read(`${t.label}|next`) as string;
   }
@@ -386,7 +391,8 @@ describe("the emitter", () => {
 
       for (const [id, value] of want) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
     }
-    if (process.env.EMITTER_LEFT) console.log(taken, stores, emitterCounts.hoisted, [...left].sort((a, b) => b[1] - a[1]));
+    if (process.env.EMITTER_LEFT) console.log(taken, stores, emitterCounts, [...left].sort((a, b) => b[1] - a[1]));
+    expect(emitterCounts.reciprocals).toBeGreaterThan(200);
     expect(emitterCounts.hoisted).toBeGreaterThan(200);
     expect(taken).toBeGreaterThan(3900);
     expect(stores).toBeGreaterThan(1000);

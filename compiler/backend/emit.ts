@@ -357,7 +357,7 @@ class Scope {
 // ── the layout ──
 
 /** A write of a variable, laid out where the statement was, expanded once every place of the variable is known. */
-interface Write { target: string; value: Linear }
+interface Write { target: string; value: Linear; at?: At }
 /** An action of an expanded write: it writes `into`; a variable it reads plus a constant is in its own number. */
 interface WriteAct { into: Place; modifier: "set" | "add"; value: Num; reads?: Read }
 /**
@@ -371,7 +371,8 @@ interface Table { array: ArrayDecl; index: Linear }
 interface Shift { of: Linear; by: number; signed: boolean }
 /** A store into a cell of one of the program's arrays: its index, and its value with the cells it reads first. */
 interface Store { array: ArrayDecl; index: Linear; reads: { id: string; table?: Table; shift?: Shift }[]; value: Linear }
-type Item = { act: Act } | { write: Write } | { copy: string } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string } };
+/** (`at` on a copy or a call: the statement it is for, when its trigger is another's.) */
+type Item = { act: Act } | { write: Write } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At };
 interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number }
 
 /**
@@ -401,6 +402,21 @@ function storable(a: ArrayDecl): boolean {
   return a.kind === "number" && !a.values && !a.texts && !a.dynamic && !x.slice && !x.through && !x.packed && a.task === undefined && !a.bits;
 }
 
+/** The fixed-point functions the emitter makes as its own triggers rather than calling the Python side's. */
+const NATIVE = { fdiv_by: true };
+
+/** A sum as an expression again (to test its sign). */
+function linearExpr(l: Linear): NumExpr {
+  const at = { line: 0, column: 0 } as At;
+  let e: NumExpr | null = null;
+  for (const t of l.terms) {
+    const term: NumExpr = t.k === 1 ? { kind: "var", id: t.id } : { kind: "binary", op: "*", left: { kind: "var", id: t.id }, right: { kind: "const", value: t.k }, at, label: "" };
+    e = e ? { kind: "binary", op: "+", left: e, right: term, at, label: "" } : term;
+  }
+  if (!e) return { kind: "const", value: l.c };
+  return l.c ? { kind: "binary", op: "+", left: e, right: { kind: "const", value: l.c }, at, label: "" } : e;
+}
+
 /** A constant plus an array's first cell's EPD, as an action's number. */
 const num = (n: number, base?: string): Num => (base ? { epdOf: base, plus: n } : n);
 
@@ -418,7 +434,7 @@ class Emitter {
   /** A condition whose player field is a place of what it reads: the index of a table's cell. */
   condPlayers = new Map<Cond, Read>();
   /** A store's action: its destination a place of the index, its number (when not a constant) a place of the value. */
-  actPlaces = new Map<Act, { dest: Read; value?: Read }>();
+  actPlaces = new Map<Act, { dest?: Read; value?: Read }>();
   /** The variables of the emitter's own (a table's index), which have no cell on the Python side. */
   own = new Set<string>();
   /** The arrays whose cells are read where they are, and the EPD from one cell's value to the next's. */
@@ -494,9 +510,9 @@ class Emitter {
   }
 
   write(target: string, value: Linear, copy = true): void {
-    const w = { target, value };
+    const w: Write = { target, value, ...(this.at ? { at: this.at } : {}) };
     // (The copy is there for a variable that turns out to need one: the rest leave it out.)
-    this.open().items.push({ write: w }, ...(copy ? [{ copy: target }] : []));
+    this.open().items.push({ write: w }, ...(copy ? [{ copy: target, ...(this.at ? { at: this.at } : {}) }] : []));
     let list = this.writes.get(target);
     if (!list) this.writes.set(target, (list = []));
     list.push(w);
@@ -670,6 +686,9 @@ class Emitter {
         if (this.scope.islands.has(s)) return this.left(s);
     }
     const call = this.scope.calls.get(s);
+    if (call && (s.kind === "declare" || s.kind === "assign") && call.fn.fn === "fdiv_by" && NATIVE.fdiv_by) {
+      return this.reciprocal(call.fn.c!, call.args[0], s.kind === "declare" ? s.decl.id : s.target);
+    }
     if (call && (s.kind === "declare" || s.kind === "assign")) {
       // The arguments into the function's parameters, written by the trigger before the call; the result into the
       // target's cell, copied into its other places after.
@@ -681,7 +700,7 @@ class Emitter {
         this.write(id, value, false);
       });
       this.results.add(target);
-      this.open().items.push({ call: { fn: call.fn, target } }, { copy: target });
+      this.open().items.push({ call: { fn: call.fn, target }, ...(this.at ? { at: this.at } : {}) }, { copy: target, ...(this.at ? { at: this.at } : {}) });
       return;
     }
     const store = this.scope.stores.get(s);
@@ -772,7 +791,7 @@ class Emitter {
       this.condPlayers.set(cell, { id: index, scale: stride, add: 0, base: t.array.id });
       this.push({ conds: [{ ...inside }, cell], items: [{ bump: { target, add: u(2 ** j) } }], at });
     }
-    this.open().items.push({ copy: target });
+    this.open().items.push({ copy: target, ...(this.at ? { at: this.at } : {}) });
   }
 
   /**
@@ -804,6 +823,130 @@ class Emitter {
       }
       this.land(past);
     }
+    this.open().items.push({ copy: target });
+  }
+
+  /**
+   * `c / x` of a fixed number x and a constant c above zero, as the emitter's own triggers — the very bits of the Python
+   * side's `make_const_fdiv` (part 3): long division the way it is done on paper, the remainder doubled a step and the
+   * divisor taken away when it fits. Where that function copies the divisor into its loop, here the divisor's magnitude
+   * is a variable whose places are the loop's comparison and subtraction (the latter its negation: the game's subtract
+   * stops at 0), written by the graph where it computes it. The quotient, the remainder and the dividend's bits still to
+   * come are cells of the graph's own (`cells`: one trigger whose actions add their numbers to themselves). The search
+   * of the divisor's top bit (a branch a level) leaves the remainder and the quotient's top bit — which reaches bit 31 on
+   * the last step, the loop's test of its end — as constants. The quotient then goes into the target's cell by the
+   * quotient's own action, pointed at the number of the action that sets the target and run once: its sign after, the
+   * negative one as 0xFFFFFFFF less it (a subtract that never reaches 0) plus 0x80000001. A divisor whose quotient
+   * takes 32 bits or more (a few 65 536ths) is the Python side's function's.
+   */
+  reciprocal(c: number, x: Linear, target: string): void {
+    const d = BigInt(c) << 16n;
+    const topD = d.toString(2).length - 1;
+    type Plan = "zero" | null | { n: number; r0: number; rest: number };
+    const plan = (t: number): Plan => {
+      const n = topD - t + 1;
+      if (n <= 0) return "zero";
+      if (n > 31) return null;
+      return { n, r0: Number(d >> BigInt(n)), rest: Number(((d & ((1n << BigInt(n)) - 1n)) << BigInt(32 - n)) & 0xffffffffn) };
+    };
+    const plans = Array.from({ length: 32 }, (_, t) => plan(t));
+    emitterCounts.reciprocals++;
+    const withBits = plans.some((p) => p && p !== "zero" && p.rest);
+    this.results.add(target);
+    // The magnitude and the sign.
+    const b = `${this.key}.rb${this.n++}`, neg = `${this.key}.rn${this.n++}`;
+    this.own.add(b);
+    this.own.add(neg);
+    // (A sum the sign of which is tested: into a variable of the emitter's own first, unless it is one plus a constant.)
+    if (!(x.terms.length === 1 && x.terms[0].k === 1)) {
+      const xs = `${this.key}.rx${this.n++}`;
+      this.own.add(xs);
+      this.write(xs, x, false);
+      x = { c: 0, terms: [{ id: xs, k: 1 }] };
+    }
+    const xv: NumExpr = linearExpr(x);
+    const done = this.label("rdone"), zero = this.label("rzero"), slow = this.label("rslow"), loop = this.label("rloop");
+    this.write(neg, { c: 0, terms: [] }, false);
+    const positive = this.label("rpos"), signed = this.label("rsigned");
+    this.jump({ kind: "compare", op: "<", left: xv, right: { kind: "const", value: 0 }, at: this.at!, label: "" } as BoolExpr, false, positive, this.at);
+    this.write(b, scaled(x, MAX), false);
+    this.write(neg, { c: 1, terms: [] }, false);
+    this.goto(signed);
+    this.land(positive);
+    this.write(b, x, false);
+    this.land(signed);
+    const bv: NumExpr = { kind: "var", id: b };
+    this.jump({ kind: "compare", op: "==", left: bv, right: { kind: "const", value: 0 }, unsigned: true, at: this.at!, label: "" } as BoolExpr, true, zero, this.at);
+    // The cells, and the loop's triggers (made below, after the search, which goes to them).
+    const cells = this.label("rcells"), takeBit = this.label("rbit"), test = this.label("rtest");
+    const field = (k: number): Dword => ({ at: cells, field: { act: k, part: "value" } });
+    const q = field(0), r = field(1), bits = field(2);
+    // The cells back to doubling themselves (a call before routed the quotient's elsewhere), going on to the loop.
+    const restore: Act[] = [0, 1, ...(withBits ? [2] : [])].flatMap((k) => [
+      { dword: { at: cells, field: { act: k, part: "dest" } }, modifier: "set", value: { epd: field(k) } } as Act,
+      { dword: { at: cells, field: { act: k, part: "modifier" } }, modifier: "set", value: 8 * 2 ** 24, mask: 0xff000000 } as Act,
+    ]);
+    this.open().items.push(...restore.map((act) => ({ act })), { act: { dword: { at: cells, field: "next" }, modifier: "set", value: { label: withBits ? takeBit : test } } });
+    // The search of the divisor's top bit: a leaf sets the cells for its plan, or goes where the plan says.
+    const leaf = (t: number) => {
+      const p = plans[t];
+      if (p === "zero") return this.goto(zero);
+      if (p === null) return this.goto(slow);
+      const acts: Act[] = [{ dword: r, modifier: "set", value: p.r0 }, { dword: q, modifier: "set", value: 2 ** (31 - p.n) }];
+      if (withBits) acts.push({ dword: bits, modifier: "set", value: Math.floor(p.rest / 2) });
+      this.push({ conds: [], items: acts.map((act) => ({ act })), next: loop });
+    };
+    const tree = (lo: number, hi: number) => {
+      if (lo === hi) return leaf(lo);
+      const mid = (lo + hi + 1) >> 1, high = this.label("rhi");
+      this.jump({ kind: "compare", op: ">=", left: bv, right: { kind: "const", value: 2 ** mid }, unsigned: true, at: this.at!, label: "" } as BoolExpr, true, high, this.at);
+      tree(lo, mid - 1);
+      this.land(high);
+      tree(mid, hi);
+    };
+    tree(0, 31);
+    // The loop: the cells doubled, the dividend's next bit into the remainder, the divisor taken away when it fits.
+    this.land(loop);
+    this.push({ label: cells, conds: [], items: [q, r, ...(withBits ? [bits] : [])].map((f) => ({ act: { dword: f, modifier: "add", value: 0 } as Act })), next: withBits ? takeBit : test });
+    if (withBits) this.push({ label: takeBit, conds: [{ dword: bits, compare: "atLeast", value: SIGN }], items: [{ act: { dword: r, modifier: "add", value: 1 } }], next: test });
+    const fits: Cond = { dword: r, compare: "atLeast", value: 0 };
+    this.condReads.set(fits, { id: b, scale: 1, add: 0 });
+    const takeAway: Act = { dword: r, modifier: "add", value: 0 };
+    this.actPlaces.set(takeAway, { value: { id: b, scale: MAX, add: 0 } });
+    this.push({ label: test, conds: [fits], items: [{ act: takeAway }, { act: { dword: q, modifier: "add", value: 1 } }] });
+    // The end: the quotient's top bit at bit 31.
+    const leave = this.label("rleave");
+    this.branch([{ dword: q, compare: "atLeast", value: SIGN }], leave, this.at);
+    this.goto(cells);
+    // The quotient into the target's cell, by its own action: set, then its top bit taken off; or its negation.
+    this.land(leave);
+    const into = this.placesOf(target)[0].dword!;
+    const negLeave = this.label("rnegl");
+    this.jump({ kind: "compare", op: "==", left: { kind: "var", id: neg }, right: { kind: "const", value: 0 }, unsigned: true, at: this.at!, label: "" } as BoolExpr, false, negLeave, this.at);
+    const route = (setAt: string, k: number, back: string): Act[] => [
+      { dword: { at: cells, field: { act: 0, part: "dest" } }, modifier: "set", value: { epd: { at: setAt, field: { act: k, part: "value" } } } },
+      { dword: { at: cells, field: { act: 0, part: "modifier" } }, modifier: "set", value: 7 * 2 ** 24, mask: 0xff000000 },
+      { dword: { at: cells, field: "next" }, modifier: "set", value: { label: back } },
+    ];
+    const setPos = this.label("rsetp"), setNeg = this.label("rsetn");
+    this.push({ conds: [], items: route(setPos, 0, setPos).map((act) => ({ act })), next: cells });
+    this.land(negLeave);
+    this.push({ conds: [], items: route(setNeg, 1, setNeg).map((act) => ({ act })), next: cells });
+    this.push({ label: setPos, conds: [], items: [{ act: { dword: into, modifier: "set", value: 0 } }, { act: { dword: into, modifier: "add", value: SIGN } }], next: done });
+    this.push({ label: setNeg, conds: [], items: [{ act: { dword: into, modifier: "set", value: MAX } }, { act: { dword: into, modifier: "subtract", value: 0 } }, { act: { dword: into, modifier: "add", value: SIGN + 1 } }], next: done });
+    // A quotient of 0; a divisor of a few 65 536ths, the Python side's function.
+    this.land(zero);
+    this.push({ conds: [], items: [{ act: { dword: into, modifier: "set", value: 0 } }], next: done });
+    this.land(slow);
+    {
+      const id = `${this.key}.arg${this.n++}`;
+      const fn: FixedFn = { fn: "fdiv_by", c };
+      this.own.add(id);
+      this.params.set(id, { param: fn, index: 0 });
+      this.write(id, x, false);
+      this.open().items.push({ call: { fn, target } });
+    }
+    this.land(done);
     this.open().items.push({ copy: target });
   }
 
@@ -1031,7 +1174,7 @@ class Emitter {
     const refreshes: { t: Trigger; places: (Place | WriteAct)[] }[] = [];
     let n = 0;
     for (const p of kept) {
-      type Piece = { acts: (Act | WriteAct)[] } | { copy: string } | { island: Stmt } | { call: { fn: FixedFn; target: string } } | { refresh: string; places: (Place | WriteAct)[] };
+      type Piece = { acts: (Act | WriteAct)[] } | { copy: string; at?: At } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] };
       const pieces: Piece[] = [{ acts: [] }];
       const acts = () => {
         const last = pieces[pieces.length - 1];
@@ -1049,12 +1192,12 @@ class Emitter {
           if (!copied.has(it.bump.target) && ps.length > MOST_ACTS - 1) this.crowded.add(it.bump.target);
           for (const into of copied.has(it.bump.target) ? ps.slice(0, 1) : ps) acts().push({ into, modifier: "add", value: mul(into.scale, it.bump.add) } as WriteAct);
         }
-        else if ("copy" in it) { if (copied.has(it.copy) && !routed.has(it.copy)) pieces.push({ copy: it.copy }); }
-        else if ("call" in it) pieces.push({ call: it.call });
+        else if ("copy" in it) { if (copied.has(it.copy) && !routed.has(it.copy)) pieces.push({ copy: it.copy, ...(it.at ? { at: it.at } : {}) }); }
+        else if ("call" in it) pieces.push({ call: it.call, ...(it.at ? { at: it.at } : {}) });
         else {
           pieces.push({ island: it.island });
           // What it may write, back into every place but the cell.
-          for (const id of it.writes) if ((this.places.get(id)?.length ?? 0) > 1 && !routed.has(id)) pieces.push({ copy: id });
+          for (const id of it.writes) if ((this.places.get(id)?.length ?? 0) > 1 && !routed.has(id)) pieces.push({ copy: id, ...(it.island.at ? { at: it.island.at as At } : {}) });
         }
       }
       if (p.conds.length && (pieces.length > 1 || (pieces[0] as { acts: unknown[] }).acts.length > MOST_ACTS)) return this.crowded.size ? "crowded" : "a branch with too many actions";
@@ -1106,7 +1249,8 @@ class Emitter {
           continue;
         }
         if ("copy" in piece) {
-          made.push({ label: label(), conds: [], acts: [], copy: { from: piece.copy, into: [] }, ...(p.at ? { at: p.at } : {}) });
+          const at = piece.at ?? p.at;
+          made.push({ label: label(), conds: [], acts: [], copy: { from: piece.copy, into: [] }, ...(at ? { at } : {}) });
           continue;
         }
         if ("island" in piece) {
@@ -1114,7 +1258,8 @@ class Emitter {
           continue;
         }
         if ("call" in piece) {
-          made.push({ label: label(), conds: [], acts: [], call: { ...piece.call.fn, into: this.placesOf(piece.call.target)[0].dword! }, ...(p.at ? { at: p.at } : {}) });
+          const at = piece.at ?? p.at;
+          made.push({ label: label(), conds: [], acts: [], call: { ...piece.call.fn, into: this.placesOf(piece.call.target)[0].dword! }, ...(at ? { at } : {}) });
           continue;
         }
         for (let i = 0; i === 0 || i < piece.acts.length; i += MOST_ACTS) {
@@ -1125,7 +1270,8 @@ class Emitter {
             if ("into" in a) {
               at.set(a, { at: t.label, field: { act: k, part: "value" } });
               later.push({ t, k, w: a });
-              t.acts.push({ dword: { game: 0 }, modifier: a.modifier, value: a.value });
+              const from = writeOf.get(a as WriteAct)?.at;
+              t.acts.push({ dword: { game: 0 }, modifier: a.modifier, value: a.value, ...(from && from !== t.at ? { at: from } : {}) });
             } else t.acts.push(a);
           });
           made.push(t);
@@ -1491,7 +1637,7 @@ function inlined(x: unknown, functions: Map<string, FuncDecl>, depth = 0): unkno
  * it took. A per-player program is not looked at yet (its variables are rows), nor a task's (its variables are slots).
  */
 /** How often the emitter did what is worth counting, for its tests: loops with values computed once on the way in. */
-export const emitterCounts = { hoisted: 0 };
+export const emitterCounts = { hoisted: 0, reciprocals: 0 };
 
 /** One loop lowered to a graph, or why it is not. `decls`: every variable of the program, by id. */
 export function emitLoop(loop: Stmt, decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), indexed = new Set<string>(), arrays = new Map<string, ArrayDecl>()): Graph | string {
@@ -1511,13 +1657,17 @@ export function emitLoop(loop: Stmt, decls: Map<string, VarDecl>, key: string, f
   const rw = new Rewriter(key, take);
   const shaped = inlined(loop, functions) as Stmt;
   // What of the loop's values reads nothing it writes is computed once, on the way in.
-  const stored = new Set<string>();
+  const stored = new Set<string>(), seen = new Set<string>();
   const storesIn = (x: unknown): void => {
     if (!x || typeof x !== "object") return;
     if (Array.isArray(x)) { x.forEach(storesIn); return; }
     const o = x as Record<string, unknown>;
     if ((o.kind === "store" || o.kind === "push" || o.kind === "setLength" || o.kind === "pop" || o.kind === "declareArray") && typeof o.array === "string") stored.add(o.array);
-    if (typeof o.fn === "string") storesIn(functions.get(o.fn)?.body);
+    // (A function that calls itself, or two that call each other, looked into once.)
+    if (typeof o.fn === "string" && !seen.has(o.fn)) {
+      seen.add(o.fn);
+      storesIn(functions.get(o.fn)?.body);
+    }
     Object.values(o).forEach(storesIn);
   };
   storesIn(shaped);

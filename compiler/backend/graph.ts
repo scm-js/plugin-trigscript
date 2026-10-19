@@ -53,8 +53,11 @@ export type Modifier = "set" | "add" | "subtract";
 /** A number known when the map is made: a constant, or the EPD of an array's first cell's value plus a constant. */
 export type Num = number | { epdOf: string; plus: number };
 
-/** A number an action writes: one known when the map is made, or where a label is (a trigger's address). */
-export type Value = Num | { label: string };
+/**
+ * A number an action writes: one known when the map is made, where a label is (a trigger's address), or the EPD of a
+ * dword (what an action's destination holds: a cell of the graph's own routed to write somewhere else).
+ */
+export type Value = Num | { label: string } | { epd: Dword };
 
 /** The dword compared with `value` (read from 0 up); with `mask`, the dword's bits of the mask (`value` as it is). */
 export interface Cond { dword: Dword; compare: Compare; value: number; mask?: number }
@@ -63,7 +66,8 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * `value` written into the dword, added to it or taken from it; with `mask`, only the mask's bits change. An add wraps;
  * the game's subtract stops at 0, so it is no way to take a variable away (add its negation).
  */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number }
+/** `at`: the statement the action is for, when a trigger holds the work of several (the cost of a line, action by action). */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At }
 
 /**
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,

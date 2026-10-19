@@ -11,7 +11,8 @@
  * --save writes this run's numbers as the new baseline. Needs a plugin-eudplib checkout and a scm-sim checkout beside
  * this repository (or EUDPLIB_DIR / SCM_SIM_DIR), as build-fixture and the lifted game do.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { playWeighed } from "./lifted-weigh.mts";
@@ -19,7 +20,8 @@ import { playWeighed } from "./lifted-weigh.mts";
 const root = resolve(import.meta.dirname, "..");
 const flag = (n: string) => process.argv.slice(2).find((a) => a === `--${n}` || a.startsWith(`--${n}=`))?.split("=")[1] ?? (process.argv.includes(`--${n}`) ? "" : undefined);
 const script = join(root, "probes", "lowering-bench.ts");
-const built = join(root, "fixtures", "eud", "lowering-bench.scx");
+// (Built into a folder of its own: fixtures/ holds the base maps everything shares.)
+const built = join(mkdtempSync(join(tmpdir(), "lowering-bench-")), "lowering-bench.scx");
 const baselinePath = join(root, "probes", "lowering-bench.baseline.json");
 
 const b = spawnSync("npx", ["tsx", join(root, "scripts", "build-fixture.mts"), script, built], { cwd: root, encoding: "utf8", maxBuffer: 256 << 20, env: { EMITTER: "0", ...process.env, TRIGGER_MAP: "1" } });

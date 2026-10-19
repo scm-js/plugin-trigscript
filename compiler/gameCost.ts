@@ -103,12 +103,16 @@ export class CostLines {
   constructor(map: TriggerMap, payloadEnd: number) {
     this.payloadEnd = payloadEnd;
     this.payloadStart = payloadEnd - map.payload;
-    for (const [offset, conditions, actions, origin] of map.triggers) {
+    for (const [offset, conditions, actions, origin, byAction] of map.triggers) {
       const where = lineOf(origin);
       const g = where ? this.idOf(where) : CARRY;
       const at = this.payloadStart + offset;
       for (let i = 0; i < conditions; i++) this.byRecord.set(at + 8 + 20 * i, g);
-      for (let i = 0; i < actions; i++) this.byRecord.set(at + 8 + 320 + 32 * i, g);
+      // (A trigger holding several lines' work gives each its actions.)
+      for (let i = 0; i < actions; i++) {
+        const own = byAction?.[i] !== undefined ? lineOf(byAction[i]) : where;
+        this.byRecord.set(at + 8 + 320 + 32 * i, own ? this.idOf(own) : g);
+      }
     }
   }
 
