@@ -1926,6 +1926,48 @@ templates. None of the showpieces wants them, and each needs a runtime of its ow
 4. **Texts made in the game**: `String.fromCharCode`, `toFixed`, a number with thousands. Save codes (Part C) need the
    first.
 
+### What Remastered charges (cost step 1, 2026-10-18)
+
+A4 counts conditions and actions, and the dial put the budget at 500 thousand of them. But the dial's loop is the
+cheapest kind of work there is, and A4's count is a number of records, not a time. Before making the language
+cheaper, step 1 finds what each kind of record costs Remastered. Read in the Ghidra project (1.23.10.13515):
+
+- **Every Deaths and Set Deaths of an EUD map goes through the emulator**, even one in the real deaths table: the
+  handlers (+0x28AB30, +0x288240) take the emulator's way whenever the map is an EUD map (+0x105423C), with no fast
+  path. Inside (+0x2E1450, +0x2E18F0): a one-entry cache of the last region read (+0x80) and another of the last
+  written (+0x88), else a search of a tree (+0x2DA5A0), then the region's own read or write through its vtable.
+- **The tree holds about 12,300 regions**: every unit (336 bytes), sprite, image and bullet is a region of its own.
+  So a read of a field of another unit than the last always misses the cache, and so does a read of a payload
+  variable between two reads of a unit.
+- **A masked Set Deaths is a read and a write** (+0x2E7DB0); an unaligned one two of each (+0x2E7A20). A masked
+  Deaths condition costs only an AND.
+- **A trigger costs something of its own.** The walk (+0x41B350) finds each trigger through the caches or the tree
+  (+0x2E1940) and reads its next pointer through the emulator (+0x2E4540), and checks the game's state (+0x33D7C0,
+  five instructions) after each condition and action. A4 counts none of that: an empty trigger counts 0.
+- The game speed table (0x5124D8, backed by image+0xDCF050) and 0x51CE8C (image+0x1067BE8) are regions the emulator
+  reads and writes; whether the game paces its frames from that copy is a probe of its own, later.
+
+**The probe** (`probes/frame-weights.py`, hand-written eudplib, beside `probes/frame-weights.ts`): 13 mixes, each 8
+game seconds at 200 thousand and at 800 thousand records a frame, idle stretches between, 32 phases in all
+(`python3 probes/frame-weights.py` prints them). It writes its phase and frame as deaths of Player 12 (units
+220–222), which the profiler reads from the game's own deaths array. The mixes: the dial's loop as eudplib writes it;
+payload Set Deaths 64, 8 and 1 to a trigger; empty triggers; payload Deaths conditions; Set Deaths in the deaths
+table; alternating payload and deaths table (the write cache misses every time); masked Set Deaths; conditions on one
+unit's fields, on 256 different units, and alternating one unit with the payload; Set Switch.
+
+In the lifted game every mix lands on its design count (201,741 and 806,494 a frame; empty: 781 and 3,125 turns of
+256 triggers, 1,807 and 6,494 records, the loop's own). game-check: 0 accesses Remastered ends the game on, 0
+ignored, 0 never seen. One number from the count already: **eudplib's own loop is 13 records a turn; TrigScript's
+lowering of the same loop is 39** — the first thing the cheaper lowering should match.
+
+**The profiler** (scm-sim-reader `remastered/profile.py`, Windows Python, read-only, not shipped): every 50 ms each
+thread's CPU cycles (QueryThreadCycleTime) with the probe's marks, and ~1,000 stack samples a second of the busiest
+threads: the instruction pointer and the stack's words that point into StarCraft.exe. A return address of the walk
+among them says which of its calls the thread was under. `remastered/profile_report.py` takes the profile, the
+probe's table and the lifted count, and gives cycles a record for each mix (between its two amounts, and against
+idle), the trigger's own cost and an action's (from 64 to a trigger against 1), and where the samples were. Checked
+on a synthetic profile; awaiting a played run.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
