@@ -7,7 +7,7 @@ import {
   ActionFlag, ActionType, cloneTrigger, Comparison, ConditionFlag, ConditionType, emptyAction, emptyCondition, emptyTrigger, encodeTriggers,
   PlayerGroup, SetModifier, SwitchAction, SwitchState, TriggerFlag, UnitClass, type TriggerRecord,
 } from "../vendor/triggers";
-import { aiScriptCode } from "../vendor/triggerDefs";
+import { actionDef, aiScriptCode } from "../vendor/triggerDefs";
 import { generateDeclarations } from "../compiler/declarations";
 import { compileScript, type CompileResult, type ScriptFiles } from "../compiler/compiler";
 import { defaultScriptNames, identifier, scriptNames } from "../compiler/names";
@@ -462,11 +462,14 @@ describe.skipIf(mapFiles.length === 0)("fixture maps", () => {
       };
       const back = resolveStrings(r, intern);
       // Hint bits are not part of the language, and a text is compared by content: a map's table may hold the same text twice.
+      // A text or a sound in a field the action does not use is left behind (Wakka Wakka's Play WAV carries a text the
+      // game never reads): the script says only what an action uses.
       const hints = ConditionFlag.UnitPropertiesUsed | ConditionFlag.UnitTypeUsed | ConditionFlag.UnitIdUsed;
+      const uses = (type: number, field: "text" | "wav") => !!actionDef(type)?.args.some((x) => x.field === field);
       const norm = (list: TriggerRecord[], table: (string | null)[]) => list.map((t) => ({
         ...t,
         conditions: t.conditions.map((c) => ({ ...c, flags: c.flags & ~hints })),
-        actions: t.actions.map((a) => ({ ...a, flags: a.flags & ~hints, text: table[a.text] ?? "", wav: table[a.wav] ?? "" })),
+        actions: t.actions.map((a) => ({ ...a, flags: a.flags & ~hints, text: uses(a.type, "text") ? table[a.text] ?? "" : "", wav: uses(a.type, "wav") ? table[a.wav] ?? "" : "" })),
       }));
       expect(norm(back, strings)).toEqual(norm(map.triggers, map.strings));
     });
