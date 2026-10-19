@@ -282,6 +282,8 @@ class Scope {
       switch (o.kind) {
         case "break": if (breaks === 0) ok = this.no("a break out of a statement it cannot lower"); break;
         case "continue": if (loops === 0) ok = this.no("a continue out of a statement it cannot lower"); break;
+        // (A variable of the rewriter's has no cell on the Python side: a statement that reads one is not left to it.)
+        case "var": if (typeof o.id === "string" && isTemp(o.id)) ok = this.no("a value computed ahead, read by a statement it cannot lower"); break;
         case "return": case "sleep": case "parallel": case "start": case "try": case "throw": case "uncaught": case "graph":
           ok = this.no(`a ${o.kind} in a statement it cannot lower`);
           break;
