@@ -2567,6 +2567,10 @@ left, in the order the measurements put it:
 1. *A loop's test turned round.* eudplib's branch spends two triggers and two actions on the way its conditions hold
    and one trigger on the other; a loop's test holds on every turn but the last. Testing the opposite and leaving when
    it holds makes the way on one trigger whose condition fails (about 28 ns a turn on every loop with a comparison).
+   *Tried 2026-10-19 and set aside:* the list loop gained (4.05 → 3.63 µs) but the empty loop (1.79 → 2.17), the array
+   loop (4.70 → 5.08) and the bench's own turn (108 → 128 ns) lost — the opposite comparison reads its two sides another
+   way (`floored_zero` where `<` used eudplib's own), which static routing then serves less well. It needs the
+   comparison lowered so that both directions read their sides alike first.
 2. *Arithmetic of our own* (part 3). The raycaster's time is in `fdiv` (0.41 ms of its 1.06), eudplib's product (0.16)
    and `fmul` (0.15): bit-serial routines inside functions whose variables eudplib made and shares between calls, so
    no routing of ours reaches them. They have to stay exact (the simulator agrees bit for bit), so the work is in how the
