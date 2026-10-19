@@ -149,7 +149,7 @@ function checkTextLoops(body: Stmt[], out: ProgramDiagnostic[]) {
 
 /** What a loop over units, or a pick, costs: a word at the end of the line. */
 function scans(program: Program, out: LineHint[]) {
-  const SLOTS = "the game's 1700 unit slots";
+  const SLOTS = "every unit on the map (the game's unit table, as far as the units in use reach)";
   const each = program.perPlayer ? ", once for each player the program runs for" : "";
   const seen = new Set<string>();
   const hint = (at: At, label: string, note: string) => {

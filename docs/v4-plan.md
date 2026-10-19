@@ -2170,6 +2170,34 @@ The raycaster: 1.55 → 1.30 ms a frame on average, its costliest frame 3.09 →
 cheaper lowering). A fixed product and quotient are still several microseconds: eudplib's own product and division
 are the floor under them, and the raycaster does a few of each a column.
 
+### A loop over units costs what the map holds (2026-10-18)
+
+A loop over units, and a pick, walked the 1 700 places of the unit table every time: about 135 ns a place, 229 µs a
+loop whatever the map held. Two ways to make it the units' cost were tried.
+
+- **The players' lists**, built first: each player's list holds every unit of theirs from its making to its kill
+  (those in transports, buildings and training, and subunits — what the table's walk found), latest first. In the game
+  it ordered the units as the simulator could, but a step along a list reads a pointer, which eudplib does a bit at a
+  time (`f_cunitepdread_epd`, about 82 records), and the step came to about 175 records a unit: better than the table
+  only under about 100 units. Dropped.
+- **The table, walked as the game hands its places out, stopping once every unit in use has been met** — as built.
+  The game takes slot 0 first, then 1699 downwards, and a freed place goes in behind the next one handed out
+  (scm-sim docs/specs/unit-lists.md, section 3), so the places in use lie at the top. The walk is slot 0, then 1699
+  down, counting each place with a sprite against the count of records in use (0x6283F0), and stops at it. In a
+  12 000-frame game of four in the lifted game, there were never more places with a sprite than records in use, and
+  on one frame one fewer (a record in use whose sprite had gone): then the walk goes to the end, slower and still
+  right. The order is the units oldest first, until a place freed is handed out again.
+- **The simulator** hands places out the game's way (`World.free`), and its loops go oldest first (`World.living`): the
+  game's order as long as no freed place has been handed out again. When the game frees a record, some frames after
+  its unit is gone, is not something the simulator knows; a test that depends on the order of units made after
+  others died can find the game's different. (The table's walk from slot 0 up differed from the simulator even
+  without that.)
+- **Cost**: the bench's loop 229 → 29 µs a frame; a loop over all 182 units of a map 34 µs, over 238 units 48 µs —
+  about 0.2 µs a unit, the old cost only with the table nearly full. The units probe's costliest frame 1.48 → 1.08 ms.
+- `probes/game-unit-order.ts` checks the order, a unit given away, a unit killed in the loop (its own and the next)
+  and a unit made in it, in the game and the simulator. The guide, the README, the IR reference and the editor's
+  *scans units* note say the order and the cost.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

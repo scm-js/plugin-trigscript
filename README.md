@@ -1197,8 +1197,11 @@ if (target) target.order("move", locations.Exit);
 `randomUnit(filter?)` pick one unit or `null`, and TypeScript wants the `if (target)` before
 the unit is used (or `target?.kill()`). A filter is `{ type, owner, at }`, every part known
 when you build; `units.Men`, `units.Buildings` and `units.Factories` work as a type, and
-`CurrentPlayer` as an owner. Units come in the order of the game's unit table; a dying unit
-is passed over, so `first()` after a `kill()` is the next one.
+`CurrentPlayer` as an owner. Units come oldest first: the game's unit table in the order the
+game hands its places out (slot 0, then 1699 downwards), the walk stopping once it has met
+every unit in use, so a loop costs what the map holds. A unit made in the place of one that
+died, once the game has freed it, comes where the dead one did. A dying unit is passed over,
+so `first()` after a `kill()` is the next one.
 
 A unit has `hp`, `shields` and `energy` in whole points, `maxHp` / `maxShields` of its
 type, `owner`, `type`, `x`, `y`, `kills`, `orderId`, `cooldown`, `resources` (a mineral

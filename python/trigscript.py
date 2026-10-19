@@ -102,6 +102,8 @@ MINIMAP_COLOR_OFFSET = 0x581DD6 - 0x581D76
 # The heads of the game's lists of units (1.16.1, which Remastered emulates): the visible units and the dying ones. Each
 # links a record in just behind its head, so behind the head a list runs latest first (scm-sim docs/specs/unit-lists.md).
 VISIBLE_HEAD, DYING_HEAD = 0x628430, 0x62842C
+# How many unit records are in use (a dword): up when a record is taken, down when one is freed.
+RECORDS_IN_USE = 0x6283F0
 # How many units one frame's events pass hands on of each kind; past that the rest are handed on in the next frame.
 EVENT_CAP = 512
 # A unit's hit points (+0x08), and the last player whose attack hurt it (+0x90, a byte; 8 when none has): a unit that died
@@ -2629,9 +2631,12 @@ class Lowering:
         return [f_dwread_epd(base + i) for i in range(4)]
 
     def scan(self, flt, node, body):
-        """The game's unit table, slot by slot: `body(ref, next_, exit_)` for every unit on the map the
-        filter matches. Every test is one condition whose address moves on with the slot, so a slot
-        that does not match costs a trigger or two."""
+        """The game's unit table in the order the game hands its places out — slot 0, then 1699 downwards, the units
+        oldest first — stopping once it has met as many units as the game says are in use (0x6283F0): the places in use
+        lie at the top, so the walk costs what the map holds, not the 1 700 places (about 135 ns a place, 229 µs a loop).
+        `body(ref, next_, exit_)` for every unit the filter matches. Every test is one condition whose address moves on
+        with the slot, so a slot that does not match costs a trigger or two. (Counted are the places with a sprite: never
+        more than the game's count, and at most one fewer in a 12 000-frame game of four, when the walk goes to the end.)"""
         ptr, epd = EUDVariable(), EUDVariable()
         empty = MemoryEPD(0, Exactly, 0)
         dying = MemoryXEPD(0, Exactly, 0, 0xFF00)
@@ -2664,13 +2669,17 @@ class Lowering:
                 match.append(c)
                 moving.append((c, OFF_POS))
                 values.append((c, value))
+        # Slot 0 first; past it the walk jumps to slot 1699 and goes down.
+        remaining = fresh(f_dwread(RECORDS_IN_USE))
         DoActions([ptr.SetNumber(UNIT_TABLE), epd.SetNumber(EPD(UNIT_TABLE))] + [SetMemory(c + 4, SetTo, EPD(UNIT_TABLE) + off) for c, off in moving])
         for c, value in values:
             f_dwwrite_epd(EPD(c + 8), value)
+        top_slot = UNIT_TABLE + UNIT_SIZE * (UNIT_SLOTS - 1)
         head, next_, exit_ = Forward(), Forward(), Forward()
         head << NextTrigger()
-        EUDJumpIf(ptr >= UNIT_END, exit_)
+        EUDJumpIf(remaining == 0, exit_)
         EUDJumpIf(empty, next_)
+        remaining -= 1
         EUDJumpIf(dying, next_)
         if match:
             matched = Forward()
@@ -2682,8 +2691,13 @@ class Lowering:
             EUDJumpIf((group & GROUP_BITS[kind]) == 0, next_)
         body(UnitRef(ptr, epd, None), next_, exit_)
         next_ << NextTrigger()
-        DoActions([SetMemory(c + 4, Add, UNIT_SIZE // 4) for c, _ in moving] + [ptr.AddNumber(UNIT_SIZE), epd.AddNumber(UNIT_SIZE // 4)])
+        down = Forward()
+        EUDJumpIfNot(ptr == UNIT_TABLE, down)
+        DoActions([SetMemory(c + 4, SetTo, EPD(top_slot) + off) for c, off in moving] + [ptr.SetNumber(top_slot), epd.SetNumber(EPD(top_slot))])
         EUDJump(head)
+        down << NextTrigger()
+        DoActions([SetMemory(c + 4, Add, (-(UNIT_SIZE // 4)) & U32) for c, _ in moving] + [ptr.SubtractNumber(UNIT_SIZE), epd.SubtractNumber(UNIT_SIZE // 4)])
+        EUDJumpIfNot(ptr == UNIT_TABLE, head)
         exit_ << NextTrigger()
 
     def pick(self, e):

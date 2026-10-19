@@ -154,10 +154,11 @@ describe("the probe", () => {
       checked.push(m[1]);
     }
     expect(checked).toEqual(["A", "B", "C", "D", "E", "F", "G", "H"]);
-    // Step H's Marine is in the dead one's place of the unit table, the place's uniqueness byte moved on: another key.
+    // Step H's Marine is in a place of its own: the game hands out the next free place, and puts the dead one's behind
+    // it (scm-sim docs/specs/unit-lists.md, section 3).
     const dead = sim.units.find((u) => !u.alive)!;
     const made = sim.units[sim.units.length - 1];
-    expect([made.alive, made.slot === dead.slot, made.uid]).toEqual([true, true, dead.uid + 1]);
+    expect([made.alive, made.slot === dead.slot, made.uid]).toEqual([true, false, 0]);
     expect(sim.faults).toEqual([]);
     expect(sim.events.some((e) => e.text === "done")).toBe(true);
     // The functions that take and give texts are called, the one that calls itself among them.

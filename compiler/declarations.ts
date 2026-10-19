@@ -900,7 +900,7 @@ export interface Sim {
   selectUnits(units: readonly SimUnit[], player?: Player): this;
 
   count(player: Player, type: UnitType, at?: Location): number;
-  /** The units on the map, in the order of the game's unit table. */
+  /** The units on the map, oldest first, as a loop over them comes to them. */
   units(filter?: { owner?: Player; type?: UnitType; at?: Location }): SimUnit[];
   resources(player: Player): { ore: number; gas: number };
   deaths(player: Player, type: UnitType): number;

@@ -33,7 +33,8 @@ describe("units are made", () => {
   it("at the location's centre, with the type's hit points, and a loop finds them", () => {
     const sim = run(`createUnit(P1, units.TerranMarine, 3, ${HOME}); let n = 0; let hp = 0; for (const u of unitsAt(${HOME}, { owner: P1 })) { n++; hp += u.hp; } print(\`\${n} \${hp} \${countUnits(P1, units.TerranMarine, ${HOME})} \${countUnits(P1, units.TerranMarine, ${FIELD})}\`);`);
     expect(shown(sim)).toEqual(["3 120 3 0"]);
-    expect(sim.units.map((u) => [u.x, u.y, u.slot])).toEqual([[100, 100, 0], [100, 100, 1], [100, 100, 2]]);
+    // (Slot 0, then 1699 downwards: the places in the order the game hands them out.)
+    expect(sim.units.map((u) => [u.x, u.y, u.slot])).toEqual([[100, 100, 0], [100, 100, 1699], [100, 100, 1698]]);
   });
 
   it("a type's hit points a program wrote are what the next one is made with", () => {
@@ -94,13 +95,14 @@ describe("what is done to units", () => {
       for (const u of unitsAt(${HOME})) hits.set(u, 7);
       const victim = first({ type: units.TerranMarine });
       if (victim) victim.kill();
-      createUnit(P1, units.TerranMarine, 1, ${HOME});
+      createUnit(P1, units.TerranMarine, 2, ${HOME});
       let found = 0; let live = 0;
       for (const u of unitsAt(${HOME})) { live++; if (hits.has(u)) found++; }
       print(\`\${live} \${found} \${victim ? victim.hp : -1}\`);`);
-    // Two alive, one of them known; the variable that held the dead one finds no unit, though its place has one in it again.
-    expect(shown(sim)).toEqual(["2 1 -1"]);
-    expect(sim.units.map((u) => [u.slot, u.uid, u.alive])).toEqual([[0, 0, false], [1, 0, true], [0, 1, true]]);
+    // Three alive, one of them known; the variable that held the dead one finds no unit, though its place has one in it
+    // again: the game hands out the next free place first and the freed one after it (slot 0 here, its byte moved on).
+    expect(shown(sim)).toEqual(["3 1 -1"]);
+    expect(sim.units.map((u) => [u.slot, u.uid, u.alive])).toEqual([[0, 0, false], [1699, 0, true], [1698, 0, true], [0, 1, true]]);
   });
 
   it("a trigger()'s units are the programs' units: one world", () => {
