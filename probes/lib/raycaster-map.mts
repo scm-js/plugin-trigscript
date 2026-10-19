@@ -2,8 +2,11 @@
 // grey in fog, black never seen, the widest apart of every tile's minimap colours (S4's survey) — and the 32 rows below
 // the start locations and the parked camera, whose box the minimap draws over what is under it. As bad-apple-map.mts,
 // without a song. Other fog probes take it too, with a name and description of their own (MAP_NAME, MAP_DESCRIPTION).
+// BOARD=snow lays Ice's plain snow (tile 66) instead: Remastered's minimap draws a tile as its art's average and fog as
+// 0.64 of lit (the tile survey, 2026-10-19), so the brightest art is the board there — snow, lit 130 against fog 82,
+// where 23778 is 86 against 57. Badlands 23778 stays the board for Classic graphics, whose minimap is sharper.
 //
-//   npx tsx probes/lib/raycaster-map.mts <out.scx>
+//   [BOARD=snow] npx tsx probes/lib/raycaster-map.mts <out.scx>
 //
 // Needs a scm-js checkout beside this one with its tileset data (npm run extract).
 import { writeFileSync } from "node:fs";
@@ -20,7 +23,8 @@ const { baseTerrain, flatTerrain } = await import(join(E, "src/formats/tileset/t
 
 const [out] = process.argv.slice(2);
 if (!out) { console.error("usage: raycaster-map.mts <out.scx>"); process.exit(2); }
-const ERA = 0, TILE = 23778, W = 128, H = 128;
+const SNOW = process.env.BOARD === "snow";
+const ERA = SNOW ? 6 : 0, TILE = SNOW ? 66 : 23778, W = 128, H = 128;
 const part = (ext: string) => new Uint8Array(readFileSync(join(E, "public/tileset", `${TILESET_FILENAMES[ERA]}.${ext}`)));
 const ts = loadTileset({ cv5: part("cv5"), vf4: part("vf4"), vr4: part("vr4"), vx4: part("vx4"), wpe: part("wpe") });
 let seed = 1;

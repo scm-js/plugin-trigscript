@@ -56,7 +56,7 @@ program(async () => {
   centerLocation(PARK, 100 * 32, 112 * 32);
   centerView(PARK);
   displayText("\x04A maze in the fog of war, on the MINIMAP. W A S D to walk, I to invert.");
-  displayText("\x11Switch to Classic graphics now (Options > Graphics) for a sharp minimap.");
+  displayText("\x11Classic graphics (Options > Graphics) draws the minimap sharp, Remastered soft; a snow board is brighter in Remastered.");
   displayText("\x04Find the way out: the wall that flickers.");
   await nextFrame();
   fog.reveal(P1);
