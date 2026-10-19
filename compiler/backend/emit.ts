@@ -169,6 +169,8 @@ class Scope {
 
   /** The statements left to the Python side, inside a taken loop: what each may write. */
   islands = new Map<Stmt, Set<string>>();
+  /** Of an island that stores one value into a variable, the most it can be (value ranges, never below zero). */
+  tops = new Map<Stmt, number>();
   /** A `for` loop's counters (what its update sets), whose arrays the Python side reads through registers of its own. */
   counters: Set<string>[] = [];
   /**
@@ -231,7 +233,10 @@ class Scope {
       const of = linear(el.left), by = linear(el.right);
       if (!of || !by || by.terms.length || by.c < 1 || by.c > 31 || !of.terms.every((t) => this.ok(t.id))) return null;
       const id = `@cell${this.cells++}`;
-      reads.push({ id, shift: { of, by: by.c, signed: el.op === ">>" } });
+      // (Value ranges: a number never below zero and at most `top` has only top's bits to test, and its >> is >>>.)
+      const r = (el.left as NumExpr & { range?: [number, number] }).range;
+      const top = r && r[0] >= 0 ? r[1] : undefined;
+      reads.push({ id, shift: { of, by: by.c, signed: el.op === ">>" && top === undefined, ...(top !== undefined ? { top } : {}) } });
       return id;
     });
     if (!value || !value.terms.every((t) => t.id.startsWith("@cell") || this.ok(t.id))) return null;
@@ -290,6 +295,10 @@ class Scope {
     walk(s, 0);
     if (!ok) return false;
     this.islands.set(s, writes(s, this.functions));
+    // (What value ranges know of what it stores, for the copies after it.)
+    const value = s.kind === "assign" ? s.value : s.kind === "declare" ? (s.init as NumExpr) : undefined;
+    const r = (value as (NumExpr & { range?: [number, number] }) | undefined)?.range;
+    if (r && r[0] >= 0) this.tops.set(s, r[1]);
     return true;
   }
 
@@ -403,7 +412,8 @@ interface Read { id: string; scale: number; add: number; base?: string }
  */
 interface Table { array: ArrayDecl; index: Linear; jump?: boolean }
 /** A sum the emitter lowers shifted right by a constant: `>>` keeps the sign, `>>>` reads from 0 up. */
-interface Shift { of: Linear; by: number; signed: boolean }
+/** `top`: the most the shifted number can be, when value ranges know it never below zero (only its bits are tested). */
+interface Shift { of: Linear; by: number; signed: boolean; top?: number }
 /** A store into a cell of one of the program's arrays: its index, and its value with the cells it reads first. */
 interface Store { array: ArrayDecl; index: Linear; reads: { id: string; table?: Table; shift?: Shift }[]; value: Linear }
 /** (`at` on a copy or a call: the statement it is for, when its trigger is another's.) */
@@ -914,7 +924,13 @@ class Emitter {
       home = this.home(of, 0);
     }
     this.write(target, { c: 0, terms: [] }, false);
-    for (let top = 31; top >= sh.by; top -= 8) {
+    const highest = sh.top === undefined ? 31 : Math.min(31, Math.max(0, sh.top).toString(2).length - 1);
+    if (highest < sh.by) {
+      // (Every bit that would come down is 0.)
+      this.open().items.push({ copy: target, ...(this.at ? { at: this.at } : {}) });
+      return;
+    }
+    for (let top = highest; top >= sh.by; top -= 8) {
       const bits = [];
       for (let j = top; j >= Math.max(sh.by, top - 7); j--) bits.push(j);
       const group = bits.reduce((m, j) => (m + 2 ** j), 0);
@@ -1291,9 +1307,10 @@ class Emitter {
     const copies: { t: Trigger; id: string }[] = [];
     const refreshes: { t: Trigger; places: (Place | WriteAct)[] }[] = [];
     const fills: { t: Trigger; target: string }[] = [];
+    const afterIslands = new Set<Trigger>();
     let n = 0;
     for (const p of kept) {
-      type Piece = { acts: (Act | WriteAct)[] } | { fill: { temp: string; target: string } } | { copy: string; at?: At } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] };
+      type Piece = { acts: (Act | WriteAct)[] } | { fill: { temp: string; target: string } } | { copy: string; at?: At; island?: boolean; top?: number } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] };
       const pieces: Piece[] = [{ acts: [] }];
       const acts = () => {
         const last = pieces[pieces.length - 1];
@@ -1317,7 +1334,9 @@ class Emitter {
         else {
           pieces.push({ island: it.island });
           // What it may write, back into every place but the cell.
-          for (const id of it.writes) if ((this.places.get(id)?.length ?? 0) > 1 && !routed.has(id)) pieces.push({ copy: id, ...(it.island.at ? { at: it.island.at as At } : {}) });
+          // (Not into the offsets the Python side keeps beside a counter: its own lowering of the store stepped them.)
+          const top = this.scope.tops.get(it.island);
+          for (const id of it.writes) if ((this.places.get(id)?.filter((p) => !p.synced).length ?? 0) > 1 && !routed.has(id)) pieces.push({ copy: id, island: true, ...(top !== undefined ? { top } : {}), ...(it.island.at ? { at: it.island.at as At } : {}) });
         }
       }
       if (p.conds.length && (pieces.length > 1 || (pieces[0] as { acts: unknown[] }).acts.length > MOST_ACTS)) return this.crowded.size ? "crowded" : "a branch with too many actions";
@@ -1376,7 +1395,9 @@ class Emitter {
         }
         if ("copy" in piece) {
           const at = piece.at ?? p.at;
-          made.push({ label: label(), conds: [], acts: [], copy: { from: piece.copy, into: [] }, ...(at ? { at } : {}) });
+          const t: Trigger = { label: label(), conds: [], acts: [], copy: { from: piece.copy, into: [], ...(piece.top !== undefined ? { top: piece.top } : {}) }, ...(at ? { at } : {}) };
+          if (piece.island) afterIslands.add(t);
+          made.push(t);
           continue;
         }
         if ("island" in piece) {
@@ -1423,7 +1444,10 @@ class Emitter {
     // A scratch cell into every place of what reads it (a variable of the emitter's own: its home too).
     for (const { t, target } of fills) for (const p of this.placesOf(target)) t.copy!.into.push({ dword: dwordOf(p), add: num(p.add, p.base), ...(p.scale !== 1 ? { scale: p.scale } : {}) });
     // A copied variable's copies: every place but its cell.
-    for (const { t, id } of copies) for (const p of this.placesOf(id).slice(1)) t.copy!.into.push({ dword: dwordOf(p), add: num(p.add, p.base), ...(p.scale !== 1 ? { scale: p.scale } : {}) });
+    for (const { t, id } of copies) for (const p of this.placesOf(id).slice(1)) {
+      if (p.synced && afterIslands.has(t)) continue;
+      t.copy!.into.push({ dword: dwordOf(p), add: num(p.add, p.base), ...(p.scale !== 1 ? { scale: p.scale } : {}) });
+    }
     // Every way out of the graph passes one trigger at its end, where the branches that went there are put back.
     const exit = `${this.key}.end`;
     for (const t of triggers) if (t.next === END) t.next = exit;

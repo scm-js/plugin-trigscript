@@ -97,8 +97,11 @@ export interface Call extends FixedFn { into: Dword }
  * the way the Python side routes a read. What a variable whose writes cannot be laid out into all its places (one set
  * from itself, two that read each other) does after each write.
  */
-/** `from`: a variable's id, or (`@…`) a scratch cell of the graph's (`{ temp }`). */
-export interface Copy { from: string; into: { dword: Dword; add: Num; scale?: number }[] }
+/**
+ * `from`: a variable's id, or (`@…`) a scratch cell of the graph's (`{ temp }`). `top`: the most the copied value can
+ * be, when value ranges know it never below zero (a multiple of it is then worked out over only the bits it can have).
+ */
+export interface Copy { from: string; into: { dword: Dword; add: Num; scale?: number }[]; top?: number }
 
 /*
  * An island, in place of a trigger as a copy is: a statement the emitter does not lower, which the Python side lowers

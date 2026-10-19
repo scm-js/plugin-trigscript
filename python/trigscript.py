@@ -4714,16 +4714,20 @@ class Lowering:
                 self.graph_data[key] = EUDVariable(0)
             return self.graph_data[key]
 
-        def copy(id_, into):
+        def copy(id_, into, top=None):
             """The variable's cell into each dword (times its `scale`, plus its `add`): routed reads, a multiple worked
-            out once for all the dwords that take it. `@name`: a scratch cell of the graph's."""
+            out once for all the dwords that take it. `@name`: a scratch cell of the graph's. `top`: the most the value
+            can be (value ranges), a multiple then worked out over only its bits."""
             v = graph_temp(id_[1:]) if id_.startswith("@") else self.var(id_, st).get()
             times = {1: v}
             for e in into:
                 k = int(e.get("scale", 1)) & U32
                 if k not in times:
                     # (A power of two is a shift, a bit a trigger; another multiple eudplib's product by a constant.)
-                    times[k] = fresh(0 - v) if k == U32 else shift_const(v, "<<", k.bit_length() - 1) if k & (k - 1) == 0 else fresh(v * k)
+                    if top is not None and k != U32:
+                        times[k] = mul_bits(v, top, k)
+                    else:
+                        times[k] = fresh(0 - v) if k == U32 else shift_const(v, "<<", k.bit_length() - 1, top) if k & (k - 1) == 0 else fresh(v * k)
             for i in range(0, len(into), 16):
                 group = []
                 for e in into[i:i + 16]:
@@ -4756,7 +4760,7 @@ class Lowering:
             # (In place of a trigger: the walk goes on to the one made after it.)
             labels[t["label"]] << NextTrigger()
             if t["copy"]["into"]:
-                copy(t["copy"]["from"], t["copy"]["into"])
+                copy(t["copy"]["from"], t["copy"]["into"], t["copy"].get("top"))
             return
         if "island" in t:
             # A statement the emitter left to this side, lowered here as anywhere (nothing in it leaves it).
