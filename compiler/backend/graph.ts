@@ -27,7 +27,13 @@ export type Dword =
    */
   | { element: string }
   /** A parameter of one of the Python side's fixed-point functions (`FixedFn`): its cell. */
-  | { param: FixedFn; index: number };
+  | { param: FixedFn; index: number }
+  /**
+   * The offset the Python side may keep beside a counter some array is indexed by (`Place`): 72 times it in bytes,
+   * 18 times it in EPD — stepped by the Python side's own stores of the counter, by the graph's writes when the graph
+   * writes it. A dword that is never read when the Python side keeps no such offset.
+   */
+  | { counter: string; part: "bytes" | "dwords" };
 
 /**
  * One of the Python side's fixed-point functions (part 3): a product or a quotient of two variables, or of one and a

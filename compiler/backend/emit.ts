@@ -81,9 +81,18 @@ function linear(e: NumExpr, cell?: (e: Extract<NumExpr, { kind: "element" | "bin
   }
 }
 
-/** One variable plus a constant, or a constant: what a comparison's side can be. */
-type Side = { id: string; c: number } | { k: number };
+/**
+ * One variable plus a constant, or a constant: what a comparison's side can be — or a variable's bits under a constant
+ * mask (`x & K`), which a condition reads as they are, against a constant.
+ */
+type Side = { id: string; c: number; mask?: number } | { k: number };
 function side(e: NumExpr): Side | null {
+  if (e.kind === "binary" && e.op === "&") {
+    const [v, k] = e.right.kind === "const" ? [e.left, e.right] : e.left.kind === "const" ? [e.right, e.left] : [null, null];
+    const l = v && linear(v);
+    if (l && k && k.kind === "const" && l.c === 0 && l.terms.length === 1 && l.terms[0].k === 1) return { id: l.terms[0].id, c: 0, mask: u(k.value) };
+    return null;
+  }
   const l = linear(e);
   if (!l) return null;
   if (l.terms.length === 0) return { k: l.c };
@@ -120,10 +129,21 @@ class Scope {
       case "const": return true;
       case "compare": {
         if (e.unsigned === "left" || e.unsigned === "right") return this.bool(plain(e));
-        if (!side(e.left) || !side(e.right)) return this.no("a comparison of more than a variable and a constant");
-        return this.num(e.left) && this.num(e.right);
+        const sm = signedMask(e);
+        if (sm) return this.bool(sm);
+        const a = side(e.left), b = side(e.right);
+        if (!a || !b) return this.no("a comparison of more than a variable and a constant");
+        // (Bits under a mask, against a constant only.)
+        if (("mask" in a && a.mask !== undefined && !("k" in b)) || ("mask" in b && b.mask !== undefined && !("k" in a))) return this.no("bits under a mask against a variable");
+        // (A signed reading of bits under a mask that has the sign bit is not one condition.)
+        if (e.unsigned !== true && e.op !== "==" && e.op !== "!=" && [a, b].some((x) => "mask" in x && x.mask !== undefined && x.mask >= SIGN)) return this.no("bits under a mask with the sign bit, ordered as signed");
+        for (const x of [a, b]) if ("id" in x) {
+          if (!this.ok(x.id)) return this.no(`the variable ${this.decls.get(x.id)?.name ?? x.id}`);
+          this.read.add(x.id);
+        }
+        return true;
       }
-      case "test": return !!side(e.expr) && this.num(e.expr);
+      case "test": return this.bool(notZero(e.expr));
       case "and": case "or": return e.items.every((x) => this.bool(x));
       case "not": return this.bool(e.expr);
       default: return this.no(`a ${e.kind}`);
@@ -151,7 +171,8 @@ class Scope {
   counters: Set<string>[] = [];
   /**
    * The variables some element of an array is read or stored at: the Python side may keep a counter's offset into its
-   * arrays beside it (`Place`), stepped by its own lowering of each store — so a store of one is left to it.
+   * arrays beside it (`Place`), stepped by its own lowering of each store — two more places of the variable, 72 and
+   * 18 times it, which the graph's writes keep too.
    */
   indexed = new Set<string>();
   functions = new Map<string, FuncDecl>();
@@ -165,6 +186,8 @@ class Scope {
   cells = 0;
   /** The statements whose value is a fixed-point product or quotient the graph calls the Python side's function for. */
   calls = new Map<Stmt, { fn: FixedFn; args: Linear[] }>();
+  /** The stores into cells of the program's arrays the emitter makes: the array, the index, the value (cells first). */
+  stores = new Map<Stmt, Store>();
 
   /**
    * `fmul` / `fdiv` of numbers the emitter lowers: which of the Python side's functions (part 3) gives the same bits,
@@ -265,7 +288,7 @@ class Scope {
       case "remark": return true;
       case "block": return this.stmts(s.body, inLoop);
       case "declare": {
-        if (!this.ok(s.decl.id) || this.indexed.has(s.decl.id)) return this.island(s);
+        if (!this.ok(s.decl.id)) return this.island(s);
         const call = isTemp(s.decl.id) ? null : this.fixed(s.init as NumExpr);
         if (call) this.calls.set(s, call);
         else if (!this.lowers(s.init as NumExpr)) {
@@ -278,7 +301,7 @@ class Scope {
         return true;
       }
       case "assign": {
-        if (!this.ok(s.target) || this.indexed.has(s.target)) return this.island(s);
+        if (!this.ok(s.target)) return this.island(s);
         // (A call's result goes into a cell: never one of the emitter's own variables.)
         const call = isTemp(s.target) ? null : this.fixed(s.value);
         if (call) this.calls.set(s, call);
@@ -299,6 +322,17 @@ class Scope {
         const ok = this.stmts(s.update, true) && this.stmts(s.body, true);
         this.counters.pop();
         return ok;
+      }
+      case "store": {
+        const a = this.arrays.get(s.array);
+        if (!a || !storable(a) || this.counters.some((c) => [...readIn(s.index)].some((id) => c.has(id)))) return this.island(s);
+        const index = linear(s.index);
+        if (!index || !index.terms.every((t) => this.ok(t.id))) return this.island(s);
+        const value: { reads: { id: string; table?: Table; shift?: Shift }[]; value: Linear } | null = this.lowers(s.value as NumExpr) ? { reads: [], value: linear(s.value as NumExpr)! } : this.withCells(s.value as NumExpr);
+        if (!value) return this.island(s);
+        for (const t of [...index.terms, ...value.value.terms]) if (!t.id.startsWith("@cell")) this.read.add(t.id);
+        this.stores.set(s, { array: a, index, ...value });
+        return true;
       }
       case "break": case "continue": return inLoop;
       default: return this.island(s);
@@ -335,6 +369,8 @@ interface Read { id: string; scale: number; add: number; base?: string }
 interface Table { array: ArrayDecl; index: Linear }
 /** A sum the emitter lowers shifted right by a constant: `>>` keeps the sign, `>>>` reads from 0 up. */
 interface Shift { of: Linear; by: number; signed: boolean }
+/** A store into a cell of one of the program's arrays: its index, and its value with the cells it reads first. */
+interface Store { array: ArrayDecl; index: Linear; reads: { id: string; table?: Table; shift?: Shift }[]; value: Linear }
 type Item = { act: Act } | { write: Write } | { copy: string } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string } };
 interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number }
 
@@ -342,13 +378,28 @@ interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at
  * A place of a variable: a dword that holds it times `scale` plus `add` (wrapping) — known (its cell, a home, a
  * condition's number) or the number of an action of an expanded write, found when the triggers are cut.
  */
-interface Place { dword?: Dword; act?: WriteAct; scale: number; add: number; base?: string }
+interface Place { dword?: Dword; act?: WriteAct; scale: number; add: number; base?: string; synced?: boolean }
 
 /**
  * The most bits a list's values may have between them for the emitter to read its cells where they are: a trigger a
  * bit, each 13 ns when the bit is clear and 23 when set, against about 200 ns for the Python side's read of a cell.
  */
 const TABLE_BITS = 6;
+
+/** The most cells an array's EUDVArray has on the Python side (`VARRAY_MOST`, a cell every 18 EPD); past it, an EUDArray (a dword each). */
+const VARRAY_MOST = 2048;
+/** The EPD between one EUDVArray cell's value and the next's (72 bytes). */
+const VARRAY_STRIDE_EPD = 18;
+
+/**
+ * An array whose cells the emitter stores into where they are: of numbers, one for everyone, its cells the Python
+ * side's own (not a list known when the map is built, not one that grows, not a window on another, not a task's, not
+ * `u8` / `u16`, whose stores saturate).
+ */
+function storable(a: ArrayDecl): boolean {
+  const x = a as ArrayDecl & { packed?: unknown; slice?: unknown; through?: unknown };
+  return a.kind === "number" && !a.values && !a.texts && !a.dynamic && !x.slice && !x.through && !x.packed && a.task === undefined && !a.bits;
+}
 
 /** A constant plus an array's first cell's EPD, as an action's number. */
 const num = (n: number, base?: string): Num => (base ? { epdOf: base, plus: n } : n);
@@ -366,6 +417,8 @@ class Emitter {
   condReads = new Map<Cond, Read>();
   /** A condition whose player field is a place of what it reads: the index of a table's cell. */
   condPlayers = new Map<Cond, Read>();
+  /** A store's action: its destination a place of the index, its number (when not a constant) a place of the value. */
+  actPlaces = new Map<Act, { dest: Read; value?: Read }>();
   /** The variables of the emitter's own (a table's index), which have no cell on the Python side. */
   own = new Set<string>();
   /** The arrays whose cells are read where they are, and the EPD from one cell's value to the next's. */
@@ -395,7 +448,14 @@ class Emitter {
 
   placesOf(id: string): Place[] {
     let p = this.places.get(id);
-    if (!p) this.places.set(id, (p = [{ dword: this.params.get(id) ?? (this.own.has(id) || isTemp(id) ? { data: `${this.key}.v.${id}` } : { var: id }), scale: 1, add: 0 }]));
+    if (!p) {
+      this.places.set(id, (p = [{ dword: this.params.get(id) ?? (this.own.has(id) || isTemp(id) ? { data: `${this.key}.v.${id}` } : { var: id }), scale: 1, add: 0 }]));
+      // (The Python side's offsets beside a counter an array is indexed by: kept by every write, already right on the
+      // way in.)
+      if (this.scope.indexed.has(id) && !this.own.has(id) && !isTemp(id)) {
+        p.push({ dword: { counter: id, part: "bytes" }, scale: 72, add: 0, synced: true }, { dword: { counter: id, part: "dwords" }, scale: 18, add: 0, synced: true });
+      }
+    }
     return p;
   }
 
@@ -470,6 +530,29 @@ class Emitter {
       return r ? "true" : "false";
     }
     if ("k" in a) return this.conds(FLIP[op], b, a, unsigned);
+    if (a.mask !== undefined) {
+      // The bits under the mask, read from 0 up, against the constant: a signed reading of them is the same when the
+      // mask leaves the sign bit out (a constant below zero is then below them all).
+      let k = (b as { k: number }).k;
+      if (op === "==" || op === "!=") k = u(k);
+      else {
+        if (!unsigned && a.mask >= SIGN) return null;
+        if (!unsigned && (k | 0) < 0) return (op === ">" || op === ">=") ? "true" : "false";
+      }
+      // (Bits the mask has not cannot match.)
+      if ((op === "==" || op === "!=") && (k & ~a.mask) !== 0) return op === "!=" ? "true" : "false";
+      const mem: Dword = this.home(a.id, 0);
+      const one = (compare: Compare, value: number): Cond[] => [{ dword: mem, compare, value, mask: a.mask }];
+      switch (op) {
+        case "<": return k === 0 ? "false" : one("atMost", k - 1);
+        case "<=": return one("atMost", k);
+        case ">": return k === MAX ? "false" : one("atLeast", k + 1);
+        case ">=": return one("atLeast", k);
+        case "==": return one("exactly", k);
+        case "!=": return k === 0 ? one("atLeast", 1) : null;
+      }
+    }
+    if ("k" in b === false && (b as { mask?: number }).mask !== undefined) return null;
     const mem = this.home(a.id, a.c + d);
     if ("k" in b) {
       const k = u(b.k + d);
@@ -514,6 +597,8 @@ class Emitter {
     }
     if (e.kind !== "compare") return null;
     if (e.unsigned === "left" || e.unsigned === "right") return this.single(plain(e), when);
+    const sm = signedMask(e);
+    if (sm) return this.single(sm, when);
     return this.conds(when ? e.op : INVERSE[e.op], side(e.left)!, side(e.right)!, e.unsigned === true);
   }
 
@@ -546,6 +631,8 @@ class Emitter {
       }
       case "compare": {
         if (e.unsigned === "left" || e.unsigned === "right") return this.jump(plain(e), when, to, at);
+        const sm = signedMask(e);
+        if (sm) return this.jump(sm, when, to, at);
         const c = this.single(e, when);
         if (c === "false") return;
         if (c === "true") return this.goto(to);
@@ -597,6 +684,8 @@ class Emitter {
       this.open().items.push({ call: { fn: call.fn, target } }, { copy: target });
       return;
     }
+    const store = this.scope.stores.get(s);
+    if (store) return this.store(store);
     const cells = this.scope.tables.get(s);
     if (cells && (s.kind === "declare" || s.kind === "assign")) {
       // The cells first, each into a variable of the emitter's own; then the value, a sum of them and the rest.
@@ -718,6 +807,42 @@ class Emitter {
     this.open().items.push({ copy: target });
   }
 
+  /**
+   * A store into a cell of an array: one trigger, its condition the index inside the array (read from 0 up: one below
+   * zero is past the end, where a store does nothing), its action setting the cell — the action's destination a place
+   * of the index (the EPD of the first cell's value, plus the index times the EPD between cells), its number a place
+   * of the value. An index or a value that is more than a variable goes into a variable of the emitter's own first.
+   */
+  store(st: Store): void {
+    const stride = st.array.length > VARRAY_MOST ? 1 : VARRAY_STRIDE_EPD;
+    this.arrays.set(st.array.id, stride);
+    const alone = (l: Linear) => l.c === 0 && l.terms.length === 1 && l.terms[0].k === 1;
+    let index: string;
+    if (alone(st.index)) index = st.index.terms[0].id;
+    else {
+      index = `${this.key}.si${this.n++}`;
+      this.own.add(index);
+      this.write(index, st.index, false);
+    }
+    const own = new Map(st.reads.map((r) => [r.id, `${this.key}.${r.id.slice(1)}`]));
+    for (const r of st.reads) {
+      this.own.add(own.get(r.id)!);
+      if (r.table) this.readTable(own.get(r.id)!, r.table, this.at);
+      else this.readShift(own.get(r.id)!, r.shift!, this.at);
+    }
+    const value: Linear = { c: st.value.c, terms: st.value.terms.map((t) => ({ id: own.get(t.id) ?? t.id, k: t.k })) };
+    let from: string | null = null;
+    if (value.terms.length && alone(value)) from = value.terms[0].id;
+    else if (value.terms.length) {
+      from = `${this.key}.sv${this.n++}`;
+      this.own.add(from);
+      this.write(from, value, false);
+    }
+    const act: Act = { dword: { element: st.array.id }, modifier: "set", value: from ? 0 : value.c };
+    this.actPlaces.set(act, { dest: { id: index, scale: stride, add: 0, base: st.array.id }, ...(from ? { value: { id: from, scale: 1, add: 0 } } : {}) });
+    this.push({ conds: [{ dword: this.home(index, 0), compare: "atMost", value: st.array.length - 1 }], items: [{ act }] });
+  }
+
   /** A statement left to the Python side, where it is; what it may write copied back into the graph's places after. */
   left(s: Stmt): void {
     const writes = this.scope.islands.get(s);
@@ -813,6 +938,24 @@ class Emitter {
       const q = this.condPlayers.get(c);
       if (q) this.placesOf(q.id).push({ dword: { at: p.label, field: { cond: k, part: "player" } }, scale: q.scale, add: q.add, base: q.base });
     });
+    // A store's destination and number are places of its index and value: its trigger keeps its label (it has a
+    // condition), its actions follow the puts-back that land there.
+    const pinned = new Set<string>();
+    for (const p of this.protos) {
+      let k = this.restores.get(p.label)?.length ?? 0;
+      for (const it of p.items) {
+        if (!("act" in it)) continue;
+        const ap = this.actPlaces.get(it.act);
+        if (ap) {
+          for (const [part, r] of [["dest", ap.dest], ["value", ap.value]] as const) {
+            if (!r) continue;
+            this.placesOf(r.id).push({ dword: { at: p.label, field: { act: k, part } }, scale: r.scale, add: r.add, ...(r.base ? { base: r.base } : {}) });
+            pinned.add(r.id);
+          }
+        }
+        k++;
+      }
+    }
     // Each target's writes expanded once all its places are known — the writes that read it come first in the
     // order, and each action that reads a variable is a place of it.
     const expanded = new Map<Write, WriteAct[]>();
@@ -852,7 +995,7 @@ class Emitter {
     const routed = new Set<string>();
     for (const [id, w] of written) {
       const ps = this.places.get(id) ?? [];
-      if (this.own.has(id) || isTemp(id) || ps.length <= 1) continue;
+      if (this.own.has(id) || isTemp(id) || ps.length <= 1 || pinned.has(id) || ps.some((p) => p.synced)) continue;
       let read = 0;
       for (const p of ps.slice(1)) {
         if (p.act) read += weight(protoOf.get(writeOf.get(p.act)!));
@@ -1018,7 +1161,7 @@ class Emitter {
       // (A routed variable's places are refreshed where they are read.)
       if (routed.has(id)) continue;
       const d = dwordOf(p);
-      if ("var" in d && d.var === id && p.add === 0 && p.scale === 1 && !p.base) continue;
+      if (p.synced || ("var" in d && d.var === id && p.add === 0 && p.scale === 1 && !p.base)) continue;
       graph.entries.push({ from: id, into: d, add: num(p.add, p.base), ...(p.scale !== 1 ? { scale: p.scale } : {}) });
     }
     const problems = checkGraph(graph);
@@ -1099,6 +1242,33 @@ function plain(e: Extract<BoolExpr, { kind: "compare" }>): BoolExpr {
   return holdsWhenNegative ? { kind: "or", items: [negative, asU32] } : { kind: "and", items: [notNegative, asU32] };
 }
 
+/**
+ * An ordered comparison, read signed, of a variable's bits under a mask that has the sign bit, against a constant —
+ * as comparisons read from 0 up: with the sign bit set the bits are below zero (a constant below zero is then compared
+ * with them from 0 up, one at zero or above is above them), with it clear they are at or above zero. Null when it is
+ * not one.
+ */
+function signedMask(e: Extract<BoolExpr, { kind: "compare" }>): BoolExpr | null {
+  if (e.unsigned === true || e.unsigned === "left" || e.unsigned === "right" || e.op === "==" || e.op === "!=") return null;
+  let [l, r, op] = [side(e.left), side(e.right), e.op] as [Side | null, Side | null, CompareOp];
+  if (l && "k" in l && r && "mask" in r && r.mask !== undefined) [l, r, op] = [r, l, FLIP[op] as CompareOp];
+  if (!l || !r || !("mask" in l) || l.mask === undefined || l.mask < SIGN || !("k" in r)) return null;
+  const k = r.k | 0;
+  const where = { at: e.at, label: e.label };
+  const bits: NumExpr = { kind: "binary", op: "&", left: { kind: "var", id: l.id }, right: { kind: "const", value: l.mask }, at: e.at, label: "" };
+  const top: NumExpr = { kind: "binary", op: "&", left: { kind: "var", id: l.id }, right: { kind: "const", value: SIGN }, at: e.at, label: "" };
+  const zero: NumExpr = { kind: "const", value: 0 };
+  const below: BoolExpr = { kind: "compare", op: "!=", left: top, right: zero, unsigned: true, ...where };
+  const above: BoolExpr = { kind: "compare", op: "==", left: top, right: zero, unsigned: true, ...where };
+  const asU32: BoolExpr = { kind: "compare", op, left: bits, right: { kind: "const", value: u(k) }, unsigned: true, ...where };
+  const less = op === "<" || op === "<=";
+  // With the sign bit set: a constant below zero is compared from 0 up; one at zero or above settles it.
+  const neg: BoolExpr = k < 0 ? asU32 : { kind: "const", value: less };
+  // With it clear: one at zero or above is compared from 0 up; one below zero settles it.
+  const pos: BoolExpr = k >= 0 ? asU32 : { kind: "const", value: !less };
+  return { kind: "or", items: [{ kind: "and", items: [below, neg] }, { kind: "and", items: [above, pos] }] };
+}
+
 /** A variable the rewriter made (`@t…`): the emitter's own, with no cell on the Python side. */
 const isTemp = (id: string) => id.startsWith("@t");
 
@@ -1127,8 +1297,49 @@ class Rewriter {
     return { at: s.at as At, label: s.label ?? "" };
   }
 
+  /**
+   * The loop being rewritten, while its body is: what it may write (its own stores and declarations, those of the
+   * functions it calls), and the values computed once on the way in.
+   */
+  hoist: { written: Set<string>; arrays: Set<string>; out: Stmt[] } | null = null;
+
+  /**
+   * A value worth computing once, ahead of the loop, and that may be: a shift, a fixed-point product or quotient, a cell
+   * of a list known when the map is built — reading nothing the loop writes, and calling nothing.
+   */
+  invariant(e: NumExpr): boolean {
+    const h = this.hoist;
+    if (!h) return false;
+    const costly = (e.kind === "binary" && (e.op === ">>" || e.op === ">>>") && e.right.kind === "const") || (e.kind === "intrinsic" && (e.name === "fmul" || e.name === "fdiv")) || e.kind === "element";
+    if (!costly) return false;
+    let pure = true;
+    const walk = (x: unknown): void => {
+      if (!pure || !x || typeof x !== "object") return;
+      if (Array.isArray(x)) { x.forEach(walk); return; }
+      const o = x as Record<string, unknown>;
+      if (o.kind === "var" && typeof o.id === "string" && (h.written.has(o.id) || isTemp(o.id))) pure = false;
+      if (o.kind === "element" && h.arrays.has(o.array as string)) pure = false;
+      if (o.kind === "call" || o.kind === "read" || o.kind === "randomInt" || o.kind === "input" || o.kind === "unitField" || o.kind === "tableRead" || o.kind === "pop") pure = false;
+      Object.values(o).forEach(walk);
+    };
+    walk(e);
+    return pure;
+  }
+
   /** `e` with every `?:`, abs, min and max in it computed first into a variable of the emitter's own. */
   flat(e: NumExpr, pre: Stmt[], where: { at: At; label: string }): NumExpr {
+    if (this.invariant(e)) {
+      const t = this.temp();
+      // (Computed once, ahead of the loop; the rest of this rewriting sees a variable.)
+      const h = this.hoist!;
+      this.hoist = null;
+      try {
+        h.out.push(...this.set(t, e, where));
+      } finally {
+        this.hoist = h;
+      }
+      return { kind: "var", id: t };
+    }
     switch (e.kind) {
       case "binary": return { ...e, left: this.flat(e.left, pre, where), right: this.flat(e.right, pre, where) };
       case "unary": case "cast": return { ...e, expr: this.flat(e.expr, pre, where) };
@@ -1168,6 +1379,11 @@ class Rewriter {
     return [...pre, assign(value)];
   }
 
+  /** A value the emitter reads cells for as it is (a cell of a list known when the map is built, a shift): left as it is. */
+  table(e: NumExpr): boolean {
+    return e.kind === "element" || (e.kind === "binary" && (e.op === ">>" || e.op === ">>>"));
+  }
+
   /** A comparison's side as a variable plus a constant: a longer sum computed first. */
   side(e: NumExpr, pre: Stmt[], where: { at: At; label: string }): NumExpr {
     if (side(e)) return e;
@@ -1203,6 +1419,19 @@ class Rewriter {
         return keep([{ ...s, init: { kind: "const", value: 0 } }, ...this.set(s.decl.id, init, where)]);
       }
       case "block": return [{ ...s, body: this.stmts(s.body) }];
+      case "store": {
+        // A value the emitter does not take as it is into a variable of its own first; the index likewise.
+        const value = s.value as NumExpr;
+        const pre: Stmt[] = [];
+        const index = plain(s.index) ? s.index : this.side(this.flat(s.index, pre, where), pre, where);
+        let stored: NumExpr = value;
+        if (!plain(value) && !this.table(value)) {
+          const t = this.temp();
+          pre.push(...this.set(t, value, where));
+          stored = { kind: "var", id: t };
+        }
+        return pre.length ? keep([...pre, { ...s, index, value: stored }]) : [s];
+      }
       case "if": {
         const pre: Stmt[] = [];
         const cond = this.cond(s.cond, pre, where);
@@ -1261,6 +1490,9 @@ function inlined(x: unknown, functions: Map<string, FuncDecl>, depth = 0): unkno
  * The loops the emitter takes, replaced by `graph` statements: `{ kind: "graph", graph, original }`. Returns how many
  * it took. A per-player program is not looked at yet (its variables are rows), nor a task's (its variables are slots).
  */
+/** How often the emitter did what is worth counting, for its tests: loops with values computed once on the way in. */
+export const emitterCounts = { hoisted: 0 };
+
 /** One loop lowered to a graph, or why it is not. `decls`: every variable of the program, by id. */
 export function emitLoop(loop: Stmt, decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), indexed = new Set<string>(), arrays = new Map<string, ArrayDecl>()): Graph | string {
   const scope = new Scope(decls);
@@ -1276,9 +1508,29 @@ export function emitLoop(loop: Stmt, decls: Map<string, VarDecl>, key: string, f
     trial.arrays = arrays;
     return trial.stmts(list, true) && trial.islands.size === 0;
   };
-  const s = new Rewriter(key, take).stmt(inlined(loop, functions) as Stmt)[0];
-  if (s.kind !== "while" && s.kind !== "for" && s.kind !== "do") return "not a loop";
-  if (!scope.stmt(s, false) || scope.islands.has(s)) return scope.why || "?";
+  const rw = new Rewriter(key, take);
+  const shaped = inlined(loop, functions) as Stmt;
+  // What of the loop's values reads nothing it writes is computed once, on the way in.
+  const stored = new Set<string>();
+  const storesIn = (x: unknown): void => {
+    if (!x || typeof x !== "object") return;
+    if (Array.isArray(x)) { x.forEach(storesIn); return; }
+    const o = x as Record<string, unknown>;
+    if ((o.kind === "store" || o.kind === "push" || o.kind === "setLength" || o.kind === "pop" || o.kind === "declareArray") && typeof o.array === "string") stored.add(o.array);
+    if (typeof o.fn === "string") storesIn(functions.get(o.fn)?.body);
+    Object.values(o).forEach(storesIn);
+  };
+  storesIn(shaped);
+  rw.hoist = { written: writes(shaped, functions), arrays: stored, out: [] };
+  let rewritten = rw.stmt(shaped)[0];
+  const hoisted = rw.hoist.out;
+  rw.hoist = null;
+  // (What is computed ahead must be the emitter's own whole, or the loop is rewritten again computing it where it was.)
+  if (hoisted.length && !take(hoisted)) rewritten = new Rewriter(`${key}r`, take).stmt(shaped)[0];
+  if (rewritten.kind !== "while" && rewritten.kind !== "for" && rewritten.kind !== "do") return "not a loop";
+  const s: Stmt = hoisted.length && take(hoisted) ? { kind: "block", body: [...hoisted, rewritten], at: rewritten.at } : rewritten;
+  if (s.kind === "block") emitterCounts.hoisted++;
+  if (!scope.stmt(s, false) || scope.islands.has(s) || scope.islands.has(rewritten)) return scope.why || "?";
   // A loop that is all islands is the Python side's still.
   if (scope.read.size === 0 && scope.written.size === 0) return "nothing in it the emitter lowers";
   const make = (forced: Set<string>): { e: Emitter; g: Graph | string } => {

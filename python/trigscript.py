@@ -4618,6 +4618,14 @@ class Lowering:
                 return EPD(self.graph_data[d["data"]])
             if "element" in d:
                 return element0(d["element"])[0]
+            if "counter" in d:
+                # The offset this side keeps beside a counter an array is indexed by, or (it keeps none) a dword nothing reads.
+                place = self.places.get(d["counter"])
+                if place is None:
+                    if ("junk",) not in self.graph_data:
+                        self.graph_data[("junk",)] = Db(4)
+                    return EPD(self.graph_data[("junk",)])
+                return EPD((place.bytes if d["part"] == "bytes" else place.dwords).getValueAddr())
             base, f = labels[d["at"]], d["field"]
             if f == "next":
                 return EPD(base + 4)
