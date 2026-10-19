@@ -2381,6 +2381,63 @@ second kind of variable. What the run did give: A4's weights for actions and con
 were Set Switch's and a guess — `otherAction` 3.8, `otherCondition` 3.6 (was 4.8, a Deaths condition's) — so a
 script's `trigger()` records and the classic backend's resources, scores and switches weigh what they cost.
 
+### The limits, and a backend of our own (2026-10-19)
+
+After the cost slices, the question was whether there is more to have, and whether eudplib is where it stops. What
+cannot move, whatever writes the triggers:
+
+- **Every Deaths and Set Deaths of an EUD map goes through the emulator** (above): a record costs 3–6 ns at the least,
+  a Set Deaths 9.4. The game's own 5.4 ms a frame is beyond reach.
+- **A trigger decides one bit.** It runs or it does not; so taking an n-bit value out of memory into a variable takes
+  at least n triggers, and a 32-bit read is about 0.4 µs however it is written.
+- **No code of our own runs.** The emulator lets a map at the regions it lists and no others, and the game's code is
+  there only as copies that ignore writes. Getting past that would be an exploit of the game, which this plan does
+  not do.
+
+Where the lowering stands against that floor (Remastered's weights, the bench):
+
+| Statement | Now | Floor, roughly |
+| --- | ---: | ---: |
+| `x += 1` | 18 ns | 15 |
+| a loop's turn | 181 ns | eudplib's 190: the same |
+| `x = cells[k]` | 376 ns | 200 |
+| `list[k] = y`, any index | 639 ns | 200 |
+| `fmul` | 4.7 µs | 0.5–1 |
+| `fdiv` / `sqrt_fixed` | 7.4 / 10.1 µs | about 1 |
+
+The simple statements are at the floor; what is far from it is everything that takes a number apart a bit at a time —
+products, quotients, shifts, a read of memory, an index worked out from a variable — and everything that pays a trigger
+for each action because the code is made of small triggers. eudplib is a library of macros written when 1.16.1's
+measure was the number of records: each operation is emitted alone, with no view of the next, no idea how wide a value
+is, and a jump as an empty trigger. Remastered charges a trigger 8.3 ns of its own, as much as the action in it.
+
+**The order:**
+
+1. **Two probes, cheap, that could change the rest.**
+   - *Where Remastered decides a map is an EUD map* (the flag at +0x105423C), read in Ghidra, and the weights probe's
+     yardsticks built as a map without EUD: if a map that is not EUD runs its triggers much cheaper, the classic backend
+     (scripts that never touch memory) gains from staying classic, and a script could be told so.
+   - *What Bring and Command cost* a unit in the location, in an EUD map: the game's own loop over units, one
+     condition. If it is cheap per unit, a library can ask "is any bullet within this box" natively instead of in
+     arithmetic.
+2. **Value ranges.** The compiler works out the range of every number variable and expression it can (constants,
+   loop counters, masks, `u8`/`u16`, comparisons that guard a branch, `Math.min`/`max`, `%` by a constant, what a
+   field of the game holds), and the lowering takes only the bits the range has: a read, a product, a quotient, a shift,
+   an index worked out from a variable. Nothing in the language changes; the bench says what it gave.
+3. **A backend of our own, part 1.** Below eudplib's macros, not beside them: a trigger-level IR (triggers, conditions,
+   actions, labels, values written into other records) that the lowering emits into and that is then scheduled and laid
+   out before eudplib is handed the records:
+   - *packing* independent actions of straight-line code into one trigger (up to 64 share one walk);
+   - *laying code out* so the common path falls through rather than jumping through an empty trigger, and conditions
+     sit in the trigger whose actions they guard;
+   - *choosing* between lowerings of one statement by Remastered's weights, the same model A4 shows.
+   Every change is held against the lifted game and the simulator, as the lowering's slices were: the same tests both
+   ways, the bench before and after. The later parts — values kept in the actions that use them, a calling convention
+   of our own, profile-guided layout from A4's runs, and eudplib's loader and layout replaced — wait for what part 1
+   measures.
+
+Not on the list: anything that runs outside the trigger walk, and threads (the game has one for triggers).
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
