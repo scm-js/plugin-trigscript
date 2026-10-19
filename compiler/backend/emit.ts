@@ -18,9 +18,9 @@
  * falls through one trigger whose conditions failed (13.4 ns); a branch is a trigger that sets its own next pointer to
  * where it goes, put back by an action at the place it went to.
  */
-import type { ArrayDecl, BoolExpr, FuncDecl, NumExpr, Program, Stmt, VarDecl, At } from "../ir";
+import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Program, Stmt, VarDecl, At } from "../ir";
 import { PACK_FROM } from "../eud";
-import { END, MOST_ACTS, MOST_CONDS, checkGraph, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Trigger } from "./graph";
+import { END, MOST_ACTS, MOST_CONDS, checkGraph, nextOf, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
 export const GAME_TICK = 0x57f23c;
@@ -198,6 +198,74 @@ class Scope {
   calls = new Map<Stmt, { fn: FixedFn; args: Linear[] }>();
   /** The stores into cells of the program's arrays the emitter makes: the array, the index, the value (cells first). */
   stores = new Map<Stmt, Store>();
+  /**
+   * A map of our own: a called function's body as the emitter takes it (rewritten once, `emitBody`), and whether each
+   * function met so far is taken (`walking` while its body is looked at: a call of it then is a call of itself).
+   */
+  bodyOf?: (id: string) => Stmt[] | undefined;
+  taken = new Map<string, boolean | "walking">();
+  /** What a `return` gives back where it stands: the kind of the function or inlined call around it, innermost last. */
+  returning: string[] = [];
+
+  /**
+   * A call in a map of our own: its arguments written into the function's parameters, which are variables like any
+   * other, and its result copied into the call's own; a called function's body looked at once, an inlined call's body
+   * where it is. Not a call that may come back into its own function (recursion: a stack of our own is to come).
+   */
+  call(c: Call): boolean {
+    if (c.saves) return this.no(`a call of ${c.name ?? "a function"} that may come back into the function it is in`);
+    for (const p of c.params) {
+      const d = p.decl;
+      if (!this.ok(d.id)) return this.no(`the parameter ${d.name}, a ${d.kind}`);
+      if (d.kind === "boolean" ? !this.test(p.init as BoolExpr) : !this.lowers(p.init as NumExpr)) return this.no(`the value given to ${d.name}`);
+      if (d.kind !== "boolean") this.num(p.init as NumExpr);
+      this.declared.add(d.id);
+      this.written.add(d.id);
+    }
+    if (c.result) {
+      if (!this.ok(c.result.decl.id)) return this.no(`a call that gives back a ${c.result.kind}`);
+      this.declared.add(c.result.decl.id);
+      this.written.add(c.result.decl.id);
+    }
+    if (c.fn !== undefined) return this.function(c.fn);
+    this.returning.push(c.result?.kind ?? "void");
+    try {
+      return this.stmts(c.body, false);
+    } finally {
+      this.returning.pop();
+    }
+  }
+
+  /** A called function: its body, looked at once. */
+  function(id: string): boolean {
+    const f = this.functions.get(id), state = this.taken.get(id);
+    if (state === "walking" || f?.recursive) return this.no(`${f?.name ?? id}, which calls itself`);
+    if (state !== undefined) return state || this.no(`a call of ${f?.name ?? id}`);
+    const body = this.bodyOf?.(id);
+    if (!f || !body) return this.no(`a call of ${id}`);
+    this.taken.set(id, "walking");
+    let ok = true;
+    if (f.result) {
+      if (!this.ok(f.result.decl.id)) ok = this.no(`${f.name}, which gives back a ${f.result.kind}`);
+      this.declared.add(f.result.decl.id);
+      this.written.add(f.result.decl.id);
+    }
+    this.returning.push(f.result?.kind ?? "void");
+    ok = ok && this.stmts(body, false);
+    this.returning.pop();
+    this.taken.set(id, ok);
+    return ok;
+  }
+
+  /** A `return` of a function or an inlined call the emitter lays out: its value one the emitter lowers. */
+  returned(s: Extract<Stmt, { kind: "return" }>): boolean {
+    const kind = this.returning[this.returning.length - 1];
+    if (s.value === undefined || kind === "void") return true;
+    if (kind === "boolean") return this.test(s.value as BoolExpr) || this.no("a value given back that it does not lower");
+    if (kind !== "number" || !this.lowers(s.value as NumExpr)) return this.no("a value given back that it does not lower");
+    this.num(s.value as NumExpr);
+    return true;
+  }
 
   /**
    * `fmul` / `fdiv` of numbers the emitter lowers: which of the Python side's functions (part 3) gives the same bits,
@@ -389,6 +457,8 @@ class Scope {
       case "print":
         if (this.native && s.position === "chat" && s.parts.every((p) => p.kind === "text")) return true;
         return this.island(s);
+      case "call": return (this.native && this.call(s.call)) || this.island(s);
+      case "return": return (this.native && this.returning.length > 0 && this.returned(s)) || this.island(s);
       default: return this.island(s);
     }
   }
@@ -512,6 +582,17 @@ class Emitter {
   params = new Map<string, Dword>();
   /** The table targets whose places outgrew a trigger, for the emitter to try again with them copied. */
   crowded = new Set<string>();
+  /**
+   * A map of our own: the functions a call has reached, each laid out once after the program (`functions()`) — where
+   * it starts, and the trigger it ends at, whose next pointer every call sets to where it goes on — and those still
+   * to lay out. `depth`: the most loops around a call of it, which its triggers count as theirs.
+   */
+  fns = new Map<string, { entry: string; exit: string; depth: number }>();
+  pending: string[] = [];
+  /** The loops around the function being laid out, at its deepest call. */
+  depthBase = 0;
+  /** The function or inlined call being laid out, innermost last: the variable its `return` writes, where it goes. */
+  frames: { result?: { id: string; kind: string }; end: string }[] = [];
 
   readonly key: string;
   readonly scope: Scope;
@@ -550,7 +631,7 @@ class Emitter {
   }
 
   push(p: Omit<Proto, "label"> & { label?: string }): Proto {
-    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.loops.length, ...(p.keep ? { keep: true } : {}) };
+    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}) };
     this.protos.push(t);
     return t;
   }
@@ -751,6 +832,8 @@ class Emitter {
     }
     if (s.kind === "declare" && s.decl.kind === "boolean") return this.setBool(s.decl.id, s.init as BoolExpr);
     if (s.kind === "assignBool") return this.setBool(s.target, s.value);
+    if (s.kind === "call" && !this.scope.islands.has(s)) return this.call(s.call);
+    if (s.kind === "return") return this.ret(s);
     const call = this.scope.calls.get(s);
     if (call && (s.kind === "declare" || s.kind === "assign") && call.fn.fn === "fdiv_by" && NATIVE.fdiv_by) {
       return this.reciprocal(call.fn.c!, call.args[0], s.kind === "declare" ? s.decl.id : s.target);
@@ -802,7 +885,8 @@ class Emitter {
         const head = this.label("loop"), cont = this.label("cont"), exit = this.label("exit");
         // What of the test nothing in the loop changes is tested once, on the way in (a u32 counter against a signed
         // bound is the bound's sign and the counter's place: the sign does not change).
-        const { once, every } = s.cond ? split(s.cond, writtenIn([...s.body, ...(s.kind === "for" ? s.update : [])])) : { once: null, every: null };
+        // (Everything the loop may write: a boolean set from a test, what a call in it writes, all the way down.)
+        const { once, every } = s.cond ? split(s.cond, writes({ kind: "block", body: [...s.body, ...(s.kind === "for" ? s.update : [])], at: s.at }, this.scope.functions)) : { once: null, every: null };
         if (once) this.jump(once, false, exit, s.at);
         this.land(head);
         if (every) this.jump(every, false, exit, s.at);
@@ -988,6 +1072,73 @@ class Emitter {
     this.land(no);
     this.write(target, { c: 0, terms: [] });
     this.land(done);
+  }
+
+  /**
+   * A call (a map of our own). The arguments are written into the function's parameters — into every place each has
+   * in the function's triggers, as any write is — in order; the rewriter has already taken into variables of its own
+   * any value a later argument's call could change. A called function: the trigger with the arguments also sets the
+   * next pointer of the trigger the function ends at to here, and goes to the function's first; back here, the
+   * function's result is copied into the call's own. An inlined call: its body where it stands, its result 0 until a
+   * `return` writes it (as the Python side has it).
+   */
+  call(c: Call): void {
+    for (const p of c.params) {
+      if (p.decl.kind === "boolean") this.setBool(p.decl.id, p.init as BoolExpr);
+      else this.write(p.decl.id, linear(p.init as NumExpr)!);
+    }
+    if (c.fn !== undefined) {
+      const f = this.scope.functions.get(c.fn)!;
+      let fn = this.fns.get(c.fn);
+      if (!fn) {
+        this.fns.set(c.fn, (fn = { entry: this.label("fn"), exit: this.label("fx"), depth: 0 }));
+        this.pending.push(c.fn);
+      }
+      fn.depth = Math.max(fn.depth, this.depthBase + this.loops.length);
+      const back = this.label("back");
+      this.open().items.push({ act: { dword: nextOf(fn.exit), modifier: "set", value: { label: back } } });
+      this.goto(fn.entry);
+      this.land(back);
+      if (c.result && f.result) this.write(c.result.decl.id, { c: 0, terms: [{ id: f.result.decl.id, k: 1 }] });
+      return;
+    }
+    const end = this.label("iend");
+    if (c.result) this.write(c.result.decl.id, { c: 0, terms: [] });
+    this.frames.push({ ...(c.result ? { result: { id: c.result.decl.id, kind: c.result.kind } } : {}), end });
+    this.stmts(c.body);
+    this.frames.pop();
+    this.land(end);
+  }
+
+  /** A `return`: the value into the result of the function or inlined call around it, and on to its end. */
+  ret(s: Extract<Stmt, { kind: "return" }>): void {
+    const frame = this.frames[this.frames.length - 1];
+    const r = frame.result;
+    if (r && r.kind === "boolean" && s.value !== undefined) this.setBool(r.id, s.value as BoolExpr);
+    else if (r) this.write(r.id, s.value === undefined ? { c: 0, terms: [] } : linear(s.value as NumExpr)!);
+    this.goto(frame.end);
+  }
+
+  /**
+   * The functions the calls reached, each laid out once after the program (which never falls into them): its body,
+   * what it gives back off its end (0), and the trigger it ends at — empty, kept, its next pointer the call's. A
+   * function called inside loops counts its triggers as that deep, for what weighs a variable's reads.
+   */
+  functions(): void {
+    for (let id = this.pending.shift(); id !== undefined; id = this.pending.shift()) {
+      const f = this.scope.functions.get(id)!, body = this.scope.bodyOf!(id)!, fn = this.fns.get(id)!;
+      const outer = this.depthBase;
+      this.depthBase = fn.depth;
+      this.land(fn.entry);
+      const result = f.result ? { id: f.result.decl.id, kind: f.result.kind } : undefined;
+      this.frames.push({ ...(result ? { result } : {}), end: fn.exit });
+      this.stmts(body);
+      this.frames.pop();
+      const last = body.filter((s) => s.kind !== "remark").at(-1);
+      if (result && last?.kind !== "return") this.write(result.id, { c: 0, terms: [] });
+      this.push({ label: fn.exit, conds: [], items: [], keep: true, at: f.at });
+      this.depthBase = outer;
+    }
   }
 
   /**
@@ -1604,6 +1755,14 @@ function signedMask(e: Extract<BoolExpr, { kind: "compare" }>): BoolExpr | null 
 /** A variable the rewriter made (`@t…`): the emitter's own, with no cell on the Python side. */
 const isTemp = (id: string) => id.startsWith("@t");
 
+/** Whether a value calls a function anywhere in it. */
+function holdsCall(x: unknown): boolean {
+  if (!x || typeof x !== "object") return false;
+  if (Array.isArray(x)) return x.some(holdsCall);
+  const o = x as Record<string, unknown>;
+  return o.kind === "call" || Object.values(o).some(holdsCall);
+}
+
 /**
  * A loop's statements as the emitter takes them: a value that is `?:`, `Math.abs`, `Math.min` / `max` as `if` / `else`
  * of plain assignments (`x = c ? a : b` is `if (c) x = a; else x = b`; `x = abs(e)` tests e's sign; a product or
@@ -1611,14 +1770,60 @@ const isTemp = (id: string) => id.startsWith("@t");
  * of the emitter's own (`@t…`), and a loop's test that needs that computed at the top of each turn. Every expression
  * moved is pure, so computing it ahead of a test that would have skipped it changes nothing. A statement whose
  * rewriting the emitter would not take whole stays as it was (an island cannot read a variable of the emitter's own).
+ *
+ * For a map of our own (`own`), a call inside an expression becomes a statement of its own ahead of it, the
+ * expression reading the call's result: a value to its left that the call may change is taken into a variable of the
+ * emitter's own first (JavaScript reads it before the call), and a call in a later part of `&&` / `||` runs only when
+ * the parts before it leave the answer open.
  */
 class Rewriter {
   n = 0;
   readonly key: string;
   readonly take: (list: Stmt[]) => boolean;
-  constructor(key: string, take: (list: Stmt[]) => boolean) {
+  /** A map of our own (`emitBody`): calls taken out of expressions, and every rewriting taken (there are no islands). */
+  readonly own: boolean;
+  readonly functions: Map<string, FuncDecl>;
+  /** What a `return` gives back where it stands: the kind of the function or inlined call around it, innermost last. */
+  returning: string[] = [];
+  constructor(key: string, take: (list: Stmt[]) => boolean, own = false, functions = new Map<string, FuncDecl>(), result?: string) {
     this.key = key;
     this.take = take;
+    this.own = own;
+    this.functions = functions;
+    if (result) this.returning.push(result);
+  }
+
+  /**
+   * A value worked out before the statements `pre` gained from `mark` on, and read after them: taken into a variable of
+   * the emitter's own at `mark` when a call among them may write what it reads.
+   */
+  before<E extends NumExpr | BoolExpr>(e: E, pre: Stmt[], mark: number, where: { at: At; label: string }, test = false): E {
+    if (!this.own || mark === pre.length || e.kind === "const") return e;
+    const later = writes({ kind: "block", body: pre.slice(mark), at: where.at }, this.functions);
+    if (![...readIn(e)].some((id) => later.has(id))) return e;
+    const t = this.temp();
+    pre.splice(mark, 0, test ? { kind: "assignBool", target: t, value: e as BoolExpr, ...where } : { kind: "assign", target: t, value: e as NumExpr, ...where });
+    return { kind: "var", id: t } as E;
+  }
+
+  /** A call as a statement of its own, after what its arguments need (in `pre`); an inlined call's body rewritten. */
+  call(c: Call, pre: Stmt[], where: { at: At; label: string }): void {
+    const marks: number[] = [];
+    const inits = c.params.map((p) => {
+      marks.push(pre.length);
+      return p.decl.kind === "boolean" ? this.cond(p.init as BoolExpr, pre, where) : p.decl.kind === "number" ? this.flat(p.init as NumExpr, pre, where) : p.init;
+    });
+    marks.push(pre.length);
+    // Each argument read before what the ones after it run (from the last back: a value put in ahead of a later one's
+    // statements leaves the earlier marks where they were).
+    for (let i = inits.length - 2; i >= 0; i--) {
+      const kind = c.params[i].decl.kind;
+      if (kind === "number" || kind === "boolean") inits[i] = this.before(inits[i] as NumExpr | BoolExpr, pre, marks[i + 1], where, kind === "boolean");
+    }
+    this.returning.push(c.result?.kind ?? "void");
+    const body = c.fn === undefined ? this.stmts(c.body) : c.body;
+    this.returning.pop();
+    pre.push({ kind: "call", call: { ...c, params: c.params.map((p, i) => ({ ...p, init: inits[i] })), body }, ...where });
   }
 
   temp(): string {
@@ -1673,17 +1878,38 @@ class Rewriter {
       return { kind: "var", id: t };
     }
     switch (e.kind) {
-      case "binary": return { ...e, left: this.flat(e.left, pre, where), right: this.flat(e.right, pre, where) };
+      case "binary": {
+        const left = this.flat(e.left, pre, where), mark = pre.length;
+        const right = this.flat(e.right, pre, where);
+        return { ...e, left: this.before(left, pre, mark, where), right };
+      }
       case "unary": case "cast": return { ...e, expr: this.flat(e.expr, pre, where) };
       case "element": return { ...e, index: this.flat(e.index, pre, where) };
+      case "call": {
+        if (!this.own || !e.call.result) return e;
+        this.call(e.call, pre, where);
+        return { kind: "var", id: e.call.result.decl.id };
+      }
       case "ternary": case "intrinsic": {
-        if (e.kind === "intrinsic" && e.name !== "abs" && e.name !== "min" && e.name !== "max") return { ...e, args: e.args.map((a) => this.flat(a, pre, where)) };
+        if (e.kind === "intrinsic" && e.name !== "abs" && e.name !== "min" && e.name !== "max") return { ...e, args: this.each(e.args, pre, where) };
         const t = this.temp();
         pre.push(...this.set(t, e, where));
         return { kind: "var", id: t };
       }
       default: return e;
     }
+  }
+
+  /** Several values in order, each flattened: an earlier one read before a later one's calls run. */
+  each(list: NumExpr[], pre: Stmt[], where: { at: At; label: string }, as = (e: NumExpr) => e): NumExpr[] {
+    const marks: number[] = [];
+    const out = list.map((x) => {
+      marks.push(pre.length);
+      return as(this.flat(x, pre, where));
+    });
+    marks.push(pre.length);
+    for (let i = out.length - 2; i >= 0; i--) out[i] = this.before(out[i], pre, marks[i + 1], where);
+    return out;
   }
 
   /** The statements that set `target` to `e`. */
@@ -1697,13 +1923,16 @@ class Rewriter {
       return [...pre, { kind: "if", cond, then: this.set(target, e.whenTrue, where), else: this.set(target, e.whenFalse, where), ...where }];
     }
     if (e.kind === "intrinsic" && e.name === "abs") {
-      const a = this.flat(e.args[0], pre, where);
+      let a = this.flat(e.args[0], pre, where);
+      // (A map of our own: a sum of more than one variable into a variable of the emitter's own first, so that its sign
+      // is one condition.)
+      if (this.own && linear(a)) a = this.side(a, pre, where);
       if (linear(a)) return [...pre, { kind: "if", cond: { kind: "compare", op: "<", left: a, right: zero, ...where }, then: [assign({ kind: "unary", op: "-", expr: a, at: where.at })], else: [assign(a)], ...where }];
       // (A product or a quotient: into the target first, its sign tested there.)
       return [...pre, assign(a), { kind: "if", cond: { kind: "compare", op: "<", left: v(target), right: zero, ...where }, then: [assign({ kind: "unary", op: "-", expr: v(target), at: where.at })], ...where }];
     }
     if (e.kind === "intrinsic" && (e.name === "min" || e.name === "max") && e.args.length === 2) {
-      const [a, b] = e.args.map((x) => this.side(this.flat(x, pre, where), pre, where));
+      const [a, b] = this.each(e.args, pre, where, (x) => this.side(x, pre, where));
       const cond: BoolExpr = { kind: "compare", op: e.name === "min" ? "<" : ">", left: a, right: b, ...(e.unsigned ? { unsigned: true } : {}), ...where };
       return [...pre, { kind: "if", cond, then: [assign(a)], else: [assign(b)], ...where }];
     }
@@ -1726,10 +1955,31 @@ class Rewriter {
 
   cond(c: BoolExpr, pre: Stmt[], where: { at: At; label: string }): BoolExpr {
     switch (c.kind) {
-      case "compare": return { ...c, left: this.side(this.flat(c.left, pre, where), pre, where), right: this.side(this.flat(c.right, pre, where), pre, where) };
+      case "compare": {
+        const [left, right] = this.each([c.left, c.right], pre, where, (x) => this.side(x, pre, where));
+        return { ...c, left, right };
+      }
       case "test": return { ...c, expr: this.side(this.flat(c.expr, pre, where), pre, where) };
-      case "and": case "or": return { ...c, items: c.items.map((x) => this.cond(x, pre, where)) };
+      case "and": case "or": {
+        if (!this.own || !c.items.slice(1).some(holdsCall)) return { ...c, items: c.items.map((x) => this.cond(x, pre, where)) };
+        // A later part calls: it runs only when the parts before it leave the answer open. The answer so far is kept
+        // in a variable of the emitter's own, each later part worked out under an `if` on it.
+        const t = this.temp(), so: BoolExpr = { kind: "var", id: t };
+        const first = this.cond(c.items[0], pre, where);
+        pre.push({ kind: "assignBool", target: t, value: first, ...where });
+        for (const x of c.items.slice(1)) {
+          const inner: Stmt[] = [];
+          const value = this.cond(x, inner, where);
+          pre.push({ kind: "if", cond: c.kind === "and" ? so : { kind: "not", expr: so }, then: [...inner, { kind: "assignBool", target: t, value, ...where }], ...where });
+        }
+        return so;
+      }
       case "not": return { ...c, expr: this.cond(c.expr, pre, where) };
+      case "call": {
+        if (!this.own || !c.call.result) return c;
+        this.call(c.call, pre, where);
+        return { kind: "var", id: c.call.result.decl.id };
+      }
       default: return c;
     }
   }
@@ -1746,6 +1996,11 @@ class Rewriter {
     switch (s.kind) {
       case "assign": return plain(s.value) ? [s] : keep(this.set(s.target, s.value, where));
       case "declare": {
+        if (s.decl.kind === "boolean" && this.own) {
+          const pre: Stmt[] = [];
+          const init = this.cond(s.init as BoolExpr, pre, where);
+          return pre.length ? keep([...pre, { ...s, init }]) : [s];
+        }
         const init = s.init as NumExpr;
         if (s.decl.kind !== "number" || plain(init)) return [s];
         return keep([{ ...s, init: { kind: "const", value: 0 } }, ...this.set(s.decl.id, init, where)]);
@@ -1755,14 +2010,36 @@ class Rewriter {
         // A value the emitter does not take as it is into a variable of its own first; the index likewise.
         const value = s.value as NumExpr;
         const pre: Stmt[] = [];
-        const index = plain(s.index) ? s.index : this.side(this.flat(s.index, pre, where), pre, where);
+        let index = plain(s.index) ? s.index : this.side(this.flat(s.index, pre, where), pre, where);
+        const mark = pre.length;
         let stored: NumExpr = value;
         if (!plain(value) && !this.table(value)) {
           const t = this.temp();
           pre.push(...this.set(t, value, where));
           stored = { kind: "var", id: t };
         }
+        index = this.before(index, pre, mark, where);
         return pre.length ? keep([...pre, { ...s, index, value: stored }]) : [s];
+      }
+      case "call": {
+        if (!this.own) return [s];
+        const pre: Stmt[] = [];
+        this.call(s.call, pre, where);
+        return pre;
+      }
+      case "return": {
+        // The value given back, as the emitter takes it: a boolean's test flattened, a number into a variable of the
+        // emitter's own first when it is more than a sum.
+        const kind = this.returning[this.returning.length - 1];
+        if (!this.own || s.value === undefined || (kind !== "number" && kind !== "boolean")) return [s];
+        const pre: Stmt[] = [];
+        if (kind === "boolean") {
+          const value = this.cond(s.value as BoolExpr, pre, where);
+          return [...pre, { ...s, value }];
+        }
+        if (plain(s.value as NumExpr)) return [s];
+        const t = this.temp();
+        return [...this.set(t, s.value as NumExpr, where), { ...s, value: { kind: "var", id: t } }];
       }
       case "if": {
         const pre: Stmt[] = [];
@@ -1831,6 +2108,22 @@ function inlined(x: unknown, functions: Map<string, FuncDecl>, depth = 0): unkno
 }
 
 /**
+ * A function's number kept as a value (`fn` on a constant) as a plain number: in a map of our own nothing else keeps
+ * the function in the map — the dispatcher's call of it lays it out.
+ */
+function plainFns(x: unknown): unknown {
+  if (Array.isArray(x)) return x.map(plainFns);
+  if (!x || typeof x !== "object") return x;
+  const o = x as Record<string, unknown>;
+  if (o.kind === "const" && "fn" in o) {
+    const plain = { ...o };
+    delete plain.fn;
+    return plain;
+  }
+  return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, plainFns(v)]));
+}
+
+/**
  * The loops the emitter takes, replaced by `graph` statements: `{ kind: "graph", graph, original }`. Returns how many
  * it took. A per-player program is not looked at yet (its variables are rows), nor a task's (its variables are slots).
  */
@@ -1844,19 +2137,37 @@ export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0 };
  * copy it in; a copy within the body is made of triggers by the layout). Returns the graph, or why it cannot be.
  */
 export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>()): Graph | string {
+  // (Every statement must be the emitter's here, so a rewriting it would not take is refused whichever way it goes:
+  // no trial is needed.)
+  const take = () => true;
+  const known = new Map(decls);
+  for (const f of functions.values()) {
+    for (const p of f.params) known.set(p.id, p);
+    if (f.result) known.set(f.result.decl.id, f.result.decl);
+  }
+  // A called function's body, rewritten once, the first time a call reaches it (a call of itself meanwhile sees it as
+  // it was written, and is refused).
+  const bodies = new Map<string, Stmt[]>();
+  const bodyOf = (id: string): Stmt[] | undefined => {
+    const f = functions.get(id);
+    if (!f) return undefined;
+    let b = bodies.get(id);
+    if (!b) {
+      bodies.set(id, f.body);
+      b = new Rewriter(`${key}.f${bodies.size}`, take, true, functions, f.result?.kind).stmts(plainFns(inlined(f.body, functions)) as Stmt[]);
+      bodies.set(id, b);
+    }
+    return b;
+  };
   const rules = (scope: Scope) => {
     scope.native = true;
     scope.functions = functions;
     scope.arrays = arrays;
+    scope.bodyOf = bodyOf;
   };
-  const take = (list: Stmt[]): boolean => {
-    const trial = new Scope(decls);
-    rules(trial);
-    return trial.stmts(list, true) && trial.islands.size === 0;
-  };
-  const block = new Rewriter(key, take).stmt(inlined({ kind: "block", body, at: body[0]?.at } as Stmt, functions) as Stmt);
+  const block = new Rewriter(key, take, true, functions).stmt(plainFns(inlined({ kind: "block", body, at: body[0]?.at } as Stmt, functions)) as Stmt);
   const s: Stmt = block.length === 1 ? block[0] : ({ kind: "block", body: block, at: body[0]?.at } as Stmt);
-  const scope = new Scope(decls);
+  const scope = new Scope(known);
   rules(scope);
   if (!scope.stmt(s, false)) return scope.why || "?";
   if (scope.islands.size) return `a ${[...scope.islands.keys()][0].kind} it does not lower (${scope.why || "no reason given"})`;
@@ -1868,6 +2179,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     // At its end the program wakes no more.
     e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } });
     e.goto(END);
+    e.functions();
     return { e, g: e.graph([...scope.read].filter((id) => !scope.declared.has(id) && !isTemp(id))) };
   };
   const g = make(new Set()).g;

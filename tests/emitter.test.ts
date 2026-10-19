@@ -5,8 +5,8 @@
 // same random values, every variable compared after. The game probe probes/game-emitter.ts does the same in the
 // lifted game, for fewer loops.
 import { describe, expect, it } from "vitest";
-import type { ArrayDecl, BoolExpr, FuncDecl, NumExpr, Stmt, VarDecl } from "../compiler/ir";
-import { emitLoop, emitterCounts } from "../compiler/backend/emit";
+import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, VarDecl } from "../compiler/ir";
+import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
 import { END, type Dword, type Graph, type Num } from "../compiler/backend/graph";
 import { fixedDiv, fixedMul } from "../compiler/fixedMath";
 
@@ -41,6 +41,7 @@ function num(e: NumExpr, env: Env): number {
       return i < WRITABLE.get(e.array)! ? env.get(cellKey(e.array, i)) ?? 0 : 0;
     }
     case "call": {
+      if (CALLS.whole) return callValue(e.call, env);
       const f = FUNCTIONS.get(e.call.fn!)!;
       const inner = new Map(env);
       e.call.params.forEach((p, k) => inner.set(f.params[k].id, num(p.init as NumExpr, env)));
@@ -74,6 +75,7 @@ function bool(e: BoolExpr, env: Env): boolean {
     case "or": return e.items.some((x) => bool(x, env));
     case "test": return num(e.expr, env) !== 0;
     case "var": return (env.get(e.id) ?? 0) !== 0;
+    case "call": return callValue(e.call, env) !== 0;
     case "compare": {
       const a = num(e.left, env), b = num(e.right, env);
       if (e.unsigned === true) return compare(e.op, a, b);
@@ -85,7 +87,26 @@ function bool(e: BoolExpr, env: Env): boolean {
   }
 }
 
-type Flow = "next" | "break" | "continue";
+type Flow = "next" | "break" | "continue" | "return";
+
+/**
+ * Calls as the IR means them (the random programs with functions): every argument worked out, then the parameters
+ * set; the body run on the one environment (a function's variables are the program's, one of each); what `return`
+ * gives back (0 off the end) into the function's result and the call's own.
+ */
+const CALLS = { whole: false };
+const RETURNS: { value: number; kind: string }[] = [];
+function callValue(c: Call, env: Env): number {
+  const values = c.params.map((p) => (p.decl.kind === "boolean" ? (bool(p.init as BoolExpr, env) ? 1 : 0) : num(p.init as NumExpr, env)));
+  c.params.forEach((p, i) => env.set(p.decl.id, values[i]));
+  const f = c.fn !== undefined ? FUNCTIONS.get(c.fn) : undefined;
+  RETURNS.push({ value: 0, kind: (f ? f.result?.kind : c.result?.kind) ?? "void" });
+  run(f ? f.body : c.body, env, { n: 1e6 });
+  const { value } = RETURNS.pop()!;
+  if (f?.result) env.set(f.result.decl.id, value);
+  if (c.result) env.set(c.result.decl.id, value);
+  return value;
+}
 function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
   for (const s of list) {
     if (--budget.n < 0) throw new Error("too long");
@@ -107,11 +128,20 @@ function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
         break;
       }
       case "unrolled": {
+        let out: Flow = "next";
         for (const it of s.iterations) {
           const f = run(it, env, budget);
           if (f === "break") break;
+          if (f === "return") { out = f; break; }
         }
+        if (out !== "next") return out;
         break;
+      }
+      case "call": callValue(s.call, env); break;
+      case "return": {
+        const r = RETURNS[RETURNS.length - 1];
+        r.value = s.value === undefined ? 0 : r.kind === "boolean" ? (bool(s.value as BoolExpr, env) ? 1 : 0) : num(s.value as NumExpr, env);
+        return "return";
       }
       case "assign": env.set(s.target, num(s.value, env)); break;
       case "store": {
@@ -123,15 +153,27 @@ function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
       case "if": { const f = run(bool(s.cond, env) ? s.then : s.else ?? [], env, budget); if (f !== "next") return f; break; }
       case "break": return "break";
       case "continue": return "continue";
-      case "while": case "for":
+      case "while": case "for": {
+        let out: Flow = "next";
         while (!s.cond || bool(s.cond, env)) {
-          if (run(s.body, env, budget) === "break") break;
+          const f = run(s.body, env, budget);
+          if (f === "break") break;
+          if (f === "return") { out = f; break; }
           if (s.kind === "for") run(s.update, env, budget);
         }
+        if (out !== "next") return out;
         break;
-      case "do":
-        do { if (run(s.body, env, budget) === "break") break; } while (bool(s.cond, env));
+      }
+      case "do": {
+        let out: Flow = "next";
+        do {
+          const f = run(s.body, env, budget);
+          if (f === "break") break;
+          if (f === "return") { out = f; break; }
+        } while (bool(s.cond, env));
+        if (out !== "next") return out;
         break;
+      }
       default: throw new Error(s.kind);
     }
   }
@@ -453,5 +495,195 @@ describe("the emitter", () => {
     expect(emitterCounts.hoisted).toBeGreaterThan(200);
     expect(taken).toBeGreaterThan(3900);
     expect(stores).toBeGreaterThan(1000);
+  });
+});
+
+// ── random programs with functions, as a map of our own lays them out ──
+
+/**
+ * A whole program for `emitBody`: its variables declared first, then statements that call functions — as statements,
+ * inside sums, in comparisons, in a later part of `&&` / `||`, as arguments of other calls — and inlined calls (a body
+ * of their own, as the front end makes a function called once). A function calls only those made before it (nothing
+ * calls itself); it reads and writes the program's variables, its parameters and its own, and gives back a number, a
+ * boolean or nothing, from inside ifs and loops or off its end.
+ */
+function programWithCalls(seed: number) {
+  const r = rng(seed);
+  const decls = new Map<string, VarDecl>();
+  const decl = (name: string, kind: "number" | "boolean" = "number"): VarDecl => {
+    const d: VarDecl = { id: `${name}#${decls.size}`, name, kind, shared: false, at };
+    decls.set(d.id, d);
+    return d;
+  };
+  // Parameters and what calls give back are read only inside the call (and a function that is one `return` is put
+  // where it is called, setting neither): not compared.
+  const inner = new Set<string>();
+  const hidden = (d: VarDecl) => (inner.add(d.id), d);
+  TABLES.clear();
+  FUNCTIONS.clear();
+  WRITABLE.clear();
+  type Scope = { nums: VarDecl[]; bools: VarDecl[]; returns?: "number" | "boolean" | "void"; calls: FuncDecl[] };
+  const v = (d: VarDecl): NumExpr => ({ kind: "var", id: d.id });
+  const k = (n: number): NumExpr => ({ kind: "const", value: n });
+  const bin = (op: "+" | "-" | "*" | "<<", left: NumExpr, right: NumExpr): NumExpr => ({ kind: "binary", op, left, right, at, label: "" });
+  const globals = ["a", "b", "c", "d"].map((n) => decl(n));
+  const flags = ["f", "g"].map((n) => decl(n, "boolean"));
+  let counters = 0;
+
+  const call = (f: FuncDecl, sc: Scope, depth: number): Call => ({
+    name: f.name, fn: f.id, at, label: "", body: [],
+    params: f.params.map((p) => ({ decl: p, init: p.kind === "boolean" ? cond(sc, depth + 1) : value(sc, depth + 1), label: "" })),
+    ...(f.result ? { result: { decl: hidden(decl(`(${f.name} result)`, f.result.kind === "boolean" ? "boolean" : "number")), kind: f.result.kind } } : {}),
+  });
+  /** A call of a function used once, its body where it is: a parameter of its own, a return or two. */
+  const inlinedCall = (sc: Scope, depth: number, kind: "number" | "boolean" | "void"): Call => {
+    const p = hidden(decl("q"));
+    const inner: Scope = { nums: [...globals, p], bools: flags, returns: kind, calls: sc.calls };
+    const body = block(inner, depth + 2, false);
+    if (kind !== "void" && r.next() < 0.7) body.push({ kind: "return", value: kind === "boolean" ? cond(inner, depth + 2) : value(inner, depth + 2), at, label: "" });
+    return { name: "once", at, label: "", params: [{ decl: p, init: value(sc, depth + 1), label: "" }], body, ...(kind !== "void" ? { result: { decl: hidden(decl("(once result)", kind === "boolean" ? "boolean" : "number")), kind } } : {}) };
+  };
+  const callable = (sc: Scope, kind: "number" | "boolean") => sc.calls.filter((f) => (f.result?.kind ?? "void") === kind);
+
+  function value(sc: Scope, depth: number): NumExpr {
+    const x = r.int(14);
+    const fs = callable(sc, "number");
+    if (depth < 3 && x >= 11 && fs.length) return { kind: "call", call: call(r.pick(fs), sc, depth) };
+    if (depth < 2 && x === 10 && r.next() < 0.5) return { kind: "call", call: inlinedCall(sc, depth, "number") };
+    const any = () => v(r.pick(sc.nums));
+    switch (x % 9) {
+      case 0: return k(r.pick(EDGES));
+      case 1: return any();
+      case 2: return bin("+", any(), k(r.pick(EDGES)));
+      case 3: return bin("-", any(), depth < 3 ? value(sc, depth + 1) : any());
+      case 4: return bin("+", depth < 3 ? value(sc, depth + 1) : any(), any());
+      case 5: return { kind: "unary", op: "-", expr: any(), at };
+      case 6: return bin("*", any(), k(r.pick([3, -1, 2, 65536])));
+      case 7: return depth < 3 ? { kind: "ternary", cond: cond(sc, depth + 1), whenTrue: value(sc, depth + 1), whenFalse: any(), at, label: "" } : any();
+      default: {
+        const name = r.pick(["min", "max", "abs"] as const);
+        const inner = depth < 3 ? value(sc, depth + 1) : any();
+        return { kind: "intrinsic", name, args: name === "abs" ? [inner] : [any(), inner], at, label: "" };
+      }
+    }
+  }
+  function cond(sc: Scope, depth: number): BoolExpr {
+    const x = r.int(12);
+    const fs = callable(sc, "boolean");
+    if (depth < 3 && x === 11 && fs.length) return { kind: "call", call: call(r.pick(fs), sc, depth) };
+    if (depth < 3 && x >= 8) return { kind: r.next() < 0.5 ? "and" : "or", items: [cond(sc, depth + 1), cond(sc, depth + 1), ...(r.next() < 0.3 ? [cond(sc, depth + 1)] : [])] };
+    if (x === 7) return { kind: "var", id: r.pick(sc.bools).id };
+    if (x === 6 && depth < 3) return { kind: "not", expr: cond(sc, depth + 1) };
+    const sideOf = (): NumExpr => (r.next() < 0.5 ? v(r.pick(sc.nums)) : r.next() < 0.5 ? k(r.pick(EDGES)) : value(sc, depth + 1));
+    return { kind: "compare", op: r.pick(["<", "<=", ">", ">=", "==", "!="] as const), left: sideOf(), right: sideOf(), ...(r.next() < 0.7 ? {} : { unsigned: true }), at, label: "" };
+  }
+  function block(sc: Scope, depth: number, inLoop: boolean): Stmt[] {
+    const out: Stmt[] = [];
+    for (let n = 1 + r.int(4); n > 0; n--) {
+      const x = r.int(14);
+      if (x < 5) out.push({ kind: "assign", target: r.pick(sc.nums).id, value: value(sc, 0), at, label: "" });
+      else if (x === 5) out.push({ kind: "assignBool", target: r.pick(sc.bools).id, value: cond(sc, 0), at, label: "" });
+      else if (x === 6 && sc.calls.length) out.push({ kind: "call", call: call(r.pick(sc.calls), sc, 0), at, label: "" });
+      else if (x === 7 && depth < 3) out.push({ kind: "call", call: inlinedCall(sc, depth, r.pick(["number", "void"] as const)), at, label: "" });
+      else if (x < 10 && depth < 3) out.push({ kind: "if", cond: cond(sc, 0), then: block(sc, depth + 1, inLoop), ...(r.next() < 0.5 ? { else: block(sc, depth + 1, inLoop) } : {}), at, label: "" });
+      else if (x < 12 && depth < 2) {
+        // A loop that ends: a counter of its own, which nothing else writes.
+        const c = decl(`i${counters++}`);
+        // (Now and then the test calls too, before or after the counter's part.)
+        const count: BoolExpr = { kind: "compare", op: "<", left: v(c), right: k(1 + r.int(4)), at, label: "" };
+        const y = r.next();
+        const test: BoolExpr = y < 0.15 ? { kind: "and", items: [count, cond(sc, 1)] } : y < 0.3 ? { kind: "and", items: [cond(sc, 1), count] } : count;
+        const step: Stmt = { kind: "assign", target: c.id, value: bin("+", v(c), k(1)), at, label: "" };
+        out.push({ kind: "declare", decl: c, init: k(r.int(2)), at, label: "" });
+        const body = block(sc, depth + 1, true);
+        const kind = r.int(3);
+        out.push(kind === 0 ? { kind: "for", cond: test, update: [step], body, at, label: "" } : kind === 1 ? { kind: "while", cond: test, body: [step, ...body], at, label: "" } : { kind: "do", body: [step, ...body], cond: count, at, label: "", condLabel: "" } as Stmt);
+      }
+      else if (x === 12 && sc.returns) out.push({ kind: "if", cond: cond(sc, 0), then: [{ kind: "return", ...(sc.returns === "void" ? {} : { value: sc.returns === "boolean" ? cond(sc, 0) : value(sc, 0) }), at, label: "" }], at, label: "" });
+      else if (inLoop) out.push({ kind: "if", cond: cond(sc, 0), then: [{ kind: r.next() < 0.5 ? "break" : "continue", at, label: "" }], at, label: "" });
+    }
+    return out;
+  }
+
+  // The functions, each calling only those before it.
+  const made: FuncDecl[] = [];
+  for (let i = 0, n = 1 + r.int(4); i < n; i++) {
+    const kind = r.pick(["number", "number", "number", "boolean", "void"] as const);
+    const params = Array.from({ length: r.int(4) }, (_, j) => hidden(decl(`p${i}${j}`, r.next() < 0.2 ? "boolean" : "number")));
+    const locals = Array.from({ length: r.int(3) }, (_, j) => decl(`l${i}${j}`));
+    const sc: Scope = { nums: [...globals, ...params.filter((p) => p.kind === "number"), ...locals], bools: [...flags, ...params.filter((p) => p.kind === "boolean")], returns: kind, calls: [...made] };
+    const body: Stmt[] = [
+      ...locals.map((l): Stmt => ({ kind: "declare", decl: l, init: value({ ...sc, nums: [...globals, ...params.filter((p) => p.kind === "number")] }, 1), at, label: "" })),
+      ...block(sc, 1, false),
+    ];
+    if (kind !== "void" && r.next() < 0.8) body.push({ kind: "return", value: kind === "boolean" ? cond(sc, 0) : value(sc, 0), at, label: "" });
+    const f: FuncDecl = { id: `F${i}#f`, name: `F${i}`, params, body, at, ...(kind !== "void" ? { result: { decl: hidden(decl(`(F${i} result)`, kind === "boolean" ? "boolean" : "number")), kind } } : {}) };
+    FUNCTIONS.set(f.id, f);
+    made.push(f);
+  }
+  const main: Scope = { nums: globals, bools: flags, calls: made };
+  const body: Stmt[] = [
+    ...globals.map((d): Stmt => ({ kind: "declare", decl: d, init: k(r.next() < 0.5 ? r.int(20) : r.pick(EDGES)), at, label: "" })),
+    ...flags.map((d): Stmt => ({ kind: "declare", decl: d, init: { kind: "const", value: r.next() < 0.5 }, at, label: "" })),
+    ...block(main, 0, false),
+    ...block(main, 0, false),
+  ];
+  return { decls, body, inner };
+}
+
+describe("the emitter, calls in a map of our own", () => {
+  it("lays out random programs with functions so that they leave every variable as the programs do", () => {
+    let taken = 0;
+    const left = new Map<string, number>();
+    CALLS.whole = true;
+    try {
+      for (let seed = 1; seed <= 3000; seed++) {
+        const { decls, body, inner } = programWithCalls(seed);
+        const g = emitBody(body, decls, `c${seed}`, FUNCTIONS);
+        if (process.env.EMITTER_SEED === String(seed)) console.log(JSON.stringify({ body, functions: [...FUNCTIONS.values()], g }, null, 1));
+        if (typeof g === "string") { left.set(g, (left.get(g) ?? 0) + 1); if (process.env.EMITTER_LEFT === "seeds") console.log(seed, g); continue; }
+        taken++;
+        const want: Env = new Map();
+        run(body, want, { n: 1e6 });
+        let got: Env;
+        try { got = exec(g, new Map()); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
+        for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
+      }
+    } finally {
+      CALLS.whole = false;
+    }
+    if (process.env.EMITTER_LEFT) console.log(taken, [...left].sort((a, b) => b[1] - a[1]));
+    expect(taken).toBeGreaterThan(2950);
+  });
+});
+
+describe("the emitter, a loop's test", () => {
+  it("tests every turn a part of `&&` that a boolean set in the loop, or a call in it, changes", () => {
+    // while (i < 10 && go) { i += 1; go = i < 5; }   and   while (i < 10 && n > 0) { i += 1; shrink(); }
+    TABLES.clear();
+    WRITABLE.clear();
+    FUNCTIONS.clear();
+    const d = (name: string, kind: "number" | "boolean" = "number"): VarDecl => ({ id: `${name}#t`, name, kind, shared: false, at });
+    const [i, n, go] = [d("i"), d("n"), d("go", "boolean")];
+    const decls = new Map([i, n, go].map((x) => [x.id, x]));
+    const v = (x: VarDecl): NumExpr => ({ kind: "var", id: x.id });
+    const k = (x: number): NumExpr => ({ kind: "const", value: x });
+    const lt = (a: NumExpr, b: NumExpr): BoolExpr => ({ kind: "compare", op: "<", left: a, right: b, at, label: "" });
+    const step: Stmt = { kind: "assign", target: i.id, value: { kind: "binary", op: "+", left: v(i), right: k(1), at, label: "" }, at, label: "" };
+    const shrink: FuncDecl = { id: "shrink#t", name: "shrink", params: [], body: [{ kind: "assign", target: n.id, value: { kind: "binary", op: "-", left: v(n), right: k(1), at, label: "" }, at, label: "" }], at };
+    FUNCTIONS.set(shrink.id, shrink);
+    const loops: Stmt[] = [
+      { kind: "while", cond: { kind: "and", items: [lt(v(i), k(10)), { kind: "var", id: go.id }] }, body: [step, { kind: "assignBool", target: go.id, value: lt(v(i), k(5)), at, label: "" }], at, label: "" },
+      { kind: "while", cond: { kind: "and", items: [lt(v(i), k(10)), lt(k(0), v(n))] }, body: [step, { kind: "call", call: { name: "shrink", fn: shrink.id, params: [], body: [], at, label: "" }, at, label: "" }], at, label: "" },
+    ];
+    for (const loop of loops) {
+      const g = emitLoop(loop, decls, "t", FUNCTIONS);
+      expect(typeof g).not.toBe("string");
+      const start: Env = new Map([[i.id, 0], [n.id, 3], [go.id, 1]]);
+      const want = new Map(start);
+      run([loop], want, { n: 1e4 });
+      const got = exec(g as Graph, start);
+      expect(got.get(i.id)).toBe(want.get(i.id));
+    }
   });
 });
