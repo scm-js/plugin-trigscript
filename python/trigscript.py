@@ -4675,6 +4675,11 @@ class Lowering:
                 return EPD(self.graph_data[d["data"]])
             if "element" in d:
                 return element0(d["element"])[0]
+            if "getter" in d:
+                from eudplib.core.eudstruct.vararray import _getter, _getter_dst
+                return _getter_dst if d["getter"] == "dest" else EPD(_getter) + 1
+            if "temp" in d:
+                return EPD(graph_temp(d["temp"]).getValueAddr())
             if "counter" in d:
                 # The offset this side keeps beside a counter an array is indexed by, or (it keeps none) a dword nothing reads.
                 place = self.places.get(d["counter"])
@@ -4696,13 +4701,23 @@ class Lowering:
                     return labels[v["label"]]
                 if "epd" in v:
                     return epd(v["epd"])
+                if "addrOf" in v:
+                    # (The first cell of an EUDVArray, a trigger: a jump into cell i goes 72 i bytes on.)
+                    return unProxy(self.array(v["addrOf"], st).store) + v["plus"]
                 return element0(v["epdOf"])[0] + v["plus"]
             return v
 
+        def graph_temp(name):
+            """A scratch cell of the graph's: a variable of this side's, one for each name."""
+            key = ("temp", name)
+            if key not in self.graph_data:
+                self.graph_data[key] = EUDVariable(0)
+            return self.graph_data[key]
+
         def copy(id_, into):
             """The variable's cell into each dword (times its `scale`, plus its `add`): routed reads, a multiple worked
-            out once for all the dwords that take it."""
-            v = self.var(id_, st).get()
+            out once for all the dwords that take it. `@name`: a scratch cell of the graph's."""
+            v = graph_temp(id_[1:]) if id_.startswith("@") else self.var(id_, st).get()
             times = {1: v}
             for e in into:
                 k = int(e.get("scale", 1)) & U32

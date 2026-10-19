@@ -73,6 +73,7 @@ function bool(e: BoolExpr, env: Env): boolean {
     case "and": return e.items.every((x) => bool(x, env));
     case "or": return e.items.some((x) => bool(x, env));
     case "test": return num(e.expr, env) !== 0;
+    case "var": return (env.get(e.id) ?? 0) !== 0;
     case "compare": {
       const a = num(e.left, env), b = num(e.right, env);
       if (e.unsigned === true) return compare(e.op, a, b);
@@ -89,7 +90,29 @@ function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
   for (const s of list) {
     if (--budget.n < 0) throw new Error("too long");
     switch (s.kind) {
-      case "declare": env.set(s.decl.id, num(s.init as NumExpr, env)); break;
+      case "declare": env.set(s.decl.id, s.decl.kind === "boolean" ? (bool(s.init as BoolExpr, env) ? 1 : 0) : num(s.init as NumExpr, env)); break;
+      case "assignBool": env.set(s.target, bool(s.value, env) ? 1 : 0); break;
+      case "switch": {
+        const v = num(s.value, env) | 0;
+        let from = s.cases.findIndex((c) => c.value !== null && (c.value | 0) === v);
+        if (from < 0) from = s.cases.findIndex((c) => c.value === null);
+        if (from < 0) break;
+        let out: Flow = "next";
+        for (let i = from; i < s.cases.length; i++) {
+          const f = run(s.cases[i].body, env, budget);
+          if (f === "break") break;
+          if (f !== "next") { out = f; break; }
+        }
+        if (out !== "next") return out;
+        break;
+      }
+      case "unrolled": {
+        for (const it of s.iterations) {
+          const f = run(it, env, budget);
+          if (f === "break") break;
+        }
+        break;
+      }
       case "assign": env.set(s.target, num(s.value, env)); break;
       case "store": {
         const i = num(s.index, env), v = num(s.value as NumExpr, env);
@@ -130,7 +153,9 @@ const INDEXED = new Set<string>();
 const TABLE_EPD = (id: string) => 0x100000 * (1 + [...TABLES.keys(), ...WRITABLE.keys()].indexOf(id));
 /** A writable array's cells in the interpreter's memory: an EUDVArray's, 18 EPD apart. */
 const cellEpd = (id: string, i: number) => `epd:${TABLE_EPD(id) + 18 * i}`;
-const numOf = (n: Num): number => (typeof n === "number" ? n : u(TABLE_EPD(n.epdOf) + n.plus));
+/** Where an array's first cell is as a trigger (an EUDVArray's): a jump into cell i goes to this plus 72 i. */
+const ARRAY_ADDR = (id: string) => 0x40000000 + 0x1000000 * (1 + [...TABLES.keys(), ...WRITABLE.keys()].indexOf(id));
+const numOf = (n: Num): number => (typeof n === "number" ? n : "epdOf" in n ? u(TABLE_EPD(n.epdOf) + n.plus) : u(ARRAY_ADDR(n.addrOf) + n.plus));
 
 function key(d: Dword): string {
   if ("game" in d) return `game:${d.game}`;
@@ -139,6 +164,8 @@ function key(d: Dword): string {
   if ("element" in d) throw new Error("an element is read through a condition's player field");
   if ("param" in d) return `param:${d.param.fn}:${d.param.c ?? ""}:${d.index}`;
   if ("counter" in d) return `counter:${d.counter}:${d.part}`;
+  if ("getter" in d) return `getter:${d.getter}`;
+  if ("temp" in d) return `temp:${d.temp}`;
   const f = d.field;
   return f === "next" ? `${d.at}|next` : "cond" in f ? `${d.at}|cond:${f.cond}${f.part === "player" ? ":player" : ""}` : `${d.at}|act:${f.act}:${f.part}`;
 }
@@ -172,9 +199,22 @@ function exec(g: Graph, env: Env): Env {
   const read = (k: string) => mem.get(k) ?? 0;
   for (const e of g.entries) mem.set(key(e.into), u(Math.imul(e.scale ?? 1, env.get(e.from) ?? 0) + numOf(e.add)));
   const byLabel = new Map(g.triggers.map((t) => [t.label, t]));
-  let pc = g.triggers[0].label;
+  let pc: string | number = g.triggers[0].label;
   for (let steps = 0; pc !== END; steps++) {
     if (steps > 2_000_000) throw new Error("the graph does not end");
+    if (typeof pc === "number") {
+      // A jump into an EUDVArray's cell: it writes its value where eudplib's getter says, and goes where it says.
+      const at = pc;
+      const id = [...TABLES.keys(), ...WRITABLE.keys()].find((a) => at >= ARRAY_ADDR(a) && at < ARRAY_ADDR(a) + 72 * (TABLES.get(a)?.length ?? WRITABLE.get(a)!));
+      if (!id || (at - ARRAY_ADDR(id)) % 72) throw new Error(`a jump outside every array: ${at}`);
+      const i = (at - ARRAY_ADDR(id)) / 72;
+      const value = TABLES.has(id) ? u(TABLES.get(id)![i]) : (mem.get(cellEpd(id, i)) as number);
+      const dest = mem.get("getter:dest");
+      if (typeof dest !== "string" || !dest.startsWith("@")) throw new Error("the getter goes nowhere");
+      mem.set(dest.slice(1), value);
+      pc = mem.get("getter:next") as string;
+      continue;
+    }
     const t = byLabel.get(pc)!;
     if (t.island) {
       // As the Python side does: the statement on the variables' cells.
@@ -198,7 +238,8 @@ function exec(g: Graph, env: Env): Env {
       const r = f === "fmul_vars" ? fixedMul(arg(0), arg(1)) : f === "fdiv_vars" ? fixedDiv(arg(0), arg(1)) : f === "fmul_by" ? fixedMul(arg(0), c) : f === "fdiv_by" ? fixedDiv(c, arg(0)) : fixedDiv(arg(0), c);
       mem.set(key(t.call.into), u(r));
     }
-    for (const c of t.copy?.into ?? []) mem.set(key(c.dword), u(Math.imul(c.scale ?? 1, read(`var:${t.copy!.from}`) as number) + numOf(c.add)));
+    const from = t.copy && (t.copy.from.startsWith("@") ? `temp:${t.copy.from.slice(1)}` : `var:${t.copy.from}`);
+    for (const c of t.copy?.into ?? []) mem.set(key(c.dword), u(Math.imul(c.scale ?? 1, read(from!) as number) + numOf(c.add)));
     // The game stops at the first condition that fails; a masked one compares the dword's bits of the mask with the
     // number as it is.
     const holds = t.conds.every((c, k) => {
@@ -223,7 +264,7 @@ function exec(g: Graph, env: Env): Env {
       if (a.mask !== undefined && modifier === "set") { mem.set(d, Number((BigInt(old) & ~BigInt(a.mask) & 0xffffffffn) | (BigInt(v) & BigInt(a.mask)))); return; }
       mem.set(d, modifier === "set" ? v : modifier === "add" ? u(old + v) : Math.max(0, old - v));
     });
-    pc = read(`${t.label}|next`) as string;
+    pc = read(`${t.label}|next`) as string | number;
   }
   // (Those offsets still 72 and 18 times their counters.)
   for (const id of INDEXED) {
@@ -252,6 +293,7 @@ function program(seed: number) {
     return d;
   };
   const vars = ["a", "b", "c", "d", "e"].map(decl);
+  const flags = ["f", "g"].map((name) => { const d = decl(name); d.kind = "boolean"; return d; });
   // Two lists known when the program is built, a short one (the Python side's EUDVArray) and a long one (packed), and
   // a function that is one return of a cell of one.
   TABLES.clear();
@@ -300,7 +342,7 @@ function program(seed: number) {
     const x = r.int(10);
     if (depth > 1 || x < 6) return cmp();
     if (x < 8) return { kind: r.next() < 0.5 ? "and" : "or", items: [cond(depth + 1), cond(depth + 1), ...(r.next() < 0.3 ? [cond(depth + 1)] : [])] };
-    if (x < 9) return { kind: "not", expr: cond(depth + 1) };
+    if (x < 9) return r.next() < 0.5 ? { kind: "var", id: r.pick(flags).id } : { kind: "not", expr: cond(depth + 1) };
     return { kind: "test", expr: side(), at, label: "" };
   };
   const block = (depth: number, inLoop: boolean): Stmt[] => {
@@ -332,6 +374,19 @@ function program(seed: number) {
         const stored: NumExpr = r.next() < 0.2 ? { kind: "element", array: "W#w", index: v(r.pick(vars)), at } : r.next() < 0.5 ? value(t) : k(r.pick(EDGES));
         out.push({ kind: "store", array: "W#w", index, value: stored, at, label: "" });
       }
+      else if (x === 6 && r.next() < 0.5) {
+        // A boolean set from a test, a switch (falling through, break and continue in it), a loop the front end unrolled.
+        const y = r.next();
+        if (y < 0.4) out.push({ kind: "assignBool", target: r.pick(flags).id, value: cond(0), at, label: "" });
+        else if (y < 0.75 && depth < 3) {
+          const values = [r.pick([0, 1, 2, 3, -1, 7]), r.pick([0, 1, 2, 3, -1, 7]), r.pick([2, 5, 2147483647, -2147483648])];
+          const cases = values.map((value) => ({ value, body: [...block(depth + 1, true), ...(r.next() < 0.5 ? [{ kind: "break", at, label: "" } as Stmt] : [])] }));
+          if (r.next() < 0.5) cases.push({ value: null as unknown as number, body: block(depth + 1, true) });
+          out.push({ kind: "switch", value: r.next() < 0.7 ? v(r.pick(vars)) : bin("+", v(r.pick(vars)), k(1)), cases, at, label: "" } as Stmt);
+        } else if (depth < 3) {
+          out.push({ kind: "unrolled", iterations: [block(depth + 1, true), block(depth + 1, true)], at, label: "" } as Stmt);
+        }
+      }
       else if (x < 8 && depth < 3) out.push({ kind: "if", cond: cond(0), then: block(depth + 1, inLoop), ...(r.next() < 0.5 ? { else: block(depth + 1, inLoop) } : {}), at, label: "" });
       else if (x < 10 && depth < 2) out.push(...loop(depth + 1));
       else if (inLoop) out.push({ kind: "if", cond: cond(0), then: [{ kind: r.next() < 0.5 ? "break" : "continue", at, label: "" }], at, label: "" });
@@ -358,6 +413,7 @@ function program(seed: number) {
   // Small values often, so that indexes land inside the lists too.
   const env: Env = new Map(vars.map((d) => [d.id, u(r.next() < 0.4 ? r.int(20) : r.next() < 0.5 ? r.pick(EDGES) : Math.floor(r.next() * U32))]));
   for (let i = 0; i < W.length; i++) env.set(cellKey(W.id, i), u(r.pick(EDGES)));
+  for (const f of flags) env.set(f.id, r.int(2));
   return { decls, outer, env, arrays };
 }
 
@@ -393,6 +449,7 @@ describe("the emitter", () => {
     }
     if (process.env.EMITTER_LEFT) console.log(taken, stores, emitterCounts, [...left].sort((a, b) => b[1] - a[1]));
     expect(emitterCounts.reciprocals).toBeGreaterThan(200);
+    expect(emitterCounts.jumps).toBeGreaterThan(200);
     expect(emitterCounts.hoisted).toBeGreaterThan(200);
     expect(taken).toBeGreaterThan(3900);
     expect(stores).toBeGreaterThan(1000);

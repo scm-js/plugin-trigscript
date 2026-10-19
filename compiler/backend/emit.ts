@@ -144,6 +144,7 @@ class Scope {
         return true;
       }
       case "test": return this.bool(notZero(e.expr));
+      case "var": return this.bool(notZero({ kind: "var", id: e.id }));
       case "and": case "or": return e.items.every((x) => this.bool(x));
       case "not": return this.bool(e.expr);
       default: return this.no(`a ${e.kind}`);
@@ -158,7 +159,8 @@ class Scope {
   ok(id: string): boolean {
     if (isTemp(id)) return true;
     const d = this.decls.get(id);
-    return !!d && d.kind === "number" && !d.bits && d.task === undefined && !d.held;
+    // (A boolean is a cell holding 1 or 0, as a number is.)
+    return !!d && (d.kind === "number" || d.kind === "boolean") && !d.bits && d.task === undefined && !d.held;
   }
 
   stmts(list: Stmt[], inLoop: boolean): boolean {
@@ -244,13 +246,19 @@ class Scope {
   table(e: NumExpr): Table | null {
     if (e.kind !== "element") return null;
     const a = this.arrays.get(e.array) as (ArrayDecl & { packed?: unknown }) | undefined;
-    if (!a || !a.values || a.texts || a.dynamic || a.slice || a.through || a.task !== undefined || a.kind !== "number") return null;
-    // A trigger a bit the values have: worth it for small numbers (a maze's cells), not for a list with one below 0.
-    const bits = a.values.reduce((m, v) => (m | (v >>> 0)) >>> 0, 0).toString(2).replace(/0/g, "").length;
-    if (bits > TABLE_BITS) return null;
+    if (!a || a.kind !== "number") return null;
     const index = linear(e.index);
     if (!index || !index.terms.every((t) => this.ok(t.id))) return null;
-    return { array: a, index };
+    if (!a.values) {
+      // An array the program writes: a jump into its cell (the Python side's EUDVArray, a cell every 72 bytes).
+      return storable(a) && a.length <= VARRAY_MOST ? { array: a, index, jump: true } : null;
+    }
+    if (a.texts || a.dynamic || a.slice || a.through || a.task !== undefined) return null;
+    // A trigger a bit the values have: worth it for small numbers (a maze's cells); a jump into the cell for wider
+    // ones, when the Python side keeps them as an EUDVArray (a long list is dwords, packed: no cells to jump into).
+    const bits = a.values.reduce((m, v) => (m | (v >>> 0)) >>> 0, 0).toString(2).replace(/0/g, "").length;
+    if (bits <= TABLE_BITS) return { array: a, index };
+    return a.values.length < PACK_FROM ? { array: a, index, jump: true } : null;
   }
 
   /**
@@ -261,12 +269,14 @@ class Scope {
    */
   island(s: Stmt): boolean {
     let ok = true;
-    const walk = (x: unknown, loops: number): void => {
+    // (`loops`: the loops around, inside the statement; `breaks`: those and the switches, which a break also ends.)
+    const walk = (x: unknown, loops: number, breaks = loops): void => {
       if (!ok || !x || typeof x !== "object") return;
-      if (Array.isArray(x)) { x.forEach((y) => walk(y, loops)); return; }
+      if (Array.isArray(x)) { x.forEach((y) => walk(y, loops, breaks)); return; }
       const o = x as Record<string, unknown>;
       switch (o.kind) {
-        case "break": case "continue": if (loops === 0) ok = this.no(`a ${o.kind} out of a statement it cannot lower`); break;
+        case "break": if (breaks === 0) ok = this.no("a break out of a statement it cannot lower"); break;
+        case "continue": if (loops === 0) ok = this.no("a continue out of a statement it cannot lower"); break;
         case "return": case "sleep": case "parallel": case "start": case "try": case "throw": case "uncaught": case "graph":
           ok = this.no(`a ${o.kind} in a statement it cannot lower`);
           break;
@@ -274,8 +284,8 @@ class Scope {
           if (this.counters.some((c) => [...readIn(o.index as NumExpr)].some((id) => c.has(id)))) ok = this.no("an array read at the loop's counter");
           break;
       }
-      const inner = o.kind === "while" || o.kind === "for" || o.kind === "do" || o.kind === "unitLoop" || o.kind === "textLoop" || o.kind === "unrolled" || o.kind === "switch";
-      for (const v of Object.values(o)) if (v && typeof v === "object") walk(v, loops + (inner ? 1 : 0));
+      const inner = o.kind === "while" || o.kind === "for" || o.kind === "do" || o.kind === "unitLoop" || o.kind === "textLoop" || o.kind === "unrolled";
+      for (const v of Object.values(o)) if (v && typeof v === "object") walk(v, loops + (inner ? 1 : 0), breaks + (inner || o.kind === "switch" ? 1 : 0));
     };
     walk(s, 0);
     if (!ok) return false;
@@ -289,6 +299,12 @@ class Scope {
       case "block": return this.stmts(s.body, inLoop);
       case "declare": {
         if (!this.ok(s.decl.id)) return this.island(s);
+        if (s.decl.kind === "boolean") {
+          if (!this.test(s.init as BoolExpr)) return this.island(s);
+          this.declared.add(s.decl.id);
+          this.written.add(s.decl.id);
+          return true;
+        }
         const call = isTemp(s.decl.id) ? null : this.fixed(s.init as NumExpr);
         if (call) this.calls.set(s, call);
         else if (!this.lowers(s.init as NumExpr)) {
@@ -313,6 +329,22 @@ class Scope {
         this.written.add(s.target);
         return true;
       }
+      case "assignBool": {
+        if (!this.ok(s.target) || !this.test(s.value)) return this.island(s);
+        this.written.add(s.target);
+        return true;
+      }
+      case "switch": {
+        const v = side(s.value);
+        if (!v || ("mask" in v && v.mask !== undefined) || s.cases.some((c) => c.value !== null && typeof c.value !== "number")) return this.island(s);
+        if ("id" in v) {
+          if (!this.ok(v.id)) return this.island(s);
+          this.read.add(v.id);
+        }
+        // (A break inside ends the switch; a continue is the loop's around it.)
+        return s.cases.every((c) => this.stmts(c.body, true));
+      }
+      case "unrolled": return s.iterations.every((it) => this.stmts(it, true));
       case "if": return this.test(s.cond) ? this.stmts(s.then, inLoop) && this.stmts(s.else ?? [], inLoop) : this.island(s);
       case "while": return (!s.cond || this.test(s.cond)) ? this.stmts(s.body, true) : this.island(s);
       case "do": return this.test(s.cond) ? this.stmts(s.body, true) : this.island(s);
@@ -365,15 +397,19 @@ interface WriteAct { into: Place; modifier: "set" | "add"; value: Num; reads?: R
  * `base`, the EPD of that array's first cell (a condition's player field reading a cell at an index).
  */
 interface Read { id: string; scale: number; add: number; base?: string }
-/** A cell of a list known when the map is built, at an index the emitter lowers. */
-interface Table { array: ArrayDecl; index: Linear }
+/**
+ * A cell of an array at an index the emitter lowers: of a list known when the map is built, read a bit at a time where
+ * it is; or (`jump`) of an EUDVArray, the walk sent into the cell, which writes its value out through eudplib's getter.
+ */
+interface Table { array: ArrayDecl; index: Linear; jump?: boolean }
 /** A sum the emitter lowers shifted right by a constant: `>>` keeps the sign, `>>>` reads from 0 up. */
 interface Shift { of: Linear; by: number; signed: boolean }
 /** A store into a cell of one of the program's arrays: its index, and its value with the cells it reads first. */
 interface Store { array: ArrayDecl; index: Linear; reads: { id: string; table?: Table; shift?: Shift }[]; value: Linear }
 /** (`at` on a copy or a call: the statement it is for, when its trigger is another's.) */
-type Item = { act: Act } | { write: Write } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At };
-interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number }
+type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At };
+/** `keep`: an empty trigger that stays (a jump whose next pointer a place sets). */
+interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean }
 
 /**
  * A place of a variable: a dword that holds it times `scale` plus `add` (wrapping) — known (its cell, a home, a
@@ -418,7 +454,8 @@ function linearExpr(l: Linear): NumExpr {
 }
 
 /** A constant plus an array's first cell's EPD, as an action's number. */
-const num = (n: number, base?: string): Num => (base ? { epdOf: base, plus: n } : n);
+/** (A base `addr:<id>` is the address of an array's first cell, a trigger; any other the EPD of its first cell's value.) */
+const num = (n: number, base?: string): Num => (!base ? n : base.startsWith("addr:") ? { addrOf: base.slice(5), plus: n } : { epdOf: base, plus: n });
 
 class Emitter {
   protos: Proto[] = [];
@@ -433,6 +470,8 @@ class Emitter {
   condReads = new Map<Cond, Read>();
   /** A condition whose player field is a place of what it reads: the index of a table's cell. */
   condPlayers = new Map<Cond, Read>();
+  /** A jump into an EUDVArray's cell: its trigger's next pointer, a place of the index. */
+  jumpReads = new Map<string, Read>();
   /** A store's action: its destination a place of the index, its number (when not a constant) a place of the value. */
   actPlaces = new Map<Act, { dest?: Read; value?: Read }>();
   /** The variables of the emitter's own (a table's index), which have no cell on the Python side. */
@@ -488,7 +527,7 @@ class Emitter {
   }
 
   push(p: Omit<Proto, "label"> & { label?: string }): Proto {
-    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.loops.length };
+    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.loops.length, ...(p.keep ? { keep: true } : {}) };
     this.protos.push(t);
     return t;
   }
@@ -604,6 +643,7 @@ class Emitter {
     if (e.kind === "const") return e.value === when ? "true" : "false";
     if (e.kind === "not") return this.single(e.expr, !when);
     if (e.kind === "test") return this.single(notZero(e.expr), when);
+    if (e.kind === "var") return this.single(notZero({ kind: "var", id: e.id }), when);
     if ((e.kind === "and" && when) || (e.kind === "or" && !when)) {
       const parts = e.items.map((x) => this.single(x, when));
       if (parts.some((p) => p === null)) return null;
@@ -626,6 +666,7 @@ class Emitter {
         return;
       case "not": return this.jump(e.expr, !when, to, at);
       case "test": return this.jump(notZero(e.expr), when, to, at);
+      case "var": return this.jump(notZero({ kind: "var", id: e.id }), when, to, at);
       case "and": case "or": {
         if ((e.kind === "and") !== when) {
           for (const x of e.items) this.jump(x, when, to, at);
@@ -682,9 +723,11 @@ class Emitter {
     switch (s.kind) {
       case "remark": return;
       case "block": return this.stmts(s.body);
-      case "declare": case "assign": case "if": case "while": case "for": case "do":
+      case "declare": case "assign": case "if": case "while": case "for": case "do": case "assignBool": case "switch": case "store":
         if (this.scope.islands.has(s)) return this.left(s);
     }
+    if (s.kind === "declare" && s.decl.kind === "boolean") return this.setBool(s.decl.id, s.init as BoolExpr);
+    if (s.kind === "assignBool") return this.setBool(s.target, s.value);
     const call = this.scope.calls.get(s);
     if (call && (s.kind === "declare" || s.kind === "assign") && call.fn.fn === "fdiv_by" && NATIVE.fdiv_by) {
       return this.reciprocal(call.fn.c!, call.args[0], s.kind === "declare" ? s.decl.id : s.target);
@@ -761,6 +804,38 @@ class Emitter {
         this.land(exit);
         return;
       }
+      case "switch": {
+        // A test of the value against each case, in order; the bodies one after another (a case falls into the next).
+        const end = this.label("swend"), at = s.at;
+        const labels = s.cases.map(() => this.label("case"));
+        s.cases.forEach((c, i) => {
+          if (c.value !== null) this.jump({ kind: "compare", op: "==", left: s.value, right: { kind: "const", value: c.value }, at, label: s.label }, true, labels[i], at);
+        });
+        const fallback = s.cases.findIndex((c) => c.value === null);
+        this.goto(fallback >= 0 ? labels[fallback] : end);
+        const outer = this.loops[this.loops.length - 1];
+        this.loops.push({ cont: outer?.cont ?? end, exit: end });
+        s.cases.forEach((c, i) => {
+          this.land(labels[i]);
+          this.stmts(c.body);
+        });
+        this.loops.pop();
+        this.land(end);
+        return;
+      }
+      case "unrolled": {
+        // Each turn as it is: a continue goes to the next, a break past the last.
+        const end = this.label("unend");
+        for (const it of s.iterations) {
+          const next = this.label("unnext");
+          this.loops.push({ cont: next, exit: end });
+          this.stmts(it);
+          this.loops.pop();
+          this.land(next);
+        }
+        this.land(end);
+        return;
+      }
       case "break": return this.goto(this.loops[this.loops.length - 1].exit);
       case "continue": return this.goto(this.loops[this.loops.length - 1].cont);
       default: return this.left(s);
@@ -777,6 +852,7 @@ class Emitter {
    * EPD), a longer one as dwords one after another (`packed`).
    */
   readTable(target: string, t: Table, at?: At): void {
+    if (t.jump) return this.readJump(target, t, at);
     const stride = (t.array.values!.length >= PACK_FROM ? 1 : 18);
     this.arrays.set(t.array.id, stride);
     const index = `${this.key}.i${this.n++}`;
@@ -792,6 +868,33 @@ class Emitter {
       this.push({ conds: [{ ...inside }, cell], items: [{ bump: { target, add: u(2 ** j) } }], at });
     }
     this.open().items.push({ copy: target, ...(this.at ? { at: this.at } : {}) });
+  }
+
+  /**
+   * A cell of an EUDVArray into `target`, by a jump into it: eudplib's getter (which every cell goes to, writing its
+   * value into it) pointed at a scratch cell and back here; a trigger whose next pointer is a place of the index (the
+   * address of the first cell, 72 bytes a cell) sends the walk into the cell; an index outside the array (read from 0
+   * up) skips to a 0. The scratch cell is then copied into the target's places.
+   */
+  readJump(target: string, t: Table, at?: At): void {
+    emitterCounts.jumps++;
+    this.arrays.set(t.array.id, VARRAY_STRIDE_EPD);
+    let index: string;
+    if (t.index.c === 0 && t.index.terms.length === 1 && t.index.terms[0].k === 1) index = t.index.terms[0].id;
+    else {
+      index = `${this.key}.ji${this.n++}`;
+      this.own.add(index);
+      this.write(index, t.index, false);
+    }
+    const temp = `${this.key}.jt${this.n++}`, back = this.label("jback"), out = this.label("jout"), jump = this.label("jmp");
+    this.open().items.push({ act: { dword: { getter: "dest" }, modifier: "set", value: { epd: { temp } } } }, { act: { dword: { getter: "next" }, modifier: "set", value: { label: back } } });
+    this.jump({ kind: "compare", op: ">=", left: { kind: "var", id: index }, right: { kind: "const", value: t.array.length }, unsigned: true, at: at!, label: "" } as BoolExpr, true, out, at);
+    this.push({ label: jump, conds: [], items: [], next: back, keep: true, at });
+    this.jumpReads.set(jump, { id: index, scale: 72, add: 0, base: `addr:${t.array.id}` });
+    this.land(out);
+    this.push({ conds: [], items: [{ act: { dword: { temp }, modifier: "set", value: 0 } }], next: back, at });
+    this.land(back);
+    this.open().items.push({ fill: { temp, target } });
   }
 
   /**
@@ -824,6 +927,17 @@ class Emitter {
       this.land(past);
     }
     this.open().items.push({ copy: target });
+  }
+
+  /** A boolean set from a test: 1 when it holds, 0 when not. */
+  setBool(target: string, cond: BoolExpr): void {
+    const no = this.label("bno"), done = this.label("bdone");
+    this.jump(cond, false, no, this.at);
+    this.write(target, { c: 1, terms: [] });
+    this.goto(done);
+    this.land(no);
+    this.write(target, { c: 0, terms: [] });
+    this.land(done);
   }
 
   /**
@@ -1082,8 +1196,12 @@ class Emitter {
       if (q) this.placesOf(q.id).push({ dword: { at: p.label, field: { cond: k, part: "player" } }, scale: q.scale, add: q.add, base: q.base });
     });
     // A store's destination and number are places of its index and value: its trigger keeps its label (it has a
-    // condition), its actions follow the puts-back that land there.
+    // condition), its actions follow the puts-back that land there. A jump's next pointer is a place of its index.
     const pinned = new Set<string>();
+    for (const [label, r] of this.jumpReads) {
+      this.placesOf(r.id).push({ dword: { at: label, field: "next" }, scale: r.scale, add: r.add, base: r.base });
+      pinned.add(r.id);
+    }
     for (const p of this.protos) {
       let k = this.restores.get(p.label)?.length ?? 0;
       for (const it of p.items) {
@@ -1113,7 +1231,7 @@ class Emitter {
     const alias = new Map<string, string>();
     const kept: Proto[] = [];
     for (const p of this.protos) {
-      if (p.conds.length === 0 && p.items.length === 0 && !this.restores.get(p.label)?.length) alias.set(p.label, p.next!);
+      if (p.conds.length === 0 && p.items.length === 0 && !p.keep && !this.restores.get(p.label)?.length) alias.set(p.label, p.next!);
       else kept.push(p);
     }
     const resolve = (l: string): string => {
@@ -1172,9 +1290,10 @@ class Emitter {
     const later: { t: Trigger; k: number; w: WriteAct }[] = [];
     const copies: { t: Trigger; id: string }[] = [];
     const refreshes: { t: Trigger; places: (Place | WriteAct)[] }[] = [];
+    const fills: { t: Trigger; target: string }[] = [];
     let n = 0;
     for (const p of kept) {
-      type Piece = { acts: (Act | WriteAct)[] } | { copy: string; at?: At } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] };
+      type Piece = { acts: (Act | WriteAct)[] } | { fill: { temp: string; target: string } } | { copy: string; at?: At } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] };
       const pieces: Piece[] = [{ acts: [] }];
       const acts = () => {
         const last = pieces[pieces.length - 1];
@@ -1192,6 +1311,7 @@ class Emitter {
           if (!copied.has(it.bump.target) && ps.length > MOST_ACTS - 1) this.crowded.add(it.bump.target);
           for (const into of copied.has(it.bump.target) ? ps.slice(0, 1) : ps) acts().push({ into, modifier: "add", value: mul(into.scale, it.bump.add) } as WriteAct);
         }
+        else if ("fill" in it) pieces.push({ fill: it.fill });
         else if ("copy" in it) { if (copied.has(it.copy) && !routed.has(it.copy)) pieces.push({ copy: it.copy, ...(it.at ? { at: it.at } : {}) }); }
         else if ("call" in it) pieces.push({ call: it.call, ...(it.at ? { at: it.at } : {}) });
         else {
@@ -1248,6 +1368,12 @@ class Emitter {
           made.push(t);
           continue;
         }
+        if ("fill" in piece) {
+          const t: Trigger = { label: label(), conds: [], acts: [], copy: { from: `@${piece.fill.temp}`, into: [] }, ...(p.at ? { at: p.at } : {}) };
+          fills.push({ t, target: piece.fill.target });
+          made.push(t);
+          continue;
+        }
         if ("copy" in piece) {
           const at = piece.at ?? p.at;
           made.push({ label: label(), conds: [], acts: [], copy: { from: piece.copy, into: [] }, ...(at ? { at } : {}) });
@@ -1281,7 +1407,7 @@ class Emitter {
       const last = made[made.length - 1];
       if (last.copy || last.island || last.call) made.push({ label: `${this.key}.cut${n++}`, conds: [], acts: [] });
       made.forEach((t, i) => {
-        if (t.copy) { if (!refreshes.some((r) => r.t === t)) copies.push({ t, id: t.copy.from }); }
+        if (t.copy) { if (!refreshes.some((r) => r.t === t) && !fills.some((f) => f.t === t)) copies.push({ t, id: t.copy.from }); }
         else if (!t.island && !t.call) t.next = i === made.length - 1 ? to(p.next!) : made[i + 1].label;
       });
       triggers.push(...made);
@@ -1294,6 +1420,8 @@ class Emitter {
       if ("into" in pl) t.copy!.into.push({ dword: at.get(pl)!, add: num(pl.reads!.add, pl.reads!.base), ...(pl.reads!.scale !== 1 ? { scale: pl.reads!.scale } : {}) });
       else t.copy!.into.push({ dword: dwordOf(pl), add: num(pl.add, pl.base), ...(pl.scale !== 1 ? { scale: pl.scale } : {}) });
     }
+    // A scratch cell into every place of what reads it (a variable of the emitter's own: its home too).
+    for (const { t, target } of fills) for (const p of this.placesOf(target)) t.copy!.into.push({ dword: dwordOf(p), add: num(p.add, p.base), ...(p.scale !== 1 ? { scale: p.scale } : {}) });
     // A copied variable's copies: every place but its cell.
     for (const { t, id } of copies) for (const p of this.placesOf(id).slice(1)) t.copy!.into.push({ dword: dwordOf(p), add: num(p.add, p.base), ...(p.scale !== 1 ? { scale: p.scale } : {}) });
     // Every way out of the graph passes one trigger at its end, where the branches that went there are put back.
@@ -1596,6 +1724,18 @@ class Rewriter {
         return [s.kind === "for" ? { ...s, cond: undefined, body: [...pre, leave, ...body], update } : { ...s, cond: undefined, body: [...pre, leave, ...body] }];
       }
       case "do": return [{ ...s, body: this.stmts(s.body) }];
+      case "unrolled": return [{ ...s, iterations: s.iterations.map((it) => this.stmts(it)) }];
+      case "switch": {
+        const pre: Stmt[] = [];
+        const value = side(s.value) ? s.value : this.side(this.flat(s.value, pre, where), pre, where);
+        const out: Stmt = { ...s, value, cases: s.cases.map((c) => ({ ...c, body: this.stmts(c.body) })) };
+        return pre.length && this.take([...pre]) ? [...pre, out] : [{ ...s, cases: s.cases.map((c) => ({ ...c, body: this.stmts(c.body) })) }];
+      }
+      case "assignBool": {
+        const pre: Stmt[] = [];
+        const value = this.cond(s.value, pre, where);
+        return pre.length ? keep([...pre, { ...s, value }]) : [s];
+      }
       default: return [s];
     }
   }
@@ -1637,7 +1777,7 @@ function inlined(x: unknown, functions: Map<string, FuncDecl>, depth = 0): unkno
  * it took. A per-player program is not looked at yet (its variables are rows), nor a task's (its variables are slots).
  */
 /** How often the emitter did what is worth counting, for its tests: loops with values computed once on the way in. */
-export const emitterCounts = { hoisted: 0, reciprocals: 0 };
+export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0 };
 
 /** One loop lowered to a graph, or why it is not. `decls`: every variable of the program, by id. */
 export function emitLoop(loop: Stmt, decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), indexed = new Set<string>(), arrays = new Map<string, ArrayDecl>()): Graph | string {
@@ -1677,7 +1817,7 @@ export function emitLoop(loop: Stmt, decls: Map<string, VarDecl>, key: string, f
   rw.hoist = null;
   // (What is computed ahead must be the emitter's own whole, or the loop is rewritten again computing it where it was.)
   if (hoisted.length && !take(hoisted)) rewritten = new Rewriter(`${key}r`, take).stmt(shaped)[0];
-  if (rewritten.kind !== "while" && rewritten.kind !== "for" && rewritten.kind !== "do") return "not a loop";
+  if (rewritten.kind !== "while" && rewritten.kind !== "for" && rewritten.kind !== "do" && rewritten.kind !== "unrolled") return "not a loop";
   const s: Stmt = hoisted.length && take(hoisted) ? { kind: "block", body: [...hoisted, rewritten], at: rewritten.at } : rewritten;
   if (s.kind === "block") emitterCounts.hoisted++;
   if (!scope.stmt(s, false) || scope.islands.has(s) || scope.islands.has(rewritten)) return scope.why || "?";
@@ -1729,7 +1869,7 @@ export function emitGraphs(program: Program, report?: (line: string) => void): n
   const visit = (list: Stmt[]): void => {
     for (let i = 0; i < list.length; i++) {
       const s = list[i];
-      if (s.kind === "while" || s.kind === "for" || s.kind === "do") {
+      if (s.kind === "while" || s.kind === "for" || s.kind === "do" || s.kind === "unrolled") {
         const g = emitLoop(s, decls, `g${taken}`, functions, indexed, arrays);
         if (typeof g === "string") report?.(`emitter: left the loop at line ${s.at?.line}: ${g}`);
         else {

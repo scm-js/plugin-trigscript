@@ -33,7 +33,14 @@ export type Dword =
    * 18 times it in EPD — stepped by the Python side's own stores of the counter, by the graph's writes when the graph
    * writes it. A dword that is never read when the Python side keeps no such offset.
    */
-  | { counter: string; part: "bytes" | "dwords" };
+  | { counter: string; part: "bytes" | "dwords" }
+  /**
+   * eudplib's getter, which an EUDVArray's cell goes to after writing its value into it: the dword its action writes
+   * (`dest`, an EPD) and where it goes after (`next`) — set before the walk is sent into a cell.
+   */
+  | { getter: "dest" | "next" }
+  /** A scratch cell of the graph's (a variable of the Python side's it makes): where a cell's value comes out. */
+  | { temp: string };
 
 /**
  * One of the Python side's fixed-point functions (part 3): a product or a quotient of two variables, or of one and a
@@ -50,8 +57,11 @@ export type Field = { cond: number; part?: "value" | "player" } | { act: number;
 export type Compare = "atLeast" | "atMost" | "exactly";
 export type Modifier = "set" | "add" | "subtract";
 
-/** A number known when the map is made: a constant, or the EPD of an array's first cell's value plus a constant. */
-export type Num = number | { epdOf: string; plus: number };
+/**
+ * A number known when the map is made: a constant, or the EPD of an array's first cell's value plus a constant, or the
+ * address of an EUDVArray's first cell (a trigger: what a jump into a cell goes to) plus a constant.
+ */
+export type Num = number | { epdOf: string; plus: number } | { addrOf: string; plus: number };
 
 /**
  * A number an action writes: one known when the map is made, where a label is (a trigger's address), or the EPD of a
@@ -87,6 +97,7 @@ export interface Call extends FixedFn { into: Dword }
  * the way the Python side routes a read. What a variable whose writes cannot be laid out into all its places (one set
  * from itself, two that read each other) does after each write.
  */
+/** `from`: a variable's id, or (`@…`) a scratch cell of the graph's (`{ temp }`). */
 export interface Copy { from: string; into: { dword: Dword; add: Num; scale?: number }[] }
 
 /*
