@@ -27,6 +27,8 @@ import { STDLIB, stdlibImports, stdlibPath } from "./stdlib";
 import { checkProgram } from "./eud";
 import { checkLocal } from "./local";
 import { typeNumbers } from "./numbers";
+import { rangeNumbers } from "./ranges";
+import { emitGraphs } from "./backend/emit";
 import { markRecursion, settleRecursion } from "./recursion";
 import { inputPlan, inputsOf, numberSyncSlots, type InputPlan } from "./input";
 import { declarations, programDeclarations, type Program } from "./ir";
@@ -173,6 +175,12 @@ export interface CompileOptions {
   lib: string;
   /** Run the script's tests after a compile that went through: the world they start from, and which of them. Absent: they are listed and not run. */
   tests?: TestRunOptions;
+  /** false: no value ranges (`ranges.ts`) — what a test compares a program with them against. */
+  ranges?: boolean;
+  /** false: no loop is lowered by the emitter (`backend/emit.ts`), all by the Python side — what a test or a bench compares against. */
+  emitter?: boolean;
+  /** Told which loops the emitter took and which it left, and why. */
+  emitterReport?: (line: string) => void;
 }
 
 export { LowerError };
@@ -489,6 +497,8 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     if (entry.options.name) emitted.program.name = entry.options.name;
     // What every number is read as, written into the operations that care, before anything looks at the program.
     const mixes = typeNumbers(emitted.program);
+    // The values each number can take, for the lowering to take only the bits a value has.
+    if (options.ranges !== false) rangeNumbers(emitted.program);
     syncSlots += numberSyncSlots(emitted.program, syncSlots);
     markRecursion(emitted.program);
     // A function that calls itself keeps its variables on the stack, and an environment's references would not be counted there.
@@ -505,6 +515,8 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
     const local = checkLocal(emitted.program);
     // Checked as the script wrote it; only then is a function that calls itself taken apart into what a backend can re-enter.
     const recursion = settleRecursion(emitted.program);
+    // The loops the emitter takes, lowered to triggers of its own (the statements kept for the simulator).
+    if (options.emitter !== false) emitGraphs(emitted.program, options.emitterReport);
     for (const d of [...mixes, ...check.errors, ...local.errors, ...recursion]) {
       if (planned.has(`${d.at.file}:${d.at.line}`)) continue;
       diagnostics.push({ file: d.at.file, line: d.at.line, column: d.at.column, endLine: d.at.line, endColumn: d.at.column + 1, message: d.message, source: "compiler" });

@@ -8,8 +8,11 @@
  */
 import type { ActionRecord, ConditionRecord } from "../vendor/triggers";
 import type { InputSource } from "./input";
+import type { Graph } from "./backend/graph";
 
 /**
+ * 26: a `graph` statement — a loop the emitter (`backend/emit.ts`) lowered to triggers of its own, which a backend makes as they are; `original` is the loop, for what does not lower (the simulator).
+ * 25: value ranges — `range` on a number of the IR, `[lowest, highest]` of its signed reading, which `ranges.ts` found it can never leave (absent: any 32 bits). A backend may take only the bits a range has; it is never told anything that is not so, and one that reads no ranges does what it did.
  * 24: closures over locals — `VarDecl.held`: a variable that holds a reference the closures count, read by its own `declare` (what it held is let go of) and so 0 before it was ever declared. Everything else of closures is the front end's: an environment is a row of arrays of the program, and the counting is statements.
  * 22: exceptions — `taskHandle`, the number of the task an expression runs in; `try` (a body, and the statements that run when an error is thrown in it), `throw` (the error in flight goes to the nearest `try` around it, out through the calls it is in), `uncaught` (the error in flight is said in red and given up), and `Program.errors`, the variables an error in flight is kept in. A called function that may throw returns at once with the error in flight, and its call goes on to the nearest `try`. A function that calls itself throws a `RangeError` when the stack runs out, where it used to stop the program.
  * 21: functions as values — `fn` on a `const`: the number is a function's, the id of the `FuncDecl` it runs, which is what keeps that function in the map. A call through such a number is a call of a function the front end made (a *dispatcher*, a `switch` on its first parameter), so no new kind of statement. A function may now be called, and so lowered, before a variable it uses is declared: a backend makes a variable where it is first used.
@@ -33,7 +36,7 @@ import type { InputSource } from "./input";
  * 3: reads (`read`), `random(n)` as a number, the bitwise operators and `print` with its text in parts.
  * 2: a record's text and sound are written out in the JSON (1 had the map's string indices); `cyclesPerSecond` is gone.
  */
-export const IR_VERSION = 24;
+export const IR_VERSION = 26;
 
 /** The most a buffer of `buildText` holds, in bytes; python/trigscript.py has the same number. Past it the text is cut. */
 export const BUILD_BYTES = 2047;
@@ -257,6 +260,11 @@ export const I32_MAX = 0x7fffffff;
 export const I32_MIN = -0x80000000;
 export const U32_MAX = 0xffffffff;
 
+/**
+ * A number of the IR. Any of them may carry `range: [lo, hi]` (IR 25): `ranges.ts` found its signed reading always
+ * between the two, both included. It is a promise a backend may lean on — take only the bits a value can have, drop a
+ * check that cannot fail — and never needs to.
+ */
 export type NumExpr =
   /** `fixed`: a 16.16 number, `value` its raw cell (the value times 65 536); `numbers.ts` reads it so, a backend takes `value` as it is. */
   /** `fn`: the number is a function kept as a value (B3), the id of the function it stands for — what keeps that function in the map. */
@@ -637,7 +645,9 @@ export type Stmt =
    */
   | { kind: "uncaught"; at: At; label: string }
   /** A word for the editor about a line: a loop unrolled when the script was built. */
-  | { kind: "remark"; text: string; short?: string; at: At };
+  | { kind: "remark"; text: string; short?: string; at: At }
+  /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */
+  | { kind: "graph"; graph: Graph; original: Stmt[]; at: At; label: string };
 
 export interface Program {
   version: number;
@@ -761,6 +771,7 @@ export function declarations(body: Stmt[]): VarDecl[] {
       case "call": call(s.call); break;
       case "block": s.body.forEach(stmt); break;
       case "try": s.body.forEach(stmt); s.catch.forEach(stmt); break;
+      case "graph": s.original.forEach(stmt); break;
       default: break;
     }
   };

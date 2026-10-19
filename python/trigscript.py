@@ -69,7 +69,7 @@ from eudplib import *
 from eudplib.core.mapdata.stringmap import ForceAddString
 from eudplib.memio.rwcommon import br1, br2, bw1
 
-IR_VERSION = 24
+IR_VERSION = 26
 FRAMES_PER_SECOND = 24
 # Where the game keeps what a read reads (1.16.1 addresses, which Remastered emulates). The player
 # tables are the ones Magenta's probes 5 and 8 read in the game.
@@ -131,6 +131,479 @@ with open(settings["ir"], encoding="utf-8") as _f:
     IR = json.load(_f)
 if IR.get("version") != IR_VERSION:
     raise RuntimeError("trigscript: the IR is version %r; this plugin reads version %d" % (IR.get("version"), IR_VERSION))
+
+
+# ── Static routing (TrigScript 4, the backend's first part) ──
+# eudplib keeps a variable as a trigger of one action, SetDeaths(dest, modifier, value), and reads it by routing:
+# three actions set that action's destination and modifier and the trigger's next pointer, then the walk goes through
+# it. In a played frame of the bullets bench that routing was half the time (scripts/trigger-shapes.mts). Here every
+# copy of a variable this file made (SeqCompute, and everything eudplib does through it: <<, +=, a call's arguments)
+# is lowered as a *site* — whatever came before jumps to a Forward, then a setup trigger with the routing, then the
+# cells, then what follows — and what eudplib itself does to a cell (its vtable, its destination, its mask, its
+# modifier asked for anywhere else) is counted. Once the whole program is lowered (`decide`, at the end of
+# afterTriggerExec), a cell read at exactly one site and touched nowhere else needs no routing at all: its destination,
+# modifier and next pointer are written into the variable buffer as the map is built (they never change), and the site
+# jumps straight into its cells. Any other site keeps its setup. Only variables this file made directly take part:
+# eudplib's own (a function's parameters and results, its pooled temporaries) are shared by many places it cannot see.
+# The `staticRouting` setting "0" leaves everything to eudplib, to weigh what this gives.
+import sys as _sys
+import eudplib.core.variable.eudv as _eudv
+import eudplib.core.variable.vbuf as _vbuf
+from eudplib.utils import unProxy as _unproxy_r
+
+
+class _Region:
+    """Where code is being lowered: a loop of the IR (`loop`), or code that runs apart from what is around it — a
+    coroutine (a program's body, a task, a branch of a parallel), a function's body, a scope of triggers apart."""
+
+    def __init__(self, kind):
+        self.kind = kind
+        self.waits = False  # a loop that sleeps or waits: anything else may run before it goes on
+        self.unknown = False  # a loop that calls something whose body this cannot see (a function that calls itself)
+        self.calls = set()  # the functions (EUDFuncN ids) called from here
+        self.entry = self.after = None  # a loop's way in, which the hoisted routing goes in front of
+        self.hoist = []
+        self.copies = []  # (variable, its copy for one site of the loop), filled on the way in
+
+
+class _Routing:
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.on = False
+        self.emitting = 0
+        self.reading = 0  # inside a condition's own making: a value read, not written
+        self.ours = {}  # id -> the variable, for the variables this file made while lowering
+        self.touches = {}  # id -> where something other than a site asked for one of its routing fields
+        self.writes = {}  # id -> where its value's address was asked for other than to read it in a condition
+        self.sites = {}  # id -> the groups it is read in
+        self.groups = []
+        self.static = {}  # a cell's VariableTriggerForward -> (dest, modifier byte, next)
+        self.stack = []  # (barrier or loop regions) innermost last
+        self.main = _Region("main")
+        self.functions = {}  # id of an EUDFuncN -> the region of its body
+        self.loops = []
+        self.names = {}  # id -> the name of the script's variable it is, for the report
+        self.why_touched = {}  # id -> where it was touched, for the report
+        self.made_at = {}  # id -> where it was made, for the report
+        self.stats = {"groups": 0, "bare groups": 0, "cells": 0, "static": 0, "hoisted": 0, "replicas": 0, "loops": 0}
+
+    def where(self):
+        """(the region the code runs in apart from the rest, the loops around it in that region, outermost first)."""
+        loops = []
+        for r in reversed(self.stack):
+            if r.kind != "loop":
+                return r, tuple(reversed(loops))
+            loops.append(r)
+        return self.main, tuple(reversed(loops))
+
+    def touched(self, v):
+        if self.on and not self.emitting:
+            k = id(v)
+            if k in self.ours:
+                self.touches.setdefault(k, []).append(self.where())
+                if settings.get("routingReport") and k in self.names:
+                    f, chain = _sys._getframe(2), []
+                    while f is not None and len(chain) < 6:
+                        chain.append("%s:%d" % (f.f_code.co_name, f.f_lineno))
+                        f = f.f_back
+                    self.why_touched.setdefault(k, set()).add(" < ".join(chain))
+
+    def wrote(self, v):
+        if self.on and not self.emitting and not self.reading:
+            k = id(v)
+            if k in self.ours:
+                self.writes.setdefault(k, []).append(self.where())
+
+    def called(self, fn):
+        if self.on:
+            apart, loops = self.where()
+            apart.calls.add(id(fn))
+            for r in loops:
+                r.calls.add(id(fn))
+
+    def waited(self):
+        if self.on:
+            for r in self.where()[1]:
+                r.waits = True
+
+    def unknown_call(self):
+        if self.on:
+            for r in self.where()[1]:
+                r.unknown = True
+
+    def reached(self, calls):
+        """The regions of the functions these calls reach, those they call in turn included."""
+        out, todo = [], list(calls)
+        seen = set()
+        while todo:
+            f = todo.pop()
+            if f in seen:
+                continue
+            seen.add(f)
+            r = self.functions.get(f)
+            if r is not None:
+                out.append(r)
+                todo.extend(r.calls)
+        return out
+
+    def plan_for(self, v, r):
+        """What loop r can do for v's reads in it: "hoist" (one site in it: its routing set once in front of it),
+        "replicas" (several sites, and nothing in it writes v: a copy of v a site, each copy routed for good and filled
+        in front of it), or why not. Nothing that runs between the loop's way in and its way out may route v (or, for
+        copies, write it) but those sites: not the loop's own code, not a function it calls, and — when it waits —
+        nothing outside it in another coroutine, since anything may run while it waits."""
+        k = id(v)
+        groups, touches, writes = self.sites[k], self.touches.get(k, []), self.writes.get(k, [])
+        if r.unknown:
+            return "calls a function that calls itself"
+        inside = [h for h in groups if r in h["ctx"][1]]
+        if any(r in t[1] for t in touches):
+            return "touched in the loop"
+        fns = self.reached(r.calls)
+        if any(h["ctx"][0] in fns for h in groups) or any(t[0] in fns for t in touches):
+            return "a function the loop calls routes it"
+        if r.waits:
+            apart = inside[0]["ctx"][0]
+            if any(h["ctx"][0] is not apart for h in groups) or any(t[0] is not apart for t in touches):
+                return "waits, and other code routes it"
+        if len(inside) == 1:
+            return "hoist"
+        if any(r in w[1] for w in writes) or any(w[0] in fns for w in writes):
+            return "read at %d sites and written in the loop" % len(inside)
+        if r.waits and any(w[0] is not inside[0]["ctx"][0] for w in writes):
+            return "waits, and other code writes it"
+        return "replicas"
+
+    def choice(self, v, g):
+        """For v in group g: ("static", None), (\"hoist\" or "replicas", the outermost loop that can), or (None, why not)."""
+        k = id(v)
+        if len(self.sites[k]) == 1 and not self.touches.get(k):
+            return "static", None
+        whys = []
+        for r in g["ctx"][1]:
+            how = self.plan_for(v, r)
+            if how in ("hoist", "replicas"):
+                return how, r
+            whys.append(how)
+        return None, "; ".join(whys) if whys else "read at %d sites, outside any loop" % len(self.sites[k])
+
+    def decide(self):
+        """Each group whose cells all need no routing at its site goes in bare: a cell read there and nowhere else is
+        routed in the variable buffer for good; one that is the only read inside a loop has its routing set once in
+        front of the loop; one read at several sites of a loop that never writes it is read from a copy of its own,
+        routed for good, which the loop's way in fills. Every other group keeps its setup."""
+        if not self.on:
+            return
+        self.on = False
+        report = settings.get("routingReport")
+        for g in self.groups:
+            self.stats["groups"] += 1
+            self.stats["cells"] += len(g["cells"])
+            plan = []
+            for v, dest, mod, nxt, slot in g["cells"]:
+                how, where = self.choice(v, g)
+                if how is None:
+                    if report and g["ctx"][1]:
+                        print("trigscript: routing kept in a loop: %s: %s" % (self.names.get(id(v)) or "a temporary made at " + self.made_at.get(id(v), "?"), where))
+                        for w in sorted(self.why_touched.get(id(v), ()))[:3]:
+                            print("trigscript:   touched at " + w)
+                    plan = None
+                    break
+                plan.append((how, where))
+            if plan is None:
+                g["entry"] << g["setup"]
+                for v, _, _, _, slot in g["cells"]:
+                    slot << v.GetVTable()
+                continue
+            self.stats["bare groups"] += 1
+            g["entry"] << g["bare"]
+            for (v, dest, mod, nxt, slot), (how, r) in zip(g["cells"], plan):
+                self.stats[{"static": "static", "hoist": "hoisted", "replicas": "replicas"}[how]] += 1
+                if how == "static":
+                    slot << v.GetVTable()
+                    self.static[v.GetVTable()] = (dest, mod, nxt)
+                elif how == "hoist":
+                    slot << v.GetVTable()
+                    r.hoist.append((v, dest, mod, nxt))
+                else:
+                    copy = EUDVariable()
+                    slot << copy.GetVTable()
+                    self.static[copy.GetVTable()] = (dest, mod, nxt)
+                    r.copies.append((v, copy))
+        # Each loop's way in: straight on, or through triggers that set the routing hoisted in front of it and fill its
+        # copies (made here, out of the way of the code being made: what is pending is put aside and handed on after).
+        held = Forward()
+        SetNextTrigger(held)
+        for r in self.loops:
+            if not r.hoist and not r.copies:
+                r.entry << r.after
+                continue
+            self.stats["loops"] += 1
+            steps = []  # (actions, the cell the trigger goes on to, or None for the next step)
+            acts = []
+            for v, dest, mod, nxt in r.hoist:
+                acts += [SetDeaths(EPD(v.getDestAddr()), SetTo, dest, 0), SetDeathsX(EPD(v.getDestAddr()) + 2, SetTo, mod << 24, 0, 0xFF000000), SetNextPtr(v.GetVTable(), nxt)]
+            for i in range(0, len(acts), 63):
+                steps.append((acts[i:i + 63], None))
+            # A copy is filled by the variable's own cell, routed into the copy and back each time (it may be routed
+            # otherwise outside the loop, so nothing of it is assumed).
+            for v, copy in r.copies:
+                steps.append(([SetDeaths(EPD(v.getDestAddr()), SetTo, EPD(copy.getValueAddr()), 0), SetDeathsX(EPD(v.getDestAddr()) + 2, SetTo, 7 << 24, 0, 0xFF000000)], v))
+            firsts = [Forward() for _ in steps]
+            for i, (acts_i, cell) in enumerate(steps):
+                after = firsts[i + 1] if i + 1 < len(steps) else r.after
+                if cell is None:
+                    firsts[i] << RawTrigger(nextptr=after, actions=acts_i)
+                else:
+                    firsts[i] << RawTrigger(nextptr=cell.GetVTable(), actions=acts_i + [SetNextPtr(cell.GetVTable(), after)])
+            r.entry << firsts[0]
+        held << NextTrigger()
+        print("trigscript: static routing — %(bare groups)d of %(groups)d reads without routing: %(static)d cells routed for good, %(hoisted)d routed once in front of a loop, %(replicas)d read from a copy (%(loops)d loops)" % self.stats)
+
+
+ROUTE = _Routing(settings.get("staticRouting", "1") != "0")
+
+if ROUTE.enabled:
+    _var_init = _eudv.EUDVariable.__init__
+    _MODULE = globals()
+
+    def _routed_init(self, *args, **kwargs):
+        _var_init(self, *args, **kwargs)
+        # Made by a line of this file itself (not by eudplib on its behalf): ours to route.
+        f = _sys._getframe(1)
+        if ROUTE.on and f.f_globals is _MODULE:
+            ROUTE.ours[id(self)] = self
+            if settings.get("routingReport"):
+                ROUTE.made_at[id(self)] = "%s:%d < %s:%d" % (f.f_code.co_name, f.f_lineno, f.f_back.f_code.co_name, f.f_back.f_lineno)
+
+    _eudv.EUDVariable.__init__ = _routed_init
+
+    def _watched(name):
+        method = getattr(_eudv.EUDVariable, name)
+
+        def wrapper(self, *args, **kwargs):
+            ROUTE.touched(self)
+            return method(self, *args, **kwargs)
+
+        wrapper.__name__ = name
+        setattr(_eudv.EUDVariable, name, wrapper)
+
+    for _name in ("GetVTable", "getDestAddr", "getMaskAddr", "SetModifier", "SetDest", "AddDest", "SubtractDest", "SetDestX", "AddDestX", "SubtractDestX"):
+        _watched(_name)
+
+    # Its value's address asked for is a write unless a condition asks it (a condition only reads the value).
+    _value_addr = _eudv.EUDVariable.getValueAddr
+
+    def _routed_value_addr(self):
+        ROUTE.wrote(self)
+        return _value_addr(self)
+
+    _eudv.EUDVariable.getValueAddr = _routed_value_addr
+    import eudplib.core.variable.vbase as _vbase
+
+    def _reading(name):
+        method = getattr(_vbase.VariableBase, name)
+
+        def wrapper(self, *args, **kwargs):
+            ROUTE.reading += 1
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                ROUTE.reading -= 1
+
+        wrapper.__name__ = name
+        setattr(_vbase.VariableBase, name, wrapper)
+
+    for _name in ("AtLeast", "AtMost", "Exactly", "AtLeastX", "AtMostX", "ExactlyX"):
+        _reading(_name)
+
+    _seqcompute = _eudv.SeqCompute
+    _MODS = {id(SetTo): 7, id(Add): 8, id(Subtract): 9}
+
+    def _emit_group(cells, consts, memo):
+        """A site: what came before jumps to `entry`; the setup does the constant stores before it (as eudplib's own
+        SeqCompute does, in the same trigger) and routes the cells in a chain, the last back to `after`. The bare way in
+        (no routing: `decide` chose) does the constants alone and goes through `slot`s — each the cell itself, or a
+        copy of it a loop keeps — whose routing is set elsewhere."""
+        ROUTE.emitting += 1
+        try:
+            entry, after = Forward(), Forward()
+            SetNextTrigger(entry)
+            first = cells[0][0].GetVTable()
+            slots = [Forward() for _ in cells]
+            # (An action belongs to one trigger: the constants are made twice, for the setup and for the bare way in.)
+            const_acts = lambda: [SetDeaths(_eudv._get_computedest(EncodePlayer(_unproxy_r(dst))), mdt, src, 0) for dst, mdt, src in consts]
+            bare = RawTrigger(nextptr=slots[0], actions=const_acts()) if consts else slots[0]
+            acts, plan = const_acts(), []
+            for i, (v, dest, mod) in enumerate(cells):
+                nxt = cells[i + 1][0].GetVTable() if i + 1 < len(cells) else after
+                # A cell this same SeqCompute routed already keeps what was set then (eudplib's own does the same): it is
+                # read at two sites, so neither goes without its setup.
+                was = memo.get(id(v))
+                if not was or was[0] is not dest:
+                    acts.append(v.SetDest(dest))
+                if not was or was[1] is not mod:
+                    acts.append(v.SetModifier(mod))
+                acts.append(SetNextPtr(v.GetVTable(), nxt))
+                memo[id(v)] = (dest, mod)
+                plan.append((v, dest, _MODS[id(mod)], slots[i + 1] if i + 1 < len(cells) else after, slots[i]))
+            setup = RawTrigger(nextptr=first, actions=acts)
+            after << NextTrigger()
+        finally:
+            ROUTE.emitting -= 1
+        g = {"entry": entry, "setup": setup, "bare": bare, "cells": plan, "ctx": ROUTE.where()}
+        ROUTE.groups.append(g)
+        for v, _, _, _, _ in plan:
+            ROUTE.sites.setdefault(id(v), []).append(g)
+
+    def _routed_seqcompute(assignpairs):
+        if not ROUTE.on or ROUTE.emitting:
+            return _seqcompute(assignpairs)
+        plain, group = [], []
+
+        def flush_plain():
+            if plain:
+                _seqcompute(list(plain))
+                plain.clear()
+
+        consts, memo = [], {}
+
+        def flush_group():
+            if group:
+                _emit_group(list(group), list(consts), memo)
+                group.clear()
+                consts.clear()
+
+        for dst, mdt, src in assignpairs:
+            s = _unproxy_r(src)
+            if isinstance(s, EUDVariable) and id(s) in ROUTE.ours and id(mdt) in _MODS:
+                if any(v is s for v, _, _ in group) or len(group) * 3 + len(consts) >= 61:
+                    flush_group()
+                if not group:
+                    # The constant stores just before it go with it, as eudplib keeps them in one trigger.
+                    k = max([i for i, (_, _, x) in enumerate(plain) if isinstance(_unproxy_r(x), EUDVariable)], default=-1)
+                    consts.extend(plain[k + 1:])
+                    del plain[k + 1:]
+                    flush_plain()
+                group.append((s, _eudv._get_computedest(EncodePlayer(_unproxy_r(dst))), mdt))
+            else:
+                flush_group()
+                plain.append((dst, mdt, src))
+        flush_group()
+        flush_plain()
+
+    # Every eudplib module that took SeqCompute by name (a call's arguments go through eudplib.core.variable's) calls this one.
+    for _mod in list(_sys.modules.values()):
+        if getattr(_mod, "__name__", "").startswith("eudplib") and getattr(_mod, "SeqCompute", None) is _seqcompute:
+            _mod.SeqCompute = _routed_seqcompute
+    SeqCompute = _routed_seqcompute
+
+    # Where code runs apart: a function's body (eudplib's and this file's), a scope of triggers this file sets apart.
+    from eudplib.core.eudfunc.eudfuncn import EUDFuncN as _EUDFuncN_r
+    _fn_call = _EUDFuncN_r.__call__
+    _fn_body = _EUDFuncN_r._create_func_body
+
+    def _routed_call(self, *args, **kwargs):
+        ROUTE.called(self)
+        return _fn_call(self, *args, **kwargs)
+
+    def _routed_body(self):
+        r = ROUTE.functions.setdefault(id(self), _Region("fn"))
+        ROUTE.stack.append(r)
+        try:
+            return _fn_body(self)
+        finally:
+            ROUTE.stack.pop()
+
+    _EUDFuncN_r.__call__ = _routed_call
+    _EUDFuncN_r._create_func_body = _routed_body
+    _push_scope, _pop_scope = PushTriggerScope, PopTriggerScope
+
+    def PushTriggerScope():  # noqa: N802 (this file's own scopes apart: a function that calls itself)
+        ROUTE.stack.append(_Region("scope"))
+        return _push_scope()
+
+    def PopTriggerScope():  # noqa: N802
+        ROUTE.stack.pop()
+        return _pop_scope()
+
+    # The variable buffer writes the cells a decided group reads with their routing in place.
+    _create_vartrigger = _vbuf.EUDVarBuffer.create_vartrigger
+
+    def _indexed_vartrigger(self, v, initval):
+        idx = getattr(self, "_ts_index", None)
+        if idx is None:
+            idx = self._ts_index = {}
+        idx[v] = len(self._initvals)
+        return _create_vartrigger(self, v, initval)
+
+    _vbuf.EUDVarBuffer.create_vartrigger = _indexed_vartrigger
+
+    def _static_of(buf):
+        return [(i, ROUTE.static[v]) for v, i in getattr(buf, "_ts_index", {}).items() if v in ROUTE.static]
+
+    _collect_vars = _vbuf.EUDVarBuffer.CollectDependency
+
+    def _collect_routed(self, emitbuffer):
+        _collect_vars(self, emitbuffer)
+        for _, (dest, _, nxt) in _static_of(self):
+            for x in (dest, nxt):
+                if type(x) is not int:
+                    emitbuffer.WriteDword(x)
+
+    _vbuf.EUDVarBuffer.CollectDependency = _collect_routed
+
+    _write_vars = _vbuf.EUDVarBuffer.WritePayload
+
+    def _write_routed(self, emitbuffer):
+        static = _static_of(self)
+        if not static:
+            return _write_vars(self, emitbuffer)
+        # The buffer as eudplib lays it out (vbuf.py): 324 bytes before the first cell, then 72 a variable — variable i's
+        # trigger starts 4 bytes before the buffer plus 72·i, so its next pointer is at 72·i, its action's destination at
+        # 340 + 72·i, its value at 344 + 72·i and its modifier byte at 351 + 72·i — then the last triggers' tails.
+        n = len(self._initvals)
+        blob = bytearray(324)
+        block = bytearray(72)
+        block[0:4] = b"\xFF\xFF\xFF\xFF"
+        block[24:36] = b"\0\0\x2D\x07\0\0SC\x04\0\0\0"
+        blob += block * n
+        sym = {}
+
+        def put(off, x):
+            if isinstance(x, int):
+                blob[off:off + 4] = (x & 0xFFFFFFFF).to_bytes(4, "little")
+            else:
+                sym[off] = x
+
+        for i, iv in enumerate(self._initvals):
+            if isinstance(iv, int):
+                if iv:
+                    put(344 + 72 * i, iv)
+            else:
+                put(344 + 72 * i, iv)
+        for i, (dest, mod, nxt) in static:
+            put(340 + 72 * i, dest)
+            blob[351 + 72 * i] = mod
+            put(72 * i, nxt)
+        pos = 0
+        for off in sorted(sym):
+            emitbuffer.WriteBytes(bytes(blob[pos:off]))
+            emitbuffer.WriteDword(sym[off])
+            pos = off + 4
+        emitbuffer.WriteBytes(bytes(blob[pos:]))
+        emitbuffer.WriteSpace(32)
+        emitbuffer.WriteDword(4)  # flags
+        emitbuffer.WriteSpace(27)
+        emitbuffer.WriteByte(0)  # currentAction
+        for _i in range(27):
+            emitbuffer.WriteSpace(40)
+            emitbuffer.WriteDword(4)
+            emitbuffer.WriteSpace(27)
+            emitbuffer.WriteByte(0)
+
+    _vbuf.EUDVarBuffer.WritePayload = _write_routed
+    ROUTE.on = True
 
 
 def where(node):
@@ -213,17 +686,18 @@ def cell_write(store, index, value, modifier):
         return
     if isinstance(index, int):
         if modifier == SetTo:
-            store[index] = value  # (eudplib's own: a variable's value writes itself into the cell)
+            # The variable's value written into the cell (through SeqCompute: a site of static routing).
+            SeqCompute([(store._epd + VARRAY_VALUE // 4 + VARRAY_STRIDE // 4 * index, SetTo, value)])
         else:
             Trigger(actions=SetMemoryEPD(store._epd + VARRAY_VALUE // 4 + VARRAY_STRIDE // 4 * index, modifier, value))
         return
     act = Forward()
-    start = [SetMemory(act + 16, SetTo, store._epd + VARRAY_VALUE // 4)]
+    # (Through SeqCompute, so that a variable's copy into the action is a site of static routing.)
+    pairs = [(EPD(act) + 4, SetTo, store._epd + VARRAY_VALUE // 4)]
     if isinstance(unProxy(value), EUDVariable):
-        VProc(value, start + list(value.QueueAssignTo(EPD(act) + 5)))
+        pairs.append((EPD(act) + 5, SetTo, value))
         value = 0
-    else:
-        RawTrigger(actions=start)
+    SeqCompute(pairs)
     for b in reversed(range(max((store._size - 1).bit_length(), 1))):
         RawTrigger(conditions=index.AtLeastX(1, 1 << b), actions=SetMemory(act + 16, Add, VARRAY_STRIDE // 4 << b))
     RawTrigger(actions=[act << SetMemoryEPD(0, modifier, value)])
@@ -363,6 +837,53 @@ def lists_at(body, index_id, lists):
     return out
 
 
+class Cursors:
+    """Reads and writes at a loop's counter through registers of their own (the backend's second part): a read is a
+    trigger whose next pointer is the cell's address — so it jumps straight to the cell, which writes itself out
+    through eudplib's getter — and a write an action whose destination is the cell's value. Each register is set once on
+    the way into the loop (the array's first cell plus the counter's place) and moved on by the counter's step at the
+    loop's update, one add each, where `varray_read` / `varray_write` work the place out at every access (two variables
+    routed into a jump, or into an action, each time). Only for a loop whose body stores nothing into the counter, waits
+    for nothing, calls nothing and changes no array's length (`lengths_fixed_in`): the arrays' blocks stay where they
+    are, and nothing but the update moves the counter."""
+
+    def __init__(self, counter, place, step):
+        self.counter, self.place, self.step = counter, place, step
+        self.reads = []  # (the trigger whose next pointer is the register, the first cell: a constant or a variable)
+        self.writes = []  # (the action whose destination is the register, the first cell's value's EPD)
+
+    def read(self, base, out):
+        from eudplib.core.eudstruct.vararray import _getter, _getter_dst
+        after = Forward()
+        t = RawTrigger(nextptr=0, actions=[SetNextPtr(_getter, after), SetMemoryEPD(_getter_dst, SetTo, EPD(out.getValueAddr()))])
+        after << NextTrigger()
+        self.reads.append((t, base))
+
+    def write(self, base_epd, value, modifier):
+        act = Forward()
+        if isinstance(unProxy(value), EUDVariable):
+            SeqCompute([(EPD(act) + 5, SetTo, value)])
+            value = 0
+        RawTrigger(actions=[act << SetMemoryEPD(0, modifier, value)])
+        self.writes.append((act, base_epd))
+
+    def init(self):
+        """The registers set from where each array's block starts and the counter's place (on the way in)."""
+        pairs = []
+        for t, base in self.reads:
+            pairs += [(EPD(t) + 1, SetTo, base), (EPD(t) + 1, Add, self.place.bytes)]
+        for act, base_epd in self.writes:
+            pairs += [(EPD(act) + 4, SetTo, base_epd), (EPD(act) + 4, Add, self.place.dwords)]
+        SeqCompute(pairs)
+
+    def advance(self):
+        """The registers moved on by the counter's step (at the loop's update)."""
+        acts = [SetMemory(t + 4, Add, (VARRAY_STRIDE * self.step) & U32) for t, _ in self.reads]
+        acts += [SetMemory(act + 16, Add, (VARRAY_STRIDE // 4 * self.step) & U32) for act, _ in self.writes]
+        if acts:
+            DoActions(acts)
+
+
 class Place:
     """A counter's offset into EUDVArrays, kept by its stores: in bytes (72 a step, for a read's jump) and in dwords
     (18 a step, for a write's destination)."""
@@ -420,19 +941,12 @@ def varray_write(value_epd, place, value, modifier):
     """The cell whose value is at EPD `value_epd` + the place's dwords set to (or added to) `value`: `value_epd` a
     constant, or a variable holding it."""
     act = Forward()
-    vs, acts = [], []
-    if isinstance(value_epd, EUDVariable):
-        vs.append(value_epd)
-        acts += value_epd.QueueAssignTo(EPD(act) + 4)
-    else:
-        acts.append(SetMemory(act + 16, SetTo, value_epd))
-    vs.append(place.dwords)
-    acts += place.dwords.QueueAddTo(EPD(act) + 4)
+    # (Through SeqCompute, so that each variable's copy into the action is a site of static routing.)
+    pairs = [(EPD(act) + 4, SetTo, value_epd), (EPD(act) + 4, Add, place.dwords)]
     if isinstance(unProxy(value), EUDVariable):
-        vs.append(value)
-        acts += value.QueueAssignTo(EPD(act) + 5)
+        pairs.append((EPD(act) + 5, SetTo, value))
         value = 0
-    VProc(vs, acts)
+    SeqCompute(pairs)
     RawTrigger(actions=[act << SetMemoryEPD(0, modifier, value)])
 
 
@@ -476,6 +990,8 @@ class Storage:
         self.rowed = rows is not None
         self.player_of = rows
         self.store = cell_array([0] * rows.count) if self.rowed else EUDVariable(0)  # initial: the variable's own cell
+        if not self.rowed:
+            ROUTE.names[id(self.store)] = decl.get("name", "?")
 
     def get(self):
         return self.store[self.player_of()] if self.rowed else self.store
@@ -1689,7 +2205,7 @@ def chain_fdiv(a, b):
 
 def fixed_fns():
     """The fixed numbers' functions, made when the first one is met: one body each in the map, called."""
-    if _FIXED:
+    if "fdiv" in _FIXED:
         return _FIXED
 
     @EUDFunc
@@ -1797,6 +2313,318 @@ def fixed_fns():
         EUDReturn(root(x, 16, 16))
 
     _FIXED.update(fmul=fmul, fdiv=fdiv, sqrt_fixed=sqrt_fixed, sqrt_whole=sqrt_whole)
+    return _FIXED
+
+
+# A trigger's first condition's number, and its first action's destination, number and modifier (a SetDeaths, its
+# modifier the top byte of the dword: 7 SetTo, 8 Add), from the trigger's address: 8 bytes of links, 16 conditions of
+# 20 bytes, then the actions. A cell of our own is a trigger of one action that adds its number to itself: running it
+# doubles the number, and nothing routes it while only the loop it sits in runs it (TrigScript 4, the backend, part 3).
+COND_VALUE, ACT_DEST, ACT_VALUE, ACT_MODIFIER_DWORD = 16, 344, 348, 352
+
+
+_CONST_FDIV = {}
+
+
+def const_fdiv(c, x, bound=None):
+    """fdiv(c, x) — c × 65 536 / x towards zero — for a constant c and a variable x, the very bits fixed_fns()'s fdiv
+    gives (compiler/fixedMath.ts#fixedDiv). `bound`: the most |x| can be, when ranges.ts knows. One body for each c
+    (and bound) in the map, called."""
+    c = signed(c & U32)
+    if c == 0:
+        return 0
+    key = (abs(c), bound)
+    if key not in _CONST_FDIV:
+        _CONST_FDIV[key] = make_const_fdiv(abs(c), bound)
+    q = fresh(_CONST_FDIV[key](as_var(x)))
+    if c < 0:
+        q << 0 - q
+    return q
+
+
+def make_const_fdiv(c, bound):
+    """The divisor, not the dividend, stays where it is: long division the way it is done on paper, the remainder
+    doubled a step and the divisor taken from it when it fits, so the divisor is written into the one comparison and
+    the one subtraction of a loop of four triggers, where eudplib's division writes it, doubled, into every step it
+    has (each a copy, the cost of all the rest). The dividend c × 65 536 is known: where the divisor's highest bit is
+    (a search of comparisons) says how far down the dividend the first step that can take the divisor away is, and
+    what the remainder is there (a constant), so only the steps that make a bit of the quotient are run. The quotient
+    is counted in a cell with a bit put above it, which reaches the top on the last step: the loop's test of its end.
+    Quotients of 2^31 and more (a divisor of a few 65 536ths) are fixed_fns()'s fdiv's."""
+    d = c << 16
+    top_d = d.bit_length() - 1
+    t_most = 31 if bound is None else max(0, min(31, bound.bit_length() - 1))
+
+    def plan(t):
+        """For a divisor whose highest bit is t: (steps, the remainder before them, the dividend's bits still to
+        come at the top of a cell), or None when the loop cannot (no step: the quotient is 0; too many: wraps)."""
+        n = top_d - t + 1
+        if n <= 0:
+            return "zero"
+        if n > 31:
+            return None
+        return (n, d >> n, ((d & ((1 << n) - 1)) << (32 - n)) & U32)
+
+    plans = {t: plan(t) for t in range(t_most + 1)}
+    with_bits = any(isinstance(v, tuple) and v[2] for v in plans.values())
+
+    @EUDFunc
+    def fdiv_by(x):
+        out = EUDVariable()
+        if EUDIf()(x == 0):
+            EUDReturn(0)
+        EUDEndIf()
+        neg = fresh(0)
+        if EUDIf()(x >= SIGN):
+            x << 0 - x
+            neg << 1
+        EUDEndIf()
+        # The quotient, the remainder and the dividend's bits still to come: three cells of our own in one trigger, the
+        # three numbers doubled by one run of it.
+        cells, take_bit, test, end, leave, after = Forward(), Forward(), Forward(), Forward(), Forward(), Forward()
+        q, r, bits = cells + ACT_VALUE, cells + ACT_VALUE + 32, cells + ACT_VALUE + 64
+        # The divisor, where the loop compares and subtracts.
+        SeqCompute([(EPD(test + COND_VALUE), SetTo, x), (EPD(test + ACT_VALUE), SetTo, x)])
+        # The quotient's cell back to doubling itself (the last call sent it to `out`).
+        DoActions([SetMemory(cells + ACT_DEST, SetTo, EPD(q)),
+                   SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 8 << 24, 0xFF000000),
+                   SetNextPtr(cells, take_bit if with_bits else test)])
+        how = fresh(0)  # 0: the loop, 1: the quotient is 0, 2: fdiv's own way
+
+        def leaf(t):
+            p = plans[t]
+            if p is None:
+                DoActions(how.SetNumber(2))
+            elif p == "zero":
+                DoActions(how.SetNumber(1))
+            else:
+                n, r0, rest = p
+                # (The dividend's bits a place lower than where they are tested: the cells double them first.)
+                acts = [SetMemory(r, SetTo, r0), SetMemory(q, SetTo, 1 << (31 - n))]
+                if with_bits:
+                    acts.append(SetMemory(bits, SetTo, rest >> 1))
+                DoActions(acts)
+
+        def tree(lo, hi):
+            if lo == hi:
+                leaf(lo)
+                return
+            mid = (lo + hi + 1) // 2
+            if EUDIf()(x >= (1 << mid)):
+                tree(mid, hi)
+            if EUDElse()():
+                tree(lo, mid - 1)
+            EUDEndIf()
+
+        tree(0, t_most)
+        if EUDIf()(how == 0):
+            cells << RawTrigger(actions=[SetMemory(q, Add, 0), SetMemory(r, Add, 0)] + ([SetMemory(bits, Add, 0)] if with_bits else []))
+            if with_bits:
+                # The dividend's next bit into the remainder, from the top of its cell.
+                take_bit << RawTrigger(conditions=Memory(bits, AtLeast, SIGN), actions=SetMemory(r, Add, 1))
+            test << RawTrigger(conditions=Memory(r, AtLeast, 0), actions=[SetMemory(r, Subtract, 0), SetMemory(q, Add, 1)])
+            end << RawTrigger(nextptr=cells, conditions=Memory(q, AtLeast, SIGN), actions=SetNextPtr(end, leave))
+            # The quotient's cell run once more, its number written into `out`; the bit above it taken off after.
+            leave << RawTrigger(nextptr=cells, actions=[
+                SetNextPtr(end, cells),
+                SetMemory(cells + ACT_DEST, SetTo, EPD(out.getValueAddr())),
+                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 7 << 24, 0xFF000000),
+                SetNextPtr(cells, after),
+            ])
+            after << RawTrigger(actions=out.AddNumber(SIGN))
+        if EUDElseIf()(how == 1):
+            out << 0
+        if EUDElse()():
+            out << fixed_fns()["fdiv"](c, x)
+        EUDEndIf()
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    return fdiv_by
+
+
+_FIXED_BY_CONST = {}
+
+
+def fixed_by_const(name, x, c, bound=None):
+    """fmul(x, c) or fdiv(x, c) of a variable x and a constant c: the very bits fixed_fns()'s give
+    (compiler/fixedMath.ts), from comparisons with constants and constants added — nothing copied. `bound`: the most
+    |x| can be, when ranges.ts knows. One body for each constant (and bound) in the map, called."""
+    c = signed(c & U32)
+    if c == 0:
+        return 0
+    key = (name, abs(c), bound)
+    if key not in _FIXED_BY_CONST:
+        _FIXED_BY_CONST[key] = (make_fmul_by if name == "fmul" else make_fdiv_by_const)(abs(c), 31 if bound is None else max(0, min(31, bound.bit_length() - 1)))
+    q = fresh(_FIXED_BY_CONST[key](as_var(x)))
+    if c < 0:
+        q << 0 - q
+    return q
+
+
+def magnitude_of(x):
+    """x made its distance from 0 in place; 1 when it was below 0."""
+    neg = fresh(0)
+    if EUDIf()(x >= SIGN):
+        x << 0 - x
+        neg << 1
+    EUDEndIf()
+    return neg
+
+
+def make_fmul_by(c, top):
+    """x × c / 65 536 towards zero: each bit of |x| adds c times its place, split at the point — the whole part added
+    into the result and the part below it gathered apart, whose whole part is added at the end (so the result is the
+    product's, not a sum of rounded parts). `top`: the highest bit |x| can have."""
+    parts = [((c << j) >> 16, (c << j) & 0xFFFF) for j in range(top + 1)]
+    low_bits = sum(lo for _, lo in parts).bit_length()
+
+    @EUDFunc
+    def fmul_by(x):
+        neg = magnitude_of(x)
+        out, low = fresh(0), fresh(0)
+        for j, (hi, lo) in enumerate(parts):
+            acts = ([out.AddNumber(hi & U32)] if hi & U32 else []) + ([low.AddNumber(lo)] if lo else [])
+            if acts:
+                RawTrigger(conditions=x.AtLeastX(1, 1 << j), actions=acts)
+        for k in range(16, low_bits):
+            RawTrigger(conditions=low.AtLeastX(1, 1 << k), actions=out.AddNumber(1 << (k - 16)))
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    return fmul_by
+
+
+def make_fdiv_by_const(c, top):
+    """x × 65 536 / c towards zero: long division with the divisor doubled into each step when the map is built, so a
+    step is one comparison with a constant. The whole part's quotient bits go straight to their place 16 higher; the
+    remainder, below c, is then moved up as far as stays under 2^32 (a bit tested, its new place added) and divided
+    again, until the sixteen bits below the point are found. `top`: the highest bit |x| can have."""
+    c_top = c.bit_length() - 1
+    chunk = max(1, 31 - c_top)
+
+    @EUDFunc
+    def fdiv_by_const(x):
+        neg = magnitude_of(x)
+        out = fresh(0)
+        # The whole part: steps from the highest multiple of c that |x| can reach.
+        for i in range(min(31 - c_top, top - c_top) if top >= c_top else -1, -1, -1):
+            add = (1 << (i + 16)) & U32
+            RawTrigger(conditions=x.AtLeast(c << i), actions=[x.SubtractNumber(c << i)] + ([out.AddNumber(add)] if add else []))
+        # Below the point: x < c now.
+        done = 0
+        while done < 16:
+            k = min(chunk, 16 - done)
+            for bit in range(c_top, -1, -1):  # x <<= k, from its top bit down (each lands where nothing is yet)
+                RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=x.AddNumber(((1 << (bit + k)) - (1 << bit)) & U32))
+            done += k
+            for i in range(k - 1, -1, -1):
+                RawTrigger(conditions=x.AtLeast(c << i), actions=[x.SubtractNumber(c << i), out.AddNumber(1 << (i + 16 - done))])
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    return fdiv_by_const
+
+
+def fixed_vars():
+    """fmul and fdiv of two variables (TrigScript 4, the backend, part 3): loops over cells of our own, the other side
+    written once into the step that adds or subtracts it, where eudplib's ways write it, shifted, into every step.
+    One body each in the map, called."""
+    if "fmul_vars" in _FIXED:
+        return _FIXED
+
+    def take_out(cells, out, after):
+        """The actions that send the first cell of `cells` into `out` when the trigger runs next, and go on to
+        `after`; the cell is put back to doubling itself when its loop starts again."""
+        return [SetMemory(cells + ACT_DEST, SetTo, EPD(out.getValueAddr())),
+                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 7 << 24, 0xFF000000),
+                SetNextPtr(cells, after)]
+
+    def put_back(cells, nxt):
+        return [SetMemory(cells + ACT_DEST, SetTo, EPD(cells + ACT_VALUE)),
+                SetMemoryX(cells + ACT_MODIFIER_DWORD, SetTo, 8 << 24, 0xFF000000),
+                SetNextPtr(cells, nxt)]
+
+    @EUDFunc
+    def fmul_vars(a, b):
+        """a × b / 65 536 towards zero. With the 16-bit halves of the magnitudes, a × b / 65 536 is ah × b + al × bh
+        plus al × bl / 65 536: one loop of sixteen steps reads a bit of ah and the same bit of al (a doubled a step,
+        its bits 31 and 15 tested), and doubles two sums — w gathering ah × b + al × bh, z gathering al × bl, whose
+        bits from 16 up are added to w at the end."""
+        neg = magnitudes(a, b)
+        bh = shift_const(b, ">>>", 16)
+        bl = fresh(b)
+        DoActions(bl.SetNumberX(0, 0xFFFF0000))
+        out, count = EUDVariable(), EUDVariable()
+        cells, high, low, end, leave, after = (Forward() for _ in range(6))
+        w, z, x = cells + ACT_VALUE, cells + ACT_VALUE + 32, cells + ACT_VALUE + 64
+        SeqCompute([(EPD(high + ACT_VALUE), SetTo, b), (EPD(low + ACT_VALUE), SetTo, bh), (EPD(low + ACT_VALUE + 32), SetTo, bl), (EPD(x), SetTo, a)])
+        DoActions(put_back(cells, high) + [SetMemory(w, SetTo, 0), SetMemory(z, SetTo, 0), count.SetNumber(15)])
+        # A step: the bits added, then (but on the last step) the sums and a doubled.
+        high << RawTrigger(conditions=Memory(x, AtLeast, SIGN), actions=SetMemory(w, Add, 0))
+        low << RawTrigger(conditions=MemoryX(x, AtLeast, 1, 0x8000), actions=[SetMemory(w, Add, 0), SetMemory(z, Add, 0)])
+        end << RawTrigger(conditions=count.Exactly(0), actions=SetNextPtr(end, leave))
+        cells << RawTrigger(nextptr=high, actions=[SetMemory(w, Add, 0), SetMemory(z, Add, 0), SetMemory(x, Add, 0), count.SubtractNumber(1)])
+        leave << RawTrigger(actions=SetNextPtr(end, cells))
+        for k in range(16, 32):
+            RawTrigger(conditions=MemoryX(z, AtLeast, 1, 1 << k), actions=SetMemory(w, Add, 1 << (k - 16)))
+        RawTrigger(nextptr=cells, actions=take_out(cells, out, after))
+        after << NextTrigger()
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    @EUDFunc
+    def fdiv_vars(a, b):
+        """a × 65 536 / b towards zero; a divisor of 0 gives 0. Long division the way it is done on paper: the dividend's
+        bits shifted into the remainder from the top, the divisor taken away when it fits, the quotient doubled a step
+        (wrapping, as fdiv's does). The divisor is written into the one comparison and the one subtraction of the loop.
+        The dividend's leading zeros first: the loop's cells run on their own until its top bit is in place, each run
+        a step with nothing in it (the quotient and remainder are 0, and stay so)."""
+        if EUDIf()([b == 0]):
+            EUDReturn(0)
+        EUDEndIf()
+        if EUDIf()([a == 0]):
+            EUDReturn(0)
+        EUDEndIf()
+        neg = magnitudes(a, b)
+        out, count = EUDVariable(), EUDVariable()
+        if EUDIf()(a >= SIGN):
+            # (2^31, the magnitude of -2^31 only: its top bit is past where the loop starts.)
+            # (fdiv's own way reads it as -2^31, and b as -2^31 too when it is 2^31: the quotient of the magnitudes is
+            # its quotient, negated when only a read below zero.)
+            out << fixed_fns()["fdiv"](a, b)
+            if EUDIf()(b <= 0x7FFFFFFF):
+                out << 0 - out
+            EUDEndIf()
+        if EUDElse()():
+            cells, ready, take_bit, test, end, leave, after = (Forward() for _ in range(7))
+            q, r, d = cells + ACT_VALUE, cells + ACT_VALUE + 32, cells + ACT_VALUE + 64
+            SeqCompute([(EPD(test + COND_VALUE), SetTo, b), (EPD(test + ACT_VALUE), SetTo, b), (EPD(d), SetTo, a)])
+            # 47 steps: the dividend's bits 30 … 0 and sixteen 0s.
+            DoActions(put_back(cells, ready) + [SetMemory(q, SetTo, 0), SetMemory(r, SetTo, 0), count.SetNumber(47)])
+            # Until the dividend's top bit is at bit 30: then a run of the cells brings it to 31, where it is taken.
+            ready << RawTrigger(nextptr=cells, conditions=Memory(d, AtLeast, 1 << 30), actions=SetNextPtr(cells, take_bit))
+            cells << RawTrigger(nextptr=ready, actions=[SetMemory(q, Add, 0), SetMemory(r, Add, 0), SetMemory(d, Add, 0), count.SubtractNumber(1)])
+            take_bit << RawTrigger(conditions=Memory(d, AtLeast, SIGN), actions=SetMemory(r, Add, 1))
+            test << RawTrigger(conditions=Memory(r, AtLeast, 0), actions=[SetMemory(r, Subtract, 0), SetMemory(q, Add, 1)])
+            end << RawTrigger(nextptr=cells, conditions=count.Exactly(0), actions=SetNextPtr(end, leave))
+            leave << RawTrigger(nextptr=cells, actions=[SetNextPtr(end, cells)] + take_out(cells, out, after))
+            after << NextTrigger()
+        EUDEndIf()
+        if EUDIf()(neg == 1):
+            out << 0 - out
+        EUDEndIf()
+        EUDReturn(out)
+
+    _FIXED.update(fmul_vars=fmul_vars, fdiv_vars=fdiv_vars)
     return _FIXED
 
 
@@ -2212,6 +3040,8 @@ class Lowering:
         # Inside a loop over a growing array at a counter, the arrays read there unchecked: index id → {array id: True,
         # or the flag the loop set on the way in}.
         self.inside = {}
+        # The loops whose accesses at their counter go through registers (`Cursors`), by the counter's id.
+        self.cursors = {}
         counters, saved = find_counters(program), saved_arrays(program)
 
         def find_places(node):
@@ -2399,6 +3229,9 @@ class Lowering:
             a = self.array(e["array"], e)
             place = self.place_of(e["index"], a)
             if place is not None:
+                cur = self.cursor_at(e["index"], a)
+                if cur is not None:
+                    return self.cursor_read(cur, a, e)
                 return a.get_placed(self.num(e["index"]), place, self.bound_of(e["index"], e["array"]))
             return a.get(self.num(e["index"]))
         if k == "length":
@@ -2451,6 +3284,8 @@ class Lowering:
             x = self.num(e["args"][0])
             if isinstance(x, int):
                 return abs(signed(x)) & U32
+            if top_of(e["args"][0]) is not None:
+                return x
             t = fresh(x)
             if EUDIf()(t >= SIGN):
                 t << 0 - t
@@ -2465,6 +3300,15 @@ class Lowering:
             if isinstance(a, int) and isinstance(b, int):
                 key = (lambda v: v) if unsigned else signed
                 return min(a, b, key=key) if name == "min" else max(a, b, key=key)
+            # One side always the smaller (ranges.ts): no comparison. Read unsigned, only when both are never below zero.
+            ra, rb = rng(e["args"][0]), rng(e["args"][1])
+            if ra is not None and rb is not None and (not unsigned or (ra[0] >= 0 and rb[0] >= 0)):
+                if ra[1] <= rb[0]:
+                    return a if name == "min" else b
+                if rb[1] <= ra[0]:
+                    return b if name == "min" else a
+            if isinstance(a, int) or isinstance(b, int):
+                return clamp_const(b if isinstance(a, int) else a, a if isinstance(a, int) else b, name, unsigned)
             t = EUDVariable()
             if EUDIf()(self.ordered(a, "<=" if name == "min" else ">=", b, unsigned)):
                 t << a
@@ -2484,10 +3328,19 @@ class Lowering:
         if all(isinstance(x, int) for x in args):
             return fixed_const(name, [signed(x) for x in args], e.get("unsigned"), [signed(v) for v in self.array(e["table"], e).values] if name in ("atan2", "sin", "cos") else None) & U32
         fns = fixed_fns()
+        bound = lambda i: (lambda r: None if r is None else max(abs(r[0]), abs(r[1])))(rng(e["args"][i]))
         if name == "fmul":
-            return fresh(fns["fmul"](*[as_var(x) for x in args]))
+            if isinstance(args[1], int):
+                return fixed_by_const("fmul", args[0], args[1], bound(0))
+            if isinstance(args[0], int):
+                return fixed_by_const("fmul", args[1], args[0], bound(1))
+            return fresh(fixed_vars()["fmul_vars"](*[as_var(x) for x in args]))
         if name == "fdiv":
-            return fresh(fns["fdiv"](*[as_var(x) for x in args]))
+            if isinstance(args[0], int):
+                return const_fdiv(args[0], args[1], bound(1))
+            if isinstance(args[1], int):
+                return fixed_by_const("fdiv", args[0], args[1], bound(0))
+            return fresh(fixed_vars()["fdiv_vars"](*[as_var(x) for x in args]))
         if name == "sqrt":
             return fresh(fns["sqrt_whole" if e.get("unsigned") else "sqrt_fixed"](as_var(args[0])))
         if name in ("sin", "cos"):
@@ -2607,7 +3460,7 @@ class Lowering:
         a, b = self.num(e["left"]), self.num(e["right"])
         op = e["op"]
         if op in BITWISE:
-            return self.bitwise(op, a, b)
+            return self.bitwise(op, a, b, top_of(e["left"]))
         both = isinstance(a, int) and isinstance(b, int)
         if op == "+":
             return (a + b) & U32 if both else a + b
@@ -2618,8 +3471,12 @@ class Lowering:
                 return (a * b) & U32
             # By a power of two, a shift: x * 32 is x << 5, a fifth of the cost of eudplib's general product.
             k, v = (b, a) if isinstance(b, int) else (a, b) if isinstance(a, int) else (None, None)
+            vtop = top_of(e["left"] if k is b else e["right"]) if k is not None else None
             if k is not None and k > 0 and k & (k - 1) == 0:
-                return v if k == 1 else shift_const(v, "<<", k.bit_length() - 1)
+                return v if k == 1 else shift_const(v, "<<", k.bit_length() - 1, vtop)
+            if k is not None and vtop is not None and mul_bits_pays(vtop, k):
+                # The other side known to be 0 ... vtop (ranges.ts): a trigger a bit it can have.
+                return mul_bits(as_var(v), vtop, k)
             if k is not None:
                 # eudplib's product goes over its first operand's bits and stops past the highest that is set: whichever
                 # of the two is smaller first, the constant by its distance from 0 (a number below zero has every top
@@ -2633,10 +3490,22 @@ class Lowering:
                     f_mul(kv, v, ret=[r])
                 EUDEndIf()
                 return 0 - r if m < 0 else r
+            # eudplib's product goes over its first operand's bits, up to the highest set: the side with fewer first.
+            ta, tb = top_of(e["left"]), top_of(e["right"])
+            if tb is not None and (ta is None or tb < ta):
+                a, b = b, a
             return f_mul(as_var(a), as_var(b))
         # / and %: towards zero, the remainder with the dividend's sign, unless both sides are u32s. A divisor of 0 gives 0.
         unsigned = bool(e.get("unsigned"))
         pick = (lambda q, r: q) if op == "/" else (lambda q, r: r)
+        # Both sides known never below zero (ranges.ts): the division is the same read either way, and takes only the
+        # bits the dividend can have. A dividend that is a constant is its own top.
+        atop = a if isinstance(a, int) and a < SIGN else top_of(e["left"])
+        brange = (signed(b), signed(b)) if isinstance(b, int) else rng(e["right"])
+        if atop is not None and not both and brange is not None and brange[0] >= 1 and (atop >> 1).bit_length() <= 24:
+            if isinstance(b, int):
+                return pick(*div_bits(as_var(a), b, atop))
+            return pick(*div_var_bits(as_var(a), b, atop))
         if isinstance(b, int):
             if b == 0:
                 raise Fail("trigscript: division by zero%s" % where(e))
@@ -2649,7 +3518,10 @@ class Lowering:
             return pick(*(f_div(a, b) if unsigned else f_div_towards_zero(fresh(a), signed(b))))
         out = fresh(0)
         if EUDIf()(b >= 1):
-            q, r = f_div(as_var(a), b) if unsigned else f_div_towards_zero(fresh(a), fresh(b))
+            if atop is not None and brange is not None and brange[0] >= 0 and (atop >> 1).bit_length() <= 24:
+                q, r = div_var_bits(as_var(a), b, atop)
+            else:
+                q, r = f_div(as_var(a), b) if unsigned else f_div_towards_zero(fresh(a), fresh(b))
             out << pick(q, r)
         EUDEndIf()
         return out
@@ -2682,11 +3554,11 @@ class Lowering:
         return relation(a + SIGN, op, (b + SIGN) & U32 if isinstance(b, int) else b + SIGN)
 
     @staticmethod
-    def bitwise(op, a, b):
+    def bitwise(op, a, b, atop=None):
         """& | ^ << >> >>> over 32 bits. `>>` keeps the sign of what it shifts and `>>>` does not; a shift by 32 or
-        more leaves nothing but that sign."""
+        more leaves nothing but that sign. `atop`: the left side is known to be 0 ... atop (ranges.ts)."""
         if op in ("<<", ">>", ">>>") and isinstance(b, int) and not isinstance(a, int) and 0 < b < 32:
-            return shift_const(a, op, b)
+            return shift_const(a, op, b, atop)
         if op in ("<<", ">>", ">>>"):
             if isinstance(a, int) and isinstance(b, int):
                 if op == "<<":
@@ -3327,6 +4199,7 @@ class Lowering:
             elif do == "give":
                 to = int(verb["to"])
                 cu.cgive(self.current() if to == CURRENT_PLAYER else to)
+                forget_counts()
             elif do == "order":
                 self.order(cu, verb, st)
             elif do == "locate":
@@ -3360,6 +4233,7 @@ class Lowering:
         x, y = cu.posX - f_div(width, 2)[0], cu.posY - f_div(height, 2)[0]
         for i, v in enumerate((x, y, x + width, y + height)):
             f_dwwrite_epd(base + i, v)
+        forget_counts()
 
     def select(self, st):
         """select() (B5): on the player's own computer the selection becomes the units still there — the twelve slots
@@ -3398,17 +4272,32 @@ class Lowering:
         if size:
             width, height = self.num(size["width"]), self.num(size["height"])
             if isinstance(width, int) and isinstance(height, int):
-                nx, ny = x - width // 2, y - height // 2
+                # Each side is the centre plus a constant: all four in one go, the centre routed into the two sides that
+                # take it, the constants added where they land (four temporaries made and copied was about 0.75 µs —
+                # every brush of the fog library is one of these).
+                sides = []
+                for i, (c, d) in enumerate(((x, -(width // 2)), (y, -(height // 2)), (x, width - width // 2), (y, height - height // 2))):
+                    if isinstance(c, int):
+                        sides.append((base + i, SetTo, (c + d) & U32))
+                    else:
+                        sides.append((base + i, SetTo, c))
+                        if d & U32:
+                            sides.append((base + i, Add, d & U32))
+                SeqCompute(sides)
+                forget_counts()
+                return
             else:
                 nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
             for i, v in enumerate((nx, ny, nx + width, ny + height)):
                 f_dwwrite_epd(base + i, v)
+            forget_counts()
             return
         left, top, right, bottom = [f_dwread_epd(base + i) for i in range(4)]
         width, height = right - left, bottom - top
         nx, ny = x - f_div(width, 2)[0], y - f_div(height, 2)[0]
         for i, v in enumerate((nx, ny, nx + width, ny + height)):
             f_dwwrite_epd(base + i, v)
+        forget_counts()
 
     def adjust(self, cu, do, amount, percent):
         """Hit points down — at 0 the unit dies — or up to the type's maximum, in the game's own units (256 to a point)."""
@@ -3601,12 +4490,20 @@ class Lowering:
                     v = self.num(step[1])
                     if step[0] == "-":
                         v = (-v) & U32 if isinstance(v, int) else 0 - v
+                    cur = self.cursor_at(st["index"], a)
+                    if cur is not None:
+                        self.cursor_write(cur, a, st, v, Add)
+                        return
                     a.set_placed(self.num(st["index"]), place, v, Add, self.bound_of(st["index"], st["array"]))
                     return
                 a.add(self.num(st["index"]), self.num(step[1]), step[0])
                 return
             value = (self.num if a.decl["kind"] == "number" else self.truth)(st["value"])
             if place is not None:
+                cur = self.cursor_at(st["index"], a)
+                if cur is not None:
+                    self.cursor_write(cur, a, st, value, SetTo)
+                    return
                 a.set_placed(self.num(st["index"]), place, value, SetTo, self.bound_of(st["index"], st["array"]))
                 return
             a.set(self.num(st["index"]), value)
@@ -3675,8 +4572,144 @@ class Lowering:
             self.uncaught(st)
         elif k == "remark":
             pass
+        elif k == "graph":
+            self.graph(st, ctx)
         else:
             raise Fail("trigscript: unknown statement %r%s" % (k, where(st)))
+
+    # ── the emitter's graphs (compiler/backend/graph.ts) ──
+    GRAPH_COMPARE = {"atLeast": AtLeast, "atMost": AtMost, "exactly": Exactly}
+    GRAPH_MODIFIER = {"set": SetTo, "add": Add, "subtract": Subtract}
+
+    def graph(self, st, ctx):
+        """A loop the emitter lowered (TrigScript 4, the backend: the emitter): its triggers made as they are, where the
+        loop was. A dword of the graph is a game address, a variable's cell, a dword of the graph's own data (one in the
+        map for each name), or a field of one of its triggers; the copies into it on the way in are routed reads of the
+        variables, as any read is. A statement lowered twice (a `finally` copied to each way out) makes it twice."""
+        g = st["graph"]
+        if not hasattr(self, "graph_data"):
+            self.graph_data = {}
+        labels = {t["label"]: Forward() for t in g["triggers"]}
+        end = Forward()
+        labels["@end"] = end
+
+        def element0(id_):
+            """The EPD of the value of an array's first cell, and of the next cell's less it."""
+            store = self.array(id_, st).store
+            if is_varray(store):
+                return EPD(unProxy(store) + VARRAY_VALUE), VARRAY_STRIDE // 4
+            return store._epd, 1
+
+        # The lists the graph reads where they are: laid out as the emitter thought, or nothing is made.
+        for a in g.get("arrays", []):
+            if element0(a["id"])[1] != a["stride"]:
+                raise Fail("trigscript: the emitter read %s's cells %d EPD apart, which are %d%s" % (a["id"], a["stride"], element0(a["id"])[1], where(st)))
+
+        def epd(d):
+            if "game" in d:
+                return EPD(d["game"])
+            if "param" in d:
+                return EPD(self.graph_function(d["param"])._fargs[d["index"]].getValueAddr())
+            if "var" in d:
+                return EPD(self.var(d["var"], st).get().getValueAddr())
+            if "data" in d:
+                if d["data"] not in self.graph_data:
+                    self.graph_data[d["data"]] = Db(4)
+                return EPD(self.graph_data[d["data"]])
+            if "element" in d:
+                return element0(d["element"])[0]
+            base, f = labels[d["at"]], d["field"]
+            if f == "next":
+                return EPD(base + 4)
+            if "cond" in f:
+                return EPD(base + COND_VALUE + 20 * f["cond"] - (4 if f.get("part") == "player" else 0))
+            return EPD(base + ACT_DEST - 16 + 32 * f["act"] + {"value": 20, "dest": 16, "modifier": 24}[f["part"]])
+
+        def value(v):
+            if isinstance(v, dict):
+                return labels[v["label"]] if "label" in v else element0(v["epdOf"])[0] + v["plus"]
+            return v
+
+        def copy(id_, into):
+            """The variable's cell into each dword (times its `scale`, plus its `add`): routed reads, a multiple worked
+            out once for all the dwords that take it."""
+            v = self.var(id_, st).get()
+            times = {1: v}
+            for e in into:
+                k = int(e.get("scale", 1)) & U32
+                if k not in times:
+                    # (A power of two is a shift, a bit a trigger; another multiple eudplib's product by a constant.)
+                    times[k] = fresh(0 - v) if k == U32 else shift_const(v, "<<", k.bit_length() - 1) if k & (k - 1) == 0 else fresh(v * k)
+            for i in range(0, len(into), 16):
+                group = []
+                for e in into[i:i + 16]:
+                    d = epd(e["into"] if "into" in e else e["dword"])
+                    group.append((d, SetTo, times[int(e.get("scale", 1)) & U32]))
+                    if e["add"]:
+                        group.append((d, Add, value(e["add"])))
+                SeqCompute(group)
+
+        entries = {}
+        for e in g["entries"]:
+            entries.setdefault(e["from"], []).append(e)
+        for id_, es in entries.items():
+            copy(id_, es)
+        origins = globals().get("_ORIGINS")
+        for t in g["triggers"]:
+            # (With the map of triggers on, each trigger says the line of the statement it comes from.)
+            if origins is not None and t.get("at"):
+                origins.append(_origin_of(t["at"]))
+            try:
+                self.graph_trigger(t, labels, epd, value, copy, ctx)
+            finally:
+                if origins is not None and t.get("at"):
+                    origins.pop()
+        end << NextTrigger()
+
+    def graph_trigger(self, t, labels, epd, value, copy, ctx):
+        """One trigger of a graph, or what stands in its place (a copy, an island, a call)."""
+        if "copy" in t:
+            # (In place of a trigger: the walk goes on to the one made after it.)
+            labels[t["label"]] << NextTrigger()
+            if t["copy"]["into"]:
+                copy(t["copy"]["from"], t["copy"]["into"])
+            return
+        if "island" in t:
+            # A statement the emitter left to this side, lowered here as anywhere (nothing in it leaves it).
+            labels[t["label"]] << NextTrigger()
+            self.statement(t["island"], ctx)
+            return
+        if "call" in t:
+            # A fixed-point function, its parameters written by the triggers before: it goes back to the trigger
+            # after this one, its result written where the graph says (an EPD, as a call's return is).
+            f, back = self.graph_function(t["call"]), Forward()
+            labels[t["label"]] << RawTrigger(nextptr=f._fstart, actions=[SetMemory(f._nptr, SetTo, back), SetMemoryEPD(EPD(f._frets[0].getDestAddr()), SetTo, epd(t["call"]["into"]))])
+            back << NextTrigger()
+            return
+        conds = [MemoryXEPD(epd(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"], c["mask"]) if "mask" in c else MemoryEPD(epd(c["dword"]), self.GRAPH_COMPARE[c["compare"]], c["value"]) for c in t["conds"]]
+        acts = [SetMemoryXEPD(epd(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"]), a["mask"]) if "mask" in a else SetMemoryEPD(epd(a["dword"]), self.GRAPH_MODIFIER[a["modifier"]], value(a["value"])) for a in t["acts"]]
+        if "next" in t:
+            labels[t["label"]] << RawTrigger(nextptr=labels[t["next"]], conditions=conds, actions=acts)
+        else:
+            labels[t["label"]] << RawTrigger(conditions=conds, actions=acts)
+
+    def graph_function(self, spec):
+        """The fixed-point function a graph calls (compiler/backend/graph.ts, FixedFn), its body made."""
+        fn, c = spec["fn"], int(spec.get("c", 0))
+        if fn in ("fmul_vars", "fdiv_vars"):
+            f = fixed_vars()[fn]
+        elif fn == "fdiv_by":
+            if (c, None) not in _CONST_FDIV:
+                _CONST_FDIV[(c, None)] = make_const_fdiv(c, None)
+            f = _CONST_FDIV[(c, None)]
+        else:
+            name = "fmul" if fn == "fmul_by" else "fdiv"
+            if (name, c, None) not in _FIXED_BY_CONST:
+                _FIXED_BY_CONST[(name, c, None)] = (make_fmul_by if name == "fmul" else make_fdiv_by_const)(c, 31)
+            f = _FIXED_BY_CONST[(name, c, None)]
+        if f._fstart is None:
+            f._create_func_body()
+        return f
 
     def try_(self, st, ctx):
         """The body with its catch as the place a throw goes to; the catch after it, reached only that way."""
@@ -3779,30 +4812,190 @@ class Lowering:
         return left["id"], out
 
     def for_(self, st, ctx):
-        head, update, exit_ = Forward(), Forward(), Forward()
         unchecked = self.unchecked_loop(st)
-        if unchecked is not None:
-            was = self.inside.get(unchecked[0])
-            self.inside[unchecked[0]] = unchecked[1]
+        cursor = self.cursors_for(st)
+        flags = [] if unchecked is None else [f for f in unchecked[1].values() if f is not True]
+        if unchecked is not None and cursor is not None and flags and len(flags) <= 16:
+            # Unswitched: every other array the body reads at the counter found as long as the loop's own on the way in
+            # (the usual case: a record's fields grow together) runs a copy of the loop that knows it, with no flag
+            # tested at each access; otherwise the copy that tests them.
+            self._copies = getattr(self, "_copies", 0) + 1
             try:
-                self.for_body(st, ctx, head, update, exit_)
+                if EUDIf()([f >= 1 for f in flags]):
+                    self.for_copy(st, ctx, (unchecked[0], {k: True for k in unchecked[1]}), True)
+                if EUDElse()():
+                    self.for_copy(st, ctx, unchecked, True)
+                EUDEndIf()
             finally:
-                if was is None:
-                    self.inside.pop(unchecked[0], None)
-                else:
-                    self.inside[unchecked[0]] = was
+                self._copies -= 1
             return
-        self.for_body(st, ctx, head, update, exit_)
+        self.for_copy(st, ctx, unchecked, cursor is not None)
 
-    def for_body(self, st, ctx, head, update, exit_):
+    def for_copy(self, st, ctx, unchecked, cursors):
+        """One copy of a `for` loop: `unchecked` what `unchecked_loop` found (or the same with every flag known true),
+        `cursors` whether its accesses at the counter go through registers (`Cursors`). An unswitched loop has two, each
+        a region of its own for static routing, with a way in of its own."""
+        head, update, exit_ = Forward(), Forward(), Forward()
+        region = None
+        if ROUTE.enabled and ROUTE.on and ROUTE.stack and ROUTE.stack[-1].kind == "loop" and getattr(self, "_copies", 0):
+            region = _Region("loop")
+            region.entry, region.after = Forward(), Forward()
+            SetNextTrigger(region.entry)
+            region.after << NextTrigger()
+            ROUTE.loops.append(region)
+        cursor = self.cursors_for(st) if cursors else None
+        if cursor is not None:
+            # The way in, which the registers' setting goes in front of once the body has said which there are.
+            pre, pre_after = Forward(), Forward()
+            SetNextTrigger(pre)
+            pre_after << NextTrigger()
+            self.cursors[cursor.counter] = cursor
+        if region is not None:
+            ROUTE.stack.append(region)
+        try:
+            if unchecked is not None:
+                was = self.inside.get(unchecked[0])
+                self.inside[unchecked[0]] = unchecked[1]
+                try:
+                    self.for_body(st, ctx, head, update, exit_, cursor)
+                finally:
+                    if was is None:
+                        self.inside.pop(unchecked[0], None)
+                    else:
+                        self.inside[unchecked[0]] = was
+            else:
+                self.for_body(st, ctx, head, update, exit_, cursor)
+        finally:
+            if region is not None:
+                ROUTE.stack.pop()
+            if cursor is not None:
+                del self.cursors[cursor.counter]
+        if cursor is not None:
+            # Made out of the way of the code being made (what is pending is put aside and handed on after), and as
+            # code in front of the loop, not in it.
+            outer = ROUTE.stack.pop() if ROUTE.enabled and ROUTE.stack and ROUTE.stack[-1].kind == "loop" else None
+            held = Forward()
+            SetNextTrigger(held)
+            if cursor.reads or cursor.writes:
+                pre << NextTrigger()
+                cursor.init()
+                SetNextTrigger(pre_after)
+            else:
+                pre << pre_after
+            held << NextTrigger()
+            if outer is not None:
+                ROUTE.stack.append(outer)
+
+    def cursors_for(self, st):
+        """`Cursors` for a loop `for (…; …; i = i ± c)` at a counter with a place, when that store is its whole update and
+        its body is as `lengths_fixed_in` wants it (no wait, no call, no length changed, nothing stored into i)."""
+        upd = st.get("update") or []
+        if len(upd) != 1 or upd[0].get("kind") != "assign":
+            return None
+        i = upd[0].get("target")
+        if i not in self.places:
+            return None
+        step = counter_step(upd[0].get("value"), i)
+        if step is None or step[0] != "add":
+            return None
+        lists = {a["id"] for a in self.p.get("arrays", []) if a.get("dynamic") or a.get("through")}
+        if not lengths_fixed_in(st["body"], i, lists):
+            return None
+        return Cursors(i, self.places[i], step[1])
+
+    def cursor_at(self, index, a):
+        """The loop's `Cursors` an access at `index` of `a` can go through, or None: the index is a cursor loop's counter,
+        and the array keeps its block where it is — a fixed one, or a growing one the loop found at least as long as its
+        own (`inside`: known, or a flag set on the way in)."""
+        if index.get("kind") != "var":
+            return None
+        cur = self.cursors.get(index.get("id"))
+        if cur is None or self.places.get(cur.counter) is not cur.place:
+            return None
+        if type(a) is ArrayStorage and a.placeable():
+            return cur
+        if type(a) is ListStorage and a.placeable() and self.bound_of(index, a.decl["id"]) is not None:
+            return cur
+        return None
+
+    def cursor_read(self, cur, a, e):
+        # (A read that always happens fills its temporary whole: it need not start from 0, as `fresh` does.)
+        if type(a) is ArrayStorage:
+            r = rng(e["index"])
+            if r is not None and r[0] >= 0 and r[1] <= a.length - 1:
+                out = EUDVariable()
+                cur.read(unProxy(a.store), out)  # (inside, the ranges say)
+                return out
+            out = fresh(0)
+            if EUDIf()(as_var(self.num(e["index"])) <= a.length - 1):
+                cur.read(unProxy(a.store), out)
+            EUDEndIf()
+            return out
+        bound = self.bound_of(e["index"], e["array"])
+        if bound is True:
+            out = EUDVariable()
+            cur.read(a.base[0], out)
+            return out
+        out = fresh(0)
+        if EUDIf()(bound >= 1):
+            cur.read(a.base[0], out)
+        if EUDElseIf()(as_var(self.num(e["index"])) < as_var(a.field("len"))):
+            varray_read(a.base[0], cur.place, out)
+        EUDEndIf()
+        return out
+
+    def cursor_write(self, cur, a, st, value, modifier):
+        if a.bits and modifier == SetTo:
+            value = saturate(value, a.bits)
+        v = fresh(value) if modifier == SetTo and not isinstance(value, int) else value
+        if type(a) is ArrayStorage:
+            r = rng(st["index"])
+            if r is not None and r[0] >= 0 and r[1] <= a.length - 1:
+                cur.write(a.store._epd + VARRAY_VALUE // 4, v, modifier)
+            else:
+                if EUDIf()(as_var(self.num(st["index"])) <= a.length - 1):
+                    cur.write(a.store._epd + VARRAY_VALUE // 4, v, modifier)
+                EUDEndIf()
+            return
+        bound = self.bound_of(st["index"], st["array"])
+        if bound is True:
+            cur.write(a.base[1], v, modifier)
+            return
+        i, n = as_var(self.num(st["index"])), as_var(a.field("len"))
+        if EUDIf()(bound >= 1):
+            cur.write(a.base[1], v, modifier)
+        if EUDElseIf()(i < n):
+            varray_write(a.base[1], cur.place, v, modifier)
+        if EUDElseIf()(i == n):
+            a.push(v)
+        EUDEndIf()
+
+    def for_body(self, st, ctx, head, update, exit_, cursor=None):
         head << NextTrigger()
         if st.get("cond") is not None:
             EUDJumpIfNot(self.cond(st["cond"]), exit_)
         self.straight(st["body"], dict(ctx, **{"break": exit_, "continue": update}))
         update << NextTrigger()
-        if self.straight(st["update"], ctx):
+        if cursor is not None and self.cursor_update(st, cursor):
+            EUDJump(head)
+        elif self.straight(st["update"], ctx):
+            if cursor is not None:
+                cursor.advance()
             EUDJump(head)
         exit_ << NextTrigger()
+
+    def cursor_update(self, st, cursor):
+        """A cursor loop's update `i = i ± c` of a variable of the program's own: the counter, its place and every
+        register moved on in one trigger, where they were three. False when the counter is kept otherwise (a row)."""
+        target = self.vars.get(cursor.counter)
+        if not isinstance(target, Storage) or target.rowed or target.bits:
+            return False
+        c = cursor.step
+        acts = [target.store.AddNumber(c & U32), cursor.place.bytes.AddNumber((VARRAY_STRIDE * c) & U32), cursor.place.dwords.AddNumber((VARRAY_STRIDE // 4 * c) & U32)]
+        acts += [SetMemory(t + 4, Add, (VARRAY_STRIDE * c) & U32) for t, _ in cursor.reads]
+        acts += [SetMemory(act + 16, Add, (VARRAY_STRIDE // 4 * c) & U32) for act, _ in cursor.writes]
+        DoActions(acts)
+        return True
 
     def unrolled(self, st, ctx):
         exit_ = Forward()
@@ -3915,12 +5108,17 @@ class Lowering:
                     value << 228
                 EUDEndIf()
             fields[name] = value
+        moves = int(r["type"]) in MOVES_UNITS
         if count is None:
             DoActions(Action(**fields))
+            if moves:
+                forget_counts()
             return
         fields["amount"] = 1
         for _ in EUDLoopRange(0, count):
             DoActions(Action(**fields))
+        if moves:
+            forget_counts()
 
     def print_(self, st):
         """Text with values in it: every value first, then the text, shown only on the screen of the player it is for."""
@@ -4402,6 +5600,7 @@ class Lowering:
         back = EUDVariable()
 
         def body():
+            ROUTE.unknown_call()
             after = Forward()
             DoActions([SetNextPtr(tail, after), back.SetNumber(after)])
             EUDJump(start)
@@ -4999,9 +6198,97 @@ def fixed_const(name, args, unsigned=False, table=None):
     return t
 
 
-def shift_const(x, op, k):
+def rng(node):
+    """The range compiler/ranges.ts found for a number of the IR - its signed reading, lowest and highest - or None."""
+    if not isinstance(node, dict):
+        return None
+    if node.get("kind") == "const":
+        v = signed(int(node["value"]) & U32)
+        return (v, v)
+    r = node.get("range")
+    return (int(r[0]), int(r[1])) if r else None
+
+
+def top_of(node):
+    """The most a number of the IR can be, when ranges.ts found it never below zero; None otherwise."""
+    r = rng(node)
+    return r[1] if r is not None and r[0] >= 0 else None
+
+
+def mul_bits(v, top, k):
+    """v * k, wrapping, of a variable known to be 0 ... top and a constant k of either sign: a trigger a bit v can have,
+    each adding k shifted to that bit (eudplib's product by a constant goes over all 32, through a call)."""
+    r = EUDVariable()
+    RawTrigger(actions=r.SetNumber(0))
+    for bit in range(top.bit_length()):
+        add = (k << bit) & U32
+        if add:
+            RawTrigger(conditions=v.AtLeastX(1, 1 << bit), actions=r.AddNumber(add))
+    return r
+
+
+def mul_bits_pays(top, k):
+    """Whether mul_bits beats eudplib's product for a side of 0 ... top and the constant k, by Remastered's weights: about
+    18 ns a bit of top, against a call (80 ns) and about 95 ns a bit of the smaller side for eudplib's."""
+    m = abs(signed(k))
+    return 18 * top.bit_length() < 80 + 95 * min(m.bit_length(), top.bit_length())
+
+
+def div_bits(a, d, top):
+    """(a // d, a % d) of a value known to be 0 ... top and a constant d >= 1: a trigger a bit the quotient can have,
+    where eudplib's goes over every bit a 32-bit dividend could give, through a call. `a` is copied, not used up."""
+    if d == 1:
+        return a, 0
+    if d & (d - 1) == 0:
+        k = d.bit_length() - 1
+        rem = fresh(a)
+        DoActions(rem.SetNumberX(0, (~(d - 1)) & U32))
+        return shift_const(as_var(a), ">>>", k, top), rem
+    rem, q = fresh(a), EUDVariable()
+    RawTrigger(actions=q.SetNumber(0))
+    for i in range((top // d).bit_length() - 1, -1, -1):
+        RawTrigger(conditions=rem.AtLeast(d << i), actions=[rem.SubtractNumber(d << i), q.AddNumber(1 << i)])
+    return q, rem
+
+
+def div_var_bits(a, b, top):
+    """(a // b, a % b) of a value known to be 0 ... top and a variable b >= 1, both read from 0 up: eudplib's division
+    chain (the divisor doubled into each step's condition and action, then the steps from the highest down), with only
+    as many steps as top has bits, and the chain started as soon as the next doubling would pass top - where eudplib's
+    doubles the divisor until it would pass 2^31 and keeps 32 steps."""
+    n = max(1, top.bit_length())
+    q, x, rem = EUDVariable(), EUDVariable(), fresh(a)
+    SeqCompute([(q, SetTo, 0), (x, SetTo, b)])
+    cells = [(Forward(), Forward()) for _ in range(n)]
+    chain = [Forward() for _ in range(n)]
+    half = (top >> 1) + 1
+    for i in range(n):
+        SeqCompute([(EPD(c), SetTo, x) for c in cells[i]])
+        if i == n - 1:
+            break
+        # Past top / 2 the next doubling is past top, whose steps take nothing: the chain starts here.
+        p1, p2, p3 = Forward(), Forward(), Forward()
+        p1 << RawTrigger(nextptr=p2, conditions=x.AtLeast(half), actions=SetNextPtr(p1, p3))
+        p3 << RawTrigger(nextptr=chain[i], actions=SetNextPtr(p1, p2))
+        p2 << NextTrigger()
+        SeqCompute([(x, Add, x)])
+    for i in range(n - 1, -1, -1):
+        c, act = Forward(), Forward()
+        chain[i] << RawTrigger(conditions=[c << rem.AtLeast(0)], actions=[act << rem.SubtractNumber(0), q.AddNumber(1 << i)])
+        cells[i][0] << c + 8
+        cells[i][1] << act + 20
+    return q, rem
+
+
+def shift_const(x, op, k, top=None):
     """x << k, x >> k (the sign kept) or x >>> k for a constant k from 1 to 31, one trigger a bit that moves: a bit of x
-    tested, its place in the result added. A short shift left is doublings instead (a doubling is about two triggers)."""
+    tested, its place in the result added. A short shift left is doublings instead (a doubling is about two triggers).
+    `top`: x is known to be 0 ... top (ranges.ts), so only its bits move - and `>>` is `>>>`, the sign bit being 0."""
+    if top is not None:
+        if op == ">>":
+            op = ">>>"
+        if op == ">>>" and top >> k == 0:
+            return 0
     if op == "<<" and k <= 4:
         t = fresh(x)
         for _ in range(k):
@@ -5010,11 +6297,20 @@ def shift_const(x, op, k):
     r = EUDVariable()
     RawTrigger(actions=r.SetNumber(0))
     if op == "<<":
-        for bit in range(32 - k):
+        for bit in range(32 - k if top is None else min(32 - k, top.bit_length())):
             RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=r.AddNumber(1 << (bit + k)))
         return r
     # From the top, eight bits a group: a group with none of its bits set is jumped over (a small number skips most).
-    for top in range(31, k - 1, -8):
+    # Known to be at most `top`, the bits above it are never set, and a group of eight or fewer needs no jump.
+    highest = 31 if top is None else top.bit_length() - 1
+    if highest - k < 8:
+        for bit in range(highest, k - 1, -1):
+            add = 1 << (bit - k)
+            if op == ">>" and bit == 31:
+                add = (add - (1 << (32 - k))) & U32
+            RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=r.AddNumber(add))
+        return r
+    for top in range(highest, k - 1, -8):
         bits = range(top, max(k, top - 7) - 1, -1)
         group = sum(1 << bit for bit in bits)
         past = Forward()
@@ -5026,6 +6322,37 @@ def shift_const(x, op, k):
             RawTrigger(conditions=x.AtLeastX(1, 1 << bit), actions=r.AddNumber(add))
         past << NextTrigger()
     return r
+
+
+def clamp_const(v, c, name, unsigned):
+    """min(v, c) or max(v, c) of a variable and a constant: a copy of v, set to c by a trigger whose conditions say it
+    passes c — one or two comparisons with constants, where a comparison of two values and a branch was about 0.17 µs
+    (the front end puts a max(…, 0) around every coordinate of a centerLocation, so the fog library's every brush)."""
+    t = fresh(v)
+    c &= U32
+    if unsigned:
+        if name == "max" and c > 0:
+            RawTrigger(conditions=t.AtMost(c - 1), actions=t.SetNumber(c))
+        elif name == "min" and c < U32:
+            RawTrigger(conditions=t.AtLeast(c + 1), actions=t.SetNumber(c))
+        return t
+    # Signed: below zero is from 2^31 up, read from 0 up.
+    if name == "max":
+        if c < SIGN:
+            RawTrigger(conditions=t.AtLeast(SIGN), actions=t.SetNumber(c))
+            if c > 0:
+                RawTrigger(conditions=t.AtMost(c - 1), actions=t.SetNumber(c))
+        elif c > SIGN:
+            RawTrigger(conditions=[t.AtLeast(SIGN), t.AtMost(c - 1)], actions=t.SetNumber(c))
+    else:
+        if c < SIGN:
+            if c < SIGN - 1:
+                RawTrigger(conditions=[t.AtMost(SIGN - 1), t.AtLeast(c + 1)], actions=t.SetNumber(c))
+        else:
+            RawTrigger(conditions=t.AtMost(SIGN - 1), actions=t.SetNumber(c))
+            if c < U32:
+                RawTrigger(conditions=t.AtLeast(c + 1), actions=t.SetNumber(c))
+    return t
 
 
 def signed_order(a, op, b):
@@ -5050,6 +6377,40 @@ def not_all(conds):
     # (Trigger, not RawTrigger: a condition whose amount is a variable is patched before, as EUDIf does.)
     Trigger(conditions=conds, actions=v.Clear())
     return v
+
+
+def forget_counts():
+    """Bring keeps the counts it found for a location number until the trigger pass ends or a query of another kind or
+    location is asked: writing a location's sides, or making units in it, leaves the next Bring of it reading the old
+    counts (Remastered and the lifted game alike, probes/location-stale.py). A Command in between makes it count again
+    (about 30 ns, and the next Bring is a scan, as it would be for a location that moved). Only in a map whose programs
+    ask Bring at all: the fog library moves a location and makes a unit at it for every brush, and asks nothing."""
+    if _asks_bring():
+        RawTrigger(conditions=Command(P1, AtLeast, 0, 0))
+
+
+_BRING = []
+
+
+def _asks_bring():
+    """Whether any program of the map reads a Bring condition: tests one (an `if`, an `until`) or counts with one."""
+    if not _BRING:
+        def walk(node):
+            if isinstance(node, list):
+                return any(walk(x) for x in node)
+            if not isinstance(node, dict):
+                return False
+            rec = node.get("record")
+            if isinstance(rec, dict) and (node.get("kind") == "cond" or node.get("source") == "condition") and rec.get("type") == COND_BRING:
+                return True
+            return any(walk(v) for v in node.values() if isinstance(v, (list, dict)))
+        _BRING.append(walk(IR.get("programs", [])))
+    return _BRING[0]
+
+
+# Actions that put units where a Bring already counted, or change whose they are: Create Unit with Properties, Move
+# Unit, Create Unit, Give Units to Player.
+MOVES_UNITS = {11, 39, 44, 48}
 
 
 def always(truth):
@@ -5569,6 +6930,43 @@ if settings.get("variableMap"):
     _injector.initialize_payload = _initialize_and_say
 
 
+# The loops of the IR and the code that runs apart from them, for static routing (above): a loop is a region with a way
+# in (`entry`, what came before jumps there; `after`, the loop's first trigger), a sleep or a parallel makes the loops
+# around it wait, a coroutine (a program's body, a task, a branch) runs apart, and a call of a function that calls itself
+# is one whose body this cannot follow.
+if ROUTE.enabled:
+    _ROUTED_LOOPS = ("while", "do", "for", "unitLoop", "textLoop")
+    _lower_statement = Lowering.statement
+
+    def _routed_statement(self, st, ctx):
+        k = st["kind"]
+        if k in ("sleep", "parallel"):
+            ROUTE.waited()
+        if k not in _ROUTED_LOOPS or not ROUTE.on:
+            return _lower_statement(self, st, ctx)
+        r = _Region("loop")
+        r.entry, r.after = Forward(), Forward()
+        SetNextTrigger(r.entry)
+        r.after << NextTrigger()
+        ROUTE.loops.append(r)
+        ROUTE.stack.append(r)
+        try:
+            return _lower_statement(self, st, ctx)
+        finally:
+            ROUTE.stack.pop()
+
+    Lowering.statement = _routed_statement
+    _lower_coroutine = Lowering.coroutine
+
+    def _routed_coroutine(self, *args, **kwargs):
+        ROUTE.stack.append(_Region("coroutine"))
+        try:
+            return _lower_coroutine(self, *args, **kwargs)
+        finally:
+            ROUTE.stack.pop()
+
+    Lowering.coroutine = _routed_coroutine
+
 INPUT = Input(IR.get("input"))
 _SOURCES = {s: uses_source(IR.get("programs", []), s) for s in ("created", "died", "killed", "ordered", "morphed")}
 EVENTS = Events(_SOURCES["created"], _SOURCES["died"] or _SOURCES["killed"], _SOURCES["ordered"], _SOURCES["morphed"]) if any(_SOURCES.values()) else None
@@ -5595,3 +6993,5 @@ def afterTriggerExec():
         EVENTS.run()
     for prog in PROGRAMS:
         prog.run()
+    # Everything this file makes is made by now: which reads need no routing (above).
+    ROUTE.decide()

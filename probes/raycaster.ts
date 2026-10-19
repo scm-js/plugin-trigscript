@@ -7,6 +7,9 @@
 //
 //   npx tsx probes/lib/raycaster-map.mts fixtures/eud/raycaster-base.scx
 //   npx tsx scripts/build-fixture.mts probes/raycaster.ts fixtures/eud/raycaster.scx fixtures/eud/raycaster-base.scx
+// Its tests on the same map — the board is 128 tiles wide, and on a smaller one (the default, 96) the columns from 32
+// on are off the map and never drawn:
+//   npx tsx scripts/test-game.mts probes/raycaster.ts fixtures/eud/raycaster-base.scx
 import { fog } from "trigscript/fog";
 import { test, expect } from "trigscript";
 

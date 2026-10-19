@@ -82,7 +82,15 @@ const SPOT = reserveLocation("fog: where each brush is made");
  * of the action is known when the script is built (one given by the program costs writing it into the action).
  */
 const disc = game((player: Player, x: number, y: number, size: number) => {
-  centerLocation(SPOT, x * 32 + 16, y * 32 + 16, 32, 32);
+  discPx(player, x * 32 + 16, y * 32 + 16, size);
+});
+
+/**
+ * disc() in pixels, (px, py) the centre of the tile: what a caller with many brushes uses, its products by 32 worked
+ * out once and the brushes' offsets added (a product by 32 of a number the game holds is a test a bit, about 0.4 µs).
+ */
+const discPx = game((player: Player, px: number, py: number, size: number) => {
+  centerLocation(SPOT, px, py, 32, 32);
   switch (size) {
     case 0: case 1: createUnit(player, BRUSHES[0], 1, SPOT); removeUnit(player, BRUSHES[0]); break;
     case 2: createUnit(player, BRUSHES[1], 1, SPOT); removeUnit(player, BRUSHES[1]); break;
@@ -212,13 +220,19 @@ function film(video: Video): Film {
  */
 export const light = game((player: Player, x: number, y: number, shape: number | Picture | Video, frame: number = 0) => {
   if (typeof shape === "number") disc(player, x, y, shape);
-  else if ("brushes" in shape) for (const b of shape.brushes) disc(player, x + b.x, y + b.y, b.size);
   else {
-    const { words, starts } = film(shape);
-    const end = starts[frame + 1];
-    for (let i = starts[frame]; i < end; i++) {
-      const w = words[i];
-      disc(player, x + (w & 255), y + ((w >> 8) & 255), w >> 16);
+    // The picture's corner in pixels once; each brush is its offset from there (a constant of a picture).
+    const px = x * 32 + 16, py = y * 32 + 16;
+    if ("brushes" in shape) for (const b of shape.brushes) discPx(player, px + b.x * 32, py + b.y * 32, b.size);
+    else {
+      const { words, starts } = film(shape);
+      const end = starts[frame + 1];
+      for (let i = starts[frame]; i < end; i++) {
+        const w = words[i];
+        // (A row's offset in pixels straight from its byte: the same as ((w >> 8) & 255) * 32, and the shift only has
+        // the byte's eight bits to look at.)
+        discPx(player, px + (w & 255) * 32, py + ((w & 0xff00) >> 3), w >> 16);
+      }
     }
   }
 });
@@ -306,33 +320,46 @@ function columnPlan(layout: ColumnLayout): ColumnPlan {
 const columnRect = game((player: Player, words: readonly number[], starts: readonly number[], at: number, x: number, top: number, bottom: number) => {
   let i = starts[at];
   const end = starts[at + 1];
+  // In pixels once; each brush is its offset (a few bits, a few tests) from there.
+  const px = x * 32 + 16, pt = top * 32 + 16, pb = bottom * 32 + 16;
   while (i < end) {
     const w = words[i];
-    const dx = x + (w & 255), dy = (w >> 8) & 255, size = w >> 16;
-    disc(player, dx, top + dy, size);
-    disc(player, dx, bottom + dy, size);
+    const dx = (w & 255) * 32, dy = (w & 0xff00) >> 3, size = w >> 16;
+    discPx(player, px + dx, pt + dy, size);
+    discPx(player, px + dx, pb + dy, size);
     i++;
   }
 });
 
 /**
- * One column's part of fog.columns(): `k` rows, a brush (3 × 4) every 4 of them and the last moved back to end on the
- * edge, twice — from row `top` down and from row `bottom` down — centred on column `x`. What the smallest brush covers
- * exactly, worked out here rather than read: it is the most common rectangle by far.
+ * One column's part of fog.columns(), in pixels: brushes (3 × 4) a column of 4 rows apart and the last moved back to
+ * end on the edge, twice — from `pt` and from `pb`, the centres of the first brush of each — down a column `k32`
+ * pixels deep (32 a row; under 4 rows, a brush deep), centred on `px`. What the smallest brush covers exactly, worked out
+ * here rather than read: it is the most common rectangle by far. In pixels because the caller has them, stepped: a
+ * product by 32 of a number the game holds is a test a bit, about 0.4 µs, where a step is an add.
  */
-const columnBar = game((player: Player, x: number, top: number, bottom: number, k: number) => {
-  const last = Math.max(k, 4) - 2;
-  let r = 2;
+const columnBarPx = game((player: Player, px: number, pt: number, pb: number, k32: number) => {
+  // How far down the last brush is from the first.
+  const end = Math.max(k32, 128) - 128;
+  let r = 0;
   while (true) {
-    centerLocation(SPOT, x * 32 + 16, (top + r) * 32 + 16, 32, 32);
+    centerLocation(SPOT, px, pt, 32, 32);
     createUnit(player, BRUSHES[0], 1, SPOT);
     removeUnit(player, BRUSHES[0]);
-    centerLocation(SPOT, x * 32 + 16, (bottom + r) * 32 + 16, 32, 32);
+    centerLocation(SPOT, px, pb, 32, 32);
     createUnit(player, BRUSHES[0], 1, SPOT);
     removeUnit(player, BRUSHES[0]);
-    if (r >= last) break;
-    r = Math.min(r + 4, last);
+    if (r >= end) break;
+    const step = Math.min(end - r, 128);
+    r += step;
+    pt += step;
+    pb += step;
   }
+});
+
+/** columnBarPx() in tiles: `k` rows from row `top` down and from row `bottom` down, centred on column `x`. */
+const columnBar = game((player: Player, x: number, top: number, bottom: number, k: number) => {
+  columnBarPx(player, x * 32 + 16, top * 32 + 80, bottom * 32 + 80, k * 32);
 });
 
 /**
@@ -404,15 +431,27 @@ export const columns = game((player: Player, x: number, y: number, layout: Colum
   // A shaded column of light ink is drawn on its own, after the rest: to the rest it is as if it were not there — and
   // so is every column of a light outline, which is all edges.
   const depth: number[] = new Array(count).fill(0);
-  let least = half;
+  // Half of each column's height, at most half the layout's: worked out once. (Clamped before the shift, the same
+  // number: the shift then has the few bits the clamp leaves, where a height from the program could have any.)
+  const halves: number[] = new Array(count).fill(0);
+  // And in pixels (32 a row), for the bars, which place their brushes in pixels: a small number times 32 is a few tests.
+  const halves32: number[] = new Array(count).fill(0);
+  let least = half, most = 0;
+  // (A light outline is all edges: every depth is 0, nothing to work out.)
+  const flat = !dark && outline;
+  if (flat) least = 0;
   let i = 0;
   while (i < count) {
-    const a = Math.min(Math.max(heights[i] >> 1, 0), half);
-    let d = dark ? half - a : a;
-    if (!dark && outline) d = 0;
-    else if (faces !== undefined && !dark && !outline && (faces[i] & 1) != 0) d = 0;
-    depth[i] = d;
-    if (d < least) least = d;
+    const a = Math.min(Math.max(heights[i], 0), 2 * half + 1) >> 1;
+    halves[i] = a;
+    halves32[i] = a * 32;
+    if (!flat) {
+      let d = dark ? half - a : a;
+      if (faces !== undefined && !dark && !outline && (faces[i] & 1) != 0) d = 0;
+      depth[i] = d;
+      if (d < least) least = d;
+      if (d > most) most = d;
+    }
     i++;
   }
   // A rectangle from depth p, k deep, starts on the rows above and below the middle (light) or below the top and above
@@ -424,8 +463,9 @@ export const columns = game((player: Player, x: number, y: number, layout: Colum
     if (dark) columnRect(player, words, starts, least, x, y + least - k, y + 2 * half - least);
     else columnRect(player, words, starts, least, x, mid - least, mid + least - k);
   }
-  // Each group of columns, from the least to the group's least; then each column, from there to its own.
-  let g = 0;
+  // Each group of columns, from the least to the group's least; then each column, from there to its own. (Nothing,
+  // when every column's depth is the least: a light outline's always.)
+  let g = most > least ? 0 : count;
   while (g < count) {
     const last = Math.min(g + group, count);
     let gl = half;
@@ -452,25 +492,33 @@ export const columns = game((player: Player, x: number, y: number, layout: Colum
   if (outline) {
     // Where one face meets another, the nearer (taller) of the two columns is an edge.
     const edge: number[] = new Array(count).fill(0);
+    let face = faces[0], tall = heights[0];
     i = 1;
     while (i < count) {
-      if (faces[i] != faces[i - 1]) { if (heights[i] >= heights[i - 1]) edge[i] = 1; else edge[i - 1] = 1; }
+      const f = faces[i], h = heights[i];
+      if (f != face) { if (h >= tall) edge[i] = 1; else edge[i - 1] = 1; }
+      face = f;
+      tall = h;
       i++;
     }
+    // The bars in pixels: a column's centre stepped across, the middle row's worked out once.
+    const mid80 = mid * 32 + 80;
+    let px = (x + 1) * 32 + 16;
     i = 0;
     while (i < count) {
-      const a = Math.min(Math.max(heights[i] >> 1, 0), half), cx = x + i * width + 1;
-      if (dark) { if (edge[i] != 0 && a >= 2) columnBar(player, cx, mid - a, mid, a); }
+      const a = halves[i], a32 = halves32[i];
+      if (dark) { if (edge[i] != 0 && a >= 2) columnBarPx(player, px, mid80 - a32, mid80, a32); }
       else if (a > 0) {
-        if (edge[i] != 0 || a < 8) columnBar(player, cx, mid - a, mid, a);
-        else columnBar(player, cx, mid - a, mid + a - 4, 4);
+        if (edge[i] != 0 || a < 8) columnBarPx(player, px, mid80 - a32, mid80, a32);
+        else columnBarPx(player, px, mid80 - a32, mid80 + a32 - 128, 128);
       }
+      px += width * 32;
       i++;
     }
   } else if (faces !== undefined) {
     i = 0;
     while (i < count) {
-      if ((faces[i] & 1) != 0) columnShaded(player, x + i * width + 1, mid, Math.min(Math.max(heights[i] >> 1, 0), half), dark, lines);
+      if ((faces[i] & 1) != 0) columnShaded(player, x + i * width + 1, mid, halves[i], dark, lines);
       i++;
     }
   }

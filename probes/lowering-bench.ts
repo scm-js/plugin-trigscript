@@ -24,6 +24,8 @@ program(() => {
   let cells: number[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   // Fixed numbers from the game too: 1.5 and -2.25, and one to put results in.
   let fa: fixed = fixed(zero) + 1.5, fb: fixed = fixed(zero) - 2.25, fr: fixed = 0.5;
+  // Values whose range the compiler knows (compiler/ranges.ts) though not the value: 200 in 0 … 1023, 7 in 0 … 63.
+  const sv = (zero + 200) & 1023, tv = (zero + 7) & 63;
   while (true) {
     for (let i = 0; i < n; i++) { /* LOOP */
       x += 1; /* ADD_CONST */
@@ -49,6 +51,9 @@ program(() => {
       fr = fa * fb; /* FIXED_MUL */
       fr = fa / fb; /* FIXED_DIV */
       fr = fa * 3; /* FIXED_MUL_INT */
+      fr = fa * 0.66; /* FIXED_MUL_CONST */
+      fr = fa / 2.5; /* FIXED_DIV_CONST */
+      fr = 1 / fa; /* FIXED_RECIP */
       fr = Math.sqrt(fa); /* FIXED_SQRT */
       if (fa < fb) b = 4; /* FIXED_LESS */
       if (fa < 0) b = 5; /* FIXED_SIGN */
@@ -63,6 +68,16 @@ program(() => {
       x = 1000 / y; /* DIV_VAR */
       x = list[k]; /* LIST_READ */
       list[k] = y; /* LIST_WRITE */
+      x = sv * 12; /* MUL_CONST_R */
+      x = sv * tv; /* MULTIPLY_R */
+      x = sv / 3; /* DIV_CONST_R */
+      x = sv % 10; /* MOD_CONST_R */
+      x = 1000 / (tv + 1); /* DIV_VAR_R */
+      x = sv / (tv + 1); /* DIV_VARS_R */
+      x = sv >> 2; /* SHIFT_RIGHT_R */
+      x = sv << 3; /* SHIFT_LEFT_R */
+      if (sv < tv) b = 6; /* LESS_VARS_R */
+      if (sv < 300) b = 7; /* LESS_CONST_R */
       b = 0; /* TAIL */
     }
     for (const u of unitsOf(P1)) { x += u.hp; } /* UNITS */

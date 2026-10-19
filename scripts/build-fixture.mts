@@ -34,7 +34,9 @@ const eudplib = resolve(eudplibArg ?? process.env.EUDPLIB_DIR ?? join(root, ".."
 if (!existsSync(map)) { console.error(`no map at ${map}`); process.exit(2); }
 if (!existsSync(join(eudplib, "scripts", "build-map.mts"))) { console.error(`no plugin-eudplib checkout at ${eudplib}`); process.exit(2); }
 
-const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib() });
+// RANGES=0: built without value ranges (compiler/ranges.ts), to weigh what they give.
+// EMITTER=0: no loop lowered by the emitter (compiler/backend/emit.ts), all by the Python side; EMITTER_REPORT=1 says which it took.
+const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib(), ranges: process.env.RANGES !== "0", emitter: process.env.EMITTER !== "0", ...(process.env.EMITTER_REPORT ? { emitterReport: (line: string) => console.log(line) } : {}) });
 if (r.diagnostics.length) { for (const d of r.diagnostics) console.error(`${d.file}:${d.line}:${d.column} ${d.message}`); process.exit(1); }
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));
@@ -113,6 +115,10 @@ const sections = buildPlugins(r.input, "/work/files/trigscript.json");
 // TRIGGER_MAP=1: the Python says where each trigger it made sits in the payload (a TRIGSCRIPT-MAP line in the
 // log), and that line is written beside the map as <out>.triggers.json, for scm-sim's run in the lifted game.
 if (process.env.TRIGGER_MAP) (sections.trigscript as Record<string, string>).triggerMap = "1";
+// STATIC_ROUTING=0: every variable read routed as eudplib routes it (python/trigscript.py, static routing), to weigh what it gives.
+if (process.env.STATIC_ROUTING === "0") (sections.trigscript as Record<string, string>).staticRouting = "0";
+// ROUTING_REPORT=1: why each variable read inside a loop keeps its routing (python/trigscript.py, static routing).
+if (process.env.ROUTING_REPORT) (sections.trigscript as Record<string, string>).routingReport = "1";
 // VARIABLE_MAP=1: the same for where each program's variables are (TRIGSCRIPT-VARS), as <out>.variables.json, for a
 // test in the lifted game to read them (`sim.program()`).
 if (process.env.VARIABLE_MAP) (sections.trigscript as Record<string, string>).variableMap = "1";

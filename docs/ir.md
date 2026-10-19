@@ -792,6 +792,22 @@ interpreter agree on every case:
 - An action's variable `modifier` (a unit count) means that many units: the lowering does
   the action once for each, so 0 is none and 300 is 300.
 - A `switch` compares bits: a case of −1 is 0xFFFFFFFF.
+- **Ranges** (version 25). Any number may carry `range: [lo, hi]`: `compiler/ranges.ts` found its
+  signed reading never below `lo` nor above `hi`. A backend may use it to take only the bits a
+  value can have — the Python lowering does for a product by a constant, a quotient and a
+  remainder by a constant or by a variable, a shift, and a `min` / `max` / `abs` one side of
+  which always wins — and may ignore it. The same pass reads a comparison whose sides are
+  never below zero as `unsigned`, and turns one whose ranges settle it (wherever it is met,
+  its sides doing nothing but give a value) into a constant: the program means what it did.
+- **Graphs** (version 26). With the emitter on (`CompileOptions.emitter`), a loop may arrive as
+  `{ kind: "graph", graph, original }`: `compiler/backend/emit.ts` lowered it to triggers of its
+  own (`compiler/backend/graph.ts`), which a backend makes as they are, where the statement was —
+  its conditions and actions on dwords of the game, the program's variables' cells, data of the
+  graph's own and the fields of its own triggers (a condition's player field among them: it reads
+  the cell of a list that field says), its copies of variables on the way in, its calls of the
+  lowering's fixed-point functions and the statements it leaves to the lowering (islands). `original`
+  is the loop, for what does not make triggers: the simulator runs it, and a walk over the
+  statements finds the declarations in it.
 
 ## Records
 

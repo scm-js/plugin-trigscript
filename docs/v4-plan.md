@@ -2447,6 +2447,500 @@ second kind of variable. What the run did give: A4's weights for actions and con
 were Set Switch's and a guess — `otherAction` 3.8, `otherCondition` 3.6 (was 4.8, a Deaths condition's) — so a
 script's `trigger()` records and the classic backend's resources, scores and switches weigh what they cost.
 
+### The limits, and a backend of our own (2026-10-19)
+
+After the cost slices, the question was whether there is more to have, and whether eudplib is where it stops. What
+cannot move, whatever writes the triggers:
+
+- **Every Deaths and Set Deaths of an EUD map goes through the emulator** (above): a record costs 3–6 ns at the least,
+  a Set Deaths 9.4. The game's own 5.4 ms a frame is beyond reach.
+- **A trigger decides one bit.** It runs or it does not; so taking an n-bit value out of memory into a variable takes
+  at least n triggers, and a 32-bit read is about 0.4 µs however it is written.
+- **No code of our own runs.** The emulator lets a map at the regions it lists and no others, and the game's code is
+  there only as copies that ignore writes. Getting past that would be an exploit of the game, which this plan does
+  not do.
+
+Where the lowering stands against that floor (Remastered's weights, the bench):
+
+| Statement | Now | Floor, roughly |
+| --- | ---: | ---: |
+| `x += 1` | 18 ns | 15 |
+| a loop's turn | 181 ns | eudplib's 190: the same |
+| `x = cells[k]` | 376 ns | 200 |
+| `list[k] = y`, any index | 639 ns | 200 |
+| `fmul` | 4.7 µs | 0.5–1 |
+| `fdiv` / `sqrt_fixed` | 7.4 / 10.1 µs | about 1 |
+
+The simple statements are at the floor; what is far from it is everything that takes a number apart a bit at a time —
+products, quotients, shifts, a read of memory, an index worked out from a variable — and everything that pays a trigger
+for each action because the code is made of small triggers. eudplib is a library of macros written when 1.16.1's
+measure was the number of records: each operation is emitted alone, with no view of the next, no idea how wide a value
+is, and a jump as an empty trigger. Remastered charges a trigger 8.3 ns of its own, as much as the action in it.
+
+**The order:**
+
+1. **Two probes, cheap, that could change the rest.**
+   - *Where Remastered decides a map is an EUD map* (the flag at +0x105423C), read in Ghidra, and the weights probe's
+     yardsticks built as a map without EUD: if a map that is not EUD runs its triggers much cheaper, the classic backend
+     (scripts that never touch memory) gains from staying classic, and a script could be told so.
+   - *What Bring and Command cost* a unit in the location, in an EUD map: the game's own loop over units, one
+     condition. If it is cheap per unit, a library can ask "is any bullet within this box" natively instead of in
+     arithmetic.
+2. **Value ranges.** The compiler works out the range of every number variable and expression it can (constants,
+   loop counters, masks, `u8`/`u16`, comparisons that guard a branch, `Math.min`/`max`, `%` by a constant, what a
+   field of the game holds), and the lowering takes only the bits the range has: a read, a product, a quotient, a shift,
+   an index worked out from a variable. Nothing in the language changes; the bench says what it gave.
+3. **A backend of our own, part 1.** Below eudplib's macros, not beside them: a trigger-level IR (triggers, conditions,
+   actions, labels, values written into other records) that the lowering emits into and that is then scheduled and laid
+   out before eudplib is handed the records:
+   - *packing* independent actions of straight-line code into one trigger (up to 64 share one walk);
+   - *laying code out* so the common path falls through rather than jumping through an empty trigger, and conditions
+     sit in the trigger whose actions they guard;
+   - *choosing* between lowerings of one statement by Remastered's weights, the same model A4 shows.
+   Every change is held against the lifted game and the simulator, as the lowering's slices were: the same tests both
+   ways, the bench before and after. The later parts — values kept in the actions that use them, a calling convention
+   of our own, profile-guided layout from A4's runs, and eudplib's loader and layout replaced — wait for what part 1
+   measures.
+
+Not on the list: anything that runs outside the trigger walk, and threads (the game has one for triggers).
+
+**The two probes, built and played (2026-10-19).** Read in Ghidra first (1.23.10.13515):
+- *A map is an EUD map when it loads with one.* +0x358C0A goes over every trigger of the map (0x960 bytes apart) and
+  +0x2E17E0 sets bit 1 of +0x105423C for a Deaths condition, bit 2 for a Set Deaths action, whose player is above 26 or
+  is 12, or whose unit is above 232. Nothing sets it later. Without it the walk (+0x41B350) follows the game's own list
+  of triggers, and Set Deaths (+0x288240) writes the deaths table straight — refusing a player above 8 or a unit above
+  227 — so a map that is not EUD cannot reach past the deaths table at all. There is no mixing the two in one map.
+- *Bring and Command never touch the emulator.* Both read a table of counts, a cell for each player and unit type (0x540
+  bytes): Command copies the game's own counts into it (+0x28AF60); Bring counts the units in its location (+0x28BBD0).
+  The table is kept while the queries stay of one kind and, for Bring, of one location number: it is thrown away at the
+  start of every trigger pass (+0x41C007) and by the actions that kill or remove units (+0x28A960). **Writing a location's
+  sides does not throw it away**: a Bring of a location moved that way since the last Bring of it reads the old counts
+  (played: `probes/location-stale.py`, below). A library that moves a location to ask about a place must ask something
+  else in between.
+- `probes/classic-weights.mts` (no eudplib: the editor's own code writes 5,017 triggers) — blocks turned on by phase:
+  16 conditions a trigger with the last failing, the same with 62 Set Deaths after, 62 Set Switch; marks as Player 8's
+  deaths (a map that is not EUD writes none of Players 9–12), `remastered/profile.py --marks-player=8`. A pass comes
+  every other frame (hyper triggers), as the lifted game shows.
+- `probes/native-queries.py` (eudplib, the weights probe's schedule): Bring of one location (one scan a frame, the rest
+  lookups), Command, Bring alternating two locations with 0, 16 and about 64 marines in them (a scan each time),
+  Bring alternating with Command, and a location's four sides written and Bring of it, two in turn. 160 marines in
+  boxes around Home; the lifted game finds 16, 16, 67 and 71 (the two big boxes take a few of each other's).
+
+**Played (2026-10-19), Remastered 1.23.10.13515, the same computer as the weights.**
+- *classic-weights* (`remastered/classic_report.py`, and the samples under the walk counted by phase): the game thread's
+  own work moves by about 1 ms a pass from one idle phase to the next, as much as the probe's biggest block, so the
+  fit is loose. The samples under the walk put a Set Deaths at about 5–7 ns (an EUD map's: 8.4 in the same session) and
+  a Deaths condition at 7–10 ns, no cheaper than an EUD map's 5.4. A map that is not EUD saves perhaps a third on its
+  actions and nothing on its conditions, and gives up every loop and every address: **nothing to win there.** Settled.
+- *native-queries* (`profile_report.py … --short=4`), ns each:
+
+  | Query | ns |
+  | --- | ---: |
+  | Bring of one location, asked again | 4.6 |
+  | Command, asked again | 4.3 |
+  | Deaths condition (the same run) | 5.4 |
+  | Bring, a new location, nothing in it | 191 |
+  | Bring, a new location, 16 marines | 1,582 |
+  | Bring, a new location, about 64 marines | 2,450 |
+  | Bring and Command in turn, one location (half of them a scan) | 808 |
+
+  A query asked again is cheaper than a Deaths condition; a new location is a scan, 0.2–2.5 µs by what is in it, and
+  turning from Bring to Command (or back) throws the table away too, as Ghidra said. For a library: ask one location
+  many times in a row, all of its Commands together and all of its Brings together, and never alternate. The moving
+  pair (four sides written, then Bring, two locations in turn) is a scan each time, 1.6 µs a Bring, as expected.
+  Remastered's own counts match the lifted game's exactly (Home at 128 2512; same 16, empty 0 0, 16s 16 16, 64s 67 71,
+  moving 16 16), so each row measured the boxes it says. (The moving pair is placed before the marines exist, so
+  this line does not test staleness; the next probe does.)
+- *location-stale* (`probes/location-stale.py`, no profiler: nine lines on the screen), Remastered the same as the
+  lifted 1.16.1 game, line for line. In one pass, after a Bring of location L:
+  - L's sides written (A to B, and B to A): the next Bring of L reads **the old counts**.
+  - A unit made in L by Create Unit: **the old counts** too (the next frame sees it).
+  - The Move Location action: fresh (not read in Ghidra; likely its search for the unit to centre on).
+  - A Bring of another location, a Command, or a Remove Unit action in between: fresh. So does the next frame.
+  For the backend: a library that writes a location's sides (every `at(x, y)` query) and then asks Bring must put a
+  query of another location, or a Command, in between when L was asked earlier in the same pass and the answer must be
+  new. The cheapest is a Command (about 30 ns, from the Bring-and-Command row; the next Bring of L is a scan either way). The same after
+  making units in a location that is asked again.
+  **TrigScript had this bug** (`probes/game-location-stale.ts`: `countUnits(P1, marine, spot)` after `centerLocation(spot,
+  …)` printed `4 4 4 4,4,4,4,` in the lifted game where `4 0 4 4,0,4,0,` is right; the simulator, which keeps no such
+  table, had it right, so the two disagreed). Fixed in the lowering: `centerLocation()`, `unit.locate()`, `unit.give()`
+  and the actions Create Unit (with Properties), Move Unit and Give Units are followed by a Command (`forget_counts`).
+
+**As built: value ranges (2026-10-19).** `compiler/ranges.ts`, run after `numbers.ts`; IR 25 (`range` on a number).
+- The range of every number variable is the union of what is stored into it, and 0 (a cell before its first store);
+  facts from tests (`if (i < n)`, a loop's own test) hold until the variable is stored into, and are dropped at a wait,
+  a call, a statement holding a call, the top of a loop for what it stores. A loop's counter whose only stores are its
+  declaration and the update keeps its test's fact through waits and calls in the body (not in a task, whose slots
+  share the code, nor a per-player program's shared variable). A variable something stores into behind the program's
+  back — a task's handle, the error in flight, a loop's `was` — is any number. Ranges that still grow after eight
+  passes go to their end on that side, then narrowing passes bring them back (`k = (k + 1) & 15` creeps one a pass).
+- Arrays take a range only when nothing else reaches their cells: tables known when built, `u8` / `u16`, fixed arrays
+  that are no window, row, text row or heap array.
+- In the lowering (`python/trigscript.py`): a product by a constant of a side known 0 … top is a trigger a bit of top
+  (`mul_bits`, where it beats eudplib's by the weights); a quotient or remainder by a constant (`div_bits`) or by a
+  variable (`div_var_bits`: eudplib's chain, as many steps as the dividend has bits, started as soon as the next
+  doubling would pass the dividend's top) when both sides are never below zero, and no zero check when the divisor's
+  range says so; a shift moves only the bits a value has, and needs no group jumps under eight of them; eudplib's
+  product takes the side with fewer bits first; `min` / `max` / `abs` one side of which always wins are that side.
+- The pass also reads comparisons whose sides are never below zero as unsigned, and turns one the ranges settle into a
+  constant when its sides do nothing but give a value, and wherever it is met.
+- Checked: `tests/ranges.test.ts` (the shapes, and every game probe simulated with and without ranges: the same lines
+  and faults — it found a task handle the pass had kept as 0), `probes/game-ranges.ts` 5/5 in the lifted game and the
+  simulator, every game probe as before (game-debug's one failure is meant), vitest 1123.
+
+| Line (values known 0 … 1023 and 0 … 63, not their values) | Before | After |
+| --- | ---: | ---: |
+| `sv * 12` | 721 ns | 243 |
+| `sv * tv` | 1 080 | 700 |
+| `sv / 3` | 1 094 | 302 |
+| `sv % 10` | 1 067 | 275 |
+| `1000 / (tv + 1)` | 7 026 | 1 751 |
+| `sv / (tv + 1)` | 7 011 | 1 692 |
+| `sv >> 2` | 327 | 217 |
+
+The showpieces hardly move (raycaster 1.15 → 1.13 ms, snake's first frame 4.41 → 4.33, Tetris and the bullets the same):
+their time is not in products and quotients of bounded values. Where it is, `scripts/trigger-shapes.mts` says:
+
+| A frame of | ms | the walk alone | routing | data actions | failed bit tests |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| bullets (200, moved and aged) | 0.46 | 30% | **51%** (next pointers 0.10, a cell's destination 0.07, its modifier 0.06) | 16% | 2% |
+| raycaster | 1.37 | 36% | **35%** | 21% | 18% |
+
+*Routing* is eudplib's way of reading a variable: a variable is a trigger of one action whose amount is its value, and a
+read sets that action's destination and modifier and the trigger's next pointer — three Set Deaths — before the walk
+goes through it. `x = y + z` is four triggers, 124 ns, of which the reading is two setups of three actions each. That is
+the part a backend of our own takes first (below).
+
+**As built: the backend, part 1 — routing decided once the program is whole (2026-10-19).** In `python/trigscript.py`
+(*Static routing*), between eudplib's macros and its allocator; `staticRouting` "0" turns it off (`STATIC_ROUTING=0` in
+build-fixture), `routingReport` says why each read inside a loop keeps its routing (`ROUTING_REPORT=1`).
+- Every copy `SeqCompute` makes of a variable this file made (and everything eudplib does through it — `<<`, `+=`, a call's
+  arguments; every eudplib module that took `SeqCompute` by name is pointed at the new one) is lowered as a *site*: what
+  came before jumps to a Forward; behind it the setup trigger (the constant stores before it, then the routing of each
+  cell, chained) and a bare way in (the constants alone). Everything else that asks a cell for a routing field — its
+  vtable, its destination, its mask, its modifier — is recorded with where it was asked, and so is every request for
+  its value's address that is not a condition's (a write). The array helpers that routed a value by hand (`cell_write`,
+  `varray_write`) go through `SeqCompute` too.
+- Code is lowered in *regions*: the loops of the IR, and code that runs apart — a coroutine (a program's body, a task, a
+  branch), a function's body, a scope apart. A loop records whether it waits, the functions it calls, and whether it
+  calls one whose body cannot be followed (a function that calls itself).
+- At the end of `afterTriggerExec` each group goes in bare when every cell in it is one of: read at that one site and
+  touched nowhere else — its routing written into eudplib's variable buffer as the map is built (`EUDVarBuffer.WritePayload`
+  patched: next pointer at 72·i, destination at 340 + 72·i, modifier byte at 351 + 72·i); the only read inside some loop
+  that nothing else in it (nor a function it calls, nor — when it waits — another coroutine) routes — its routing set
+  once in triggers in front of the loop; read at several sites of a loop that never writes it — each site reads a copy
+  of its own, routed for good, which the loop's way in fills. Otherwise the group keeps its setup, as eudplib had it.
+- Checked: every game probe in the lifted game and the simulator (game-debug's one failure is meant), vitest.
+
+| | Before | Routed for good | + loops (copies, hoisting) |
+| --- | ---: | ---: | ---: |
+| bench, one turn of every inner line | 53.1 µs | 51.3 | 49.6 |
+| bench, the loops over arrays and units | 64.8 µs | 61.4 | 54.8 |
+| a loop's own turn (`for (…; i < n; i++)`) | 181 ns | 108 | 108 |
+| an empty loop's turn | 189 ns | 189 | 112 |
+| raycaster, a frame | 1.13 ms | 1.08 | 1.06 |
+| bullets, a frame | 0.46 ms | 0.44 | 0.44 |
+
+The showpieces move little: what they spend is in two places routing cannot reach from outside. The bullets' fields are
+read through `varray_read`, which works the place out at every access (part 2, *record loops*, below); the raycaster's
+time is fixed-point arithmetic inside eudplib-made functions (`fdiv` 0.41 ms of its 1.06, eudplib's product 0.16, `fmul`
+0.15), whose own variables eudplib shares between calls (part 3, *arithmetic of our own*).
+
+**As built: the backend, part 2 — record loops (2026-10-19).** A `for` loop whose update is `i = i ± c` at a counter with a
+place, and whose body is as `lengths_fixed_in` wants it (no wait, no call, no length changed, nothing stored into `i`),
+reads and writes its arrays at `i` through registers of their own (`Cursors`): a read is a trigger whose own next
+pointer is the cell's address, so it jumps straight into the cell (which writes itself out through eudplib's getter);
+a write is an action whose own destination is the cell's value. Each register is set once on the way in (the array's
+first cell plus the counter's place, out of the way of the loop's code, as static routing's are) and moved on by the
+counter's step at the update — the counter, its place and every register in one trigger. `varray_read` and
+`varray_write` worked the place out at every access: two variables routed into a jump or an action each time.
+- Fixed arrays go through registers too, checked against their length unless the ranges prove the index inside.
+- A loop over a growing array whose body reads other growing arrays at its counter tested a flag at every access (were
+  they at least as long as its own when it began?). It is now *unswitched*: the flags are tested once on the way in, and
+  a copy of the loop that knows them all true runs — the usual case, a record's fields grow together — or the copy that
+  tests them. Each copy is a region of static routing of its own.
+- A read that always happens fills its temporary whole, so it no longer starts from 0.
+- `probes/game-cursors.ts`: records moved and aged, other lists longer and shorter at the counter, fixed arrays with the
+  bound proved and not, steps of 2 and −1, `continue` / `break`, a loop inside reading at the outer counter — 4/4 in the
+  lifted game and the simulator.
+
+| bullets bench (200 records, moved, bounced, aged) | Before this work | Part 1 | Part 2 |
+| --- | ---: | ---: | ---: |
+| a frame | 0.46 ms | 0.44 | 0.20 |
+| `b.x += b.dx`, a bullet | 410 ns | ~400 | 107 |
+
+**What is next for the backend.** Parts 1 and 2 took routing away where a read's routing can be decided ahead. What is
+left, in the order the measurements put it:
+1. *A loop's test turned round.* eudplib's branch spends two triggers and two actions on the way its conditions hold
+   and one trigger on the other; a loop's test holds on every turn but the last. Testing the opposite and leaving when
+   it holds makes the way on one trigger whose condition fails (about 28 ns a turn on every loop with a comparison).
+   *Tried 2026-10-19 and set aside:* the list loop gained (4.05 → 3.63 µs) but the empty loop (1.79 → 2.17), the array
+   loop (4.70 → 5.08) and the bench's own turn (108 → 128 ns) lost — the opposite comparison reads its two sides another
+   way (`floored_zero` where `<` used eudplib's own), which static routing then serves less well. It needs the
+   comparison lowered so that both directions read their sides alike first.
+2. *Arithmetic of our own* (part 3). **Built — below.**
+3. *Values written where they are used* — the end of the road routing starts on. A variable is one action whose amount
+   is its value, and every use of it elsewhere is a copy made by routing it there. In a block of straight-line code the
+   uses are known when the map is built, so each value can live in the amount fields of the actions that use it: the
+   producer's trigger has an action for each of them and writes them all when the walk passes it. `x = y + z` with x
+   used three times is y's trigger setting three fields and z's adding to them — no setup, no routing, a trigger a
+   producer. Copies for a loop's reads (part 1b) are the first case of it. Straight-line expressions first, then
+   variables across a loop's turns, then the bit-serial arithmetic of 2 written that way.
+
+**As built: the backend, part 3 — arithmetic of our own (2026-10-19).** Measured first (`scripts/trace-frame.mts`, frame
+112 of the raycaster, each eudplib cell counted with the line that ran it): `fdiv` was 0.60 ms of the frame's 2.10, and
+81% of it was copies — the doubled divisor written into two or six fields at each step of eudplib's division chain,
+each a routed run of a variable (about 46 ns) — against 16% for the comparisons that do the dividing. A copy cannot be
+made much cheaper (a value is in one action, so each place it goes is one run of that action), so the work is fewer of
+them:
+- *Cells of our own.* A trigger of one or more actions each adding its own amount to itself: one run doubles every
+  number in it, nothing routes it, and conditions and actions elsewhere read and change the amounts where they are
+  (`COND_VALUE`, `ACT_VALUE`, … in `python/trigscript.py`). A quotient, a remainder and the dividend's bits still to
+  come are three actions of one trigger.
+- *The divisor stays where it is.* Long division as on paper — the remainder doubled a step, the divisor taken away
+  when it fits — so the divisor is copied into the one comparison and the one subtraction of a loop of four triggers
+  (cells, the dividend's next bit, the test, the end), not into every step. `fdiv_vars`: 47 steps, the dividend's
+  leading zeros run first by the cells alone (a step with nothing in it each). `fmul_vars`: the 16-bit halves,
+  `ah × b + al × bh + al × bl / 65 536`, one loop of 16 steps reading bit 31 and bit 15 of a doubled `a`.
+- *One side known when the map is built.* `c / x` (`make_const_fdiv`): where the divisor's top bit is (a search of
+  comparisons) says how far down the known dividend the first step that can take the divisor away is, and what the
+  remainder is there — a constant per leaf — so only the steps that make quotient bits run; the quotient carries a bit
+  above it that reaches the top on the last step (the loop's end test). `x / c` and `x * c` (`fixed_by_const`): no
+  copies at all — the doubled divisor is constants in the steps, and a product is each bit of `|x|` adding `c` times
+  its place, split at the point so the rounding is the product's.
+- Exact: `probes/game-fdiv.ts` (written by `scripts/gen-fixed-probe.mjs`) holds 960 results — `c / x`, `x / c`, `x * c`
+  for six constants each and `x * y`, `x / y` over 32 × 12 values, at the edges (1, 2^31 − 1, −2^31, 0) — against the
+  compiler's own arithmetic as literals: the same bits in the lifted game and the simulator. It found one: −2^31 / −2^31
+  through fdiv's own way, which reads both as −2^31.
+
+| Lowering bench, ns a turn | Before | After |
+| --- | ---: | ---: |
+| `fa * fb` | 4520 | 3027 |
+| `fa / fb` | 7174 | 5116 |
+| `fa * 0.66` | 4520 | 818 |
+| `fa / 2.5` | 7174 | 1380 |
+| `1 / fa` | 7174 | 1821 |
+| `Math.floor(78 / fa)` | ~7400 | 2262 |
+
+The raycaster: 1.06 → **0.77 ms** a frame on average, its costliest frame 2.10 → 1.51 (division 0.60 → 0.16, products
+0.40 → 0.23). What is left in it: the fog library's drawing (0.56 ms, now the most), then the products of two variables
+(`(mapX + 1 - x) * deltaX` — ranges cannot see that the left side is 0 … 1, which would halve it). Not done yet:
+`Math.sqrt` (10.1 µs, the same treatment would apply), integer `*` and `/` of two variables (eudplib's still).
+
+**Where a raycaster frame goes now** (`scripts/trigger-shapes.mts`, frames 10–120, 0.78 ms): the walk itself 39%; routing
+still 0.19 ms (24%: next pointers 0.083, a cell's destination 0.052, its modifier 0.053); triggers whose conditions
+failed 0.19 ms (25%). Routing is what values written where they are used takes away; the failed triggers and the walk
+are the shape of eudplib's branches and jumps. Both are the emitter's.
+
+### The fog library, faster
+
+Measured first (`scripts/trace-frame.mts --wide`, frame 112 of the raycaster, every eudplib cell counted with the line
+that ran it): the fog library was about 0.56 ms of the frame's 1.51, and a brush — 292 of them that frame — about 1.2 µs,
+of which the unit made and taken away was 0.05. The rest was arithmetic around it:
+- *the location's four sides*, each a temporary made and copied (`x - 16`, then `+ 32`, …): about 0.75 µs;
+- *a product by 32* of a coordinate the game holds, `(top + r) * 32`, a test a bit (27 of them): about 0.4 µs — worked
+  out again for every brush of a bar, for the column's x as much as for the row;
+- *a `max(…, 0)`* the front end puts around every coordinate of a `centerLocation`: a signed comparison of two values
+  and a branch, about 0.17 µs a coordinate;
+- per column, `heights[i] >> 1` (a shift of 31 tests) worked out twice, and a pass over every column that a light
+  outline — all of whose depths are 0 — has nothing to do in.
+
+What changed, with nothing drawn differently:
+- *Python* (`center_location`): a location of a size known when the script is built has its four sides written in one
+  `SeqCompute`, the centre routed into the two sides that take it and the constants added where they land.
+  `clamp_const`: a `min` / `max` against a constant is a copy and one or two triggers whose conditions compare with
+  constants (signed and unsigned, at the edges: `probes/game-clamps.ts`). `forget_counts` (the Command after a
+  location moves or units are made) only in a map whose programs ask Bring at all — the fog library asks none.
+- *The library* (`stdlib/fog.ts`): brushes placed in pixels (`discPx`, `columnBarPx`), their products by 32 worked out
+  once and stepped by adds — across a bar, across the columns, from a picture's or a video frame's corner; each
+  column's half height clamped before the shift (the same number, the shift then has the clamp's few bits) and kept,
+  with its pixels, for the passes after; the pass over the groups skipped when every depth is the least; the edge pass
+  carrying the face and height before it rather than reading them again; a video word's row as `(w & 0xff00) >> 3`
+  rather than `((w >> 8) & 255) * 32`.
+- *Checked:* the fog board in the lifted game, hashed every frame for 70 frames of the raycaster (walking, turning, both
+  inks), the same as the branch's base build on its own map; every game probe; the raycaster's two tests.
+
+| | Before | After |
+| --- | ---: | ---: |
+| Raycaster, a frame on average | 0.77 ms | **0.60 ms** |
+| Raycaster, its costliest frame (112) | 1.51 ms | 1.16 ms |
+| The fog library in that frame | ~0.56 ms | ~0.27 ms |
+| A brush of a bar | ~1.2 µs | ~0.25 µs |
+| Bad Apple, a frame while it plays | 0.360 ms | 0.305 ms |
+
+What is left in a brush is the four sides' routed copies (about 55 ns each): the emitter's, when a location's sides can
+be places of the coordinates. Tried and set aside: shifts left by 5 as doublings (`shift_const`; about 66 ns a doubling
+against 14 a bit tested, but the raycaster's coordinates have few bits set, and it came out 0.01 ms slower).
+
+Two things found on the way, neither the library's: `compiler/ranges.ts` spread a list's values into `Math.min(…)`, which
+overflows the stack for a video's table (Bad Apple did not build on this branch; now a loop, kept once a list); and the
+raycaster's test of its first picture, "failing in the lifted game" with columns 32–41 undrawn, was being run on the
+default map, 96 tiles wide — the board is 128, and those columns are off it. On its own map
+(`fixtures/eud/raycaster-base.scx`, now said in the probe's header) both of its tests pass, before these changes and after.
+
+
+### The emitter: a backend of our own, one statement kind at a time
+
+Parts 1–3 changed what eudplib makes from inside it. From here the lowering itself moves: a TypeScript emitter that
+lowers the IR to triggers and decides where every value lives, beside `python/trigscript.py` until it has taken all of
+it, then the layout and the loader, then the input plugins — and then no Python at all.
+
+**E1 — the graph, and the splice.** `compiler/backend/`:
+- *The graph*: triggers (≤ 16 conditions, ≤ 64 actions, a label, where the walk goes next) whose conditions compare a
+  dword with a number (a mask optional) and whose actions write one (set, add, subtract, a mask optional), plus the
+  game's own records passed through. A dword is a game address, a field of one of the graph's triggers (a condition's
+  or an action's number, an action's destination or modifier, a next pointer), or a variable of the Python side's,
+  named by id. Labels resolve when the Python side makes the triggers.
+- *The splice*: a statement the emitter takes becomes `{ kind: "graph", graph, original }` (IR 26). The Python side
+  makes `graph`'s triggers where the statement was (a small materializer: labels to `Forward`s, variables to their
+  cells' addresses, through `Lowering.var`); the simulator runs `original`. So every game probe holds the emitter
+  against the IR's meaning — the lifted game running the graph, the simulator the statements it replaced.
+
+**Values written where they are used** — what the emitter is for. A number has *places*: every amount field that
+reads it (the number an action adds, sets or compares with), and a home that conditions read as memory. A write to the
+number writes all of its places — a constant one action each (`i += 1` with i read in four places is one trigger of
+five actions, where eudplib adds to i's cell and then routes the cell to each of the four, about 46 ns each). `x = y + z`
+with x in three places is six actions — y set into each place, z added — and so y's places include those three
+actions' amounts, which y's own writes keep. A comparison with a constant reads any place as memory; `x < y` reads x as
+memory against y placed (less one) in the condition. In a straight-line block or a loop every place is known when the
+map is built; where it is not — an element read at a variable index, a function's result, a per-player variable — a
+value comes from a cell, routed once into its places, as now.
+
+The order, each measured on the bench and the showpieces, each held by every game probe:
+1. E1's graph, the materializer, the splice, the differential check (the simulator against the lifted game) wired in.
+2. Numbers whose every write the emitter makes (a variable written only by taken statements, temporaries always):
+   `declare`, `assign`, `if`, `while`, `for`, `break`, `continue` of numbers and their comparisons. Branches laid out
+   as the emitter likes — the fall-through on the likely way, a failed condition costing 13.4 ns rather than a jump.
+3. The rest of the numbers: arrays and records (part 2's registers), function calls (parameters written into the
+   body's places; results through a cell), the arithmetic of part 3 as graph code.
+4. The layout and the loader of our own (the payload, its relocation, the start), proved on the lifted game and the
+   allowlist; then units, text and the input plugins; then the Python side goes, and Pyodide with it.
+
+**As built: E1 and the start of E2 (2026-10-19).** `compiler/backend/graph.ts` (the triggers), `compiler/backend/emit.ts`
+(the emitter), `Lowering.graph` in `python/trigscript.py` (the materializer), IR 26 (`graph`, `original`), on with
+`CompileOptions.emitter` / `EMITTER=1` (`EMITTER_REPORT=1` says which loops it took and why it left the others).
+- *Taken:* a `while`, `for` or `do` whose every statement is a number declared, set or added to from constants and
+  variables (`+`, `-`, negation), `if` / `else` on comparisons (`and`, `or`, `!`, a number tested), `break`,
+  `continue`, loops inside — of variables that are plain cells (not a per-player program's, not a task's, no `u8` /
+  `u16`). A loop the front end unrolled (a known count) never reaches it; neither does anything with an element,
+  a call, a product.
+- *Places, signed:* a place holds the variable or its negation, plus a constant: the game's subtract stops at 0, so a
+  variable is taken away by adding its negation, and every write is sets and adds. Comparisons read a home holding the
+  variable plus 2^31 when signed (an unsigned comparison then), `x < y` of two variables reads y less one with a
+  second condition keeping y off 0; a `u32` against a signed number is two comparisons (`plain`).
+- *Copied variables:* a variable set from itself other than by adding (`x = y - x`), and the variables of a loop of
+  reads (`x` from `y`, `y` from `x`: Fibonacci, a swap) would need places without end; their writes go to their
+  cells alone and a copy (`Copy`, a routed read per place, as eudplib's) follows each write.
+- *Layout:* a branch sets its own next pointer and the trigger it goes to puts it back; a loop's test is the way out,
+  which fails on every turn but the last; every fall-through is said, so an empty trigger is dropped.
+- *Checked:* `tests/emitter.test.ts` — 4000 random loops (nested, `break` / `continue` under random conditions,
+  signed, unsigned and mixed comparisons at the edges, variables set from themselves and from each other) run as
+  written and as their graphs by a small interpreter of the triggers: every variable the same. `probes/game-emitter.ts`
+  in the lifted game against the simulator (which runs `original`).
+- *Scaled places:* a place holds any constant times the variable plus a constant, so a product by a constant and a
+  shift left by one are as linear as a sum: `g = g * 3 + 1` with g in four places is four sets of its multiples.
+- *Tested once:* the part of a loop's test that reads nothing the loop writes is tested on the way in (a `u32`
+  counter against a signed bound: the bound's sign).
+- *Measured:* the bench's `for (let i = 0; i < m; i++) { }` of 16 turns 1793 → **659 ns** (874 before the test was
+  split): a turn is one failed test and the counter's add, about 32 ns. Every game probe passes with the emitter on.
+- *Islands:* a statement the emitter does not lower stays in a taken loop, lowered by the Python side where it is
+  (`Trigger.island`): every variable is in its cell (a cell is always one of its places), and what the island may
+  write — its own stores, its calls' results and parameters, what the functions it calls write — is copied back into
+  the graph's places after it. Not an island: anything that leaves it (a `break` of a loop outside it, `return`), a
+  wait, a `try`; an array read at a `for` loop's counter (the Python side's registers, part 2, are better there); a
+  store of a variable some array is indexed by (the Python side keeps such a counter's offset beside it, `Place`,
+  and steps it at each store it lowers). With islands the raycaster's column loop and four of Snake's loops are
+  taken; every game probe still passes. The raycaster is no faster (0.78 ms against 0.77): its loop is mostly islands
+  (the products, the quotients, the array stores), and the copies after them cost what the routing did. Islands are
+  what lets the emitter take a loop at all; what it gains comes as more of a loop's statements become its own (E3).
+- *Not the emitter's:* the raycaster's game test of its first picture (columns 32–41 not drawn by frame 6) fails at
+  the branch's base too (45ac0d7) — the heights and faces it draws are the simulator's, number for number.
+
+**As built: E3, more of a loop the emitter's own (2026-10-19, branch emitter-e3).** Measured first: with islands the
+raycaster's column loop was taken but no faster (0.78 ms a frame against 0.77), its loop almost all islands — the
+inner loop's `cellAt(mapX, mapY)` (a call of a function that reads a cell of the maze), `Math.floor`, the products and
+quotients, the `?:` and abs of the steps, the stores. Each step below measured on the raycaster (average frame /
+frame 112) and kept only once it paid.
+- *Calls inlined.* A call of a function that is one `return` of a number — called by name, or (called once) carrying
+  its body — is that expression with the parameters replaced by the arguments, where every argument is a sum the
+  emitter lowers (`inlined`). The loop is rewritten before it is looked at; `original` stays as written.
+- *Cells of lists known when the map is built, read where they are.* `CELLS[mapY * 16 + mapX]`: the index into a
+  variable of the emitter's own (`own`, a dword of data, no cell on the Python side), the target set to 0, and a
+  trigger a bit the list's values have between them — the index inside the list (read from 0 up, so below zero is
+  past the end and reads 0) and that bit of the cell, the condition's *player field* (the EPD it reads) a place of the
+  index times the cells' spacing plus the first cell's EPD (`Num`, `{ epdOf }`): 18 for the Python side's EUDVArray, 1
+  for a list of PACK_FROM values or more, which goes packed (the Python side checks the spacing, `Graph.arrays`). The
+  index condition comes first: the game stops at a trigger's first condition that fails, so a cell past the end is
+  never read (the lifted game's memory check on a probe reading past both ends: nothing outside the map's own memory
+  and what is known allowed). Only for lists whose values have 6 bits or fewer between them (a maze's 0–2: two
+  triggers); a list with a number below 0 has 32, and is left to the Python side. A cell inside a sum is read into a
+  variable of the emitter's own first. **The raycaster: 0.77 → 0.70 ms, 1.51 → 1.36** — the inner loop is the
+  emitter's whole (91 µs of frame 112 where the call, its glue and eudplib's jumps were about 240).
+- *Fixed-point products and quotients called from the graph.* `fmul` / `fdiv` of sums the emitter lowers call part
+  3's functions (`fmul_vars`, `fdiv_vars`; with a constant above zero `fmul_by`, `fdiv_by` (c / x), `fdiv_by_const`):
+  the arguments written into the function's parameter cells by the trigger before the call (each a place of what it
+  reads), the call (`Trigger.call`) setting where the function goes back to and where its result goes — the target's
+  cell, as eudplib's call writes a return straight into a dword — and the target copied after. A constant below 0 is
+  left to the Python side (its quotient negated after is not the same bits at −2^31). Alone it was slower (0.72 /
+  1.41): `mapX` was still an island (`Math.floor`), and copying it into the places that hold it times 65 536 (the
+  fixed argument) went through eudplib's product by a constant (`_mulf`, 48 µs a frame). A copy times a power of two
+  is a shift now (0.71 / 1.39), and then:
+- *Shifts right by a constant.* `x >> k` / `x >>> k` of a sum: the sum into a variable of the emitter's own (or a
+  variable alone, read in its cell), and a trigger a bit that comes down adding its new place's worth to every place
+  of the target — so a place holding the result times 65 536 costs nothing more; for `>>` the sign bit adds its
+  weight below 0. From the top eight bits a group, a group with none set jumped over. `Math.floor` of a fixed is this.
+  **0.67 / 1.31.**
+- *`?:`, `Math.abs`, `Math.min` / `max` rewritten* (`Rewriter`): `x = c ? a : b` is `if (c) x = a; else x = b`;
+  `x = abs(e)` tests e's sign (abs of a product or quotient: the result's, in the target); min / max a comparison
+  (unsigned where the IR says); such a value inside a sum or a comparison's side computed first into a variable of
+  the emitter's own (`@t…`); a loop's test that needs one, computed at the top of each turn. A statement whose
+  rewriting the emitter would not take whole stays as it was (an island cannot read the emitter's own variables).
+  Alone it was slower again (0.71 / 1.38): `deltaX` — a call's result, then its abs — was copied into its six places
+  twice a column, where the Python side routed it once a read.
+- *Routed variables.* A variable whose writes each end in a copy (a call's result, one an island writes, one copied
+  for a loop of reads) is instead read where it is used, when that is cheaper — its reads against its writes times its
+  places, each weighed by how deep in the graph's loops it is (a loop inside counted four turns of the one outside):
+  the dwords a trigger is about to read refreshed from the cell just before it. A write's reads are refreshed before
+  its first action (`c = b - c` reads the c from before), and a write of the variable makes later reads in the same
+  run of actions stale. A trigger with conditions that reads one is entered through its refreshes (`…in`), while the
+  trigger keeps its label for the branch that sets its own next pointer. **0.67 / 1.31** — the rewritten statements
+  cost what the islands did, and are the emitter's for what comes next.
+- *Lines:* each trigger of a graph says the line of the statement it comes from (the map of triggers, the cost of a
+  line), where all said the loop's line; writes of several statements in one trigger say the first's.
+- *Found on the way:* the IR's serialization (`serializeIr`) passed a `graph` statement through as it was, so an
+  island with text in it (a `print`) would have reached the Python side with the compile's local text ids — it maps
+  `original` and every island now. `fixed_fns()` returned early whenever its table had anything in it, so a graph that
+  made `fixed_vars()` first left `fdiv_vars` without the `fdiv` it falls back to: a build that failed (the bench, with
+  the emitter on).
+
+| With the emitter (`EMITTER=1`) against without | Without | With |
+| --- | ---: | ---: |
+| Raycaster, a frame on average | 0.77 ms | **0.67 ms** |
+| Raycaster, its costliest frame (112) | 1.51 ms | **1.31 ms** |
+| Bullets, a frame | 0.20 ms | 0.20 ms |
+| Snake, a frame / its costliest (frame 2) | 0.07 / 4.17 ms | 0.07 / 4.00 ms |
+| Tetris, a frame / its costliest | 0.34 / 8.11 ms | 0.34 / 8.09 ms |
+| Lowering bench, all lines | 97.2 µs | 94.1 µs |
+| `for (let i = 0; i < m; i++) { }`, 16 turns | 1793 ns | 659 ns |
+
+With the emitter on, the bench takes its own loop, so its lines' costs are the graph's: lines whose writes share a
+trigger with the line before them are counted there ("did not run"), and only the total compares. Checked:
+`tests/emitter.test.ts`, 4000 random loops now with lists short and long (in and past their ends), calls of a
+function that is a cell, fixed products and quotients, shifts right, `?:` / abs / min / max — run as written and as
+their graphs, every variable the same; `probes/game-emitter.ts` A–I in the lifted game and the simulator; every game
+probe with the emitter on and off. **Left off by default:** everything measured is as fast or faster and every probe
+passes, but the lifted game is 1.16.1 with Remastered's EUD rules modelled — the emitter's reads through a
+condition's player field and its calls into part 3's functions should be played in Remastered first (the emitter
+probe as a map), and the cost-by-line report gives a shared trigger's cost to its first line.
+
+**Played in Remastered and switched on (2026-10-19).** `probes/game-emitter.ts`, built with the emitter (all 11 of its
+loops taken), played in Remastered 1.23.10.13515: its nine lines (A–I) are the lifted game's, number for number — the
+cells of a known list read through a condition's player field and the fixed products and quotients called straight
+from the graph included. The emitter is now on by default; `emitter: false` / `EMITTER=0` turns it off. The lowering
+bench builds with it off: a trigger of the emitter's may hold several lines' work and the count gives it to the first,
+so the bench's numbers by line are the Python side's. With both of today's branches the raycaster is 0.50 ms a frame
+(0.60 with the emitter off; 1.13 when this section began).
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe
