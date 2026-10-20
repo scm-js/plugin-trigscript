@@ -37,6 +37,7 @@ import { allTables, type ScriptNames } from "./names";
 import { Collector, createRuntime, type GameFunctionValue, type ProgramDescriptor, type ScriptString } from "./runtime";
 import { newBody, Structured, type Body } from "./structured";
 import { english, type Translate } from "../i18n";
+import type { ClipFile } from "./sound";
 
 export type { ScriptString } from "./runtime";
 export { DEATHS_TABLE_ADDRESS } from "./runtime";
@@ -145,8 +146,12 @@ export interface CompileResult {
   sources: (TriggerSource | null)[];
   /** Local string table: a record's `text` / `wav` field `k > 0` means `strings[k - 1]`. */
   strings: ScriptString[];
-  /** The clips the script plays (`sound.ts`), as the WAVs the map's archive gets, by their names there: once each. */
-  sounds: { path: string; bytes: Uint8Array }[];
+  /**
+   * The clips the script plays (`sound.ts`), as the files the map's archive gets, by their names there: once each. An
+   * Ogg Vorbis one has its samples instead of bytes until `finishSounds` (`vorbis.ts`) encodes it; after a compile with
+   * `sounds: false` (a check) each is its name alone: the map is to get them from a build.
+   */
+  sounds: ClipFile[];
   diagnostics: ScriptDiagnostic[];
   /** The programs' variables, in declaration order; a function's copies and results are left out. */
   variables: VariableInfo[];
@@ -183,6 +188,11 @@ export interface CompileOptions {
   emitter?: boolean;
   /** Told which loops the emitter took and which it left, and why. */
   emitterReport?: (line: string) => void;
+  /**
+   * false: the clips the script plays are named, not made — a check as the user types, whose sounds the map does not
+   * get (`sound.ts`'s clips work their samples out only when asked). A build's compile leaves it out.
+   */
+  sounds?: boolean;
 }
 
 export { LowerError };
@@ -383,6 +393,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
 
   /* ── Run ── */
   const collector = new Collector();
+  collector.soundContents = options.sounds !== false;
   const registry = new TestRegistry();
   const where = (err: unknown) => { const at = locate(err, linked); return at.file ? { file: at.file, line: at.line ?? 1, ...(at.column ? { column: at.column } : {}) } : null; };
   registry.where = () => where(new Error()) ?? { file: ENTRY_FILE, line: 1 };
@@ -540,7 +551,7 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
       ? runTests(registry, { triggers, sources, ir, strings: collector.strings, locate: where }, options.tests)
       : { list: listTests(registry).list, results: [], only: [], ms: 0 };
   }
-  return result({ ir, input, triggers, sources, strings: collector.strings, sounds: [...collector.sounds].map(([path, bytes]) => ({ path, bytes })), variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }) });
+  return result({ ir, input, triggers, sources, strings: collector.strings, sounds: [...collector.sounds.values()], variables, programs, buildTime, hints, tests, ...(registry.empty ? {} : { modules: [...linked] }) });
 }
 
 /**

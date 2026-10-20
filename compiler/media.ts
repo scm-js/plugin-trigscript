@@ -19,14 +19,16 @@
 import { fromBase64, PROB_HALF, RangeDecoder, RangeEncoder, toBase64 } from "./rangeCoder";
 import { describeImage, IMAGE_EXTENSION, imageValue } from "./image";
 import { clipValue, describeSound, SOUND_EXTENSION } from "./sound";
+import { describeNotes, NOTES_EXTENSION, notesValue } from "./notes";
 
 /** The extension of a video among a script's files. */
 export const VIDEO_EXTENSION = ".video";
-/** A video, an image (`image.ts`) or a sound (`sound.ts`): a file of the script that is no TypeScript, whose import gives a value. */
-export const isMediaFile = (path: string): boolean => /\.(?:video|image|sound)$/i.test(path);
+/** A video, an image (`image.ts`), a sound (`sound.ts`) or notes (`notes.ts`): a file of the script that is no TypeScript, whose import gives a value. */
+export const isMediaFile = (path: string): boolean => /\.(?:video|image|sound|notes)$/i.test(path);
 export const isVideoFile = (path: string): boolean => path.toLowerCase().endsWith(VIDEO_EXTENSION);
 export const isImageFile = (path: string): boolean => path.toLowerCase().endsWith(IMAGE_EXTENSION);
 export const isSoundFile = (path: string): boolean => path.toLowerCase().endsWith(SOUND_EXTENSION);
+export const isNotesFile = (path: string): boolean => path.toLowerCase().endsWith(NOTES_EXTENSION);
 
 /** A game frame on Fastest, in milliseconds: what a video imported "at the game's speed" has a frame for. */
 export const FASTEST_FRAME_MS = 42;
@@ -175,11 +177,11 @@ export function describeVideo(text: string): string {
   }
 }
 
-/** The value an import of a media file gives: an `Image` for an `.image`, a `Clip` for a `.sound`, a `Video` for a `.video`. */
-export const mediaValue = (path: string, text: string): unknown => (isImageFile(path) ? imageValue(text) : isSoundFile(path) ? clipValue(text) : videoValue(text));
+/** The value an import of a media file gives: an `Image` for an `.image`, a `Clip` for a `.sound`, `Notes` for a `.notes`, a `Video` for a `.video`. */
+export const mediaValue = (path: string, text: string): unknown => (isImageFile(path) ? imageValue(text) : isSoundFile(path) ? clipValue(text) : isNotesFile(path) ? notesValue(text) : videoValue(text));
 
 /** What the Explorer's hover says about a media file. */
-export const describeMedia = (path: string, text: string): string => (isImageFile(path) ? describeImage(text) : isSoundFile(path) ? describeSound(text) : describeVideo(text));
+export const describeMedia = (path: string, text: string): string => (isImageFile(path) ? describeImage(text) : isSoundFile(path) ? describeSound(text) : isNotesFile(path) ? describeNotes(text) : describeVideo(text));
 
 /* ── The coding: a tile's odds by the tiles around it, for LZMA's binary range coder (`rangeCoder.ts`) ── */
 

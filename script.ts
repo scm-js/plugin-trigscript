@@ -108,15 +108,22 @@ export function isScriptMember(name: string): boolean {
   return memberKey(name).startsWith(memberKey(SCRIPT_FOLDER));
 }
 
-/** A WAV a build wrote for a clip the script plays (`compiler/sound.ts`): `staredit\wav\trigscript-<hash>.wav`. */
-export const isBuiltSound = (name: string): boolean => /^staredit\\wav\\trigscript-[0-9a-f]{8}\.wav$/.test(memberKey(name));
+/** A file a build wrote for a clip the script plays (`compiler/sound.ts`): `staredit\wav\trigscript-<hash>.wav`, or `.ogg` (8 hex digits before 3.13, 16 since). */
+export const isBuiltSound = (name: string): boolean => /^staredit\\wav\\trigscript-(?:[0-9a-f]{8}|[0-9a-f]{16})\.(wav|ogg)$/.test(memberKey(name));
 
-/** The members with the clips of this build in place of the last one's. */
-export function withSounds(extras: Extras, sounds: readonly { path: string; bytes: Uint8Array }[]): Map<string, Uint8Array> {
+/**
+ * The members with the clips of this build in place of the last one's. A clip already in the map keeps its bytes as
+ * they are: the name says what it holds. One that is not, and has no bytes — an Ogg Vorbis clip from a check, which
+ * leaves it unencoded — is refused: the map would play nothing.
+ */
+export function withSounds(extras: Extras, sounds: readonly { path: string; bytes?: Uint8Array }[]): Map<string, Uint8Array> {
   const next = new Map<string, Uint8Array>();
   for (const [name, bytes] of extras) if (!isBuiltSound(name)) next.set(name, bytes);
-  // A clip already in the map keeps its bytes as they are: the name says what it holds.
-  for (const s of sounds) next.set(s.path, [...extras].find(([name]) => memberKey(name) === memberKey(s.path))?.[1] ?? s.bytes);
+  for (const s of sounds) {
+    const bytes = [...extras].find(([name]) => memberKey(name) === memberKey(s.path))?.[1] ?? s.bytes;
+    if (!bytes) throw new Error(`The sound ${s.path} was not encoded: compile it as a build (with its sounds) before installing it.`);
+    next.set(s.path, bytes);
+  }
   return next;
 }
 
@@ -133,10 +140,10 @@ export function pathOf(member: string): string | null {
 }
 
 /** What a file of the script ends in: TypeScript, TypeScript with JSX, or a video, an image or a sound it imports (`compiler/media.ts`). */
-const SCRIPT_FILE = /\.(?:tsx?|video|image|sound)$/i;
+const SCRIPT_FILE = /\.(?:tsx?|video|image|sound|notes)$/i;
 
-/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts` (or `.tsx`, `.video`, `.image`, `.sound`). */
-export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video|image|sound)$/;
+/** A file name a script may use: letters, digits, `_`, `-`, `.`, folders with `/`, ending in `.ts` (or `.tsx`, `.video`, `.image`, `.sound`, `.notes`). */
+export const FILE_NAME = /^(?:[A-Za-z0-9_\-.]+\/)*[A-Za-z0-9_\-.]+\.(?:tsx?|video|image|sound|notes)$/;
 
 function member(extras: Extras, name: string): Uint8Array | undefined {
   const key = memberKey(name);

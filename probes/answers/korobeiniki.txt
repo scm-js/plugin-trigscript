@@ -1,0 +1,26 @@
+TrigScript sounds, step 2: Korobeiniki, arranged
+================================================
+
+Host it as a multiplayer game, alone, with the game's music OFF. Headphones help.
+It plays A (32 s, step 1: plain waves, the notes you heard last time), a pause, then B (about 63 s), and repeats.
+Start it once and quit when A comes round again. A recording is all I need, plus what your ears say.
+B is beside this sheet as korobeiniki-step2.ogg too, to play outside the game.
+
+B, bar by bar (143 beats a minute, a bar 1.68 s):
+  0:00  intro, 4 bars: a slow pad and a plucked arpeggio; hats come in, then the kick and a snare build
+  0:07  A1, 8 bars: the melody on a warm filtered lead with a dotted echo; bass, drums
+  0:20  A2, 8 bars: the melody on seven detuned saws, a bell an octave up, the pluck arpeggio, claps and open hats
+  0:34  break, 4 bars: electric piano (FM), the bell, the bass holding, no drums
+  0:40  A3, 8 bars: everything, with an acid line under the melody; a drum fill at the end
+  0:54  the last chord, ringing out into the reverb
+
+What to listen for:
+1. Does B sound like real produced music now, or still like a toy? What sounds best, what sounds worst? ............
+2. The mix: is anything too loud or buried (melody, bass, kick, hats, bell, acid)? ............
+3. The reverb and echoes: too much, too little, about right? ............
+4. Anything wrong: crackle, clipping, a sound that cuts off, a hitch in the game? ............
+5. Which instruments would you want more of for the falling-block showpiece? ............
+
+What is new (step 2): filters that open and close with each note, detuned stacks of voices (supersaw, pad), FM (the
+bell and the electric piano), plucked strings, a synthesized drum kit (kick, snare, clap, hats, tom, rim), drive,
+echo, chorus, a plate reverb shared by the tracks, a compressor on the drums, the bass and the whole mix.

@@ -19,6 +19,7 @@ import { cover, covers, prepareShapes } from "./compiler/cover";
 import { FOG_SHAPES } from "./compiler/fogShapes";
 import { decodeTrack, demux } from "./videoDecode";
 import { importSound, isSoundSource, SOUND_FILES } from "./soundImport";
+import { importNotes, isMidiSource, MIDI_FILES } from "./notesImport";
 
 /** A picture or a video the person picked, ready to be drawn at a size. */
 interface Source {
@@ -262,16 +263,20 @@ function imageModule(rows: string[], from: string): string {
 }
 
 /** What an import made: a `.video`, an `.image`, or a `.ts` of a picture's rows. */
-export interface ImportedFile { path: string; text: string; kind: "video" | "image" | "rows" | "sound" }
+export interface ImportedFile { path: string; text: string; kind: "video" | "image" | "rows" | "sound" | "notes" }
 
 /**
  * Import Video…: pick a video or an image, choose the size (and, for ink, the threshold) over a preview, and get the
  * script file it becomes — or null when the person cancelled. `taken` says whether a path is in use.
  */
 export async function importMedia(api: PluginApi, t: Translate, options: { mapWidth: number; mapHeight: number; taken: (path: string) => boolean; file?: File }): Promise<ImportedFile | null> {
-  const file = options.file ?? (await api.ui.pickFiles({ accept: `video/*,image/*,.mkv,.webm,.mp4,.mov,.gif,${SOUND_FILES}` }))[0];
+  const file = options.file ?? (await api.ui.pickFiles({ accept: `video/*,image/*,.mkv,.webm,.mp4,.mov,.gif,${SOUND_FILES},${MIDI_FILES}` }))[0];
   if (!file) return null;
-  // A sound has an import of its own (`soundImport.ts`).
+  // A MIDI file and a sound have imports of their own (`notesImport.ts`, `soundImport.ts`).
+  if (isMidiSource(file)) {
+    const got = await importNotes(api, t, file, options.taken, fileStem(file.name));
+    return got ? { ...got, kind: "notes" } : null;
+  }
   if (isSoundSource(file)) {
     const got = await importSound(api, t, file, options.taken, fileStem(file.name));
     return got ? { ...got, kind: "sound" } : null;

@@ -1641,6 +1641,241 @@ freely within 32 voices, each note's length and loudness baked into its file.
   note by note against the same song mixed at build, onset by onset (34 of them): 7.8 ms apart on average (sd), 16 at
   most, no drift over the song; equally loud second by second; a hit every 589.5 ms for the 588 written.
 
+### Sounds: step 1 of the quality work, the format and the master (built 2026-10-19)
+
+The user's direction after the music demo: make the instruments and the sound good enough for a showpiece — an
+arrangement of Korobeiniki (the folk song is in the public domain; the Tetris arrangements and look are not, so the
+parts around the melody are our own). Step 1 is what every later step sounds through: the file the map gets, the rate
+a mix is made at, two channels, and a limiter. Steps after it: the instruments themselves (filters, detune, FM,
+reverb, delay, drive), song structure, music that follows the game.
+
+- **Ogg Vorbis** (`compiler/vorbis.ts`): libvorbis + libogg compiled to WebAssembly by wasm-media-encoders 0.7.0 (MIT;
+  BSD), its `ogg.wasm` copied to `dist/vorbis.wasm` by the build with a LEGAL file; our own glue, a few calls into its
+  exports, instantiated synchronously (the package's JavaScript carries both its encoders inline and only
+  instantiates asynchronously). A clip a program plays that lasts 2 seconds or more goes in as Ogg Vorbis at
+  quality 5; a shorter one stays a WAV (they start on their frame — Ogg's start is not measured yet), as does an
+  untouched import (its own ADPCM), one made `wav()`, and any clip a `trigger()` plays (1.16.1 plays those triggers and
+  no Ogg). The fixed stream serial makes the file the same for the same samples — in Node and in the browser alike.
+- **Encoded only for a build.** A compile names an Ogg clip by a hash of its samples; the compile worker encodes it
+  when the request says `sounds` (Apply, `service.build`), fetching `dist/vorbis.wasm` once, and keeps 32 encoded files
+  by name. A check as the user types leaves the name alone and does not send the samples back. `withSounds` refuses a
+  sound with no bytes that the map does not already hold. Three minutes of two channels encode in about 1.5 s.
+- **Two channels**: `Clip.channels`, `pan(position)` (a balance, so 0 is the clip as it was), `mono()`; a mix, a join
+  or a mixdown with a two-channel part is two channels. A short two-channel clip is 16-bit WAV. Tracks take
+  `{ pan, volume }`, each clip a track plays made once.
+- **Resampling** by a windowed sinc (Blackman, 16 each side, cutoff at the lower rate's half) in place of straight
+  lines, which dulled the top and folded a pitched-up note's harmonics back down (a 3 kHz sine an octave up: images
+  under 0.2 % now).
+- **The limiter** (`Clip.limit`, `normalize`): look-ahead 5 ms (the lowest need over the next 5 ms, averaged over 5 ms,
+  so the gain is down smoothly before the peak and never above what it needs), release 0.1 s, the two sides together.
+  Ceiling −1.5 dB: Ogg Vorbis comes back up to a dB louder at its peaks (a song limited to −1 dB decoded at −0.16 dB;
+  at −1.5 dB, −0.45).
+- **`music.render(song, { rate, limit })`**: the notes made again at 44 100 Hz (a song's own clips, for play, stay at
+  22 050), through the limiter unless `limit: false`.
+- **Measured** on `probes/korobeiniki-ab.ts` (32 s, seven tracks; A as before: 22 050 Hz, one channel, ADPCM WAV,
+  turned down to fit; B: 44 100 Hz, panned, limited, Ogg): above 11 kHz A has nothing (−56 dB), B −36 dB; B's sides
+  (L − R) −27 dB; B 2.1 dB louder at the same peak; A 355 KB, B 559 KB. Compile with both renders 1.1 s, encode 0.3 s.
+  Lifted game clean (0 ending, A at frame 98, B at 930). Headless Chromium through the real compile worker: a check
+  returns the name only, a build the Ogg (558 554 bytes, as Node), a second build from the cache.
+- **Played 2026-10-19** (recording 13.59.06.34): A at 6.771 s, B at 41.715 s, A again at 76.659 s — 34.944 s apart
+  both times, the 832 frames written: the Ogg starts as the WAV does and costs the game no time. B as heard against
+  the file: 31.9 dB over all 32 s (the recording's AAC; the WAV A came back at 24.5), the worst 100 ms 19.5 dB — no
+  dropout; L − R follows the file's at 0.996; peaks back at 0.97 of full scale (the whole 1.08×, the peaks 1.00–1.05×:
+  something after the game rounds the top off gently) — no clipping.
+- **Found on the way:** `ranges.ts` read `process.env` in the browser's worker, where there is none — every program
+  failed to compile in the editor. Guarded (its own commit).
+
+### Sounds: step 2, the instruments and the effects (built 2026-10-19)
+
+User after step 1's A/B: "B sounds way better, go for step 2".
+
+- **Effects** (`compiler/dsp.ts`, as `Clip` methods): `filter` — a trapezoidal state-variable filter (lowpass, highpass,
+  bandpass, notch; cutoff a number or [seconds, hertz] points swept log-linearly; resonance 0 … 1) and cookbook
+  biquads (lowshelf, highshelf, peak); `drive(dB)` — tanh at twice the rate; `delay` — feedback with a lowpass in the
+  loop, ping-pong; `reverb` — a plate after Dattorro (four diffusers, a figure-eight tank with modulated allpasses,
+  seven taps a side: L/R correlation 0.00); `chorus`; `compress` (soft knee, linked). Measured: the 1 kHz lowpass
+  −3.1 dB at its cutoff, the +6 dB shelf +5.9, plucks within 0.1 cent.
+- **Sources**: `tone` takes [seconds, pitch] points (glides) and `voices`/`detune`/`width` (supersaw, two channels);
+  `fm()` two operators, index points, feedback; `pluck()` Karplus–Strong, tuned by a fractional delay.
+- **The library**: `music.synth` gets a filter with its own envelope (octaves above the cutoff), unison, drive, glide;
+  `music.fmSynth`, `music.strings`; `music.presets` (supersaw, pad, bass, acid, lead, chip, keys, bell, pluck) and
+  `music.drums()` (k s c h o t r, 44.1 kHz) written in TrigScript itself on the public API. Tracks take `fx` (on the
+  whole part in `render`, on each note in `play`) and `reverb` (a send); `render` takes `reverb` (the shared room) and
+  `master`. A song's bar is a whole number of frames, a step need not be (sixteenths at 143 bpm are 2.5): `play` puts
+  a note on its nearest frame (the mixer's own grid is 21 ms). The 32-voice limit moved from `song()` to `play` (the
+  note tables are made when first read; a getter that refuses is a build error now — `structured.ts`'s `readField`).
+- **Lazy clips.** The first arrangement took 8 s to compile, every check as the user types: a check reruns the whole
+  script, renders and all. A cache by recipe did not help — the song's intermediate parts are ~125M samples against a
+  32M budget, so LRU thrashed and the second compile missed everything. What fixed it: a clip knows its length,
+  channels and recipe key at once and works its samples out only when asked (`peak`, a build's file). A check
+  (`CompileOptions.sounds: false`, the worker's default without `sounds`) names each clip's file by its key — with an
+  `ENGINE` tag so changed DSP never keeps a map's old bytes — and makes no sample. Reverb and echo tails are formulas
+  (a plate's: 1.24 / −ln decay s) so lengths need no samples. Clips made the same way are one object (a weak-reference
+  map). Hot loops are plain loops (typed-array `map()` and a closure a sample were most of the 8 s). Builds get 60 s.
+- **Measured** (`probes/korobeiniki.ts`: 34 bars, nine tracks, intro / A1 / A2 / break / A3 / outro, 63 s; A = step 1's
+  mix): check 0.6 s cold, 0.4 warm in Node; headless Chromium worker check 1.1 s, build 3.6 s, re-check after an edit
+  0.26 s, second build 0.24 s, the Ogg bytes as Node's. Stems balanced by LUFS (supersaw +6 dB, bell −6, keys −3, …);
+  the mix −11.8 LUFS (A −10.9), sections −22 → −12.5 → −12 → −13.5 → −11.8, peak −0.27 dB decoded; 1.25 MB Ogg. Lifted
+  game clean. Map 1.8 MB.
+- **Found on the way:** the key hash's second half could go negative (`b ^ (b >>> 15)` is signed), putting a minus
+  in a file's name that `isBuiltSound` would not know — fixed, and every name of 200 checked.
+- **Played 2026-10-19** (recording 16.08.43.37): A at 4.894 s, B at 39.859 s — 34.965 s apart. B as heard against the
+  file: the same level within 0.2 dB, second by second; no drift over 63 s (the best lag 0 samples in every 10 s);
+  27 dB below 6 kHz and 8.5 dB above it (hats and air, 14% of the energy: the recording's AAC, A's sparser top came back
+  at 31.9 dB as before), the worst second 14 dB — no dropout; L − R follows the file's at 0.990; peaks 0.94 — no
+  clipping; the tail down to the recording's floor (−95 dB). User: "b sounds pretty sick yeah, maybe too strong/loud on
+  the beat/drums but thats stylistic complaints only" — the kit goes down in the showpiece's mix (step 5), not here.
+
+### Sounds: step 3, writing a song (built 2026-10-19)
+
+User after step 2: "go for step 3". Nothing here makes a new sound beyond three clips; it is all for writing songs.
+
+- **Patterns.** "@" after a step's notes or letters says how loud ("C4+E4@0.6", "kh@1.3"; 0 to 4). `transpose`,
+  `stretch` (eighths written as sixteenths), `repeat`, `beat` (a kit's bar from the steps each letter plays on).
+- **Chords.** `chord("E", 3, 1)` → "G#3+B3+E4": 23 kinds ("m", "7", "maj7", "m7b5", "sus4", "add9", …), inversions,
+  "C/E" over another bass. `over(chord, template)` draws a chord's notes by number (1 the lowest, past the last round
+  again an octave up, ^ and _ an octave either way): an arpeggio, a bass line, a comp. `chords(progression, template,
+  { octave, lead })` a template a chord; `lead` turns each chord to the inversion whose notes move least from the one
+  before — "Am E Dm C" comes out as step 2's hand-written voicings.
+- **Sections.** `part(instrument, how heard)`, `section(bars, { part: pattern }, { name, fx, volume })`,
+  `arrange(options, parts, ...sections)`. A pattern shorter than its section plays again until it is full (it must
+  divide it); a part a section does not name rests; `section.with({ lead: null, saw: tune })` is the section changed.
+  `song.sections` says where each is (bar, frame) — for step 4's stems and the visualizer. A section's `fx` take its
+  length (`{ seconds, bars, bar }`) for their points; its notes are mixed apart from the section's start, tails and
+  all, and through them, before the part's own fx — so `render` only: `play` refuses a song with them, in words. A
+  section's `volume` is a velocity, so it plays either way.
+- **Swing**: every second step `swing` of a step late; a note runs to its swung end step.
+- **Between sections**: `riser(seconds)` (noise through a resonant band opening, a detuned saw rising), `impact()`,
+  the kit's crash (`x`), `pump(beat)` (a part ducking on each beat, as under a kick), `bars(bpm, n)` — seconds of n
+  bars as a song plays them, for a riser's length.
+- **Proof.** Step 2's arrangement written again with `arrange` (`probes/korobeiniki-form.ts`, A) gives the same Ogg to
+  the byte (`trigscript-120f8d218410588b.ogg`): a song of sections is a song of tracks, the same recipes.
+- **B** (73 s, 40 bars): intro (filters opening) / verse / build (riser, snare roll in crescendo, half a bar of
+  silence) / drop (four on the floor, impact, pumping) / break / the last verse a tone up / outro (the pad closing).
+  The kit at 0.6 for the user's "maybe too strong/loud on the beat/drums": before the master the drums are 2 LU under
+  everything else together (in A they matched it). Sections before the master −21 / −13.7 / −13.3 / −12.5 / −15.3 /
+  −12.4 / −15.8 LUFS; through a gentler master (threshold −12) −18.5 / −12.9 / −11.4 / −11.5 / −13.3 / −11.4 / −15.7,
+  −12.1 in all, peak −0.57 dB. The check 0.8 s. Lifted game clean. Map 2.7 MB.
+
+- **Played 2026-10-19** (recording 16.56.34.39): A at 7.631 s, B at 73.488 s — 65.857 s apart, the 1,568 frames
+  the program waits (A's 1,496 and 72). B against the file: the same level within 0.3 dB second by second; the lag
+  −34 samples at every 10 s, so no drift over 71 s; 27 dB below 6 kHz, 9.5 above (the recording's AAC, as before); the
+  worst second 12.9 dB — no dropout; L − R follows the file's at 0.990; peaks 0.94 — no clipping; the outro's tail
+  followed down to −79 dB, under the recording's floor after. User: "B sounds amazing".
+- **MIDI** (3e669dc). Import Video… takes a `.mid`: `compiler/notes.ts` reads formats 0 and 1 (running status, a
+  note struck again ending the first, the first tempo, the time signature as quarter notes a bar, names, programs,
+  channel 10 the drums) into a `.notes` file of the script — a note four numbers in 960ths of a beat, the MIDI file not
+  kept. Clicking one shows a roll, a colour a track, and plays it roughly (a sine a note). `music.midi(notes, parts,
+  { steps, bpm, swing, drums })` makes a song of the tracks `parts` names (by name, or place from 0): notes to the
+  nearest step, velocity / 100 as "@" in twentieths, overlapping notes split into voices (a note joins a chord struck
+  with it, of its length and velocity, else the first voice free), a kit's letters by General MIDI number. Windows'
+  own town.mid (11 tracks, 2,121 notes, never committed): check 0.7 s, build 3.2 s. The dialog and the viewer are
+  type-checked, not yet run in a browser.
+- **The limiter judged by its samples let the wave between them over** — found with town.mid, decoded at 0.99. The
+  limited PCM's samples peaked at −2.0 dB and its true peak at −0.4: the overshoot was ours, not Vorbis's. `limit` now
+  takes each sample's need from its true peak (windowed sinc, 16 a side, each eighth of a sample; computed only near
+  samples over half the ceiling), the ceiling back at −1.5 dB: true peaks −1.5, decoded sample peaks −0.7 (town),
+  −0.9 (step 2's mix), −1.1 (step 3's B). 8 a side under-read a wave near 22 kHz by 0.4 dB. `ENGINE` is "sound 3": a
+  file's name says how it was made, and a map keeps a file whose name it has, so a change in what a method does must
+  change it. The map played for step 3 was built before this (edb73ee).
+
+### Sounds: step 4, music that follows the game (built 2026-10-19)
+
+User after step 3 ("B sounds amazing"): "go for step 4".
+
+- **What the game allows.** No sound stops; a sound starts on the mixer's 21.3 ms grid after its frame; 32 at once,
+  added with no limiter. So the unit is a bar: `music.stems(song, { layers, tail, quality, peak, stingers })` cuts a
+  song of sections into a clip a bar a layer — the notes that start in the bar with their releases, echoes and reverb
+  (each bar its own reverb from its own sends), so a bar overlaps what follows whatever follows it. A bar the same as
+  another is the same clip. A bar under a section's effects is mixed where it falls in the whole section, then cut out,
+  so a sweep or a pump is where it was.
+- **Tails.** A bar's clip keeps `tail` (2 s) after its last note ends, faded over the last second — the bars after
+  cover the rest; a layer's last bar keeps all of it (the outro rings out). From the bar line instead of the last note
+  cut the build's four-bar riser before its top (−3.7 dB of highs): measured, fixed. 3 s → 2 s: 7.2 → 6.5 MB.
+- **Level.** The game adds the clips up, so there is no master compressor or limiter over them: `together(parts)`
+  (sound.ts, new) turns every bar down by one gain until the song played through stays under 0.84 between samples,
+  worked out when a build needs it. Played through, every layer on: −16.3 LUFS, sample peak −1.9 dB, true −1.2 (B was
+  −12.1 through its master). Baking the master's gain curve into each bar would make it as loud, but a bar played twice
+  would then be two files, and a check must name files without samples — not done.
+- **Size.** `Clip.ogg(quality)` (new): Ogg Vorbis at its own quality, however short. Bars at 4 (70% of 5's bytes, by
+  ffmpeg's encoder on 20 of them). Korobeiniki, 40 bars × 4 layers: 114 distinct clips, all Ogg, 5.4 MB (8.0 MB before
+  the section-effect bars stopped running to their section's end and the tails were cut). The bass bars, 1.7 s, are
+  the first short Oggs a map plays: the recording says whether they start on time.
+- **Faithful.** Every bar summed at its time against the continuous render (no master) scaled by one gain: the
+  samples differ (10 dB: chorus and the plate's modulation start again each bar) but lows, mids and highs match second
+  by second within 0–0.5 / −0.1–1.0 / 0–1.5 dB (the highs the bars' master shelf, +1.5 dB at 9 kHz).
+- **The game side.** `class Band` (made inside the program; fields the game holds: section, bar, count, at, next/now,
+  loop, on[8], stung, playing; `go`, `queue`, `mute`, `unmute`, `sting`, `stop`) and `conduct(stems, band)`, a task
+  sleeping a bar at a time: on the bar line a pending section, then each layer's clip by unrolled test (a clip is no
+  value a program holds — `const c = s.bars[k][b][l]` in game code is refused; written inline it folds), the stinger,
+  then on, wrapping a section or the song. Simulated in the tests: jump, mute, stinger, loop at the bar lines.
+- **Probe** `probes/korobeiniki-band.ts` (step 3's B as stems, 4 layers; keys 1–7 sections, D B H M layers, L loop,
+  Space crash): build 18 s, map 5.6 MB, check 1.1 s, lifted game clean.
+
+- **Played 2026-10-19** (recording 17.53.58.41; the untouched pass from 3.180 s, then keys). Each bar's start
+  against the bars summed at exact times, by correlation of its first 0.35 s (all 40 clear, 0.53–1.00): 0, 5.3, 10.6,
+  16.0 ms and round again — the mixer's 21.3 ms grid (1,024 samples at 48 kHz): a bar is 78.75 of its buffers, so each
+  bar lands a quarter later in one and every fourth wraps; mean 9.1, sd 7.3, never more than one buffer. The frames
+  themselves are steady. A bar of 32 frames (1,344 ms, 63 buffers) would land the same each time, but only at 48 kHz
+  — the grid is the player's device's. The level: 60 s within 0.05 dB of the file, seconds within 0.7 dB; the
+  untouched pass peaked at 0.824 (the file 0.831). **The bass bars — the first short Oggs — start on the grid as the
+  rest do** (lows: lag 5.3 / 10.7 ms, correlation 1.00), but alone in the intro the lows came 2.3–2.4 dB under the
+  file with the same shape: **the game plays an Ogg of one channel 2.4 dB quieter** (step 1's one-channel WAV came at
+  its level). Fixed: an Ogg always goes in with two channels ("stereo" in its name). **Steered, it reached 0.998 once**
+  (144.3 s, a riser then the drop's hit): the stinger, crash + impact, played at its own level over the drop. Fixed:
+  `together(…, { over })` leaves room for a clip that may play on top at any of its times and turns it down with the
+  rest; `stems` passes the stingers at every bar line. With that stinger the song went to −19.0 LUFS; the probe's is
+  now the crash alone at 0.7: −16.6 LUFS, the worst bar line with a crash 0.811. Rebuilt the map (5.6 MB).
+
+- **User after the second play: "it felt great - waiting for the next bar line took a bit too long imo if
+  sometime important happens but it wasnt bad".** A sound cannot be stopped, so a change cannot land mid-piece (the
+  piece's remaining beats would sound over the new section). Two answers: `conduct` now wakes every beat and plays a
+  stinger on the next one (≤ 0.42 s at 143); `stems({ every })` cuts every few beats (a number dividing the bar's;
+  its frames whole) — `Band.piece` / `beat`, `Stems.pieces` / `every` / `waits`, `Song.beats`. Korobeiniki: bars 114
+  files, 5.5 MB, 13 sounds at once; half bars 190, 7.4 MB, 20 (12 left of 32), build 18 s. The half-bar map is
+  Maps/TrigScript/trigscript-korobeiniki-halfbar.scx beside the bar one.
+
+### Sounds: how to make the Korobeiniki work again (2026-10-19)
+
+User after the half-bar map: "half bars is fine … map size isnt a problem. we're going for polish and wow factor.
+make sure we know how to reproduce this track and work". Half bars (`every: 2`) are the choice for the showpiece. The
+showpiece (step 5: the falling-block game restyled, the music following it, the visualizer) waits until the language
+work is done.
+
+**The track.** Korobeiniki is a Russian folk song in the public domain: the melody only is the folk song's; the bass,
+chords, arpeggios, counter-lines, drums and form are ours. Never Hirokazu Tanaka's Game Boy bass or countermelody or
+any official arrangement; no "Tetris" in a map's or video's name (a description may say "the Tetris theme"); no
+official Tetris look (a 10 × 20 well, the official pieces or colours — Tetris Holding v. Xio). The StarCraft race-theme
+remix is only for a video: never committed, never in the registry or on scmjs.dev, no download linked.
+
+| Probe (`probes/`) | What it is | Its sheet (`probes/answers/`) |
+| --- | --- | --- |
+| `korobeiniki-ab.ts` | step 1: the same notes before (22 kHz mono WAV) and after (44.1 kHz stereo, limiter, Ogg) | `korobeiniki-ab.txt` |
+| `korobeiniki.ts` | step 2: A = step 1's mix, B = the first arrangement (presets, drums, effects; 34 bars, 63 s) | `korobeiniki.txt` |
+| `korobeiniki-form.ts` | step 3: A = step 2's B as sections; B = **the track** (40 bars, 73 s: intro, verse, build, drop, break, last verse a tone up, outro) | `korobeiniki-form.txt` |
+| `korobeiniki-band.ts` | step 4: the track cut in half bars, four layers, steered by keys (1–7, D B H M, L, Space) | `korobeiniki-band.txt` (`-bars.txt`: the whole-bar build) |
+
+**Making a map** (a scm-js checkout beside this one with its tileset data, and plugin-eudplib, as for every probe):
+
+    npx tsx probes/lib/raycaster-map.mts fixtures/eud/sound-base.scx            # the base map, once
+    npx tsx scripts/build-fixture.mts probes/korobeiniki-band.ts fixtures/eud/korobeiniki-band.scx fixtures/eud/sound-base.scx
+    SCM_SIM_DIR=../scm-sim-eud npx tsx scripts/game-check.mts probes/korobeiniki-band.ts --frames=3800 fixtures/eud/sound-base.scx
+
+and it goes in Remastered's maps folder, `TrigScript/`, with its sheet. Played as a multiplayer game, alone, the
+game's music off, recorded.
+
+**The sounds as the map gets them**, to listen to or compare: `npx tsx scripts/sound-dump.mts <probe> <folder>` (the
+names alone: `--check`). The song as the game plays it piece by piece, every layer on:
+`--append 'program(async () => { playWav(st.playthrough.ogg(5), 0); });'` on the band probe — the largest file.
+A file's name says how it was made (`ENGINE` in sound.ts); since the true-peak limiter ("sound 3") the names differ
+from the ones the recordings of steps 1–3 heard, and the bytes a little.
+
+**A recording checked:** `npx tsx scripts/recording-check.mts <recording.mp4> <ref.ogg>…` finds each reference after
+the one before and says where it starts, how far after the last (in frames), the level against the file second by
+second, the lag at every 10 s (drift), how close below and above 6 kHz, the worst second, L − R, peaks;
+`--pieces=0.84` (half bars at 143) adds each piece's start against the playthrough. What the recordings gave is under
+each step above; the recorder's AAC is what blurs the top (7–10 dB above 6 kHz), not the game.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):

@@ -9,6 +9,8 @@
  * module bundled on its own as `dist/compiler.js`.
  */
 export { compileScript } from "./compiler";
+/** The worker encodes a build's Ogg Vorbis sounds with these (`vorbis.ts`). */
+export { finishSounds, loadVorbis } from "./vorbis";
 
 /** Where this module was loaded from — what the worker is told to import. */
 export const ENTRY_URL: string = import.meta.url;

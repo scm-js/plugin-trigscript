@@ -484,19 +484,54 @@ ${kw}interface Image {
   halftone(cellWidth: number, cellHeight?: number, options?: { readonly diffuse?: boolean }): readonly string[];
 }
 /**
+ * Notes when the script is built, imported from a MIDI file (\`import tune from "./tune.notes"\`, made by
+ * Import Video… from a .mid): each track's notes, in beats from the start. \`music.midi(tune, { Piano: keys })\`
+ * makes a song of the tracks it names, each played by an instrument.
+ */
+${kw}interface Notes {
+  /** The tempo the file starts at, beats a minute. */
+  readonly bpm: number;
+  /** Quarter notes a bar, by the file's time signature (4 for 4/4, 3 for 6/8). */
+  readonly beats: number;
+  /** How often the tempo changes later in the file: a song plays at one tempo, the first. */
+  readonly tempoChanges: number;
+  readonly tracks: readonly NotesTrack[];
+  /** The MIDI file it came from. */
+  readonly source?: string;
+}
+
+/** A track of imported notes: one channel of one track of the MIDI file. */
+${kw}interface NotesTrack {
+  /** Its name in the file (unique among the tracks), or "Track 2", "Track 1 channel 3". */
+  readonly name: string;
+  /** 1 … 16. */
+  readonly channel: number;
+  /** The General MIDI instrument the file asks for, 1 (piano) … 128. */
+  readonly program: number;
+  /** Whether it is on channel 10, the drums. */
+  readonly drums: boolean;
+  /** Its notes in the order they start: \`at\` and \`beats\` in beats (quarter notes), \`pitch\` the MIDI number (60 is C4), \`note\` its name, \`velocity\` 1 … 127. */
+  readonly notes: readonly { readonly at: number; readonly beats: number; readonly pitch: number; readonly note: string; readonly velocity: number }[];
+}
+
+/**
  * A sound when the script is built: imported (\`import boom from "./boom.sound"\`, made by Import Video… in
  * the Explorer from any sound file) or made by tone(), noise() and silence(). Every method makes a new clip.
  * A program plays one with playWav(boom); the build puts each clip it plays in the map once.
  * In the game a sound starts within 21 ms of its frame; playing it again adds a second copy beside the
  * first, and nothing stops one, so a clip's length and loudness are what is heard. 32 play at once, and
- * copies add with no limiter: keep peak under 1 where they overlap. A clip goes in the map as IMA ADPCM,
- * a quarter of 16-bit, unless that would distort it (the jumps of a square or saw wave): then as 16-bit.
+ * copies add with no limiter: keep peak under 1 where they overlap. A clip of 2 seconds or more that a
+ * program plays goes in the map as Ogg Vorbis (Remastered plays it). A shorter one, or one a trigger()
+ * plays (which 1.16.1 plays too, and it plays no Ogg), is a WAV: IMA ADPCM, a quarter of 16-bit, unless
+ * that would distort it (the jumps of a square or saw wave) or it has two channels: then 16-bit.
  */
 ${kw}interface Clip {
   /** How long it plays. */
   readonly seconds: number;
   /** Samples a second. */
   readonly rate: number;
+  /** 1, or 2 for a clip with a left and a right (pan(), or a mix with one). */
+  readonly channels: 1 | 2;
   /** The loudest sample, 0 to 1; above 1 is cut off when the map's file is written. */
   readonly peak: number;
   /** The part from \`from\` to \`to\` seconds (the end when left out). */
@@ -520,13 +555,85 @@ ${kw}interface Clip {
    * decay, sustain and release: \`tone("C4", 0.5).envelope([0, 0], [0.01, 1], [0.1, 0.6], [0.4, 0.6], [0.5, 0])\`
    */
   envelope(...points: readonly (readonly [number, number])[]): Clip;
+  /**
+   * Where it is heard, −1 left to 1 right: a balance, the far side turned down, so 0 is the clip as it
+   * was. The clip then has two channels.
+   */
+  pan(position: number): Clip;
+  /** Its two channels as one. */
+  mono(): Clip;
+  /**
+   * Never louder than \`ceiling\` (0.84, −1.5 dB, when left out), between the samples too: turned down smoothly over the 5 ms before
+   * each peak that would go over, and back up over \`release\` seconds (0.1). What a mix goes through last,
+   * so that the parts can add up without cutting off: \`mixdown(parts).limit()\`.
+   */
+  /**
+   * The same clip, put in the map as Ogg Vorbis at \`quality\`, −1 … 10 (5, about 160 kbit/s for two channels, when
+   * left out): 4 is about 130, 3 about 110 — smaller files, for clips many of which play at once. However short it is
+   * (a clip shorter than two seconds is otherwise a WAV).
+   */
+  ogg(quality?: number): Clip;
+  limit(options?: { readonly ceiling?: number; readonly release?: number }): Clip;
+  /** Louder or quieter, so its loudest sample is \`peak\` (0.84, −1.5 dB, when left out). */
+  normalize(peak?: number): Clip;
+  /** In the map as a WAV however long it is, for StarCraft 1.16.1, which plays no Ogg. */
+  wav(): Clip;
+  /**
+   * A filter. "lowpass" keeps what is below \`cutoff\` hertz, "highpass" what is above, "bandpass" what is
+   * near it, "notch" all but it — \`cutoff\` a number, or [seconds, hertz] points to sweep it (a synth's
+   * filter opening: \`saw.filter("lowpass", [[0, 300], [0.1, 4000], [0.6, 800]], { resonance: 0.6 })\`);
+   * \`resonance\` 0 to 1 rings at the cutoff. "lowshelf" and "highshelf" turn everything below or above
+   * \`cutoff\` up or down by \`gain\` dB, "peak" what is around it, \`q\` wide (0.707).
+   */
+  filter(type: "lowpass" | "highpass" | "bandpass" | "notch" | "lowshelf" | "highshelf" | "peak", cutoff: number | readonly (readonly [number, number])[], options?: { readonly resonance?: number; readonly gain?: number; readonly q?: number }): Clip;
+  /**
+   * Saturation, \`dB\` of push (6 warm, 18 gritty, 30 fuzz): quiet parts as they were, loud ones rounded
+   * off toward a square — the harmonics a guitar amp or a tape adds.
+   */
+  drive(dB: number): Clip;
+  /**
+   * An echo \`seconds\` later (a beat's worth: 60 / bpm), each repeat \`feedback\` as loud (0.35) and a little
+   * duller (\`tone\`, the hertz kept, 5 000), \`mix\` its level (0.35). \`pingPong\`: left, right, left (two
+   * channels). The clip gets longer by the repeats.
+   */
+  delay(seconds: number, options?: { readonly feedback?: number; readonly mix?: number; readonly tone?: number; readonly pingPong?: boolean }): Clip;
+  /**
+   * A plate reverb: the room around the sound, different left and right (two channels), the clip longer
+   * by its tail. \`decay\` 0 to 1 (0.6; 0.3 a small room, 0.9 a hall), \`damping\` 0 to 1 (0.4: how fast the
+   * top dies), \`predelay\` seconds before it starts (0.015), \`mix\` the reverb's level (0.3), \`dry\` the
+   * clip's (1), \`width\` 0 to 1 (1).
+   */
+  reverb(options?: { readonly decay?: number; readonly damping?: number; readonly predelay?: number; readonly mix?: number; readonly dry?: number; readonly width?: number }): Clip;
+  /** A chorus: copies a few ms late and wobbling, left and right apart (two channels). \`speed\` Hz (0.8), \`depth\` seconds (0.003), \`mix\` (0.5). */
+  chorus(options?: { readonly speed?: number; readonly depth?: number; readonly mix?: number }): Clip;
+  /**
+   * A compressor: above \`threshold\` dB (−18), every \`ratio\` dB louder (4) comes out one, turned down
+   * over \`attack\` seconds (0.005) and back over \`release\` (0.12), eased over a \`knee\` dB wide (6);
+   * \`makeup\` dB after (0). Evens a part out, or glues a mix.
+   */
+  compress(options?: { readonly threshold?: number; readonly ratio?: number; readonly attack?: number; readonly release?: number; readonly knee?: number; readonly makeup?: number }): Clip;
 }
 /**
  * When the script is built: a tone of \`pitch\` — hertz, or a note's name: "A4" (440), "C#5", "Eb3" — for
- * \`seconds\`. wave: "sine" (the default), "square", "triangle" or "saw"; volume 0 to 1 (0.5).
+ * \`seconds\`, or [seconds, pitch] points to glide (a kick's drop: [[0, 150], [0.08, 45]]). wave: "sine"
+ * (the default), "square", "triangle" or "saw"; volume 0 to 1 (0.5). \`voices\` copies (1 to 16) spread
+ * \`detune\` cents apart from lowest to highest (20), and \`width\` 0 to 1 across left and right: a
+ * supersaw is \`tone("A3", 1, { wave: "saw", voices: 7, detune: 30, width: 0.8 })\`.
  *   const beep = tone("A5", 0.1, { wave: "square", volume: 0.3 }).fade(0, 0.05);
  */
-${kw}function tone(pitch: number | string, seconds: number, options?: { readonly wave?: "sine" | "square" | "triangle" | "saw"; readonly volume?: number; readonly rate?: number }): Clip;
+${kw}function tone(pitch: number | string | readonly (readonly [number, number | string])[], seconds: number, options?: { readonly wave?: "sine" | "square" | "triangle" | "saw"; readonly volume?: number; readonly rate?: number; readonly voices?: number; readonly detune?: number; readonly width?: number }): Clip;
+/**
+ * When the script is built: two-operator FM — a sine whose phase another, \`ratio\` times its pitch,
+ * pushes by \`index\` (2; or [seconds, index] points, bright at the start and mellow after). ratio 1 a
+ * reed or an electric piano, 3.5 or 7 a bell, 0.5 a bass; \`feedback\` 0 to 2 gives the push an edge.
+ *   const bell = fm("E5", 2, { ratio: 3.5, index: [[0, 6], [2, 0.3]], volume: 0.3 }).fade(0, 1.5);
+ */
+${kw}function fm(pitch: number | string | readonly (readonly [number, number | string])[], seconds: number, options?: { readonly ratio?: number; readonly index?: number | readonly (readonly [number, number])[]; readonly feedback?: number; readonly volume?: number; readonly rate?: number }): Clip;
+/**
+ * When the script is built: a plucked string (Karplus–Strong) — a guitar, a harp, a koto. \`brightness\`
+ * 0 to 1 (0.5), \`decay\` seconds to fade away (2).
+ */
+${kw}function pluck(pitch: number | string, seconds: number, options?: { readonly brightness?: number; readonly decay?: number; readonly volume?: number; readonly rate?: number }): Clip;
 /** When the script is built: noise for \`seconds\` (the same every build) — with fade(), a hit or a burst. */
 ${kw}function noise(seconds: number, options?: { readonly volume?: number; readonly rate?: number }): Clip;
 /** When the script is built: nothing for \`seconds\`, to put a gap between clips: \`a.then(silence(0.2), b)\`. */
@@ -534,8 +641,17 @@ ${kw}function silence(seconds: number, options?: { readonly rate?: number }): Cl
 /**
  * When the script is built: clips laid over one another, each from its own time in seconds, as one clip —
  * a song mixed before the game, every note exactly in time. \`mixdown([{ clip: kick, at: 0 }, { clip: hat, at: 0.25 }])\`
+ * At the first part's rate, or \`rate\`; two channels when a part has two. \`seconds\`: that long at least.
  */
-${kw}function mixdown(parts: readonly { readonly clip: Clip; readonly at: number }[], seconds?: number): Clip;
+${kw}function mixdown(parts: readonly { readonly clip: Clip; readonly at: number }[], seconds?: number, rate?: number): Clip;
+/**
+ * Clips the game will play together, each from its time — the bars of a song played one after another and the layers
+ * over them — each turned down by one gain, so what they add up to never goes over \`peak\` (0.84, −1.5 dB), between
+ * the samples too: what a limiter does for a mix, for sounds the game adds up itself. Never turned up. The same clip
+ * given twice comes back as one. \`over\`: clips that may play on top, each at any of its times (a stinger on any bar
+ * line), room left for them too; they come back after the parts, turned down with them. When the script is built: \`const [a, b] = together([{ clip: x, at: 0 }, { clip: y, at: 1 }])\`
+ */
+${kw}function together(parts: readonly { readonly clip: Clip; readonly at: number }[], options?: { readonly peak?: number; readonly over?: readonly { readonly clip: Clip; readonly at: readonly number[] }[] }): Clip[];
 /** A brush of cover(): which of the shapes (0 the first), centred on tile (x, y) of the picture. */
 ${kw}interface Brush { readonly x: number; readonly y: number; readonly shape: number }
 /**
@@ -1096,6 +1212,11 @@ declare module "*.image" {
 declare module "*.sound" {
   const sound: Clip;
   export default sound;
+}
+// ── Notes the script imports, from a MIDI file: import tune from "./tune.notes"; ──
+declare module "*.notes" {
+  const notes: Notes;
+  export default notes;
 }
 `;
 

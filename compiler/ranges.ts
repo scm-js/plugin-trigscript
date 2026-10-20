@@ -571,7 +571,8 @@ export function rangeNumbers(program: Program): void {
     if (done) break;
   }
   if (unknown) return;
-  if (process.env.RANGES_DEBUG) for (const [k, v] of vars) if (!isAny(v)) console.log(`ranges ${k} = ${v[0]} … ${v[1]}`);
+  // (Node only: a worker in the browser has no `process`, and reading it there threw — every program failed to compile.)
+  if (typeof process !== "undefined" && process.env?.RANGES_DEBUG) for (const [k, v] of vars) if (!isAny(v)) console.log(`ranges ${k} = ${v[0]} … ${v[1]}`);
   annotate = true;
   next = new Map();
   nextCells = new Map();
