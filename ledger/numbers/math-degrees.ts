@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient of fixed numbers
+// ledger: step 4, takes
 // Radians as degrees, from `trigscript/math`: `degrees(r)`.
 import { degrees } from "trigscript/math";
 program(() => {

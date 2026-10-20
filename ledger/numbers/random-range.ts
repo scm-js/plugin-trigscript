@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a random number
+// ledger: step 4, takes
 // A random whole number from a low to a high, both included, from `trigscript/random`: `range(1, 3)`.
 import { range } from "trigscript/random";
 program(() => {

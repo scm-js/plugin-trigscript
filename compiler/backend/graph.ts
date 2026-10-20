@@ -88,7 +88,15 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * map's strings when the map is made.
  */
 /** `show`: instead of a write, Display Text of a printed text's template (`Graph.templates`), as it is when shown. */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string }
+/**
+ * `randomize`: instead of a write, the game's Set Switch of that switch (0-based) to a random state — one bit of the
+ * game's own random numbers, the same on every player's machine. A map of our own reads the switch where the game keeps
+ * it (`SWITCHES`).
+ */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string; randomize?: number }
+
+/** Where the game keeps its 256 switches: a bit each, 32 to a dword. */
+export const SWITCHES = 0x58dc40;
 
 /**
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,

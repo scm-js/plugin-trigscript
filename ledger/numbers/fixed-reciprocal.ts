@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient of fixed numbers
+// ledger: step 4, takes
 // A number written in the script divided by a number with a fraction: `1 / x`.
 program(() => {
   let x = 0.5;

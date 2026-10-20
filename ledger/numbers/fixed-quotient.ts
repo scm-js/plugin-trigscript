@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient of fixed numbers
+// ledger: step 4, takes
 // A quotient of two numbers with a fraction that change while the game runs: `x / y`.
 program(() => {
   let x = 0.5;

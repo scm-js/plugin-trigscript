@@ -241,7 +241,7 @@ export function layout(input: LayoutInput): OwnMap {
   const encoded = triggers.map((t) => ({
     t,
     conds: t.conds.map((c) => ({ c, player: epd(address(c.dword)) })),
-    acts: t.acts.map((a) => ({ a, player: a.display !== undefined || a.show !== undefined ? 0 : epd(address(a.dword)), number: a.display !== undefined || a.show !== undefined ? 0 : value(a.value) })),
+    acts: t.acts.map((a) => ({ a, player: a.display !== undefined || a.show !== undefined || a.randomize !== undefined ? 0 : epd(address(a.dword)), number: a.display !== undefined || a.show !== undefined || a.randomize !== undefined ? 0 : value(a.value) })),
   }));
   const size = next - base;
   const out = new Uint8Array(pad + size);
@@ -263,6 +263,14 @@ export function layout(input: LayoutInput): OwnMap {
     });
     acts.forEach(({ a, player, number }, k) => {
       const o = n + 328 + 32 * k;
+      if (a.randomize !== undefined) {
+        // Set Switch (13), its switch in the record's number, Randomize (11).
+        w32(o + 20, a.randomize);
+        dv.setUint8(pad + o + 26 - base, 13);
+        dv.setUint8(pad + o + 27 - base, 11);
+        dv.setUint8(pad + o + 28 - base, 4);
+        return;
+      }
       if (a.display !== undefined || a.show !== undefined) {
         if (a.show !== undefined && !input.template) throw new Error(`a printed text (${a.show}) with no string to show it by`);
         w32(o + 4, a.show !== undefined ? input.template!(a.show) : input.text(a.display!));

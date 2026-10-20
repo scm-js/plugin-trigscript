@@ -8,9 +8,9 @@ import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarDecl } from "../compiler/ir";
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
-import { END, TRIGGER_BYTES, type Dword, type Graph, type Num } from "../compiler/backend/graph";
+import { END, SWITCHES, TRIGGER_BYTES, type Dword, type Graph, type Num } from "../compiler/backend/graph";
 import { layout } from "../compiler/backend/layout";
-import { fixedDiv, fixedMul } from "../compiler/fixedMath";
+import { fixedDiv, fixedMul, fixedText } from "../compiler/fixedMath";
 
 const U32 = 2 ** 32;
 const u = (n: number) => ((n % U32) + U32) % U32;
@@ -28,12 +28,18 @@ function num(e: NumExpr, env: Env): number {
     case "cast": return num(e.expr, env);
     case "intrinsic": {
       const [a, b] = e.args.map((x) => num(x, env));
+      if (e.name === "fmul" || e.name === "fdiv") {
+        see(e.args[0], a); see(e.args[1], b);
+        const r = u(e.name === "fmul" ? fixedMul(a | 0, b | 0) : fixedDiv(a | 0, b | 0));
+        see(e, r);
+        return r;
+      }
       if (e.name === "abs") return u(Math.abs(a | 0));
       if (e.name === "min" || e.name === "max") {
         const [x, y] = e.unsigned ? [a, b] : [a | 0, b | 0];
         return u(e.name === "min" ? Math.min(x, y) : Math.max(x, y));
       }
-      return u(e.name === "fmul" ? fixedMul(a | 0, b | 0) : fixedDiv(a | 0, b | 0));
+      throw new Error(e.name);
     }
     case "ternary": return bool(e.cond, env) ? num(e.whenTrue, env) : num(e.whenFalse, env);
     case "element": {
@@ -184,7 +190,7 @@ function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
         const bytes: number[] = [];
         for (const p of s.parts) {
           if (p.kind === "text") bytes.push(...new TextEncoder().encode(p.text));
-          else if (p.kind === "number") bytes.push(...new TextEncoder().encode(String(p.unsigned ? num(p.expr, env) : num(p.expr, env) | 0)));
+          else if (p.kind === "number") bytes.push(...new TextEncoder().encode(p.fixed ? fixedText(num(p.expr, env) | 0) : String(p.unsigned ? num(p.expr, env) : num(p.expr, env) | 0)));
           else if (p.kind === "char") { const b = num(p.expr, env) & 0xff; if (b) bytes.push(b); }
         }
         PRINTED.want.push(shown(bytes));
@@ -399,6 +405,12 @@ function exec(g: Graph, env: Env): Env {
       return c.compare === "atLeast" ? x >= y : c.compare === "atMost" ? x <= y : x === y;
     });
     if (holds) t.acts.forEach((a, k) => {
+      // Set Switch to a random state: the switch's bit where the game keeps it.
+      if (a.randomize !== undefined) {
+        const at = `game:${SWITCHES + 4 * (a.randomize >> 5)}`, bit = 2 ** (a.randomize & 31), was = (read(at) as number) || 0;
+        mem.set(at, randomBit() ? Number((BigInt(was) | BigInt(bit)) & 0xffffffffn) : Number(BigInt(was) & ~BigInt(bit) & 0xffffffffn));
+        return;
+      }
       // Display Text: what it shows.
       if (a.show !== undefined) { PRINTED.got.push(showOf(a.show)); return; }
       if (a.display !== undefined) { PRINTED.got.push(shown([...new TextEncoder().encode(a.display)])); return; }
@@ -436,6 +448,15 @@ function exec(g: Graph, env: Env): Env {
     if (mem.get(`counter:${id}:bytes`) !== u(Math.imul(72, v)) || mem.get(`counter:${id}:dwords`) !== u(Math.imul(18, v))) throw new Error(`the offsets beside ${id} are not its`);
   }
   return asEnv();
+}
+
+/** The game's random bits for Set Switch to a random state, in the tests: a generator of their own, seeded per test. */
+const RANDOM_BITS = { s: 1 };
+function randomBit(): number {
+  let x = RANDOM_BITS.s >>> 0 || 1;
+  x ^= x << 13; x >>>= 0; x ^= x >> 17; x ^= x << 5; x >>>= 0;
+  RANDOM_BITS.s = x;
+  return x >>> 31;
 }
 
 /** A program and its graph, for a look at one seed (EMITTER_SEED): into EMITTER_DUMP's file, or printed. */
@@ -667,6 +688,13 @@ function observeRanges(body: Stmt[], arrays: Map<string, ArrayDecl>): void {
       if (r && a && r[0] >= 0 && r[1] < a.length) { index.range = r; RANGED.n++; }
     }
     // The sides of a product or a quotient (of a reading from 0 up, only a range at or above zero, as ranges.ts gives).
+    // (Of a fixed product or quotient, its two arguments and its answer, read as numbers.)
+    if (o.kind === "intrinsic" && (o.name === "fmul" || o.name === "fdiv")) {
+      for (const side of [...(o.args as NumExpr[]), o as unknown as NumExpr] as (NumExpr & { range?: [number, number] })[]) {
+        const r = SEEN.get(side);
+        if (r && side.kind !== "const") { side.range = r; RANGED.arith++; }
+      }
+    }
     if (o.kind === "binary" && (o.op === "*" || o.op === "/" || o.op === "%" || o.op === "&" || o.op === "|" || o.op === "^" || ((o.op === "<<" || o.op === ">>" || o.op === ">>>") && (o.right as NumExpr).kind !== "const"))) {
       // (And the answer's, which a copy of it into a field holding a multiple goes over only the bits of.)
       const r = SEEN.get(o as unknown as NumExpr);
@@ -735,6 +763,11 @@ function programWithCalls(seed: number, recursion = false) {
 
   function value(sc: Scope, depth: number): NumExpr {
     if (r.next() < 0.08) return { kind: "element", array: nums.id, index: index(sc, nums), at };
+    // A product or a quotient of numbers with a fraction (16.16), of values and constants, below zero, past 2^31 when wrapped.
+    if (r.next() < 0.05) {
+      const side = (): NumExpr => (r.next() < 0.3 ? k(r.pick([65536, 98304, -163840, 1, 0x7fffffff, -2147483648, 3 << 15, 100 << 16, 0])) : depth < 2 && r.next() < 0.2 ? value(sc, depth + 1) : v(r.pick(sc.nums)));
+      return { kind: "intrinsic", name: r.pick(["fmul", "fdiv"] as const), args: [side(), side()], at, label: "" };
+    }
     // A product of two values, a quotient or a remainder (step 4): signed or read from 0 up, by a value or a constant.
     if (r.next() < 0.1) {
       const op = r.pick(["*", "/", "%", "&", "|", "^", "<<", ">>", ">>>"] as const);
@@ -779,7 +812,7 @@ function programWithCalls(seed: number, recursion = false) {
     parts: Array.from({ length: 1 + r.int(4) }, (): TextPart => {
       const y = r.next();
       if (y < 0.35) return { kind: "text", text: r.pick(["Wave ", " of ", ": ", "x", "é ", "점수 ", ""]) };
-      if (y < 0.85) return { kind: "number", expr: value(sc, 1), ...(r.next() < 0.3 ? { unsigned: true } : {}) };
+      if (y < 0.85) { const z = r.next(); return { kind: "number", expr: value(sc, 1), ...(z < 0.25 ? { unsigned: true } : z < 0.45 ? { fixed: true } : {}) }; }
       return { kind: "char", expr: r.next() < 0.5 ? k(r.int(9)) : v(r.pick(sc.nums)) };
     }),
   });
@@ -1010,6 +1043,13 @@ function runOwn(g: Graph): Env {
         PRINTED.got.push(shown(out));
         continue;
       }
+      if (kind === 13) {
+        // Set Switch: to a random state (11), its bit where the game keeps it.
+        const sw = rd(o + 20), addr = SWITCHES + 4 * (sw >> 5), bit = 2 ** (sw & 31);
+        if (byte(o + 27) !== 11) throw new Error(`Set Switch ${byte(o + 27)}`);
+        wr(addr, randomBit() ? (rd(addr) | bit) >>> 0 : (rd(addr) & ~bit) >>> 0);
+        continue;
+      }
       if (kind !== 45) throw new Error(`action kind ${kind}`);
       const dest = at(rd(o + 16)), value = rd(o + 20), modifier = byte(o + 27), old = rd(dest);
       if (dv.getUint16(o + 30 - base, true) === 0x4353) {
@@ -1057,6 +1097,38 @@ describe("a map of our own, laid out", () => {
     }
     expect(ran).toBeGreaterThan(400);
   }, RANDOM_PROGRAMS);
+});
+
+describe("a map of our own, random numbers", () => {
+  it("draws each whole number below the bound as often as the next, from the game's own random bits", () => {
+    // x = random(n) for bounds known and not, small and large; run many times, as a graph and from the laid-out bytes.
+    const decls = new Map<string, VarDecl>();
+    const decl = (name: string): VarDecl => { const d: VarDecl = { id: `${name}#${decls.size}`, name, kind: "number", shared: false, at }; decls.set(d.id, d); return d; };
+    const [x, n] = [decl("x"), decl("n")];
+    const v = (d: VarDecl): NumExpr => ({ kind: "var", id: d.id });
+    const draw = (bound: NumExpr, range?: [number, number]): Stmt[] => [{ kind: "declare", decl: x, init: { kind: "randomInt", bound: range ? ({ ...bound, range } as unknown as NumExpr) : bound, at, label: "" }, at, label: "" } as Stmt];
+    const cases: { name: string; body: Stmt[]; bound: number }[] = [
+      ...[2, 6, 7, 8, 100].map((b) => ({ name: `random(${b})`, body: draw({ kind: "const", value: b }), bound: b })),
+      ...[1, 3, 6, 33].map((b) => ({ name: `random(n), n ${b}`, body: [{ kind: "declare", decl: n, init: { kind: "const", value: b }, at, label: "" } as Stmt, ...draw(v(n))], bound: b })),
+      { name: "random(n), n in 0 … 40", body: [{ kind: "declare", decl: n, init: { kind: "const", value: 12 }, at, label: "" } as Stmt, ...draw(v(n), [0, 40])], bound: 12 },
+    ];
+    for (const c of cases) {
+      const g = emitBody(c.body, decls, "rnd", new Map(), new Map());
+      expect([c.name, typeof g === "string" ? g : "takes"]).toEqual([c.name, "takes"]);
+      if (typeof g === "string") continue;
+      const counts = Array(c.bound).fill(0);
+      const runs = 400 * c.bound;
+      RANDOM_BITS.s = 12345;
+      for (let i = 0; i < runs; i++) {
+        const got = i % 3 ? exec(g, new Map()) : runOwn(g);
+        const value = got.get(x.id) ?? 0;
+        expect([c.name, value < c.bound]).toEqual([c.name, true]);
+        counts[value]++;
+      }
+      // Each value within a fifth of its share.
+      for (const k of counts) expect([c.name, Math.abs(k - runs / c.bound) < runs / c.bound / 5]).toEqual([c.name, true]);
+    }
+  });
 });
 
 describe("a map of our own, functions that call themselves", () => {

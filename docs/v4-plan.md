@@ -3519,7 +3519,9 @@ found what they left out; where a step moved, its old number is given.
 2. Texts with numbers in them ✓ (#38). Texts as values moved to 8.
 3. Arrays of a fixed length ✓ (#39). Arrays that grow moved to 9.
 4. **Numbers.** (Part 1 ✓: products, quotients and remainders — "Products and quotients on our own backend"; part 2 ✓:
-   bits and shifts by a value — "Bits and shifts on our own backend".)
+   bits and shifts by a value — "Bits and shifts on our own backend"; part 3 ✓: fixed products, quotients and
+   printing — "Numbers with a fraction on our own backend"; part 4 ✓: random numbers — "Random numbers on our own
+   backend". Left: `sqrt`, `sin`, `cos`, `atan2`, and `u8` and `u16`.)
    A product, a quotient and a remainder of two values and by a constant, signed and `u32`; `&` `|` `^`
    as values; a shift by a value; `trunc`. Fixed point: `fmul`, `fdiv`, `c / x` (the emitter's reciprocal exists),
    `sqrt`, `sin`, `cos`, `atan2` (`tan` and `hypot` come down to these). `u8` and `u16` variables (saturating
@@ -3901,8 +3903,8 @@ lists what no script reaches. A step is done when its scripts say so.
 | 0 The start | 157 of 158 |
 | 1 Calls and recursion | 33 of 33 |
 | 2 Texts with numbers | 6 of 6 |
-| 3 Arrays of a fixed length | 53 of 54 |
-| 4 Numbers | 27 of 59 |
+| 3 Arrays of a fixed length | 54 of 54 |
+| 4 Numbers | 44 of 59 |
 | 5 The game's conditions and actions | 0 of 193 |
 | 6 The game's memory | 0 of 49 |
 | 7 Programs, owners and players | 1 of 22 |
@@ -3913,8 +3915,8 @@ lists what no script reaches. A step is done when its scripts say so.
 | 12 Input | 0 of 31 |
 | 13 The map's own triggers | 0 of 13 |
 
-Two steps called done are not quite: a `?:` of two booleans (step 0) and a cell read at a shifted index, `xs[a >> 1]`
-(step 3 — the store there and `const i = a >> 1; xs[i]` are taken). Every script a map of our own takes was also run
+One step called done is not quite: a `?:` of two booleans (step 0). (A cell read at a shifted index, `xs[a >> 1]`, the
+other one, is taken since step 4's part 4.) Every script a map of our own takes was also run
 from its laid-out bytes against the simulator — the numbers, arrays, texts and language scripts, and about forty edge
 cases besides (signs of `>>`, `u32` printed and compared, wrap-around, reads past the ends, negative indexes): all
 printed the same. The README's reference to the language predates TrigScript 4 (it says `try` and `async` are missing):
@@ -4067,6 +4069,69 @@ Checked: random programs with `&` `|` `^` and shifts by values and constants (co
 the edges, with and without the ranges a run shows — as written, as graphs and from the laid-out bytes (2,995 of 3,000
 taken: a shift by a constant of what the emitter does not take yet is refused); the ledger's scripts against the
 simulator; `probes/own-bits.ts` built both ways, its lines the same at the same frames, every one ok.
+
+### Numbers with a fraction on our own backend (2026-10-20)
+
+Step 4, part 3: `fixed` (16.16) products and quotients, by a constant and of two values, a constant over a value, and
+a fixed number printed (`Emitter.fixedByConst`, `fixedOverConst`, `fixedProduct`, `divide` with a fixed or constant
+dividend, `fixedParts`). The answers are the simulator's (`compiler/fixedMath.ts`): towards zero, wrapping at 32 bits,
+a quotient by 0 is 0.
+
+- **By a constant** (`x * 1.5`): the magnitude's bits each add their share of the constant, split in two — the part
+  above the point straight into the answer, the part below into a low cell whose bits 16 and up are added after — on
+  two chains, one for each sign. eudplib's is its whole `f_mul` of two values and a shift.
+- **Over a constant** (`x / 1.5`): the Python backend's `make_fdiv_by_const` written as triggers: the whole part a
+  chain of comparisons, then sixteen rounds that shift the remainder in place.
+- **Of two values** (`x * y`): a loop of sixteen steps in a doubling trigger — each step tests the top bit of one side,
+  adds the other side's magnitude into the high part and its shifted half into the low, and the doubling trigger
+  doubles both and counts. 64-bit work in 32-bit cells, the low half's top bits added into the answer at the end.
+- **A quotient of two values** (`x / y`) and **a constant over a value** (`3 / x`) are the division of part 1 with
+  sixteen more steps after the dividend's bits (the point); a constant dividend's bits are known when the map is
+  built, so its steps are entered by the divisor's top bits four at a time, with what the remainder holds there
+  preloaded.
+- **A fixed number printed**: the sign, the whole part by the digits routine of step 2, and the point and four places
+  below it, rounded half up as `fixedText` rounds them (10 000 carried into the whole part), the zeros at the end not
+  shown. A trigger a bit for the places, and a trigger each for 8, 4, 2 and 1 times a place's power of ten. eudplib's
+  build divides by 65 536, by 1 000, by 100 and by 10.
+
+| `probes/own-fixed.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 200 of `x * 1.5` (frame 4) | **0.179 ms** | 0.252 ms |
+| 200 of `x / 1.5` (frame 6) | **0.290 ms** | 0.375 ms |
+| 200 of `3 / x` (frame 8) | **0.348 ms** | 0.428 ms |
+| 200 of `x * y` (frame 10) | **0.524 ms** | 0.677 ms |
+| 200 of `x / y` (frame 12) | **0.693 ms** | 1.093 ms |
+| nine fixed numbers printed (frame 12, past the quotients) | **0.015 ms** | 0.174 ms |
+
+`sqrt`, `sin`, `cos` and `atan2` are still refused (`math-vec-length`).
+
+### Random numbers on our own backend (2026-10-20)
+
+Step 4, part 4: `random(n)`, `random()` and the `trigscript/random` library over them (`Emitter.randomNumber`).
+
+- **The game's own random bits.** Set Switch to a random state is one draw of the game's generator — bit 7 of its
+  15-bit number, the same on every machine (scm-sim, round seventeen). The routine draws into switch 256 and tests it
+  with a masked condition where the game keeps the switches, a trigger each, and puts the switch back as it was.
+- **Drawn, not divided.** random(n) draws the bits of n − 1 from its top bit down and draws again when they make n or
+  more — fewer than two tries on average, never for a power of two — so every number below n is exactly as likely. A
+  constant n's bits are known when the map is built; a value's top bit is found by a search of comparisons, and the
+  draws entered there. random() is one bit, and a bound of 0 or 1 gives 0.
+- eudplib seeds a generator of its own from a switch once (`f_randomize`) and then works each draw out with two
+  products (`f_dwrand`) and a division by n (`f_div`), whose remainder leans a little towards the small numbers.
+- An index that is more than a sum — a random number, a product, a shift — is now worked out into a variable first, so
+  `pick(list)` and `xs[a >> 1]` (step 3's last refused row) are taken.
+
+| `probes/own-random.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| bounds: 82 draws of `random(n)` (frame 2) | **0.045 ms** | 1.365 ms |
+| 200 of `faces[random(6)] += 1` (frame 4) | **0.423 ms** | 1.226 ms |
+| 200 of `random(j % 10 + 1)` (frame 6) | **0.257 ms** | 1.836 ms |
+| 200 of `random()` (frame 8) | **0.063 ms** | 0.252 ms |
+
+Checked: random programs with fixed products, quotients and fixed numbers printed, as graphs and from the laid-out
+bytes; random numbers below constant and variable bounds drawn 400 times a value, each within a fifth of its share,
+both ways; the ledger's fixed scripts against the simulator line for line, its random ones 200 times each way (the same
+shares, within chance); `probes/own-fixed.ts` and `probes/own-random.ts` built both ways, every line ok.
 
 ## Part C — the game, pushed
 

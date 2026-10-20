@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a random number
+// ledger: step 4, takes
 // One of a list at random, from `trigscript/random`: `pick(list)`.
 import { pick } from "trigscript/random";
 const WAVES = [5, 8, 13];

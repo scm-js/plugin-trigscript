@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a product of fixed numbers
+// ledger: step 4, takes
 // A product of two numbers with a fraction that change while the game runs: `x * y`.
 program(() => {
   let x = 0.5;

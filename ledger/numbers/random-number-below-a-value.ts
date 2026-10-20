@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a random number
+// ledger: step 4, takes
 // A random whole number below a bound that changes while the game runs: `random(n)`.
 program(() => {
   let n = 1;

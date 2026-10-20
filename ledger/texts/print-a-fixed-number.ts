@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a fixed number printed
+// ledger: step 4, takes
 // A number with a fraction in a printed text, as a decimal of up to four places: `` print(`${x}`) `` of 2.75.
 program(() => {
   let x = 0.5;

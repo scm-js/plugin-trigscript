@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a random number
+// ledger: step 4, takes
 // True a number of times in a hundred, from `trigscript/random`: `chance(25)`.
 import { chance } from "trigscript/random";
 program(() => {

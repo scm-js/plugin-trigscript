@@ -1,4 +1,4 @@
-// ledger: step 3, refused: a shift by a constant (>>) as a value
+// ledger: step 3, takes
 // A cell read at a place worked out by a shift, as the halves of a list are: `xs[a >> 1]` (stored there, or with the
 // place kept in a variable first, it is taken).
 program(() => {
