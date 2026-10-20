@@ -6,7 +6,7 @@
 // lifted game, for fewer loops.
 import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, VarDecl } from "../compiler/ir";
+import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarDecl } from "../compiler/ir";
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
 import { END, isStack, type Dword, type Graph, type Num } from "../compiler/backend/graph";
 import { layout } from "../compiler/backend/layout";
@@ -98,6 +98,13 @@ type Flow = "next" | "break" | "continue" | "return";
  */
 const CALLS = { whole: false };
 /**
+ * What the programs print, as written and as run: each text's bytes (UTF-8, a number in decimal, a byte as itself, a
+ * 0 byte as nothing) less 0x0D — which StarCraft draws as nothing, and which a map of our own fills the room around a
+ * number with — in hex.
+ */
+const PRINTED: { want: string[]; got: string[] } = { want: [], got: [] };
+const shown = (bytes: number[]) => bytes.filter((b) => b !== 0x0d).map((b) => b.toString(16).padStart(2, "0")).join("");
+/**
  * The statements the evaluator may still run for the program in hand (a hundred thousand), its calls' bodies included: a program whose
  * functions call themselves from inside each other's loops can run for hundreds of millions, and is set aside.
  */
@@ -148,6 +155,16 @@ function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
         break;
       }
       case "call": callValue(s.call, env); break;
+      case "print": {
+        const bytes: number[] = [];
+        for (const p of s.parts) {
+          if (p.kind === "text") bytes.push(...new TextEncoder().encode(p.text));
+          else if (p.kind === "number") bytes.push(...new TextEncoder().encode(String(p.unsigned ? num(p.expr, env) : num(p.expr, env) | 0)));
+          else if (p.kind === "char") { const b = num(p.expr, env) & 0xff; if (b) bytes.push(b); }
+        }
+        PRINTED.want.push(shown(bytes));
+        break;
+      }
       case "return": {
         const r = RETURNS[RETURNS.length - 1];
         r.value = s.value === undefined ? 0 : r.kind === "boolean" ? (bool(s.value as BoolExpr, env) ? 1 : 0) : num(s.value as NumExpr, env);
@@ -220,6 +237,7 @@ function key(d: Dword): string {
   if ("counter" in d) return `counter:${d.counter}:${d.part}`;
   if ("getter" in d) return `getter:${d.getter}`;
   if ("temp" in d) return `temp:${d.temp}`;
+  if ("template" in d) return `template:${d.template}:${d.word}`;
   const f = d.field;
   return f === "next" ? `${d.at}|next` : "cond" in f ? `${d.at}|cond:${f.cond}${f.part === "player" ? ":player" : ""}` : `${d.at}|act:${f.act}:${f.part}`;
 }
@@ -238,6 +256,16 @@ function exec(g: Graph, env: Env): Env {
   };
   // The lists, where the graph says the Python side keeps them.
   for (const { id, stride } of g.arrays ?? []) TABLES.get(id)?.forEach((v, i) => mem.set(`epd:${TABLE_EPD(id) + stride * i}`, u(v)));
+  // A map of our own's printed texts' templates, a dword at a time.
+  for (const t of g.templates ?? []) for (let w = 0; 4 * w < t.bytes.length; w++) mem.set(key({ template: t.id, word: w }), [0, 1, 2, 3].reduce((x, i) => x + (t.bytes[4 * w + i] ?? 0) * 2 ** (8 * i), 0));
+  const showOf = (id: string) => {
+    const out: number[] = [];
+    for (let w = 0; ; w++) for (let i = 0; i < 4; i++) {
+      const b = Math.floor((read(key({ template: id, word: w })) as number) / 2 ** (8 * i)) & 0xff;
+      if (b === 0) return shown(out);
+      out.push(b);
+    }
+  };
   // A map of our own's stacks: cell triggers, each its number, its action's destination and its next pointer.
   STACKS.splice(0, STACKS.length, ...(g.stacks ?? []).map((st) => st.id));
   const stacks = (g.stacks ?? []).map((st) => ({ epd: TABLE_EPD(st.id), addr: ARRAY_ADDR(st.id), cells: st.cells }));
@@ -325,6 +353,9 @@ function exec(g: Graph, env: Env): Env {
       return c.compare === "atLeast" ? x >= y : c.compare === "atMost" ? x <= y : x === y;
     });
     if (holds) t.acts.forEach((a, k) => {
+      // Display Text: what it shows.
+      if (a.show !== undefined) { PRINTED.got.push(showOf(a.show)); return; }
+      if (a.display !== undefined) { PRINTED.got.push(shown([...new TextEncoder().encode(a.display)])); return; }
       const v = read(`${t.label}|act:${k}:value`);
       // The destination and the modifier as the fields hold them now: a cell routed elsewhere, a store's EPD.
       const dest = mem.get(`${t.label}|act:${k}:dest`);
@@ -616,9 +647,20 @@ function programWithCalls(seed: number, recursion = false) {
     const sideOf = (): NumExpr => (r.next() < 0.5 ? v(r.pick(sc.nums)) : r.next() < 0.5 ? k(r.pick(EDGES)) : value(sc, depth + 1));
     return { kind: "compare", op: r.pick(["<", "<=", ">", ">=", "==", "!="] as const), left: sideOf(), right: sideOf(), ...(r.next() < 0.7 ? {} : { unsigned: true }), at, label: "" };
   }
+  /** A text printed with values in it: words (one not ASCII now and then), numbers signed and not, bytes. */
+  const print = (sc: Scope): Stmt => ({
+    kind: "print", to: 13, position: "chat", at, label: "",
+    parts: Array.from({ length: 1 + r.int(4) }, (): TextPart => {
+      const y = r.next();
+      if (y < 0.35) return { kind: "text", text: r.pick(["Wave ", " of ", ": ", "x", "é ", "점수 ", ""]) };
+      if (y < 0.85) return { kind: "number", expr: value(sc, 1), ...(r.next() < 0.3 ? { unsigned: true } : {}) };
+      return { kind: "char", expr: r.next() < 0.5 ? k(r.int(9)) : v(r.pick(sc.nums)) };
+    }),
+  });
   function block(sc: Scope, depth: number, inLoop: boolean): Stmt[] {
     const out: Stmt[] = [];
     for (let n = 1 + r.int(4); n > 0; n--) {
+      if (r.next() < 0.08) out.push(print(sc));
       const x = r.int(14);
       if (x < 5) out.push({ kind: "assign", target: r.pick(sc.nums).id, value: value(sc, 0), at, label: "" });
       else if (x === 5) out.push({ kind: "assignBool", target: r.pick(sc.bools).id, value: cond(sc, 0), at, label: "" });
@@ -705,7 +747,7 @@ function programWithCalls(seed: number, recursion = false) {
 
 describe("the emitter, calls in a map of our own", () => {
   it("lays out random programs with functions so that they leave every variable as the programs do", () => {
-    let taken = 0;
+    let taken = 0, texts = 0, numbers = 0;
     const left = new Map<string, number>();
     CALLS.whole = true;
     try {
@@ -717,15 +759,21 @@ describe("the emitter, calls in a map of our own", () => {
         taken++;
         const want: Env = new Map();
         EVAL.n = 1e5;
+        PRINTED.want = [];
+        PRINTED.got = [];
         run(body, want, EVAL);
         let got: Env;
         try { got = exec(g, new Map()); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
         for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
+        expect([seed, PRINTED.got]).toEqual([seed, PRINTED.want]);
+        texts += PRINTED.want.length;
+        numbers += PRINTED.want.filter((t) => /3[0-9]/.test(t)).length;
       }
     } finally {
       CALLS.whole = false;
     }
-    if (process.env.EMITTER_LEFT) console.log(taken, [...left].sort((a, b) => b[1] - a[1]));
+    if (process.env.EMITTER_LEFT) console.log(taken, texts, numbers, [...left].sort((a, b) => b[1] - a[1]));
+    expect(texts).toBeGreaterThan(3000);
     expect(taken).toBeGreaterThan(2950);
   });
 });
@@ -771,7 +819,9 @@ describe("the emitter, a loop's test", () => {
  * with the top bit set. One pass: the programs sleep nowhere. Returns each variable's cell as the pass left it.
  */
 function runOwn(g: Graph): Env {
-  const own = layout({ graph: g, strings: 0, owner: 0, text: () => 1, arrays: new Map() });
+  // (Strings by number: a printed text's template 1000 on, a text known when built 5000 on.)
+  const templates = (g.templates ?? []).map((t) => t.id), texts: string[] = [];
+  const own = layout({ graph: g, strings: 0, owner: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays: new Map(), template: (id) => 1000 + templates.indexOf(id) });
   const DEATHS = 0x58a364;
   const bytes = own.payload.slice();
   const dv = new DataView(bytes.buffer);
@@ -799,7 +849,15 @@ function runOwn(g: Graph): Env {
     for (let k = 0; holds && k < 64; k++) {
       const o = pc + 328 + 32 * k, kind = byte(o + 26);
       if (kind === 0) break;
-      if (kind === 9) continue;
+      if (kind === 9) {
+        // Display Text: the string's bytes as they are now, to the first 0.
+        const index = rd(o + 4);
+        if (index >= 5000) { PRINTED.got.push(shown([...new TextEncoder().encode(texts[index - 5000])])); continue; }
+        const out: number[] = [];
+        for (let a = own.templates.get(templates[index - 1000])!; byte(a) !== 0; a++) out.push(byte(a));
+        PRINTED.got.push(shown(out));
+        continue;
+      }
       if (kind !== 45) throw new Error(`action kind ${kind}`);
       const dest = at(rd(o + 16)), value = rd(o + 20), modifier = byte(o + 27), old = rd(dest);
       const v = modifier === 7 ? value : modifier === 8 ? u(old + value) : Math.max(0, old - value);
@@ -821,10 +879,13 @@ describe("a map of our own, laid out", () => {
         if (typeof g === "string") continue;
         const want: Env = new Map();
         EVAL.n = 1e5;
+        PRINTED.want = [];
+        PRINTED.got = [];
         run(body, want, EVAL);
         let got: Env;
         try { got = runOwn(g); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
         for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
+        expect([seed, PRINTED.got]).toEqual([seed, PRINTED.want]);
         ran++;
       }
     } finally {
@@ -850,6 +911,8 @@ describe("a map of our own, functions that call themselves", () => {
         if (g.stacks) deep++;
         const want: Env = new Map();
         EVAL.n = 1e5;
+        PRINTED.want = [];
+        PRINTED.got = [];
         try {
           run(body, want, EVAL);
         } catch (err) {
@@ -860,9 +923,12 @@ describe("a map of our own, functions that call themselves", () => {
         let got: Env;
         try { got = exec(g, new Map()); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
         for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
+        expect([seed, PRINTED.got]).toEqual([seed, PRINTED.want]);
         if (seed % 5 === 0) {
+          PRINTED.got = [];
           try { got = runOwn(g); } catch (err) { throw new Error(`seed ${seed}, laid out: ${(err as Error).message}`); }
           for (const [id, value] of want) if (!inner.has(id)) expect([seed, "laid out", id, got.get(id) ?? 0]).toEqual([seed, "laid out", id, value]);
+          expect([seed, "laid out", PRINTED.got]).toEqual([seed, "laid out", PRINTED.want]);
         }
       }
     } finally {

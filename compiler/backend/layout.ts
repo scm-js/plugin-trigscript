@@ -41,6 +41,8 @@ export interface OwnMap {
   address: number;
   /** Where each variable's cell is, by id. */
   vars: Map<string, number>;
+  /** Where each printed text's template is: the string the map gives it is to start there. */
+  templates: Map<string, number>;
 }
 
 export interface LayoutInput {
@@ -53,6 +55,17 @@ export interface LayoutInput {
   text: (t: string) => number;
   /** The cells of the lists the graph reads where they are, by array id. */
   arrays: Map<string, number[]>;
+  /**
+   * A printed text's template's index in the map's string table (1-based), for Display Text: the map maker points
+   * that string at the template, which the layout puts after the triggers (`OwnMap.templates`).
+   */
+  template?: (id: string) => number;
+  /**
+   * Where each template already is, when the map maker has put it among the map's strings (the game's own table of
+   * strings names only its first 64 KB in 1.16.1, which the lifted game is): the layout then leaves them out of the
+   * payload. Unset, the payload holds them.
+   */
+  templateAt?: Map<string, number>;
 }
 
 /**
@@ -163,6 +176,13 @@ export function layout(input: LayoutInput): OwnMap {
     listData.push({ at: next, values, stride: a.stride });
     next += 4 * a.stride * Math.max(1, values.length) + 4;
   }
+  // The templates of texts printed with values, each on a dword's start (where the map maker put them, or here).
+  const templates = new Map<string, number>(input.templateAt ?? []);
+  for (const t of graph.templates ?? []) {
+    if (templates.has(t.id)) continue;
+    templates.set(t.id, next);
+    next += 4 * Math.ceil(t.bytes.length / 4);
+  }
   const field = (d: Extract<Dword, { at: string }>): number => {
     const t = at.get(d.at);
     if (t === undefined) throw new Error(`no trigger ${d.at}`);
@@ -184,6 +204,11 @@ export function layout(input: LayoutInput): OwnMap {
     // (A scratch cell of the graph's is the cell of a variable named after it, as the copy from it says.)
     if ("temp" in d) return address({ var: `@${d.temp}` });
     if ("element" in d && isStack(d.element)) return stackOf(d.element) + 348;
+    if ("template" in d) {
+      const t = templates.get(d.template);
+      if (t === undefined) throw new Error(`no template ${d.template}`);
+      return t + 4 * d.word;
+    }
     if ("element" in d) {
       const l = lists.get(d.element);
       if (l === undefined) throw new Error(`the graph reads ${d.element} without saying so`);
@@ -211,7 +236,7 @@ export function layout(input: LayoutInput): OwnMap {
   const encoded = triggers.map((t) => ({
     t,
     conds: t.conds.map((c) => ({ c, player: epd(address(c.dword)) })),
-    acts: t.acts.map((a) => ({ a, player: a.display !== undefined ? 0 : epd(address(a.dword)), number: a.display !== undefined ? 0 : value(a.value) })),
+    acts: t.acts.map((a) => ({ a, player: a.display !== undefined || a.show !== undefined ? 0 : epd(address(a.dword)), number: a.display !== undefined || a.show !== undefined ? 0 : value(a.value) })),
   }));
   const size = next - base;
   const out = new Uint8Array(pad + size);
@@ -233,8 +258,9 @@ export function layout(input: LayoutInput): OwnMap {
     });
     acts.forEach(({ a, player, number }, k) => {
       const o = n + 328 + 32 * k;
-      if (a.display !== undefined) {
-        w32(o + 4, input.text(a.display));
+      if (a.display !== undefined || a.show !== undefined) {
+        if (a.show !== undefined && !input.template) throw new Error(`a printed text (${a.show}) with no string to show it by`);
+        w32(o + 4, a.show !== undefined ? input.template!(a.show) : input.text(a.display!));
         dv.setUint8(pad + o + 26 - base, 9);
         dv.setUint8(pad + o + 28 - base, 4);
         return;
@@ -250,6 +276,7 @@ export function layout(input: LayoutInput): OwnMap {
     w32(n + 2376, 4); // preserved
   });
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
+  for (const t of graph.templates ?? []) if (!input.templateAt?.has(t.id)) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));
   // Each cell trigger: Set Deaths, add (its destination and next pointer written by every routing), preserved.
   for (let k = 0; k < cellTriggers; k++) {
     const c = cellBase + 72 * k;
@@ -260,7 +287,7 @@ export function layout(input: LayoutInput): OwnMap {
   }
   const vars = new Map<string, number>([...cells].filter(([k]) => k.startsWith("var:")).map(([k, a]) => [k.slice(4), a]));
   routes.forEach((id, k) => vars.set(id, cellBase + 72 * k + 348));
-  return { payload: out, trig: startUp(owner, base), address: base, vars };
+  return { payload: out, trig: startUp(owner, base), address: base, vars, templates };
 }
 
 /**
