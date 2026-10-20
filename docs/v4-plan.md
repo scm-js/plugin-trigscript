@@ -3516,11 +3516,14 @@ the lifted game, and the probe plays the same in Remastered — and each better 
 1. Calls (below).
 2. Texts with values (4's digits), and texts made in the game.
 3. Arrays and the heap in the emitter, a store at any index included.
-4. Units: loops, fields, events, the queries scheduled (6, 7).
-5. Tasks, `async`, per-player programs, on the walk as the scheduler (2).
-6. Input (13).
-7. The map's own triggers kept beside the program (eudplib's stage 3), or built into it.
-8. `python/trigscript.py` (7,100 lines) and Pyodide deleted: the own-loader probe builds in 0.7 s against 5.3.
+4. Numbers the emitter leaves to the Python side today: a product of two values, a quotient and a remainder (by a
+   constant too), `&` `|` `^` of two values or with a constant, a shift by a value — eudplib's `f_mul`, `f_div` and
+   bit functions. A map of our own refuses all of them now (found 2026-10-19, writing the arrays probe).
+5. Units: loops, fields, events, the queries scheduled (6, 7).
+6. Tasks, `async`, per-player programs, on the walk as the scheduler (2).
+7. Input (13).
+8. The map's own triggers kept beside the program (eudplib's stage 3), or built into it.
+9. `python/trigscript.py` (7,100 lines) and Pyodide deleted: the own-loader probe builds in 0.7 s against 5.3.
 
 ### Calls on our own backend (2026-10-19)
 
@@ -3687,6 +3690,66 @@ the game.
   game — the Korean too — with nothing drawn where the 0x0D are, in Remastered's graphics and, after F5, in Classic's.
 
 Not yet: a fixed number printed (`3.25`), a player's name or colour, a text of the program's; `position: "center"`.
+
+### Arrays on our own backend (2026-10-19)
+
+Step 3 of the way off eudplib, its first half: arrays of a fixed length — of numbers and of booleans, windows on them
+(a grid's rows), lists known when the map is built — in a map of our own. Growing arrays, the heap, are the second.
+
+- **A region of cell triggers for each array**, laid out after the triggers as the stacks are: eudplib's EUDVArray's
+  cells, 72 bytes apart and overlapped, each cell's number at +348. A window is its array from an offset.
+- **A store is one action** — Set Deaths, its destination a place of the index (the first cell's EPD plus 18 a cell),
+  its number a place of the value — under a condition that the index is inside the array, read from 0 up.
+- **A read into a variable is a jump into the cell**: one trigger points the cell's action at the variable and its
+  next pointer back, and goes to it — the three a place of the index — and the cell adds its number in. Straight into
+  the variable when it has no other place; otherwise into a scratch cell copied into its places.
+- **A read in a test is a condition**: the cell against a constant, read through the condition's player field, which
+  is a place of the index — `if (!seen[n])` is one trigger. A signed comparison is the ranges of bits it holds for: one
+  or two conditions, or two triggers either side of the sign. The index is tested inside first, in the same trigger or
+  one before it, so a cell past the end is never read (the game stops at the first condition that fails); outside, a
+  cell reads 0, as on the Python side.
+- **What the value ranges know** (`compiler/ranges.ts`, as the Python side takes it): an index known to be inside is
+  not tested, and a store then shares its trigger with the writes after it — `while (m < 2000) { big[m] = true; m +=
+  n; }` is two triggers a turn: the loop's test, and one with the store, the add and the index's places. A read moved
+  ahead of what decides whether it runs (a later part of `&&` or `||`, a value worked out once ahead of a loop) is
+  tested still, since a range known from those parts does not hold there.
+- **The index's own places**: the store's destination, the jump's fields and the condition's player field are places
+  of the index variable itself, kept by each write of it. A variable whose places would pass a trigger's worth (64)
+  is copied by the plan instead, and read where it is used; the fields then read a variable of the emitter's own
+  written just before. That is for the few that need it: along a run of variables each set from the one before
+  (values that functions give back, in the random programs with functions that call themselves), places multiplied
+  into the thousands — copies into 4,600 places at a call's way back, the test of those programs taking 100 s.
+
+Fixed on the way: `==` and `!=` compare the 32 bits as they are, signed or not — `x == 0` is one condition on the
+variable's own cell, where it was two on a copy with the sign moved; a trigger that does nothing is dropped; a cell
+read before a call that stores into its array reads what was there, as JavaScript does (`a[i] + f()` read `f`'s
+store before); a part of a loop's test that reads a cell is tested every turn (it was tested once on the way in when
+nothing else in it changed, and the loop ran on past it).
+
+| `probes/own-arrays.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| Stores and reads at an index, a grid's rows (frame 2) | 0.010 ms | 1.085 ms |
+| Past the ends; a sieve of booleans to 200 (frame 6) | 0.055 ms | 0.200 ms |
+| A function reading an array; a sieve to 2000 (frame 14) | **0.581 ms** | 2.541 ms |
+| Reads in order; cells in tests (frame 18) | 0.004 ms | 0.015 ms |
+
+Frame 14 came to 1.665 ms first: every index went through a copy of its own, and a cell in a test was read into a
+variable — four triggers a turn of the sieve's inner loop, eleven of the outer. 0.770 ms with the ranges, the index's
+own places and the read straight in; 0.581 ms with the test as a condition: two triggers a turn of the inner loop,
+three of the outer.
+
+Checked: random programs with arrays of numbers and of booleans, stored at and read in values and tests, in loops,
+functions and functions that call themselves — as written, as graphs and from the laid-out bytes, every other one with
+the value ranges a run of it shows (about 4,500 indexes); `probes/own-arrays.ts`: its twelve lines the same at the
+same frames built both ways, every one ok; game-check: 4,731 accesses, none ending the game; the calls, recursion,
+print and own-loader probes still all ok, recursion's frame 11.53 ms (11.64 before). The suite: 1231 pass.
+
+- **Played in Remastered (2026-10-19):** `trigscript-own-arrays.scx` printed all twelve lines word for word as the
+  lifted game, in its groups four game frames apart, every one ok; the group of the two sieves came 150 ms after the
+  one before (the others 150 to 183 ms), no stutter seen.
+
+Not yet: arrays that grow (`push`, `pop`, a length set: the heap), arrays of texts, `u8` and `u16` arrays, a task's
+arrays; numbers (step 4) — the probe's first store was `board[i] = i * i + 1`, refused.
 
 ## Part C — the game, pushed
 

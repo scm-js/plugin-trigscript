@@ -42,7 +42,9 @@ export type Dword =
   /** A scratch cell of the graph's (a variable of the Python side's it makes): where a cell's value comes out. */
   | { temp: string }
   /** The `word`-th dword of a printed text's template (`Graph.templates`), which the layout puts on a dword's start. */
-  | { template: string; word: number };
+  | { template: string; word: number }
+  /** A cell of one of a map of our own's regions of cell triggers (`Graph.cells`), by its index: its number. */
+  | { cell: string; index: number };
 
 /**
  * One of the Python side's fixed-point functions (part 3): a product or a quotient of two variables, or of one and a
@@ -132,26 +134,25 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
  * `arrays`: the arrays whose cells the graph reads where they are, each with the EPD between one cell's value and the
  * next's as the emitter laid the reads out (the Python side's EUDVArray's 18, an EUDArray's 1): the Python side checks
  * it is so.
- */
-/**
- * `stacks`: a map of our own keeps the frames of each function that calls itself on a stack of its own (an id starting
- * `STACK`), this many cells: cell triggers as a routed variable's (`layout.ts`), each holding its value in the number
- * of its one action, which adds it where its destination says and goes where its next pointer says.
- */
-/**
+ *
+ * `cells`: a map of our own keeps its arrays — and the frames of each function that calls itself, a stack each (an id
+ * starting `STACK`) — in regions of cell triggers as a routed variable's (`layout.ts`), this many cells each: a cell
+ * holds its value in the number of its one action, which adds it where its destination says and goes where its next
+ * pointer says. `values`: what the cells hold when the map starts (a list the script made when it was built).
+ *
  * `templates`: the texts a map of our own prints with values in them, each its bytes as built — the text, and a field
  * of 12 bytes on a dword's start for each number, which the program fills before it shows the text (0x0D, which draws
  * nothing, wherever nothing goes) — ending in a 0.
  */
-export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; stacks?: { id: string; cells: number }[]; templates?: { id: string; bytes: number[] }[] }
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[] }[] }
+export interface Region { id: string; cells: number; values?: number[] }
 
 /**
- * A stack, as an array's id (`STACK:` and the function's): `{ element }` is its first cell's number, `{ epdOf }` that
- * number's EPD (a cell's destination one less, its next pointer 86 less: +344 and +4 of the trigger where the number is
- * +348), `{ addrOf }` where the first cell's trigger is; a cell every 72 bytes.
+ * A region of cell triggers, as an array's id: `{ element }` is its first cell's number, `{ epdOf }` that number's EPD
+ * (a cell's destination one less, its next pointer 86 less: +344 and +4 of the trigger where the number is +348),
+ * `{ addrOf }` where the first cell's trigger is; a cell every 72 bytes. A stack's id starts with this.
  */
 export const STACK = "@stack";
-export const isStack = (id: string) => id.startsWith(STACK);
 
 /** The most conditions and actions a trigger of the game holds. */
 export const MOST_CONDS = 16;
