@@ -3575,8 +3575,8 @@ found what they left out; where a step moved, its old number is given.
     archive written in the plugin (mopaq bundled, or an addition to the plugin API); eudplib's fixes to the map
     (MTXM's null tiles, a desync by its source's account; UNIT flags; UNIx/UPGx/TECx defaults); the script's settings
     (stack depth, heap) passed; a refusal shown as a Problem while the script is typed, naming what it refuses; the
-    changeover (below); Magenta and TrigScript in one map; the payload's size (eudplib stacks its objects; ours
-    overlaps only cells, and recursion's payload is 1.87 MB).
+    changeover (below); Magenta and TrigScript in one map; the payload's size (triggers stacked as eudplib stacks
+    its objects: done early, below; what is left is the routing, a trigger a place).
 15. **The tools on maps of our own** (new). The trigger map and the variable map from the layout, in the rows scm-sim
     reads — A1 to A5, Find an EUD Error, cost by line, the desync detector and `sim.program()` name lines with them;
     `build-fixture` moved onto the own build (the `trigger()` records, Home/Away/Pixel, PEOPLE, the settings);
@@ -4528,9 +4528,8 @@ is laid out once, its address set at the program's start.
 | C: trimmed, in capitals, replaced, read back, searched (frame 3) | **1.291 ms** | 1.694 ms |
 | D: walked, sliced, made a character more each time, joined (frame 4) | **0.540 ms** | 0.840 ms |
 
-Size: 3,364 triggers and a 15 MB payload (390 KB as a file), against eudplib's 1.1 MB map — the library's functions
-are written out at every call by the front end, and every trigger takes its 2,408 bytes. Step 14's payload work
-(eudplib stacks its triggers' unused tails) and sharing a function written out the same way twice are where it goes.
+Size: 3,364 triggers and a 15 MB payload (390 KB as a file), against eudplib's 1.1 MB map: every trigger took its
+2,408 bytes. Stacked (next section), 1.3 MB.
 
 Checked: `probes/own-made-texts.ts` built both ways, the same lines at the same frames, every line ok; the 33 rows the
 step takes against the simulator, and every row of the ledger that takes (422 the same; the others actions the walker
@@ -4545,6 +4544,41 @@ in both builds — a gap of the front end's.
 
 *Open:* a text cut at 1,023 bytes counts its characters as its bytes (the Python side counts them again); the message
 the Python side shows once when a text is cut is not shown.
+
+### Triggers stacked (2026-10-20)
+
+Brought forward from step 14 (`compiler/backend/layout.ts`). The game reads no more of a trigger's 2,408 bytes than
+its next pointer, its conditions and actions, its flags and its current action — and, of the condition and the action
+after the last, two dwords each: the game asks whether one is switched off (its flags) before whether it is the last
+(its kind), in both loops (read in the lifted game's code; eudplib holds the whole condition and action after). The rest
+is room for other triggers, as eudplib's allocator stacks its objects (`stack_objects`): each trigger goes at the first
+place, from a little before where the last went (4,096 dwords), where none of the dwords it holds is another's; the
+variables' and data's dwords go in the gaps; a list or a template, after everything.
+
+- **Rows.** A doubling trigger walks a run of triggers by adding 2,408 to its next pointer, so those runs are laid out
+  one after another (`Graph.rows`, the emitter names each; `checkGraph` refuses a walker pointed at a trigger in none,
+  where the same trigger does not also move its addition aside to take its numbers out).
+- **Cell triggers** (routed variables, arrays, stacks) held only their kinds' dwords; they now hold the flags' too. A
+  cell's first condition's flags were the dword of the next action's kind of the cell five before (0), and its next
+  action's flags the current action's dword of the cell 28 before (players' bytes, 0) — right by luck, and the data
+  put in the gaps would have landed there.
+- **Checked:** every dword nobody holds filled with ones (`LayoutInput.free`, `OWN_FREE` for `build-own`): the 20
+  `probes/own-*.ts` in the lifted game print what they printed unstacked, at the same frames and costs; the emitter's
+  tests run every payload so, the walker asking a condition's and an action's flags first as the game does (with the
+  cells as they were, five of those tests fail). Remastered: `own-step8-made-filled.scx`, the made-texts probe filled so.
+
+| Probe | Payload before | Stacked | File before | Stacked |
+| --- | ---: | ---: | ---: | ---: |
+| `own-made-texts` | 15.2 MB | **1.33 MB** | 391 KB | **188 KB** |
+| `own-math` | 9.1 MB | **1.15 MB** | 259 KB | **154 KB** |
+| `own-fixed` | 5.0 MB | **389 KB** | 147 KB | **87 KB** |
+| `own-texts` | 2.3 MB | **229 KB** | 97 KB | **69 KB** |
+| `own-recursion` | 1.9 MB | **915 KB** | 78 KB | **64 KB** |
+| `own-game` | 479 KB | **28 KB** | 52 KB | **46 KB** |
+
+eudplib's build of `own-made-texts`: 894 KB of strings in a 1.1 MB scenario, 121 KB as a file (ours: 1.38 MB of
+strings, 1.65 MB scenario). What is left: about half the triggers are routing, a trigger for each place a variable is
+copied into (3,219 places in that probe) — fewer places is the next saving.
 
 ## Part C — the game, pushed
 

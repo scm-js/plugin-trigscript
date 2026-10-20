@@ -123,7 +123,7 @@ for (const t of graphs.flatMap((g) => g.templates ?? [])) {
   offsets.setUint32(4 * index, at - STRINGS, true);
   templateAt.set(t.id, at);
 }
-const own = layout({ runs: runs.map((run) => ({ graph: run.graph, owner: run.player })), players: players.slots, strings: strings.length, text: (t) => texts.get(t)!, arrays: values, template: (id) => templates.get(id)!, templateAt });
+const own = layout({ runs: runs.map((run) => ({ graph: run.graph, owner: run.player })), players: players.slots, strings: strings.length, text: (t) => texts.get(t)!, arrays: values, template: (id) => templates.get(id)!, templateAt, ...(process.env.OWN_FREE ? { free: Number(process.env.OWN_FREE) } : {}) });
 const withPayload = new Uint8Array(strings.length + own.payload.length);
 withPayload.set(strings);
 withPayload.set(own.payload, strings.length);

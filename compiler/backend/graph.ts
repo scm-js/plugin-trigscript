@@ -179,9 +179,12 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
  * `templates`: the texts a map of our own prints with values in them, each its bytes as built — the text, and a field
  * of 12 bytes on a dword's start for each number, which the program fills before it shows the text (0x0D, which draws
  * nothing, wherever nothing goes) — ending in a 0.
+ *
+ * `rows`: the runs of triggers a doubling trigger walks (`TRIGGER_BYTES`), each laid out one after another in its
+ * order, `TRIGGER_BYTES` apart. Every other trigger the layout puts where it fits (`layout.ts`).
  */
 /** (A template with `at` is the game's own memory there — the line a print at the centre of the screen is written into — and its bytes are written by the program, not laid out.) */
-export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number }[] }
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number }[]; rows?: string[][] }
 export interface Region { id: string; cells: number; values?: number[] }
 
 /**
@@ -192,9 +195,9 @@ export interface Region { id: string; cells: number; values?: number[] }
 export const STACK = "@stack";
 
 /**
- * A trigger's bytes in memory (layout.ts lays a map of our own's out one after another): a next pointer moved on by
- * this much goes to the trigger after the one it named — how a trigger walks a run of triggers it is run between
- * (`Emitter.product`, `Emitter.divide`).
+ * A trigger's bytes in memory: in a row of the graph's (`Graph.rows`, laid out one after another), a next pointer
+ * moved on by this much goes to the trigger after the one it named — how a trigger walks a run of triggers it is run
+ * between (`Emitter.product`, `Emitter.divide`).
  */
 export const TRIGGER_BYTES = 2408;
 
@@ -231,5 +234,18 @@ export function checkGraph(g: Graph): string[] {
     });
   }
   for (const e of g.entries) dword(e.into, `entry of ${e.from}`);
+  // (A trigger whose next pointer is moved on by a trigger's bytes walks a row: wherever it is pointed is in one —
+  // but where the trigger pointing it also moves where it adds, to take its numbers out, and goes on from there.)
+  const rowed = new Set((g.rows ?? []).flat());
+  for (const l of rowed) if (!labels.has(l)) out.push(`a row holds ${l}, which is not there`);
+  const walkers = new Set(g.triggers.flatMap((t) => t.acts.filter((a) => "at" in a.dword && a.dword.field === "next" && a.modifier === "add" && typeof a.value === "number" && a.value % TRIGGER_BYTES === 0).map((a) => (a.dword as { at: string }).at)));
+  for (const t of g.triggers) {
+    t.acts.forEach((a, k) => {
+      if (!("at" in a.dword) || a.dword.field !== "next" || !walkers.has(a.dword.at) || a.modifier !== "set" || typeof a.value !== "object" || !("label" in a.value)) return;
+      const W = a.dword.at;
+      if (t.acts.some((b) => "at" in b.dword && b.dword.at === W && typeof b.dword.field === "object" && "act" in b.dword.field && b.dword.field.part === "dest")) return;
+      if (!rowed.has(a.value.label)) out.push(`${t.label} action ${k}: points ${a.dword.at}, which walks a row, at ${a.value.label}, which is in none`);
+    });
+  }
   return out;
 }
