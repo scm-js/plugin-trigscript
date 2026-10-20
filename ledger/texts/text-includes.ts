@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text's includes
+// ledger: step 8, takes
 // Whether a text of the program has another in it: `s.includes("ed")`.
 program(() => {
   let n = 0;

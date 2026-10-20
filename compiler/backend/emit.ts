@@ -700,6 +700,11 @@ class Scope {
    */
   printed(p: TextPart): boolean {
     if (p.kind === "text") return true;
+    if (p.kind === "pick") {
+      if ((p.by.kind !== "var" && p.by.kind !== "const") || !p.cases.every((c) => c.when.kind === "const" && (!c.upTo || c.upTo.kind === "const")) || !this.lowers(p.by)) return this.no("a printed text picked by a value it does not lower");
+      this.num(p.by);
+      return true;
+    }
     if (p.kind !== "number" && p.kind !== "char") return this.no(`a printed ${p.kind === "value" ? "text of the program's" : p.kind === "name" ? "player's name" : "player's colour"}`);
     if (!this.lowers(p.expr)) return this.no("a printed value it does not lower");
     this.num(p.expr);
@@ -2214,6 +2219,12 @@ class Emitter {
       } else if (p.kind === "char") {
         values.push({ part: p, at: bytes.length });
         bytes.push(PAD);
+      } else if (p.kind === "pick") {
+        // A field as long as its longest text, on dwords of its own, each case's text written whole into it.
+        while (bytes.length % 4) bytes.push(PAD);
+        values.push({ part: p, at: bytes.length });
+        const most = Math.max(0, ...p.cases.map((c) => enc.encode(c.text).length));
+        bytes.push(...Array(4 * Math.ceil(most / 4)).fill(PAD));
       }
     }
     bytes.push(0);
@@ -2235,6 +2246,24 @@ class Emitter {
         this.goto(part.unsigned || f ? it.unsigned : it.signed);
         this.land(back);
         it.out.forEach((from, w) => this.open().items.push({ route: { from, into: [{ template: id, word: at / 4 + w }] } }));
+        continue;
+      }
+      if (part.kind === "pick") {
+        // For each case, a test of it and then its text's dwords, the field's padding after it, set.
+        const size = 4 * Math.ceil(Math.max(0, ...part.cases.map((c) => enc.encode(c.text).length)) / 4);
+        for (const c of part.cases) {
+          const text = [...enc.encode(c.text)];
+          while (text.length < size) text.push(PAD);
+          const words: Item[] = [];
+          for (let w = 0; 4 * w < size; w++) words.push({ act: { dword: { template: id, word: at / 4 + w }, modifier: "set", value: text.slice(4 * w, 4 * w + 4).reduce((n, b, j) => n + b * 2 ** (8 * j), 0) } });
+          const past = this.label("picked");
+          const is: BoolExpr = c.upTo
+            ? { kind: "and", items: [{ kind: "compare", op: ">=", left: part.by, right: c.when, at: this.at!, label: "" }, { kind: "compare", op: "<=", left: part.by, right: c.upTo, at: this.at!, label: "" }] }
+            : { kind: "compare", op: "==", left: part.by, right: c.when, at: this.at!, label: "" };
+          this.jump(is, false, past, this.at);
+          for (let i = 0; i < words.length; i += MOST_ACTS) this.push({ conds: [], items: words.slice(i, i + MOST_ACTS) });
+          this.land(past);
+        }
         continue;
       }
       if (part.kind !== "char") continue;

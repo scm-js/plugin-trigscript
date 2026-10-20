@@ -39,6 +39,7 @@ const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));
 const { parseScenario, serializeScenario, markDirty, setMapVersion } = await import(join(EDITOR, "src", "formats", "chk", "scenario.ts"));
 const { internString, patchPlayer, readPlayerSettings } = await import(join(EDITOR, "src", "editor", "settings.ts"));
+const { setString } = await import(join(EDITOR, "src", "formats", "chk", "sections", "strings.ts"));
 const { addUnits, applyUnitChanges, makeUnit, nextSerial } = await import(join(EDITOR, "src", "editor", "units.ts"));
 const loaded = await loadMap(new Uint8Array(readFileSync(map)));
 const scn = parseScenario(loaded.chk);
@@ -51,8 +52,14 @@ if (playersLine) for (const [slot, patch] of Object.entries(JSON.parse(playersLi
 // The map's players as the programs need them: the slots a human or a computer plays, and their forces.
 const settings = readPlayerSettings(scn) as { types: number[]; force: number[] };
 const players: MapPlayers = { slots: [0, 1, 2, 3, 4, 5, 6, 7].filter((p) => settings.types[p] === 5 || settings.types[p] === 6), forces: settings.force.slice(0, 8) };
-const lowered = emitOwn(r, players);
+// The texts the programs choose between while the game runs: the map's next strings, one after another, in the order
+// of their numbers (`compiler/backend/texts.ts`).
+const textBase = scn.strings.strings.length;
+const lowered = emitOwn(r, players, textBase);
 if (typeof lowered === "string") { console.error(`the emitter cannot lower this program: ${lowered}`); process.exit(1); }
+lowered.texts.forEach((text, i) => {
+  if (setString(scn.strings, 0, text) !== textBase + i) throw new Error("the pool of texts did not go into the map's strings one after another");
+});
 const { runs } = lowered;
 const graphs: Graph[] = runs.map((run) => run.graph);
 const emitted = performance.now();

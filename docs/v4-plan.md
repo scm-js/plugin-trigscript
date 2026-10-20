@@ -3552,7 +3552,10 @@ found what they left out; where a step moved, its old number is given.
    into every player's list with a once-a-tick guard, as eudplib's runner is, so an empty slot or a player who leaves
    does not stop the other players' programs (a program whose owner leaves stops, as the Python side's does) — both
    played, the leaver in a game of two.
-8. **Texts as values** (was half of 2). Text variables and arrays; compared, searched, measured, repeated, split and
+8. **Texts as values** (was half of 2). Part 1 ✓: texts known when built, chosen while the game runs — "Texts known
+   when built on our own backend". Part 2: texts made while the game runs, a text in memory (where it is, its length)
+   and the blocks it is kept in. Part 3: what stands on part 2.
+   Text variables and arrays; compared, searched, measured, repeated, split and
    joined; templates and JSX made while the game runs; `name()` and `color()` in a print; `ui.lines`.
 9. **Arrays that grow, and what stands on the heap** (was half of 3). `push`, `pop`, a length set, `through`, `Map`
    and `Set`, a task's arrays, an array in a function that calls itself (the front end makes every one of those
@@ -3892,7 +3895,7 @@ Bad Apple: 5, 6, 7, as the fog library. The bullets: 5 (a death count read), 9. 
 
 ### The ledger (2026-10-19)
 
-`ledger/` holds a script for each feature of the language and the library — 837 of them, in folders by area — whose
+`ledger/` holds a script for each feature of the language and the library — 840 of them, in folders by area — whose
 first line says which step of the way off eudplib makes it a map of our own's, and whether a map of our own takes it
 today, in the words of its refusal:
 
@@ -3917,7 +3920,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 5 The game's conditions and actions | 197 of 198 |
 | 6 The game's memory | 50 of 50 |
 | 7 Programs, owners and players | 27 of 28 |
-| 8 Texts as values | 0 of 43 |
+| 8 Texts as values | 18 of 46 |
 | 9 Arrays that grow, the heap | 0 of 26 |
 | 10 Units | 0 of 99 |
 | 11 Tasks, `async` and errors | 0 of 44 |
@@ -4460,6 +4463,36 @@ first trigger is kept when it goes elsewhere than the one after it; `tests/emitt
 *Open:* `let total = shared(0)` in a per-player program is set to 0 again by each run's declaration, so a count the
 runs add to in the same frame ends at 1, not the number of runs — in both builds and the simulator alike. Whether a
 `shared` declaration should set its value once, at the first run, is a question of the language.
+
+### Texts known when built on our own backend (2026-10-20)
+
+Step 8, part 1 (`compiler/backend/texts.ts`, a pass over each program's IR before the emitter). A text that is, whatever
+happens in the game, one of a few the script wrote — a `?:` of texts, a list of them read at a value, a variable only
+ever given such texts (`VarDecl.text` "id", now a number), a slice or a character of one at a value — is a number in a
+map of our own: its place in the script's pool of texts. The pool goes into the map's strings one after another from the
+next free one (`build-own`: `setString` appends), sorted as the simulator compares texts. Nothing of such a text is ever
+copied, where eudplib's build copies its bytes into a buffer every time:
+
+- **Printed alone**: Display Text of the string its number names — the action's text field from the value (step 5's
+  fields from values), one action. Likewise an action's text (a transmission's).
+- **In a printed text**: printed once for each text it can be under a test of which, when there are four ways or
+  fewer; otherwise a `pick` part (new in `TextPart`, made only by this pass): a field as long as its longest text, and
+  for each text — each run of places with the same text, for a table's — a test and the text's dwords set whole.
+- **Compared**: as numbers, `===` and `<` alike (the pool is in the texts' order).
+- **What a function of one gives** — its length, `includes` / `startsWith` / `endsWith`, `indexOf`, a character's
+  number, a slice or a character: worked out when built for each text it can be (a test of which, for each), or, for
+  a text known when built at a variable (`s[i]`, `s.slice(i, i + 4)`), a table of what it gives at each value of the
+  variable — as far as it changes, within the variable's range — read at the variable held between its ends. A
+  scratch variable the front end declared just before (`(index)` = `i + 4`) is seen through to the one it reads.
+
+| `probes/own-texts.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| A–C: chosen texts printed, compared, measured, searched, sliced (frame 2) | **0.012 ms** | 1.309 ms |
+| D–F: a switch on a text variable, many choices in a print, a transmission (frame 3) | **0.005 ms** | 0.145 ms |
+
+Checked: `probes/own-texts.ts` built both ways, the same lines at the same frames, every line ok; the 18 rows the part
+takes against the simulator, and edge cases besides (order, an index past either end, a negative start, the empty text,
+characters of three bytes, a variable given another's texts): the same; `tests/ownGame.test.ts`.
 
 ## Part C — the game, pushed
 

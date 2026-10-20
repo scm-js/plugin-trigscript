@@ -13,6 +13,7 @@ import type { CompileResult } from "../compiler";
 import type { ArrayDecl, FuncDecl, Program, VarDecl } from "../ir";
 import { ANY_PLAYERS, emitBody, groupSlots, type MapPlayers } from "./emit";
 import type { Act, Cond, Dword, Graph, Num, Trigger, Value } from "./graph";
+import { TextPool, knownTexts } from "./texts";
 
 export interface OwnRun {
   /** The program's index among the script's. */
@@ -27,6 +28,11 @@ export interface Own {
   runs: OwnRun[];
   /** The lists the runs read where they are (an array the script made when it was built), by the id a graph names. */
   values: Map<string, number[]>;
+  /**
+   * The texts known when built that the programs choose between while the game runs (`texts.ts`), in the order of
+   * their numbers: the map's strings from `textBase` on are to be these, one after another.
+   */
+  texts: string[];
 }
 
 /** The players a program runs for, as the Python side's `owner_slots`: each owner's slots, in the order given. */
@@ -41,12 +47,20 @@ function ownerSlots(program: Program, players: MapPlayers): number[] | string {
   return slots.length ? slots : "no human or computer player of this map is among the program's owners";
 }
 
-export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, players: MapPlayers = ANY_PLAYERS): Own | string {
+/**
+ * `textBase`: the string the first of `Own.texts` is to be among the map's (the next one the map adds; 1 when there is
+ * no map).
+ */
+export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, players: MapPlayers = ANY_PLAYERS, textBase = 1): Own | string {
   // (A map of our own is built without the map's triggers, so `trigger()` records would be lost without a word.)
   if (r.triggers.length) return `a map of our own keeps no trigger() or hyperTriggers() records yet; this script has ${r.triggers.length}`;
   const runs: OwnRun[] = [];
   const values = new Map<string, number[]>();
-  for (const [k, program] of r.ir.entries()) {
+  // Every program's texts known when built first: the pool is numbered once they are all in, before any is lowered.
+  const pool = new TextPool();
+  const programs = r.ir.map((p) => knownTexts(p, pool, textBase));
+  const texts = pool.finish();
+  for (const [k, program] of programs.entries()) {
     const slots = ownerSlots(program, players);
     if (typeof slots === "string") return slots;
     const decls = new Map<string, VarDecl>();
@@ -80,7 +94,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
     }
   }
   if (!runs.length) return "a script with no program";
-  return { programs: r.ir, runs, values };
+  return { programs, runs, values, texts };
 }
 
 /**

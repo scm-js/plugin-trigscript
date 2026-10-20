@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a search in a text
+// ledger: step 8, takes
 // Where a text is found in another, from a place that changes while the game runs, −1 when it is not:
 // `"abcabc".indexOf("c", i)`, and `lastIndexOf`.
 program(() => {

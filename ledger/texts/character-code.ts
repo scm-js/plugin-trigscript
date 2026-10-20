@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a character's code
+// ledger: step 8, takes
 // The code of a character of a text, at a place that changes while the game runs: `"Marine".charCodeAt(i)`.
 program(() => {
   let i = 0;

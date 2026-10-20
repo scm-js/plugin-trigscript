@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text's startsWith
+// ledger: step 8, takes
 // Whether a text of the program begins or ends with another: `startsWith`, `endsWith`.
 program(() => {
   let n = 0;

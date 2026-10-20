@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text kept in a variable
+// ledger: step 8, takes
 // `switch` on a text the program holds, its cases texts.
 program(() => {
   let n = 0;

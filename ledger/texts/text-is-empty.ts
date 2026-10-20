@@ -1,4 +1,4 @@
-// ledger: step 8, refused: two texts compared
+// ledger: step 8, takes
 // Whether a text is empty, by testing it: `if (s)`.
 program(() => {
   let n = 0;

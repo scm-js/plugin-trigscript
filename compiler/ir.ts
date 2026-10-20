@@ -455,7 +455,13 @@ export type TextPart =
   /** A text of the program: a variable's, a function's result. */
   | { kind: "value"; text: TextExpr }
   /** One byte, the number's low eight bits: a colour code chosen when the map is played. 0 writes nothing. */
-  | { kind: "char"; expr: NumExpr };
+  | { kind: "char"; expr: NumExpr }
+  /**
+   * The text of the case `by` equals: only a map of our own makes it (`compiler/backend/texts.ts`), for a text known
+   * when built chosen while the game runs; `by` is a variable or a constant, always one case's `when` or between it
+   * and its `upTo`.
+   */
+  | { kind: "pick"; by: NumExpr; cases: { when: NumExpr; upTo?: NumExpr; text: string }[] };
 
 /** A field of an action filled in by the program: `bits` 8 is a unit count (done once per unit), 16 a unit type, 32 an amount. */
 export interface ActionVariable { field: keyof ActionRecord; bits: 8 | 16 | 32; name: string; expr: NumExpr }
