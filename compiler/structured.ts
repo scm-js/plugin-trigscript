@@ -806,8 +806,9 @@ export class Structured {
       }
       const obj = sub(e.expression);
       if (!obj || obj.value === null || obj.value === undefined) return undefined;
-      // A field of the unit selected (\`local.selected.hp\`) is read when the map is played, as any unit's is.
-      if (isSelected(obj.value) || isSelectionCount(obj.value)) return undefined;
+      // A field of the unit selected (\`local.selected.hp\`) is read when the map is played, as any unit's is — and so is
+      // one of a unit picked (`first(…)?.hp`), which, worked out here, was the pick's own field: undefined.
+      if (isSelected(obj.value) || isSelectionCount(obj.value) || isUnitPick(obj.value)) return undefined;
       return { value: readField(obj.value, e.name.text) };
     }
     if (ts.isElementAccessExpression(e)) {

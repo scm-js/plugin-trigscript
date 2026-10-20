@@ -128,6 +128,14 @@ describe("events, second part: killed, order, morphed, at the top of a script", 
     expect(printed(s)).toEqual(["1:died"]);
   });
 
+  it("the action order() is not the event on.order: its arguments are worked out when the script is built", () => {
+    // (It was refused inside a program — "A call's arguments must be known" — the event's name taken for the action's.)
+    const r = compile(`order(P1, units.TerranMarine, HOME, HOME, "attack"); const u = first({ owner: P1 }); if (u) u.order("move", HOME);`);
+    const [action, , test] = r.ir[0].body as Stmt[];
+    expect(action).toMatchObject({ kind: "action", record: { type: ActionType.Order, modifier: 2, location: 1, target: 1 } });
+    expect(test).toMatchObject({ kind: "if", then: [{ kind: "unitDo", verb: { do: "order", order: "move" } }] });
+  });
+
   it("on.order hands the unit, the order it took up and the one it had; a filter on the order", () => {
     const r = compile(`
       on.order((u, order, was) => { print(\`\${u.type} \${was} -> \${order}\`); });

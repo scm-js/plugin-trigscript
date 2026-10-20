@@ -13,9 +13,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
-import { emitBody } from "../compiler/backend/emit";
+import { emitOwn } from "../compiler/backend/own";
 import { STRINGS, layout } from "../compiler/backend/layout";
-import type { ArrayDecl, FuncDecl, VarDecl } from "../compiler/ir";
 import type { Graph } from "../compiler/backend/graph";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
@@ -30,27 +29,10 @@ if (!existsSync(map)) { console.error(`no map at ${map}`); process.exit(2); }
 
 const r = compileScript(ts, scriptFiles(scriptPath), defaultScriptNames(), { lib: defaultLib(), emitter: false });
 if (r.diagnostics.length) { for (const d of r.diagnostics) console.error(`${d.file}:${d.line}:${d.column} ${d.message}`); process.exit(1); }
-if (r.ir.length !== 1) { console.error(`a map of our own has one program; this script has ${r.ir.length}`); process.exit(1); }
-const program = r.ir[0];
-if (program.perPlayer) { console.error("a map of our own has no per-player program yet"); process.exit(1); }
-// (The map's triggers are cleared below, so `trigger()` records would be lost without a word.)
-if (r.triggers.length) { console.error(`a map of our own keeps no trigger() records yet; this script has ${r.triggers.length}`); process.exit(1); }
 const compiled = performance.now();
-
-const decls = new Map<string, VarDecl>();
-const collect = (x: unknown): void => {
-  if (Array.isArray(x)) x.forEach(collect);
-  else if (x && typeof x === "object") {
-    const o = x as Record<string, unknown>;
-    if (o.decl && typeof o.decl === "object" && "id" in (o.decl as object)) decls.set((o.decl as VarDecl).id, o.decl as VarDecl);
-    for (const v of Object.values(o)) if (v && typeof v === "object") collect(v);
-  }
-};
-collect(program);
-const functions = new Map<string, FuncDecl>((program.functions ?? []).map((f) => [f.id, f]));
-const arrays = new Map<string, ArrayDecl>((program.arrays ?? []).map((a) => [a.id, a]));
-const graph = emitBody(program.body, decls, "own", functions, arrays);
-if (typeof graph === "string") { console.error(`the emitter cannot lower this program: ${graph}`); process.exit(1); }
+const lowered = emitOwn(r);
+if (typeof lowered === "string") { console.error(`the emitter cannot lower this program: ${lowered}`); process.exit(1); }
+const { program, graph } = lowered;
 const emitted = performance.now();
 
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));

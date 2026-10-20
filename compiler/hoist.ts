@@ -151,6 +151,20 @@ export function clockMessage(call: string): string {
 
 /** The library calls the game answers: never hoisted, the structured compiler lowers them. */
 const GAME_CALLS = new Set(["random", "sleep", "nextFrame", "until", "sync", "select", "start", "rose", "once", "shared", "lines", "centerLocation", ...ON_EVENTS]);
+const EVENT_NAMES: ReadonlySet<string> = new Set(ON_EVENTS);
+/**
+ * Whether a library name is one of `GAME_CALLS`. An event's name is the game's as `on.order(…)` or a unit's
+ * `u.order(…)`, not as the action of the same name, `order(…)`, a function of the library's own whose arguments the
+ * script works out as any action's.
+ */
+function answeredByGame(ts: typeof TS, checker: TS.TypeChecker, id: TS.Identifier, lib: string): boolean {
+  if (!GAME_CALLS.has(lib)) return false;
+  if (!EVENT_NAMES.has(lib)) return true;
+  let sym = checker.getSymbolAtLocation(id);
+  if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+  const decl = sym?.valueDeclaration ?? sym?.declarations?.[0];
+  return !(decl && ts.isFunctionDeclaration(decl));
+}
 /**
  * Calls that read the game — `minerals(P1)`, and a comparing condition without its comparison
  * (`deaths(P1, unit)`) — or show text a program fills in (`print`). The call is never a
@@ -311,7 +325,7 @@ export function usesGame(ts: typeof TS, checker: TS.TypeChecker, fn: TS.Node, se
     if (clockCall(ts, checker, n)) { found = true; return; }
     if (ts.isIdentifier(n)) {
       const lib = libraryName(ts, checker, n);
-      if (lib && (GAME_CALLS.has(lib) || READ_CALLS.has(lib) || READ_ARITY.has(lib) || GAME_CELL_ROOTS.has(lib))) { found = true; return; }
+      if (lib && (answeredByGame(ts, checker, n, lib) || READ_CALLS.has(lib) || READ_ARITY.has(lib) || GAME_CELL_ROOTS.has(lib))) { found = true; return; }
       const decl = declarationOf(ts, checker, n);
       const other = decl && decl !== fn && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl) ?? (classMember(ts, decl) ? decl : undefined));
       if (other && usesGame(ts, checker, other, seen)) { found = true; return; }
@@ -577,7 +591,7 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       const property = ts.isPropertyAccessExpression(p) && p.name === n;
       if ((ts.isPropertyAssignment(p) && p.name === n) || (ts.isMethodDeclaration(p) && p.name === n) || ts.isQualifiedName(p)) return;
       const lib = libraryName(ts, checker, n);
-      if (lib && GAME_CALLS.has(lib)) { ok = false; return; }
+      if (lib && answeredByGame(ts, checker, n, lib)) { ok = false; return; }
       if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p.parent) && p.parent.expression === p && property) { ok = false; return; }
       if (lib && FORBIDDEN_INSIDE.has(lib) && ts.isCallExpression(p) && p.expression === n) { ok = false; return; }
       if (property) return;
@@ -679,7 +693,7 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       let callee: TS.Expression = e.expression;
       while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
       if (isTaskFunction(ts, checker, callee)) callback(callee, items);
-      else if (!lib || !GAME_CALLS.has(lib)) value(ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) ? e.expression.expression : e.expression, items);
+      else if (!lib || !answeredByGame(ts, checker, ts.isPropertyAccessExpression(callee) ? callee.name as TS.Identifier : callee as TS.Identifier, lib)) value(ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) ? e.expression.expression : e.expression, items);
       for (const a of e.arguments ?? []) {
         let fn: TS.Expression = a;
         while (ts.isParenthesizedExpression(fn)) fn = fn.expression;

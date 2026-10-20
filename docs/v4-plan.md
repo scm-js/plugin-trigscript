@@ -3849,7 +3849,10 @@ clears the map's triggers: refused now.
 **Why the arithmetic stayed hidden.** Most refusals read `a assign it does not lower (no reason given), line N`:
 `Scope.test()` drops the reasons `bool()` gives, `lowers()` and `withCells()` give none, and `why ||=` keeps an
 earlier reason that is not the one. `a * b`, `a / 4`, `random(6)` and `minerals(P1)` were all refused in the same
-words. Step 14 asks for a refusal that names what it refuses; the ledger (below) asks for it to be right.
+words. Step 14 asks for a refusal that names what it refuses; the ledger (below) asks for it to be right. Since the
+ledger, a refusal names the first part of the statement that the emitter never takes (`unlowered` in `emit.ts`) and
+its line — "a product of two values, line 51", "the action Set Resources, line 10", "a write of unit.sight, line 550",
+"a unit's hp" — and falls back on the checks' own reason, now kept statement by statement.
 
 **Smaller things**, to fix inside the step that meets them:
 - A boolean `?:` is refused, with constants on both sides too (`Rewriter.cond` has no case for it).
@@ -3872,10 +3875,84 @@ Bad Apple: 5, 6, 7, as the fog library. The bullets: 5 (a death count read), 9. 
 - *Magenta.* It keeps plugin-eudplib alive. Until it builds on the own layout, a map with both could have TrigScript's
   program built into Magenta's eudplib build, or refuse the pair.
 
-**The ledger, so the list stays whole.** A script for each feature — the audit's 230 are the start — each with its
-step and whether a map of our own takes it, run by a test in `tests/`. It fails when a script's answer changes, and
-when a kind of the IR or a name the library exports has no row. A step is done when its rows say so. Proposed as the
-first thing before step 4.
+**The ledger, so the list stays whole.** Built before step 4: see the next section.
+
+### The ledger (2026-10-19)
+
+`ledger/` holds a script for each feature of the language and the library — 831 of them, in folders by area — whose
+first line says which step of the way off eudplib makes it a map of our own's, and whether a map of our own takes it
+today, in the words of its refusal:
+
+    // ledger: step 4, refused: a product of two values
+    // ledger: step 1, takes
+
+`tests/ledger.test.ts` compiles each one as the editor does and gives it to `emitOwn` (`compiler/backend/own.ts`, the
+checks `build-own` makes, now shared); it fails when a first line no longer says what happens, and when a kind of the IR
+(129, less six that never survive the front end), a name a script has from the library, a member of `on`, `ui`,
+`memory`, `local`, a unit, a set of units or a task, or an export of a module of the standard library (340 names in
+all) is in no script. When a step lands, `npx tsx scripts/ledger.mts --write` writes the first lines anew and the diff
+is the step's account; `npx tsx scripts/ledger.mts` prints the table, `--check <files>` looks at a few, `--missing`
+lists what no script reaches. A step is done when its scripts say so.
+
+| Step | Taken today |
+| --- | ---: |
+| 0 The start | 157 of 158 |
+| 1 Calls and recursion | 33 of 33 |
+| 2 Texts with numbers | 6 of 6 |
+| 3 Arrays of a fixed length | 53 of 54 |
+| 4 Numbers | 0 of 59 |
+| 5 The game's conditions and actions | 0 of 193 |
+| 6 The game's memory | 0 of 49 |
+| 7 Programs, owners and players | 1 of 22 |
+| 8 Texts as values | 0 of 43 |
+| 9 Arrays that grow, the heap | 0 of 27 |
+| 10 Units | 0 of 99 |
+| 11 Tasks, `async` and errors | 0 of 44 |
+| 12 Input | 0 of 31 |
+| 13 The map's own triggers | 0 of 13 |
+
+Two steps called done are not quite: a `?:` of two booleans (step 0) and a cell read at a shifted index, `xs[a >> 1]`
+(step 3 — the store there and `const i = a >> 1; xs[i]` are taken). Every script a map of our own takes was also run
+from its laid-out bytes against the simulator — the numbers, arrays, texts and language scripts, and about forty edge
+cases besides (signs of `>>`, `u32` printed and compared, wrap-around, reads past the ends, negative indexes): all
+printed the same. The README's reference to the language predates TrigScript 4 (it says `try` and `async` are missing):
+the ledger is the list it can be written again from at 4.0.
+
+**Found while writing it**, in the front end — both builds — unless said:
+
+*Fixed with the ledger:*
+- A field or flag read straight off a pick was worked out when the script was built, as `undefined`:
+  `` print(`${first(…)?.hp}`) `` printed "undefined", `if (first(…)?.cloaked)` was nothing at all, and
+  `n = first(…)?.hp ?? 5` was `n = 5`. Now a read of the game's, as `u.hp` is (`tests/units.test.ts`); a `??` after
+  it is a compile error, as after `u?.hp` (below).
+- The action `order(…)` did not compile inside a program: `on.order`'s name was taken for it, and its arguments were
+  never worked out (`tests/events.test.ts`).
+- `music.loop(song)` never compiled — the loop showed no wait of its own (`tests/music.test.ts`).
+- A map of our own refused a print to the owner named by its slot (`{ to: P1 }` in P1's program), and took a program
+  owned by P9 to P12, whose triggers the game does not run — refused now (to be confirmed in the game).
+
+*Open:*
+- **Built wrong without a word:** a function written outside the program that keeps a state and is called inside it
+  (`` const next = counter(); while (…) print(`${next()}`) ``) is worked out once when the script is built:
+  1, 1, 1 for 1, 2, 3. Kept out of the ledger until it is refused or right.
+- **Built wrong without a word:** `order(…, orders.Move)` type-checks (`OrderKind | number`) and makes an Order action
+  of modifier 6; the action knows move, patrol and attack (0, 1, 2).
+- `displayText(text, always)` made a print loses its flag — to check against the flags a print gives Display Text.
+- `disabled(…)` inside a program is neither refused nor said: a disabled condition in an `if` holds, as in a trigger.
+  `preserve()` and `preserveTrigger()` there are dropped (every program is preserved), also without a word.
+- False errors: `n++` used as a value in a loop's body ("This loop's condition never changes" — `checkSleeps` does not
+  see writes inside expressions or calls); a comparison passed as a boolean argument (`step(n, turns < 2)`); a `switch`
+  on a text known when built; `?:` between two closures; an arrow using `this` inside a method (a JavaScript exception
+  as the message); `first(…)?.order(…)` on a pick; `u?.hp ?? 0`; `await sleep(…).then(() => 7)`.
+- `return` at the top of a program is "return outside a function", and `trigscript/cutscene`'s own example uses it (and
+  `first(unitsAt(…))`, which `first` does not take).
+- Not in a program, against JavaScript: `~a`, `**`, `Math.pow`, `Math.sign`, `Math.log2`, `fill(v, start, end)`,
+  `reduce` with no first value. A `const HALF = 7 / 2` worked out when built is 3.5, a fixed number; the same `7 / 2` in
+  the game is 3.
+- A map of our own: `displayText("known text")` is refused where `print("known text")` is taken (step 5's first);
+  JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
+  `a >> 0` is refused where `a >> 1` to `a >> 31` are taken; `Math.tan` and `Math.hypot` are refused as what they
+  become (`Math.sin`, a product).
 
 ## Part C — the game, pushed
 

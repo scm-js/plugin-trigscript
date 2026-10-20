@@ -21,6 +21,7 @@
 import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type VarDecl, type At } from "../ir";
 import { PACK_FROM } from "../eud";
 import { PlayerGroup } from "../../vendor/triggers";
+import { actionDef, conditionDef } from "../../vendor/triggerDefs";
 import { END, MOST_ACTS, MOST_CONDS, STACK, checkGraph, nextOf, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
@@ -105,6 +106,184 @@ function side(e: NumExpr): Side | null {
   return null;
 }
 
+// ── what a map of our own refuses, said ──
+
+/** Why an array is not one a map of our own keeps (`nativeArray`), in a script's words. */
+function arrayWhy(a: ArrayDecl): string | undefined {
+  if (a.texts) return "an array of texts";
+  if (a.dynamic || a.through) return "an array that grows";
+  if (a.task !== undefined) return "an array of a task's";
+  if (a.bits) return `a u${a.bits} array`;
+  if (a.kind !== "number" && a.kind !== "boolean") return `an array of ${a.kind}s`;
+  return undefined;
+}
+
+/**
+ * The first thing in a statement a map of our own refused that its emitter never takes, in a script's words: the
+ * reason a refusal gives when the checks that refused it gave none ("a product of two values", "the action Create
+ * Unit"). Inner parts before the whole, in the order they are written; undefined when every part is one the emitter
+ * takes somewhere, and the reason lies in how they are put together.
+ */
+export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<string, ArrayDecl>): string | undefined {
+  const variable = (id: string): string | undefined => {
+    const d = decls.get(id);
+    if (!d) return undefined;
+    if (d.kind === "unit") return "a unit kept in a variable";
+    // (A program with `try` or `throw` keeps the message of the error in flight: what it is refused for is the error.)
+    if (d.kind === "text") return d.name === "(error message)" ? "an error thrown or caught (try, throw)" : d.name.startsWith("(") ? "a text made while the game runs" : "a text kept in a variable";
+    if (d.bits) return `a u${d.bits} variable`;
+    if (d.task !== undefined) return "a variable of a task's";
+    if (d.held) return "a variable a closure keeps";
+    return undefined;
+  };
+  const array = (id: string): string | undefined => {
+    const a = arrays.get(id);
+    return a && arrayWhy(a);
+  };
+  const plainSide = (e: NumExpr): boolean => linear(e) !== null || e.kind === "element";
+  const isConst = (e: NumExpr): boolean => linear(e)?.terms.length === 0;
+  const binary = (e: Extract<NumExpr, { kind: "binary" }>): string | undefined => {
+    if (linear(e) || !plainSide(e.left) || !plainSide(e.right)) return undefined;
+    const byConst = isConst(e.right);
+    switch (e.op) {
+      case "*": return "a product of two values";
+      case "/": return byConst ? "a quotient by a constant" : "a quotient of two values";
+      case "%": return byConst ? "a remainder by a constant" : "a remainder of two values";
+      case "&": case "|": case "^": return byConst ? `${e.op} with a constant, as a value` : `${e.op} of two values`;
+      case "<<": case ">>": case ">>>": return byConst ? `a shift by a constant (${e.op}) as a value` : `a shift by a value (${e.op})`;
+      default: return undefined;
+    }
+  };
+  const boolOnly = new Set(["compare", "and", "or", "not", "test", "cond", "random", "running", "unitAlive", "unitSame", "unitFlag", "edge", "textCompare", "textTest"]);
+  // Expressions: what each kind is, when the emitter never takes it.
+  const node = (o: Record<string, unknown>): string | undefined => {
+    switch (o.kind) {
+      case "binary": return binary(o as Extract<NumExpr, { kind: "binary" }>);
+      case "intrinsic": {
+        const name = o.name as string;
+        if (name === "fmul") return "a product of fixed numbers";
+        if (name === "fdiv") return "a quotient of fixed numbers";
+        return name === "min" || name === "max" || name === "abs" ? undefined : `Math.${name}`;
+      }
+      case "read": {
+        const r = o.read as { source: string; record?: { type: number }; fact?: string; of?: string };
+        if (r.source === "condition") return `a read of the game (${conditionDef(r.record!.type)?.name ?? `condition ${r.record!.type}`})`;
+        if (r.source === "player") return r.fact === "left" ? "whether a player has left" : `a player's ${r.fact}`;
+        return `a player's supply (${r.of})`;
+      }
+      case "cond": {
+        const r = o.record as { type: number; player: number };
+        if (r.type === DEATHS_CONDITION && r.player > LAST_GROUP) return "a read of memory (memory())";
+        return `the condition ${conditionDef(r.type)?.name ?? r.type}`;
+      }
+      case "tableRead": return `a read of ${(o.cell as { name: string }).name}`;
+      case "randomInt": return "a random number";
+      case "random": return "a random boolean";
+      case "input": return `the players' input (${(o.input as { source: string }).source})`;
+      case "length": return array(o.array as string) ? "the length of an array that grows" : undefined;
+      case "pop": return "pop()";
+      case "running": return "a task's running";
+      case "taskHandle": return "a task";
+      case "edge": return `${o.edge as string}()`;
+      case "unitField": return `a unit's ${o.field as string}`;
+      case "unitPart": return "a unit's place in the game's memory";
+      case "unitAlive": return "whether a unit is alive";
+      case "unitSame": return "two units compared";
+      case "unitFlag": return `a unit's flag ${o.flag as string}`;
+      case "unitNull": case "unitVar": case "pick": case "unitAt": case "selected": return "a unit";
+      case "textLength": return "a text's length";
+      case "textIndexOf": return "a search in a text";
+      case "textCode": return "a character's code";
+      case "textCompare": return "two texts compared";
+      case "textTest": return `a text's ${o.test as string}`;
+      case "textSlice": return "a part of a text (slice)";
+      case "textPad": return "a text padded (padStart, padEnd)";
+      case "textRepeat": return "a text repeated";
+      case "textTernary": return "a ?: of texts";
+      case "template": return "a text made while the game runs";
+      case "textCall": {
+        // (A method of a text the front end writes as a function of its own — `trim()` — or a function of the script's.)
+        const name = (o.call as { name: string }).name;
+        if (!TEXT_METHODS.has(name.split(".").pop()!)) return `a function that gives back a text (${name})`;
+        return name.includes(".") ? `${name}()` : `a text's ${name}()`;
+      }
+      case "textVar": case "textOf": case "textAt": case "built":
+        return "a text of the program's";
+      case "ternary": {
+        const t = o.whenTrue as { kind: string; value?: unknown; id?: string };
+        const boolean = boolOnly.has(t.kind) || typeof t.value === "boolean" || (t.kind === "var" && decls.get(t.id!)?.kind === "boolean");
+        return boolean ? "a ?: of booleans" : undefined;
+      }
+      case "var": return typeof o.id === "string" ? variable(o.id) : undefined;
+      case "element": return array(o.array as string);
+      default: return undefined;
+    }
+  };
+  // Statements: what each kind is, before what is in it.
+  const statement = (t: Stmt): string | undefined => {
+    switch (t.kind) {
+      case "action": {
+        if (t.record.type === SET_DEATHS_ACTION && t.record.player > LAST_GROUP) return "a write of memory (setMemory())";
+        const name = `the action ${actionDef(t.record.type)?.name ?? t.record.type}`;
+        return t.variables?.length ? `${name}, its fields from values` : t.text ? `${name}, its text the program's` : name;
+      }
+      case "tableWrite": return `a write of ${t.cell.name}`;
+      case "centerLocation": return "a location moved (centerLocation)";
+      case "select": return "select()";
+      case "syncSend": return "sync()";
+      case "push": return "push()";
+      case "pop": return "pop()";
+      case "setLength": return "an array's length set";
+      case "assignText": case "storeText": case "releaseText": return "a text of the program's";
+      case "textLoop": return "a loop over a text";
+      case "buildText": return "JSX made while the game runs";
+      case "assignUnit": return "a unit kept in a variable";
+      case "unitLoop": return t.source ? `units an event gives (${t.source})` : "a loop over units";
+      case "unitWrite": return `a unit's ${t.field} written`;
+      case "unitDo": return `a unit's verb (${t.verb.do})`;
+      case "start": {
+        // (`on.*` is a task that listens: say which.)
+        const on = t.listen?.source ? { created: "on.created", died: "on.died", killed: "on.killed", ordered: "on.order", morphed: "on.morphed" }[t.listen.source] : t.listen?.inputs?.length ? (t.listen.inputs[0].source === "chat" ? "on.chat" : "on.key") : undefined;
+        return on ? `an event handled (${on})` : "a task started";
+      }
+      case "cancel": return "a task cancelled";
+      case "parallel": return t.mode === "race" ? "Promise.race or Promise.any" : "Promise.all";
+      case "try": return "try";
+      case "throw": return "throw";
+      case "uncaught": return "an error nothing catches";
+      case "print": return t.position === "center" ? "a text at the centre of the screen" : undefined;
+      case "declare": case "assign": case "assignBool": return variable(t.kind === "declare" ? t.decl.id : t.target);
+      case "declareArray": case "store": return array(t.array);
+      default: return undefined;
+    }
+  };
+  let found: string | undefined;
+  const walk = (x: unknown): void => {
+    if (found || !x || typeof x !== "object") return;
+    if (Array.isArray(x)) { x.forEach(walk); return; }
+    const o = x as Record<string, unknown>;
+    // (A statement says what it is before what is in it; an expression after, so that the innermost part is named.)
+    const isStmt = "label" in o && typeof o.kind === "string" && STATEMENT_KINDS.has(o.kind);
+    if (isStmt) found = statement(o as unknown as Stmt);
+    // (What is read of a unit says more than the unit: `u.hp` is "a unit's hp", not "a unit kept in a variable".)
+    else if (typeof o.kind === "string" && UNIT_READS.has(o.kind)) found = node(o);
+    for (const [k, v] of Object.entries(o)) if (k !== "at" && k !== "original" && v && typeof v === "object") walk(v);
+    if (!found && !isStmt && typeof o.kind === "string") found = node(o);
+  };
+  walk(s);
+  return found;
+}
+
+/** What is read of a unit, and what is done to a text: named before the unit or the text it is done to. */
+const UNIT_READS = new Set(["unitField", "unitFlag", "unitAlive", "unitSame", "unitPart", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "textSlice", "textPad", "textRepeat", "textTernary", "textCall"]);
+/** The methods of a text the front end writes as functions of its own (`textCall`). */
+const TEXT_METHODS = new Set(["toUpperCase", "toLowerCase", "toLocaleUpperCase", "toLocaleLowerCase", "trim", "trimStart", "trimEnd", "replace", "replaceAll", "split", "join", "at", "charAt", "concat", "parseInt", "Number"]);
+/** Deaths and Set Deaths, which `memory()` and `setMemory()` are when their player is past the groups (26). */
+const DEATHS_CONDITION = 15, SET_DEATHS_ACTION = 45, LAST_GROUP = 26;
+
+/** The kinds of statement, told apart from the expressions of the same name (`pop`, `call`). */
+const STATEMENT_KINDS = new Set(["declare", "assignText", "storeText", "releaseText", "textLoop", "assign", "declareArray", "store", "push", "setLength", "assignBool", "assignUnit", "unitLoop", "unitWrite", "unitDo", "tableWrite", "if", "while", "do", "for", "unrolled", "switch", "break", "continue", "return", "sleep", "parallel", "start", "cancel", "action", "syncSend", "select", "centerLocation", "print", "buildText", "block", "try", "throw", "uncaught", "remark", "graph"]);
+
 // ── what the emitter takes ──
 
 class Scope {
@@ -114,6 +293,10 @@ class Scope {
   declared = new Set<string>();
   /** Why the last statement looked at was not taken. */
   why = "";
+  /** A map of our own: why each statement it refuses is refused (`island`), and whether that is a part it never takes. */
+  whyOf = new Map<Stmt, { why: string; never: boolean }>();
+  /** A map of our own: the slot of the program's owner, the current player while it runs. */
+  owner: number | undefined;
   readonly decls: Map<string, VarDecl>;
   constructor(decls: Map<string, VarDecl>) {
     this.decls = decls;
@@ -407,6 +590,9 @@ class Scope {
    * places of the graph's after it: its own writes, those of the functions it calls.
    */
   island(s: Stmt): boolean {
+    // (A map of our own refuses every island, so whether the Python side could lower this one where it is — the walk
+    // below — is not the question: what it is, in a script's words, is.)
+    const named = this.native ? unlowered(s, this.decls, this.arrays) : undefined;
     let ok = true;
     // (`loops`: the loops around, inside the statement; `breaks`: those and the switches, which a break also ends.)
     const walk = (x: unknown, loops: number, breaks = loops): void => {
@@ -428,7 +614,13 @@ class Scope {
       const inner = o.kind === "while" || o.kind === "for" || o.kind === "do" || o.kind === "unitLoop" || o.kind === "textLoop" || o.kind === "unrolled";
       for (const v of Object.values(o)) if (v && typeof v === "object") walk(v, loops + (inner ? 1 : 0), breaks + (inner || o.kind === "switch" ? 1 : 0));
     };
-    walk(s, 0);
+    if (!named) walk(s, 0);
+    if (this.native) {
+      // (What in it the emitter never takes; else what the walk found, or the checks' own reason since the island before.)
+      this.whyOf.set(s, { why: named ?? this.why, never: named !== undefined });
+      this.why = "";
+      ok = true;
+    }
     if (!ok) return false;
     this.islands.set(s, writes(s, this.functions));
     // (What value ranges know of what it stores, for the copies after it.)
@@ -526,7 +718,12 @@ class Scope {
       case "print":
         // (Display Text shows to the current player, the owner in a map of our own: a text for anyone else is refused
         // until a print goes to each player of its group in turn, as the Python side's does.)
-        if (this.native && s.to !== PlayerGroup.CurrentPlayer) return this.no("a text shown to other players than the program's owner") || this.island(s);
+        if (this.native && s.to !== PlayerGroup.CurrentPlayer && s.to !== this.owner) {
+          // (TrigScript's own warning — a pool of closures or instances full — is shown to every player: say which.)
+          const first = s.parts[0]?.kind === "text" ? s.parts[0].text.replace(/^[\x01-\x1f]+/, "") : "";
+          const warning = first.startsWith("TrigScript: ") ? first.slice(12).split(";")[0] : undefined;
+          return this.no(warning ? `a warning TrigScript shows every player ("${warning}")` : "a text shown to other players than the program's owner") || this.island(s);
+        }
         if (this.native && s.position === "chat" && s.parts.every((p) => this.printed(p))) return true;
         return this.island(s);
       case "call": return (this.native && this.call(s.call)) || this.island(s);
@@ -3034,7 +3231,7 @@ export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0 };
  * call of a function of the Python side's, and nothing read that the body did not write first (there is no one to
  * copy it in; a copy within the body is made of triggers by the layout). Returns the graph, or why it cannot be.
  */
-export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH): Graph | string {
+export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number): Graph | string {
   // (Every statement must be the emitter's here, so a rewriting it would not take is refused whichever way it goes:
   // no trial is needed.)
   const take = () => true;
@@ -3061,6 +3258,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   };
   const rules = (scope: Scope) => {
     scope.native = true;
+    scope.owner = owner;
     scope.functions = functions;
     scope.arrays = arrays;
     scope.bodyOf = bodyOf;
@@ -3073,10 +3271,16 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   rules(scope);
   if (!scope.stmt(s, false)) return scope.why || "?";
   if (scope.islands.size) {
-    const first = [...scope.islands.keys()][0];
-    return `a ${first.kind} it does not lower (${scope.why || "no reason given"})${first.at ? `, line ${first.at.line}` : ""}`;
+    // (The first that holds a part the emitter never takes, before one refused for how it is put together — a print to
+    // all players the front end adds, say, after a closure it cannot keep.)
+    const refused = [...scope.islands.keys()];
+    const first = refused.find((s) => scope.whyOf.get(s)?.never) ?? refused[0];
+    return `${scope.whyOf.get(first)?.why || `a ${first.kind} it does not lower`}${first.at ? `, line ${first.at.line}` : ""}`;
   }
-  if (scope.calls.size) return "a fixed product or quotient (a function of the Python side's)";
+  if (scope.calls.size) {
+    const [s, call] = [...scope.calls][0];
+    return `a ${call.fn.fn.startsWith("fdiv") ? "quotient" : "product"} of fixed numbers${s.at ? `, line ${s.at.line}` : ""}`;
+  }
   const make = (forced: Set<string>): { e: Emitter; g: Graph | string } => {
     const e = new Emitter(key, scope);
     e.forced = forced;

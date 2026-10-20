@@ -1151,7 +1151,24 @@ export const play = game(async (s: Song) => {
 
 /** Play a song again and again; start it beside a program: \`start(music.loop(song))\`. */
 export const loop = game(async (s: Song) => {
-  while (true) await play(s);
+  // (\`play\` written out again, so that the wait at the end of each turn is where the loop shows it — at least a frame,
+  // so that a song with nothing left at its end does not turn round within one frame for ever.)
+  const at = s.at;
+  const which = s.which;
+  while (true) {
+    let i = 0;
+    let now = 0;
+    while (i < at.length) {
+      if (at[i] > now) {
+        await sleep(frames(at[i] - now));
+        now = at[i];
+      }
+      const k = which[i];
+      for (let j = 0; j < s.clips.length; j++) if (k === j) playWav(s.clips[j], 0);
+      i++;
+    }
+    await sleep(frames(Math.max(s.frames - now, 1)));
+  }
 });
 
 /** Everything above as one name: import { music } from "trigscript/music"; music.play(song). */

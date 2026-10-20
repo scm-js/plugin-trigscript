@@ -90,6 +90,22 @@ program(async () => { await music.play(song); });
     for (const p of played) expect(r.sounds.map((s) => s.path)).toContain(p.path);
   });
 
+  it("plays it again and again beside the program: start(music.loop(song))", () => {
+    // (It never compiled: `while (true) await play(s)` showed the loop no wait of its own.)
+    const r = compile(`import { music } from "trigscript/music";
+const lead = music.synth();
+export const song = music.song({ bpm: 120 }, music.track(lead, "C5 . E5 ."));
+program(async () => { start(music.loop(song)); });
+`);
+    expect(errors(r)).toEqual([]);
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings });
+    sim.run(60);
+    const frames = sim.events.filter((e) => e.action.type === ActionType.PlayWav).map((e) => e.frame);
+    // Two notes a turn, six frames apart; a turn of the song every twelve frames.
+    const start = frames[0];
+    expect(frames.slice(0, 6).map((f) => f - start)).toEqual([0, 6, 12, 18, 24, 30]);
+  });
+
   it("renders into one clip, every note at its time", () => {
     const r = check(
       `const lead = music.synth({ volume: 0.3 });\nconst s = music.song({ bpm: 120 }, music.track(lead, "A4 . . . A4 . . ."));\nconst one = music.render(s);`,
