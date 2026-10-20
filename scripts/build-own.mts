@@ -18,6 +18,7 @@ import { STRINGS, layout } from "../compiler/backend/layout";
 import type { Graph } from "../compiler/backend/graph";
 import { defaultScriptNames } from "../compiler/names";
 import { defaultLib } from "../bundle/lib.mjs";
+import { finishSounds, vorbisEncoder } from "../compiler/vorbis";
 import { scriptFiles } from "./script-files.mts";
 
 const started = performance.now();
@@ -59,7 +60,12 @@ for (const [owner, base, troop] of [[0, COMMAND_CENTER, MARINE], [1, HATCHERY, Z
 applyUnitChanges(scn, addUnits(scn, placed));
 // The texts the graph shows, in the strings first: the payload goes after them.
 const texts = new Map<string, number>();
-for (const t of (graph as Graph).triggers) for (const a of t.acts) if (a.display !== undefined && !texts.has(a.display)) texts.set(a.display, internString(scn, a.display));
+const intern = (text: string) => { if (!texts.has(text)) texts.set(text, internString(scn, text)); };
+for (const t of (graph as Graph).triggers) for (const a of t.acts) {
+  if (a.display !== undefined) intern(a.display);
+  // (An action of the game's: its text and its sound file's name.)
+  for (const s of [a.strings?.text, a.strings?.wav]) if (s && "text" in s) intern(s.text);
+}
 // A string for each text printed with values in it, as long as its template and three bytes more: once the strings are
 // laid out, the template goes in it from its first dword's start on, and the string's offset is moved there (the
 // game's own table of strings names only its first 64 KB in 1.16.1, so the template stays among them, as eudplib's
@@ -116,6 +122,9 @@ const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
 let at = 0;
 for (const p of parts) { out.set(p, at); at += p.length; }
 const extras = loaded.archive ? await readExtras(loaded.archive, loaded.files) : new Map();
+// The clips the script plays, in the archive (an Ogg one encoded first), as build-fixture puts them.
+if (r.sounds.some((s) => s.vorbis)) finishSounds(r.sounds, vorbisEncoder(readFileSync(join(root, "node_modules", "wasm-media-encoders", "wasm", "ogg.wasm"))));
+for (const s of r.sounds) extras.set(s.path, s.bytes!);
 writeFileSync(resolve(outPath), await saveMap(out, { extras, compress: "pkware", listfile: true }));
 const done = performance.now();
 console.log(`${resolve(outPath)}: ${graph.triggers.length} triggers of the graph, payload ${own.payload.length} bytes at 0x${own.address.toString(16)}, start-up ${own.trig.length / 2400} triggers`);

@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Disable Debug Mode
+// ledger: step 5, takes
 // The action Disable Debug Mode, inside a program.
 program(() => {
   disableDebugMode();

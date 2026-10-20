@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A song in sections: parts named once (`music.part`), each section saying what they play
 // (`music.section`), put in order by `music.arrange`.
 import { music } from "trigscript/music";

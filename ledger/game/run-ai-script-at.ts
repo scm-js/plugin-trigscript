@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Run AI Script At Location
+// ledger: step 5, takes
 // The action Run AI Script at Location.
 program(() => {
   runAiScriptAt(aiScripts.ZergCustomLevel, locations.Anywhere);

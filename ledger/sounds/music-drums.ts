@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A drum kit made from nothing, a letter a drum: `music.drums()`.
 import { music } from "trigscript/music";
 const kit = music.drums();

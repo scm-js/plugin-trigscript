@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A song mixed into one clip when the map is built, every note in time: `music.render(song)`.
 import { music } from "trigscript/music";
 const lead = music.synth({ volume: 0.2, release: 0.05 });

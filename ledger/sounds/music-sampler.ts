@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // An instrument from a clip, played at each note's pitch: `music.sampler(clip, root)`.
 import { music } from "trigscript/music";
 const harp = music.sampler(pluck("C4", 0.5), "C4");

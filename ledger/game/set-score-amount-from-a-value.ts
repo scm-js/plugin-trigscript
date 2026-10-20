@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Set Score, its fields from values
+// ledger: step 5, takes
 // The action Set Score, the amount from a value of the program.
 program(() => {
   let points = 10;

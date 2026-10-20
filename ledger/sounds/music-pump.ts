@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A part that breathes with the beat, each note ducked on it: `{ fx: music.pump(beat) }`.
 import { music } from "trigscript/music";
 const pad = music.synth({ volume: 0.1, release: 0.05 });

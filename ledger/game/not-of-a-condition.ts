@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the condition Bring
+// ledger: step 5, takes
 // A condition turned around by `not(…)`, worked out when the map is built: a program tests the
 // flipped condition ("at least 1" becomes "at most 0").
 program(() => {

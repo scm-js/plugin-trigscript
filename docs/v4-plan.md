@@ -3529,8 +3529,11 @@ found what they left out; where a step moved, its old number is given.
    `bits`). Random numbers: `random()`, `randomInt`, seeded as `f_randomize` seeds them (the Randomize switch), each
    draw a product (`f_dwrand`). A fixed number printed. eudplib's `f_mul`, `f_div`, the bit functions and `f_dwrand`,
    each beaten.
-5. **The game's conditions and actions** (new). A trigger record of any condition and any action in the graph and the
-   layout — they encode three today: the Memory condition, Set Deaths and Display Text. Fields filled from values
+5. **The game's conditions and actions** (new). Part 1 ✓: every condition and action with its fields known when the map
+   is built, laid out as the game's record — "The game's conditions and actions on our own backend"; `memory()` and
+   `setMemory()` at an address known when built came with it (from 6). Part 2 ✓: fields from values and texts made
+   while the game runs — "Fields from values on our own backend". A trigger record of any condition and any action in the graph and the
+   layout — they encoded three before: the Memory condition, Set Deaths and Display Text. Fields filled from values
    (`action.variables`), action texts (transmissions, objectives, leaderboards). Every condition in a test and as a
    value (ore, deaths, score, kills, Bring, Command, the countdown; the Python side's bit search), the players' facts
    (race, slot, human, left) and supply; `rose` and `once`. A print to a group — each player in turn, as the Python
@@ -3901,13 +3904,13 @@ lists what no script reaches. A step is done when its scripts say so.
 
 | Step | Taken today |
 | --- | ---: |
-| 0 The start | 157 of 158 |
+| 0 The start | 158 of 158 |
 | 1 Calls and recursion | 33 of 33 |
 | 2 Texts with numbers | 6 of 6 |
 | 3 Arrays of a fixed length | 54 of 54 |
 | 4 Numbers | 59 of 59 |
-| 5 The game's conditions and actions | 0 of 193 |
-| 6 The game's memory | 0 of 49 |
+| 5 The game's conditions and actions | 154 of 195 |
+| 6 The game's memory | 0 of 47 |
 | 7 Programs, owners and players | 1 of 22 |
 | 8 Texts as values | 0 of 43 |
 | 9 Arrays that grow, the heap | 0 of 28 |
@@ -3916,8 +3919,10 @@ lists what no script reaches. A step is done when its scripts say so.
 | 12 Input | 0 of 31 |
 | 13 The map's own triggers | 0 of 13 |
 
-One step called done is not quite: a `?:` of two booleans (step 0). (A cell read at a shifted index, `xs[a >> 1]`, the
-other one, is taken since step 4's part 4.) Every script a map of our own takes was also run
+(Step 5 has 195 rows since two of step 6's — `memory()` and `setMemory()` at an address known when built — came with
+its part 1.) Every step called done is: a `?:` of two booleans (step 0), the last, is taken since step 5's part 1 — the
+side its test picks worked out under an `if` (`Rewriter.cond`). (A cell read at a shifted index, `xs[a >> 1]`, the other
+one, is taken since step 4's part 4.) Every script a map of our own takes was also run
 from its laid-out bytes against the simulator — the numbers, arrays, texts and language scripts, and about forty edge
 cases besides (signs of `>>`, `u32` printed and compared, wrap-around, reads past the ends, negative indexes): all
 printed the same. The README's reference to the language predates TrigScript 4 (it says `try` and `async` are missing):
@@ -3968,8 +3973,13 @@ the ledger is the list it can be written again from at 4.0.
 - Not in a program, against JavaScript: `~a`, `**`, `Math.pow`, `Math.sign`, `Math.log2`, `fill(v, start, end)`,
   `reduce` with no first value. A `const HALF = 7 / 2` worked out when built is 3.5, a fixed number; the same `7 / 2` in
   the game is 3.
-- A map of our own: `displayText("known text")` is refused where `print("known text")` is taken (step 5's first);
-  JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
+- A condition kept in a variable: `const both = command(…) && bring(…)` is "Variables hold numbers, booleans, … before
+  is Condition", where `switchIs(…) && !switchIs(…)` is taken as a boolean, and either in an `if` is taken
+  (found writing `probes/own-game.ts`, 2026-10-20).
+- `command()` straight after `killUnit()` or `removeUnit()` still counts the units (the game counts them until the next
+  frame) where the simulator does not; and two Transmissions, the second while the first one's time runs, hold the
+  second until the program reaches it again (both builds; found writing `probes/own-fields.ts`, 2026-10-20).
+- A map of our own: JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
   (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
   `a >> 1` to `a >> 31` were taken, is the number itself since its part 2.)
 
@@ -4181,6 +4191,104 @@ Checked: random programs with square roots (fixed and whole), sines, cosines and
 variables and arrays, as graphs and from the laid-out bytes (3,000 of 3,000 taken); the ledger's scripts against the
 simulator; `probes/own-math.ts` built both ways, every line ok — its edges: roots of 0, below zero, the largest, a
 whole number from 2^30 up; angles on the axes and of (0, 0); sines at a turn.
+
+### The game's conditions and actions on our own backend (2026-10-20)
+
+Step 5, part 1: every condition and every action of the game's whose fields are known when the map is built — Bring,
+Command, Accumulate, Switch, the clocks, Score, Opponents, Always and Never and the rest; Create Unit, Kill and Remove,
+Give, Set Resources, Set Switch, the leaderboards, Transmission, Play WAV, Center View, Victory and the rest — taken by a
+map of our own and laid out as the game's own record (`Cond.game`, `Act.record` in `compiler/backend/graph.ts`; the
+layout writes the record as it is, the action's text and sound file put among the map's strings by `build-own`, and the
+script's clips into the archive). `memory()` and `setMemory()` at an address known when built are a Deaths and a Set
+Deaths whose player is the address's EPD: they came with it, from step 6. Wait is refused (it would hold the owner's
+whole trigger list; `sleep` is the program's wait). Ledger: step 5 118 of 195 taken; the 77 left are fields from values
+(34), the game read as a value (18), `centerLocation` (6), texts made or shown to others (7), the players' facts and
+supply (7), Wait, `rose`, `once`.
+
+- **Turned around in one condition** (`gameConds`): `!` of at least n is at most n − 1 (at least 0: never), at most n
+  is at least n + 1, a switch set is cleared; Always and Never are known. Exactly, the Most and the Least have no
+  opposite in one condition: the trigger that asks them sends the walk past the goto. eudplib's `EUDNot` is a trigger
+  setting a flag and one testing it.
+- **`&&` in one trigger.** A test whose every part fits in one trigger — up to 16 conditions — is one trigger that skips
+  past the goto, where it was a branch a part (`Emitter.jump`); `||` turned around the same. This is general, as is the
+  next: with the two, the numbers probes are 2–8% faster.
+- **An `if` in one trigger** (`Emitter.guards`, `Proto.guarded`): no `else`, a body of actions of the game's and writes
+  that read nothing but their own target (`n++`, `n = 3`), conditions that fit in one trigger — that trigger is the
+  `if`: its conditions, then its actions, run when they hold. No branch and no put-back. The copies of a variable it
+  writes, when the plan copies it, come after it whether the conditions held or not — they write back what the places
+  hold when they did not.
+- **Bring counted again.** Bring keeps the counts it found for a location until a query of another kind is asked:
+  after an action that makes or moves units (Create Unit, with properties, Move Unit, Give Units), a program that asks
+  Bring gets a trigger asking Command, as the Python side's `forget_counts`.
+
+| `probes/own-game.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| The start and every check once (frame 2) | **0.003 ms** | 1.074 ms |
+| 200 turns: Set Resources, `if` of 3 conditions → `n++`, Set Deaths (frame 4) | **0.020 ms** | 0.028 ms |
+| 200 turns: `if (!deaths(…, "==", 5)) n++`, Set Deaths (frame 6) | **0.021 ms** | 0.038 ms |
+| A frame with nothing to do | **0** | 0.004 ms |
+
+Frame 4 was 0.029 ms (a tie) before `&&` in one trigger and the `if` in one trigger; the 200 turns are four triggers
+each now — the loop's test, Set Resources, the guarded `if`, Set Deaths with `j++`. What is left there is the loop's
+own test at its head, which every loop pays: a loop tested at its foot would save a trigger a turn.
+
+Checked: `tests/ownGame.test.ts` (the records byte for byte, the conditions turned around, the `if` in one trigger,
+Bring counted again); the emitter's random programs; every earlier `probes/own-*.ts` built and played again, every
+line ok; `probes/own-game.ts` built both ways, the same lines at the same frames.
+
+### Fields from values on our own backend (2026-10-20)
+
+Step 5, part 2: an action of the game's whose fields come from values — a unit type, a count, an amount, a time, a
+player or a location — and one whose text is made while the game runs (a Transmission, the objectives, a
+leaderboard's label). Ledger: step 5 154 of 195; the 41 left are the game read as a value (19), `centerLocation` (6),
+texts shown to other players than the owner (4) or at the centre (2), the players' facts and supply (7), Wait,
+`rose`, `once`.
+
+- **A field from a value is a place of its variable** (`Emitter.action`; `actPlaces` takes every part of an action
+  now): the variable's writes keep it, so the action reads the field where it is and costs nothing more when it runs.
+  eudplib copies the variable into the field before every run. The unit type, the action's kind and its count share a
+  dword: the place's constant is what is not the value (the kind times 2^16, the count times 2^24). A value more than
+  one variable times a constant plus a constant goes into a variable of the emitter's own first (`Rewriter.action`);
+  the front end's `max(n, 0)` around an amount is dropped where the value ranges already know it (`settled`).
+- **A unit count** is that many units, 0 or below none: the action done 255 at a time while more are left, then once
+  with the rest, each half only where the count's range reaches it. A type and a count both from values are one
+  variable of the emitter's own, the type plus the count times 2^24. A unit type is stopped at 228, as the Python
+  side's is. 258 Scourges in one place: ours makes about 253 (two Create Units, the game spreading each one's units),
+  eudplib's 50 to 100 (Create Unit of one, 258 times).
+- **A text made while the game runs** fills a template of its own, as a print's does (`Emitter.template`, split out of
+  `print`), and the action's text field names the template's string (`Act.textOf`): one for each place in the script,
+  where the Python side keeps one string for each kind of field, so two Transmissions written apart share it.
+- **The game's counts thrown away.** The game keeps one table of counts for Command and for Bring while the queries
+  stay of one kind, throwing it away at the start of a pass, at a query of the other kind and in the actions that kill
+  or remove units — not after Create Unit, Move Unit or Give Units. So `command()` after making units read the old
+  count, in both builds (the Python side's `forget_counts` covers Bring alone). Now, in a program that asks Command,
+  Bring or the Most/Least queries, such an action is followed in its own trigger by Kill Unit of Player 12's units of
+  type 228, which no unit is (played in the lifted game: both count again after it, and Player 12's minerals stay).
+  Part 1's Command trigger after it is gone.
+- **A Transmission** holds the rest of its trigger until its time is over and marks itself started, so the game
+  steps over it the next time the trigger is reached: in a loop, every other Transmission never showed (eudplib's
+  too). Ours is the first action of a trigger of its own, and the trigger after it puts its flags and the trigger's
+  current action back (`Emitter.transmission`, the fields `flags` and `current`): each one shows. A Transmission while
+  another one's time runs is still held, as the game holds it — to undo that needs the players' wait timers, which no
+  probe has found yet.
+- **Found on the way** (`probes/own-fields.ts`): the game counts a unit killed or removed until the next frame — a
+  `command()` straight after `killUnit()` still sees it, in both builds and the simulator does not; and the eleven text
+  lines of a frame: a line printed past them is lost to `testGame`.
+
+| `probes/own-fields.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| The start and every check (frame 2) | **0.004 ms** | 1.074 ms |
+| 200 Set Deaths adding a counter (frame 4) | **0.014 ms** | 0.021 ms |
+| 258 Scourges made and removed (frame 6) | **0.001 ms** | 0.059 ms |
+| A frame with nothing to do | **0** | 0.004 ms |
+
+The 200 adds are two triggers a turn: the loop's test, and the Set Deaths whose amount is a place of the counter, which
+`j++` keeps. Lines C and D (a count of 3, 0 and −2; a type and a count, then a kill) and H (258 made) are WRONG in
+eudplib's build: the old counts, and the Create Units of one.
+
+Checked: `tests/ownGame.test.ts` (the places and what shares their dword, the count's halves by its range, the
+Transmission's puts-back, the template); `probes/own-fields.ts` and `probes/own-game.ts` built both ways; a loop of
+four Transmissions in the lifted game (ours shows each, eudplib's every other).
 
 ## Part C — the game, pushed
 

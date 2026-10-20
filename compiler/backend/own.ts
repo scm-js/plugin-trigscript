@@ -8,7 +8,7 @@ import type { ArrayDecl, FuncDecl, Program, VarDecl } from "../ir";
 import { emitBody } from "./emit";
 import type { Graph } from "./graph";
 
-export function emitOwn(r: Pick<CompileResult, "ir" | "triggers">): { program: Program; graph: Graph } | string {
+export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">): { program: Program; graph: Graph } | string {
   if (r.ir.length !== 1) return `a map of our own has one program; this script has ${r.ir.length}`;
   const program = r.ir[0];
   if (program.perPlayer) return "a map of our own has no per-player program yet";
@@ -29,5 +29,9 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers">): { program: P
   const functions = new Map<string, FuncDecl>((program.functions ?? []).map((f) => [f.id, f]));
   const arrays = new Map<string, ArrayDecl>((program.arrays ?? []).map((a) => [a.id, a]));
   const graph = emitBody(program.body, decls, "own", functions, arrays, undefined, program.owner);
-  return typeof graph === "string" ? graph : { program, graph };
+  if (typeof graph === "string") return graph;
+  // (An action of the game's names its text and its sound file by the script's strings: given here, for the layout.)
+  const of = (k: number) => (k ? r.strings[k - 1] : undefined);
+  for (const t of graph.triggers) for (const a of t.acts) if (a.record && (a.record.text || a.record.wav)) a.strings = { text: of(a.record.text), wav: of(a.record.wav) };
+  return { program, graph };
 }

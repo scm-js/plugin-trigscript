@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Transmission
+// ledger: step 5, takes
 // The action Transmission with a clip made when the map is built as its sound.
 const chirp = tone([[0, 800], [0.2, 1600]], 0.2, { volume: 0.3 });
 program(() => {

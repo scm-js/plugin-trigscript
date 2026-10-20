@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // An FM instrument: `music.fmSynth({ ratio, index })`.
 import { music } from "trigscript/music";
 const keys = music.fmSynth({ ratio: 1, index: 2, release: 0.1 });

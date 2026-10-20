@@ -290,7 +290,7 @@ function key(d: Dword): string {
   if ("template" in d) return `template:${d.template}:${d.word}`;
   if ("cell" in d) return `epd:${TABLE_EPD(d.cell) + 18 * d.index}`;
   const f = d.field;
-  return f === "next" ? `${d.at}|next` : "cond" in f ? `${d.at}|cond:${f.cond}${f.part === "player" ? ":player" : f.part === "mask" ? ":mask" : ""}` : `${d.at}|act:${f.act}:${f.part}`;
+  return f === "next" || f === "current" ? `${d.at}|${f}` : "cond" in f ? `${d.at}|cond:${f.cond}${f.part === "player" ? ":player" : f.part === "mask" ? ":mask" : ""}` : `${d.at}|act:${f.act}:${f.part}`;
 }
 
 function exec(g: Graph, env: Env): Env {

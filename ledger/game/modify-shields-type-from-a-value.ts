@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Modify Unit Shield Points, its fields from values
+// ledger: step 5, takes
 // The action Modify Unit Shield Points, the unit type from a value of the program.
 program(() => {
   let kind: UnitType = units.ProtossZealot;

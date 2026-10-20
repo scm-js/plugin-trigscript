@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Unpause Game
+// ledger: step 5, takes
 // The action Unpause Game.
 program(() => {
   unpauseGame();

@@ -17,6 +17,7 @@
  */
 import { END, TRIGGER_BYTES, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { GAME_TICK, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
+import type { ScriptString } from "../runtime";
 
 export const STRINGS = 0x191943c8;
 const DEATHS = 0x58a364;
@@ -53,7 +54,7 @@ export interface LayoutInput {
   strings: number;
   /** The program's player, 0-based. */
   owner: number;
-  /** A text's index in the map's string table (1-based), for Display Text. */
+  /** A text's index in the map's string table (1-based), for Display Text and an action's text or sound file. */
   text: (t: string) => number;
   /** The cells of the lists the graph reads where they are, by array id. */
   arrays: Map<string, number[]>;
@@ -188,8 +189,9 @@ export function layout(input: LayoutInput): OwnMap {
     if (t === undefined) throw new Error(`no trigger ${d.at}`);
     const f = d.field;
     if (f === "next") return t + 4;
+    if (f === "current") return t + 2404;
     if ("cond" in f) return t + 8 + 20 * f.cond + (f.part === "player" ? 4 : f.part === "mask" ? 0 : 8);
-    return t + 328 + 32 * f.act + { value: 20, dest: 16, modifier: 24, mask: 0 }[f.part];
+    return t + 328 + 32 * f.act + { value: 20, dest: 16, modifier: 24, mask: 0, text: 4, wav: 8, time: 12, flags: 28 }[f.part];
   };
   const address = (d: Dword): number => {
     if ("game" in d) return d.game;
@@ -240,8 +242,11 @@ export function layout(input: LayoutInput): OwnMap {
   // (Every address first: the cells are allocated as the triggers name them, so the size is known after.)
   const encoded = triggers.map((t) => ({
     t,
-    conds: t.conds.map((c) => ({ c, player: epd(address(c.dword)) })),
-    acts: t.acts.map((a) => ({ a, player: a.display !== undefined || a.show !== undefined || a.randomize !== undefined ? 0 : epd(address(a.dword)), number: a.display !== undefined || a.show !== undefined || a.randomize !== undefined ? 0 : value(a.value) })),
+    conds: t.conds.map((c) => ({ c, player: c.game ? 0 : epd(address(c.dword)) })),
+    acts: t.acts.map((a) => {
+      const none = a.display !== undefined || a.show !== undefined || a.randomize !== undefined || a.record !== undefined;
+      return { a, player: none ? 0 : epd(address(a.dword)), number: none ? 0 : value(a.value) };
+    }),
   }));
   const size = next - base;
   const out = new Uint8Array(pad + size);
@@ -254,6 +259,17 @@ export function layout(input: LayoutInput): OwnMap {
     if (conds.length > 16 || acts.length > 64) throw new Error(`${t.label}: too many conditions or actions`);
     conds.forEach(({ c, player }, k) => {
       const o = n + 8 + 20 * k;
+      if (c.game) {
+        // A condition of the game's, as the script wrote it.
+        const r = c.game;
+        w32(o, r.location);
+        w32(o + 4, r.player);
+        w32(o + 8, r.amount);
+        dv.setUint16(pad + o + 12 - base, r.unitId, true);
+        for (const [at, b] of [[14, r.comparison], [15, r.type], [16, r.resource], [17, r.flags]]) dv.setUint8(pad + o + at - base, b);
+        dv.setUint16(pad + o + 18 - base, r.mask, true);
+        return;
+      }
       w32(o, c.mask ?? 0);
       w32(o + 4, player);
       w32(o + 8, c.value);
@@ -263,6 +279,26 @@ export function layout(input: LayoutInput): OwnMap {
     });
     acts.forEach(({ a, player, number }, k) => {
       const o = n + 328 + 32 * k;
+      if (a.record) {
+        // An action of the game's, as the script wrote it: its text and its sound file put among the map's strings.
+        const r = a.record;
+        const str = (s: ScriptString | undefined, k: number) => {
+          if (!k) return 0;
+          if (!s) throw new Error(`${t.label}: an action's string ${k} with no text given for it`);
+          return "index" in s ? s.index : input.text(s.text);
+        };
+        w32(o, r.location);
+        if (a.textOf !== undefined && !input.template) throw new Error(`an action's text (${a.textOf}) with no string to show it by`);
+        w32(o + 4, a.textOf !== undefined ? input.template!(a.textOf) : str(a.strings?.text, r.text));
+        w32(o + 8, str(a.strings?.wav, r.wav));
+        w32(o + 12, r.time);
+        w32(o + 16, r.player);
+        w32(o + 20, r.target);
+        dv.setUint16(pad + o + 24 - base, r.unitId, true);
+        for (const [at, b] of [[26, r.type], [27, r.modifier], [28, r.flags], [29, r.padding]]) dv.setUint8(pad + o + at - base, b);
+        dv.setUint16(pad + o + 30 - base, r.mask, true);
+        return;
+      }
       if (a.randomize !== undefined) {
         // Set Switch (13), its switch in the record's number, Randomize (11).
         w32(o + 20, a.randomize);
