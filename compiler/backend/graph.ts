@@ -59,7 +59,18 @@ export interface FixedFn { fn: "fmul_vars" | "fdiv_vars" | "fmul_by" | "fdiv_by"
  * destination or modifier, the mask of a masked one (a condition's or an action's, which it reads as it runs: what the
  * mask is can be written like any number), the next pointer.
  */
-export type Field = { cond: number; part?: "value" | "player" | "mask" } | { act: number; part: "value" | "dest" | "modifier" | "mask" } | "next";
+/**
+ * (An action of the game's, `Act.record`, names its other fields by these too: its location is where the mask is, its
+ * first player the destination, its second player or amount the number, its unit type, kind and count the modifier's
+ * dword; `text`, `wav` and `time` are its own.)
+ */
+/**
+ * `current`: the dword whose top byte is the trigger's current action (where a trigger held by a Wait or a
+ * Transmission goes on from); an action's `flags` dword has its flags in the low byte (bit 0: a Wait or a Transmission
+ * started, which the game steps over the next time it is reached).
+ */
+export type Field = { cond: number; part?: "value" | "player" | "mask" } | { act: number; part: ActPart } | "next" | "current";
+export type ActPart = "value" | "dest" | "modifier" | "mask" | "text" | "wav" | "time" | "flags";
 
 export type Compare = "atLeast" | "atMost" | "exactly";
 export type Modifier = "set" | "add" | "subtract";
@@ -104,7 +115,8 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * for its text and its sound file, which are the script's strings (`strings`: a record's `text` / `wav` of `k > 0` is the
  * script's `k`-th) and are put in the map's strings when the map is made.
  */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string; randomize?: number; record?: ActionRecord; strings?: { text?: ScriptString; wav?: ScriptString } }
+/** `textOf`: an action of the game's whose text is a printed text's template (`Graph.templates`), filled before it. */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string; randomize?: number; record?: ActionRecord; strings?: { text?: ScriptString; wav?: ScriptString }; textOf?: string }
 
 /** Where the game keeps its 256 switches: a bit each, 32 to a dword. */
 export const SWITCHES = 0x58dc40;

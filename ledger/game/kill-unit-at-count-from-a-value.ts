@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Kill Unit At Location, its fields from values
+// ledger: step 5, takes
 // The action Kill Unit at Location, how many from a value of the program.
 program(() => {
   let n = 1;

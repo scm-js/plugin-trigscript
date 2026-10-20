@@ -189,8 +189,9 @@ export function layout(input: LayoutInput): OwnMap {
     if (t === undefined) throw new Error(`no trigger ${d.at}`);
     const f = d.field;
     if (f === "next") return t + 4;
+    if (f === "current") return t + 2404;
     if ("cond" in f) return t + 8 + 20 * f.cond + (f.part === "player" ? 4 : f.part === "mask" ? 0 : 8);
-    return t + 328 + 32 * f.act + { value: 20, dest: 16, modifier: 24, mask: 0 }[f.part];
+    return t + 328 + 32 * f.act + { value: 20, dest: 16, modifier: 24, mask: 0, text: 4, wav: 8, time: 12, flags: 28 }[f.part];
   };
   const address = (d: Dword): number => {
     if ("game" in d) return d.game;
@@ -287,7 +288,8 @@ export function layout(input: LayoutInput): OwnMap {
           return "index" in s ? s.index : input.text(s.text);
         };
         w32(o, r.location);
-        w32(o + 4, str(a.strings?.text, r.text));
+        if (a.textOf !== undefined && !input.template) throw new Error(`an action's text (${a.textOf}) with no string to show it by`);
+        w32(o + 4, a.textOf !== undefined ? input.template!(a.textOf) : str(a.strings?.text, r.text));
         w32(o + 8, str(a.strings?.wav, r.wav));
         w32(o + 12, r.time);
         w32(o + 16, r.player);

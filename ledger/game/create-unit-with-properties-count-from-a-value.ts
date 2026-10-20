@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Create Unit with Properties, its fields from values
+// ledger: step 5, takes
 // The action Create Unit with Properties, how many from a value of the program.
 program(() => {
   let n = 1;

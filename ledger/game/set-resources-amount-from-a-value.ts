@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Set Resources, its fields from values
+// ledger: step 5, takes
 // The action Set Resources, the amount from a value of the program.
 program(() => {
   let bounty = 50;

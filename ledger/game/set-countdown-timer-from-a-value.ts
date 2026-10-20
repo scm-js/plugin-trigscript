@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Set Countdown Timer, its fields from values
+// ledger: step 5, takes
 // The action Set Countdown Timer, the seconds from a value of the program.
 program(() => {
   let seconds = 60;

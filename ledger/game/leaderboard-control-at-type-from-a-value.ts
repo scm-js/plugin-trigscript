@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Leader Board Control At Location, its fields from values
+// ledger: step 5, takes
 // The action Leader Board (Control at Location), the unit type from a value of the program.
 program(() => {
   let kind: UnitType = units.TerranMarine;
