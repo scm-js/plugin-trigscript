@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient of two values
+// ledger: step 4, takes
 // A quotient of two values that change while the game runs, rounded towards zero: `a / b`.
 program(() => {
   let a = 0;

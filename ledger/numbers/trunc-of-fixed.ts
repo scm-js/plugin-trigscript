@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient by a constant
+// ledger: step 4, takes
 // A number with a fraction cut to its whole part, towards zero: `Math.trunc(x)` (−2.5 is −2).
 program(() => {
   let x = 0.5;

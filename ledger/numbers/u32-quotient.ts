@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient by a constant
+// ledger: step 4, takes
 // A `u32` divided, as an unsigned number: `u32(a) / 2` of −2 is 2 147 483 647.
 program(() => {
   let a = 0;

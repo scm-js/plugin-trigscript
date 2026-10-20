@@ -8,7 +8,7 @@ import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarDecl } from "../compiler/ir";
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
-import { END, type Dword, type Graph, type Num } from "../compiler/backend/graph";
+import { END, TRIGGER_BYTES, type Dword, type Graph, type Num } from "../compiler/backend/graph";
 import { layout } from "../compiler/backend/layout";
 import { fixedDiv, fixedMul } from "../compiler/fixedMath";
 
@@ -53,9 +53,15 @@ function num(e: NumExpr, env: Env): number {
     }
     case "binary": {
       const a = num(e.left, env), b = num(e.right, env);
+      if (e.op === "*" || e.op === "/" || e.op === "%") { see(e.left, a); see(e.right, b); }
+      if (e.op === "/" || e.op === "%") {
+        const r = b === 0 ? 0 : u(e.unsigned ? (e.op === "/" ? Math.trunc(a / b) : a % b) : (e.op === "/" ? Math.trunc((a | 0) / (b | 0)) : (a | 0) % (b | 0)));
+        see(e, r);
+        return r;
+      }
+      if (e.op === "*") { const r = u(Math.imul(a, b)); see(e, r); return r; }
       if (e.op === "+") return u(a + b);
       if (e.op === "-") return u(a - b);
-      if (e.op === "*") return u(Math.imul(a, b));
       if (e.op === "<<") return u(a << (b & 31));
       if (e.op === ">>") return u((a | 0) >> (b & 31));
       if (e.op === ">>>") return u(a >>> (b & 31));
@@ -393,6 +399,13 @@ function exec(g: Graph, env: Env): Env {
       const mf = mem.get(ks.acts[k].modifier);
       const modifier = typeof mf === "number" ? ({ 7: "set", 8: "add", 9: "subtract" } as Record<number, string>)[(mf >>> 24) & 0xff] : a.modifier;
       const old = read(d) as number;
+      // (A next pointer moved on by whole triggers goes to the trigger that many after it, as the layout puts them.)
+      if (typeof (old as unknown) === "string" && modifier === "add" && v % TRIGGER_BYTES === 0) {
+        const i = g.triggers.findIndex((x) => x.label === (old as unknown as string)) + v / TRIGGER_BYTES;
+        if (i < 0 || i >= g.triggers.length) throw new Error(`a next pointer moved past the graph: ${old} + ${v}`);
+        mem.set(d, g.triggers[i].label);
+        return;
+      }
       if (a.mask !== undefined && modifier === "set") { mem.set(d, Number((BigInt(old) & ~BigInt(a.mask) & 0xffffffffn) | (BigInt(v) & BigInt(a.mask)))); return; }
       mem.set(d, modifier === "set" ? v : modifier === "add" ? u(old + v) : Math.max(0, old - v));
     });
@@ -607,7 +620,7 @@ describe("the emitter", () => {
 /** Each index of an array the evaluator reads or stores at: the lowest and highest it was, signed (`observeRanges`). */
 const SEEN = new Map<NumExpr, [number, number]>();
 /** How many indexes `observeRanges` gave a range. */
-const RANGED = { n: 0 };
+const RANGED = { n: 0, arith: 0 };
 function see(index: NumExpr, i: number): void {
   const x = i | 0, r = SEEN.get(index);
   SEEN.set(index, r ? [Math.min(r[0], x), Math.max(r[1], x)] : [x, x]);
@@ -633,6 +646,16 @@ function observeRanges(body: Stmt[], arrays: Map<string, ArrayDecl>): void {
     if (o.kind === "element" || o.kind === "store") {
       const index = o.index as NumExpr & { range?: [number, number] }, r = SEEN.get(index), a = arrays.get(o.array as string);
       if (r && a && r[0] >= 0 && r[1] < a.length) { index.range = r; RANGED.n++; }
+    }
+    // The sides of a product or a quotient (of a reading from 0 up, only a range at or above zero, as ranges.ts gives).
+    if (o.kind === "binary" && (o.op === "*" || o.op === "/" || o.op === "%")) {
+      // (And the answer's, which a copy of it into a field holding a multiple goes over only the bits of.)
+      const r = SEEN.get(o as unknown as NumExpr);
+      if (r && (!o.unsigned || r[0] >= 0)) (o as { range?: [number, number] }).range = r;
+      for (const side of [o.left, o.right] as (NumExpr & { range?: [number, number] })[]) {
+        const r = SEEN.get(side);
+        if (r && side.kind !== "const" && (!o.unsigned || r[0] >= 0)) { side.range = r; RANGED.arith++; }
+      }
     }
     Object.values(o).forEach(walk);
   };
@@ -693,6 +716,12 @@ function programWithCalls(seed: number, recursion = false) {
 
   function value(sc: Scope, depth: number): NumExpr {
     if (r.next() < 0.08) return { kind: "element", array: nums.id, index: index(sc, nums), at };
+    // A product of two values, a quotient or a remainder (step 4): signed or read from 0 up, by a value or a constant.
+    if (r.next() < 0.1) {
+      const op = r.pick(["*", "/", "%"] as const);
+      const side = (): NumExpr => (r.next() < 0.3 ? k(r.pick([...EDGES, 3, 10, 16, -5, 255, 65536])) : depth < 2 && r.next() < 0.2 ? value(sc, depth + 1) : v(r.pick(sc.nums)));
+      return { kind: "binary", op, left: side(), right: side(), ...(op !== "*" && r.next() < 0.35 ? { unsigned: true } : {}), at, label: "" };
+    }
     const x = r.int(14);
     const fs = callable(sc, "number");
     if (depth < 3 && x >= 11 && fs.length) return { kind: "call", call: call(r.pick(fs), sc, depth) };
@@ -865,7 +894,7 @@ describe("the emitter, calls in a map of our own", () => {
     } finally {
       CALLS.whole = false;
     }
-    if (process.env.EMITTER_LEFT) console.log(taken, texts, numbers, RANGED.n, [...left].sort((a, b) => b[1] - a[1]));
+    if (process.env.EMITTER_LEFT) console.log(taken, texts, numbers, RANGED.n, RANGED.arith, emitterCounts.products, emitterCounts.quotients, [...left].sort((a, b) => b[1] - a[1]));
     expect(texts).toBeGreaterThan(3000);
     expect(RANGED.n).toBeGreaterThan(1000);
     expect(taken).toBeGreaterThan(2950);

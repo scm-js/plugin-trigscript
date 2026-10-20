@@ -154,6 +154,13 @@ export interface Region { id: string; cells: number; values?: number[] }
  */
 export const STACK = "@stack";
 
+/**
+ * A trigger's bytes in memory (layout.ts lays a map of our own's out one after another): a next pointer moved on by
+ * this much goes to the trigger after the one it named — how a trigger walks a run of triggers it is run between
+ * (`Emitter.product`, `Emitter.divide`).
+ */
+export const TRIGGER_BYTES = 2408;
+
 /** The most conditions and actions a trigger of the game holds. */
 export const MOST_CONDS = 16;
 export const MOST_ACTS = 64;

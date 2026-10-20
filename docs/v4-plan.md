@@ -3518,7 +3518,8 @@ found what they left out; where a step moved, its old number is given.
 1. Calls ✓ (#35), and recursion ✓ (#37).
 2. Texts with numbers in them ✓ (#38). Texts as values moved to 8.
 3. Arrays of a fixed length ✓ (#39). Arrays that grow moved to 9.
-4. **Numbers.** A product, a quotient and a remainder of two values and by a constant, signed and `u32`; `&` `|` `^`
+4. **Numbers.** (Part 1 ✓: products, quotients and remainders — "Products and quotients on our own backend".)
+   A product, a quotient and a remainder of two values and by a constant, signed and `u32`; `&` `|` `^`
    as values; a shift by a value; `trunc`. Fixed point: `fmul`, `fdiv`, `c / x` (the emitter's reciprocal exists),
    `sqrt`, `sin`, `cos`, `atan2` (`tan` and `hypot` come down to these). `u8` and `u16` variables (saturating
    `bits`). Random numbers: `random()`, `randomInt`, seeded as `f_randomize` seeds them (the Randomize switch), each
@@ -3900,7 +3901,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 1 Calls and recursion | 33 of 33 |
 | 2 Texts with numbers | 6 of 6 |
 | 3 Arrays of a fixed length | 53 of 54 |
-| 4 Numbers | 0 of 59 |
+| 4 Numbers | 17 of 59 |
 | 5 The game's conditions and actions | 0 of 193 |
 | 6 The game's memory | 0 of 49 |
 | 7 Programs, owners and players | 1 of 22 |
@@ -3967,6 +3968,63 @@ the ledger is the list it can be written again from at 4.0.
   JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
   `a >> 0` is refused where `a >> 1` to `a >> 31` are taken; `Math.tan` and `Math.hypot` are refused as what they
   become (`Math.sin`, a product).
+
+### Products and quotients on our own backend (2026-10-20)
+
+Step 4, part 1: `a * b` of two values, `a / b` and `a % b` of two values and by a constant, signed (towards zero, the
+remainder with the dividend's sign) and `u32`, by 0 giving 0 as the simulator has it (`compiler/backend/emit.ts`,
+`Emitter.product`, `divideByConst`, `divide`). Each is written where it is used, not called; the value ranges decide
+how many bits it goes over.
+
+- **A product** tests the side the ranges leave fewer bits a bit at a time, where it is (a masked condition, free in
+  Remastered), and adds the other side for each bit set. When the tested side has 8 bits or fewer and the other side's
+  multiples can be fields of their own — a variable the plan does not copy, or a scratch value with few bits — each bit
+  is one trigger adding the other side times the bit (13 ns, 23 set). Otherwise Horner's way: the product so far
+  doubles in one action whose number is its own destination, in a trigger that also moves its own next pointer on a
+  trigger each time it runs, so it walks a run of bit triggers laid out one after another with nothing pointing it;
+  the other side is added from one shared trigger (about 70 ns a bit) or a field per bit (46). A side below zero is its
+  magnitude, the product negated as it comes out of the doubling trigger (its action pointed at a scratch cell and made
+  a subtraction from `MAX`). eudplib's product routes its operand through a call twice a bit, about 95 ns.
+- **A quotient or a remainder by a constant** is eudplib's chain by a constant, inlined: a trigger for each bit the
+  quotient can have, as many as the ranges leave the dividend, groups of eight that cannot take anything jumped over;
+  one chain for a dividend below zero and one for the rest, each gathering the answer with its sign in one scratch cell.
+- **A quotient or a remainder of two values** is long division with the remainder (and the quotient) doubling in such a
+  trigger: a step is the dividend's bit added, then one trigger shared by every step that takes the divisor away when it
+  fits — the divisor set into its two fields once, whatever the number of steps. A dividend below zero is read as itself
+  less 1, whose clear bits are its magnitude's set ones (a run of steps of its own). About 80 ns a step, as many as the
+  dividend has bits; eudplib's division routes its divisor into two fields of each of 32 steps first, about 6.5 µs.
+- **What the plan copies is routed, not kept.** A variable the plan copies into its places after each write (one set
+  from itself times something, or from a product, a quotient or a cell jumped into: `Scope.heavy`), or a scratch value
+  such a routine fills, would have every field holding a multiple of it filled a bit at a time at each write. So such
+  an operand is routed into the routine's fields where the routine starts (56 ns a field, `setTo`, `routeFed`), and a
+  multiple of it is never asked for.
+
+Fixed on the way: a fill folded into a target with no other place (`apart` when the target is an operand, its scratch
+cell's conditions and routes rewritten with its actions); a copy into fields holding multiples goes over only the bits
+the value's range allows (`Copy.top`, now in a map of our own's layout too).
+
+| `probes/own-numbers.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 200 products of numbers the ranges cannot bound (frame 4) | **0.700 ms** | 0.943 ms |
+| 200 quotients and remainders by constants (frame 6) | 0.572 ms | 0.730 ms |
+| 200 quotients of two values (frame 8) | 0.848 ms | 1.175 ms |
+| 200 remainders of two values (frame 10) | 0.750 ms | 1.148 ms |
+| 200 products and quotients of small numbers (frame 12) | **0.514 ms** | 0.764 ms |
+
+The first versions were slower than eudplib's: 2.08 ms for the products, which had every operand's multiples as
+places — a variable set from itself had them filled a bit at a time on every write (6 µs a turn). The table is after
+the routed operands and Horner's way. Each frame also carries the probe's own `x = x * 1103515245 + 12345`, an
+existing path that copies `x` a bit at a time into the multiples its uses keep: most of what is left in frames 4–10.
+
+Checked: random programs with products, quotients and remainders of values and constants, signed and `u32`, with and
+without the ranges a run shows (of the sides and the answers, about 9,600 sides), at every edge (`−2^31 / −1`, by 0,
+divisors past 2^31) — as written, as graphs and from the laid-out bytes; the ledger's step 4 scripts against the
+simulator; `probes/own-numbers.ts` built both ways, its ten lines the same at the same frames, every one ok.
+
+Next for these (before they are as far past eudplib as arrays are): a divisor whose range is small (`b` in 1 … 13) jumps
+into a chain by each constant (about 240 ns where the doubling takes 900, at a chain's size each); a variable set from
+itself times a constant (the LCG above) worked out by a product into a scratch value instead of copied; a shared routine
+when a program has many divisions (each written out is up to 75 triggers, 180 KB of the payload).
 
 ## Part C — the game, pushed
 

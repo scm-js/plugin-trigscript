@@ -15,7 +15,7 @@
  * flags (4: preserved) and 28 bytes of players. A condition or an action names a dword by its EPD (its distance from
  * the deaths table in dwords) in its player field; a mask goes in its first field, with 'SC' in its last.
  */
-import { END, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
+import { END, TRIGGER_BYTES, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { GAME_TICK, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 
 export const STRINGS = 0x191943c8;
@@ -24,7 +24,7 @@ const CURRENT_PLAYER = 0x6509b0;
 const TRIGGER_WAIT = 0x6509a0;
 const TRIGGER_LISTS = 0x51a280; // a player's list: 12 bytes, +4 its last node, +8 its first
 const MASKED = 0x4353; // 'SC'
-const NODE = 2408;
+const NODE = TRIGGER_BYTES;
 const COMPARE = { atLeast: 0, atMost: 1, exactly: 10 } as const;
 const MODIFIER = { set: 7, add: 8, subtract: 9 } as const;
 
@@ -110,7 +110,9 @@ function expandCopies(graph: Graph): { graph: Graph; routed: Set<string> } {
     if (!scaled.length) return;
     const chunks = <X,>(xs: X[]) => Array.from({ length: Math.ceil(xs.length / 64) || 1 }, (_, k) => xs.slice(64 * k, 64 * k + 64));
     chunks(scaled).forEach((part, k) => out.push({ label: bits(k), conds: [], acts: part.map((p) => ({ dword: p.dword, modifier: "set", value: p.add })) }));
-    for (let bit = 0; bit < 32; bit++) chunks(scaled).forEach((part, k) => out.push({
+    // (Only the bits the value can have, when its range is known never below zero.)
+    const bits32 = t.copy.top === undefined ? 32 : Math.max(1, 32 - Math.clz32(t.copy.top));
+    for (let bit = 0; bit < bits32; bit++) chunks(scaled).forEach((part, k) => out.push({
       label: `${t.label}.bit${bit}.${k}`,
       conds: [{ dword: from, compare: "atLeast", value: 1, mask: 2 ** bit }],
       acts: part.map((p) => ({ dword: p.dword, modifier: "add", value: u((p.scale ?? 1) * 2 ** bit) })),
