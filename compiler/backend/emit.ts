@@ -215,7 +215,7 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
       case "read": {
         const r = o.read as { source: string; record?: { type: number }; fact?: string; of?: string };
         if (r.source === "condition") return undefined;
-        if (r.source === "player") return r.fact === "left" ? "whether a player has left (a map of our own does not know the map's slots yet: step 7)" : undefined;
+        if (r.source === "player") return undefined;
         return undefined;
       }
       case "cond": return undefined;
@@ -405,18 +405,34 @@ const FORGET_COUNTS: ActionRecord = { location: 0, text: 0, wav: 0, time: 0, pla
  * that line), and the player at this computer.
  */
 const CENTRE_LINE = 0x640b60 + 218 * 12, CENTRE_BYTES = 218, FIRST_FREE_UNIT = 0x628438, LOCAL_PLAYER = 0x512684;
+/** The players' trigger lists: 12 bytes each, +4 the last node, +8 the first (the list's own end, ~(list + 4), when empty). */
+export const TRIGGER_LISTS = 0x51a280;
 /** Where the game keeps the current player: whom Display Text shows to, and what "the current player" names. */
 const CURRENT_PLAYER_ADDRESS = 0x6509b0;
 /**
- * The players a print goes to, a slot each (a map of our own): the owner for the current player; Players 1 to 8; All
- * Players the eight slots, whoever plays them (a slot nobody plays shows nothing). Null for a force, which needs the
- * map's slots.
+ * The map's player settings, as a map of our own needs them (TrigScript 4, step 7): the slots a human or a computer
+ * plays (0-based, P1 to P8), and each slot's force (0 to 3). Who a program runs for, who All Players and a force are,
+ * whether a player can have left.
  */
-function playersOf(to: number, owner: number | undefined): number[] | null {
-  if (to === PlayerGroup.CurrentPlayer) return [owner ?? 0];
-  if (to >= 0 && to < 8) return [to];
-  if (to === PlayerGroup.AllPlayers) return [0, 1, 2, 3, 4, 5, 6, 7];
+export interface MapPlayers { slots: number[]; forces: number[] }
+/** With no map: the eight slots, all in the first force (a new map's settings). */
+export const ANY_PLAYERS: MapPlayers = { slots: [0, 1, 2, 3, 4, 5, 6, 7], forces: [0, 0, 0, 0, 0, 0, 0, 0] };
+
+/**
+ * The players a group stands for, a slot each, as the Python side's `group_slots` has them: a player is itself; All
+ * Players and a force the slots of the map a human or a computer plays (of that force). Null for anything else.
+ */
+export function groupSlots(group: number, players: MapPlayers): number[] | null {
+  if (group >= 0 && group < 8) return [group];
+  if (group === PlayerGroup.AllPlayers) return [...players.slots];
+  if (group >= PlayerGroup.Force1 && group <= PlayerGroup.Force4) return players.slots.filter((p) => players.forces[p] === group - PlayerGroup.Force1);
   return null;
+}
+
+/** The players a print goes to, a slot each (a map of our own): the owner for the current player, else the group's. */
+function playersOf(to: number, owner: number | undefined, players: MapPlayers = ANY_PLAYERS): number[] | null {
+  if (to === PlayerGroup.CurrentPlayer) return [owner ?? 0];
+  return groupSlots(to, players);
 }
 
 /** A unit type's flingy, and the flingy tables a top speed is written into (the Python side's). */
@@ -489,6 +505,8 @@ class Scope {
   whyOf = new Map<Stmt, { why: string; never: boolean }>();
   /** A map of our own: the slot of the program's owner, the current player while it runs. */
   owner: number | undefined;
+  /** A map of our own: the map's player settings. */
+  players: MapPlayers = ANY_PLAYERS;
   /** Whether a condition taken reads the game's counts, which an action that makes or moves units leaves behind (`MOVES_UNITS`). */
   counts = false;
   readonly decls: Map<string, VarDecl>;
@@ -990,8 +1008,8 @@ class Scope {
       case "sleep": return this.native || this.island(s);
       case "print":
         // (Display Text shows to the current player: a text for others goes to each player of its group in turn —
-        // Players 1 to 8, All Players. A force needs the map's slots, which a map of our own does not know yet.)
-        if (this.native && playersOf(s.to, this.owner) === null) return this.no("a text shown to a force (a map of our own does not know the map's slots yet: step 7)") || this.island(s);
+        // Players 1 to 8, All Players, a force: the map's slots.)
+        if (this.native && playersOf(s.to, this.owner, this.players) === null) return this.no("a text shown to a group of players other than P1 to P8, All Players and the forces") || this.island(s);
         if (this.native && s.position === "center" && centreBytes(s.parts) > CENTRE_BYTES) return this.no(`a text at the centre longer than its line (${CENTRE_BYTES} bytes)`) || this.island(s);
         if (this.native && (s.position === "chat" || s.position === "center") && s.parts.every((p) => this.printed(p))) return true;
         return this.island(s);
@@ -2131,7 +2149,7 @@ class Emitter {
    * own computer alone the text written into that line (the template is the line itself: `template`'s `at`).
    */
   centre(s: Extract<Stmt, { kind: "print" }>): void {
-    const players = playersOf(s.to, this.scope.owner)!, owner = this.scope.owner ?? 0;
+    const players = playersOf(s.to, this.scope.owner, this.scope.players)!, owner = this.scope.owner ?? 0;
     const current = (p: number): Item => ({ act: { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "set", value: p } });
     for (const p of players) {
       if (p !== owner) this.open().items.push(current(p));
@@ -2162,7 +2180,7 @@ class Emitter {
       : { dword: { game: 0 }, modifier: "set", value: 0, show: this.template(s.parts) };
     // (For others than the owner: Display Text with each of them the current player in turn — it shows on the computer
     // of the player who is, and of nobody when nobody plays that slot — then the owner again.)
-    const players = playersOf(s.to, this.scope.owner)!;
+    const players = playersOf(s.to, this.scope.owner, this.scope.players)!;
     const owner = this.scope.owner ?? 0;
     const current = (p: number): Item => ({ act: { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "set", value: p } });
     this.open().items.push(...(players.length === 1 && players[0] === owner ? [{ act: show }] : [...players.flatMap((p) => [current(p), { act: { ...show } }]), current(owner)]));
@@ -3663,11 +3681,14 @@ class Emitter {
     }
     // Every fall-through said, so that dropping a trigger leaves the one before it going where it went.
     this.protos.forEach((p, i) => { if (p.next === undefined) p.next = this.protos[i + 1]?.label ?? END; });
-    // Empty triggers dropped: their labels stand for where they went.
+    // Empty triggers dropped: their labels stand for where they went. (Not the first when it goes elsewhere than the
+    // trigger after it — the walk comes into the graph at its first trigger, so the jump would be lost: `let done =
+    // false` as a program's first statement set it true.)
     const alias = new Map<string, string>();
     const kept: Proto[] = [];
-    for (const p of this.protos) {
-      if (p.conds.length === 0 && p.items.length === 0 && !p.keep && !this.restores.get(p.label)?.length) alias.set(p.label, p.next!);
+    for (const [i, p] of this.protos.entries()) {
+      const entry = i === 0 && p.next !== this.protos[1]?.label;
+      if (p.conds.length === 0 && p.items.length === 0 && !p.keep && !entry && !this.restores.get(p.label)?.length) alias.set(p.label, p.next!);
       else kept.push(p);
     }
     const resolve = (l: string): string => {
@@ -3956,8 +3977,10 @@ class Emitter {
     let falls = false;
     // (Nor one made to stay: an empty trigger of a run a doubling trigger walks, whose place in the run is its being there.)
     const stays = new Set(this.protos.filter((p) => p.keep).map((p) => p.label));
+    // (Nor the first when it goes elsewhere than the trigger after it: the walk comes into the graph there.)
     triggers.forEach((t, i) => {
-      const idle = t.label !== exit && !t.conds.length && !t.acts.length && !t.copy && !t.island && !t.call && !fielded.has(t.label) && !stays.has(t.label);
+      const entry = i === 0 && t.next !== undefined && t.next !== triggers[1]?.label;
+      const idle = t.label !== exit && !entry && !t.conds.length && !t.acts.length && !t.copy && !t.island && !t.call && !fielded.has(t.label) && !stays.has(t.label);
       if (idle && (t.next === undefined || !falls)) on.set(t.label, t.next ?? triggers[i + 1].label);
       else falls = t.next === undefined;
     });
@@ -4675,11 +4698,13 @@ class Rewriter {
   /** A player's race or slot, or supply, which a map of our own reads from memory (`fact`): one player, known. */
   facts(r: ReadSource): r is Extract<ReadSource, { source: "player" | "supply" }> {
     const one = r.source !== "condition" && (r.player <= 11 || (r.player === CURRENT_PLAYER && this.owner !== undefined));
-    return one && (r.source === "supply" || (r.source === "player" && (r.fact === "race" || r.fact === "slot")));
+    return one && (r.source === "supply" || r.source === "player");
   }
 
   /** The program's owner, the current player while it runs (a map of our own). */
   owner?: number;
+  /** The map's player settings (a map of our own). */
+  players: MapPlayers = ANY_PLAYERS;
 
   /** Each `rose()` and `once()`'s latch: a variable of the emitter's own, by the place in the script. */
   latches = new Map<BoolExpr, string>();
@@ -4700,6 +4725,17 @@ class Rewriter {
       return { kind: "binary", op: ">>>", left: memoryRead(addr & ~3, u(0xff * 2 ** sh), where), right: k(sh), ...at } as NumExpr;
     };
     const eq = (x: NumExpr, n: number): BoolExpr => ({ kind: "compare", op: "==", left: x, right: k(n), ...at });
+    if (r.source === "player" && r.fact === "left") {
+      // Whether a player who was in the map's settings as a human or a computer is gone, as eudplib's f_playerexist
+      // asks: their trigger list empty (the game empties it when they leave, and it is empty for a slot nobody took).
+      // A slot the map gives nobody: 0.
+      // (One condition: the list's first node, read where it is, exactly the list's end.)
+      const out: Stmt[] = [{ kind: "assign", target, value: k(0), ...where }];
+      if (p >= 8 || !this.players.slots.includes(p)) return out;
+      const record: ConditionRecord = { location: 0, player: u((TRIGGER_LISTS + 12 * p + 8 - DEATHS_TABLE) / 4), amount: u(~(TRIGGER_LISTS + 12 * p + 4)), unitId: 0, comparison: 10, type: DEATHS_TYPE, resource: 0, flags: 0, mask: 0 };
+      out.push({ kind: "if", cond: { kind: "cond", record }, then: [{ kind: "assign", target, value: k(1), ...where }], ...where } as Stmt);
+      return out;
+    }
     if (r.source === "player") {
       const out: Stmt[] = [{ kind: "assign", target, value: byte(PLAYER_BYTES[r.fact as "race" | "slot"] + p), ...where }];
       if (r.fact === "slot") out.push({ kind: "if", cond: eq(v(target), 5), then: [{ kind: "assign", target, value: k(1), ...where }], ...where } as Stmt);
@@ -5213,7 +5249,7 @@ export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0, products: 0
  * call of a function of the Python side's, and nothing read that the body did not write first (there is no one to
  * copy it in; a copy within the body is made of triggers by the layout). Returns the graph, or why it cannot be.
  */
-export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number): Graph | string {
+export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH, owner?: number, players: MapPlayers = ANY_PLAYERS): Graph | string {
   // (Every statement must be the emitter's here, so a rewriting it would not take is refused whichever way it goes:
   // no trial is needed.)
   const take = () => true;
@@ -5235,6 +5271,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
       const rw = new Rewriter(`${key}.f${bodies.size}`, take, true, functions, f.result?.kind);
       rw.arrays = arrays;
       rw.owner = owner;
+      rw.players = players;
       rw.bits = tops;
       b = rw.stmts(plainFns(inlined(f.body, functions)) as Stmt[]);
       bodies.set(id, b);
@@ -5244,6 +5281,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   const rules = (scope: Scope) => {
     scope.native = true;
     scope.owner = owner;
+    scope.players = players;
     scope.functions = functions;
     scope.arrays = arrays;
     scope.bodyOf = bodyOf;
@@ -5251,6 +5289,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   const rw = new Rewriter(key, take, true, functions);
   rw.arrays = arrays;
   rw.owner = owner;
+  rw.players = players;
   rw.bits = tops;
   const block = rw.stmt(plainFns(inlined({ kind: "block", body, at: body[0]?.at } as Stmt, functions)) as Stmt);
   const s: Stmt = block.length === 1 ? block[0] : ({ kind: "block", body: block, at: body[0]?.at } as Stmt);

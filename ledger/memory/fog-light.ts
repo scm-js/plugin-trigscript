@@ -1,4 +1,4 @@
-// ledger: step 7, refused: a map of our own has one program; this script has 2
+// ledger: step 7, takes
 // The fog library: a disc of fog lit for this frame, its size a value of the program:
 // `light(P1, x, y, size)`.
 // The library adds a program of its own, the canvas that wipes the fog every frame.

@@ -1,4 +1,4 @@
-// ledger: step 7, refused: a map of our own has one program; this script has 2
+// ledger: step 7, takes
 // Two programs in one map, each with an owner of its own, running side by side.
 program(
   () => {

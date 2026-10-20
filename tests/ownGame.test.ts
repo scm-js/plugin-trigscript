@@ -7,7 +7,8 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { compileScript } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
-import { emitOwn } from "../compiler/backend/own";
+import { emitOwn, type Own } from "../compiler/backend/own";
+import type { MapPlayers } from "../compiler/backend/emit";
 import type { Graph } from "../compiler/backend/graph";
 import { layout } from "../compiler/backend/layout";
 import { encodeTriggers, emptyTrigger, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
@@ -20,7 +21,7 @@ function own(body: string) {
   expect(r.diagnostics).toEqual([]);
   const o = emitOwn(r);
   if (typeof o === "string") throw new Error(o);
-  return { ...o, strings: r.strings };
+  return { ...o, graph: o.runs[0].graph, strings: r.strings };
 }
 const games = (g: Graph) => g.triggers.flatMap((t) => t.conds.filter((c) => c.game).map((c) => c.game!));
 
@@ -173,5 +174,90 @@ describe("a map of our own, the game's tables", () => {
     // (Hit points are kept 256 to a point: the read divided by 256 — a quotient by a constant.)
     const r = own(`const hp = stats(units.TerranMarine).maxHp;\nprint(\`\${hp}\`);`).graph;
     expect(r.triggers.flatMap((t) => t.conds).filter((c) => "game" in c.dword && c.mask !== undefined).length).toBeGreaterThanOrEqual(24);
+  });
+});
+
+describe("a map of our own, programs, owners and players", () => {
+  const script = (source: string, players?: MapPlayers) => {
+    lib ??= defaultLib();
+    const r = compileScript(ts, { "main.ts": source }, defaultScriptNames(), { lib, emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    return emitOwn(r, players);
+  };
+  const runsOf = (o: Own | string) => {
+    if (typeof o === "string") throw new Error(o);
+    return o.runs;
+  };
+  const ids = (g: Graph) => {
+    const out = new Set<string>();
+    const walk = (x: unknown): void => {
+      if (Array.isArray(x)) x.forEach(walk);
+      else if (x && typeof x === "object") for (const [k, v] of Object.entries(x)) k === "var" && typeof v === "string" ? out.add(v) : walk(v);
+    };
+    walk(g.triggers);
+    return out;
+  };
+
+  it("has a run for each program, and one for each player of a per-player program in the order of the slots", () => {
+    const map = { slots: [0, 2, 5], forces: [0, 1, 0, 0, 0, 1, 0, 0] };
+    const runs = runsOf(script(`program(() => { print("a"); });\nprogram(() => { print("b"); }, { owner: [P3, P1] });\nprogram(() => { print("c"); }, { owner: AllPlayers });\nprogram(() => { print("d"); }, { owner: players.Force2 });\nprogram(() => { print("e"); }, { owner: [P6, P3] });`, map));
+    // (A list of owners, All Players and a force each run once for each of their players the map gives a slot.)
+    expect(runs.map((r) => [r.program, r.player])).toEqual([[0, 0], [1, 0], [1, 2], [2, 0], [2, 2], [2, 5], [3, 5], [4, 2], [4, 5]]);
+  });
+
+  it("gives each run variables of its own, but for the shared ones, which are its program's", () => {
+    const runs = runsOf(script(`program(() => {\n  let mine = 0;\n  let total = shared(0);\n  mine += 1;\n  total += mine;\n  print(\`\${mine} \${total}\`);\n}, { owner: [P1, P2] });\nprogram(() => {\n  let total = shared(0);\n  total += 2;\n  print(\`\${total}\`);\n}, { owner: [P1, P2] });`));
+    const [a, b, c, d] = runs.map((r) => [...ids(r.graph)].filter((id) => !id.startsWith("@")));
+    const named = (xs: string[], name: string) => xs.filter((id) => id.startsWith(`${name}#`)).sort();
+    // (The first program's `total` the same cell in its two runs, its `mine` not; the second's `total` its own.)
+    expect(named(a, "total")).toEqual(named(b, "total"));
+    expect(named(a, "mine")).not.toEqual(named(b, "mine"));
+    expect(named(c, "total")).toEqual(named(d, "total"));
+    expect(named(c, "total")).not.toEqual(named(a, "total"));
+    // (And no label of one run is another's.)
+    const labels = runs.map((r) => new Set(r.graph.triggers.map((t) => t.label)));
+    expect(labels.every((l, i) => labels.every((m, j) => i === j || [...l].every((x) => !m.has(x))))).toBe(true);
+  });
+
+  it("refuses a program owned by Players 9 to 12, and one the map gives nobody to run", () => {
+    expect(script(`program(() => { print("x"); }, { owner: P9 });`)).toMatch(/a program owned by P9: a program runs for players 1 to 8, All Players or a force/);
+    expect(script(`program(() => { print("x"); }, { owner: players.Force3 });`, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] })).toMatch(/no human or computer player of this map is among the program's owners/);
+  });
+
+  it("asks whether a player has left in one condition: their list's first node exactly the list's own end", () => {
+    const runs = runsOf(script(`program(() => {\n  if (hasLeft(P2)) print("gone");\n});`));
+    const conds = runs[0].graph.triggers.flatMap((t) => t.conds).filter((c) => c.game);
+    expect(conds.map((c) => c.game)).toMatchObject([{ type: 15, comparison: 10, player: (0x51a28c + 8 - 0x58a364) / 4 + 2 ** 32, amount: (~0x51a290 >>> 0) }]);
+    // (A slot the map gives nobody has not left: no condition.)
+    const none = runsOf(script(`program(() => {\n  if (hasLeft(P3)) print("gone");\n});`, { slots: [0, 1], forces: [0, 1, 0, 0, 0, 0, 0, 0] }));
+    expect(none[0].graph.triggers.flatMap((t) => t.conds).filter((c) => c.game)).toEqual([]);
+  });
+
+  it("links each player's list to an entry of their own, alone in it, its next pointer at the list's end", () => {
+    const runs = runsOf(script(`program(() => { print("a"); });\nprogram(() => { print("b"); }, { owner: P2 });`));
+    const players = [0, 1, 3];
+    const texts = new Map<string, number>([["a", 7], ["b", 8]]);
+    const out = layout({ runs: runs.map((r) => ({ graph: r.graph, owner: r.player })), players, strings: 0, text: (s) => texts.get(s)!, arrays: new Map() });
+    // The start-up: each player's first and last trigger, the 61 between every player's.
+    const records = out.trig.length / 2400;
+    expect(records).toBe(2 * players.length + 61);
+    const owners = (k: number) => [...out.trig.subarray(2400 * k + 2372, 2400 * k + 2380)].flatMap((b, p) => (b ? [p] : []));
+    expect([owners(0), owners(1), owners(2), owners(3), owners(records - 1)]).toEqual([[0], [1], [3], players, [3]]);
+    const tv = new DataView(out.trig.buffer, out.trig.byteOffset);
+    const pv = new DataView(out.payload.buffer, out.payload.byteOffset);
+    const node = (addr: number, at: number) => pv.getUint32(addr - out.address + at, true);
+    for (const [k, p] of players.entries()) {
+      // (The last per-player trigger sets the list's last node's next pointer — the current player — to the entry.)
+      const entry = tv.getUint32(2400 * (records - players.length + k) + 320 + 20, true);
+      const list = 0x51a280 + 12 * p;
+      expect([node(entry, 0), node(entry, 4)]).toEqual([list + 4, ~(list + 4) >>> 0]);
+      // Its actions: the list made the entry alone, the entry's next pointer the gate's.
+      expect([0, 1].map((a) => (node(entry, 328 + 32 * a + 16) * 4 + 0x58a364) >>> 0)).toEqual([list + 8, list + 4]);
+      expect([node(entry, 328 + 20), node(entry, 328 + 32 + 20)]).toEqual([entry, entry]);
+      // The gate: one condition for each player before this one, their list empty.
+      const gate = node(entry, 328 + 64 + 20);
+      const conds = [0, 1, 2, 3].filter((c) => pv.getUint8(gate - out.address + 8 + 20 * c + 15) === 15);
+      expect(conds.length).toBe(players.filter((q) => q < p).length);
+    }
   });
 });

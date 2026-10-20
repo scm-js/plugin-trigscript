@@ -1,4 +1,4 @@
-// ledger: step 7, refused: a map of our own has one program; this script has 2
+// ledger: step 7, takes
 // The fog library: a video played in the fog, a frame of it every frame of the game: `await fog.play(P1, video)`.
 // A video comes only from a .video file the script imports, which a script of the ledger, one file, cannot:
 // this one has none, and the call is left out when the map is built.

@@ -1,4 +1,4 @@
-// ledger: step 7, refused: a map of our own has one program; this script has 2
+// ledger: step 7, takes
 // The fog library: columns lit for this frame, each as tall as an array of the program says, laid out
 // when the map is built: `fog.columns(P1, x, y, layout, heights)` (a bar chart, a raycaster's walls).
 // The library adds a program of its own, the canvas that wipes the fog every frame.
