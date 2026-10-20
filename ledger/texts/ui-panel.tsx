@@ -1,4 +1,4 @@
-// ledger: step 8, refused: JSX made while the game runs
+// ledger: step 8, takes
 // A title over the lines inside it, from `trigscript/ui`: `<Panel title={…}>…</Panel>`.
 import { Panel } from "trigscript/ui";
 program(async () => {

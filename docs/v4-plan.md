@@ -3554,7 +3554,8 @@ found what they left out; where a step moved, its old number is given.
    played, the leaver in a game of two.
 8. **Texts as values** (was half of 2). Part 1 ✓: texts known when built, chosen while the game runs — "Texts known
    when built on our own backend". Part 2 ✓: texts made while the game runs — "Texts made while the game runs on our
-   own backend". Part 3: JSX (`buildText`), a player's name and colour in a print, texts in arrays and records.
+   own backend". Part 3 ✓: JSX (`buildText`), a player's name and colour in a print, texts in arrays and records —
+   "JSX, names and arrays of texts on our own backend".
    Text variables and arrays; compared, searched, measured, repeated, split and
    joined; templates and JSX made while the game runs; `name()` and `color()` in a print; `ui.lines`.
 9. **Arrays that grow, and what stands on the heap** (was half of 3). `push`, `pop`, a length set, `through`, `Map`
@@ -3920,7 +3921,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 5 The game's conditions and actions | 197 of 198 |
 | 6 The game's memory | 50 of 50 |
 | 7 Programs, owners and players | 27 of 28 |
-| 8 Texts as values | 33 of 46 |
+| 8 Texts as values | 46 of 46 |
 | 9 Arrays that grow, the heap | 0 of 26 |
 | 10 Units | 0 of 99 |
 | 11 Tasks, `async` and errors | 0 of 44 |
@@ -3989,7 +3990,8 @@ the ledger is the list it can be written again from at 4.0.
   second until the program reaches it again (both builds; found writing `probes/own-fields.ts`, 2026-10-20).
 - A condition kept in a `const` is asked where the `const` is used: `const there = bring(…); centerLocation(…); if
   (there)` asks Bring after the move (both builds; found writing `probes/own-locations.ts`).
-- A map of our own: JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
+- A map of our own: JSX inside a program was "made while the game runs" even when it held nothing of the program's —
+  taken since step 8's part 3;
   (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
   `a >> 1` to `a >> 31` were taken, is the number itself since its part 2.)
 
@@ -4544,6 +4546,64 @@ in both builds — a gap of the front end's.
 
 *Open:* a text cut at 1,023 bytes counts its characters as its bytes (the Python side counts them again); the message
 the Python side shows once when a text is cut is not shown.
+
+### JSX, names and arrays of texts on our own backend (2026-10-20)
+
+Step 8, part 3 (`compiler/backend/texts.ts`), on part 2's run time. Step 8 is done: 46 of 46.
+
+- **JSX:** a buffer (`buildText`, read as `built`) is a made text of its own, a block like a variable's. Put together
+  from its start, or on from its end (the cursor at its bytes and characters); a component's buffer is copied into
+  its parent's; a buffer printed alone is shown as it is.
+- **A player's name and colour** in a print or a text: the name from the game's table of players (36 bytes a player
+  at 0x57EEE0, the name 11 in, as eudplib's `PName` reads it). For a player known when built, its length is a
+  condition a byte (where its first 0 is, no byte read), the first byte put alone and the rest copied a dword at a
+  time; the current player's, a byte at a time. The colour: the first shade of the player's colour (8 bytes a player at
+  0x581D76) and eudplib's table of the code nearest each colour of the palette (`_pcolor`).
+- **Arrays of texts and texts in records:** the front end's three arrays of numbers (where each cell's text is, the
+  block it owns, its length in characters) kept, each cell's text a block of its own laid out with the variables',
+  its EPD in the first array once the array is declared, its length in bytes in the second. A store makes the text
+  into the cell's block (through the scratch block when it reads the array); past the end, nothing. Up to 64 cells,
+  of a fixed length (one that grows is step 9's).
+
+**Through the current player** (part 2's run time made faster on the way, to beat eudplib's on every frame): a
+condition's or an action's player field of 13 is the dword the game's current player (0x6509B0) is the EPD of, so one
+write of the current player points every read and write after it there, and moving it on is an addition — eudplib's
+`cp` reads and writes. A read at EPD 13 (`peek(k(13))`) and a Set Deaths for player 13 are that, with no change to
+the emitter. Each function gives the current player back to the program's own (read once at its start) before it ends.
+
+- **Copy:** each byte of a dword the cursor may be at has its own two pointers; the current player pointed at the text's
+  dword, its bits read straight into a variable, pointed at the cursor's, written (two masked writes when the cursor is
+  inside a dword). Each read had put the address into its 32 conditions' player fields, a routing each.
+- **Known texts up to 256 bytes** (a block's room past its most): written, not copied — a function of the run time's
+  for each text, one trigger for each byte of a dword the cursor may be at, the current player moved on a dword at each
+  write, as eudplib writes a known text. Copied from a block, a known text was read as any made one.
+- **The cursor read in few places.** A variable read in an action's field is pinned: copied into each such place at
+  every write. Put, end and the known texts write through the current player, pointed at the cursor in one place each,
+  so a write of the cursor costs 11 routings, not 19; a known text's function sets how far the cursor goes in a
+  variable of its own and adds it once. Two traps on the way, each blowing the payload up several times: reading
+  `CE − SE` (a variable read at −1 is filled a bit at a time, at every write of either), and one variable shared by
+  every known text's function (copied into every one of them at each write).
+- **Only the run time's variables a program reads are declared:** a program with no made text pays nothing at its
+  start (own-leaver's start 0.005 → 0.003 ms).
+
+| Lifted game, Remastered's weights | Part 2 | Now | eudplib |
+| --- | ---: | ---: | ---: |
+| `own-made-texts` frame 2 (made, padded, a function's, clock, thousands) | 0.275 ms | **0.151 ms** | 1.391 ms |
+| `own-made-texts` frame 3 (trim, capitals, replace, read back, searched) | 1.291 ms | **0.714 ms** | 1.694 ms |
+| `own-made-texts` frame 4 (walked, sliced, typed, joined) | 0.540 ms | **0.418 ms** | 0.840 ms |
+| `own-jsx-texts` frame 2 (JSX with a number, a colour, a meter) | — | **0.069 ms** | 1.388 ms |
+| `own-jsx-texts` frame 3 (two names and two colours) | — | **0.031 ms** | 0.130 ms |
+| `own-jsx-texts` frame 4 (an array of texts, joined; records) | — | **0.190 ms** | 0.310 ms |
+
+Size: the known texts' functions cost room — `own-made-texts` 1.45 MB of payload (stacked, part 2's was 1.33 MB);
+copying every known text instead, 1.16 MB and frames of 0.204, 0.811 and 0.430 ms (`own-jsx-texts` 0.158, 0.074,
+0.239), still under eudplib's everywhere.
+
+Checked: `probes/own-jsx-texts.tsx` built both ways, the same lines and colour codes (eudplib pads with `\r`, which
+draws nothing); the 13 rows against the simulator (8 the same, 5 the same but the colour codes the simulator's log
+leaves out), every other row that takes as before (430 the same); the 20 `probes/own-*.ts` in the lifted game with the
+free dwords filled with ones, the same lines; `tests/emitter.test.ts` (JSX, a name and a colour from the game's memory,
+arrays of texts and records), its walker taking a player field of 13 as the current player.
 
 ### Triggers stacked (2026-10-20)
 

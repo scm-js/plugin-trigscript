@@ -1060,16 +1060,17 @@ describe("the emitter, a map of our own's texts", () => {
  * subtract stopping at 0; Display Text passed over), then its next pointer — as read after its actions — until one
  * with the top bit set. One pass: the programs sleep nowhere. Returns each variable's cell as the pass left it.
  */
-const laidOut = new WeakMap<Graph, { own: ReturnType<typeof layout>; texts: string[]; templates: string[] }>();
-function runOwn(g: Graph): Env {
+const laidOut = new WeakMap<Graph, { arrays: Map<string, number[]>; own: ReturnType<typeof layout>; texts: string[]; templates: string[] }>();
+/** `memory`: dwords of the game's as the map starts, by address (a player's name, their colour); `arrays`: the lists the graph reads. */
+function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>()): Env {
   // (Laid out once a graph: a test may walk one many times.)
   let done = laidOut.get(g);
-  if (!done) {
+  if (!done || (done.arrays !== arrays && (done.arrays.size || arrays.size))) {
     // (Strings by number: a printed text's template 1000 on, a text known when built 5000 on.)
     const templates = (g.templates ?? []).map((t) => t.id), texts: string[] = [];
     // (Every dword no trigger or data holds all ones: nothing reads them.)
-    const own = layout({ graph: g, strings: 0, owner: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays: new Map(), template: (id) => 1000 + templates.indexOf(id), free: 0xffffffff });
-    done = { own, texts, templates };
+    const own = layout({ graph: g, strings: 0, owner: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays, template: (id) => 1000 + templates.indexOf(id), free: 0xffffffff });
+    done = { arrays, own, texts, templates };
     laidOut.set(g, done);
   }
   const { own, texts, templates } = done;
@@ -1079,11 +1080,12 @@ function runOwn(g: Graph): Env {
   // (The payload follows strings of no length: no padding before its first trigger.)
   const base = own.address;
   const inside = (a: number) => a >= base && a + 4 <= base + bytes.length;
-  const game = new Map<number, number>();
+  const game = new Map<number, number>(memory);
   const rd = (a: number) => (inside(a) ? dv.getUint32(a - base, true) : game.get(a) ?? 0);
   const wr = (a: number, v: number) => (inside(a) ? dv.setUint32(a - base, u(v), true) : game.set(a, u(v)));
   const byte = (a: number) => dv.getUint8(a - base);
-  const at = (epd: number) => u(DEATHS + 4 * epd);
+  // (A player field of 13 is the current player: the dword whose EPD the game's current player is.)
+  const at = (epd: number) => u(DEATHS + 4 * (epd === 13 ? rd(0x6509b0) : epd));
   let pc = own.address;
   for (let steps = 0; !(pc & 0x80000000); steps++) {
     if (steps > 200_000_000) throw new Error("the payload does not end");
@@ -1217,13 +1219,13 @@ describe("a map of our own, memory at a value's address", () => {
 
 describe("a map of our own, texts made while the game runs", () => {
   /** What a one-program script prints, its payload walked from its bytes (one pass: it sleeps nowhere). */
-  const printed = (body: string): string[] => {
-    const r = compileScript(ts, { "main.ts": `program(() => {\n  let n = 0;\n  while (n < 12) n += 5;\n${body}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+  const printed = (body: string, file = "main.ts", memory?: Map<number, number>): string[] => {
+    const r = compileScript(ts, { [file]: `program(() => {\n  let n = 0;\n  while (n < 12) n += 5;\n${body}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
     expect(r.diagnostics).toEqual([]);
     const o = emitOwn(r);
     if (typeof o === "string") throw new Error(o);
     PRINTED.got = [];
-    runOwn(o.runs[0].graph);
+    runOwn(o.runs[0].graph, memory, o.values);
     return PRINTED.got;
   };
   const bytes = (...lines: string[]) => lines.map((l) => shown([...new TextEncoder().encode(l)]));
@@ -1243,6 +1245,37 @@ describe("a map of our own, texts made while the game runs", () => {
     const got = printed(`  const t = \`  \${n} ore, \${n * 2} gas  \`.trim();\n  print(\`\${t.length} \${t.charCodeAt(1)} \${t.indexOf("gas")} \${t.includes("ore")} \${t.startsWith("15")} \${t.endsWith("gas")} \${t < "16"} \${t > "15"} \${t.slice(4, 7)}\`);`);
     const t = "15 ore, 30 gas";
     expect(got).toEqual(bytes(`${t.length} ${t.charCodeAt(1)} ${t.indexOf("gas")} true true true true true ${t.slice(4, 7)}`));
+  });
+
+  it("puts JSX together a piece at a time, a colour chosen by a value among it", () => {
+    expect(printed(`  const c = n > 10 ? textColors.green : textColors.red;\n  print(<line>Wave {n} <cell color={c} /></line>);`, "main.tsx")).toEqual(bytes("\x04Wave 15 \x07■"));
+  });
+
+  it("prints a player's name and colour from where the game keeps them", () => {
+    // (Player 2: "Raynor" 11 bytes into their 36 at 0x57EEE0; the first shade of their colour, red's, 8 bytes a player
+    // at 0x581D76 — the code nearest it 8.)
+    const memory = new Map<number, number>();
+    const poke = (addr: number, byte: number) => memory.set(addr & ~3, ((memory.get(addr & ~3) ?? 0) + byte * 2 ** (8 * (addr & 3))) >>> 0);
+    [...new TextEncoder().encode("Raynor"), 0].forEach((b, j) => poke(0x57eeeb + 36 + j, b));
+    poke(0x581d76 + 8, 0x6f);
+    expect(printed("  print(`${name(P2)} ${color(P2)}joined, ${name(P2)}${name(P2)}`);", "main.ts", memory)).toEqual(bytes("Raynor \x08joined, RaynorRaynor"));
+  });
+
+  it("keeps an array of texts and a text in each row of records, written at a place that changes", () => {
+    const got = printed([
+      `  const names = ["Marine", "Marine", "Marine"];`,
+      `  let i = 0;`,
+      `  while (i < 2) i += 1;`,
+      `  names[i] = "Medic";`,
+      `  names[0] = \`\${names[i]} x\${n}\`;`,
+      // (Past the array's end: nothing written, as a number's array.)
+      `  names[i + 3] = "none";`,
+      `  print(names.join(", "));`,
+      `  const heroes = [{ name: "Raynor", hp: 5 }, { name: "Kerrigan", hp: 7 }];`,
+      `  heroes[i - 1].name = heroes[0].name + "!";`,
+      `  print(\`\${heroes[1].name} \${heroes[0].name.length} \${names[1] === "Marine"}\`);`,
+    ].join("\n"));
+    expect(got).toEqual(bytes("Medic x15, Marine, Medic", "Raynor! 6 true"));
   });
 });
 
