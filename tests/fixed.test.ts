@@ -93,6 +93,13 @@ describe("Math of fixed numbers, as the game computes it", () => {
     expect(printed("const a = Math.PI / 6 + (g - 3); const one = fixed(g) - 2; displayText(`${Math.sin(a)} ${Math.cos(one)} ${Math.tan(one)} ${Math.atan2(one, -one)} ${Math.sqrt(fixed(g) - 1)} ${Math.hypot(g, g + 1)}`);"))
       .toEqual(["0.5 0.5403 1.5573 2.3562 1.4142 5"]);
   });
+
+  it("the root of a whole number below zero is the largest, as it is read from 0 up — compared so too", () => {
+    // (Its value range once said 0, and the comparison was worked out the wrong way when the script was built.)
+    const r = compile(`program(() => { let w = -1; if (Math.sqrt(w) == 32767.99998474121) displayText("largest"); else displayText("0"); });`);
+    expect(r.diagnostics.map((d) => d.message)).toEqual([]);
+    expect(simulatePrograms(r.ir, 3, { strings: r.strings }).events.filter((e) => e.text).map((e) => e.text!)).toEqual(["largest"]);
+  });
 });
 
 describe("what a library's function knows when the script is built", () => {

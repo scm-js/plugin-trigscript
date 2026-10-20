@@ -10,7 +10,8 @@ import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarD
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
 import { END, SWITCHES, TRIGGER_BYTES, type Dword, type Graph, type Num } from "../compiler/backend/graph";
 import { layout } from "../compiler/backend/layout";
-import { fixedDiv, fixedMul, fixedText } from "../compiler/fixedMath";
+import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "../compiler/fixedMath";
+import { SIN_SCALE, atanTable, sinTable } from "../compiler/numbers";
 
 const U32 = 2 ** 32;
 const u = (n: number) => ((n % U32) + U32) % U32;
@@ -31,6 +32,18 @@ function num(e: NumExpr, env: Env): number {
       if (e.name === "fmul" || e.name === "fdiv") {
         see(e.args[0], a); see(e.args[1], b);
         const r = u(e.name === "fmul" ? fixedMul(a | 0, b | 0) : fixedDiv(a | 0, b | 0));
+        see(e, r);
+        return r;
+      }
+      if (e.name === "sin" || e.name === "cos" || e.name === "atan2") {
+        see(e.args[0], a); see(e.args[1], b);
+        const r = u(e.name === "atan2" ? fixedAtan2(a | 0, b | 0, TABLES.get(e.table!)!) : fixedSin(a | 0, b | 0, TABLES.get(e.table!)!, e.name === "cos"));
+        see(e, r);
+        return r;
+      }
+      if (e.name === "sqrt") {
+        see(e.args[0], a);
+        const r = u(fixedSqrt(a | 0, !!e.unsigned));
         see(e, r);
         return r;
       }
@@ -151,7 +164,7 @@ function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
   for (const s of list) {
     if (--budget.n < 0) throw new Error("too long");
     switch (s.kind) {
-      case "declare": env.set(s.decl.id, s.decl.kind === "boolean" ? (bool(s.init as BoolExpr, env) ? 1 : 0) : num(s.init as NumExpr, env)); break;
+      case "declare": env.set(s.decl.id, s.decl.kind === "boolean" ? (bool(s.init as BoolExpr, env) ? 1 : 0) : kept(s.decl.id, num(s.init as NumExpr, env))); break;
       case "assignBool": env.set(s.target, bool(s.value, env) ? 1 : 0); break;
       case "switch": {
         const v = num(s.value, env) | 0;
@@ -183,7 +196,7 @@ function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
         const v = (e: NumExpr | BoolExpr) => (["compare", "and", "or", "not", "test"].includes(e.kind) ? (bool(e as BoolExpr, env) ? 1 : 0) : num(e as NumExpr, env));
         const values = s.init?.map(v);
         const fill = s.fill !== undefined ? v(s.fill) : 0;
-        for (let i = 0; i < n; i++) env.set(cellKey(s.array, i), values ? values[i] ?? 0 : fill);
+        for (let i = 0; i < n; i++) env.set(cellKey(s.array, i), kept(s.array, values ? values[i] ?? 0 : fill));
         break;
       }
       case "print": {
@@ -201,12 +214,12 @@ function run(list: Stmt[], env: Env, budget: { n: number }): Flow {
         r.value = s.value === undefined ? 0 : r.kind === "boolean" ? (bool(s.value as BoolExpr, env) ? 1 : 0) : num(s.value as NumExpr, env);
         return "return";
       }
-      case "assign": env.set(s.target, num(s.value, env)); break;
+      case "assign": env.set(s.target, kept(s.target, num(s.value, env))); break;
       case "store": {
         const i = num(s.index, env);
         see(s.index, i);
         const v = ["compare", "and", "or", "not", "test"].includes(s.value.kind) ? (bool(s.value as BoolExpr, env) ? 1 : 0) : num(s.value as NumExpr, env);
-        if (i < WRITABLE.get(s.array)!) env.set(cellKey(s.array, i), v);
+        if (i < WRITABLE.get(s.array)!) env.set(cellKey(s.array, i), kept(s.array, v));
         break;
       }
       case "block": { const f = run(s.body, env, budget); if (f !== "next") return f; break; }
@@ -246,6 +259,9 @@ const FUNCTIONS = new Map<string, FuncDecl>();
 /** The program's arrays a program stores into, by id: their lengths. A cell's value is in the environment. */
 const WRITABLE = new Map<string, number>();
 const cellKey = (id: string, i: number) => `cell:${id}:${i}`;
+/** The program's `u8` and `u16` variables and arrays, by id: their tops. A store into one is stopped there, read from 0 up. */
+const TOPS = new Map<string, number>();
+const kept = (id: string, v: number) => (TOPS.has(id) ? Math.min(v >>> 0, TOPS.get(id)!) : v);
 /** The variables some array is indexed by (the Python side may keep offsets beside them). */
 const INDEXED = new Set<string>();
 
@@ -491,6 +507,7 @@ function program(seed: number) {
   TABLES.clear();
   FUNCTIONS.clear();
   WRITABLE.clear();
+  TOPS.clear();
   const arrays = new Map<string, ArrayDecl>();
   for (const [name, length] of [["T", 5 + r.int(9)], ["L", 256 + r.int(40)]] as const) {
     // (Mostly small numbers, which the emitter reads where they are; now and then a wide one, which it leaves.)
@@ -689,7 +706,7 @@ function observeRanges(body: Stmt[], arrays: Map<string, ArrayDecl>): void {
     }
     // The sides of a product or a quotient (of a reading from 0 up, only a range at or above zero, as ranges.ts gives).
     // (Of a fixed product or quotient, its two arguments and its answer, read as numbers.)
-    if (o.kind === "intrinsic" && (o.name === "fmul" || o.name === "fdiv")) {
+    if (o.kind === "intrinsic" && (o.name === "fmul" || o.name === "fdiv" || o.name === "sqrt" || o.name === "sin" || o.name === "cos" || o.name === "atan2")) {
       for (const side of [...(o.args as NumExpr[]), o as unknown as NumExpr] as (NumExpr & { range?: [number, number] })[]) {
         const r = SEEN.get(side);
         if (r && side.kind !== "const") { side.range = r; RANGED.arith++; }
@@ -725,11 +742,14 @@ function programWithCalls(seed: number, recursion = false) {
   TABLES.clear();
   FUNCTIONS.clear();
   WRITABLE.clear();
+  TOPS.clear();
   type Scope = { nums: VarDecl[]; bools: VarDecl[]; returns?: "number" | "boolean" | "void"; calls: FuncDecl[] };
   const v = (d: VarDecl): NumExpr => ({ kind: "var", id: d.id });
   const k = (n: number): NumExpr => ({ kind: "const", value: n });
   const bin = (op: "+" | "-" | "*" | "<<", left: NumExpr, right: NumExpr): NumExpr => ({ kind: "binary", op, left, right, at, label: "" });
   const globals = ["a", "b", "c", "d"].map((n) => decl(n));
+  // (Now and then a `u8` or a `u16`, whose stores stop at the top.)
+  if (r.next() < 0.3) { const g = globals[3]; g.bits = r.pick([8, 16] as const); TOPS.set(g.id, 2 ** g.bits - 1); }
   const flags = ["f", "g"].map((n) => decl(n, "boolean"));
   let counters = 0;
   // Arrays the program writes (a map of our own keeps them in regions of cell triggers): one of numbers, one of
@@ -737,11 +757,21 @@ function programWithCalls(seed: number, recursion = false) {
   const arrays = new Map<string, ArrayDecl>();
   const lists = [["N", "number"], ["B", "boolean"]].map(([name, kind]) => {
     const a = { id: `${name}#arr`, name, kind, length: 2 + r.int(7), shared: true, at } as ArrayDecl;
+    if (kind === "number" && r.next() < 0.2) { a.bits = r.pick([8, 16] as const); TOPS.set(a.id, 2 ** a.bits - 1); }
     arrays.set(a.id, a);
     WRITABLE.set(a.id, a.length);
     return a;
   });
   const [nums, bools] = lists;
+  /** A table of the program's (the sine's, the arc tangent's), added the first time it is read. */
+  const table = (id: string, values: () => number[]): string => {
+    if (!arrays.has(id)) {
+      const v = values();
+      arrays.set(id, { id, name: id, kind: "number", length: v.length, shared: true, fixed: true, values: v, at } as ArrayDecl);
+      TABLES.set(id, v);
+    }
+    return id;
+  };
   /** An index: inside the array mostly, now and then past its end or below 0. */
   const index = (sc: { nums: VarDecl[] }, a: ArrayDecl): NumExpr => (r.next() < 0.4 ? k(r.next() < 0.85 ? r.int(a.length) : r.pick([a.length, -1, 100])) : r.next() < 0.5 ? v(r.pick(sc.nums)) : bin("+", v(r.pick(sc.nums)), k(r.int(3) - 1)));
 
@@ -766,6 +796,12 @@ function programWithCalls(seed: number, recursion = false) {
     // A product or a quotient of numbers with a fraction (16.16), of values and constants, below zero, past 2^31 when wrapped.
     if (r.next() < 0.05) {
       const side = (): NumExpr => (r.next() < 0.3 ? k(r.pick([65536, 98304, -163840, 1, 0x7fffffff, -2147483648, 3 << 15, 100 << 16, 0])) : depth < 2 && r.next() < 0.2 ? value(sc, depth + 1) : v(r.pick(sc.nums)));
+      // (Now and then a square root, of a fixed number or of a whole one read from 0 up; a sine, a cosine or an arc
+      // tangent, read from the program's tables.)
+      const y = r.next();
+      if (y < 0.3) return { kind: "intrinsic", name: "sqrt", args: [side()], ...(y < 0.12 ? { unsigned: true } : {}), at, label: "" };
+      if (y < 0.45) return { kind: "intrinsic", name: r.pick(["sin", "cos"] as const), args: [side(), k(SIN_SCALE)], table: table("__sin", sinTable), at, label: "" };
+      if (y < 0.6) return { kind: "intrinsic", name: "atan2", args: [side(), side()], table: table("__atan", atanTable), at, label: "" };
       return { kind: "intrinsic", name: r.pick(["fmul", "fdiv"] as const), args: [side(), side()], at, label: "" };
     }
     // A product of two values, a quotient or a remainder (step 4): signed or read from 0 up, by a value or a constant.
@@ -958,6 +994,7 @@ describe("the emitter, a loop's test", () => {
     // while (i < 10 && go) { i += 1; go = i < 5; }   and   while (i < 10 && n > 0) { i += 1; shrink(); }
     TABLES.clear();
     WRITABLE.clear();
+    TOPS.clear();
     FUNCTIONS.clear();
     const d = (name: string, kind: "number" | "boolean" = "number"): VarDecl => ({ id: `${name}#t`, name, kind, shared: false, at });
     const [i, n, go] = [d("i"), d("n"), d("go", "boolean")];

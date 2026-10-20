@@ -305,9 +305,10 @@ export function rangeNumbers(program: Program): void {
         return fits(Math.min(...q, 0), Math.max(...q, 0));
       }
       case "sqrt": {
-        // sqrt_fixed: the root of a fixed number, a fixed (√raw × 256); sqrt_whole (unsigned): √x × 65 536 of a u32.
-        const hi = r[0][1] <= 0 ? 0 : e.unsigned ? (nonNeg(r[0]) ? Math.floor(Math.sqrt(r[0][1]) * 65536) : MAX) : Math.floor(Math.sqrt(r[0][1]) * 256);
-        return fits(0, hi);
+        // sqrt_fixed: the root of a fixed number, a fixed (√raw × 256), 0 below zero; sqrt_whole (unsigned): √x × 65 536
+        // of a u32 — a number below zero read so is past 2^30, and gives the largest.
+        const hi = e.unsigned ? (nonNeg(r[0]) ? Math.floor(Math.sqrt(r[0][1]) * 65536) : MAX) : r[0][1] <= 0 ? 0 : Math.floor(Math.sqrt(r[0][1]) * 256);
+        return [0, Math.min(hi, MAX)];
       }
       case "atan2": return [-FIXED_PI, FIXED_PI];
       case "sin": case "cos": return [-65536, 65536];

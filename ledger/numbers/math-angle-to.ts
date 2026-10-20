@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.atan2
+// ledger: step 4, takes
 // The angle from one point to another, in radians, from `trigscript/math`: `angleTo(x1, y1, x2, y2)`.
 import { angleTo } from "trigscript/math";
 program(() => {

@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.sqrt
+// ledger: step 4, takes
 // The length of a line from its two sides: `Math.hypot(dx, dy)`.
 program(() => {
   let dx = 0;

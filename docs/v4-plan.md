@@ -3518,10 +3518,11 @@ found what they left out; where a step moved, its old number is given.
 1. Calls ✓ (#35), and recursion ✓ (#37).
 2. Texts with numbers in them ✓ (#38). Texts as values moved to 8.
 3. Arrays of a fixed length ✓ (#39). Arrays that grow moved to 9.
-4. **Numbers.** (Part 1 ✓: products, quotients and remainders — "Products and quotients on our own backend"; part 2 ✓:
-   bits and shifts by a value — "Bits and shifts on our own backend"; part 3 ✓: fixed products, quotients and
-   printing — "Numbers with a fraction on our own backend"; part 4 ✓: random numbers — "Random numbers on our own
-   backend". Left: `sqrt`, `sin`, `cos`, `atan2`, and `u8` and `u16`.)
+4. **Numbers** ✓ (all 59 of the ledger's rows). Part 1: products, quotients and remainders — "Products and quotients
+   on our own backend"; part 2: bits and shifts by a value — "Bits and shifts on our own backend"; part 3: fixed
+   products, quotients and printing — "Numbers with a fraction on our own backend"; part 4: random numbers — "Random
+   numbers on our own backend"; part 5: `sqrt`, `sin`, `cos`, `atan2`, `u8` and `u16` — "Square roots, sines and
+   small numbers on our own backend".
    A product, a quotient and a remainder of two values and by a constant, signed and `u32`; `&` `|` `^`
    as values; a shift by a value; `trunc`. Fixed point: `fmul`, `fdiv`, `c / x` (the emitter's reciprocal exists),
    `sqrt`, `sin`, `cos`, `atan2` (`tan` and `hypot` come down to these). `u8` and `u16` variables (saturating
@@ -3904,7 +3905,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 1 Calls and recursion | 33 of 33 |
 | 2 Texts with numbers | 6 of 6 |
 | 3 Arrays of a fixed length | 54 of 54 |
-| 4 Numbers | 44 of 59 |
+| 4 Numbers | 59 of 59 |
 | 5 The game's conditions and actions | 0 of 193 |
 | 6 The game's memory | 0 of 49 |
 | 7 Programs, owners and players | 1 of 22 |
@@ -3969,8 +3970,8 @@ the ledger is the list it can be written again from at 4.0.
   the game is 3.
 - A map of our own: `displayText("known text")` is refused where `print("known text")` is taken (step 5's first);
   JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
-  `Math.tan` and `Math.hypot` are refused as what they become (`Math.sin`, `Math.sqrt`). (`a >> 0`, refused where
-  `a >> 1` to `a >> 31` were taken, is the number itself since step 4's part 2.)
+  (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
+  `a >> 1` to `a >> 31` were taken, is the number itself since its part 2.)
 
 ### Products and quotients on our own backend (2026-10-20)
 
@@ -4103,7 +4104,7 @@ a quotient by 0 is 0.
 | 200 of `x / y` (frame 12) | **0.693 ms** | 1.093 ms |
 | nine fixed numbers printed (frame 12, past the quotients) | **0.015 ms** | 0.174 ms |
 
-`sqrt`, `sin`, `cos` and `atan2` are still refused (`math-vec-length`).
+`sqrt`, `sin`, `cos` and `atan2` came in part 5.
 
 ### Random numbers on our own backend (2026-10-20)
 
@@ -4132,6 +4133,54 @@ Checked: random programs with fixed products, quotients and fixed numbers printe
 bytes; random numbers below constant and variable bounds drawn 400 times a value, each within a fifth of its share,
 both ways; the ledger's fixed scripts against the simulator line for line, its random ones 200 times each way (the same
 shares, within chance); `probes/own-fixed.ts` and `probes/own-random.ts` built both ways, every line ok.
+
+### Square roots, sines and small numbers on our own backend (2026-10-20)
+
+Step 4, part 5, its last: `Math.sqrt` of a fixed number and of a whole one, `Math.sin`, `Math.cos` and `Math.atan2`
+(and what comes down to them: `tan`, `hypot`, `atan`, `trigscript/math`'s `distance`, `angleTo` and `Vec.length`), and
+`u8` and `u16` variables and arrays. Step 4 is done: the ledger's 59 rows are all taken.
+
+- **A square root without a variable amount** (`Emitter.squareRoot`). The Python side's `root4` compares the remainder
+  with four times the root so far and takes it away — an amount that changes every step, which a trigger can only
+  hold in a field something copies there. Here the root is kept at the place its bits end up (after s of K steps,
+  r × 2^(K − s)), so it only ever gains a constant, and the remainder doubles instead, in a doubling trigger. Each
+  step: the next two bits of the number added to the remainder at half its scale (two triggers testing them where the
+  number is); one trigger shared by every step comparing the remainder with Q = ρ + 2^(K − s − 2) — its condition's
+  number — and taking Q away — its action's; that trigger moves its own next pointer one trigger on when it took Q, into
+  a pair laid out for each step, which adds the step's constants to the two copies of Q (and the bit to the root) and
+  moves it on to the next step's pair. The remainder at half scale stays below 2^32 even for a whole number's root of
+  31 bits. Steps whose bits are all clear are jumped over four at a time. About 120 ns a step while the number's bits
+  come in, 100 after; eudplib's is about 280.
+- **Sines and arc tangents as statements** (`Rewriter.sine`, `arcTangent`, `between`): the product by the scale, the
+  cell's place and the way to the next by masks and a shift, the table's two cells read as any array's cells are, their
+  difference times the fraction — a small product, the ranges say so — shifted down. The arc tangent's quotient of the
+  smaller side over the larger is `divide`'s new `ratio`: 17 steps, not the 47 of a fixed quotient, since it is at most
+  1. Past a table's end a read is 0, which is the arc tangents' rule and the sine table's first cell (sin 0).
+- **`u8` and `u16`** are a cell each, as the Python side's are: every store into one stopped at its top, read from 0 up
+  (`Rewriter.top`) — the front end already stops it at 0 — unless the value ranges keep it below.
+- **Found on the way:** a whole number's square root below zero — read from 0 up, so the largest fixed number — had the
+  value range 0, so `Math.sqrt(w) == …` was worked out the wrong way when the map was built, in both builds
+  (`compiler/ranges.ts`; a test in `tests/fixed.test.ts`); and a shift whose count comes to a constant (`0 >>> (c - c)`)
+  was refused (`linear` folds it now).
+
+| `probes/own-math.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 200 of `Math.sqrt(x)`, x fixed (frame 4) | **0.389 ms** | 1.348 ms |
+| 200 of `Math.sqrt(n)`, n whole (frame 6) | **0.653 ms** | 3.672 ms |
+| 200 of `Math.sin(x)` (frame 8) | **1.085 ms** | 2.261 ms |
+| 200 of `Math.cos(x)` (frame 10) | **1.085 ms** | 2.261 ms |
+| 200 of `Math.atan2(y, x)` (frame 12) | **1.343 ms** | 2.300 ms |
+
+What is left to gain: a sine is still most of its time in copies — the cell's place into the five fields the two reads
+test (0.9 µs), and two copies of 32 bits (0.9 µs each), since a cell read into a variable of the emitter's own cannot
+be read negated — a table of the differences, or a read that gives a cell and the next at once, would take them away.
+And each square root, sine and arc tangent is written where it is used (a square root about a hundred triggers, 240
+KB): `probes/own-math.ts` is 9 MB. A routine shared by every use, as the digits are, is the next thing for code size.
+
+Checked: random programs with square roots (fixed and whole), sines, cosines and arc tangents, `u8` and `u16`
+variables and arrays, as graphs and from the laid-out bytes (3,000 of 3,000 taken); the ledger's scripts against the
+simulator; `probes/own-math.ts` built both ways, every line ok — its edges: roots of 0, below zero, the largest, a
+whole number from 2^30 up; angles on the axes and of (0, 0); sines at a turn.
 
 ## Part C — the game, pushed
 

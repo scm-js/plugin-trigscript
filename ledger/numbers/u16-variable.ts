@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a u16 variable
+// ledger: step 4, takes
 // A `u16` variable, which stays within 0 … 65 535: stored below zero it is 0.
 program(() => {
   let a: u16 = 5;

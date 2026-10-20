@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.sqrt
+// ledger: step 4, takes
 // How long a `Vec` from `trigscript/math` is: `v.length()`, the square root of its sides' squares.
 import { Vec } from "trigscript/math";
 program(() => {

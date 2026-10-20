@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.cos
+// ledger: step 4, takes
 // The cosine of an angle in radians: `Math.cos(a)`.
 program(() => {
   let a = 0;

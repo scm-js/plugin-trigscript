@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.sin
+// ledger: step 4, takes
 // The tangent of an angle in radians, its sine over its cosine: `Math.tan(a)`.
 program(() => {
   let a = 0;
