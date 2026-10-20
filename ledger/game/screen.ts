@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a location moved (centerLocation)
+// ledger: step 5, takes
 // The screen library: a grid of pixels drawn by the program and shown on the map as units, a pixel
 // each: `new Screen(x, y, width, height)`, `set`, `present()`.
 import { Screen } from "trigscript/screen";

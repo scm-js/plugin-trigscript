@@ -1,4 +1,4 @@
-// ledger: step 5, refused: a text shown to other players than the program's owner
+// ledger: step 5, takes
 // A text shown to every player: `print(…, { to: AllPlayers })`.
 program(() => {
   let n = 0;

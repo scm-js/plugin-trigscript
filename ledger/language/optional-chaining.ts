@@ -1,4 +1,4 @@
-// ledger: step 9, refused: a warning TrigScript shows every player ("more than 1023 closures and their variables are kept at once")
+// ledger: step 5, takes
 // `?.` reading a number through an instance that may be `null`: `a?.v ?? 0`.
 class Node {
   constructor(public v: number) {}

@@ -3533,7 +3533,9 @@ found what they left out; where a step moved, its old number is given.
    is built, laid out as the game's record — "The game's conditions and actions on our own backend"; `memory()` and
    `setMemory()` at an address known when built came with it (from 6). Part 2 ✓: fields from values and texts made
    while the game runs — "Fields from values on our own backend". Part 3 ✓: the game's numbers read as values —
-   "The game read as a value on our own backend". A trigger record of any condition and any action in the graph and the
+   "The game read as a value on our own backend". Part 4 ✓: locations moved, prints to other players, `rose` and
+   `once` — "Locations, players and latches on our own backend". Left: prints at the centre of the screen; Wait is
+   refused on purpose. A trigger record of any condition and any action in the graph and the
    layout — they encoded three before: the Memory condition, Set Deaths and Display Text. Fields filled from values
    (`action.variables`), action texts (transmissions, objectives, leaderboards). Every condition in a test and as a
    value (ore, deaths, score, kills, Bring, Command, the countdown; the Python side's bit search), the players' facts
@@ -3910,7 +3912,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 2 Texts with numbers | 6 of 6 |
 | 3 Arrays of a fixed length | 54 of 54 |
 | 4 Numbers | 59 of 59 |
-| 5 The game's conditions and actions | 179 of 195 |
+| 5 The game's conditions and actions | 195 of 198 |
 | 6 The game's memory | 0 of 47 |
 | 7 Programs, owners and players | 1 of 22 |
 | 8 Texts as values | 0 of 43 |
@@ -3980,6 +3982,8 @@ the ledger is the list it can be written again from at 4.0.
 - `command()` straight after `killUnit()` or `removeUnit()` still counts the units (the game counts them until the next
   frame) where the simulator does not; and two Transmissions, the second while the first one's time runs, hold the
   second until the program reaches it again (both builds; found writing `probes/own-fields.ts`, 2026-10-20).
+- A condition kept in a `const` is asked where the `const` is used: `const there = bring(…); centerLocation(…); if
+  (there)` asks Bring after the move (both builds; found writing `probes/own-locations.ts`).
 - A map of our own: JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
   (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
   `a >> 1` to `a >> 31` were taken, is the number itself since its part 2.)
@@ -4333,6 +4337,32 @@ is written where it is used — a 32-bit search about 32 triggers, `probes/own-r
 
 Checked: `tests/ownGame.test.ts` (the table read and its entries, the count asked in 12 bits, the race's byte and the
 supply's table); `probes/own-reads.ts` built both ways, every line ok.
+
+### Locations, players and latches on our own backend (2026-10-20)
+
+Step 5, part 4. Ledger: step 5 195 of 198 — the two prints at the centre of the screen, and Wait, refused on purpose
+(in a program it holds only its own trigger and takes the player's one wait from the Transmissions after it: a
+program waits with `sleep()`). `hasLeft` and a print to a force moved to step 7: both need the map's slots.
+
+- **`centerLocation`** (`Rewriter.centerLocation`): the four sides written where the game keeps them (MRGN), each a Set
+  Deaths whose amount is a place of the side — the point less half the size, the far sides the near ones plus the
+  size — after which the counts are thrown away (part 2's Kill Unit). Without a size the four sides are read first
+  (part 3's reads) and the size kept. Actions whose fields are places now share a trigger while nothing but actions is
+  in it, so the four are one. 200 moves: **0.036 ms**, eudplib's 0.061.
+- **A print to another player** (P1–P8) or to All Players: Display Text with each player of the group the current
+  player in turn, then the owner again — it shows on the computer of the player who is current, and on nobody's when
+  nobody plays that slot, so All Players needs none of the map's settings (the Python side reads them). A force does.
+  TrigScript's own warnings print to everyone: two scripts of step 9 (the pool of instances, `?.` through one) were
+  refused for that alone, and are taken now — the same as the simulator.
+- **`rose()` and `once()`**: a latch for each place in the script, a variable of the emitter's own (0 when the map
+  starts): the value is the test and not the latch; then a rise's latch is the test, a once's the latch or the test.
+
+Found on the way (`probes/own-locations.ts`): a condition kept in a `const` (`const there = bring(…)`) is asked where
+the `const` is used, not where it is written — in both builds; a boolean set by an `if` is the value at the time. And
+eudplib's build misses a Command count after a Create Unit there again (part 2).
+
+Checked: `probes/own-locations.ts` built both ways, every line ok; prints to P1, P2 and All Players in the lifted game
+(P2's not shown on Player 1's screen, as eudplib's); `rose`/`once` rising twice against the simulator.
 
 ## Part C — the game, pushed
 

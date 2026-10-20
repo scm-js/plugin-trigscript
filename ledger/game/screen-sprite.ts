@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a location moved (centerLocation)
+// ledger: step 5, takes
 // The screen library: a picture made of rows of text when the map is built (`sprite`), drawn on a screen
 // where the program says (`blit`).
 import { Screen, sprite } from "trigscript/screen";

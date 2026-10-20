@@ -265,12 +265,13 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
     switch (t.kind) {
       case "action": {
         if (gameAction(t)) return undefined;
+        if (t.record.type === WAIT_ACTION) return "the action Wait (in a program it holds only its own trigger and takes the player's wait from Transmissions: a program waits with sleep())";
         if (t.record.type === SET_DEATHS_ACTION && t.record.player > LAST_GROUP) return "a write of memory (setMemory())";
         const name = `the action ${actionDef(t.record.type)?.name ?? t.record.type}`;
         return t.variables?.length ? `${name}, its fields from values` : t.text ? `${name}, its text the program's` : name;
       }
       case "tableWrite": return `a write of ${t.cell.name}`;
-      case "centerLocation": return "a location moved (centerLocation)";
+      case "centerLocation": return undefined;
       case "select": return "select()";
       case "syncSend": return "sync()";
       case "push": return "push()";
@@ -398,6 +399,22 @@ const COUNTING = new Set([2, 3, 6, 7, 16, 17]);
  * minerals stay).
  */
 const FORGET_COUNTS: ActionRecord = { location: 0, text: 0, wav: 0, time: 0, player: 11, target: 0, unitId: 228, type: 22, modifier: 0, flags: 0x10, padding: 0, mask: 0 };
+/** Where the game keeps the current player: whom Display Text shows to, and what "the current player" names. */
+const CURRENT_PLAYER_ADDRESS = 0x6509b0;
+/**
+ * The players a print goes to, a slot each (a map of our own): the owner for the current player; Players 1 to 8; All
+ * Players the eight slots, whoever plays them (a slot nobody plays shows nothing). Null for a force, which needs the
+ * map's slots.
+ */
+function playersOf(to: number, owner: number | undefined): number[] | null {
+  if (to === PlayerGroup.CurrentPlayer) return [owner ?? 0];
+  if (to >= 0 && to < 8) return [to];
+  if (to === PlayerGroup.AllPlayers) return [0, 1, 2, 3, 4, 5, 6, 7];
+  return null;
+}
+
+/** The game's locations in memory (MRGN): 20 bytes each — left, top, right, bottom, then the rest. */
+const MRGN = 0x58dc60;
 /** The condition types whose comparison is a number's at least / at most, which one condition turns around. */
 const COUNTED = new Set([1, 2, 3, 4, 5, 12, 14, 15, 21]);
 
@@ -957,14 +974,9 @@ class Scope {
       case "unrolled": return s.iterations.every((it) => this.stmts(it, true)) || this.island(s);
       case "sleep": return this.native || this.island(s);
       case "print":
-        // (Display Text shows to the current player, the owner in a map of our own: a text for anyone else is refused
-        // until a print goes to each player of its group in turn, as the Python side's does.)
-        if (this.native && s.to !== PlayerGroup.CurrentPlayer && s.to !== this.owner) {
-          // (TrigScript's own warning — a pool of closures or instances full — is shown to every player: say which.)
-          const first = s.parts[0]?.kind === "text" ? s.parts[0].text.replace(/^[\x01-\x1f]+/, "") : "";
-          const warning = first.startsWith("TrigScript: ") ? first.slice(12).split(";")[0] : undefined;
-          return this.no(warning ? `a warning TrigScript shows every player ("${warning}")` : "a text shown to other players than the program's owner") || this.island(s);
-        }
+        // (Display Text shows to the current player: a text for others goes to each player of its group in turn —
+        // Players 1 to 8, All Players. A force needs the map's slots, which a map of our own does not know yet.)
+        if (this.native && playersOf(s.to, this.owner) === null) return this.no("a text shown to a force (a map of our own does not know the map's slots yet: step 7)") || this.island(s);
         if (this.native && s.position === "chat" && s.parts.every((p) => this.printed(p))) return true;
         return this.island(s);
       case "call": return (this.native && this.call(s.call)) || this.island(s);
@@ -1681,11 +1693,7 @@ class Emitter {
         return;
       }
       case "print":
-        if (this.scope.native && !this.scope.islands.has(s)) {
-          if (s.parts.every((p) => p.kind === "text")) this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, display: s.parts.map((p) => (p.kind === "text" ? p.text : "")).join("") } });
-          else this.print(s);
-          return;
-        }
+        if (this.scope.native && !this.scope.islands.has(s)) return this.print(s);
         return this.left(s);
       case "break": return this.goto(this.loops[this.loops.length - 1].exit);
       case "continue": return this.goto(this.loops[this.loops.length - 1].cont);
@@ -1822,6 +1830,11 @@ class Emitter {
    * in a program that asks Bring or Command, Kill Unit of no unit (`FORGET_COUNTS`), in the same trigger.
    */
   action(s: Extract<Stmt, { kind: "action" }>): void {
+    // (Bring and Command counted again, written by the rewriter after a location moved: only where something counts.)
+    if (s.record === FORGET_COUNTS) {
+      if (this.scope.counts) this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, record: FORGET_COUNTS } });
+      return;
+    }
     // A field from a value is a place of its variable, kept by its writes: the action reads it where it is, and costs
     // nothing more when it runs. The record holds the rest; in the dword the type, the kind and the count share, the
     // place's constant is what is not the value. Its trigger is one of its own, the action first, so the place's index
@@ -1845,13 +1858,19 @@ class Emitter {
     // (A text made while the game runs: its template filled first, the action's text field naming it.)
     const textOf = s.text?.kind === "template" ? this.template(s.text.parts) : undefined;
     const act: Act = { dword: { game: 0 }, modifier: "set", value: 0, record, ...(textOf !== undefined ? { textOf } : {}) };
-    const items = [{ act }, ...this.forgets(record)];
+    const items: Item[] = [{ act }, ...this.forgets(record)];
     if (record.type === TRANSMISSION_ACTION) return this.transmission(act, varied.length ? places : undefined);
     if (varied.length) {
       this.actPlaces.set(act, places);
-      this.push({ conds: [], items });
+      // (Several in a row share a trigger: the indexes of their actions hold while nothing but actions is in it.)
+      const last = this.protos[this.protos.length - 1];
+      if (last && last === this.fielded && !last.items.some((it) => !("act" in it)) && last.items.length + items.length <= MOST_ACTS) last.items.push(...items);
+      else this.fielded = this.push({ conds: [], items });
     } else this.open().items.push(...items);
   }
+
+  /** The trigger the last action with fields from values was put in (`action`), which the next one may share. */
+  fielded?: Proto;
 
   /**
    * A Transmission holds the rest of its trigger until its time is over — the walk goes on to the next trigger — and
@@ -2085,8 +2104,16 @@ class Emitter {
    * JavaScript works them out.)
    */
   print(s: Extract<Stmt, { kind: "print" }>): void {
-    const id = this.template(s.parts);
-    this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, show: id } });
+    const known = s.parts.every((p) => p.kind === "text");
+    const show: Act = known
+      ? { dword: { game: 0 }, modifier: "set", value: 0, display: s.parts.map((p) => (p.kind === "text" ? p.text : "")).join("") }
+      : { dword: { game: 0 }, modifier: "set", value: 0, show: this.template(s.parts) };
+    // (For others than the owner: Display Text with each of them the current player in turn — it shows on the computer
+    // of the player who is, and of nobody when nobody plays that slot — then the owner again.)
+    const players = playersOf(s.to, this.scope.owner)!;
+    const owner = this.scope.owner ?? 0;
+    const current = (p: number): Item => ({ act: { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "set", value: p } });
+    this.open().items.push(...(players.length === 1 && players[0] === owner ? [{ act: show }] : [...players.flatMap((p) => [current(p), { act: { ...show } }]), current(owner)]));
   }
 
   /** A text with values in it written into a template of its own (`Graph.templates`), each value as it is now: its id. */
@@ -4354,7 +4381,7 @@ class Rewriter {
     }
     const one = (x: NumExpr) => (linear(x)?.terms.length ?? 2) <= 1;
     const vars = s.variables!;
-    const exprs = this.each(vars.map((v) => (v.field === "unitId" ? this.top(settled(v.expr), 228, where) : settled(v.expr))), pre, where, (x) => (one(x) ? x : this.sum(x, pre, where)));
+    const exprs = this.each(vars.map((v) => (v.field === "unitId" ? this.top(settled(v.expr), 228, where) : settled(v.expr))), pre, where, (x) => this.single(x, pre, where));
     let fields = vars.map((v, i) => ({ ...v, expr: exprs[i] }));
     const k = fields.findIndex((v) => v.field === "modifier");
     if (k < 0) return [...pre, { ...s, variables: fields }];
@@ -4410,6 +4437,49 @@ class Rewriter {
     return op === "!=" ? { kind: "not", expr: cond } : cond;
   }
 
+  /**
+   * A location centred on a point (a map of our own): its four sides written where the game keeps them (MRGN), each a
+   * Set Deaths whose amount is a place of the side — the point less half the size, the far sides the near ones plus
+   * the size — after which Bring counts again (the game keeps its counts for a location whose sides are written). The
+   * size kept when none is given: the sides read first, where they are. As the Python side's `center_location`.
+   */
+  centerLocation(s: Extract<Stmt, { kind: "centerLocation" }>, where: { at: At; label: string }): Stmt[] {
+    const pre: Stmt[] = [];
+    const at = { at: where.at, label: where.label };
+    const base = MRGN + (s.location - 1) * 20;
+    const one = (x: NumExpr) => (linear(x) ? x : this.sum(x, pre, where));
+    const [x, y] = this.each([s.x, s.y], pre, where, one);
+    const bin = (op: "+" | "-" | ">>>", left: NumExpr, right: NumExpr): NumExpr => ({ kind: "binary", op, left, right, ...at }) as NumExpr;
+    const k = (value: number): NumExpr => ({ kind: "const", value });
+    let w: NumExpr, h: NumExpr;
+    if (s.size) [w, h] = this.each([s.size.width, s.size.height], pre, where, one);
+    else {
+      const side = (i: number) => this.sum(memoryRead(base + 4 * i, undefined, where), pre, where);
+      const [l, t, r, b] = [0, 1, 2, 3].map(side);
+      w = this.sum(bin("-", r, l), pre, where);
+      h = this.sum(bin("-", b, t), pre, where);
+    }
+    const half = (e: NumExpr) => (e.kind === "const" ? k(Math.floor(u(e.value) / 2)) : this.sum(bin(">>>", e, k(1)), pre, where));
+    const single = (e: NumExpr) => this.single(e, pre, where);
+    const left = single(bin("-", x, half(w))), top = single(bin("-", y, half(h)));
+    const right = single(bin("+", left, w)), bottom = single(bin("+", top, h));
+    const write = (i: number, value: NumExpr): Stmt => {
+      const record: ActionRecord = { location: 0, text: 0, wav: 0, time: 0, player: u((base + 4 * i - DEATHS_TABLE) / 4), target: 0, unitId: 0, type: SET_DEATHS_ACTION, modifier: 7, flags: 0, padding: 0, mask: 0 };
+      const l = linear(value)!;
+      if (!l.terms.length) return { kind: "action", record: { ...record, target: u(l.c) }, ...where };
+      return { kind: "action", record, variables: [{ field: "target", bits: 32, name: "side", expr: value }], ...where };
+    };
+    return [...pre, write(0, left), write(1, top), write(2, right), write(3, bottom), { kind: "action", record: FORGET_COUNTS, ...where }];
+  }
+
+  /** A value as one variable times a constant plus a constant — what a field holds — or into a variable of the emitter's own first. */
+  single(e: NumExpr, pre: Stmt[], where: { at: At; label: string }): NumExpr {
+    if ((linear(e)?.terms.length ?? 2) <= 1) return e;
+    const t = this.temp();
+    pre.push(...this.set(t, e, where));
+    return { kind: "var", id: t };
+  }
+
   /** A player's race or slot, or supply, which a map of our own reads from memory (`fact`): one player, known. */
   facts(r: ReadSource): r is Extract<ReadSource, { source: "player" | "supply" }> {
     const one = r.source !== "condition" && (r.player <= 11 || (r.player === CURRENT_PLAYER && this.owner !== undefined));
@@ -4418,6 +4488,9 @@ class Rewriter {
 
   /** The program's owner, the current player while it runs (a map of our own). */
   owner?: number;
+
+  /** Each `rose()` and `once()`'s latch: a variable of the emitter's own, by the place in the script. */
+  latches = new Map<BoolExpr, string>();
 
   /**
    * A player's race or slot (a byte of the player table: its bits of the dword, moved down) or supply (the race's
@@ -4685,6 +4758,20 @@ class Rewriter {
         return so;
       }
       case "not": return { ...c, expr: this.cond(c.expr, pre, where) };
+      // (A map of our own: `rose()` and `once()` against a latch of their own — a variable of the emitter's own for each
+      // place in the script, 0 when the map starts, kept from one time to the next: so when it was so, it says no; so
+      // now, the latch set; not so, a rise's latch cleared.)
+      case "edge": {
+        if (!this.own) return c;
+        let latch = this.latches.get(c);
+        if (!latch) this.latches.set(c, (latch = this.temp()));
+        const held = this.temp(), t = this.temp();
+        const v = (id: string): BoolExpr => ({ kind: "var", id });
+        pre.push({ kind: "assignBool", target: held, value: this.cond(c.cond, pre, where), ...where });
+        pre.push({ kind: "assignBool", target: t, value: { kind: "and", items: [v(held), { kind: "not", expr: v(latch) }] }, ...where } as Stmt);
+        pre.push({ kind: "assignBool", target: latch, value: c.edge === "rose" ? v(held) : { kind: "or", items: [v(latch), v(held)] }, ...where } as Stmt);
+        return v(t);
+      }
       // (A ?: of booleans, on a map of our own: the side its test picks worked out under an `if` into a variable of the
       // emitter's own — the other side is never read, as in the script.)
       case "ternary": {
@@ -4863,6 +4950,7 @@ class Rewriter {
         return pre.length ? keep([...pre, { ...s, value }]) : [this.own ? { ...s, value } : s];
       }
       case "action": return this.own && (s.variables?.length || s.text?.kind === "template") ? this.action(s, where) : [s];
+      case "centerLocation": return this.own ? this.stmts(this.centerLocation(s, where)) : [s];
       default: return [s];
     }
   }

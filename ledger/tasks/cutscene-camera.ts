@@ -1,4 +1,4 @@
-// ledger: step 5, refused: a location moved (centerLocation)
+// ledger: step 5, takes
 // trigscript/cutscene: a `Camera`, which looks at a point of the map as soon as it is made, and at another by `look(x, y)`.
 import { Camera } from "trigscript/cutscene";
 program(async () => {
