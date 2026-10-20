@@ -18,7 +18,7 @@
  * falls through one trigger whose conditions failed (13.4 ns); a branch is a trigger that sets its own next pointer to
  * where it goes, put back by an action at the place it went to.
  */
-import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type VarDecl, type At } from "../ir";
+import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type VarDecl, type At } from "../ir";
 import { PACK_FROM } from "../eud";
 import { END, MOST_ACTS, MOST_CONDS, STACK, checkGraph, nextOf, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Trigger } from "./graph";
 
@@ -264,6 +264,24 @@ class Scope {
     return ok;
   }
 
+  /**
+   * A part of a printed text a map of our own takes: a text, a whole number (signed or a `u32`) the emitter lowers, a
+   * byte from one (a colour code chosen as the map is played). Not yet a fixed number, a player's name or colour, a
+   * text of the program's.
+   */
+  printed(p: TextPart): boolean {
+    if (p.kind === "text") return true;
+    if (p.kind === "number" && p.fixed) return this.no("a fixed number printed");
+    if (p.kind !== "number" && p.kind !== "char") return this.no(`a printed ${p.kind === "value" ? "text of the program's" : p.kind === "name" ? "player's name" : "player's colour"}`);
+    if (!this.lowers(p.expr)) return this.no("a printed value it does not lower");
+    this.num(p.expr);
+    this.prints = true;
+    return true;
+  }
+
+  /** Whether a text printed with a number in it is taken: the map then has the routine that writes one as digits. */
+  prints = false;
+
   /** A `return` of a function or an inlined call the emitter lays out: its value one the emitter lowers. */
   returned(s: Extract<Stmt, { kind: "return" }>): boolean {
     const kind = this.returning[this.returning.length - 1];
@@ -462,7 +480,7 @@ class Scope {
       case "unrolled": return s.iterations.every((it) => this.stmts(it, true)) || this.island(s);
       case "sleep": return this.native || this.island(s);
       case "print":
-        if (this.native && s.position === "chat" && s.parts.every((p) => p.kind === "text")) return true;
+        if (this.native && s.position === "chat" && s.parts.every((p) => this.printed(p))) return true;
         return this.island(s);
       case "call": return (this.native && this.call(s.call)) || this.island(s);
       case "return": return (this.native && this.returning.length > 0 && this.returned(s)) || this.island(s);
@@ -508,7 +526,8 @@ interface Shift { of: Linear; by: number; signed: boolean; top?: number }
 interface Store { array: ArrayDecl; index: Linear; reads: { id: string; table?: Table; shift?: Shift }[]; value: Linear }
 /** (`at` on a copy or a call: the statement it is for, when its trigger is another's.) */
 /** (`label`: every place of `target` set to where `to` is — where a function that calls itself goes back to.) */
-type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At } | { label: { target: string; to: string } };
+/** (`route`: a variable's cell into these dwords, and nothing else of its places.) */
+type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At } | { label: { target: string; to: string } } | { route: { from: string; into: Dword[] } };
 /** `keep`: an empty trigger that stays (a jump whose next pointer a place sets). */
 interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean }
 
@@ -517,6 +536,12 @@ interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at
  * condition's number) or the number of an action of an expanded write, found when the triggers are cut.
  */
 interface Place { dword?: Dword; act?: WriteAct; scale: number; add: number; base?: string; synced?: boolean }
+
+/**
+ * The byte a printed text's template fills where nothing goes: 0x0D, a carriage return, which StarCraft draws as
+ * nothing — eudplib pads its strings to whole dwords with it, and its own prints carry it around every number.
+ */
+const PAD = 0x0d;
 
 /**
  * The most bits a list's values may have between them for the emitter to read its cells where they are: a trigger a
@@ -996,7 +1021,8 @@ class Emitter {
       }
       case "print":
         if (this.scope.native && !this.scope.islands.has(s)) {
-          this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, display: s.parts.map((p) => (p.kind === "text" ? p.text : "")).join("") } });
+          if (s.parts.every((p) => p.kind === "text")) this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, display: s.parts.map((p) => (p.kind === "text" ? p.text : "")).join("") } });
+          else this.print(s);
           return;
         }
         return this.left(s);
@@ -1247,6 +1273,145 @@ class Emitter {
       this.land(after);
       this.open().items.push({ fill: { temp, target: id } });
     });
+  }
+
+  /**
+   * The routine that writes a number as digits (a map of our own), called by each print with a number in it: where
+   * its two ways in are (a signed number, a `u32`), the trigger it ends at (its next pointer the call's), the variable
+   * the number is handed in, and the three dwords it writes the digits into — 12 bytes, the number at their right end,
+   * 0x0D (which draws nothing) before it — which the print then copies into its text.
+   */
+  itoa?: { signed: string; unsigned: string; exit: string; v: string; r: string; neg: string; out: string[] };
+  /** The printed texts' templates (`Graph.templates`). */
+  templates: { id: string; bytes: number[] }[] = [];
+
+  /**
+   * A text printed with values in it (a map of our own). Its template is laid out when the map is built: the text,
+   * and for each number a field of 12 bytes on a dword's start, the bytes before it to the dword's start 0x0D (they draw
+   * nothing); for each byte from a number (a colour code), one byte. Nothing in the text moves, however wide the number
+   * is: the routine writes the number at the right end of its field, 0x0D before it. A print hands each number to the
+   * routine, copies its three dwords into the field, writes each byte where it goes (0x0D for a 0, which writes
+   * nothing), and shows the template with Display Text. (The rewriter has already put the values in the order
+   * JavaScript works them out.)
+   */
+  print(s: Extract<Stmt, { kind: "print" }>): void {
+    const id = `${this.key}.text${this.n++}`;
+    const bytes: number[] = [];
+    const enc = new TextEncoder();
+    const values: { part: TextPart; at: number }[] = [];
+    for (const p of s.parts) {
+      if (p.kind === "text") bytes.push(...enc.encode(p.text));
+      else if (p.kind === "number") {
+        while (bytes.length % 4) bytes.push(PAD);
+        values.push({ part: p, at: bytes.length });
+        bytes.push(...Array(12).fill(PAD));
+      } else if (p.kind === "char") {
+        values.push({ part: p, at: bytes.length });
+        bytes.push(PAD);
+      }
+    }
+    bytes.push(0);
+    this.templates.push({ id, bytes });
+    for (const { part, at } of values) {
+      if (part.kind === "number") {
+        const it = this.digits();
+        this.write(it.v, linear(part.expr)!, false);
+        const back = this.label("printed");
+        this.open().items.push({ act: { dword: nextOf(it.exit), modifier: "set", value: { label: back } } });
+        this.goto(part.unsigned ? it.unsigned : it.signed);
+        this.land(back);
+        it.out.forEach((from, w) => this.open().items.push({ route: { from, into: [{ template: id, word: at / 4 + w }] } }));
+        continue;
+      }
+      if (part.kind !== "char") continue;
+      // The byte: the number's low eight bits into its place in the dword (a mask), a place of the number; 0x0D when
+      // they are 0.
+      const word: Dword = { template: id, word: at >> 2 }, shift = 2 ** (8 * (at & 3)), mask = u(0xff * shift);
+      const l = linear(part.expr)!;
+      let from: string;
+      if (l.c === 0 && l.terms.length === 1 && l.terms[0].k === 1) from = l.terms[0].id;
+      else {
+        from = `${this.key}.ch${this.n++}`;
+        this.own.add(from);
+        this.write(from, l, false);
+      }
+      const set: Act = { dword: word, modifier: "set", value: 0, mask };
+      this.actPlaces.set(set, { value: { id: from, scale: shift, add: 0 } });
+      this.push({ conds: [], items: [{ act: set }] });
+      this.push({ conds: [{ dword: word, compare: "exactly", value: 0, mask }], items: [{ act: { dword: word, modifier: "set", value: u(PAD * shift), mask } }] });
+    }
+    this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, show: id } });
+  }
+
+  /** The routine that writes a number as digits: its labels and variables, made the first time a print needs it. */
+  digits(): NonNullable<Emitter["itoa"]> {
+    if (!this.itoa) {
+      const v = (name: string) => `${this.key}.(digits ${name})`;
+      this.itoa = { signed: this.label("itoa"), unsigned: this.label("itoau"), exit: this.label("itoax"), v: v("of"), r: v("left"), neg: v("minus"), out: [v("0"), v("1"), v("2")] };
+      this.own.add(this.itoa.r);
+      this.own.add(this.itoa.neg);
+    }
+    return this.itoa;
+  }
+
+  /**
+   * The routine, laid out once after the program and its functions. The three dwords set to 0x0D all through; the
+   * number's size into `left` (a signed one's sign apart); how many digits it has, by comparisons with powers of ten
+   * (four at most); then, from that many digits down, each digit's '0' (its byte from 0x0D up to 0x30, all in the
+   * trigger the comparisons go to, with the minus sign before the first digit when there is one) and its value: a
+   * trigger each for 8, 4, 2 and 1 times the digit's power of ten, which takes it from `left` and adds it to the
+   * digit's byte when `left` holds that much. About four triggers a digit; eudplib's build divides by ten for each.
+   */
+  emitDigits(): void {
+    const it = this.itoa;
+    if (!it) return;
+    const set = (id: string, c: number, terms: { id: string; k: number }[] = []) => this.write(id, { c: u(c), terms }, false);
+    this.land(it.signed);
+    set(it.neg, 0);
+    set(it.r, 0, [{ id: it.v, k: 1 }]);
+    const go = this.label("itoago");
+    this.jump({ kind: "compare", op: "<", left: { kind: "var", id: it.v }, right: { kind: "const", value: 0 }, at: this.at!, label: "" } as BoolExpr, false, go);
+    set(it.r, 0, [{ id: it.v, k: MAX }]);
+    set(it.neg, 1);
+    this.goto(go);
+    this.land(it.unsigned);
+    set(it.neg, 0);
+    set(it.r, 0, [{ id: it.v, k: 1 }]);
+    this.land(go);
+    for (const w of it.out) set(w, PAD * 0x01010101);
+    // How many digits: k when `left` is at least 10^(k-1).
+    const width = Array.from({ length: 11 }, (_, k) => this.label(`itoak${k}`));
+    const tree = (lo: number, hi: number): void => {
+      if (lo === hi) return this.goto(width[lo]);
+      const mid = (lo + hi + 1) >> 1, high = this.label("itoahi");
+      this.jump({ kind: "compare", op: ">=", left: { kind: "var", id: it.r }, right: { kind: "const", value: 10 ** (mid - 1) }, unsigned: true, at: this.at!, label: "" } as BoolExpr, true, high);
+      tree(lo, mid - 1);
+      this.land(high);
+      tree(mid, hi);
+    };
+    tree(1, 10);
+    // The byte of digit p (of 10^p) is 11 - p: the dword (11 - p) >> 2, its byte (11 - p) & 3.
+    const at = (b: number) => ({ word: b >> 2, shift: 2 ** (8 * (b & 3)) });
+    const ladder = Array.from({ length: 10 }, (_, p) => this.label(`itoap${p}`));
+    for (let k = 10; k >= 1; k--) {
+      this.land(width[k]);
+      const zeros = [0, 0, 0];
+      for (let p = 0; p < k; p++) zeros[at(11 - p).word] += (0x30 - PAD) * at(11 - p).shift;
+      zeros.forEach((add, w) => { if (add) this.open().items.push({ bump: { target: it.out[w], add: u(add) } }); });
+      const sign = at(11 - k);
+      this.push({ conds: [{ dword: this.home(it.neg, 0), compare: "atLeast", value: 1 }], items: [{ bump: { target: it.out[sign.word], add: u((0x2d - PAD) * sign.shift) } }] });
+      this.goto(ladder[k - 1]);
+    }
+    for (let p = 9; p >= 0; p--) {
+      this.land(ladder[p]);
+      const { word, shift } = at(11 - p);
+      for (const m of [8, 4, 2, 1]) {
+        const step = m * 10 ** p;
+        if (step >= U32) continue;
+        this.push({ conds: [{ dword: this.home(it.r, 0), compare: "atLeast", value: step }], items: [{ bump: { target: it.r, add: u(-step) } }, { bump: { target: it.out[word], add: m * shift } }] });
+      }
+    }
+    this.push({ label: it.exit, conds: [], items: [], keep: true });
   }
 
   /** A `return`: the value into the result of the function or inlined call around it, and on to its end. */
@@ -1655,9 +1820,11 @@ class Emitter {
     const refreshes: { t: Trigger; places: (Place | WriteAct)[] }[] = [];
     const fills: { t: Trigger; target: string }[] = [];
     const afterIslands = new Set<Trigger>();
+    /** The copies into dwords of their own (`route`): their `into` is theirs, not the variable's places. */
+    const routes = new Set<Trigger>();
     let n = 0;
     for (const p of kept) {
-      type Piece = { acts: (Act | WriteAct)[] } | { fill: { temp: string; target: string } } | { copy: string; at?: At; island?: boolean; top?: number } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] };
+      type Piece = { acts: (Act | WriteAct)[] } | { fill: { temp: string; target: string } } | { copy: string; at?: At; island?: boolean; top?: number } | { island: Stmt } | { call: { fn: FixedFn; target: string }; at?: At } | { refresh: string; places: (Place | WriteAct)[] } | { route: { from: string; into: Dword[] } };
       const pieces: Piece[] = [{ acts: [] }];
       const acts = () => {
         const last = pieces[pieces.length - 1];
@@ -1676,6 +1843,7 @@ class Emitter {
           for (const into of copied.has(it.bump.target) ? ps.slice(0, 1) : ps) acts().push({ into, modifier: "add", value: mul(into.scale, it.bump.add) } as WriteAct);
         }
         else if ("fill" in it) pieces.push({ fill: it.fill });
+        else if ("route" in it) pieces.push({ route: it.route });
         else if ("label" in it) {
           for (const pl of this.placesOf(it.label.target)) {
             if (!pl.dword || pl.scale !== 1 || pl.add !== 0) throw new Error(`emitter: a place of ${it.label.target} that is no dword of its own`);
@@ -1740,6 +1908,12 @@ class Emitter {
           made.push(t);
           continue;
         }
+        if ("route" in piece) {
+          const t: Trigger = { label: label(), conds: [], acts: [], copy: { from: piece.route.from, into: piece.route.into.map((dword) => ({ dword, add: 0 })) }, ...(p.at ? { at: p.at } : {}) };
+          routes.add(t);
+          made.push(t);
+          continue;
+        }
         if ("fill" in piece) {
           const t: Trigger = { label: label(), conds: [], acts: [], copy: { from: `@${piece.fill.temp}`, into: [] }, ...(p.at ? { at: p.at } : {}) };
           fills.push({ t, target: piece.fill.target });
@@ -1781,7 +1955,7 @@ class Emitter {
       const last = made[made.length - 1];
       if (last.copy || last.island || last.call) made.push({ label: `${this.key}.cut${n++}`, conds: [], acts: [] });
       made.forEach((t, i) => {
-        if (t.copy) { if (!refreshes.some((r) => r.t === t) && !fills.some((f) => f.t === t)) copies.push({ t, id: t.copy.from }); }
+        if (t.copy) { if (!routes.has(t) && !refreshes.some((r) => r.t === t) && !fills.some((f) => f.t === t)) copies.push({ t, id: t.copy.from }); }
         else if (!t.island && !t.call) t.next = i === made.length - 1 ? to(p.next!) : made[i + 1].label;
       });
       triggers.push(...made);
@@ -2279,6 +2453,16 @@ class Rewriter {
         this.call(s.call, pre, where);
         return pre;
       }
+      case "print": {
+        // The values of a printed text, as the emitter takes them and in JavaScript's order: each worked out before a
+        // later one's call, a value more than a sum into a variable of the emitter's own first.
+        if (!this.own || s.parts.every((p) => (p.kind !== "number" && p.kind !== "char") || plain(p.expr))) return [s];
+        const pre: Stmt[] = [];
+        const valued = s.parts.filter((p): p is Extract<TextPart, { kind: "number" | "char" }> => p.kind === "number" || p.kind === "char");
+        const exprs = this.each(valued.map((p) => p.expr), pre, where, (x) => (plain(x) ? x : this.side(x, pre, where)));
+        let i = 0;
+        return [...pre, { ...s, parts: s.parts.map((p) => (p.kind === "number" || p.kind === "char" ? { ...p, expr: exprs[i++] } : p)) }];
+      }
       case "return": {
         // The value given back, as the emitter takes it: a boolean's test flattened, a number into a variable of the
         // emitter's own first when it is more than a sum.
@@ -2436,6 +2620,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } });
     e.goto(END);
     e.functions();
+    e.emitDigits();
     if (start) {
       const writes: Write[] = [...[...e.stacks.values()].map((st) => st.sp), ...(e.stacks.size ? [e.depth] : [])].map((target) => ({ target, value: { c: 0, terms: [] } }));
       start.items.unshift(...writes.map((write) => ({ write })));
@@ -2448,6 +2633,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
       if (cells > STACK_CELLS_MOST) return { e, g: `stacks of ${cells} cells (${e.stackDepth} calls deep, ${cells / e.stackDepth} cells for a call of each function that calls itself), past the ${STACK_CELLS_MOST} a map of our own lays out: lower the recursion depth in the script's settings` };
       g.stacks = [...e.stacks.values()].map((st) => ({ id: st.id, cells: st.frame * e.stackDepth }));
     }
+    if (typeof g !== "string" && e.templates.length) g.templates = e.templates;
     return { e, g };
   };
   const g = make(new Set()).g;

@@ -3648,6 +3648,43 @@ same at the same frames built both ways, every one ok, the overflow line in red 
 
 Not yet: an array declared in a function that calls itself (its handle on the stack), units and texts kept on it.
 
+### Texts with numbers in them, on our own backend (2026-10-19)
+
+Step 2 of the way off eudplib. eudplib's build makes a number into text by dividing it by ten for each digit, a bit
+at a time, and writes the text a byte at a time through a cursor (a read of the dword, then a write). The proposal
+was a table of 1,000 three-digit cells; working it out, the table only saves the last step — a number still has to be
+cut into groups of three, a division by 1,000 — and the harder part is where the digits go: a number's width changes
+from print to print, so everything after it moves a byte, and the game writes whole dwords. What was built instead:
+
+- **A template for each print**, laid out when the map is built: its text, and for each number a field of 12 bytes
+  on a dword's start, the room before the number filled with 0x0D — a carriage return, which StarCraft draws as
+  nothing; eudplib pads its strings with it, and its own prints carry it around every number (the lifted game's text
+  lines through eudplib: `A: \r0\r\r\r, \r\r7…`). Nothing in a text ever moves. A byte from a value (a colour from JSX)
+  is one byte of the template, 0x0D for a 0.
+- **One routine writes a number into a field**, shared by every print: the field set to 0x0D; the number's size (a
+  signed one's sign apart); how many digits, by comparisons with powers of ten (four at most); then for each digit
+  from the first a trigger each for 8, 4, 2 and 1 times its power of ten, which takes that much from the size and
+  adds it to the digit's byte when the size holds it. The '0's and the minus sign go in with the trigger the
+  comparisons land on. About four triggers a digit.
+- **A print** hands each number to the routine, copies its three dwords into the field (routed, as any copy), sets
+  its bytes, and shows the template with Display Text. The template is a string of the map's: a placeholder three
+  bytes longer, the template written in it from its first dword's start and the string's offset moved there
+  (`scripts/build-own.mts`) — among the map's own strings, since 1.16.1's table names only the first 64 KB of them.
+- **The values in JavaScript's order**, worked out before a later value's call (the rewriter).
+
+| `probes/own-print.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| One text, one number (frame 6) | 0.001 ms | 0.013 ms |
+| A hundred texts of two numbers (frame 13) | **0.133 ms** | 2.411 ms |
+
+Checked: the random programs print now (words, one of them Korean, numbers signed and `u32`, bytes from values): about
+9,600 texts in the suite compared byte for byte with what JavaScript makes of them (less the 0x0D), as graphs and from
+the laid-out bytes, and in the programs with functions that call themselves. `probes/own-print.ts`: its twenty lines
+the same at the same frames built both ways, once the 0x0D are taken out of both; game-check: 178 accesses, none ending
+the game.
+
+Not yet: a fixed number printed (`3.25`), a player's name or colour, a text of the program's; `position: "center"`.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

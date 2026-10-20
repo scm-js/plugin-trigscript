@@ -14,7 +14,7 @@ import { join, resolve } from "node:path";
 import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { emitBody } from "../compiler/backend/emit";
-import { layout } from "../compiler/backend/layout";
+import { STRINGS, layout } from "../compiler/backend/layout";
 import type { ArrayDecl, FuncDecl, VarDecl } from "../compiler/ir";
 import type { Graph } from "../compiler/backend/graph";
 import { defaultScriptNames } from "../compiler/names";
@@ -76,6 +76,15 @@ applyUnitChanges(scn, addUnits(scn, placed));
 // The texts the graph shows, in the strings first: the payload goes after them.
 const texts = new Map<string, number>();
 for (const t of (graph as Graph).triggers) for (const a of t.acts) if (a.display !== undefined && !texts.has(a.display)) texts.set(a.display, internString(scn, a.display));
+// A string for each text printed with values in it, as long as its template and three bytes more: once the strings are
+// laid out, the template goes in it from its first dword's start on, and the string's offset is moved there (the
+// game's own table of strings names only its first 64 KB in 1.16.1, so the template stays among them, as eudplib's
+// buffer does).
+const templates = new Map<string, number>();
+for (const t of (graph as Graph).templates ?? []) {
+  const name = `(TrigScript text ${t.id})`;
+  templates.set(t.id, internString(scn, name + "\r".repeat(Math.max(0, t.bytes.length + 3 - name.length))));
+}
 markDirty(scn, "TRIG", "UNIT", "STRx");
 const chk = serializeScenario(scn);
 
@@ -93,10 +102,21 @@ const strx = sections.find((s) => s.name === "STRx");
 if (!strx) { console.error("the map came out with no STRx"); process.exit(1); }
 const values = new Map<string, number[]>();
 for (const a of program.arrays ?? []) if (a.values) values.set(a.id, a.values);
-const own = layout({ graph, strings: strx.body.length, owner: program.owner, text: (t) => texts.get(t)!, arrays: values });
-const withPayload = new Uint8Array(strx.body.length + own.payload.length);
-withPayload.set(strx.body);
-withPayload.set(own.payload, strx.body.length);
+// (STRx: the count, then a four-byte offset a string from the section's start; the section is at STRINGS in the game.)
+const strings = new Uint8Array(strx.body);
+const offsets = new DataView(strings.buffer);
+const templateAt = new Map<string, number>();
+for (const t of (graph as Graph).templates ?? []) {
+  const index = templates.get(t.id)!;
+  const at = (STRINGS + offsets.getUint32(4 * index, true) + 3) & ~3;
+  strings.set(t.bytes, at - STRINGS);
+  offsets.setUint32(4 * index, at - STRINGS, true);
+  templateAt.set(t.id, at);
+}
+const own = layout({ graph, strings: strings.length, owner: program.owner, text: (t) => texts.get(t)!, arrays: values, template: (id) => templates.get(id)!, templateAt });
+const withPayload = new Uint8Array(strings.length + own.payload.length);
+withPayload.set(strings);
+withPayload.set(own.payload, strings.length);
 strx.body = withPayload;
 const trig = sections.find((s) => s.name === "TRIG");
 if (trig) trig.body = own.trig;

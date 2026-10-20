@@ -40,7 +40,9 @@ export type Dword =
    */
   | { getter: "dest" | "next" }
   /** A scratch cell of the graph's (a variable of the Python side's it makes): where a cell's value comes out. */
-  | { temp: string };
+  | { temp: string }
+  /** The `word`-th dword of a printed text's template (`Graph.templates`), which the layout puts on a dword's start. */
+  | { template: string; word: number };
 
 /**
  * One of the Python side's fixed-point functions (part 3): a product or a quotient of two variables, or of one and a
@@ -82,7 +84,8 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * trigger of theirs shows it); only a graph made for a map of our own has one (`emitBody`): its text is put in the
  * map's strings when the map is made.
  */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string }
+/** `show`: instead of a write, Display Text of a printed text's template (`Graph.templates`), as it is when shown. */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string }
 
 /**
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,
@@ -135,7 +138,12 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
  * `STACK`), this many cells: cell triggers as a routed variable's (`layout.ts`), each holding its value in the number
  * of its one action, which adds it where its destination says and goes where its next pointer says.
  */
-export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; stacks?: { id: string; cells: number }[] }
+/**
+ * `templates`: the texts a map of our own prints with values in them, each its bytes as built — the text, and a field
+ * of 12 bytes on a dword's start for each number, which the program fills before it shows the text (0x0D, which draws
+ * nothing, wherever nothing goes) — ending in a 0.
+ */
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; stacks?: { id: string; cells: number }[]; templates?: { id: string; bytes: number[] }[] }
 
 /**
  * A stack, as an array's id (`STACK:` and the function's): `{ element }` is its first cell's number, `{ epdOf }` that
