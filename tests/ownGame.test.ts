@@ -108,3 +108,50 @@ describe("a map of our own, the game's actions with fields from values", () => {
     expect(graph.templates?.map((t) => t.id)).toContain(a.textOf);
   });
 });
+
+describe("a map of our own, the game's numbers read as values", () => {
+  it("reads one player's ore where the game keeps it, a bit at a time, entered at its highest group of eight bits", () => {
+    const { graph } = own(`const n = minerals(P1);\nprint(\`\${n}\`);`);
+    const ORE = 0x57f0f0;
+    const bits = graph.triggers.flatMap((t) => t.conds).filter((c) => "game" in c.dword && c.dword.game === ORE && c.mask !== undefined);
+    expect(bits).toHaveLength(32);
+    // (Below 2^8, 2^16 and 2^24, a branch past the higher bits.)
+    const entries = graph.triggers.flatMap((t) => t.conds).filter((c) => "game" in c.dword && c.dword.game === ORE && c.mask === undefined);
+    expect(entries.map((c) => c.value)).toEqual([255, 65535, 2 ** 24 - 1]);
+  });
+
+  it("asks a count of units a bit at a time from the top, 12 bits, the condition's amount what is found so far", () => {
+    const { graph } = own(`const n = countUnits(P1, units.TerranMarine);\nprint(\`\${n}\`);`);
+    const asks = graph.triggers.flatMap((t) => t.conds).filter((c) => c.game?.type === 2);
+    expect(asks).toHaveLength(12);
+    expect(asks.every((c) => c.game!.comparison === 0)).toBe(true);
+  });
+
+  it("compares a number of the game's with a value as the condition itself, its amount a place of the value", () => {
+    const { graph } = own(`let cost = 50;\ncost += 25;\nif (minerals(P1) >= cost) print("rich");\nif (minerals(P1) < 300) print("poor");`);
+    const asks = graph.triggers.flatMap((t) => t.conds).filter((c) => c.game?.type === 4);
+    // (No read: two Accumulate conditions, each turned around for the branch past its print — at most the value less
+    // one, at least 300.)
+    expect(asks.map((c) => c.game!.comparison).sort()).toEqual([0, 1]);
+    expect(graph.triggers.flatMap((t) => t.conds).some((c) => "game" in c.dword && c.dword.game === 0x57f0f0)).toBe(false);
+  });
+
+  it("reads a player's race as its byte of the player table, and supply from its race's table", () => {
+    const race = own(`if (race(P2) == races.Zerg) print("Zerg");`).graph;
+    // (Player 2's race is the second byte of the dword at 0x57F1C0: its eight bits, moved down eight.)
+    const masks = race.triggers.flatMap((t) => t.conds).filter((c) => "game" in c.dword && c.dword.game === 0x57f1c0).map((c) => c.mask);
+    expect(masks).toEqual([0x8000, 0x4000, 0x2000, 0x1000, 0x800, 0x400, 0x200, 0x100]);
+    const supply = own(`const n = supply(P1, "used", races.Terran);\nprint(\`\${n}\`);`).graph;
+    expect(supply.triggers.flatMap((t) => t.conds).some((c) => "game" in c.dword && c.dword.game === 0x582174 + 4 * 36)).toBe(true);
+  });
+});
+
+describe("a map of our own, a print at the centre of the screen", () => {
+  it("writes the text into the game's line of errors on the player's own computer, after raising the error", () => {
+    const { graph } = own(`let n = 0;\nwhile (n < 12) n += 5;\nprint(\`Wave \${n}\`, { position: "center" });`);
+    // (The template is the line itself; the Create Unit with the first free unit taken away comes before it.)
+    expect(graph.templates?.find((t) => t.at === 0x640b60 + 218 * 12)).toBeDefined();
+    expect(graph.triggers.some((t) => t.acts.some((a) => a.record?.type === 44) && t.acts.some((a) => "game" in a.dword && a.dword.game === 0x628438))).toBe(true);
+    expect(graph.triggers.some((t) => t.conds.some((c) => "game" in c.dword && c.dword.game === 0x512684))).toBe(true);
+  });
+});

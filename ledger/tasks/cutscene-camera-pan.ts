@@ -1,4 +1,4 @@
-// ledger: step 5, refused: a location moved (centerLocation)
+// ledger: step 5, takes
 // trigscript/cutscene: a camera that glides to a point over so many frames: `await cam.pan(x, y, time)`.
 import { Camera, SECOND } from "trigscript/cutscene";
 program(async () => {

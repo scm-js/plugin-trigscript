@@ -72,6 +72,8 @@ for (const t of (graph as Graph).triggers) for (const a of t.acts) {
 // buffer does).
 const templates = new Map<string, number>();
 for (const t of (graph as Graph).templates ?? []) {
+  // (A print at the centre of the screen is written into the game's own line: no string.)
+  if (t.at !== undefined) continue;
   const name = `(TrigScript text ${t.id})`;
   templates.set(t.id, internString(scn, name + "\r".repeat(Math.max(0, t.bytes.length + 3 - name.length))));
 }
@@ -97,6 +99,7 @@ const strings = new Uint8Array(strx.body);
 const offsets = new DataView(strings.buffer);
 const templateAt = new Map<string, number>();
 for (const t of (graph as Graph).templates ?? []) {
+  if (t.at !== undefined) continue;
   const index = templates.get(t.id)!;
   const at = (STRINGS + offsets.getUint32(4 * index, true) + 3) & ~3;
   strings.set(t.bytes, at - STRINGS);

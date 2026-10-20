@@ -1,4 +1,4 @@
-// ledger: step 5, refused: rose()
+// ledger: step 5, takes
 // `rose(…)`: true on the frame its test becomes true, false until it becomes false and true again.
 program(() => {
   let n = 0;

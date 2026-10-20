@@ -1,4 +1,4 @@
-// ledger: step 5, refused: a location moved (centerLocation)
+// ledger: step 5, takes
 // trigscript/cutscene: a camera that shakes for so many frames and settles where it was: `await cam.shake(12)`.
 import { Camera } from "trigscript/cutscene";
 program(async () => {

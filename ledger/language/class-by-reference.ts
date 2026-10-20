@@ -1,4 +1,4 @@
-// ledger: step 9, refused: a warning TrigScript shows every player ("more than 1023 closures and their variables are kept at once")
+// ledger: step 5, takes
 // An instance kept by reference: a variable that may hold one instance or another, or none, chosen while the game runs.
 class Node {
   constructor(public v: number) {}

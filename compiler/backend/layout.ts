@@ -180,6 +180,7 @@ export function layout(input: LayoutInput): OwnMap {
   // The templates of texts printed with values, each on a dword's start (where the map maker put them, or here).
   const templates = new Map<string, number>(input.templateAt ?? []);
   for (const t of graph.templates ?? []) {
+    if (t.at !== undefined) templates.set(t.id, t.at);
     if (templates.has(t.id)) continue;
     templates.set(t.id, next);
     next += 4 * Math.ceil(t.bytes.length / 4);
@@ -325,7 +326,7 @@ export function layout(input: LayoutInput): OwnMap {
     w32(n + 2376, 4); // preserved
   });
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
-  for (const t of graph.templates ?? []) if (!input.templateAt?.has(t.id)) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));
+  for (const t of graph.templates ?? []) if (!input.templateAt?.has(t.id) && t.at === undefined) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));
   // What a region's cells hold when the map starts.
   for (const r of graph.cells ?? []) r.values?.forEach((v, i) => w32(regions.get(r.id)! + 72 * i + 348, v));
   // Each cell trigger: Set Deaths, add (its destination and next pointer written by every routing), preserved.

@@ -1,4 +1,4 @@
-// ledger: step 5, refused: a location moved (centerLocation)
+// ledger: step 5, takes
 // trigscript/cutscene: a camera's glide that starts slow, ends slow or goes past and back: `cam.pan(x, y, time, "back")`.
 import { Camera } from "trigscript/cutscene";
 program(async () => {

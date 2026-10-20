@@ -404,7 +404,11 @@ export function textHasId(e: TextExpr, kinds: (id: string) => "id" | "made" | un
 export type BoolExpr =
   | { kind: "const"; value: boolean }
   /** A trigger condition the script wrote, its fields known when the script is built. */
-  | { kind: "cond"; record: ConditionRecord }
+  /**
+   * `amount`: a map of our own's backend only (`Rewriter.asked`), a read compared with a value — the condition's
+   * amount that value plus `add`, a place of it.
+   */
+  | { kind: "cond"; record: ConditionRecord; amount?: { expr: NumExpr; add: number } }
   /** A boolean variable. */
   | { kind: "var"; id: string }
   /** `alive[i]`: a cell of an array of booleans; false when the index is past either end. */
