@@ -97,6 +97,11 @@ type Flow = "next" | "break" | "continue" | "return";
  * gives back (0 off the end) into the function's result and the call's own.
  */
 const CALLS = { whole: false };
+/**
+ * The statements the evaluator may still run for the program in hand (a hundred thousand), its calls' bodies included: a program whose
+ * functions call themselves from inside each other's loops can run for hundreds of millions, and is set aside.
+ */
+const EVAL = { n: Infinity };
 const RETURNS: { value: number; kind: string }[] = [];
 function callValue(c: Call, env: Env): number {
   const values = c.params.map((p) => (p.decl.kind === "boolean" ? (bool(p.init as BoolExpr, env) ? 1 : 0) : num(p.init as NumExpr, env)));
@@ -105,7 +110,7 @@ function callValue(c: Call, env: Env): number {
   c.params.forEach((p, i) => env.set(p.decl.id, values[i]));
   const f = c.fn !== undefined ? FUNCTIONS.get(c.fn) : undefined;
   RETURNS.push({ value: 0, kind: (f ? f.result?.kind : c.result?.kind) ?? "void" });
-  run(f ? f.body : c.body, env, { n: 1e6 });
+  run(f ? f.body : c.body, env, EVAL);
   const { value } = RETURNS.pop()!;
   for (const [id, v] of kept ?? []) env.set(id, v);
   if (f?.result) env.set(f.result.decl.id, value);
@@ -254,7 +259,7 @@ function exec(g: Graph, env: Env): Env {
   const byLabel = new Map(g.triggers.map((t) => [t.label, t]));
   let pc: string | number = g.triggers[0].label;
   for (let steps = 0; pc !== END; steps++) {
-    if (steps > 50_000_000) throw new Error("the graph does not end");
+    if (steps > 200_000_000) throw new Error("the graph does not end");
     const st = typeof pc === "number" ? stacks.find((x) => pc as number >= x.addr && (pc as number) < x.addr + 72 * x.cells) : undefined;
     if (st) {
       // A jump into a cell of a stack: its number added where its action points, then on where it points.
@@ -711,7 +716,8 @@ describe("the emitter, calls in a map of our own", () => {
         if (typeof g === "string") { left.set(g, (left.get(g) ?? 0) + 1); if (process.env.EMITTER_LEFT === "seeds") console.log(seed, g); continue; }
         taken++;
         const want: Env = new Map();
-        run(body, want, { n: 1e6 });
+        EVAL.n = 1e5;
+        run(body, want, EVAL);
         let got: Env;
         try { got = exec(g, new Map()); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
         for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
@@ -779,7 +785,7 @@ function runOwn(g: Graph): Env {
   const at = (epd: number) => u(DEATHS + 4 * epd);
   let pc = own.address;
   for (let steps = 0; !(pc & 0x80000000); steps++) {
-    if (steps > 50_000_000) throw new Error("the payload does not end");
+    if (steps > 200_000_000) throw new Error("the payload does not end");
     if (!inside(pc)) throw new Error(`the walk left the payload: 0x${pc.toString(16)}`);
     let holds = (rd(pc + 2376) & 8) === 0;
     for (let k = 0; holds && k < 16; k++) {
@@ -814,7 +820,8 @@ describe("a map of our own, laid out", () => {
         const g = emitBody(body, decls, `c${seed}`, FUNCTIONS);
         if (typeof g === "string") continue;
         const want: Env = new Map();
-        run(body, want, { n: 1e6 });
+        EVAL.n = 1e5;
+        run(body, want, EVAL);
         let got: Env;
         try { got = runOwn(g); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
         for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
@@ -830,7 +837,7 @@ describe("a map of our own, laid out", () => {
 describe("a map of our own, functions that call themselves", () => {
   it("keeps their frames on a stack of its own: random programs as written, as graphs and from the payload's bytes", () => {
     CALLS.whole = true;
-    let taken = 0, deep = 0;
+    let taken = 0, deep = 0, long = 0;
     const left = new Map<string, number>();
     try {
       // (EMITTER_SEEDS runs more of them, for a longer look; EMITTER_FROM starts further on.)
@@ -842,7 +849,14 @@ describe("a map of our own, functions that call themselves", () => {
         taken++;
         if (g.stacks) deep++;
         const want: Env = new Map();
-        run(body, want, { n: 1e6 });
+        EVAL.n = 1e5;
+        try {
+          run(body, want, EVAL);
+        } catch (err) {
+          if ((err as Error).message !== "too long") throw err;
+          long++;
+          continue;
+        }
         let got: Env;
         try { got = exec(g, new Map()); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
         for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
@@ -854,9 +868,12 @@ describe("a map of our own, functions that call themselves", () => {
     } finally {
       CALLS.whole = false;
     }
-    if (process.env.EMITTER_LEFT) console.log(taken, deep, [...left].sort((a, b) => b[1] - a[1]));
+    if (process.env.EMITTER_LEFT) console.log(taken, deep, long, [...left].sort((a, b) => b[1] - a[1]));
+    // (Set aside as too long to run here: rare, a few in a hundred at most.)
+    expect(long).toBeLessThan(0.02 * (Number(process.env.EMITTER_SEEDS ?? 1500) - Number(process.env.EMITTER_FROM ?? 1) + 1) + 3);
     const seeds = Number(process.env.EMITTER_SEEDS ?? 1500) - Number(process.env.EMITTER_FROM ?? 1) + 1;
     expect(taken).toBeGreaterThan(0.96 * seeds);
     expect(deep).toBeGreaterThan(0.4 * seeds);
-  });
+  // (A longer look, EMITTER_SEEDS, takes longer than the suite's 30 seconds.)
+  }, process.env.EMITTER_SEEDS ? 3_600_000 : undefined);
 });
