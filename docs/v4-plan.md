@@ -3879,7 +3879,7 @@ Bad Apple: 5, 6, 7, as the fog library. The bullets: 5 (a death count read), 9. 
 
 ### The ledger (2026-10-19)
 
-`ledger/` holds a script for each feature of the language and the library — 831 of them, in folders by area — whose
+`ledger/` holds a script for each feature of the language and the library — 832 of them, in folders by area — whose
 first line says which step of the way off eudplib makes it a map of our own's, and whether a map of our own takes it
 today, in the words of its refusal:
 
@@ -3905,7 +3905,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 6 The game's memory | 0 of 49 |
 | 7 Programs, owners and players | 1 of 22 |
 | 8 Texts as values | 0 of 43 |
-| 9 Arrays that grow, the heap | 0 of 27 |
+| 9 Arrays that grow, the heap | 0 of 28 |
 | 10 Units | 0 of 99 |
 | 11 Tasks, `async` and errors | 0 of 44 |
 | 12 Input | 0 of 31 |
@@ -3931,12 +3931,26 @@ the ledger is the list it can be written again from at 4.0.
 - A map of our own refused a print to the owner named by its slot (`{ to: P1 }` in P1's program), and took a program
   owned by P9 to P12, whose triggers the game does not run — refused now (to be confirmed in the game).
 
+*Fixed after it (both builds):*
+- A function that keeps a state — one changing a variable declared outside it, a closure's, or a field of `this`
+  outside a constructor, itself or through another function of the script's — was worked out when the script was
+  built, once where its call was written: `` const next = counter(); while (…) print(`${next()}`) `` printed
+  1, 1, 1 for 1, 2, 3 (`hoist.ts` `keepsState`). Now a call of it is the program's: a closure made in the program runs
+  in the game (`ledger/language/closure-keeps-a-count.ts`), and one made when the script was built, a method of an
+  instance made then, or a function writing a `let` or a record of the script's is refused, as the write written in
+  the program is (`tests/script-functions.test.ts`). A cache filled by a method (`films.set(…)`) is no assignment, and
+  a function handed to `forEach` writing its own function's variables is that function's business: both are still
+  worked out when built. Three calls written one after the other used to come out right; they are refused now too.
+  Not caught: a state changed only through a method (`log.push(…)`, `counts.set(…)` on something of the script's) — a
+  cache does the same, and the two cannot be told apart from the code.
+- `order(…, orders.Move)` made an Order action of modifier 6 (orders.dat's number), where the action knows move,
+  patrol and attack (0, 1, 2). orders.Move, orders.Patrol and orders.AttackMove are now those three, and any other of
+  `orders.*` a type error — `orders.Die` and `orders.Stop`, 0 and 1, were taken for move and patrol
+  (`tests/events.test.ts`). A raw number is a second signature, the action's own.
+
 *Open:*
-- **Built wrong without a word:** a function written outside the program that keeps a state and is called inside it
-  (`` const next = counter(); while (…) print(`${next()}`) ``) is worked out once when the script is built:
-  1, 1, 1 for 1, 2, 3. Kept out of the ledger until it is refused or right.
-- **Built wrong without a word:** `order(…, orders.Move)` type-checks (`OrderKind | number`) and makes an Order action
-  of modifier 6; the action knows move, patrol and attack (0, 1, 2).
+- `new P(4).x` written in a program's expression is "A value must be known when the script is built"; the same through
+  a function (`function made(x) { return new P(x).x; }`) is taken.
 - `displayText(text, always)` made a print loses its flag — to check against the flags a print gives Display Text.
 - `disabled(…)` inside a program is neither refused nor said: a disabled condition in an `if` holds, as in a trigger.
   `preserve()` and `preserveTrigger()` there are dropped (every program is preserved), also without a word.

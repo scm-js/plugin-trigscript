@@ -353,6 +353,77 @@ export function usesGame(ts: typeof TS, checker: TS.TypeChecker, fn: TS.Node, se
   return found;
 }
 
+const keepsStateMemo = new WeakMap<TS.Node, boolean>();
+
+/**
+ * Whether a function of the script's own changes what outlives a call of it: a variable declared outside the function
+ * that writes it (`count += 1` of a `let` at the top of a file; `n += 1` in the function `counter()` gives back, whose
+ * `n` is counter's), or a field of `this` outside a constructor — itself, in a function written inside it, or through
+ * another of the script's functions. Worked out when the script is built, a call of it in a program would change that
+ * once, where the call is written: a loop printing `next()` showed 1, 1, 1 for 1, 2, 3. So such a call is the program's,
+ * and the program's own checks say what the game cannot change. A function handed to `forEach` or `map` writing the
+ * variables of the function it is written in is that function's own business; a cache filled by a method
+ * (`films.set(…)`) is not an assignment, and gives the same answer each time.
+ */
+export function keepsState(ts: typeof TS, checker: TS.TypeChecker, fn: TS.Node, seen = new Set<TS.Node>()): boolean {
+  const hit = keepsStateMemo.get(fn);
+  if (hit !== undefined) return hit;
+  if (seen.has(fn)) return false;
+  seen.add(fn);
+  let found = false;
+  const isFunction = (n: TS.Node): n is TS.FunctionLikeDeclaration => ts.isFunctionLike(n) && !!(n as TS.FunctionLikeDeclaration).body;
+  /** The function whose variables a write at `at` may change without outliving the call: through the callbacks it is written in. */
+  const owner = (at: TS.Node): TS.FunctionLikeDeclaration | undefined => {
+    let f: TS.Node | undefined = at.parent;
+    while (f && !isFunction(f)) f = f.parent;
+    while (f && isCallbackArgument(ts, f)) { f = f.parent; while (f && !isFunction(f)) f = f.parent; }
+    return f as TS.FunctionLikeDeclaration | undefined;
+  };
+  const strip = (e: TS.Expression): TS.Expression => {
+    while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e) || ts.isTypeAssertionExpression(e)) e = e.expression;
+    return e;
+  };
+  const outside = (target: TS.Expression, at: TS.Node): boolean => {
+    let t = strip(target);
+    if (ts.isArrayLiteralExpression(t)) return t.elements.some((x) => outside(ts.isSpreadElement(x) ? x.expression : x, at));
+    if (ts.isObjectLiteralExpression(t)) {
+      return t.properties.some((p) => ts.isPropertyAssignment(p) ? outside(p.initializer, at) : ts.isShorthandPropertyAssignment(p) ? outside(p.name, at) : ts.isSpreadAssignment(p) && outside(p.expression, at));
+    }
+    if (ts.isBinaryExpression(t) && t.operatorToken.kind === ts.SyntaxKind.EqualsToken) return outside(t.left, at);
+    while (ts.isPropertyAccessExpression(t) || ts.isElementAccessExpression(t)) t = strip(t.expression);
+    const f = owner(at);
+    if (t.kind === ts.SyntaxKind.ThisKeyword) {
+      // An arrow's `this` is the function's it is written in.
+      let g: TS.Node | undefined = f;
+      while (g && ts.isArrowFunction(g)) { g = g.parent; while (g && !isFunction(g)) g = g.parent; }
+      return !g || !ts.isConstructorDeclaration(g);
+    }
+    if (!ts.isIdentifier(t)) return false;
+    const decl = declarationOf(ts, checker, t);
+    if (!decl || decl.getSourceFile() !== at.getSourceFile()) return !!decl;
+    return !f || decl.pos < f.pos || decl.end > f.end;
+  };
+  const other = (decl: TS.Node | undefined): boolean =>
+    !!decl && decl !== fn && isFunction(decl) && !decl.getSourceFile().isDeclarationFile && keepsState(ts, checker, decl, seen);
+  const look = (n: TS.Node): void => {
+    if (found) return;
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment && outside(n.left, n)) { found = true; return; }
+    if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken) && outside(n.operand, n)) { found = true; return; }
+    if (ts.isDeleteExpression(n) && outside(n.expression, n)) { found = true; return; }
+    if ((ts.isCallExpression(n) || ts.isNewExpression(n)) && other(checker.getResolvedSignature(n)?.declaration)) { found = true; return; }
+    if (ts.isIdentifier(n)) {
+      const decl = declarationOf(ts, checker, n);
+      if (decl && (isScriptFunction(ts, decl) || scriptArrow(ts, decl)) && other(isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl))) { found = true; return; }
+      return;
+    }
+    ts.forEachChild(n, look);
+  };
+  const body = (fn as TS.FunctionLikeDeclaration).body;
+  if (body) look(body);
+  keepsStateMemo.set(fn, found);
+  return found;
+}
+
 /** A method, an accessor or a constructor of one of the script's classes: what a call through an instance runs. */
 function classMember(ts: typeof TS, decl: TS.Node): boolean {
   return (ts.isMethodDeclaration(decl) || ts.isGetAccessorDeclaration(decl) || ts.isSetAccessorDeclaration(decl) || ts.isConstructorDeclaration(decl)) && !!decl.body && isScriptClass(ts, decl.parent);
@@ -602,7 +673,7 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       // A function of the script's own that does what only the game can (`range(2, 4)` draws the game's random numbers):
       // run in the game, whatever its arguments.
       const own = decl && (isScriptFunction(ts, decl) ? decl : scriptArrow(ts, decl));
-      if (own && usesGame(ts, checker, own)) { ok = false; return; }
+      if (own && (usesGame(ts, checker, own) || keepsState(ts, checker, own))) { ok = false; return; }
       // A function of the script's own kept in an array or a record (`const fs = [a, b]`): the program's functions as
       // values, which it calls with its own values. Handed to a function (`xs.map(sq)`) or called, it is the script's.
       if (decl && (isScriptFunction(ts, decl) || scriptArrow(ts, decl)) && (ts.isArrayLiteralExpression(p) || (ts.isPropertyAssignment(p) && p.initializer === n) || ts.isShorthandPropertyAssignment(p))) { ok = false; return; }
@@ -628,6 +699,11 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       if (clockCall(ts, checker, n)) { ok = false; return; }
       // A call of a game() function runs in the game, whatever its arguments are.
       if (ts.isCallExpression(n) && isGame(n)) { ok = false; return; }
+      // So does one of a function that changes what outlives the call, a closure's variable or a field (`keepsState`).
+      if (ts.isCallExpression(n)) {
+        const callee = checker.getResolvedSignature(n)?.declaration;
+        if (callee && ts.isFunctionLike(callee) && (callee as TS.FunctionLikeDeclaration).body && !callee.getSourceFile().isDeclarationFile && keepsState(ts, checker, callee)) { ok = false; return; }
+      }
       if (ts.isCallExpression(n) && isReadCall(libraryCallName(ts, checker, n), n.arguments.length)) { ok = false; return; }
       if (ts.isBinaryExpression(n)) {
         const k = n.operatorToken.kind;

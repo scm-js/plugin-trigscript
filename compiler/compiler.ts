@@ -214,6 +214,12 @@ export function compileScript(ts: typeof TS, files: ScriptFiles, names: ScriptNa
   const diagnostics: ScriptDiagnostic[] = [];
   const result = (extra: Partial<CompileResult> = {}): CompileResult => {
     diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
+    // A function of the script's is compiled where each call is: its error once, not once a call.
+    const said = new Set<string>();
+    for (let i = diagnostics.length - 1; i >= 0; i--) {
+      const d = diagnostics[i], key = `${d.file}:${d.line}:${d.column}:${d.message}`;
+      if (said.has(key)) diagnostics.splice(i, 1); else said.add(key);
+    }
     return { triggers: [], sources: [], strings: [], sounds: [], variables: [], programs: [], buildTime: [], hints: [], refs, ir: [], input: null, tests: null, ...extra, diagnostics, ok: diagnostics.length === 0 };
   };
 

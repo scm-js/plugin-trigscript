@@ -40,3 +40,39 @@ describe("functions from any file", () => {
     expect(raw({ "main.ts": "function bad(n: number) { return [n].map((x) => `${x}`).join(); } const ok = bad(3); program(() => { print(ok); });" }).diagnostics).toEqual([]);
   });
 });
+
+describe("a function that keeps a state", () => {
+  // Worked out when the script was built, a call changed the state once where it was written: a loop printed 1, 1, 1.
+  const COUNTER = "function counter() { let n = 0; return () => { n += 1; return n; }; }";
+  const loop = (call: string) => `program(() => { let k = 0; while (k < 3) { print(\`\${${call}}\`); k += 1; } });`;
+  const said = (files: Record<string, string>) => raw(files).diagnostics.map((d) => `${d.line}: ${d.message}`);
+
+  it("a closure made in the program runs in the game, each call its own", () => {
+    expect(shown({ "main.ts": `${COUNTER}\nprogram(() => { const next = counter(); let k = 0; while (k < 3) { print(\`\${next()}\`); k += 1; } });` })).toEqual(["1", "2", "3"]);
+  });
+
+  it("one made when the script was built, or a method of an instance made then, is refused: the game cannot change what they keep", () => {
+    expect(said({ "main.ts": `${COUNTER}\nconst next = counter();\n${loop("next()")}` })).toEqual([
+      "3: next() changes what it keeps between calls, but that was made when the script was built, where the game cannot change it. Make it inside the program, or keep what changes in a let of the program.",
+    ]);
+    expect(said({ "main.ts": `class Counter { n = 0; inc() { this.n += 1; return this.n; } }\nconst c = new Counter();\n${loop("c.inc()")}` })[0]).toMatch(/^3: c\.inc\(\) changes what it keeps between calls/);
+  });
+
+  it("a function writing a variable or a record of the script's is the program's, and refused as the write would be — once", () => {
+    expect(said({ "main.ts": `let count = 0;\nfunction bump() { count += 1; return count; }\nprogram(() => { print(\`\${bump()}\`); print(\`\${bump()}\`); });` })).toEqual(["2: Only the program's let variables can be assigned."]);
+    expect(said({ "main.ts": `const box = { n: 0 };\nfunction bump() { box.n += 1; return box.n; }\n${loop("bump()")}` })[0]).toMatch(/^2: This object is computed when the script is built/);
+  });
+
+  it("what keeps no state is still worked out when the script is built: its own variables, a callback's writes to them, a cache", () => {
+    const r = compile({ "main.ts": [
+      "const cache = new Map<number, number>();",
+      "function sq(v: number) { const had = cache.get(v); if (had !== undefined) return had; const r = v * v; cache.set(v, r); return r; }",
+      "function sum(xs: number[]) { let t = 0; xs.forEach((x) => { t += x; }); return t; }",
+      "class P { x = 0; constructor(x: number) { this.x = x; } }",
+      "function made(x: number) { return new P(x).x; }",
+      "program(() => { let k = 0; while (k < 2) { print(`${sq(7)} ${sum([1, 2, 3])} ${made(4)}`); k += 1; } });",
+    ].join("\n") });
+    expect(simulatePrograms(r.ir, 1, { strings: r.strings }).events.map((e) => e.text)).toEqual(["49 6 4", "49 6 4"]);
+    expect(JSON.stringify(r.ir)).not.toContain("\"call\"");
+  });
+});
