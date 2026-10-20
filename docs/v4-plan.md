@@ -3591,6 +3591,63 @@ as before.
   stutter seen. The first map of ours with routed copies: Remastered runs the overlapped cell triggers as the lifted
   game does.
 
+### Recursion on our own backend (2026-10-19)
+
+The meaning is the Python side's (slice 8): a call that may come back into the function it is in (`Call.saves`, which
+the front end makes a statement of its own) keeps that function's variables and where it goes back to around the
+call, and takes them back after; past the depth the script's settings allow (1024 by default, counted in calls over
+every function) the program says so in red — `TrigScript: stack overflow in f, line n - 1024 calls deep. The program
+has stopped.` — and stops for good. What a map of our own does with it:
+
+- **A stack of cell triggers.** The cells are the routed copies' (72 bytes apart, overlapped, one action that adds
+  its number where its destination says and goes where its next pointer says). Keeping a frame is one trigger, a Set
+  Deaths a variable, its destination a place of the stack's `sp` and its number a place of the variable; taking a
+  cell back is a trigger that sets a scratch cell to 0, points the stack cell at it and back, and goes there (its own
+  next pointer a place of `sp`), and the scratch cell then goes into every place of the variable. eudplib's build
+  reads a cell back a bit at a time (`f_dwread_epd`, about 35 triggers).
+- **Where a function goes back to**, for one that calls itself, is a variable whose places are the next pointer of
+  the trigger it ends at and each store that keeps it; every call of the function sets them all to its own label (a
+  `label` item, expanded once every place is known). The frame of a call keeps the calling function's, as the Python
+  side's does — with two functions that call each other they differ.
+- **A stack for each function.** One for them all gave `sp` a place at every call of every function that calls
+  itself — 107 in the probe — and each call wrote them all twice; a stack of its own keeps a function's `sp` to its
+  own calls. The depth that runs out is still one count for them all.
+- **Only what is read again.** `saves` lists every variable of the function, on purpose; a map of our own keeps no
+  more of it than some way on from the call reads before writing (`liveAfterCalls`, worked backwards over the
+  function's statements: loops until nothing more comes in, `break`, `continue`, a `return` from its value and where
+  it goes — an inlined call's goes on after the call). A call that may come back takes back what it keeps, its own
+  parameters among them, so it writes only its result as far as the function is concerned. `fib` keeps two cells a
+  call instead of three.
+
+| `probes/own-recursion.ts`, frame 10 (`fib(18)`: 8361 calls; `down(1000)`) | ms |
+| --- | ---: |
+| One stack | 32.05 |
+| A stack for each function | 17.78 |
+| Only what is read again | 13.06 |
+| Where it goes back to written by each call, not copied before each store | **11.64** |
+| Through eudplib | 26.06 |
+
+Going past the depth (frame 14, 1024 calls): 0.25 ms against eudplib's 0.51. Payload 1.87 MB (the stacks: 72 bytes a
+cell, the depth times each function's largest frame).
+
+Checked: the random programs with functions now with functions that call themselves (a depth given that goes down
+each call, one or two calls of itself a statement each with the front end's `saves`, inside loops and ifs): 1500 in
+the suite (644 with a stack) as written, as graphs and a fifth of them from the laid-out bytes; 14,000 once (`EMITTER_SEEDS`,
+in pieces side by side; a program the evaluator runs past a hundred thousand statements is set aside — functions
+calling themselves from inside each other's loops multiply into hundreds of millions of calls, which the interpreters of
+the test would take minutes over; the test fails past a few in a hundred). They found
+two mistakes of the liveness before it was right (an inlined call's `return` taken as leaving the function; a call
+that may come back taken as writing its parameters). `probes/own-recursion.ts` (fib, two functions calling each
+other, a loop around the call, parameters handed on crossed, a thousand deep, fib(18), past the depth): its lines the
+same at the same frames built both ways, every one ok, the overflow line in red and nothing after it.
+
+- **Played in Remastered (2026-10-19):** `trigscript-own-recursion.scx` printed all nine lines word for word, A–F
+  "ok", in the lifted game's groups (3, 5, 7, 9 lines; game frames 2, 6, 10, 14 over 333 ms), the overflow line red
+  and nothing after it; no stutter seen on the frame of about 9,400 calls. Remastered runs the stacks of cell triggers
+  as the lifted game does.
+
+Not yet: an array declared in a function that calls itself (its handle on the stack), units and texts kept on it.
+
 ## Part C — the game, pushed
 
 Each is a library over Part B, offered only after its probe. "Known" means a played probe

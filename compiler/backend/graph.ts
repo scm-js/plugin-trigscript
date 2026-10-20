@@ -130,7 +130,20 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
  * next's as the emitter laid the reads out (the Python side's EUDVArray's 18, an EUDArray's 1): the Python side checks
  * it is so.
  */
-export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[] }
+/**
+ * `stacks`: a map of our own keeps the frames of each function that calls itself on a stack of its own (an id starting
+ * `STACK`), this many cells: cell triggers as a routed variable's (`layout.ts`), each holding its value in the number
+ * of its one action, which adds it where its destination says and goes where its next pointer says.
+ */
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; stacks?: { id: string; cells: number }[] }
+
+/**
+ * A stack, as an array's id (`STACK:` and the function's): `{ element }` is its first cell's number, `{ epdOf }` that
+ * number's EPD (a cell's destination one less, its next pointer 86 less: +344 and +4 of the trigger where the number is
+ * +348), `{ addrOf }` where the first cell's trigger is; a cell every 72 bytes.
+ */
+export const STACK = "@stack";
+export const isStack = (id: string) => id.startsWith(STACK);
 
 /** The most conditions and actions a trigger of the game holds. */
 export const MOST_CONDS = 16;

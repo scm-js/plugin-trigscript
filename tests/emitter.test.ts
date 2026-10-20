@@ -4,10 +4,11 @@
 // conditions compare memory with their own numbers, actions write memory, the walk follows next pointers), from the
 // same random values, every variable compared after. The game probe probes/game-emitter.ts does the same in the
 // lifted game, for fewer loops.
+import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, VarDecl } from "../compiler/ir";
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
-import { END, type Dword, type Graph, type Num } from "../compiler/backend/graph";
+import { END, isStack, type Dword, type Graph, type Num } from "../compiler/backend/graph";
 import { layout } from "../compiler/backend/layout";
 import { fixedDiv, fixedMul } from "../compiler/fixedMath";
 
@@ -96,14 +97,22 @@ type Flow = "next" | "break" | "continue" | "return";
  * gives back (0 off the end) into the function's result and the call's own.
  */
 const CALLS = { whole: false };
+/**
+ * The statements the evaluator may still run for the program in hand (a hundred thousand), its calls' bodies included: a program whose
+ * functions call themselves from inside each other's loops can run for hundreds of millions, and is set aside.
+ */
+const EVAL = { n: Infinity };
 const RETURNS: { value: number; kind: string }[] = [];
 function callValue(c: Call, env: Env): number {
   const values = c.params.map((p) => (p.decl.kind === "boolean" ? (bool(p.init as BoolExpr, env) ? 1 : 0) : num(p.init as NumExpr, env)));
+  // (A call that may come back into the function it is in: that function's variables kept around it.)
+  const kept = c.saves?.vars.map((id) => [id, env.get(id) ?? 0] as const);
   c.params.forEach((p, i) => env.set(p.decl.id, values[i]));
   const f = c.fn !== undefined ? FUNCTIONS.get(c.fn) : undefined;
   RETURNS.push({ value: 0, kind: (f ? f.result?.kind : c.result?.kind) ?? "void" });
-  run(f ? f.body : c.body, env, { n: 1e6 });
+  run(f ? f.body : c.body, env, EVAL);
   const { value } = RETURNS.pop()!;
+  for (const [id, v] of kept ?? []) env.set(id, v);
   if (f?.result) env.set(f.result.decl.id, value);
   if (c.result) env.set(c.result.decl.id, value);
   return value;
@@ -193,11 +202,13 @@ const INDEXED = new Set<string>();
 // ── the graph, as the game runs its triggers ──
 
 /** Where a list's first cell is, as an EPD, and how far apart its cells are, for the interpreter's memory. */
-const TABLE_EPD = (id: string) => 0x100000 * (1 + [...TABLES.keys(), ...WRITABLE.keys()].indexOf(id));
+/** The stacks of the graph being run (a map of our own's), each after the lists in the interpreter's memory. */
+const STACKS: string[] = [];
+const TABLE_EPD = (id: string) => 0x100000 * (isStack(id) ? 99 + STACKS.indexOf(id) : 1 + [...TABLES.keys(), ...WRITABLE.keys()].indexOf(id));
 /** A writable array's cells in the interpreter's memory: an EUDVArray's, 18 EPD apart. */
 const cellEpd = (id: string, i: number) => `epd:${TABLE_EPD(id) + 18 * i}`;
 /** Where an array's first cell is as a trigger (an EUDVArray's): a jump into cell i goes to this plus 72 i. */
-const ARRAY_ADDR = (id: string) => 0x40000000 + 0x1000000 * (1 + [...TABLES.keys(), ...WRITABLE.keys()].indexOf(id));
+const ARRAY_ADDR = (id: string) => 0x40000000 + 0x1000000 * (isStack(id) ? 99 + STACKS.indexOf(id) : 1 + [...TABLES.keys(), ...WRITABLE.keys()].indexOf(id));
 const numOf = (n: Num): number => (typeof n === "number" ? n : "epdOf" in n ? u(TABLE_EPD(n.epdOf) + n.plus) : u(ARRAY_ADDR(n.addrOf) + n.plus));
 
 function key(d: Dword): string {
@@ -227,6 +238,10 @@ function exec(g: Graph, env: Env): Env {
   };
   // The lists, where the graph says the Python side keeps them.
   for (const { id, stride } of g.arrays ?? []) TABLES.get(id)?.forEach((v, i) => mem.set(`epd:${TABLE_EPD(id) + stride * i}`, u(v)));
+  // A map of our own's stacks: cell triggers, each its number, its action's destination and its next pointer.
+  STACKS.splice(0, STACKS.length, ...(g.stacks ?? []).map((st) => st.id));
+  const stacks = (g.stacks ?? []).map((st) => ({ epd: TABLE_EPD(st.id), addr: ARRAY_ADDR(st.id), cells: st.cells }));
+  for (const st of stacks) for (let i = 0; i < st.cells; i++) for (const d of [0, -1, -86]) mem.set(`epd:${st.epd + 18 * i + d}`, 0);
   g.triggers.forEach((t, i) => {
     mem.set(`${t.label}|next`, t.next ?? g.triggers[i + 1]?.label ?? END);
     t.conds.forEach((c, k) => {
@@ -244,7 +259,18 @@ function exec(g: Graph, env: Env): Env {
   const byLabel = new Map(g.triggers.map((t) => [t.label, t]));
   let pc: string | number = g.triggers[0].label;
   for (let steps = 0; pc !== END; steps++) {
-    if (steps > 2_000_000) throw new Error("the graph does not end");
+    if (steps > 200_000_000) throw new Error("the graph does not end");
+    const st = typeof pc === "number" ? stacks.find((x) => pc as number >= x.addr && (pc as number) < x.addr + 72 * x.cells) : undefined;
+    if (st) {
+      // A jump into a cell of a stack: its number added where its action points, then on where it points.
+      if (((pc as number) - st.addr) % 72) throw new Error(`a jump into a stack between its cells: ${pc}`);
+      const i = ((pc as number) - st.addr) / 72, dest = mem.get(`epd:${st.epd + 18 * i - 1}`);
+      if (typeof dest !== "string" || !dest.startsWith("@")) throw new Error("a cell of a stack that points nowhere");
+      const value = mem.get(`epd:${st.epd + 18 * i}`)!;
+      mem.set(dest.slice(1), typeof value === "string" ? value : u(((mem.get(dest.slice(1)) as number) ?? 0) + value));
+      pc = mem.get(`epd:${st.epd + 18 * i - 86}`) as string;
+      continue;
+    }
     if (typeof pc === "number") {
       // A jump into an EUDVArray's cell: it writes its value where eudplib's getter says, and goes where it says.
       const at = pc;
@@ -282,7 +308,11 @@ function exec(g: Graph, env: Env): Env {
       mem.set(key(t.call.into), u(r));
     }
     const from = t.copy && (t.copy.from.startsWith("@") ? `temp:${t.copy.from.slice(1)}` : `var:${t.copy.from}`);
-    for (const c of t.copy?.into ?? []) mem.set(key(c.dword), u(Math.imul(c.scale ?? 1, read(from!) as number) + numOf(c.add)));
+    // (A label — where a function goes back to — is copied as it is: it is an address only once laid out.)
+    for (const c of t.copy?.into ?? []) {
+      const x = read(from!);
+      mem.set(key(c.dword), typeof x === "string" ? x : u(Math.imul(c.scale ?? 1, x) + numOf(c.add)));
+    }
     // The game stops at the first condition that fails; a masked one compares the dword's bits of the mask with the
     // number as it is.
     const holds = t.conds.every((c, k) => {
@@ -315,6 +345,13 @@ function exec(g: Graph, env: Env): Env {
     if (mem.get(`counter:${id}:bytes`) !== u(Math.imul(72, v)) || mem.get(`counter:${id}:dwords`) !== u(Math.imul(18, v))) throw new Error(`the offsets beside ${id} are not its`);
   }
   return asEnv();
+}
+
+/** A program and its graph, for a look at one seed (EMITTER_SEED): into EMITTER_DUMP's file, or printed. */
+function dump(x: unknown): void {
+  const text = JSON.stringify(x, null, 1);
+  if (process.env.EMITTER_DUMP) writeFileSync(process.env.EMITTER_DUMP, text);
+  else console.log(text);
 }
 
 // ── random loops ──
@@ -508,7 +545,7 @@ describe("the emitter", () => {
  * calls itself); it reads and writes the program's variables, its parameters and its own, and gives back a number, a
  * boolean or nothing, from inside ifs and loops or off its end.
  */
-function programWithCalls(seed: number) {
+function programWithCalls(seed: number, recursion = false) {
   const r = rng(seed);
   const decls = new Map<string, VarDecl>();
   const decl = (name: string, kind: "number" | "boolean" = "number"): VarDecl => {
@@ -533,7 +570,8 @@ function programWithCalls(seed: number) {
 
   const call = (f: FuncDecl, sc: Scope, depth: number): Call => ({
     name: f.name, fn: f.id, at, label: "", body: [],
-    params: f.params.map((p) => ({ decl: p, init: p.kind === "boolean" ? cond(sc, depth + 1) : value(sc, depth + 1), label: "" })),
+    // (A function that calls itself is given a small depth: it goes down to 0 a call at a time.)
+    params: f.params.map((p) => ({ decl: p, init: p.kind === "boolean" ? cond(sc, depth + 1) : p.name.startsWith("depth") ? k(r.int(5)) : value(sc, depth + 1), label: "" })),
     ...(f.result ? { result: { decl: hidden(decl(`(${f.name} result)`, f.result.kind === "boolean" ? "boolean" : "number")), kind: f.result.kind } } : {}),
   });
   /** A call of a function used once, its body where it is: a parameter of its own, a return or two. */
@@ -606,19 +644,52 @@ function programWithCalls(seed: number) {
     return out;
   }
 
-  // The functions, each calling only those before it.
+  // The functions, each calling only those before it — and, with `recursion`, now and then itself: a depth it is
+  // given goes down by one or two a call, and below 1 it returns; each call of itself a statement whose operands are
+  // its variables (as the front end makes one), keeping every variable of the function around it (`saves`).
   const made: FuncDecl[] = [];
   for (let i = 0, n = 1 + r.int(4); i < n; i++) {
     const kind = r.pick(["number", "number", "number", "boolean", "void"] as const);
-    const params = Array.from({ length: r.int(4) }, (_, j) => hidden(decl(`p${i}${j}`, r.next() < 0.2 ? "boolean" : "number")));
+    const recursive = recursion && r.next() < 0.5;
+    const first = decls.size;
+    const depth = recursive ? hidden(decl(`depth${i}`)) : null;
+    const params = [...(depth ? [depth] : []), ...Array.from({ length: r.int(4) }, (_, j) => hidden(decl(`p${i}${j}`, r.next() < 0.2 ? "boolean" : "number")))];
     const locals = Array.from({ length: r.int(3) }, (_, j) => decl(`l${i}${j}`));
-    const sc: Scope = { nums: [...globals, ...params.filter((p) => p.kind === "number"), ...locals], bools: [...flags, ...params.filter((p) => p.kind === "boolean")], returns: kind, calls: [...made] };
+    const own = params.filter((p) => p.kind === "number" && p !== depth);
+    const sc: Scope = { nums: [...globals, ...own, ...locals], bools: [...flags, ...params.filter((p) => p.kind === "boolean")], returns: kind, calls: [...made] };
     const body: Stmt[] = [
-      ...locals.map((l): Stmt => ({ kind: "declare", decl: l, init: value({ ...sc, nums: [...globals, ...params.filter((p) => p.kind === "number")] }, 1), at, label: "" })),
-      ...block(sc, 1, false),
+      ...locals.map((l): Stmt => ({ kind: "declare", decl: l, init: value({ ...sc, nums: [...globals, ...own] }, 1), at, label: "" })),
     ];
-    if (kind !== "void" && r.next() < 0.8) body.push({ kind: "return", value: kind === "boolean" ? cond(sc, 0) : value(sc, 0), at, label: "" });
-    const f: FuncDecl = { id: `F${i}#f`, name: `F${i}`, params, body, at, ...(kind !== "void" ? { result: { decl: hidden(decl(`(F${i} result)`, kind === "boolean" ? "boolean" : "number")), kind } } : {}) };
+    const id = `F${i}#f`;
+    const saves: { vars: string[]; arrays: string[]; within: string }[] = [];
+    if (depth) {
+      // Below a depth of 1: some work, and back.
+      body.push({ kind: "if", cond: { kind: "compare", op: "<", left: v(depth), right: k(1), at, label: "" }, then: [...block(sc, 2, false), { kind: "return", ...(kind === "void" ? {} : { value: kind === "boolean" ? cond(sc, 0) : value(sc, 0) }), at, label: "" } as Stmt], at, label: "" });
+      for (let call = 0, calls = 1 + r.int(2); call < calls; call++) {
+        body.push(...block(sc, 1, false));
+        const result = kind === "void" ? null : hidden(decl(`(F${i} result)`, kind === "boolean" ? "boolean" : "number"));
+        const keep = { vars: [] as string[], arrays: [] as string[], within: `F${i}` };
+        saves.push(keep);
+        const operand = (): NumExpr => (r.next() < 0.5 ? v(r.pick(sc.nums)) : bin("+", v(r.pick(sc.nums)), k(r.pick(EDGES))));
+        body.push({ kind: "call", call: { name: `F${i}`, fn: id, at, label: "", body: [], saves: keep, ...(result ? { result: { decl: result, kind: kind as "number" | "boolean" } } : {}),
+          params: params.map((p) => ({ decl: p, label: "", init: p === depth ? bin("-", v(depth), k(1 + r.int(2))) : p.kind === "boolean" ? { kind: "var", id: r.pick(sc.bools).id } as BoolExpr : operand() })) }, at, label: "" });
+        if (result && result.kind === "number") sc.nums = [...sc.nums, result];
+        if (result && result.kind === "boolean") sc.bools = [...sc.bools, result];
+      }
+    }
+    body.push(...block(sc, 1, false));
+    if (kind !== "void" && (depth || r.next() < 0.8)) body.push({ kind: "return", value: kind === "boolean" ? cond(sc, 0) : value(sc, 0), at, label: "" });
+    // Every variable of the function — its parameters, its own, those its statements made — but what a call of
+    // itself gives back, kept around that call.
+    const mine = [...decls.keys()].slice(first);
+    for (const keep of saves) {
+      const call = body.find((s): s is Extract<Stmt, { kind: "call" }> => s.kind === "call" && s.call.saves === keep);
+      keep.vars = mine.filter((x) => x !== call?.call.result?.decl.id);
+    }
+    // (A function's variables are its own: what one that calls itself leaves in them after it is done is nobody's —
+    // a map of our own keeps only what is read again around a call, so the rest is as the deepest call left it.)
+    if (depth) for (const x of mine) inner.add(x);
+    const f: FuncDecl = { id, name: `F${i}`, params, body, at, ...(depth ? { recursive: true } : {}), ...(kind !== "void" ? { result: { decl: hidden(decl(`(F${i} result)`, kind === "boolean" ? "boolean" : "number")), kind } } : {}) };
     FUNCTIONS.set(f.id, f);
     made.push(f);
   }
@@ -641,11 +712,12 @@ describe("the emitter, calls in a map of our own", () => {
       for (let seed = 1; seed <= 3000; seed++) {
         const { decls, body, inner } = programWithCalls(seed);
         const g = emitBody(body, decls, `c${seed}`, FUNCTIONS);
-        if (process.env.EMITTER_SEED === String(seed)) console.log(JSON.stringify({ body, functions: [...FUNCTIONS.values()], g }, null, 1));
+        if (process.env.EMITTER_SEED === String(seed)) dump({ body, functions: [...FUNCTIONS.values()], g });
         if (typeof g === "string") { left.set(g, (left.get(g) ?? 0) + 1); if (process.env.EMITTER_LEFT === "seeds") console.log(seed, g); continue; }
         taken++;
         const want: Env = new Map();
-        run(body, want, { n: 1e6 });
+        EVAL.n = 1e5;
+        run(body, want, EVAL);
         let got: Env;
         try { got = exec(g, new Map()); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
         for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
@@ -713,7 +785,7 @@ function runOwn(g: Graph): Env {
   const at = (epd: number) => u(DEATHS + 4 * epd);
   let pc = own.address;
   for (let steps = 0; !(pc & 0x80000000); steps++) {
-    if (steps > 5_000_000) throw new Error("the payload does not end");
+    if (steps > 200_000_000) throw new Error("the payload does not end");
     if (!inside(pc)) throw new Error(`the walk left the payload: 0x${pc.toString(16)}`);
     let holds = (rd(pc + 2376) & 8) === 0;
     for (let k = 0; holds && k < 16; k++) {
@@ -748,7 +820,8 @@ describe("a map of our own, laid out", () => {
         const g = emitBody(body, decls, `c${seed}`, FUNCTIONS);
         if (typeof g === "string") continue;
         const want: Env = new Map();
-        run(body, want, { n: 1e6 });
+        EVAL.n = 1e5;
+        run(body, want, EVAL);
         let got: Env;
         try { got = runOwn(g); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
         for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
@@ -759,4 +832,48 @@ describe("a map of our own, laid out", () => {
     }
     expect(ran).toBeGreaterThan(400);
   });
+});
+
+describe("a map of our own, functions that call themselves", () => {
+  it("keeps their frames on a stack of its own: random programs as written, as graphs and from the payload's bytes", () => {
+    CALLS.whole = true;
+    let taken = 0, deep = 0, long = 0;
+    const left = new Map<string, number>();
+    try {
+      // (EMITTER_SEEDS runs more of them, for a longer look; EMITTER_FROM starts further on.)
+      for (let seed = Number(process.env.EMITTER_FROM ?? 1); seed <= Number(process.env.EMITTER_SEEDS ?? 1500); seed++) {
+        const { decls, body, inner } = programWithCalls(seed, true);
+        const g = emitBody(body, decls, `r${seed}`, FUNCTIONS);
+        if (process.env.EMITTER_SEED === String(seed)) dump({ body, functions: [...FUNCTIONS.values()], g });
+        if (typeof g === "string") { left.set(g, (left.get(g) ?? 0) + 1); continue; }
+        taken++;
+        if (g.stacks) deep++;
+        const want: Env = new Map();
+        EVAL.n = 1e5;
+        try {
+          run(body, want, EVAL);
+        } catch (err) {
+          if ((err as Error).message !== "too long") throw err;
+          long++;
+          continue;
+        }
+        let got: Env;
+        try { got = exec(g, new Map()); } catch (err) { throw new Error(`seed ${seed}: ${(err as Error).message}`); }
+        for (const [id, value] of want) if (!inner.has(id)) expect([seed, id, got.get(id) ?? 0]).toEqual([seed, id, value]);
+        if (seed % 5 === 0) {
+          try { got = runOwn(g); } catch (err) { throw new Error(`seed ${seed}, laid out: ${(err as Error).message}`); }
+          for (const [id, value] of want) if (!inner.has(id)) expect([seed, "laid out", id, got.get(id) ?? 0]).toEqual([seed, "laid out", id, value]);
+        }
+      }
+    } finally {
+      CALLS.whole = false;
+    }
+    if (process.env.EMITTER_LEFT) console.log(taken, deep, long, [...left].sort((a, b) => b[1] - a[1]));
+    // (Set aside as too long to run here: rare, a few in a hundred at most.)
+    expect(long).toBeLessThan(0.02 * (Number(process.env.EMITTER_SEEDS ?? 1500) - Number(process.env.EMITTER_FROM ?? 1) + 1) + 3);
+    const seeds = Number(process.env.EMITTER_SEEDS ?? 1500) - Number(process.env.EMITTER_FROM ?? 1) + 1;
+    expect(taken).toBeGreaterThan(0.96 * seeds);
+    expect(deep).toBeGreaterThan(0.4 * seeds);
+  // (A longer look, EMITTER_SEEDS, takes longer than the suite's 30 seconds.)
+  }, process.env.EMITTER_SEEDS ? 3_600_000 : undefined);
 });
