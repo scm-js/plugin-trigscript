@@ -136,6 +136,18 @@ describe("events, second part: killed, order, morphed, at the top of a script", 
     expect(test).toMatchObject({ kind: "if", then: [{ kind: "unitDo", verb: { do: "order", order: "move" } }] });
   });
 
+  it("the action order() gives orders.Move, orders.Patrol and orders.AttackMove as move, patrol and attack; no other of orders.*", () => {
+    // (orders.Move made the action's modifier 6 — orders.dat's number — where the action knows 0, 1 and 2.)
+    const modifier = (order: string) => ((compile(`order(P1, units.TerranMarine, HOME, HOME, ${order});`).ir[0].body[0]) as Extract<Stmt, { kind: "action" }>).record.modifier;
+    expect(["orders.Move", "orders.Patrol", "orders.AttackMove", `"attack"`, "1"].map(modifier)).toEqual([0, 1, 2, 2, 1]);
+    // orders.Die is 0 and orders.Stop 1, the action's own numbers for move and patrol: refused, not taken for them.
+    for (const order of ["orders.Die", "orders.Stop", "orders.HoldPosition"]) {
+      expect(messages(`order(P1, units.TerranMarine, HOME, HOME, ${order});`).join("\n")).toContain("not assignable to parameter of type 'OrderKind | OrderOfAction'");
+    }
+    const r = compileScript(ts, { "main.ts": `trigger(P1, [always()], [order(P1, units.TerranMarine, 1, 1, orders.Patrol)]);` }, NAMES, { lib: LIB });
+    expect(r.triggers[0].actions[0]).toMatchObject({ type: ActionType.Order, modifier: 1 });
+  });
+
   it("on.order hands the unit, the order it took up and the one it had; a filter on the order", () => {
     const r = compile(`
       on.order((u, order, was) => { print(\`\${u.type} \${was} -> \${order}\`); });

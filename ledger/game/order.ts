@@ -1,7 +1,7 @@
 // ledger: step 5, refused: the action Order
-// The action Order: units at a location sent to another, to move, patrol or attack. (Built outside the
-// program and stood as a statement inside it: written inside, `order(…)` does not compile.)
-const charge = order(P1, units.TerranMarine, locations.Anywhere, locations.Anywhere, "attack");
+// The action Order: units at a location sent to another, to move, patrol or attack — "attack" or orders.AttackMove,
+// one of the three orders the action gives (any other of orders.* is a compile error).
 program(() => {
-  charge;
+  order(P1, units.TerranMarine, locations.Anywhere, locations.Anywhere, "attack");
+  order(P1, units.TerranMarine, locations.Anywhere, locations.Anywhere, orders.Move);
 });

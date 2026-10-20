@@ -17,7 +17,7 @@ import {
   type ActionRecord, type ConditionRecord, type TriggerRecord,
 } from "../vendor/triggers";
 import { aiScriptByName, type ActionDef, type ArgKind, type ConditionDef } from "../vendor/triggerDefs";
-import { ACTION_IDENTS, CANONICAL, choiceOf, choiceWords, CONDITION_IDENTS, scriptParams, TRIGGER_OPTION_NAMES } from "./api";
+import { ACTION_IDENTS, CANONICAL, choiceOf, choiceWords, CONDITION_IDENTS, orderOfAction, scriptParams, TRIGGER_OPTION_NAMES } from "./api";
 import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
 import { hyperTriggers, negateCondition, PLAYER_SLOTS } from "./lower";
 import { allTables, type ScriptNames } from "./names";
@@ -327,7 +327,7 @@ export function createRuntime(names: ScriptNames, collector: Collector, options:
           if (n === undefined) throw new ScriptError(`${what}: unknown ${kind} ${describe(v)}: one of ${choiceWords(kind).map((w) => JSON.stringify(w)).join(", ")}.`);
           return n;
         }
-        return integer(v, what);
+        return kind === "order" ? orderOfAction(integer(v, what)) : integer(v, what);
     }
   };
 

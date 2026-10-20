@@ -14,6 +14,7 @@
  */
 import { ACTION_FIELDS, CONDITION_FIELDS } from "./record";
 import { READ_ARITY } from "./runtime";
+import { ORDER_OF_VERB } from "./orders";
 import { ACTION_IDENTS, argType, CHOICE_TYPES, choiceWords, CONDITION_IDENTS, MODULE_NAME, propertyKey, scriptParams, TRIGGER_OPTION_NAMES } from "./api";
 import type { ActionDef, ArgKind, ConditionDef } from "../vendor/triggerDefs";
 import { allTables, defaultScriptNames, type NameTable, type ScriptNames } from "./names";
@@ -40,6 +41,8 @@ const HEADER = `// ── TrigScript ──────────────�
 function types(kw: string): string {
   return `
 ${kw}type Brand<K extends string> = { readonly __kind?: K };
+/** A number that is none of the named tables' (units.*, orders.* …): what an argument takes where a table's would be wrong. */
+${kw}type RawNumber = number & { readonly __kind?: never };
 /** A player or player group (P1 … P12, CurrentPlayer, AllPlayers, players.*, or a raw group number). */
 ${kw}type Player<N extends number = number> = N & Brand<"player">;
 /** A unit type (units.*, or a raw units.dat id): what a condition or an action names. A unit on the map is a Unit. */
@@ -52,6 +55,8 @@ ${kw}type Upgrade<N extends number = number> = N & Brand<"upgrade">;
 ${kw}type Tech<N extends number = number> = N & Brand<"tech">;
 /** An order (orders.*, or a raw orders.dat id): what a unit is doing. */
 ${kw}type Order<N extends number = number> = N & Brand<"order">;
+/** The orders the Order action gives: orders.Move, orders.Patrol and orders.AttackMove ("move", "patrol", "attack"). */
+${kw}type OrderOfAction = ${Object.values(ORDER_OF_VERB).map((n) => `Order<${n}>`).join(" | ")};
 /** A player colour (colors.*), for stats(player).color. */
 ${kw}type PlayerColor<N extends number = number> = N & Brand<"color">;
 ${kw}type ColorName = __COLOR_NAMES__;
@@ -839,7 +844,12 @@ function signature(kw: string, ident: string, def: ConditionDef | ActionDef, ret
   const all = scriptParams(def);
   const params = all.map((p) => `${p.name}${p.optional ? "?" : ""}: ${argType(p.arg.kind)}`);
   const doc = def.args.length ? `${def.name} — ${def.args.map((a) => a.label).join(", ")}` : def.name;
-  const out = `/** ${doc} */\n${kw}function ${ident}(${params.join(", ")}): ${returns};`;
+  let out = `/** ${doc} */\n${kw}function ${ident}(${params.join(", ")}): ${returns};`;
+  const order = all.findIndex((p) => p.arg.kind === "order");
+  if (order >= 0) {
+    const raw = all.map((p, i) => `${p.name}${p.optional ? "?" : ""}: ${i === order ? "RawNumber" : argType(p.arg.kind)}`);
+    out += `\n/** ${doc}: the action's own number for the order, 0 move, 1 patrol, 2 attack. */\n${kw}function ${ident}(${raw.join(", ")}): ${returns};`;
+  }
   if (returns !== "Condition" || !READ_ARITY.has(ident)) return out;
   // Without the comparison and the amount, the quantity itself: a read, inside program().
   const read = all.filter((p) => p.arg.kind !== "comparison" && p.arg.kind !== "amount").map((p) => `${p.name}: ${argType(p.arg.kind)}`);
