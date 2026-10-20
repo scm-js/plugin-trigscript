@@ -3534,8 +3534,8 @@ found what they left out; where a step moved, its old number is given.
    `setMemory()` at an address known when built came with it (from 6). Part 2 ✓: fields from values and texts made
    while the game runs — "Fields from values on our own backend". Part 3 ✓: the game's numbers read as values —
    "The game read as a value on our own backend". Part 4 ✓: locations moved, prints to other players, `rose` and
-   `once` — "Locations, players and latches on our own backend". Left: prints at the centre of the screen; Wait is
-   refused on purpose. A trigger record of any condition and any action in the graph and the
+   `once` — "Locations, players and latches on our own backend". Prints at the centre of the screen ✓ (same section). Wait is
+   refused on purpose: step 5 is done but for it. A trigger record of any condition and any action in the graph and the
    layout — they encoded three before: the Memory condition, Set Deaths and Display Text. Fields filled from values
    (`action.variables`), action texts (transmissions, objectives, leaderboards). Every condition in a test and as a
    value (ore, deaths, score, kills, Bring, Command, the countdown; the Python side's bit search), the players' facts
@@ -3912,7 +3912,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 2 Texts with numbers | 6 of 6 |
 | 3 Arrays of a fixed length | 54 of 54 |
 | 4 Numbers | 59 of 59 |
-| 5 The game's conditions and actions | 195 of 198 |
+| 5 The game's conditions and actions | 197 of 198 |
 | 6 The game's memory | 0 of 47 |
 | 7 Programs, owners and players | 1 of 22 |
 | 8 Texts as values | 0 of 43 |
@@ -4357,9 +4357,21 @@ program waits with `sleep()`). `hasLeft` and a print to a force moved to step 7:
 - **`rose()` and `once()`**: a latch for each place in the script, a variable of the emitter's own (0 when the map
   starts): the value is the test and not the latch; then a rise's latch is the test, a once's the latch or the test.
 
+- **A print at the centre of the screen**, as eudplib's `f_eprintln` (`Emitter.centre`): for each player it is for,
+  with that player the current player, the game's "Cannot create more units" raised — Create Unit for the current
+  player with the game's first free unit (0x628438) read, taken away and put back from a place of what was read —
+  which shows the game's line of errors (the thirteenth text line, 0x640B60 + 218 × 12) at the centre; and, on that
+  player's computer alone (the player at this computer, 0x512684), the text written into that line: the template is the
+  line itself (`Graph.templates`' `at`), every dword of it written, then its numbers into their fields. The lifted game
+  has the line as eudplib's does; Remastered is `probes/own-step5.ts`.
+
 Found on the way (`probes/own-locations.ts`): a condition kept in a `const` (`const there = bring(…)`) is asked where
 the `const` is used, not where it is written — in both builds; a boolean set by an `if` is the value at the time. And
 eudplib's build misses a Command count after a Create Unit there again (part 2).
+
+For Remastered: `probes/own-step5.ts` (with an answer sheet) — the centre print, three Transmissions in a loop, a print
+to every player, counts straight after Create Unit, a location moved and units made in it; all as they should be in the
+lifted game.
 
 Checked: `probes/own-locations.ts` built both ways, every line ok; prints to P1, P2 and All Players in the lifted game
 (P2's not shown on Player 1's screen, as eudplib's); `rose`/`once` rising twice against the simulator.

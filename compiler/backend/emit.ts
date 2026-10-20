@@ -294,7 +294,7 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
       case "try": return "try";
       case "throw": return "throw";
       case "uncaught": return "an error nothing catches";
-      case "print": return t.position === "center" ? "a text at the centre of the screen" : undefined;
+      case "print": return undefined;
       case "declare": case "assign": case "assignBool": return variable(t.kind === "declare" ? t.decl.id : t.target);
       case "declareArray": case "store": return array(t.array);
       default: return undefined;
@@ -399,6 +399,12 @@ const COUNTING = new Set([2, 3, 6, 7, 16, 17]);
  * minerals stay).
  */
 const FORGET_COUNTS: ActionRecord = { location: 0, text: 0, wav: 0, time: 0, player: 11, target: 0, unitId: 228, type: 22, modifier: 0, flags: 0x10, padding: 0, mask: 0 };
+/**
+ * A print at the centre of the screen (`Emitter.centre`): the game's line of errors (the thirteenth of the text lines,
+ * 218 bytes each), the game's first free unit (0 makes Create Unit fail with "Cannot create more units", which shows
+ * that line), and the player at this computer.
+ */
+const CENTRE_LINE = 0x640b60 + 218 * 12, CENTRE_BYTES = 218, FIRST_FREE_UNIT = 0x628438, LOCAL_PLAYER = 0x512684;
 /** Where the game keeps the current player: whom Display Text shows to, and what "the current player" names. */
 const CURRENT_PLAYER_ADDRESS = 0x6509b0;
 /**
@@ -428,6 +434,11 @@ function settled(e: NumExpr): NumExpr {
   const r = (x as NumExpr & { range?: readonly [number, number] }).range;
   if (c.kind !== "const" || !r) return e;
   return (e.name === "max" ? r[0] >= c.value : r[1] <= c.value) ? settled(x) : e;
+}
+
+/** About the bytes a printed text's template takes (`Emitter.template`): its texts, 12 for a number and 8 more for a fraction, a char 1, and the end. */
+function centreBytes(parts: TextPart[]): number {
+  return parts.reduce((n, p) => n + (p.kind === "text" ? new TextEncoder().encode(p.text).length : p.kind === "number" ? 15 + (p.fixed ? 9 : 0) : 1), 1);
 }
 
 /** Statements with the blocks around them taken away, and the remarks. */
@@ -977,7 +988,8 @@ class Scope {
         // (Display Text shows to the current player: a text for others goes to each player of its group in turn —
         // Players 1 to 8, All Players. A force needs the map's slots, which a map of our own does not know yet.)
         if (this.native && playersOf(s.to, this.owner) === null) return this.no("a text shown to a force (a map of our own does not know the map's slots yet: step 7)") || this.island(s);
-        if (this.native && s.position === "chat" && s.parts.every((p) => this.printed(p))) return true;
+        if (this.native && s.position === "center" && centreBytes(s.parts) > CENTRE_BYTES) return this.no(`a text at the centre longer than its line (${CENTRE_BYTES} bytes)`) || this.island(s);
+        if (this.native && (s.position === "chat" || s.position === "center") && s.parts.every((p) => this.printed(p))) return true;
         return this.island(s);
       case "call": return (this.native && this.call(s.call)) || this.island(s);
       case "action": {
@@ -2092,7 +2104,7 @@ class Emitter {
    */
   itoa?: { signed: string; unsigned: string; exit: string; v: string; r: string; neg: string; out: string[] };
   /** The printed texts' templates (`Graph.templates`). */
-  templates: { id: string; bytes: number[] }[] = [];
+  templates: { id: string; bytes: number[]; at?: number }[] = [];
 
   /**
    * A text printed with values in it (a map of our own). Its template is laid out when the map is built: the text,
@@ -2103,7 +2115,38 @@ class Emitter {
    * nothing), and shows the template with Display Text. (The rewriter has already put the values in the order
    * JavaScript works them out.)
    */
+  /**
+   * A print at the centre of the screen, as eudplib's `f_eprintln`: for each player it is for, with that player the
+   * current player — the game's error "Cannot create more units" raised (Create Unit for the current player with the
+   * game's first free unit taken away, then put back: the line of errors shown at the centre), and on that player's
+   * own computer alone the text written into that line (the template is the line itself: `template`'s `at`).
+   */
+  centre(s: Extract<Stmt, { kind: "print" }>): void {
+    const players = playersOf(s.to, this.scope.owner)!, owner = this.scope.owner ?? 0;
+    const current = (p: number): Item => ({ act: { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "set", value: p } });
+    for (const p of players) {
+      if (p !== owner) this.open().items.push(current(p));
+      // The error raised: the first free unit read, taken away for the Create Unit, put back.
+      const free = `${this.key}.free${this.n++}`;
+      this.own.add(free);
+      this.readGame(free, { location: 0, player: u((FIRST_FREE_UNIT - DEATHS_TABLE) / 4), amount: 0, unitId: 0, comparison: 0, type: 15, resource: 0, flags: 0, mask: 0 }, s.at);
+      const back: Act = { dword: { game: FIRST_FREE_UNIT }, modifier: "set", value: 0 };
+      this.actPlaces.set(back, { value: { id: free, scale: 1, add: 0 } });
+      const create: ActionRecord = { location: 64, text: 0, wav: 0, time: 0, player: CURRENT_PLAYER, target: 0, unitId: 0, type: 44, modifier: 1, flags: 0x10, padding: 0, mask: 0 };
+      this.push({ conds: [], items: [{ act: { dword: { game: FIRST_FREE_UNIT }, modifier: "set", value: 0 } }, { act: { dword: { game: 0 }, modifier: "set", value: 0, record: create } }, { act: back }], at: s.at });
+      // The text into the line, on that player's computer alone.
+      const here = this.label("centre"), past = this.label("centred");
+      this.branch([{ dword: { game: LOCAL_PLAYER }, compare: "exactly", value: p }], here, s.at);
+      this.goto(past);
+      this.land(here);
+      this.template(s.parts, CENTRE_LINE);
+      this.land(past);
+    }
+    if (players.some((p) => p !== owner)) this.open().items.push(current(owner));
+  }
+
   print(s: Extract<Stmt, { kind: "print" }>): void {
+    if (s.position === "center") return this.centre(s);
     const known = s.parts.every((p) => p.kind === "text");
     const show: Act = known
       ? { dword: { game: 0 }, modifier: "set", value: 0, display: s.parts.map((p) => (p.kind === "text" ? p.text : "")).join("") }
@@ -2116,8 +2159,11 @@ class Emitter {
     this.open().items.push(...(players.length === 1 && players[0] === owner ? [{ act: show }] : [...players.flatMap((p) => [current(p), { act: { ...show } }]), current(owner)]));
   }
 
-  /** A text with values in it written into a template of its own (`Graph.templates`), each value as it is now: its id. */
-  template(parts: TextPart[]): string {
+  /**
+   * A text with values in it written into a template of its own (`Graph.templates`), each value as it is now: its id.
+   * `at`: the template is the game's memory there (the line of a print at the centre), its bytes written first.
+   */
+  template(parts: TextPart[], at?: number): string {
     const id = `${this.key}.text${this.n++}`;
     const bytes: number[] = [];
     const enc = new TextEncoder();
@@ -2144,7 +2190,13 @@ class Emitter {
       }
     }
     bytes.push(0);
-    this.templates.push({ id, bytes });
+    this.templates.push({ id, bytes, ...(at !== undefined ? { at } : {}) });
+    if (at !== undefined) {
+      // (Every dword of it as built, the fields' padding too, before the values are written into their fields.)
+      const words: Item[] = [];
+      for (let w = 0; 4 * w < bytes.length; w++) words.push({ act: { dword: { template: id, word: w }, modifier: "set", value: [0, 1, 2, 3].reduce((n, k) => n + (bytes[4 * w + k] ?? 0) * 2 ** (8 * k), 0) } });
+      for (let i = 0; i < words.length; i += MOST_ACTS) this.push({ conds: [], items: words.slice(i, i + MOST_ACTS) });
+    }
     for (const { part, at } of values) {
       if (part.kind === "number") {
         const it = this.digits();

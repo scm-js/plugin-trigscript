@@ -176,7 +176,8 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
  * of 12 bytes on a dword's start for each number, which the program fills before it shows the text (0x0D, which draws
  * nothing, wherever nothing goes) — ending in a 0.
  */
-export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[] }[] }
+/** (A template with `at` is the game's own memory there — the line a print at the centre of the screen is written into — and its bytes are written by the program, not laid out.) */
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number }[] }
 export interface Region { id: string; cells: number; values?: number[] }
 
 /**

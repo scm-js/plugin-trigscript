@@ -145,3 +145,13 @@ describe("a map of our own, the game's numbers read as values", () => {
     expect(supply.triggers.flatMap((t) => t.conds).some((c) => "game" in c.dword && c.dword.game === 0x582174 + 4 * 36)).toBe(true);
   });
 });
+
+describe("a map of our own, a print at the centre of the screen", () => {
+  it("writes the text into the game's line of errors on the player's own computer, after raising the error", () => {
+    const { graph } = own(`let n = 0;\nwhile (n < 12) n += 5;\nprint(\`Wave \${n}\`, { position: "center" });`);
+    // (The template is the line itself; the Create Unit with the first free unit taken away comes before it.)
+    expect(graph.templates?.find((t) => t.at === 0x640b60 + 218 * 12)).toBeDefined();
+    expect(graph.triggers.some((t) => t.acts.some((a) => a.record?.type === 44) && t.acts.some((a) => "game" in a.dword && a.dword.game === 0x628438))).toBe(true);
+    expect(graph.triggers.some((t) => t.conds.some((c) => "game" in c.dword && c.dword.game === 0x512684))).toBe(true);
+  });
+});
