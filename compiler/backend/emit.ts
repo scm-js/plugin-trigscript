@@ -18,11 +18,11 @@
  * falls through one trigger whose conditions failed (13.4 ns); a branch is a trigger that sets its own next pointer to
  * where it goes, put back by an action at the place it went to.
  */
-import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type VarDecl, type At } from "../ir";
+import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type ReadSource, type Stmt, type TextPart, type VarDecl, type At } from "../ir";
 import { PACK_FROM } from "../eud";
 import type { Range } from "../ranges";
 import { PlayerGroup, type ActionRecord, type ConditionRecord } from "../../vendor/triggers";
-import { actionDef, conditionDef } from "../../vendor/triggerDefs";
+import { actionDef } from "../../vendor/triggerDefs";
 import { END, MOST_ACTS, MOST_CONDS, STACK, SWITCHES, TRIGGER_BYTES, checkGraph, nextOf, type Act, type ActPart, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
@@ -214,9 +214,9 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
       }
       case "read": {
         const r = o.read as { source: string; record?: { type: number }; fact?: string; of?: string };
-        if (r.source === "condition") return `a read of the game (${conditionDef(r.record!.type)?.name ?? `condition ${r.record!.type}`})`;
-        if (r.source === "player") return r.fact === "left" ? "whether a player has left" : `a player's ${r.fact}`;
-        return `a player's supply (${r.of})`;
+        if (r.source === "condition") return undefined;
+        if (r.source === "player") return r.fact === "left" ? "whether a player has left (a map of our own does not know the map's slots yet: step 7)" : undefined;
+        return undefined;
       }
       case "cond": return undefined;
       case "tableRead": return `a read of ${(o.cell as { name: string }).name}`;
@@ -356,6 +356,40 @@ function fieldsTaken(s: Extract<Stmt, { kind: "action" }>): boolean {
  * Create Unit, Give Units). The Python side's `MOVES_UNITS`; its `forget_counts` covers Bring alone.
  */
 const MOVES_UNITS = new Set([11, 39, 44, 48]);
+/**
+ * A number of the game's read into a variable (a map of our own, step 5 part 3): what a condition can be asked. Where
+ * the game keeps it for one player — deaths, kills, ore, gas — the dword is read where it is; otherwise the condition
+ * is asked a bit at a time from the top (`Emitter.readGame`). The Python side's `read_condition`.
+ */
+const DEATHS_TABLE = 0x58a364, KILLS_TABLE = 0x5878a4, ORE_TABLE = 0x57f0f0, GAS_TABLE = 0x57f120;
+const CURRENT_PLAYER = 13, DEATHS_TYPE = 15, KILL_TYPE = 5, ACCUMULATE_TYPE = 4, OPPONENTS_TYPE = 14;
+const gameRead = (r: ReadSource): r is Extract<ReadSource, { source: "condition" }> => r.source === "condition";
+/**
+ * Where the game keeps a condition's number for one player, when it does: its address, and the bits of it the condition
+ * reads (a masked Deaths, `memory()` with a mask: its location field, 'SC' in its last). A Deaths of a player past the
+ * groups is `memory()`: the dword its player field is the EPD of.
+ */
+function tableOf(rec: ConditionRecord, owner: number | undefined): { at: number; mask: number } | undefined {
+  const masked = rec.type === DEATHS_TYPE && rec.mask === MASKED_MARK;
+  const mask = masked ? u(rec.location) : U32 - 1;
+  if (rec.type === DEATHS_TYPE && rec.player > LAST_GROUP && rec.unitId < 228) return { at: u(DEATHS_TABLE + 4 * (rec.unitId * 12 + rec.player)), mask };
+  const p = rec.player === CURRENT_PLAYER ? owner : rec.player <= 11 ? rec.player : undefined;
+  if (p === undefined || (masked && rec.type !== DEATHS_TYPE)) return undefined;
+  if ((rec.type === DEATHS_TYPE || rec.type === KILL_TYPE) && rec.unitId < 228) return { at: (rec.type === DEATHS_TYPE ? DEATHS_TABLE : KILLS_TABLE) + 4 * (rec.unitId * 12 + p), mask };
+  if (rec.type === ACCUMULATE_TYPE && (rec.resource === 0 || rec.resource === 1)) return { at: (rec.resource === 0 ? ORE_TABLE : GAS_TABLE) + 4 * p, mask };
+  return undefined;
+}
+/** The mark a masked condition carries in its last two bytes ('SC'), its mask in its location field. */
+const MASKED_MARK = 0x4353;
+/** A player's bytes (slot, race) and the supply tables, by race (36 dwords apart), as the Python side reads them. */
+const PLAYER_BYTES = { slot: 0x57f1b4, race: 0x57f1c0 } as const;
+const SUPPLY_TABLES = { provided: 0x582144, used: 0x582174, max: 0x5821a4 } as const;
+/** A dword of memory, or its bits of a mask, read as a value: a masked Deaths whose player is the dword's EPD. */
+function memoryRead(addr: number, mask: number | undefined, where: { at: At; label: string }): NumExpr {
+  const record: ConditionRecord = { location: mask ?? 0, player: u((addr - DEATHS_TABLE) / 4), amount: 0, unitId: 0, comparison: 0, type: DEATHS_TYPE, resource: 0, flags: 0, mask: mask === undefined ? 0 : MASKED_MARK };
+  return { kind: "read", read: { source: "condition", record }, ...where };
+}
+
 /** The conditions that read that table: Command, Bring, Command the Most (at), Command the Least (at). */
 const COUNTING = new Set([2, 3, 6, 7, 16, 17]);
 /**
@@ -517,6 +551,15 @@ class Scope {
    * the emitter's own first (`reads`), the value a sum of those and the program's variables.
    */
   tables = new Map<Stmt, { reads: CellRead[]; value: Linear }>();
+  /** A map of our own: the statements that set a variable to a number of the game's (`Emitter.readGame`). */
+  gameReads = new Map<Stmt, { rec: ConditionRecord; shift: number }>();
+  /** A number of the game's as a statement's value: a read, or (a byte of memory) its bits shifted down. */
+  readOf(e: NumExpr): { rec: ConditionRecord; shift: number } | undefined {
+    if (!this.native) return undefined;
+    if (e.kind === "read" && gameRead(e.read)) return { rec: e.read.record, shift: 0 };
+    if (e.kind === "binary" && e.op === ">>>" && e.left.kind === "read" && gameRead(e.left.read) && e.right.kind === "const") return { rec: e.left.read.record, shift: e.right.value };
+    return undefined;
+  }
   cells = 0;
   /** The statements whose value is a fixed-point product or quotient the graph calls the Python side's function for. */
   calls = new Map<Stmt, { fn: FixedFn; args: Linear[] }>();
@@ -818,6 +861,14 @@ class Scope {
           this.written.add(s.decl.id);
           return true;
         }
+        const r = this.readOf(s.init as NumExpr);
+        if (r) {
+          this.gameReads.set(s, r);
+          if (COUNTING.has(r.rec.type)) this.counts = true;
+          this.declared.add(s.decl.id);
+          this.written.add(s.decl.id);
+          return true;
+        }
         const call = isTemp(s.decl.id) ? null : this.fixed(s.init as NumExpr);
         if (call) this.calls.set(s, call);
         else if (!this.lowers(s.init as NumExpr)) {
@@ -832,6 +883,13 @@ class Scope {
       }
       case "assign": {
         if (!this.ok(s.target)) return this.island(s);
+        const r = this.readOf(s.value);
+        if (r) {
+          this.gameReads.set(s, r);
+          if (COUNTING.has(r.rec.type)) this.counts = true;
+          this.written.add(s.target);
+          return true;
+        }
         // (A call's result goes into a cell: never one of the emitter's own variables.)
         const call = isTemp(s.target) ? null : this.fixed(s.value);
         if (call) this.calls.set(s, call);
@@ -1458,6 +1516,8 @@ class Emitter {
     if (s.kind === "assignBool") return this.setBool(s.target, s.value);
     if (s.kind === "call" && !this.scope.islands.has(s)) return this.call(s.call);
     if (s.kind === "action" && !this.scope.islands.has(s)) return this.action(s);
+    const read = this.scope.gameReads.get(s);
+    if (read && (s.kind === "declare" || s.kind === "assign")) return this.readGame(s.kind === "declare" ? s.decl.id : s.target, read.rec, s.at, read.shift);
     if (s.kind === "declareArray" && this.scope.native && !this.scope.islands.has(s)) return this.declareArray(s);
     if (s.kind === "return") return this.ret(s);
     const call = this.scope.calls.get(s);
@@ -1783,6 +1843,44 @@ class Emitter {
       { act: { dword: { at: tx.label, field: { act: 0, part: "flags" } }, modifier: "set", value: act.record!.flags, mask: 0xff } },
       { act: { dword: { at: tx.label, field: "current" }, modifier: "set", value: 0, mask: 0xff000000 } },
     ] });
+  }
+
+  /**
+   * A number of the game's into `target`. Kept where the game keeps it (one player's deaths, kills, ore or gas): read
+   * a bit at a time from the top, where it is — a masked condition each — entered at the highest group of eight bits
+   * it has, so that a number below 65 536 is read in 16 bits (eudplib's `f_dwread_epd` reads 32). Otherwise the
+   * condition asked a bit at a time from the top, its amount a place of what is found so far plus the bit, so each
+   * bit is one trigger whose condition holds when the bit is set (12 bits for a count of units, which never reaches
+   * 4 096; 4 for the opponents; 32 otherwise, as the Python side's).
+   */
+  readGame(target: string, rec: ConditionRecord, at?: At, shift = 0): void {
+    emitterCounts.reads++;
+    const key = `${this.key}.rg${this.n++}`;
+    const table = tableOf(rec, this.scope.owner);
+    if (table !== undefined) {
+      const out = `${key}.o`, d: Dword = { game: table.at }, whole = table.mask === U32 - 1;
+      this.push({ conds: [], items: [{ act: { dword: { temp: out }, modifier: "set", value: 0 } }], at });
+      // (A whole dword below 2^8, 2^16, 2^24: from bit 7, 15 or 23. A mask's bits alone, each moved down `shift`.)
+      const starts = whole ? [0, 1, 2].map(() => this.label("rgfrom")) : [];
+      if (whole) [0, 1, 2].forEach((g) => this.branch([{ dword: d, compare: "atMost", value: 2 ** (8 * (g + 1)) - 1 }], starts[g], at));
+      for (let b = 31; b >= 0; b--) {
+        if (whole && b % 8 === 7 && b < 31) this.land(starts[(b - 7) / 8]);
+        if (!whole && !(table.mask & 2 ** b)) continue;
+        this.push({ conds: [{ dword: d, compare: "atLeast", value: 1, mask: u(2 ** b) }], items: [{ act: { dword: { temp: out }, modifier: "add", value: u(2 ** (b - shift)) } }], at });
+      }
+      this.open().items.push({ fill: { temp: out, target } });
+      return;
+    }
+    const bits = rec.type === 2 || rec.type === 3 ? 12 : rec.type === OPPONENTS_TYPE ? 4 : 32;
+    const found = `${key}.f`;
+    this.own.add(found);
+    this.write(found, { c: 0, terms: [] }, false);
+    for (let b = bits - 1; b >= 0; b--) {
+      const c = gameCond({ ...rec, comparison: 0, amount: 0 });
+      this.condReads.set(c, { id: found, scale: 1, add: u(2 ** b) });
+      this.push({ conds: [c], items: [{ bump: { target: found, add: u(2 ** b) } }], at });
+    }
+    this.write(target, { c: 0, terms: [{ id: found, k: 1 }] });
   }
 
   /** After an action that makes or moves units, in a program that asks Bring or Command: the counts thrown away. */
@@ -4167,6 +4265,13 @@ class Rewriter {
       }
       case "unary": case "cast": return { ...e, expr: this.flat(e.expr, pre, where) };
       case "randomInt": return { ...e, bound: this.flat(e.bound, pre, where) };
+      // (A map of our own: a number of the game's into a variable of the emitter's own, read there.)
+      case "read": {
+        if (!this.own || !(gameRead(e.read) || this.facts(e.read))) return e;
+        const t = this.temp();
+        pre.push(...this.set(t, e, where));
+        return { kind: "var", id: t };
+      }
       case "element": {
         // (A map of our own: an index that is more than a sum — a product, a shift, a random number — worked out first
         // into a variable of the emitter's own, which the read's table then tests.)
@@ -4255,12 +4360,57 @@ class Rewriter {
     return [...pre, ...made(count)];
   }
 
+  /** A player's race or slot, or supply, which a map of our own reads from memory (`fact`): one player, known. */
+  facts(r: ReadSource): r is Extract<ReadSource, { source: "player" | "supply" }> {
+    const one = r.source !== "condition" && (r.player <= 11 || (r.player === CURRENT_PLAYER && this.owner !== undefined));
+    return one && (r.source === "supply" || (r.source === "player" && (r.fact === "race" || r.fact === "slot")));
+  }
+
+  /** The program's owner, the current player while it runs (a map of our own). */
+  owner?: number;
+
+  /**
+   * A player's race or slot (a byte of the player table: its bits of the dword, moved down) or supply (the race's
+   * table, the player's own race read first when none is given — a slot with none has no supply — then halves, as the
+   * top bar shows it, half a supply in use counting as one), as the Python side reads them. A computer's slot reads 5
+   * in a Use Map Settings game and 1 in melee: both 1. (The current player is the owner.)
+   */
+  fact(target: string, r: Extract<ReadSource, { source: "player" | "supply" }>, where: { at: At; label: string }): Stmt[] {
+    const p = r.player === CURRENT_PLAYER ? this.owner! : r.player;
+    const at = { at: where.at, label: where.label };
+    const k = (value: number): NumExpr => ({ kind: "const", value });
+    const v = (id: string): NumExpr => ({ kind: "var", id });
+    const byte = (addr: number): NumExpr => {
+      const sh = 8 * (addr & 3);
+      return { kind: "binary", op: ">>>", left: memoryRead(addr & ~3, u(0xff * 2 ** sh), where), right: k(sh), ...at } as NumExpr;
+    };
+    const eq = (x: NumExpr, n: number): BoolExpr => ({ kind: "compare", op: "==", left: x, right: k(n), ...at });
+    if (r.source === "player") {
+      const out: Stmt[] = [{ kind: "assign", target, value: byte(PLAYER_BYTES[r.fact as "race" | "slot"] + p), ...where }];
+      if (r.fact === "slot") out.push({ kind: "if", cond: eq(v(target), 5), then: [{ kind: "assign", target, value: k(1), ...where }], ...where } as Stmt);
+      return out;
+    }
+    const table = (race: number): NumExpr => memoryRead(SUPPLY_TABLES[r.of] + 4 * (36 * race + p), undefined, where);
+    const half = this.temp(), out: Stmt[] = [];
+    if (r.race !== null) out.push({ kind: "assign", target: half, value: table(r.race), ...where });
+    else {
+      const race = this.temp();
+      out.push({ kind: "assign", target: race, value: byte(PLAYER_BYTES.race + p), ...where }, { kind: "assign", target: half, value: k(0), ...where });
+      for (const n of [0, 1, 2]) out.push({ kind: "if", cond: eq(v(race), n), then: [{ kind: "assign", target: half, value: table(n), ...where }], ...where } as Stmt);
+    }
+    const sum: NumExpr = r.of === "used" ? { kind: "binary", op: "+", left: v(half), right: k(1), ...at } as NumExpr : v(half);
+    out.push({ kind: "assign", target, value: { kind: "binary", op: ">>>", left: sum, right: k(1), ...at } as NumExpr, ...where });
+    return out;
+  }
+
   /** The statements that set `target` to `e`. */
   set(target: string, e: NumExpr, where: { at: At; label: string }): Stmt[] {
     const assign = (value: NumExpr): Stmt => ({ kind: "assign", target, value, ...where });
     const v = (id: string): NumExpr => ({ kind: "var", id });
     const zero: NumExpr = { kind: "const", value: 0 };
     const pre: Stmt[] = [];
+    if (this.own && e.kind === "read" && gameRead(e.read)) return [assign(e)];
+    if (this.own && e.kind === "read" && this.facts(e.read)) return this.fact(target, e.read, where);
     if (e.kind === "ternary") {
       const cond = this.cond(e.cond, pre, where);
       return [...pre, { kind: "if", cond, then: this.set(target, e.whenTrue, where), else: this.set(target, e.whenFalse, where), ...where }];
@@ -4718,7 +4868,7 @@ function plainFns(x: unknown): unknown {
  * it took. A per-player program is not looked at yet (its variables are rows), nor a task's (its variables are slots).
  */
 /** How often the emitter did what is worth counting, for its tests: loops with values computed once on the way in. */
-export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0, products: 0, quotients: 0, bits: 0, shifts: 0, fixed: 0, random: 0 };
+export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0, products: 0, quotients: 0, bits: 0, shifts: 0, fixed: 0, random: 0, reads: 0 };
 
 /**
  * A whole body of statements lowered to one graph, for a map of our own (no Python side, no eudplib): every statement
@@ -4747,6 +4897,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
       bodies.set(id, f.body);
       const rw = new Rewriter(`${key}.f${bodies.size}`, take, true, functions, f.result?.kind);
       rw.arrays = arrays;
+      rw.owner = owner;
       rw.bits = tops;
       b = rw.stmts(plainFns(inlined(f.body, functions)) as Stmt[]);
       bodies.set(id, b);
@@ -4762,6 +4913,7 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   };
   const rw = new Rewriter(key, take, true, functions);
   rw.arrays = arrays;
+  rw.owner = owner;
   rw.bits = tops;
   const block = rw.stmt(plainFns(inlined({ kind: "block", body, at: body[0]?.at } as Stmt, functions)) as Stmt);
   const s: Stmt = block.length === 1 ? block[0] : ({ kind: "block", body: block, at: body[0]?.at } as Stmt);

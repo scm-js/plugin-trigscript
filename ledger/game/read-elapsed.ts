@@ -1,4 +1,4 @@
-// ledger: step 5, refused: a read of the game (Elapsed Time)
+// ledger: step 5, takes
 // Game seconds since the start, read when the line runs: `elapsed()`.
 program(() => {
   const n = elapsed();

@@ -3532,7 +3532,8 @@ found what they left out; where a step moved, its old number is given.
 5. **The game's conditions and actions** (new). Part 1 ✓: every condition and action with its fields known when the map
    is built, laid out as the game's record — "The game's conditions and actions on our own backend"; `memory()` and
    `setMemory()` at an address known when built came with it (from 6). Part 2 ✓: fields from values and texts made
-   while the game runs — "Fields from values on our own backend". A trigger record of any condition and any action in the graph and the
+   while the game runs — "Fields from values on our own backend". Part 3 ✓: the game's numbers read as values —
+   "The game read as a value on our own backend". A trigger record of any condition and any action in the graph and the
    layout — they encoded three before: the Memory condition, Set Deaths and Display Text. Fields filled from values
    (`action.variables`), action texts (transmissions, objectives, leaderboards). Every condition in a test and as a
    value (ore, deaths, score, kills, Bring, Command, the countdown; the Python side's bit search), the players' facts
@@ -3909,7 +3910,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 2 Texts with numbers | 6 of 6 |
 | 3 Arrays of a fixed length | 54 of 54 |
 | 4 Numbers | 59 of 59 |
-| 5 The game's conditions and actions | 154 of 195 |
+| 5 The game's conditions and actions | 179 of 195 |
 | 6 The game's memory | 0 of 47 |
 | 7 Programs, owners and players | 1 of 22 |
 | 8 Texts as values | 0 of 43 |
@@ -4289,6 +4290,41 @@ eudplib's build: the old counts, and the Create Units of one.
 Checked: `tests/ownGame.test.ts` (the places and what shares their dword, the count's halves by its range, the
 Transmission's puts-back, the template); `probes/own-fields.ts` and `probes/own-game.ts` built both ways; a loop of
 four Transmissions in the lifted game (ours shows each, eudplib's every other).
+
+### The game read as a value on our own backend (2026-10-20)
+
+Step 5, part 3: what a condition can be asked, read as a number — ore, gas, deaths, kills, a sum over a group,
+units counted (Command, Bring), a score, the clocks, the opponents — and the players' race, slot and supply
+(`Emitter.readGame`, `Rewriter.fact`). Ledger: step 5 179 of 195; the 16 left are `centerLocation` (6), texts shown to
+other players than the owner (4) or at the centre (2), `hasLeft` (it needs the map's slots, which a map of our own
+does not know until step 7), Wait, `rose`, `once`.
+
+- **Where the game keeps it** — one player's deaths, kills, ore or gas, and `memory()` at an address known when built
+  (a Deaths whose player is past the groups; with a mask, its bits alone) — the dword is read where it is, a masked
+  condition a bit, entered at the highest group of eight bits it has: three tests (below 2^8, 2^16, 2^24) send the
+  walk past the bits that are 0, so ore below 65 536 is read in 16. eudplib's `f_dwread_epd` reads 32.
+- **Otherwise the condition is asked**, a bit at a time from the top: the condition's amount is a place of what is
+  found so far plus the bit, so each bit is one trigger — its condition holding is the bit — whose action adds the
+  bit to the places of the bits after it. 12 bits for a count of units, 4 for the opponents, 32 for the rest, as the
+  Python side's.
+- **A player's race and slot** are a byte of the player table: its eight bits of the dword, each added moved down into
+  place. A computer's slot reads 5 in a Use Map Settings game, 1 in melee: both 1, as the Python side has it.
+  **Supply** is its race's table (the player's own race read first when none is given), halved as the top bar shows
+  it, half a supply in use counting as one.
+
+| `probes/own-reads.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| The start and every read once (frame 2) | **0.025 ms** | 1.163 ms |
+| 200 reads of ore below 2^16 (frame 4) | **0.129 ms** | 0.219 ms |
+| 200 counts of units (frame 6) | **0.102 ms** | 0.418 ms |
+
+Every line the same in both builds, supply included (4 of 10, at most 200; Zerg 2). What is left to gain: each read
+is written where it is used — a 32-bit search about 32 triggers, `probes/own-reads.ts` 3.5 MB — and a read compared
+straight with a value (`minerals(P1) >= cost`) could be the condition itself, its amount a place of the value, with no
+read at all.
+
+Checked: `tests/ownGame.test.ts` (the table read and its entries, the count asked in 12 bits, the race's byte and the
+supply's table); `probes/own-reads.ts` built both ways, every line ok.
 
 ## Part C — the game, pushed
 
