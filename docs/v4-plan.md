@@ -3511,19 +3511,68 @@ None of what follows runs code of our own or reaches past what the emulator list
     patterns as a state machine) that builds back. Classic triggers only.
 
 **The way off eudplib.** Each step held the same way — the script built both ways says the same at the same frames in
-the lifted game, and the probe plays the same in Remastered — and each better than eudplib's way, not a copy of it:
+the lifted game, and the probe plays the same in Remastered — and each better than eudplib's way, not a copy of it.
+The list had nine steps until the audit of 2026-10-19 ("The way off eudplib, audited", after the arrays section)
+found what they left out; where a step moved, its old number is given.
 
-1. Calls (below).
-2. Texts with values (4's digits), and texts made in the game.
-3. Arrays and the heap in the emitter, a store at any index included.
-4. Numbers the emitter leaves to the Python side today: a product of two values, a quotient and a remainder (by a
-   constant too), `&` `|` `^` of two values or with a constant, a shift by a value — eudplib's `f_mul`, `f_div` and
-   bit functions. A map of our own refuses all of them now (found 2026-10-19, writing the arrays probe).
-5. Units: loops, fields, events, the queries scheduled (6, 7).
-6. Tasks, `async`, per-player programs, on the walk as the scheduler (2).
-7. Input (13).
-8. The map's own triggers kept beside the program (eudplib's stage 3), or built into it.
-9. `python/trigscript.py` (7,100 lines) and Pyodide deleted: the own-loader probe builds in 0.7 s against 5.3.
+1. Calls ✓ (#35), and recursion ✓ (#37).
+2. Texts with numbers in them ✓ (#38). Texts as values moved to 8.
+3. Arrays of a fixed length ✓ (#39). Arrays that grow moved to 9.
+4. **Numbers.** A product, a quotient and a remainder of two values and by a constant, signed and `u32`; `&` `|` `^`
+   as values; a shift by a value; `trunc`. Fixed point: `fmul`, `fdiv`, `c / x` (the emitter's reciprocal exists),
+   `sqrt`, `sin`, `cos`, `atan2` (`tan` and `hypot` come down to these). `u8` and `u16` variables (saturating
+   `bits`). Random numbers: `random()`, `randomInt`, seeded as `f_randomize` seeds them (the Randomize switch), each
+   draw a product (`f_dwrand`). A fixed number printed. eudplib's `f_mul`, `f_div`, the bit functions and `f_dwrand`,
+   each beaten.
+5. **The game's conditions and actions** (new). A trigger record of any condition and any action in the graph and the
+   layout — they encode three today: the Memory condition, Set Deaths and Display Text. Fields filled from values
+   (`action.variables`), action texts (transmissions, objectives, leaderboards). Every condition in a test and as a
+   value (ore, deaths, score, kills, Bring, Command, the countdown; the Python side's bit search), the players' facts
+   (race, slot, human, left) and supply; `rose` and `once`. A print to a group — each player in turn, as the Python
+   side does — and at the centre. Sounds: Play WAV with the clips in the archive, the music library. Locations:
+   `centerLocation`, the reserved locations, the scratch location an order goes through.
+6. **The game's memory** (new). `stats()` tables read and written (the speed, colour and name cells included),
+   `memory.vision`, `memory.game`, `memory.map`, `memory()` and `setMemory()`. What the fog library, the raycaster and
+   Bad Apple stand on.
+7. **Programs, owners and players** (new; per-player programs were in 6). Several `program()`s in a map — a top-level
+   `on.*` is a program of its own, and `trigscript/fog` adds one. Owners checked against the map's slots and forces, as
+   the Python side's `owner_slots`. Per-player programs. The walk linked into every player's list with a once-a-tick
+   guard, as eudplib's runner is, so an empty owner slot or an owner who leaves does not stop the program — both
+   played, the leaver in a game of two.
+8. **Texts as values** (was half of 2). Text variables and arrays; compared, searched, measured, repeated, split and
+   joined; templates and JSX made while the game runs; `name()` and `color()` in a print; `ui.lines`.
+9. **Arrays that grow, and what stands on the heap** (was half of 3). `push`, `pop`, a length set, `through`, `Map`
+   and `Set`, a task's arrays, an array in a function that calls itself (the front end makes every one of those
+   growing today, a fixed length too); closures over locals and reference classes (`held`, the pool of 1,024 cells);
+   signals, which stand on both.
+10. **Units** (was 5). Every unit value, unit loops and events, fields, flags, writes and verbs, picks, `select()` and
+    the game command it sends, `underMouse`; the queries scheduled (ideas 6, 7).
+11. **Tasks, `async` and errors** (was 6; errors new). `start`, `cancel`, `running`, `Promise.all`/`race`/`any`,
+    `every`, `after`, `on.*` handlers, on the walk as the scheduler (idea 2). `try`, `catch`, `finally`, `throw`,
+    `uncaught`, a program's `errors`, the error classes.
+12. **Input** (was 7; idea 13). Keys, clicks, the mouse, typed lines, sync channels, the `local.*` reads and the user's
+    player id. The test harness types and presses through chatEvent's and MSQC's addresses (`GameSim`): it moves with
+    them, and the map stops needing what MSQC takes (a location, the Valkyrie's entry, Player 12's units).
+13. **The map's own triggers** (was 8). Kept beside the program, in eudplib's order (programs after every player's
+    triggers) or another one said; `trigger()` and `hyperTriggers()` records.
+14. **The build in the editor** (new). A build step of the plugin's own for Save, Test Map and export; the CHK and the
+    archive written in the plugin (mopaq bundled, or an addition to the plugin API); eudplib's fixes to the map
+    (MTXM's null tiles, a desync by its source's account; UNIT flags; UNIx/UPGx/TECx defaults); the script's settings
+    (stack depth, heap) passed; a refusal shown as a Problem while the script is typed, naming what it refuses; the
+    changeover (below); Magenta and TrigScript in one map; the payload's size (eudplib stacks its objects; ours
+    overlaps only cells, and recursion's payload is 1.87 MB).
+15. **The tools on maps of our own** (new). The trigger map and the variable map from the layout, in the rows scm-sim
+    reads — A1 to A5, Find an EUD Error, cost by line, the desync detector and `sim.program()` name lines with them;
+    `build-fixture` moved onto the own build (the `trigger()` records, Home/Away/Pixel, PEOPLE, the settings);
+    the allowlist's evidence traced again; the lowering bench's baseline anew; a built map tested end to end in CI.
+16. **The gate before the Python goes** (new). With it goes the second build every step is held against. Before:
+    random whole programs (idea 17) built our way and run in the lifted game against the simulator; every probe and
+    showpiece built our way and played again in Remastered; the simulator's model (`docs/ir.md`: the Python lowering's
+    today) moved to the own backend.
+17. **Deleted** (was 9): `python/trigscript.py` (7,100 lines), its embedding (`embed-python.mts`, whose stdlib half
+    stays), the IR's hand-off to Python (`serializeIr`, `packTable`, `IR_VERSION`), the `requires` of plugin-eudplib,
+    and the copy in five repositories that says a map is built by eudplib. The own-loader probe builds in 0.7 s
+    against 5.3.
 
 ### Calls on our own backend (2026-10-19)
 
@@ -3750,6 +3799,83 @@ print and own-loader probes still all ok, recursion's frame 11.53 ms (11.64 befo
 
 Not yet: arrays that grow (`push`, `pop`, a length set: the heap), arrays of texts, `u8` and `u16` arrays, a task's
 arrays; numbers (step 4) — the probe's first store was `board[i] = i * i + 1`, refused.
+
+### The way off eudplib, audited (2026-10-19)
+
+Step 4 was found by accident: the arrays probe's `i * i + 1` was refused, and the probe was changed to fit. So the
+list was checked against everything the Python side does, from four sides:
+
+- **The probes.** Every program of the 93 probes given to the own emitter, then each of its statements and expressions
+  alone, every refusal counted by what refused it.
+- **One feature at a time.** About 230 scripts of a feature each, compiled and given to `emitBody`.
+- **The code.** The IR, kind by kind, against `emit.ts` and `python/trigscript.py`; eudplib's own machinery (its
+  injector, euddraft's driver and plugins, `fixmapdata`); the euddraft plugins the input uses.
+- **Everything that reads a build.** The editor's build, the tools of Part A, the scripts, the tests, CI, scm-sim, and
+  the other repositories that mention eudplib.
+
+**What a map of our own takes today.** Numbers added, subtracted, multiplied and shifted by a constant, compared,
+`min`, `max`, `abs`; booleans; arrays of a fixed length; calls and recursion; a print of known text and whole numbers to
+the current player; sleeps; loops; and what the front end turns into those — classes, records, generators, labels,
+sorting, callbacks, function values, `await` of a function, `until`. Twelve of the 93 probes build: the five own-backend
+probes and seven measurement probes. No showpiece does.
+
+**What the nine steps left out** — steps 5, 6, 7 and 14 to 16 now, and parts of 4, 8, 9 and 11:
+
+- *The game itself.* The graph and the layout can hold three kinds of record. Every other action is refused — Create
+  Unit (5,992 statements across the probes), Remove Unit, Set Resources, Play WAV (312), Center View, Talking Portrait,
+  Transmission, Minimap Ping, the countdown, leaderboards, objectives — and every read of the game: ore, deaths, Bring,
+  kills, a player's slot, race or leaving. Random numbers too. No step named any of it; units (old 5) covered only
+  unit values.
+- *The game's memory.* `stats()` tables, `memory.*`, `local.*`: what the fog library, the raycaster and Bad Apple
+  write.
+- *Locations.* `centerLocation`, the reserved ones, the scratch location an order goes through.
+- *Fixed point past `+` and `-`.* `fmul` (23 statements), `fdiv` (81), `sqrt`, `sin`, `cos`: old step 4 named only
+  whole numbers.
+- *Errors.* `try`, `throw`, `uncaught`.
+- *Programs and players.* 27 of the 93 probes have more than one program, and `trigscript/fog` adds one to any script
+  that imports it; `build-own` takes one. The start-up links the owner's list only (`layout.ts`): an empty owner slot
+  never starts the program, and an owner who leaves may stop it. eudplib links a runner into every player's list.
+- *The build and the tools.* No build step in the editor (`build-own` is a script that imports the editor's code from
+  a checkout, and the plugin API cannot write the archive); no sounds in the archive; none of eudplib's fixes to the
+  map; Magenta and TrigScript cannot share a map (two payloads at one address, two links of the lists); A1 to A5,
+  Find an EUD Error and the test harness read the variable and trigger maps only the Python build writes; no built map
+  is tested in CI; and once the Python is deleted, nothing is left to build the second way and compare against.
+
+**Wrong without a word — made refusals with this audit.** `print(…, { to })` was shown to the program's owner
+whoever it was for (`Scope` never read `to`; the Python side sets each player of the group current in turn): a text
+for anyone else is refused now (`tests/emitter.test.ts`). `trigger()` records were dropped by `build-own`, which
+clears the map's triggers: refused now.
+
+**Why the arithmetic stayed hidden.** Most refusals read `a assign it does not lower (no reason given), line N`:
+`Scope.test()` drops the reasons `bool()` gives, `lowers()` and `withCells()` give none, and `why ||=` keeps an
+earlier reason that is not the one. `a * b`, `a / 4`, `random(6)` and `minerals(P1)` were all refused in the same
+words. Step 14 asks for a refusal that names what it refuses; the ledger (below) asks for it to be right.
+
+**Smaller things**, to fix inside the step that meets them:
+- A boolean `?:` is refused, with constants on both sides too (`Rewriter.cond` has no case for it).
+- A call in a `do` loop's test is refused.
+- `emitBody` does not try a crowded branch again with copies, as `emitLoop` does.
+- "An array read at the loop's counter", a rule for eudplib's loops, refuses code of our own too.
+- `build-own` passes no stack depth, so the refusal that says to lower it cannot be followed.
+- Arrays and stacks past 65,536 cells.
+
+**Which showpiece waits on which step.** Tetris: 4 (random), 5 (Remove Unit), 11, 12. Snake: the same and 8 (JSX
+made in the game). The raycaster: 4 (fixed point, `sin`, `cos`), 5 (`centerLocation`), 6, 7 (the fog's program), 12.
+Bad Apple: 5, 6, 7, as the fog library. The bullets: 5 (a death count read), 9. The cutscene: 5, 8, 9, 10, 11, 12.
+
+**Decisions it asks for:**
+- *The changeover.* Build our own way wherever the emitter takes the whole script, and through eudplib elsewhere,
+  saying which in Output — from step 14 on; or switch nothing until step 13. The first gives map makers the speed early
+  and needs a script's refusals shown while it is typed, so that a map does not change builds without anyone seeing.
+- *Protection.* eudplib scrambles the locations, shuffles its payload and adds an ISOM section of negative length;
+  ours does none of it. Keep none of it, or some?
+- *Magenta.* It keeps plugin-eudplib alive. Until it builds on the own layout, a map with both could have TrigScript's
+  program built into Magenta's eudplib build, or refuse the pair.
+
+**The ledger, so the list stays whole.** A script for each feature — the audit's 230 are the start — each with its
+step and whether a map of our own takes it, run by a test in `tests/`. It fails when a script's answer changes, and
+when a kind of the IR or a name the library exports has no row. A step is done when its rows say so. Proposed as the
+first thing before step 4.
 
 ## Part C — the game, pushed
 
