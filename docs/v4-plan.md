@@ -3683,6 +3683,9 @@ the laid-out bytes, and in the programs with functions that call themselves. `pr
 the same at the same frames built both ways, once the 0x0D are taken out of both; game-check: 178 accesses, none ending
 the game.
 
+- **Played in Remastered (2026-10-19):** `trigscript-own-print.scx` printed every line word for word as the lifted
+  game — the Korean too — with nothing drawn where the 0x0D are, in Remastered's graphics and, after F5, in Classic's.
+
 Not yet: a fixed number printed (`3.25`), a player's name or colour, a text of the program's; `position: "center"`.
 
 ## Part C — the game, pushed
