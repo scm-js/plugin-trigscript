@@ -3744,6 +3744,10 @@ the value ranges a run of it shows (about 4,500 indexes); `probes/own-arrays.ts`
 same frames built both ways, every one ok; game-check: 4,731 accesses, none ending the game; the calls, recursion,
 print and own-loader probes still all ok, recursion's frame 11.53 ms (11.64 before). The suite: 1231 pass.
 
+- **Played in Remastered (2026-10-19):** `trigscript-own-arrays.scx` printed all twelve lines word for word as the
+  lifted game, in its groups four game frames apart, every one ok; the group of the two sieves came 150 ms after the
+  one before (the others 150 to 183 ms), no stutter seen.
+
 Not yet: arrays that grow (`push`, `pop`, a length set: the heap), arrays of texts, `u8` and `u16` arrays, a task's
 arrays; numbers (step 4) — the probe's first store was `board[i] = i * i + 1`, refused.
 
