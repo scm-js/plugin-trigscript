@@ -1,4 +1,4 @@
-// ledger: step 8, refused: two texts compared
+// ledger: step 8, takes
 // Two texts compared while the game runs: `===`, `!==`, and `<` in the order of their characters.
 program(() => {
   let n = 0;

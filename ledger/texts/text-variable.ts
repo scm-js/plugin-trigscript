@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text kept in a variable
+// ledger: step 8, takes
 // A text kept in a variable and changed while the game runs: `let unit = "Marine"`, then `unit = "Medic"`.
 program(() => {
   let unit = "Marine";

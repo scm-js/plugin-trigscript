@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a ?: of texts
+// ledger: step 8, takes
 // A boolean of the program as a text, true or false: `` `${done}` ``.
 program(() => {
   let n = 0;

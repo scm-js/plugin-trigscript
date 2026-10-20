@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a ?: of texts
+// ledger: step 8, takes
 // One text or another, by a test while the game runs: `print(n > 10 ? "Medic" : "Marine")`.
 program(() => {
   let n = 0;

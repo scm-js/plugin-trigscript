@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text's length
+// ledger: step 8, takes
 // How many characters a text of the program has: `.length`.
 program(() => {
   let n = 0;

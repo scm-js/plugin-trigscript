@@ -9,6 +9,7 @@ import { compileScript } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { emitOwn, type Own } from "../compiler/backend/own";
 import type { MapPlayers } from "../compiler/backend/emit";
+import type { TextPart } from "../compiler/ir";
 import type { Graph } from "../compiler/backend/graph";
 import { layout } from "../compiler/backend/layout";
 import { encodeTriggers, emptyTrigger, type ActionRecord, type ConditionRecord } from "../vendor/triggers";
@@ -259,5 +260,50 @@ describe("a map of our own, programs, owners and players", () => {
       const conds = [0, 1, 2, 3].filter((c) => pv.getUint8(gate - out.address + 8 + 20 * c + 15) === 15);
       expect(conds.length).toBe(players.filter((q) => q < p).length);
     }
+  });
+});
+
+describe("a map of our own, texts known when built chosen while the game runs", () => {
+  const ownOf = (body: string, base = 1) => {
+    lib ??= defaultLib();
+    const r = compileScript(ts, { "main.ts": `program(() => {\n  let n = 0;\n  let i = 0;\n  while (n < 12) n += 5;\n  while (i < 3) i += 1;\n${body}\n});\n` }, defaultScriptNames(), { lib, emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r, undefined, base);
+    if (typeof o === "string") throw new Error(o);
+    return o;
+  };
+  const acts = (o: Own) => o.runs.flatMap((r) => r.graph.triggers.flatMap((t) => t.acts));
+
+  it("numbers the pool's texts in the order texts compare, from the string it is given", () => {
+    const o = ownOf(`  print(n > 10 ? "b" : "ab");\n  print(i > 2 ? "a" : "é");`, 40);
+    expect(o.texts).toEqual(["a", "ab", "b", "é"]);
+    // (A chosen text alone is Display Text of the string its number names: the base added to the number.)
+    const shown = acts(o).filter((a) => a.record?.type === 9);
+    expect(shown.length).toBe(2);
+    expect(shown.every((a) => !a.display)).toBe(true);
+  });
+
+  it("compares two chosen texts as their numbers, and looks up what a function of one gives", () => {
+    const o = ownOf(`  const a = n > 10 ? "Medic" : "Marine";\n  if (a < "Mf" && a.length == 5 && a.includes("ed")) print("yes");`);
+    // No text is compared byte by byte: no condition reads a template or the strings.
+    expect(o.runs[0].graph.templates ?? []).toEqual([]);
+    expect(o.texts).toEqual(["Marine", "Medic", "Mf", "ed"]);
+  });
+
+  it("reads a function of a known text at a variable from a table within the variable's range", () => {
+    const o = ownOf(`  const s = "Terran Marine";\n  print(\`\${s.charCodeAt(i)}\`);`);
+    // (i is 0 to 3 as the loop leaves it — its range — so the table has no more cells than that.)
+    const table = o.programs[0].arrays.find((a) => a.id.startsWith("@text.table"))!;
+    expect(table.values!.length).toBeLessThanOrEqual(5);
+    expect(table.values!.slice(0, 4)).toEqual([84, 101, 114, 114]);
+  });
+
+  it("writes a choice of many texts into a printed text's field whole, a case for each run of places with one text", () => {
+    const o = ownOf(`  const s = "Terran Marine";\n  print(\`[\${s[i + 3]}]\`);`);
+    const picks = o.programs[0].body.flatMap((s) => (s.kind === "print" ? s.parts.filter((p) => p.kind === "pick") : []));
+    expect(picks.length).toBe(1);
+    const cases = (picks[0] as Extract<TextPart, { kind: "pick" }>).cases;
+    // (i is 0 to 3: the characters 3 to 6.)
+    expect(cases.map((c) => c.text).join("")).toBe("ran ");
   });
 });
