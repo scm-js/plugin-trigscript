@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a write of weapon.bonus
+// ledger: step 6, takes
 // A weapon's other fields written: upgrade bonus, cooldown, hits per attack, least range.
 program(() => {
   stats(weapons.GaussRifle).bonus = 2;

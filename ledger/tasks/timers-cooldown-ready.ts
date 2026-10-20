@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a read of memory.game.frame
+// ledger: step 6, takes
 // trigscript/timers: a `Cooldown` asked whether it is ready, how long until it is, and made ready again: `ready()`, `left()`, `reset()`.
 import { Cooldown } from "trigscript/timers";
 program(async () => {

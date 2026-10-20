@@ -155,3 +155,23 @@ describe("a map of our own, a print at the centre of the screen", () => {
     expect(graph.triggers.some((t) => t.conds.some((c) => "game" in c.dword && c.dword.game === 0x512684))).toBe(true);
   });
 });
+
+describe("a map of our own, the game's tables", () => {
+  const actions = (g: Graph) => g.triggers.flatMap((t) => t.acts).filter((a) => a.record?.type === 45).map((a) => a.record!);
+  it("writes a byte of a player's row as a masked Set Deaths into its dword", () => {
+    // (Player 2's upgrade level: the second byte of a dword — its mask in the record's location, 'SC' in its last.)
+    const [w] = actions(own(`stats(P2).upgrades[upgrades.TerranInfantryWeapons] = 3;`).graph);
+    expect(w.mask).toBe(0x4353);
+    expect([0xff, 0xff00, 0xff0000, 0xff000000]).toContain(w.location);
+    expect(w.target).toBe(3 * (w.location / 0xff));
+  });
+
+  it("writes a flag as its bit, and reads a scaled field divided by its scale", () => {
+    const [w] = actions(own(`stats(units.TerranMarine).detector = true;`).graph);
+    expect(w.location.toString(2).replace(/0/g, "")).toBe("1");
+    expect(w.target).toBe(w.location);
+    // (Hit points are kept 256 to a point: the read divided by 256 — a quotient by a constant.)
+    const r = own(`const hp = stats(units.TerranMarine).maxHp;\nprint(\`\${hp}\`);`).graph;
+    expect(r.triggers.flatMap((t) => t.conds).filter((c) => "game" in c.dword && c.mask !== undefined).length).toBeGreaterThanOrEqual(24);
+  });
+});

@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a write of tech.minerals
+// ledger: step 6, takes
 // A technology's research cost and time, and the energy a cast takes, written: `stats(techs.*)`.
 program(() => {
   stats(techs.StimPacks).minerals = 50;

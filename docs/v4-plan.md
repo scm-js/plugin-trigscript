@@ -3542,7 +3542,7 @@ found what they left out; where a step moved, its old number is given.
    (race, slot, human, left) and supply; `rose` and `once`. A print to a group — each player in turn, as the Python
    side does — and at the centre. Sounds: Play WAV with the clips in the archive, the music library. Locations:
    `centerLocation`, the reserved locations, the scratch location an order goes through.
-6. **The game's memory** (new). `stats()` tables read and written (the speed, colour and name cells included),
+6. **The game's memory** ✓ (all 50 of the ledger's rows: "The game's tables on our own backend"). `stats()` tables read and written (the speed, colour and name cells included),
    `memory.vision`, `memory.game`, `memory.map`, `memory()` and `setMemory()`. What the fog library, the raycaster and
    Bad Apple stand on.
 7. **Programs, owners and players** (new; per-player programs were in 6). Several `program()`s in a map — a top-level
@@ -3913,7 +3913,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 3 Arrays of a fixed length | 54 of 54 |
 | 4 Numbers | 59 of 59 |
 | 5 The game's conditions and actions | 197 of 198 |
-| 6 The game's memory | 0 of 47 |
+| 6 The game's memory | 50 of 50 |
 | 7 Programs, owners and players | 1 of 22 |
 | 8 Texts as values | 0 of 43 |
 | 9 Arrays that grow, the heap | 0 of 28 |
@@ -4375,6 +4375,36 @@ lifted game.
 
 Checked: `probes/own-locations.ts` built both ways, every line ok; prints to P1, P2 and All Players in the lifted game
 (P2's not shown on Player 1's screen, as eudplib's); `rose`/`once` rising twice against the simulator.
+
+### The game's tables on our own backend (2026-10-20)
+
+Step 6: `stats()` tables read and written — unit types, weapons, upgrades, techs, players — and `memory.game`,
+`memory.map`, `memory.vision`, the `local.*` reads (`Rewriter.tableRead`, `tableWrite`, `cellWrite`, `speed`). Every cell
+is at an address known when the map is built (`base + key + index × stride`, a player's row the owner's for the
+current player), so step 5's reads and actions are all it takes. Ledger: step 6 50 of 50, the five `local.*` reads of
+step 12 among them (the front end keeps a value only one computer knows from the game's state, both builds alike).
+
+- **A read** is its bits of the dword it is in, read where they are and moved down (part 3's reads, the group entry now
+  on a masked field too: a word below 256 is read in 8 bits); a scaled field divided by its scale; a bit 0 or 1.
+- **A write** is a Set Deaths into that dword, masked for a byte, a word or a bit (the mask in the record's location,
+  'SC' in its last), its amount a place of the value — times the field's scale unless written so, stopped at its top. A
+  constant `true` or `false` is the bit itself. A player's colour is its byte and the minimap's.
+- **A name** known when built is its text's number among the map's strings (`Act.amountText`, laid out as the string
+  is placed). A name made while the game runs is refused.
+- **A top speed** is the unit type's flingy's, as the Python side writes it: the flingy read where the game keeps it,
+  and the writes into its tables naming their dwords by a place of it — a dword's EPD the table's plus the flingy, plus
+  half or a quarter of it for a word or a byte, whose place in its dword a test chooses. A constant speed's acceleration
+  and halting distance are worked out when built (rounded as Python rounds, a half to the even one).
+
+| `probes/own-memory.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| The start and every check (frame 2) | **0.025 ms** | 1.167 ms |
+| 200 reads of a word of the unit table (frame 4) | **0.092 ms** | 0.140 ms |
+| 200 writes of it from a value (frame 6) | **0.040 ms** | 0.188 ms |
+
+Checked: `tests/ownGame.test.ts` (a byte of a player's row masked, a flag's bit, a scaled read); `probes/own-memory.ts`
+built both ways, every line ok — speeds included, the flingy's four fields the same as eudplib's; a unit name's string
+read back from the game ("Space Marine"); `local.*` the same in both builds.
 
 ## Part C — the game, pushed
 

@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a read of memory.game.frame
+// ledger: step 6, takes
 // trigscript/timers: a `Countdown`, a length of time that runs down while the game runs: `left()` and `done()`.
 import { Countdown } from "trigscript/timers";
 program(async () => {
