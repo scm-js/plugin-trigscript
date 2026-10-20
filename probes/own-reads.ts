@@ -3,8 +3,8 @@
 // time from the highest group of eight bits the number has; anything else — a sum over a group, units counted, a score,
 // the clocks — is the condition asked a bit at a time from the top. Built both ways (through eudplib, and as a map of
 // our own), the lifted game should print the same lines at the same frames; every line should end "ok", and a line
-// ending "WRONG" names the check that failed (line F prints what it read: the two builds should agree). Frames 2 and 4
-// (the lifted game's 4 and 6) are each 200 reads, to weigh.
+// ending "WRONG" names the check that failed (line F prints what it read: the two builds should agree). Frames 2, 4 and 8
+// (the lifted game's 4, 6 and 10) are each 200 reads or comparisons, to weigh.
 //   npx tsx scripts/build-own.mts probes/own-reads.ts /tmp/own-reads.scx
 //   npx tsx scripts/build-fixture.mts probes/own-reads.ts /tmp/own-reads-eud.scx
 // The map build-own makes: Player 1 a person with a Command Center and 4 Marines, Player 2 a computer with a Hatchery
@@ -48,6 +48,20 @@ program(() => {
   j = 0; sum = 0;
   while (j < 200) { sum += countUnits(P1, units.TerranMarine); j++; }
   if (sum == 800) print("H: 200 counts of units ok"); else print("H: 200 counts of units WRONG");
+  sleep(frames(2));
+  // I: a number of the game's compared with a value — the condition itself, its amount the value.
+  let cost = 1000;
+  cost += 234;
+  let few = 3, none = 0;
+  if (minerals(P1) >= cost && !(minerals(P1) > cost) && minerals(P1) <= cost && !(minerals(P1) < cost) && minerals(P1) == cost && cost <= minerals(P1)
+    && countUnits(P1, units.TerranMarine) > few && !(countUnits(P1, units.TerranMarine) < few) && countUnits(P1, units.TerranMarine) != few
+    && !(countUnits(P1, units.TerranMarine) < none) && deaths(P1, units.TerranMarine) == 7) print("I: compared with values ok");
+  else print("I: compared with values WRONG");
+  sleep(frames(2));
+  // Frame 8: 200 turns of ore compared with a value that changes every turn.
+  j = 0; sum = 0;
+  while (j < 200) { if (minerals(P1) >= j * 10) sum++; j++; }
+  if (sum == 124) print("J: 200 comparisons with a value ok"); else print("J: 200 comparisons with a value WRONG");
   print("Own reads: done.");
 });
 

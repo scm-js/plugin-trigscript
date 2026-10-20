@@ -4318,10 +4318,18 @@ does not know until step 7), Wait, `rose`, `once`.
 | 200 reads of ore below 2^16 (frame 4) | **0.129 ms** | 0.219 ms |
 | 200 counts of units (frame 6) | **0.102 ms** | 0.418 ms |
 
+- **A read compared with a value is the condition itself** (`Rewriter.asked`, `Emitter.condsOf`): `minerals(P1) >=
+  cost` is Accumulate at least `cost`, the condition's amount a place of `cost` (`cond.amount`), and no read at all.
+  `>` and `<` are at least one more, at most one less; turned around, one less or one more again, where the value's
+  range keeps the amount inside 0 to 2^32 − 1 (else the trigger sends the walk past). The value never below zero, as
+  the ranges know it: a count is never below zero, a value may be.
+
+| | Own | eudplib |
+| --- | ---: | ---: |
+| 200 of `minerals(P1) >= j * 10` (frame 8) | **0.012 ms** | 0.248 ms |
+
 Every line the same in both builds, supply included (4 of 10, at most 200; Zerg 2). What is left to gain: each read
-is written where it is used — a 32-bit search about 32 triggers, `probes/own-reads.ts` 3.5 MB — and a read compared
-straight with a value (`minerals(P1) >= cost`) could be the condition itself, its amount a place of the value, with no
-read at all.
+is written where it is used — a 32-bit search about 32 triggers, `probes/own-reads.ts` 3.5 MB.
 
 Checked: `tests/ownGame.test.ts` (the table read and its entries, the count asked in 12 bits, the race's byte and the
 supply's table); `probes/own-reads.ts` built both ways, every line ok.

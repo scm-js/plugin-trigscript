@@ -506,6 +506,11 @@ class Scope {
       case "not": return this.bool(e.expr);
       case "cond":
         if (!this.native) return this.no(`a ${e.kind}`);
+        if (e.amount) {
+          const l = linear(e.amount.expr);
+          if (!l || l.terms.length > 1 || !l.terms.every((t) => this.ok(t.id))) return this.no("a condition's amount it does not lower");
+          for (const t of l.terms) this.read.add(t.id);
+        }
         if (COUNTING.has(e.record.type)) this.counts = true;
         return true;
       default: return this.no(`a ${e.kind}`);
@@ -1401,7 +1406,7 @@ class Emitter {
     if (e.kind === "not") return this.single(e.expr, !when);
     if (e.kind === "test") return this.single(notZero(e.expr), when);
     if (e.kind === "var") return this.single(notZero({ kind: "var", id: e.id }), when);
-    if (e.kind === "cond") return gameConds(e.record, when);
+    if (e.kind === "cond") return this.condsOf(e, when);
     if ((e.kind === "and" && when) || (e.kind === "or" && !when)) {
       const parts = e.items.map((x) => this.single(x, when));
       if (parts.some((p) => p === null)) return null;
@@ -1474,13 +1479,13 @@ class Emitter {
         return;
       }
       case "cond": {
-        const c = gameConds(e.record, when);
+        const c = this.condsOf(e, when);
         if (c === "false") return;
         if (c === "true") return this.goto(to);
         if (c) return this.branch(c, to, at);
         // (Not so, of a condition no other one turns around: past `to` when it holds.)
         const past = this.label("p");
-        this.branch(gameConds(e.record, true) as Cond[], past, at);
+        this.branch(this.condsOf(e, true) as Cond[], past, at);
         this.goto(to);
         this.land(past);
         return;
@@ -1783,6 +1788,26 @@ class Emitter {
   }
 
   /** A boolean set from a test: 1 when it holds, 0 when not. */
+  /**
+   * A condition of the game's as conditions that hold exactly when it is `when` (`gameConds`); one whose amount is a
+   * value (`cond.amount`) has it as a place of the value, turned around one more or one less where the value's range
+   * keeps the amount inside 0 to 2^32 − 1.
+   */
+  condsOf(e: Extract<BoolExpr, { kind: "cond" }>, when: boolean): Cond[] | "true" | "false" | null {
+    if (!e.amount) return gameConds(e.record, when);
+    const l = linear(e.amount.expr)!, [t] = l.terms, add = e.amount.add;
+    const r = (e.amount.expr as NumExpr & { range?: readonly [number, number] }).range;
+    const one = (comparison: number, more: number): Cond[] => {
+      const c = gameCond({ ...e.record, comparison, amount: 0 });
+      this.condReads.set(c, { id: t.id, scale: t.k, add: u(l.c + add + more) });
+      return [c];
+    };
+    if (when) return one(e.record.comparison, 0);
+    if (e.record.comparison === 0) return r && r[0] + add >= 1 ? one(1, -1) : null;
+    if (e.record.comparison === 1) return r && r[1] + add <= U32 - 2 ? one(0, 1) : null;
+    return null;
+  }
+
   /** A statement an `if` may guard in its one trigger: an action of the game's, or a write that reads only its target. */
   guards(t: Stmt): boolean {
     if (this.scope.islands.has(t) || this.scope.tables.has(t) || this.scope.calls.has(t)) return false;
@@ -4360,6 +4385,31 @@ class Rewriter {
     return [...pre, ...made(count)];
   }
 
+  /**
+   * A number of the game's compared with a constant, or with one variable times a constant plus a constant that is
+   * never below zero: the condition itself, its amount the value (`cond.amount`, a place of it) — no read at all.
+   * `>` and `<` are at least one more, at most one less. Null where it is not that, or the value's range would take the
+   * amount past 0 or 2^32 − 1.
+   */
+  asked(c: Extract<BoolExpr, { kind: "compare" }>): BoolExpr | null {
+    const k = [c.left, c.right].findIndex((x) => x.kind === "read" && gameRead(x.read));
+    if (k < 0) return null;
+    const read = (k === 0 ? c.left : c.right) as Extract<NumExpr, { kind: "read" }>, other = k === 0 ? c.right : c.left;
+    const l = linear(other);
+    if (!l || l.terms.length > 1 || !gameRead(read.read)) return null;
+    const range: readonly [number, number] | undefined = l.terms.length ? (other as NumExpr & { range?: readonly [number, number] }).range : [l.c, l.c];
+    if (!range || range[0] < 0) return null;
+    const flip = { "<": ">", ">": "<", "<=": ">=", ">=": "<=", "==": "==", "!=": "!=" } as const;
+    const op = k === 0 ? c.op : flip[c.op];
+    const how: Record<string, [number, number]> = { ">=": [0, 0], ">": [0, 1], "<=": [1, 0], "<": [1, -1], "==": [10, 0], "!=": [10, 0] };
+    const [comparison, add] = how[op];
+    if (range[0] + add < 0) return op === "<" && range[1] < 1 ? { kind: "const", value: false } : null;
+    if (range[1] + add > U32 - 1) return null;
+    const record = { ...read.read.record, comparison, amount: l.terms.length ? 0 : u(l.c + add) };
+    const cond: BoolExpr = l.terms.length ? { kind: "cond", record, amount: { expr: other, add } } : { kind: "cond", record };
+    return op === "!=" ? { kind: "not", expr: cond } : cond;
+  }
+
   /** A player's race or slot, or supply, which a map of our own reads from memory (`fact`): one player, known. */
   facts(r: ReadSource): r is Extract<ReadSource, { source: "player" | "supply" }> {
     const one = r.source !== "condition" && (r.player <= 11 || (r.player === CURRENT_PLAYER && this.owner !== undefined));
@@ -4604,6 +4654,8 @@ class Rewriter {
         return { kind: "compare", op: "==", left: { kind: "var", id: t }, right: { kind: "const", value: 1 }, unsigned: true, ...where };
       }
       case "compare": {
+        const asked = this.own ? this.asked(c) : null;
+        if (asked) return asked;
         const cell = this.cellCompare(c, pre, where);
         if (cell) return cell;
         let [left, right] = this.each([c.left, c.right], pre, where, (x) => this.side(x, pre, where));

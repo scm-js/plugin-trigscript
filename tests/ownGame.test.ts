@@ -127,6 +127,15 @@ describe("a map of our own, the game's numbers read as values", () => {
     expect(asks.every((c) => c.game!.comparison === 0)).toBe(true);
   });
 
+  it("compares a number of the game's with a value as the condition itself, its amount a place of the value", () => {
+    const { graph } = own(`let cost = 50;\ncost += 25;\nif (minerals(P1) >= cost) print("rich");\nif (minerals(P1) < 300) print("poor");`);
+    const asks = graph.triggers.flatMap((t) => t.conds).filter((c) => c.game?.type === 4);
+    // (No read: two Accumulate conditions, each turned around for the branch past its print — at most the value less
+    // one, at least 300.)
+    expect(asks.map((c) => c.game!.comparison).sort()).toEqual([0, 1]);
+    expect(graph.triggers.flatMap((t) => t.conds).some((c) => "game" in c.dword && c.dword.game === 0x57f0f0)).toBe(false);
+  });
+
   it("reads a player's race as its byte of the player table, and supply from its race's table", () => {
     const race = own(`if (race(P2) == races.Zerg) print("Zerg");`).graph;
     // (Player 2's race is the second byte of the dword at 0x57F1C0: its eight bits, moved down eight.)
