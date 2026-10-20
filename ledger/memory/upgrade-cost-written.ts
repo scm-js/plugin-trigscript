@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a write of upgrade.minerals
+// ledger: step 6, takes
 // An upgrade's cost and time written: `stats(upgrades.*)`.
 program(() => {
   stats(upgrades.TerranInfantryArmor).minerals = 50;

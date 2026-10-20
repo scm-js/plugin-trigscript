@@ -115,8 +115,12 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * for its text and its sound file, which are the script's strings (`strings`: a record's `text` / `wav` of `k > 0` is the
  * script's `k`-th) and are put in the map's strings when the map is made.
  */
-/** `textOf`: an action of the game's whose text is a printed text's template (`Graph.templates`), filled before it. */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string; randomize?: number; record?: ActionRecord; strings?: { text?: ScriptString; wav?: ScriptString }; textOf?: string }
+/**
+ * `textOf`: an action of the game's whose text is a printed text's template (`Graph.templates`), filled before it.
+ * `amountText`: a Set Deaths whose amount is a text's number among the map's strings, times 2^`shift` (a unit type's
+ * name written).
+ */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string; randomize?: number; record?: ActionRecord; strings?: { text?: ScriptString; wav?: ScriptString }; textOf?: string; amountText?: { text: string; shift: number } }
 
 /** Where the game keeps its 256 switches: a bit each, 32 to a dword. */
 export const SWITCHES = 0x58dc40;

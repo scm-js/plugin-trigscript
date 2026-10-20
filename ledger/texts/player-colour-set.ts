@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a write of player.color
+// ledger: step 6, takes
 // A player's colour changed while the game runs, to one of `colors`: `stats(P2).color = colors.teal`.
 program(() => {
   let n = 0;

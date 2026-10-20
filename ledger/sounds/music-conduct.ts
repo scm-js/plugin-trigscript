@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a read of memory.game.frame
+// ledger: step 6, takes
 // Music that follows the game: a song cut into bars and layers (`music.stems`), played by
 // `music.conduct(stems, band)` as a `Band` says: which section, which layers, a stinger on the next beat.
 import { music, Band } from "trigscript/music";

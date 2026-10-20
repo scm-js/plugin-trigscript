@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a read of memory.game.frame
+// ledger: step 6, takes
 // trigscript/timers: a `Countdown` given more time, and started again: `add(frames)`, `restart(length)`.
 import { Countdown } from "trigscript/timers";
 program(async () => {

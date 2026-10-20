@@ -18,7 +18,7 @@
  * falls through one trigger whose conditions failed (13.4 ns); a branch is a trigger that sets its own next pointer to
  * where it goes, put back by an action at the place it went to.
  */
-import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type ReadSource, type Stmt, type TextPart, type VarDecl, type At } from "../ir";
+import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type ReadSource, type Stmt, type TableCell, type TextPart, type VarDecl, type At } from "../ir";
 import { PACK_FROM } from "../eud";
 import type { Range } from "../ranges";
 import { PlayerGroup, type ActionRecord, type ConditionRecord } from "../../vendor/triggers";
@@ -219,7 +219,7 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
         return undefined;
       }
       case "cond": return undefined;
-      case "tableRead": return `a read of ${(o.cell as { name: string }).name}`;
+      case "tableRead": return (o.cell as TableCell).special ? `a read of ${(o.cell as { name: string }).name}` : undefined;
       case "input": return `the players' input (${(o.input as { source: string }).source})`;
       case "length": return array(o.array as string) ? "the length of an array that grows" : undefined;
       case "pop": return "pop()";
@@ -270,7 +270,7 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
         const name = `the action ${actionDef(t.record.type)?.name ?? t.record.type}`;
         return t.variables?.length ? `${name}, its fields from values` : t.text ? `${name}, its text the program's` : name;
       }
-      case "tableWrite": return `a write of ${t.cell.name}`;
+      case "tableWrite": return t.cell.special === "name" && (t.value as { kind: string }).kind !== "text" ? `a write of ${t.cell.name} made while the game runs` : undefined;
       case "centerLocation": return undefined;
       case "select": return "select()";
       case "syncSend": return "sync()";
@@ -331,7 +331,7 @@ const WAIT_ACTION = 4, TRANSMISSION_ACTION = 7, SWITCH_CONDITION = 11, ALWAYS_CO
  * Wait, which would hold the owner's whole trigger list.
  */
 const gameAction = (s: Extract<Stmt, { kind: "action" }>): boolean =>
-  (!s.text || (s.text.kind === "template" && MADE_TEXT.has(s.record.type))) && s.record.type !== WAIT_ACTION && fieldsTaken(s);
+  (!s.text || (s.text.kind === "template" && MADE_TEXT.has(s.record.type)) || (s.text.kind === "text" && s.record.type === SET_DEATHS_ACTION)) && s.record.type !== WAIT_ACTION && fieldsTaken(s);
 /**
  * The actions whose text may be made while the game runs (a template filled before it, as a print's): Transmission,
  * Display Text, the mission objectives and the leaderboards' labels — the game reads such a text again whenever it
@@ -419,6 +419,10 @@ function playersOf(to: number, owner: number | undefined): number[] | null {
   return null;
 }
 
+/** A unit type's flingy, and the flingy tables a top speed is written into (the Python side's). */
+const UNITS_FLINGY = 0x6644f8, FLINGY_CONTROL = 0x6c9858, FLINGY_SPEED = 0x6c9ef8, FLINGY_ACCELERATION = 0x6c9c78, FLINGY_HALT = 0x6c9930;
+/** A player's minimap colour, this far after their colour (the Python side's `MINIMAP_COLOR_OFFSET`). */
+const MINIMAP_COLOR_OFFSET = 0x581dd6 - 0x581d76;
 /** The game's locations in memory (MRGN): 20 bytes each — left, top, right, bottom, then the rest. */
 const MRGN = 0x58dc60;
 /** The condition types whose comparison is a number's at least / at most, which one condition turns around. */
@@ -1869,7 +1873,9 @@ class Emitter {
     }
     // (A text made while the game runs: its template filled first, the action's text field naming it.)
     const textOf = s.text?.kind === "template" ? this.template(s.text.parts) : undefined;
-    const act: Act = { dword: { game: 0 }, modifier: "set", value: 0, record, ...(textOf !== undefined ? { textOf } : {}) };
+    // (A Set Deaths whose amount is a text's number — `Rewriter.tableWrite`'s name — the shift its mask's.)
+    const amountText = s.text?.kind === "text" && record.type === SET_DEATHS_ACTION ? { text: s.text.text, shift: record.location ? 31 - Math.clz32(record.location & -record.location) : 0 } : undefined;
+    const act: Act = { dword: { game: 0 }, modifier: "set", value: 0, record, ...(textOf !== undefined ? { textOf } : {}), ...(amountText ? { amountText } : {}) };
     const items: Item[] = [{ act }, ...this.forgets(record)];
     if (record.type === TRANSMISSION_ACTION) return this.transmission(act, varied.length ? places : undefined);
     if (varied.length) {
@@ -1916,12 +1922,15 @@ class Emitter {
     if (table !== undefined) {
       const out = `${key}.o`, d: Dword = { game: table.at }, whole = table.mask === U32 - 1;
       this.push({ conds: [], items: [{ act: { dword: { temp: out }, modifier: "set", value: 0 } }], at });
-      // (A whole dword below 2^8, 2^16, 2^24: from bit 7, 15 or 23. A mask's bits alone, each moved down `shift`.)
-      const starts = whole ? [0, 1, 2].map(() => this.label("rgfrom")) : [];
-      if (whole) [0, 1, 2].forEach((g) => this.branch([{ dword: d, compare: "atMost", value: 2 ** (8 * (g + 1)) - 1 }], starts[g], at));
-      for (let b = 31; b >= 0; b--) {
-        if (whole && b % 8 === 7 && b < 31) this.land(starts[(b - 7) / 8]);
-        if (!whole && !(table.mask & 2 ** b)) continue;
+      // (The bits of the mask from the top, each moved down `shift`; entered at the highest group of eight from the
+      // lowest that has a bit set: below 2^8, 2^16, 2^24 of the field — the masked dword at most that — from its bit 7,
+      // 15 or 23.)
+      const bits = Array.from({ length: 32 }, (_, b) => 31 - b).filter((b) => table.mask & 2 ** b);
+      const lo = bits[bits.length - 1], cuts = [8, 16, 24].map((g) => lo + g).filter((c) => c <= bits[0]);
+      const starts = new Map(cuts.map((c) => [c - 1, this.label("rgfrom")]));
+      for (const c of cuts) this.branch([{ dword: d, compare: "atMost", value: u(2 ** c - 2 ** lo), ...(whole ? {} : { mask: table.mask }) }], starts.get(c - 1)!, at);
+      for (const b of bits) {
+        if (starts.has(b)) this.land(starts.get(b)!);
         this.push({ conds: [{ dword: d, compare: "atLeast", value: 1, mask: u(2 ** b) }], items: [{ act: { dword: { temp: out }, modifier: "add", value: u(2 ** (b - shift)) } }], at });
       }
       this.open().items.push({ fill: { temp: out, target } });
@@ -4369,6 +4378,12 @@ class Rewriter {
       }
       case "unary": case "cast": return { ...e, expr: this.flat(e.expr, pre, where) };
       case "randomInt": return { ...e, bound: this.flat(e.bound, pre, where) };
+      case "tableRead": {
+        if (!this.own || e.cell.special) return e;
+        const t = this.temp();
+        pre.push(...this.set(t, e, where));
+        return { kind: "var", id: t };
+      }
       // (A map of our own: a number of the game's into a variable of the emitter's own, read there.)
       case "read": {
         if (!this.own || !(gameRead(e.read) || this.facts(e.read))) return e;
@@ -4524,6 +4539,131 @@ class Rewriter {
     return [...pre, write(0, left), write(1, top), write(2, right), write(3, bottom), { kind: "action", record: FORGET_COUNTS, ...where }];
   }
 
+  /** Where a cell of the game's tables is (`TableCell`): a player's table at the current player is the owner's row. */
+  cellAddress(c: TableCell): number {
+    const index = c.player && c.index === CURRENT_PLAYER ? this.owner ?? 0 : c.index;
+    return c.base + (c.key ?? 0) + index * c.stride;
+  }
+
+  /**
+   * A cell of the game's tables read into `target` (a map of our own; the Python side's `table_read`): its bits of the
+   * dword it is in — a byte, a word, a dword or one bit — moved down, read where they are; a scaled field divided by
+   * its scale.
+   */
+  tableRead(target: string, c: TableCell, where: { at: At; label: string }): Stmt[] {
+    const addr = this.cellAddress(c), sh = 8 * (addr & 3);
+    const bits = c.width === "bit" ? u(2 ** (c.bit ?? 0)) : c.width === 4 ? U32 - 1 : 2 ** (8 * c.width) - 1;
+    const shift = sh + (c.width === "bit" ? c.bit ?? 0 : 0);
+    const at = { at: where.at, label: where.label };
+    const read = memoryRead(addr & ~3, c.width === 4 ? undefined : u(bits * 2 ** sh), where);
+    let value: NumExpr = shift ? ({ kind: "binary", op: ">>>", left: read, right: { kind: "const", value: shift }, ...at } as NumExpr) : read;
+    if ((c.scale ?? 1) > 1) {
+      const t = this.temp();
+      return [{ kind: "assign", target: t, value, ...where }, { kind: "assign", target, value: { kind: "binary", op: "/", left: { kind: "var", id: t }, right: { kind: "const", value: c.scale! }, ...at } as NumExpr, ...where }];
+    }
+    return [{ kind: "assign", target, value, ...where }];
+  }
+
+  /**
+   * A cell of the game's tables written (a map of our own; the Python side's `table_write`): a Set Deaths into the
+   * dword it is in — masked for a byte, a word or a bit — its amount a place of the value, which is times the field's
+   * scale (unless written so) and stopped at the field's top. A player's colour is its byte and the minimap's. A name
+   * known when built is its text's number among the map's strings. A top speed is the unit type's flingy's (`speed`).
+   * Null for a name made while the game runs.
+   */
+  tableWrite(s: Extract<Stmt, { kind: "tableWrite" }>, where: { at: At; label: string }): Stmt[] | null {
+    const c = s.cell;
+    const at = { at: where.at, label: where.label };
+    const pre: Stmt[] = [];
+    if (c.special === "name") {
+      const t = s.value as { kind: string; text?: string };
+      if (t.kind !== "text" || t.text === undefined) return null;
+      const w = this.cellWrite(this.cellAddress(c), 2, { kind: "const", value: 0 }, where) as Extract<Stmt, { kind: "action" }>;
+      return [{ ...w, text: { kind: "text", text: t.text } } as Stmt];
+    }
+    let value: NumExpr;
+    if (s.boolean && (s.value as BoolExpr).kind === "const") value = { kind: "const", value: (s.value as Extract<BoolExpr, { kind: "const" }>).value ? 1 : 0 };
+    else if (s.boolean) {
+      const t = this.temp();
+      pre.push({ kind: "assignBool", target: t, value: this.cond(s.value as BoolExpr, pre, where), ...where });
+      value = { kind: "var", id: t };
+    } else value = this.single(this.flat(s.value as NumExpr, pre, where), pre, where);
+    const scale = c.scale ?? 1;
+    if (scale > 1 && !s.scaled) value = this.single({ kind: "binary", op: "*", left: value, right: { kind: "const", value: scale }, ...at } as NumExpr, pre, where);
+    if (c.special === "speed") return this.speed(c.index, value, pre, where);
+    const width = c.width === "bit" ? "bit" : c.width;
+    if (width !== 4) value = this.single(this.top(value, width === "bit" ? 1 : 2 ** (8 * width) - 1, where), pre, where);
+    const addr = this.cellAddress(c);
+    const out = [...pre, this.cellWrite(addr, width, value, where, c.bit)];
+    if (c.special === "color") out.push(this.cellWrite(addr + MINIMAP_COLOR_OFFSET, 1, value, where));
+    return out;
+  }
+
+  /**
+   * A unit type's top speed (256 to a pixel a frame), as the Python side's `write_speed` and Magenta write it: the
+   * flingy the type moves as switched to table control and given the speed, an acceleration of about a seventeenth of
+   * it and the halting distance v² / 2a to match (each at least 1). The flingy is read where the game keeps it, so the
+   * writes into its tables name their dwords by a place of it: a dword's EPD the table's plus the flingy (plus half or a
+   * quarter of it for a word or a byte, whose place in its dword is the rest, chosen by a test).
+   */
+  speed(unit: number, value: NumExpr, pre: Stmt[], where: { at: At; label: string }): Stmt[] {
+    const at = { at: where.at, label: where.label };
+    const k = (n: number): NumExpr => ({ kind: "const", value: n });
+    const v = (id: string): NumExpr => ({ kind: "var", id });
+    const bin = (op: "+" | "*" | "/" | ">>>" | "&", left: NumExpr, right: NumExpr): NumExpr => ({ kind: "binary", op, left, right, ...at }) as NumExpr;
+    const f = this.temp();
+    const out: Stmt[] = [...pre, ...this.set(f, memoryRead((UNITS_FLINGY + unit) & ~3, u(0xff * 2 ** (8 * ((UNITS_FLINGY + unit) & 3))), where), where)];
+    // (The byte moved down where it is not the dword's first.)
+    const sh = 8 * ((UNITS_FLINGY + unit) & 3);
+    if (sh) out.splice(out.length - 1, 1, { kind: "assign", target: f, value: bin(">>>", memoryRead((UNITS_FLINGY + unit) & ~3, u(0xff * 2 ** sh), where), k(sh)), ...where });
+    let acceleration: NumExpr, halt: NumExpr;
+    if (value.kind === "const") {
+      // (Rounded as the Python side's `round` rounds: a half to the even one.)
+      const even = (x: number) => (Math.abs(x % 1) === 0.5 ? 2 * Math.round(x / 2) : Math.round(x));
+      const speed = value.value, a = Math.max(1, even(speed / 17));
+      acceleration = k(Math.min(a, 0xffff));
+      halt = k(Math.max(1, even((speed * speed) / (2 * a))));
+    } else {
+      const a = this.temp(), h = this.temp();
+      out.push({ kind: "assign", target: a, value: bin("/", value, k(17)), ...where });
+      out.push({ kind: "if", cond: { kind: "compare", op: "==", left: v(a), right: k(0), ...at }, then: [{ kind: "assign", target: a, value: k(1), ...where }], ...where } as Stmt);
+      out.push({ kind: "assign", target: h, value: bin("/", bin("*", value, value), bin("*", v(a), k(2))), ...where });
+      out.push({ kind: "if", cond: { kind: "compare", op: "==", left: v(h), right: k(0), ...at }, then: [{ kind: "assign", target: h, value: k(1), ...where }], ...where } as Stmt);
+      out.push({ kind: "assign", target: a, value: this.top(v(a), 0xffff, where), ...where });
+      acceleration = v(a);
+      halt = v(h);
+    }
+    // A Set Deaths of `amount` (masked by `mask`) into the dword whose EPD is `epd` plus the flingy's `part`.
+    const write = (base: number, part: NumExpr, amount: NumExpr, mask = 0): Stmt => {
+      const record: ActionRecord = { location: mask, text: 0, wav: 0, time: 0, player: u((base - DEATHS_TABLE) / 4), target: 0, unitId: 0, type: SET_DEATHS_ACTION, modifier: 7, flags: 0, padding: 0, mask: mask ? MASKED_MARK : 0 };
+      const variables: Extract<Stmt, { kind: "action" }>["variables"] = [{ field: "player", bits: 32, name: "flingy", expr: bin("+", part, k(u((base - DEATHS_TABLE) / 4))) }];
+      const l = linear(amount)!;
+      if (l.terms.length) variables.push({ field: "target", bits: 32, name: "flingy", expr: amount });
+      return { kind: "action", record: { ...record, player: 0, target: l.terms.length ? 0 : u(l.c) }, variables, ...where };
+    };
+    const quarter = this.temp(), half = this.temp(), byte = this.temp(), odd = this.temp();
+    out.push({ kind: "assign", target: quarter, value: bin(">>>", v(f), k(2)), ...where }, { kind: "assign", target: byte, value: bin("&", v(f), k(3)), ...where });
+    out.push({ kind: "assign", target: half, value: bin(">>>", v(f), k(1)), ...where }, { kind: "assign", target: odd, value: bin("&", v(f), k(1)), ...where });
+    // The flingy's control byte 0 (table control): its byte of the dword, as the rest of the flingy says.
+    for (let b = 0; b < 4; b++) out.push({ kind: "if", cond: { kind: "compare", op: "==", left: v(byte), right: k(b), ...at }, then: [write(FLINGY_CONTROL, v(quarter), k(0), u(0xff * 2 ** (8 * b)))], ...where } as Stmt);
+    out.push(write(FLINGY_SPEED, v(f), value), write(FLINGY_HALT, v(f), halt));
+    // The acceleration, a word: its half of the dword.
+    const accel = this.single(acceleration, out, where);
+    for (const h of [0, 1]) out.push({ kind: "if", cond: { kind: "compare", op: "==", left: v(odd), right: k(h), ...at }, then: [write(FLINGY_ACCELERATION, v(half), h ? this.single(bin("*", accel, k(65536)), out, where) : accel, h ? 0xffff0000 : 0xffff)], ...where } as Stmt);
+    return out;
+  }
+
+  /** A Set Deaths of `value` into the cell at `addr`: the dword, or (masked) its byte, word or bit. */
+  cellWrite(addr: number, width: 1 | 2 | 4 | "bit", value: NumExpr, where: { at: At; label: string }, bit = 0): Stmt {
+    const sh = 8 * (addr & 3) + (width === "bit" ? bit : 0);
+    const mask = width === 4 ? 0 : u((width === "bit" ? 1 : 2 ** (8 * width) - 1) * 2 ** sh);
+    const record: ActionRecord = { location: mask, text: 0, wav: 0, time: 0, player: u(((addr & ~3) - DEATHS_TABLE) / 4), target: 0, unitId: 0, type: SET_DEATHS_ACTION, modifier: 7, flags: 0, padding: 0, mask: mask ? MASKED_MARK : 0 };
+    const l = linear(value)!;
+    if (!l.terms.length) return { kind: "action", record: { ...record, target: u(u(l.c) * 2 ** sh) }, ...where };
+    const shifted: NumExpr = sh ? ({ kind: "binary", op: "*", left: value, right: { kind: "const", value: 2 ** sh }, at: where.at, label: where.label } as NumExpr) : value;
+    return { kind: "action", record, variables: [{ field: "target", bits: 32, name: "cell", expr: shifted }], ...where };
+  }
+
   /** A value as one variable times a constant plus a constant — what a field holds — or into a variable of the emitter's own first. */
   single(e: NumExpr, pre: Stmt[], where: { at: At; label: string }): NumExpr {
     if ((linear(e)?.terms.length ?? 2) <= 1) return e;
@@ -4586,6 +4726,7 @@ class Rewriter {
     const pre: Stmt[] = [];
     if (this.own && e.kind === "read" && gameRead(e.read)) return [assign(e)];
     if (this.own && e.kind === "read" && this.facts(e.read)) return this.fact(target, e.read, where);
+    if (this.own && e.kind === "tableRead" && !e.cell.special) return this.tableRead(target, e.cell, where);
     if (e.kind === "ternary") {
       const cond = this.cond(e.cond, pre, where);
       return [...pre, { kind: "if", cond, then: this.set(target, e.whenTrue, where), else: this.set(target, e.whenFalse, where), ...where }];
@@ -5003,6 +5144,10 @@ class Rewriter {
       }
       case "action": return this.own && (s.variables?.length || s.text?.kind === "template") ? this.action(s, where) : [s];
       case "centerLocation": return this.own ? this.stmts(this.centerLocation(s, where)) : [s];
+      case "tableWrite": {
+        const out = this.own ? this.tableWrite(s, where) : null;
+        return out ? this.stmts(out) : [s];
+      }
       default: return [s];
     }
   }

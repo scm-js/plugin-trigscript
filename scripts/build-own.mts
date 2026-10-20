@@ -65,6 +65,7 @@ for (const t of (graph as Graph).triggers) for (const a of t.acts) {
   if (a.display !== undefined) intern(a.display);
   // (An action of the game's: its text and its sound file's name.)
   for (const s of [a.strings?.text, a.strings?.wav]) if (s && "text" in s) intern(s.text);
+  if (a.amountText) intern(a.amountText.text);
 }
 // A string for each text printed with values in it, as long as its template and three bytes more: once the strings are
 // laid out, the template goes in it from its first dword's start on, and the string's offset is moved there (the

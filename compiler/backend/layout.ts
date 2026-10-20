@@ -294,7 +294,7 @@ export function layout(input: LayoutInput): OwnMap {
         w32(o + 8, str(a.strings?.wav, r.wav));
         w32(o + 12, r.time);
         w32(o + 16, r.player);
-        w32(o + 20, r.target);
+        w32(o + 20, a.amountText ? u(input.text(a.amountText.text) * 2 ** a.amountText.shift) : r.target);
         dv.setUint16(pad + o + 24 - base, r.unitId, true);
         for (const [at, b] of [[26, r.type], [27, r.modifier], [28, r.flags], [29, r.padding]]) dv.setUint8(pad + o + at - base, b);
         dv.setUint16(pad + o + 30 - base, r.mask, true);

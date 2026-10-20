@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a write of unit.permanentCloak
+// ledger: step 6, takes
 // The rest of a unit type's flags: cloak, burrow, regeneration, invincible, hero, mechanical, robotic.
 program(() => {
   stats(units.TerranMarine).permanentCloak = true;

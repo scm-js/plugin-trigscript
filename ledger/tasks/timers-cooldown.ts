@@ -1,4 +1,4 @@
-// ledger: step 6, refused: a read of memory.game.frame
+// ledger: step 6, takes
 // trigscript/timers: a `Cooldown`, something that can be done once every so many frames: `shot.use()` is true when it was ready.
 import { Cooldown } from "trigscript/timers";
 program(async () => {
