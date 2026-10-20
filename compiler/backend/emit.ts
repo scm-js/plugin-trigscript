@@ -18,9 +18,9 @@
  * falls through one trigger whose conditions failed (13.4 ns); a branch is a trigger that sets its own next pointer to
  * where it goes, put back by an action at the place it went to.
  */
-import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Program, Stmt, VarDecl, At } from "../ir";
+import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type VarDecl, type At } from "../ir";
 import { PACK_FROM } from "../eud";
-import { END, MOST_ACTS, MOST_CONDS, checkGraph, nextOf, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Trigger } from "./graph";
+import { END, MOST_ACTS, MOST_CONDS, STACK, checkGraph, nextOf, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
 export const GAME_TICK = 0x57f23c;
@@ -206,14 +206,21 @@ class Scope {
   taken = new Map<string, boolean | "walking">();
   /** What a `return` gives back where it stands: the kind of the function or inlined call around it, innermost last. */
   returning: string[] = [];
+  /** Whether a call that may come back into its own function is taken: the program then keeps a stack. */
+  recursion = false;
 
   /**
    * A call in a map of our own: its arguments written into the function's parameters, which are variables like any
    * other, and its result copied into the call's own; a called function's body looked at once, an inlined call's body
-   * where it is. Not a call that may come back into its own function (recursion: a stack of our own is to come).
+   * where it is. A call that may come back into the function it is in keeps that function's variables on the stack
+   * around it (`saves`): numbers and booleans, not an array's handle.
    */
   call(c: Call): boolean {
-    if (c.saves) return this.no(`a call of ${c.name ?? "a function"} that may come back into the function it is in`);
+    if (c.saves) {
+      if (c.saves.arrays.length) return this.no(`a growing array declared in ${c.saves.within}, which calls itself`);
+      for (const id of c.saves.vars) if (!this.ok(id)) return this.no(`the variable ${this.decls.get(id)?.name ?? id} of ${c.saves.within}, which calls itself`);
+      this.recursion = true;
+    }
     for (const p of c.params) {
       const d = p.decl;
       if (!this.ok(d.id)) return this.no(`the parameter ${d.name}, a ${d.kind}`);
@@ -236,10 +243,10 @@ class Scope {
     }
   }
 
-  /** A called function: its body, looked at once. */
+  /** A called function: its body, looked at once (a call of it inside that body is taken as the body is). */
   function(id: string): boolean {
     const f = this.functions.get(id), state = this.taken.get(id);
-    if (state === "walking" || f?.recursive) return this.no(`${f?.name ?? id}, which calls itself`);
+    if (state === "walking") return true;
     if (state !== undefined) return state || this.no(`a call of ${f?.name ?? id}`);
     const body = this.bodyOf?.(id);
     if (!f || !body) return this.no(`a call of ${id}`);
@@ -500,7 +507,8 @@ interface Shift { of: Linear; by: number; signed: boolean; top?: number }
 /** A store into a cell of one of the program's arrays: its index, and its value with the cells it reads first. */
 interface Store { array: ArrayDecl; index: Linear; reads: { id: string; table?: Table; shift?: Shift }[]; value: Linear }
 /** (`at` on a copy or a call: the statement it is for, when its trigger is another's.) */
-type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At };
+/** (`label`: every place of `target` set to where `to` is — where a function that calls itself goes back to.) */
+type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At } | { label: { target: string; to: string } };
 /** `keep`: an empty trigger that stays (a jump whose next pointer a place sets). */
 interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean }
 
@@ -515,6 +523,9 @@ interface Place { dword?: Dword; act?: WriteAct; scale: number; add: number; bas
  * bit, each 13 ns when the bit is clear and 23 when set, against about 200 ns for the Python side's read of a cell.
  */
 const TABLE_BITS = 6;
+
+/** The most cells a map of our own's stack has: a trigger of 72 bytes each (4.7 MB at this). */
+const STACK_CELLS_MOST = 65536;
 
 /** The most cells an array's EUDVArray has on the Python side (`VARRAY_MOST`, a cell every 18 EPD); past it, an EUDArray (a dword each). */
 const VARRAY_MOST = 2048;
@@ -593,6 +604,31 @@ class Emitter {
   depthBase = 0;
   /** The function or inlined call being laid out, innermost last: the variable its `return` writes, where it goes. */
   frames: { result?: { id: string; kind: string }; end: string }[] = [];
+  /**
+   * A map of our own whose functions call themselves: a stack each, by function — its id, the variable of the
+   * emitter's own that holds the cells in use (`sp`: what addresses the stack — a store's destination, a cell's
+   * fields, a jump into one — are places of it), the most cells a frame takes — and, for them all, how many frames
+   * are on the stacks (`depth`) and how deep they may go (the script's setting). A stack apart for each function
+   * keeps the places of its `sp` to its own calls: one for them all had a place at every call of every function, and
+   * every call wrote them all.
+   */
+  stacks = new Map<string, { id: string; sp: string; frame: number }>();
+  stackDepth = STACK_DEPTH;
+  /** The called function being laid out (`functions()`): a frame keeps where it goes back to. */
+  current?: string;
+  /** Of the function being laid out: what is still to be read after each of its calls that may come back. */
+  live = new Map<Call, Set<string>>();
+  get depth(): string { return `${this.key}.depth`; }
+
+  /** The stack of the function a frame is the function's. */
+  stackOf(fn: string): { id: string; sp: string; frame: number } {
+    let st = this.stacks.get(fn);
+    if (!st) {
+      this.stacks.set(fn, (st = { id: `${STACK}:${fn}`, sp: `${this.key}.sp.${fn}`, frame: 0 }));
+      this.own.add(st.sp);
+    }
+    return st;
+  }
 
   readonly key: string;
   readonly scope: Scope;
@@ -1083,10 +1119,7 @@ class Emitter {
    * `return` writes it (as the Python side has it).
    */
   call(c: Call): void {
-    for (const p of c.params) {
-      if (p.decl.kind === "boolean") this.setBool(p.decl.id, p.init as BoolExpr);
-      else this.write(p.decl.id, linear(p.init as NumExpr)!);
-    }
+    if (!c.saves) this.arguments(c);
     if (c.fn !== undefined) {
       const f = this.scope.functions.get(c.fn)!;
       let fn = this.fns.get(c.fn);
@@ -1096,9 +1129,17 @@ class Emitter {
       }
       fn.depth = Math.max(fn.depth, this.depthBase + this.loops.length);
       const back = this.label("back");
-      this.open().items.push({ act: { dword: nextOf(fn.exit), modifier: "set", value: { label: back } } });
+      // (A function that calls itself also keeps where it goes back to in a variable, which a frame keeps: the frame
+      // of a call that may come back is the function's the call is in.)
+      const ra = f.recursive ? this.returnOf(c.fn, fn.exit) : null;
+      const within = c.saves && this.current !== undefined ? this.fns.get(this.current) : undefined;
+      if (c.saves && !within) throw new Error(`emitter: a call of ${f.name} that keeps a frame, outside a function`);
+      const kept = c.saves ? this.keep(c, this.returnOf(this.current!, within!.exit)) : null;
+      if (kept) this.arguments(c);
+      this.open().items.push(ra ? { label: { target: ra, to: back } } : { act: { dword: nextOf(fn.exit), modifier: "set", value: { label: back } } });
       this.goto(fn.entry);
       this.land(back);
+      if (kept) this.bringBack(kept);
       if (c.result && f.result) {
         // What the function gives back goes into its cell alone, and each call reads it from there: as places, a
         // return would write every call's, and each of those actions would be a place of what the return reads —
@@ -1114,6 +1155,98 @@ class Emitter {
     this.stmts(c.body);
     this.frames.pop();
     this.land(end);
+  }
+
+  /**
+   * The arguments into the parameters, in order. A call that may come back into the function it is in sets that
+   * function's own parameters, which a later argument may read: then every argument goes into a variable of the
+   * emitter's own first.
+   */
+  arguments(c: Call): void {
+    const set = (id: string, kind: string, value: NumExpr | BoolExpr) => (kind === "boolean" ? this.setBool(id, value as BoolExpr) : this.write(id, linear(value as NumExpr)!));
+    const params = new Set(c.params.map((p) => p.decl.id));
+    const crossed = c.params.some((p, i) => i > 0 && [...readIn(p.init as NumExpr | BoolExpr)].some((id) => params.has(id) && c.params.findIndex((q) => q.decl.id === id) < i));
+    if (!crossed) {
+      for (const p of c.params) set(p.decl.id, p.decl.kind, p.init as NumExpr | BoolExpr);
+      return;
+    }
+    const temps = c.params.map((p) => {
+      const t = `${this.key}.arg${this.n++}`;
+      this.own.add(t);
+      set(t, p.decl.kind, p.init as NumExpr | BoolExpr);
+      return t;
+    });
+    c.params.forEach((p, i) => this.write(p.decl.id, { c: 0, terms: [{ id: temps[i], k: 1 }] }));
+  }
+
+  /**
+   * Where a function that calls itself goes back to, as a variable whose places are the next pointer of the trigger
+   * the function ends at and the number of each store that keeps it on the stack: every call of the function sets
+   * them all to where it goes on (a label), and after a call that may come back a cell of the stack puts them back.
+   */
+  returnOf(fn: string, exit: string): string {
+    const ra = `${fn}.(goes back to)`;
+    if (!this.places.has(ra)) this.placesOf(ra).push({ dword: nextOf(exit), scale: 1, add: 0 });
+    return ra;
+  }
+
+  /**
+   * Before a call that may come back into the function it is in (a map of our own): too deep, the program says so and
+   * stops for good, as the Python side's build does; otherwise the function's variables and where it goes back to
+   * onto the stack — one trigger, a Set Deaths each, its destination a place of `sp`, its number a place of what it
+   * keeps — and `sp` and `depth` on.
+   */
+  keep(c: Call, ra: string): { vars: string[]; stack: { id: string; sp: string } } {
+    // (Only what is read again before it is written: `saves` lists every variable of the function.)
+    const live = this.live.get(c);
+    if (!live) throw new Error(`emitter: a call of ${c.name ?? "a function"} that keeps a frame, not looked at`);
+    const vars = [...c.saves!.vars.filter((id) => live.has(id)), ra];
+    const stack = this.stackOf(this.current!);
+    stack.frame = Math.max(stack.frame, vars.length);
+    this.own.add(this.depth);
+    const room = this.label("room");
+    this.jump({ kind: "compare", op: "<", left: { kind: "var", id: this.depth }, right: { kind: "const", value: this.stackDepth }, unsigned: true, at: this.at!, label: "" }, true, room, this.at);
+    const line = this.at?.line ?? "?";
+    this.open().items.push(
+      { act: { dword: { game: 0 }, modifier: "set", value: 0, display: `\x06TrigScript: stack overflow in ${c.saves!.within}, line ${line} - ${this.stackDepth} calls deep. The program has stopped.` } },
+      { act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } },
+    );
+    this.goto(END);
+    this.land(room);
+    const store = this.push({ conds: [], items: [] });
+    vars.forEach((id, j) => {
+      const act: Act = { dword: { element: stack.id }, modifier: "set", value: 0 };
+      this.actPlaces.set(act, { dest: { id: stack.sp, scale: 18, add: 18 * j, base: stack.id }, value: { id, scale: 1, add: 0 } });
+      store.items.push({ act });
+    });
+    // (A trigger of its own after it: an action's place is its index in its trigger, which the writes of `sp` would
+    // push past 64.)
+    this.push({ conds: [], items: [] });
+    this.write(stack.sp, { c: vars.length, terms: [{ id: stack.sp, k: 1 }] }, false);
+    this.write(this.depth, { c: 1, terms: [{ id: this.depth, k: 1 }] }, false);
+    return { vars, stack };
+  }
+
+  /**
+   * After it: `sp` and `depth` back, and each cell of the frame into a scratch cell — a trigger that sets the scratch
+   * cell to 0, points the stack cell's action at it and its next pointer back here, and goes to it (its own next
+   * pointer a place of `sp`) — and the scratch cell into every place of the variable.
+   */
+  bringBack(kept: { vars: string[]; stack: { id: string; sp: string } }): void {
+    const { id: stack, sp } = kept.stack;
+    this.write(sp, { c: u(-kept.vars.length), terms: [{ id: sp, k: 1 }] }, false);
+    this.write(this.depth, { c: MAX, terms: [{ id: this.depth, k: 1 }] }, false);
+    kept.vars.forEach((id, j) => {
+      const temp = `${this.key}.st${this.n++}`, after = this.label("got"), jump = this.label("pop");
+      const point: Act = { dword: { element: stack }, modifier: "set", value: { epd: { temp } } };
+      const back: Act = { dword: { element: stack }, modifier: "set", value: { label: after } };
+      this.actPlaces.set(point, { dest: { id: sp, scale: 18, add: 18 * j - 1, base: stack } });
+      this.actPlaces.set(back, { dest: { id: sp, scale: 18, add: 18 * j - 86, base: stack } });
+      this.push({ label: jump, conds: [], items: [{ act: { dword: { temp }, modifier: "set", value: 0 } }, { act: point }, { act: back }], next: after, keep: true });
+      this.jumpReads.set(jump, { id: sp, scale: 72, add: 72 * j, base: `addr:${stack}` });
+      this.land(after);
+      this.open().items.push({ fill: { temp, target: id } });
+    });
   }
 
   /** A `return`: the value into the result of the function or inlined call around it, and on to its end. */
@@ -1135,6 +1268,8 @@ class Emitter {
       const f = this.scope.functions.get(id)!, body = this.scope.bodyOf!(id)!, fn = this.fns.get(id)!;
       const outer = this.depthBase;
       this.depthBase = fn.depth;
+      this.current = id;
+      this.live = f.recursive ? liveAfterCalls(body) : new Map();
       this.land(fn.entry);
       const result = f.result ? { id: f.result.decl.id, kind: f.result.kind } : undefined;
       this.frames.push({ ...(result ? { result } : {}), end: fn.exit });
@@ -1541,6 +1676,12 @@ class Emitter {
           for (const into of copied.has(it.bump.target) ? ps.slice(0, 1) : ps) acts().push({ into, modifier: "add", value: mul(into.scale, it.bump.add) } as WriteAct);
         }
         else if ("fill" in it) pieces.push({ fill: it.fill });
+        else if ("label" in it) {
+          for (const pl of this.placesOf(it.label.target)) {
+            if (!pl.dword || pl.scale !== 1 || pl.add !== 0) throw new Error(`emitter: a place of ${it.label.target} that is no dword of its own`);
+            acts().push({ dword: pl.dword, modifier: "set", value: { label: to(it.label.to) } });
+          }
+        }
         else if ("copy" in it) { if (copied.has(it.copy) && !routed.has(it.copy)) pieces.push({ copy: it.copy, ...(it.at ? { at: it.at } : {}) }); }
         else if ("call" in it) pieces.push({ call: it.call, ...(it.at ? { at: it.at } : {}) });
         else {
@@ -1683,6 +1824,90 @@ type CompareOp = "<" | "<=" | ">" | ">=" | "==" | "!=";
 const FLIP = { "<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!=" } as const;
 const INVERSE = { "<": ">=", "<=": ">", ">": "<=", ">=": "<", "==": "!=", "!=": "==" } as const;
 const notZero = (e: NumExpr): BoolExpr => ({ kind: "compare", op: "!=", left: e, right: { kind: "const", value: 0 }, at: { line: 0, column: 0 } as At, label: "" });
+
+/**
+ * What is still to be read after each call that may come back, in a function's body (a map of our own keeps no more
+ * of `saves` than that on the stack): the variables that some way on from the call reads before it writes them. Worked
+ * backwards over the statements — a loop until nothing more comes in, a `break` from what follows its loop, a
+ * `continue` from its loop's top, a `return` from its value and where it goes (an inlined call's, on after the call).
+ * A call is read from (its arguments) and writes its result, and its parameters unless it is one that may come back:
+ * that one takes back after it what it keeps, the parameters it sets among them. What the function it calls does to
+ * this one's variables does not count otherwise: a function's variables are its own.
+ */
+export function liveAfterCalls(body: Stmt[]): Map<Call, Set<string>> {
+  const out = new Map<Call, Set<string>>();
+  /** What is live where a `break`, a `continue` and a `return` go. */
+  type Flow = { brk: Set<string>; cont: Set<string>; ret: Set<string> };
+  const union = (...xs: Set<string>[]) => new Set(xs.flatMap((x) => [...x]));
+  const reads = (e: unknown) => (e && typeof e === "object" ? readIn(e as NumExpr) : new Set<string>());
+  const seq = (list: Stmt[], after: Set<string>, flow: Flow): Set<string> => {
+    let live = after;
+    for (let i = list.length - 1; i >= 0; i--) live = stmt(list[i], live, flow);
+    return live;
+  };
+  const loop = (test: BoolExpr | undefined, body: Stmt[], update: Stmt[], after: Set<string>, testFirst: boolean, flow: Flow): Set<string> => {
+    // The top of a turn: (the test, then) the body, the update, and round again — until nothing more comes in.
+    const tested = (top: Set<string>) => union(test ? reads(test) : new Set(), after, top);
+    let top = new Set<string>();
+    for (;;) {
+      const cont = seq(update, testFirst ? tested(top) : tested(top), { ...flow, brk: after, cont: after });
+      const next = seq(body, cont, { ...flow, brk: after, cont });
+      const grown = [...next].some((id) => !top.has(id));
+      top = union(top, next);
+      if (!grown) return testFirst ? tested(top) : top;
+    }
+  };
+  const stmt = (s: Stmt, after: Set<string>, flow: Flow): Set<string> => {
+    switch (s.kind) {
+      case "declare": case "assign": case "assignBool": {
+        const target = s.kind === "declare" ? s.decl.id : s.target;
+        const live = new Set(after);
+        live.delete(target);
+        return union(live, reads(s.kind === "declare" ? s.init : s.value));
+      }
+      case "store": return union(after, reads(s.index), reads(s.value));
+      case "call": {
+        const c = s.call;
+        // (Recorded on every pass of a loop around it: the last is the one that holds.)
+        if (c.saves) out.set(c, new Set(after));
+        let live = new Set(after);
+        if (c.result) live.delete(c.result.decl.id);
+        // An inlined call's body where it is: its `return` goes on to what follows the call.
+        if (c.fn === undefined) live = seq(c.body, live, { brk: live, cont: live, ret: live });
+        // (A call that may come back sets parameters that are this function's own, and takes back after it what it
+        // keeps: what was live after it is so before it too.)
+        if (!c.saves) for (const p of c.params) live.delete(p.decl.id);
+        return union(live, ...c.params.map((p) => reads(p.init)));
+      }
+      case "return": return union(reads(s.value), flow.ret);
+      case "if": return union(reads(s.cond), seq(s.then, after, flow), seq(s.else ?? [], after, flow));
+      case "block": return seq(s.body, after, flow);
+      case "while": return loop(s.cond, s.body, [], after, true, flow);
+      case "for": return loop(s.cond, s.body, s.update, after, true, flow);
+      case "do": return loop(s.cond, s.body, [], after, false, flow);
+      case "break": return flow.brk;
+      case "continue": return flow.cont;
+      case "switch": {
+        // Each case falls into the next; a break leaves the switch, a continue is the loop's around it. Any case may
+        // be where it starts, or none.
+        const entries: Set<string>[] = [];
+        let live = after;
+        for (let i = s.cases.length - 1; i >= 0; i--) entries.push((live = seq(s.cases[i].body, live, { ...flow, brk: after })));
+        return union(reads(s.value), after, ...entries);
+      }
+      case "unrolled": {
+        let live = after;
+        for (let i = s.iterations.length - 1; i >= 0; i--) live = seq(s.iterations[i], live, { ...flow, brk: after, cont: live });
+        return live;
+      }
+      // (Anything else a map of our own takes reads what it reads and writes nothing of a function's own.)
+      default: return union(after, reads(s));
+    }
+  };
+  const none = new Set<string>();
+  seq(body, none, { brk: none, cont: none, ret: none });
+  return out;
+}
 
 /**
  * Every variable a statement may write: what it sets or declares, a call's result and parameters, and what the
@@ -2163,7 +2388,7 @@ export const emitterCounts = { hoisted: 0, reciprocals: 0, jumps: 0 };
  * call of a function of the Python side's, and nothing read that the body did not write first (there is no one to
  * copy it in; a copy within the body is made of triggers by the layout). Returns the graph, or why it cannot be.
  */
-export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>()): Graph | string {
+export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string, functions = new Map<string, FuncDecl>(), arrays = new Map<string, ArrayDecl>(), stackDepth = STACK_DEPTH): Graph | string {
   // (Every statement must be the emitter's here, so a rewriting it would not take is refused whichever way it goes:
   // no trial is needed.)
   const take = () => true;
@@ -2202,12 +2427,28 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   const make = (forced: Set<string>): { e: Emitter; g: Graph | string } => {
     const e = new Emitter(key, scope);
     e.forced = forced;
+    e.stackDepth = stackDepth;
+    // Stacks: each `sp` and `depth` set at the start, which sets every place of each `sp` — the fields of its stack it
+    // addresses. (Which stacks there are is known once the functions are laid out: the writes go into this trigger then.)
+    const start = scope.recursion ? e.push({ conds: [], items: [] }) : null;
     e.stmt(s);
     // At its end the program wakes no more.
     e.open().items.push({ act: { dword: { data: WAKE_TICK }, modifier: "set", value: U32 - 1 } });
     e.goto(END);
     e.functions();
-    return { e, g: e.graph([...scope.read].filter((id) => !scope.declared.has(id) && !isTemp(id))) };
+    if (start) {
+      const writes: Write[] = [...[...e.stacks.values()].map((st) => st.sp), ...(e.stacks.size ? [e.depth] : [])].map((target) => ({ target, value: { c: 0, terms: [] } }));
+      start.items.unshift(...writes.map((write) => ({ write })));
+      for (const w of writes) e.writes.set(w.target, [...(e.writes.get(w.target) ?? []), w]);
+    }
+    const g = e.graph([...scope.read].filter((id) => !scope.declared.has(id) && !isTemp(id)));
+    if (typeof g !== "string" && e.stacks.size) {
+      const most = Math.max(...[...e.stacks.values()].map((st) => st.frame)), cells = [...e.stacks.values()].reduce((n, st) => n + st.frame * e.stackDepth, 0);
+      if (most > MOST_ACTS) return { e, g: `a function that calls itself and keeps ${most - 1} variables around a call (${MOST_ACTS - 1} at the most)` };
+      if (cells > STACK_CELLS_MOST) return { e, g: `stacks of ${cells} cells (${e.stackDepth} calls deep, ${cells / e.stackDepth} cells for a call of each function that calls itself), past the ${STACK_CELLS_MOST} a map of our own lays out: lower the recursion depth in the script's settings` };
+      g.stacks = [...e.stacks.values()].map((st) => ({ id: st.id, cells: st.frame * e.stackDepth }));
+    }
+    return { e, g };
   };
   const g = make(new Set()).g;
   if (typeof g === "string") return g;

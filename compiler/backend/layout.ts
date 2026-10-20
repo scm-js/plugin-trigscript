@@ -15,7 +15,7 @@
  * flags (4: preserved) and 28 bytes of players. A condition or an action names a dword by its EPD (its distance from
  * the deaths table in dwords) in its player field; a mask goes in its first field, with 'SC' in its last.
  */
-import { END, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
+import { END, isStack, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { GAME_TICK, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 
 export const STRINGS = 0x191943c8;
@@ -128,15 +128,27 @@ export function layout(input: LayoutInput): OwnMap {
   ];
   for (const t of graph.triggers) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
   const at = new Map<string, number>(triggers.map((t, i) => [t.label, base + NODE * i]));
-  // The cell triggers of the variables routed, after the triggers: eudplib's EUDVariable, 72 bytes each — a trigger
-  // whose conditions end at once, its action at +328 (destination +344, number +348), the next action's kind 0. They
-  // overlap: what one trigger reads of its node is bytes the others never read (eudplib lays its variables out so).
+  // The cell triggers of the variables routed, after the triggers, and then the stack's: eudplib's EUDVariable, 72
+  // bytes each — a trigger whose conditions end at once, its action at +328 (destination +344, number +348), the next
+  // action's kind 0. They overlap: what one trigger reads of its node is bytes the others never read (eudplib lays its
+  // variables out so).
   const cellBase = base + NODE * triggers.length;
   const routes = [...routed];
   routes.forEach((id, k) => at.set(ROUTE_CELL + id, cellBase + 72 * k));
   const routeOf = (id: string) => at.get(ROUTE_CELL + id);
+  const stackBase = new Map<string, number>();
+  let cellTriggers = routes.length;
+  for (const st of graph.stacks ?? []) {
+    stackBase.set(st.id, cellBase + 72 * cellTriggers);
+    cellTriggers += st.cells;
+  }
+  const stackOf = (id: string) => {
+    const b = stackBase.get(id);
+    if (b === undefined) throw new Error(`no stack ${id}`);
+    return b;
+  };
   // The data after them: the variables' cells, the graph's dwords, the lists it reads (each cell `stride` EPD apart).
-  let next = routes.length ? cellBase + 72 * routes.length + NODE : cellBase;
+  let next = cellTriggers ? cellBase + 72 * cellTriggers + NODE : cellBase;
   const cells = new Map<string, number>();
   const cell = (name: string) => {
     if (!cells.has(name)) { cells.set(name, next); next += 4; }
@@ -169,6 +181,9 @@ export function layout(input: LayoutInput): OwnMap {
     if ("data" in d && d.data === WAKE_AT) return at.get(wake)! + 328 + 20;
     if ("data" in d && d.data === WAKE_NEXT) return at.get(wake)! + 4;
     if ("data" in d) return cell(`data:${d.data}`);
+    // (A scratch cell of the graph's is the cell of a variable named after it, as the copy from it says.)
+    if ("temp" in d) return address({ var: `@${d.temp}` });
+    if ("element" in d && isStack(d.element)) return stackOf(d.element) + 348;
     if ("element" in d) {
       const l = lists.get(d.element);
       if (l === undefined) throw new Error(`the graph reads ${d.element} without saying so`);
@@ -185,7 +200,9 @@ export function layout(input: LayoutInput): OwnMap {
       if (t === undefined) throw new Error(`no trigger ${v.label}`);
       return t;
     }
+    if ("addrOf" in v && isStack(v.addrOf)) return u(stackOf(v.addrOf) + v.plus);
     if ("addrOf" in v) throw new Error(`a jump into ${v.addrOf}'s cells, which a map of our own does not lay out`);
+    if (isStack(v.epdOf)) return u(epd(stackOf(v.epdOf) + 348) + v.plus);
     const l = lists.get(v.epdOf);
     if (l === undefined) throw new Error(`no list ${v.epdOf}`);
     return u(epd(l) + v.plus);
@@ -234,13 +251,13 @@ export function layout(input: LayoutInput): OwnMap {
   });
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
   // Each cell trigger: Set Deaths, add (its destination and next pointer written by every routing), preserved.
-  routes.forEach((_, k) => {
+  for (let k = 0; k < cellTriggers; k++) {
     const c = cellBase + 72 * k;
     dv.setUint8(pad + c + 328 + 26 - base, 45);
     dv.setUint8(pad + c + 328 + 27 - base, MODIFIER.add);
     dv.setUint8(pad + c + 328 + 28 - base, 20);
     w32(c + 2376, 4);
-  });
+  }
   const vars = new Map<string, number>([...cells].filter(([k]) => k.startsWith("var:")).map(([k, a]) => [k.slice(4), a]));
   routes.forEach((id, k) => vars.set(id, cellBase + 72 * k + 348));
   return { payload: out, trig: startUp(owner, base), address: base, vars };
