@@ -15,7 +15,7 @@
  * flags (4: preserved) and 28 bytes of players. A condition or an action names a dword by its EPD (its distance from
  * the deaths table in dwords) in its player field; a mask goes in its first field, with 'SC' in its last.
  */
-import { END, isStack, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
+import { END, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { GAME_TICK, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 
 export const STRINGS = 0x191943c8;
@@ -43,6 +43,8 @@ export interface OwnMap {
   vars: Map<string, number>;
   /** Where each printed text's template is: the string the map gives it is to start there. */
   templates: Map<string, number>;
+  /** Where each region of cell triggers (an array, a stack) starts: its first cell's trigger. */
+  regions: Map<string, number>;
 }
 
 export interface LayoutInput {
@@ -149,17 +151,13 @@ export function layout(input: LayoutInput): OwnMap {
   const routes = [...routed];
   routes.forEach((id, k) => at.set(ROUTE_CELL + id, cellBase + 72 * k));
   const routeOf = (id: string) => at.get(ROUTE_CELL + id);
-  const stackBase = new Map<string, number>();
+  const regions = new Map<string, number>();
   let cellTriggers = routes.length;
-  for (const st of graph.stacks ?? []) {
-    stackBase.set(st.id, cellBase + 72 * cellTriggers);
-    cellTriggers += st.cells;
+  for (const r of graph.cells ?? []) {
+    regions.set(r.id, cellBase + 72 * cellTriggers);
+    cellTriggers += r.cells;
   }
-  const stackOf = (id: string) => {
-    const b = stackBase.get(id);
-    if (b === undefined) throw new Error(`no stack ${id}`);
-    return b;
-  };
+  const regionOf = (id: string) => regions.get(id);
   // The data after them: the variables' cells, the graph's dwords, the lists it reads (each cell `stride` EPD apart).
   let next = cellTriggers ? cellBase + 72 * cellTriggers + NODE : cellBase;
   const cells = new Map<string, number>();
@@ -203,7 +201,12 @@ export function layout(input: LayoutInput): OwnMap {
     if ("data" in d) return cell(`data:${d.data}`);
     // (A scratch cell of the graph's is the cell of a variable named after it, as the copy from it says.)
     if ("temp" in d) return address({ var: `@${d.temp}` });
-    if ("element" in d && isStack(d.element)) return stackOf(d.element) + 348;
+    if ("element" in d && regionOf(d.element) !== undefined) return regionOf(d.element)! + 348;
+    if ("cell" in d) {
+      const r = regionOf(d.cell);
+      if (r === undefined) throw new Error(`no region ${d.cell}`);
+      return r + 72 * d.index + 348;
+    }
     if ("template" in d) {
       const t = templates.get(d.template);
       if (t === undefined) throw new Error(`no template ${d.template}`);
@@ -225,9 +228,9 @@ export function layout(input: LayoutInput): OwnMap {
       if (t === undefined) throw new Error(`no trigger ${v.label}`);
       return t;
     }
-    if ("addrOf" in v && isStack(v.addrOf)) return u(stackOf(v.addrOf) + v.plus);
+    if ("addrOf" in v && regionOf(v.addrOf) !== undefined) return u(regionOf(v.addrOf)! + v.plus);
     if ("addrOf" in v) throw new Error(`a jump into ${v.addrOf}'s cells, which a map of our own does not lay out`);
-    if (isStack(v.epdOf)) return u(epd(stackOf(v.epdOf) + 348) + v.plus);
+    if (regionOf(v.epdOf) !== undefined) return u(epd(regionOf(v.epdOf)! + 348) + v.plus);
     const l = lists.get(v.epdOf);
     if (l === undefined) throw new Error(`no list ${v.epdOf}`);
     return u(epd(l) + v.plus);
@@ -277,6 +280,8 @@ export function layout(input: LayoutInput): OwnMap {
   });
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
   for (const t of graph.templates ?? []) if (!input.templateAt?.has(t.id)) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));
+  // What a region's cells hold when the map starts.
+  for (const r of graph.cells ?? []) r.values?.forEach((v, i) => w32(regions.get(r.id)! + 72 * i + 348, v));
   // Each cell trigger: Set Deaths, add (its destination and next pointer written by every routing), preserved.
   for (let k = 0; k < cellTriggers; k++) {
     const c = cellBase + 72 * k;
@@ -287,7 +292,7 @@ export function layout(input: LayoutInput): OwnMap {
   }
   const vars = new Map<string, number>([...cells].filter(([k]) => k.startsWith("var:")).map(([k, a]) => [k.slice(4), a]));
   routes.forEach((id, k) => vars.set(id, cellBase + 72 * k + 348));
-  return { payload: out, trig: startUp(owner, base), address: base, vars, templates };
+  return { payload: out, trig: startUp(owner, base), address: base, vars, templates, regions };
 }
 
 /**
