@@ -1,4 +1,4 @@
-// ledger: step 4, refused: & of two values
+// ledger: step 4, takes
 // The bits two values that change while the game runs both have: `a & b`.
 program(() => {
   let a = 0;

@@ -188,8 +188,8 @@ export function layout(input: LayoutInput): OwnMap {
     if (t === undefined) throw new Error(`no trigger ${d.at}`);
     const f = d.field;
     if (f === "next") return t + 4;
-    if ("cond" in f) return t + 8 + 20 * f.cond + (f.part === "player" ? 4 : 8);
-    return t + 328 + 32 * f.act + { value: 20, dest: 16, modifier: 24 }[f.part];
+    if ("cond" in f) return t + 8 + 20 * f.cond + (f.part === "player" ? 4 : f.part === "mask" ? 0 : 8);
+    return t + 328 + 32 * f.act + { value: 20, dest: 16, modifier: 24, mask: 0 }[f.part];
   };
   const address = (d: Dword): number => {
     if ("game" in d) return d.game;

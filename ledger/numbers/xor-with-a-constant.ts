@@ -1,4 +1,4 @@
-// ledger: step 4, refused: ^ with a constant, as a value
+// ledger: step 4, takes
 // A value with bits flipped, as a value: `a ^ 5`.
 program(() => {
   let a = 0;

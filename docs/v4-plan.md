@@ -3518,7 +3518,8 @@ found what they left out; where a step moved, its old number is given.
 1. Calls ✓ (#35), and recursion ✓ (#37).
 2. Texts with numbers in them ✓ (#38). Texts as values moved to 8.
 3. Arrays of a fixed length ✓ (#39). Arrays that grow moved to 9.
-4. **Numbers.** (Part 1 ✓: products, quotients and remainders — "Products and quotients on our own backend".)
+4. **Numbers.** (Part 1 ✓: products, quotients and remainders — "Products and quotients on our own backend"; part 2 ✓:
+   bits and shifts by a value — "Bits and shifts on our own backend".)
    A product, a quotient and a remainder of two values and by a constant, signed and `u32`; `&` `|` `^`
    as values; a shift by a value; `trunc`. Fixed point: `fmul`, `fdiv`, `c / x` (the emitter's reciprocal exists),
    `sqrt`, `sin`, `cos`, `atan2` (`tan` and `hypot` come down to these). `u8` and `u16` variables (saturating
@@ -3901,7 +3902,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 1 Calls and recursion | 33 of 33 |
 | 2 Texts with numbers | 6 of 6 |
 | 3 Arrays of a fixed length | 53 of 54 |
-| 4 Numbers | 17 of 59 |
+| 4 Numbers | 27 of 59 |
 | 5 The game's conditions and actions | 0 of 193 |
 | 6 The game's memory | 0 of 49 |
 | 7 Programs, owners and players | 1 of 22 |
@@ -3966,8 +3967,8 @@ the ledger is the list it can be written again from at 4.0.
   the game is 3.
 - A map of our own: `displayText("known text")` is refused where `print("known text")` is taken (step 5's first);
   JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
-  `a >> 0` is refused where `a >> 1` to `a >> 31` are taken; `Math.tan` and `Math.hypot` are refused as what they
-  become (`Math.sin`, a product).
+  `Math.tan` and `Math.hypot` are refused as what they become (`Math.sin`, `Math.sqrt`). (`a >> 0`, refused where
+  `a >> 1` to `a >> 31` were taken, is the number itself since step 4's part 2.)
 
 ### Products and quotients on our own backend (2026-10-20)
 
@@ -4005,11 +4006,13 @@ the value's range allows (`Copy.top`, now in a map of our own's layout too).
 
 | `probes/own-numbers.ts` (lifted game, Remastered's weights) | Own | eudplib |
 | --- | ---: | ---: |
-| 200 products of numbers the ranges cannot bound (frame 4) | **0.700 ms** | 0.943 ms |
-| 200 quotients and remainders by constants (frame 6) | 0.572 ms | 0.730 ms |
-| 200 quotients of two values (frame 8) | 0.848 ms | 1.175 ms |
-| 200 remainders of two values (frame 10) | 0.750 ms | 1.148 ms |
+| 200 products of numbers the ranges cannot bound (frame 4) | **0.677 ms** | 0.943 ms |
+| 200 quotients and remainders by constants (frame 6) | 0.526 ms | 0.730 ms |
+| 200 quotients of two values (frame 8) | 0.825 ms | 1.175 ms |
+| 200 remainders of two values (frame 10) | 0.727 ms | 1.148 ms |
 | 200 products and quotients of small numbers (frame 12) | **0.514 ms** | 0.764 ms |
+
+(After part 2's fill into the one field that reads a value; before it, 0.700, 0.572, 0.848, 0.750 and 0.514.)
 
 The first versions were slower than eudplib's: 2.08 ms for the products, which had every operand's multiples as
 places — a variable set from itself had them filled a bit at a time on every write (6 µs a turn). The table is after
@@ -4025,6 +4028,45 @@ Next for these (before they are as far past eudplib as arrays are): a divisor wh
 into a chain by each constant (about 240 ns where the doubling takes 900, at a chain's size each); a variable set from
 itself times a constant (the LCG above) worked out by a product into a scratch value instead of copied; a shared routine
 when a program has many divisions (each written out is up to 75 triggers, 180 KB of the payload).
+
+### Bits and shifts on our own backend (2026-10-20)
+
+Step 4, part 2: `&` `|` `^` as values, with a constant and of two values, and shifts by a value (`Emitter.bits`,
+`shiftLeft`, `shiftRight`).
+
+- **Bits are masked writes.** The game works a masked Set Deaths on the bits under its mask alone — of the dword and of
+  the number both, so an addition's carry past the mask is lost (scm-sim's `maskedWrite`; the tests' interpreters
+  applied the mask after the addition and now do as the game does). So the left side is copied into a scratch cell
+  and: `& k` sets k's clear bits to 0, `| k` its set bits to 1, `^ k` adds k to the even bits and to the odd bits apart
+  (each sum's bit is the two bits' exclusive or) — two actions. Of two values the same: the right side is the number of
+  `^`'s two additions, or the **mask** of `&`'s and `|`'s one write — an action's mask is a field like any number
+  (`{ act, part: "mask" }`, the record's first dword), set from the right side as the routine starts, and for `&` its
+  bits flipped by two masked additions of all ones. This is eudplib's own way for two variables (its `&` is this write,
+  its `^` these additions), without the calls; a trigger a bit, built first, was 2.6× slower than eudplib.
+- **A shift left by a value** is the number in a doubling trigger walked n times: runs of 16, 8, 4, 2 and 1 empty
+  triggers, one for each bit of n, the doubling trigger going back into its run after each (about 37 ns a doubling).
+  eudplib's is a loop of routed additions of the number to itself.
+- **A shift right by a value** is Horner's way over the bits that stay: the answer doubling in a trigger that also
+  counts, a trigger a bit from the top adding it when set, and one shared test ending the walk when the count reaches
+  31 — 32 − n bits, about 69 ns each. `>>` of a number below zero works on its bits flipped and flips the answer as it
+  comes out. eudplib's right shift by a value is 2^n by 32 comparisons and a whole division.
+- **By 32 or more**, as TrigScript has it (the README's operators row; JavaScript shifts by the remainder): `<<` and
+  `>>>` leave nothing, `>>` the sign — tested unless the ranges know the count below 32. The emitter's existing `x << k`
+  by a constant took the count's remainder, and a count of 0 (`a >> 0`, refused before) is the number itself.
+- **A value filled into the one field that reads it.** A product's, a quotient's or a mask's answer read by one write
+  only (`sum += x & 0xff`) is worked in that write's number where it is, not copied there (56 ns): a variable of the
+  emitter's own nothing reads at its cell has its scratch cell folded into its one other place.
+
+| `probes/own-bits.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 200 each of `& 0xff`, `\| 0x100`, `^ 0x5555` (frame 4) | **0.063 ms** | 0.146 ms |
+| 200 each of `&`, `\|`, `^` of two values (frame 6) | **0.086 ms** | 0.217 ms |
+| 200 each of `1 << n`, `x >> n`, `x >>> n` (frame 8) | **0.834 ms** | 2.399 ms |
+
+Checked: random programs with `&` `|` `^` and shifts by values and constants (counts of 32 and more, below zero), at
+the edges, with and without the ranges a run shows — as written, as graphs and from the laid-out bytes (2,995 of 3,000
+taken: a shift by a constant of what the emitter does not take yet is refused); the ledger's scripts against the
+simulator; `probes/own-bits.ts` built both ways, its lines the same at the same frames, every one ok.
 
 ## Part C — the game, pushed
 

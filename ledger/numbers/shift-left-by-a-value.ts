@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a shift by a value (<<)
+// ledger: step 4, takes
 // A value shifted left by a number that changes while the game runs: `1 << n`.
 program(() => {
   let n = 0;

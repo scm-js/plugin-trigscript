@@ -1,4 +1,4 @@
-// ledger: step 4, refused: | with a constant, as a value
+// ledger: step 4, takes
 // A value with bits set, as a value: `a | 1`.
 program(() => {
   let a = 0;

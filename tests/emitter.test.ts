@@ -62,10 +62,19 @@ function num(e: NumExpr, env: Env): number {
       if (e.op === "*") { const r = u(Math.imul(a, b)); see(e, r); return r; }
       if (e.op === "+") return u(a + b);
       if (e.op === "-") return u(a - b);
-      if (e.op === "<<") return u(a << (b & 31));
-      if (e.op === ">>") return u((a | 0) >> (b & 31));
-      if (e.op === ">>>") return u(a >>> (b & 31));
-      if (e.op === "&") return u(a & b);
+      if (e.op === "<<" || e.op === ">>" || e.op === ">>>") {
+        see(e.left, a); see(e.right, b);
+        // (A count of 32 or more, read from 0 up, leaves nothing — or the sign, for `>>` — as TrigScript has it.)
+        const r = b >= 32 ? (e.op === ">>" && (a | 0) < 0 ? U32 - 1 : 0) : u(e.op === "<<" ? a << b : e.op === ">>" ? (a | 0) >> b : a >>> b);
+        see(e, r);
+        return r;
+      }
+      if (e.op === "&" || e.op === "|" || e.op === "^") {
+        see(e.left, a); see(e.right, b);
+        const r = u(e.op === "&" ? a & b : e.op === "|" ? a | b : a ^ b);
+        see(e, r);
+        return r;
+      }
       throw new Error(e.op);
     }
     default: throw new Error(e.kind);
@@ -259,7 +268,7 @@ function key(d: Dword): string {
   if ("template" in d) return `template:${d.template}:${d.word}`;
   if ("cell" in d) return `epd:${TABLE_EPD(d.cell) + 18 * d.index}`;
   const f = d.field;
-  return f === "next" ? `${d.at}|next` : "cond" in f ? `${d.at}|cond:${f.cond}${f.part === "player" ? ":player" : ""}` : `${d.at}|act:${f.act}:${f.part}`;
+  return f === "next" ? `${d.at}|next` : "cond" in f ? `${d.at}|cond:${f.cond}${f.part === "player" ? ":player" : f.part === "mask" ? ":mask" : ""}` : `${d.at}|act:${f.act}:${f.part}`;
 }
 
 function exec(g: Graph, env: Env): Env {
@@ -299,9 +308,11 @@ function exec(g: Graph, env: Env): Env {
     mem.set(`${t.label}|next`, t.next ?? g.triggers[i + 1]?.label ?? END);
     t.conds.forEach((c, k) => {
       mem.set(`${t.label}|cond:${k}`, c.value);
+      if (c.mask !== undefined) mem.set(`${t.label}|cond:${k}:mask`, c.mask);
       if ("element" in c.dword) mem.set(`${t.label}|cond:${k}:player`, TABLE_EPD(c.dword.element));
     });
     t.acts.forEach((a, k) => {
+      if (a.mask !== undefined) mem.set(`${t.label}|act:${k}:mask`, a.mask);
       mem.set(`${t.label}|act:${k}:value`, typeof a.value === "object" && "label" in a.value ? a.value.label : typeof a.value === "object" && "epd" in a.value ? `@${key(a.value.epd)}` : numOf(a.value));
       // (A store's destination: an EPD its index's writes keep.)
       if ("element" in a.dword) mem.set(`${t.label}|act:${k}:dest`, TABLE_EPD(a.dword.element));
@@ -383,7 +394,8 @@ function exec(g: Graph, env: Env): Env {
         at = `epd:${read(ks.conds[k].player)}`;
         if (!mem.has(at)) throw new Error(`a read outside the list: ${at}`);
       } else at = ks.conds[k].at;
-      const x = c.mask === undefined ? (read(at) as number) : Number(BigInt(read(at) as number) & BigInt(c.mask)), y = read(ks.conds[k].value) as number;
+      // (The mask as its field holds it now: a routine may write it.)
+      const x = c.mask === undefined ? (read(at) as number) : Number(BigInt(read(at) as number) & BigInt(read(`${t.label}|cond:${k}:mask`) as number)), y = read(ks.conds[k].value) as number;
       return c.compare === "atLeast" ? x >= y : c.compare === "atMost" ? x <= y : x === y;
     });
     if (holds) t.acts.forEach((a, k) => {
@@ -406,7 +418,14 @@ function exec(g: Graph, env: Env): Env {
         mem.set(d, g.triggers[i].label);
         return;
       }
-      if (a.mask !== undefined && modifier === "set") { mem.set(d, Number((BigInt(old) & ~BigInt(a.mask) & 0xffffffffn) | (BigInt(v) & BigInt(a.mask)))); return; }
+      if (a.mask !== undefined) {
+        // As the game has a masked write: the dword's bits and the number's under the mask worked, the rest kept — so
+        // an addition's carry past the mask is lost.
+        const m = read(`${t.label}|act:${k}:mask`) as number, f = Number(BigInt(old) & BigInt(m)), w = Number(BigInt(v) & BigInt(m));
+        const next = modifier === "set" ? w : modifier === "add" ? u(f + w) : Math.max(0, f - w);
+        mem.set(d, Number((BigInt(old) & ~BigInt(m) & 0xffffffffn) | (BigInt(next) & BigInt(m))));
+        return;
+      }
       mem.set(d, modifier === "set" ? v : modifier === "add" ? u(old + v) : Math.max(0, old - v));
     });
     pc = read(ks.next) as string | number;
@@ -648,7 +667,7 @@ function observeRanges(body: Stmt[], arrays: Map<string, ArrayDecl>): void {
       if (r && a && r[0] >= 0 && r[1] < a.length) { index.range = r; RANGED.n++; }
     }
     // The sides of a product or a quotient (of a reading from 0 up, only a range at or above zero, as ranges.ts gives).
-    if (o.kind === "binary" && (o.op === "*" || o.op === "/" || o.op === "%")) {
+    if (o.kind === "binary" && (o.op === "*" || o.op === "/" || o.op === "%" || o.op === "&" || o.op === "|" || o.op === "^" || ((o.op === "<<" || o.op === ">>" || o.op === ">>>") && (o.right as NumExpr).kind !== "const"))) {
       // (And the answer's, which a copy of it into a field holding a multiple goes over only the bits of.)
       const r = SEEN.get(o as unknown as NumExpr);
       if (r && (!o.unsigned || r[0] >= 0)) (o as { range?: [number, number] }).range = r;
@@ -718,9 +737,9 @@ function programWithCalls(seed: number, recursion = false) {
     if (r.next() < 0.08) return { kind: "element", array: nums.id, index: index(sc, nums), at };
     // A product of two values, a quotient or a remainder (step 4): signed or read from 0 up, by a value or a constant.
     if (r.next() < 0.1) {
-      const op = r.pick(["*", "/", "%"] as const);
-      const side = (): NumExpr => (r.next() < 0.3 ? k(r.pick([...EDGES, 3, 10, 16, -5, 255, 65536])) : depth < 2 && r.next() < 0.2 ? value(sc, depth + 1) : v(r.pick(sc.nums)));
-      return { kind: "binary", op, left: side(), right: side(), ...(op !== "*" && r.next() < 0.35 ? { unsigned: true } : {}), at, label: "" };
+      const op = r.pick(["*", "/", "%", "&", "|", "^", "<<", ">>", ">>>"] as const);
+      const side = (): NumExpr => (r.next() < 0.3 ? k(r.pick([...EDGES, 3, 10, 16, -5, 255, 65536, 0xf0f0, -256])) : depth < 2 && r.next() < 0.2 ? value(sc, depth + 1) : v(r.pick(sc.nums)));
+      return { kind: "binary", op, left: side(), right: side(), ...((op === "/" || op === "%") && r.next() < 0.35 ? { unsigned: true } : {}), at, label: "" };
     }
     const x = r.int(14);
     const fs = callable(sc, "number");
@@ -993,8 +1012,14 @@ function runOwn(g: Graph): Env {
       }
       if (kind !== 45) throw new Error(`action kind ${kind}`);
       const dest = at(rd(o + 16)), value = rd(o + 20), modifier = byte(o + 27), old = rd(dest);
-      const v = modifier === 7 ? value : modifier === 8 ? u(old + value) : Math.max(0, old - value);
-      wr(dest, dv.getUint16(o + 30 - base, true) === 0x4353 ? Number((BigInt(old) & ~BigInt(rd(o)) & 0xffffffffn) | (BigInt(v) & BigInt(rd(o)))) : v);
+      if (dv.getUint16(o + 30 - base, true) === 0x4353) {
+        // (A masked write as the game has it: the bits under the mask of both worked, a carry past them lost.)
+        const m = rd(o), f = (old & m) >>> 0, w = (value & m) >>> 0;
+        const next = modifier === 7 ? w : modifier === 8 ? u(f + w) : Math.max(0, f - w);
+        wr(dest, ((old & ~m) | (next & m)) >>> 0);
+        continue;
+      }
+      wr(dest, modifier === 7 ? value : modifier === 8 ? u(old + value) : Math.max(0, old - value));
     }
     pc = rd(pc + 4);
   }

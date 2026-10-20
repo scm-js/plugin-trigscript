@@ -54,9 +54,10 @@ export interface FixedFn { fn: "fmul_vars" | "fdiv_vars" | "fmul_by" | "fdiv_by"
 
 /**
  * A field of a trigger: a condition's number (or its player, the EPD of the dword it reads), an action's number,
- * destination or modifier, the next pointer.
+ * destination or modifier, the mask of a masked one (a condition's or an action's, which it reads as it runs: what the
+ * mask is can be written like any number), the next pointer.
  */
-export type Field = { cond: number; part?: "value" | "player" } | { act: number; part: "value" | "dest" | "modifier" } | "next";
+export type Field = { cond: number; part?: "value" | "player" | "mask" } | { act: number; part: "value" | "dest" | "modifier" | "mask" } | "next";
 
 export type Compare = "atLeast" | "atMost" | "exactly";
 export type Modifier = "set" | "add" | "subtract";
