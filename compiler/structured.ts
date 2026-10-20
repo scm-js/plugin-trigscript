@@ -60,7 +60,7 @@ import type * as TS from "typescript";
 import { ActionType, PlayerGroup } from "../vendor/triggers";
 import type { ActionRecord } from "../vendor/triggers";
 import type { HoistedThunks, ProgramPlan } from "./hoist";
-import { clockCall, declarationOf, isOnCall, isScriptClass, isScriptFunction, libraryCallName, ON_EVENTS, scriptArrow } from "./hoist";
+import { clockCall, declarationOf, isOnCall, isScriptClass, isScriptFunction, keepsState, libraryCallName, ON_EVENTS, scriptArrow } from "./hoist";
 import { ORDER_NAMES } from "./orders";
 import { DEAF_KEYS, KEY_NAMES, keyName, parseChatPattern, type ChatPattern, type InputSource } from "./input";
 import { scriptParams } from "./api";
@@ -765,6 +765,12 @@ export class Structured {
     return undefined;
   }
 
+  /** Whether a call is of a function of the script's own that changes what outlives the call (`keepsState` in hoist.ts). */
+  private keepsState(call: TS.CallExpression): boolean {
+    const decl = this.c.checker.getResolvedSignature(call)?.declaration;
+    return !!decl && this.ts.isFunctionLike(decl) && !!(decl as TS.FunctionLikeDeclaration).body && !decl.getSourceFile().isDeclarationFile && keepsState(this.ts, this.c.checker, decl);
+  }
+
   private varOf(expr: TS.Expression): VarDecl | undefined {
     const b = this.bindingOf(expr);
     return b?.kind === "var" ? b.v : undefined;
@@ -820,6 +826,9 @@ export class Structured {
     if (ts.isCallExpression(e)) {
       const callee = sub(e.expression);
       if (!callee || typeof callee.value !== "function" || isGameFunction(callee.value)) return undefined;
+      // A function that changes what outlives the call (`keepsState`) — a closure made when the script was built, a method
+      // writing its instance — would change it once, here, however often the program calls it.
+      if (this.keepsState(e)) return undefined;
       const self = ts.isPropertyAccessExpression(e.expression) ? sub(e.expression.expression)?.value : undefined;
       const args: unknown[] = [];
       for (const a of e.arguments) {
@@ -11314,6 +11323,10 @@ export class Structured {
       return acc;
     }
     if (isBuilder(callee)) { this.c.error(e, callee.kind === "condition" ? "This is a condition; test it in an if or a while." : "This is an action; it stands as a statement."); return null; }
+    if (typeof callee === "function" && this.keepsState(e)) {
+      this.c.error(e, `${e.expression.getText()}() changes what it keeps between calls, but that was made when the script was built, where the game cannot change it. Make it inside the program, or keep what changes in a let of the program.`);
+      return null;
+    }
     if (typeof callee === "function") { this.c.error(e, "This helper is computed when the script is built and cannot take a variable of the program. Write it as a game() function to run it in the game."); return null; }
     this.notConstant(e, "A call's arguments");
     return null;

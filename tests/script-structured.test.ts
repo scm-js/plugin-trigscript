@@ -856,7 +856,8 @@ describe("structured: short circuits, lazy constants, names", () => {
   });
 
   it("build-time parts of a body run once", () => {
-    const counted = files({ "main.ts": 'import { tick } from "./count";\nprogram(() => { let n = 0; if (bring(P1, units.AnyUnit, locations.Anywhere, ">=", tick())) n++; });', "count.ts": "let calls = 0;\nexport const tick = () => ++calls;\nexport const seen = () => calls;" });
+    // (Counted by a push: a function assigning a variable of its file keeps a state, and a call of it is the program's.)
+    const counted = files({ "main.ts": 'import { tick } from "./count";\nprogram(() => { let n = 0; if (bring(P1, units.AnyUnit, locations.Anywhere, ">=", tick())) n++; });', "count.ts": "const calls: number[] = [];\nexport const tick = () => calls.push(0);\nexport const seen = () => calls.length;" });
     expect(counted.ok).toBe(true);
     const stmt = counted.ir[0].body.find((s) => s.kind === "if");
     expect(stmt && stmt.kind === "if" && stmt.cond.kind === "cond" ? stmt.cond.record.amount : null).toBe(1);
