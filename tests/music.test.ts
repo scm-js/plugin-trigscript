@@ -295,13 +295,13 @@ const st = music.stems(song, { layers: { drums: ["drums"], tunes: ["lead", "pad"
   it("cuts a song into a clip a bar a layer, the same bar one clip, its tail kept, and names what it holds", () => {
     const r = check(SONG,
       `if (st.barFrames !== 48 || st.layers.join() !== "drums,tunes" || st.sections.map((x) => x.name).join() !== "a,b") fail(\`\${st.barFrames} \${st.layers} \${st.sections.map((x) => x.name)}\`);
-if (st.bars.length !== 2 || st.bars[1].length !== 2 || st.bars[1][0][0] !== st.bars[1][1][0]) fail("a bar the same as another is the same clip");
+if (st.pieces.length !== 2 || st.pieces[1].length !== 2 || st.pieces[1][0][0] !== st.pieces[1][1][0]) fail("a bar the same as another is the same clip");
 // The tunes' last bar rings out whole; the one before is cut two seconds after the bar (its notes end in it).
-const before = st.bars[1][0][1]!, lastBar = st.bars[1][1][1]!;
+const before = st.pieces[1][0][1]!, lastBar = st.pieces[1][1][1]!;
 if (!(lastBar.seconds > before.seconds) || Math.abs(before.seconds - (48 * 0.042 + 2)) > 1e-3) fail(\`\${before.seconds} \${lastBar.seconds}\`);
-if (st.bars[0][0][1] === st.bars[1][0][1]) fail("different bars");
+if (st.pieces[0][0][1] === st.pieces[1][0][1]) fail("different bars");
 const bar = 48 * 0.042;
-if (!(st.bars[0][0][1]!.seconds > bar)) fail(\`a tail: \${st.bars[0][0][1]!.seconds}\`);
+if (!(st.pieces[0][0][1]!.seconds > bar)) fail(\`a tail: \${st.pieces[0][0][1]!.seconds}\`);
 if (st.section("b") !== 1 || st.layer("tunes") !== 1 || st.stinger("crash") !== 0) fail("by name");
 if (st.voices < 2 || st.voices > 6) fail(String(st.voices));`,
     );
@@ -315,10 +315,10 @@ if (st.voices < 2 || st.voices > 6) fail(String(st.voices));`,
     const r = check(SONG,
       `const pieces: { clip: Clip; at: number }[] = [];
 let g = 0;
-for (const sec of st.bars) for (const row of sec) { for (const c of row) if (c) pieces.push({ clip: c, at: g * 48 * 0.042 }); g++; }
+for (const sec of st.pieces) for (const row of sec) { for (const c of row) if (c) pieces.push({ clip: c, at: g * 48 * 0.042 }); g++; }
 const sum = mixdown(pieces), loud = music.stems(song, { layers: { drums: ["drums"], tunes: ["lead", "pad"] }, peak: 1 });
 if (!(sum.peak <= 0.8401 && sum.peak > 0.6)) fail(\`\${sum.peak}\`);
-if (!(loud.bars[0][0][0]!.peak > st.bars[0][0][0]!.peak)) fail("peak");`,
+if (!(loud.pieces[0][0][0]!.peak > st.pieces[0][0][0]!.peak)) fail("peak");`,
     );
     expect(errors(r)).toEqual([]);
   });
@@ -344,10 +344,41 @@ program(async () => {
     const paths = r.sounds.map((s) => s.path);
     const played = sim.events.filter((e) => e.action.type === ActionType.PlayWav).map((e) => [e.frame, paths.indexOf((r.strings[e.action.wav - 1] as { text: string }).text)]);
     // Clips: 0 a's drums, 1 a's tunes, 2 b's drums, 3 and 4 b's tunes (its last bar rings out whole), 5 the crash.
-    // Bars every 48 frames from frame 1.
-    expect(played).toEqual([[1, 0], [1, 1], [49, 2], [49, 3], [97, 2], [97, 4], [145, 1], [145, 5], [193, 3], [241, 2], [241, 4], [289, 2], [289, 3], [337, 2], [337, 4], [385, 2], [385, 3]]);
+    // Bars every 48 frames from frame 1, beats every 12: the crash, asked for on frame 101, on the next beat.
+    expect(played).toEqual([[1, 0], [1, 1], [49, 2], [49, 3], [97, 2], [97, 4], [109, 5], [145, 1], [193, 3], [241, 2], [241, 4], [289, 2], [289, 3], [337, 2], [337, 4], [385, 2], [385, 3]]);
     // The bars Ogg Vorbis however short; the crash, half a second, a WAV.
     expect(r.sounds.map((s) => s.path.slice(-3))).toEqual(["ogg", "ogg", "ogg", "ogg", "ogg", "wav"]);
+  });
+});
+
+describe("music that follows the game, in half bars", () => {
+  it("cuts every two beats, so a change waits half a bar", () => {
+    const r = compile(`import { music, Band } from "trigscript/music";
+const lead = music.synth({ volume: 0.5, release: 0.05 });
+const parts = { lead: music.part(lead) };
+const song = music.arrange({ bpm: 120, steps: 2 }, parts, music.section(1, { lead: "C4 . D4 . E4 . F4 ." }, { name: "a" }), music.section(1, { lead: "A4 . B4 . C5 . D5 ." }, { name: "b" }));
+const st = music.stems(song, { layers: { lead: ["lead"] }, every: 2 });
+const fail = (what: string) => { throw new Error(what); };
+if (st.every !== 2 || st.waits.join() !== "12,12" || st.pieces[0].length !== 2) fail(\`\${st.every} \${st.waits} \${st.pieces[0].length}\`);
+program(async () => {
+  const band = new Band();
+  band.loop = true;
+  start(music.conduct(st, band));
+  await sleep(frames(30));
+  band.go(st.section("b"));
+});
+`);
+    expect(errors(r)).toEqual([]);
+    const sim = new ProgramSimulation(r.ir, { strings: r.strings });
+    sim.run(100);
+    const paths = r.sounds.map((s) => s.path);
+    const played = sim.events.filter((e) => e.action.type === ActionType.PlayWav).map((e) => [e.frame, paths.indexOf((r.strings[e.action.wav - 1] as { text: string }).text)]);
+    // a's halves on frames 1 and 25; asked for b on frame 31, it begins on 49 (not 97, a bar later); then b again.
+    expect(played).toEqual([[1, 0], [25, 1], [49, 2], [73, 3], [97, 2]]);
+    const bad = compile(`import { music } from "trigscript/music";
+const song = music.arrange({ bpm: 120, steps: 2 }, { lead: music.part(music.synth()) }, music.section(1, { lead: "C4" }));
+music.stems(song, { layers: { lead: ["lead"] }, every: 3 });`);
+    expect(errors(bad).join("\n")).toMatch(/every few beats of a bar's 4, a number that divides it — not every 3/);
   });
 });
 

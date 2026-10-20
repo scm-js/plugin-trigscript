@@ -1,13 +1,14 @@
 // Step 4 of the music library's quality work, heard in StarCraft: Remastered: Korobeiniki (a Russian folk song, in
 // the public domain; the melody only — the rest is this file's own), step 3's arrangement cut into bars and layers
-// (`music.stems`) and played bar by bar as the program says (`Band`, `music.conduct`): music that follows the game.
-// Left alone it plays the song through, bar by bar, and starts again; the keys steer it. Host it as a multiplayer
+// (`music.stems`) and played piece by piece as the program says (`Band`, `music.conduct`): music that follows the game.
+// Cut in half bars (`every: 2`), so a change waits at most 0.84 s; a stinger plays on the next beat (0.42 s). Left
+// alone it plays the song through and starts again; the keys steer it. Host it as a multiplayer
 // game, alone, with the game's music off.
 //
-//   1 … 7   go to a section at the next bar line: intro, verse, build, drop, break, last verse, outro
-//   D B H M the drums, the bass, the harmony (pad, arpeggio, piano), the melody: off or on from the next bar line
+//   1 … 7   go to a section at the next half bar: intro, verse, build, drop, break, last verse, outro
+//   D B H M the drums, the bass, the harmony (pad, arpeggio, piano), the melody: off or on from the next half bar
 //   L       a section plays again when it ends (or goes on to the next)
-//   Space   a crash on the next bar line
+//   Space   a crash on the next beat
 //
 //   npx tsx probes/lib/raycaster-map.mts fixtures/eud/sound-base.scx
 //   npx tsx scripts/build-fixture.mts probes/korobeiniki-band.ts fixtures/eud/korobeiniki-band.scx fixtures/eud/sound-base.scx
@@ -149,6 +150,7 @@ const st = music.stems(step3, {
   reverb: ROOM,
   master: (c) => c.filter("highshelf", 9000, { gain: 1.5 }),
   stingers: { crash: crash.gain(0.7) },
+  every: 2,
 });
 const NAMES = st.sections.map((x) => x.name);
 const KEYS = ["1", "2", "3", "4", "5", "6", "7"] as const;
@@ -168,7 +170,7 @@ program(async () => {
   start(music.conduct(st, band));
   let shown = -1;
   while (true) {
-    for (let k = 0; k < KEYS.length; k++) if (keyPressed(P1, KEYS[k])) { band.go(k); displayText(`\x04→ ${NAMES[k]} at the next bar`); }
+    for (let k = 0; k < KEYS.length; k++) if (keyPressed(P1, KEYS[k])) { band.go(k); displayText(`\x04→ ${NAMES[k]} at the next half bar`); }
     for (let l = 0; l < LAYER_KEYS.length; l++) if (keyPressed(P1, LAYER_KEYS[l])) {
       band.on[l] = !band.on[l];
       if (band.on[l]) displayText(`\x04${LAYERS[l]} on`); else displayText(`\x04${LAYERS[l]} off`);

@@ -1827,6 +1827,14 @@ User after step 3 ("B sounds amazing"): "go for step 4".
   rest; `stems` passes the stingers at every bar line. With that stinger the song went to −19.0 LUFS; the probe's is
   now the crash alone at 0.7: −16.6 LUFS, the worst bar line with a crash 0.811. Rebuilt the map (5.6 MB).
 
+- **User after the second play: "it felt great - waiting for the next bar line took a bit too long imo if
+  sometime important happens but it wasnt bad".** A sound cannot be stopped, so a change cannot land mid-piece (the
+  piece's remaining beats would sound over the new section). Two answers: `conduct` now wakes every beat and plays a
+  stinger on the next one (≤ 0.42 s at 143); `stems({ every })` cuts every few beats (a number dividing the bar's;
+  its frames whole) — `Band.piece` / `beat`, `Stems.pieces` / `every` / `waits`, `Song.beats`. Korobeiniki: bars 114
+  files, 5.5 MB, 13 sounds at once; half bars 190, 7.4 MB, 20 (12 left of 32), build 18 s. The half-bar map is
+  Maps/TrigScript/trigscript-korobeiniki-halfbar.scx beside the bar one.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):

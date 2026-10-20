@@ -38,13 +38,14 @@
  *   const song = music.arrange({ bpm: 120, steps: 2 }, parts, intro, verse, verse.with({ keys: null }), outro);
  *
  * Music that follows the game is a song of sections cut into bars and layers, a clip each, which the program steers
- * bar by bar — which section, which layers, a stinger on the next bar line:
+ * bar by bar — which section, which layers, a stinger on the next beat:
  *
  *   const cut = music.stems(song, { layers: { drums: ["drums"], rest: ["keys", "bass"] } });
  *   program(async () => {
  *     const band = new Band();                    // import { music, Band } from "trigscript/music"
  *     start(music.conduct(cut, band));
  *     if (danger) band.go(cut.section("chorus")); // at the next bar line
+ *     if (cleared) band.sting(cut.stinger("crash")); // on the next beat
  *   });
  *
  * What the game does with it (the sound probe, 2026-10-19): a bar is a whole number of frames (42 ms on Fastest), so
@@ -617,6 +618,8 @@ export interface Song {
   readonly stepFrames: number;
   /** Frames a bar lasts, a whole number. */
   readonly barFrames: number;
+  /** Beats a bar. */
+  readonly beats: number;
   /** The tempo it plays at: the nearest to the one asked for whose bar is a whole number of frames. */
   readonly bpm: number;
   /** Steps, the longest track's. */
@@ -717,7 +720,7 @@ function compose(options: SongOptions, tracks: readonly Track[], sections: reado
     return t;
   };
   const made: Song = Object.freeze({
-    stepFrames, barFrames, bpm: (60 * beats) / (barFrames * FRAME), steps, sections: Object.freeze([...sections]),
+    stepFrames, barFrames, beats, bpm: (60 * beats) / (barFrames * FRAME), steps, sections: Object.freeze([...sections]),
     get frames() { return tables().frames; },
     get seconds() { return tables().frames * FRAME; },
     get clips() { return playable().clips; },
@@ -842,48 +845,62 @@ export function render(s: Song, options: { readonly rate?: number; readonly limi
   return limit === false ? mixed : mixed.limit(limit === true ? {} : limit);
 }
 
-/* ── Music that follows the game: a song cut into bars, played bar by bar ── */
+/* ── Music that follows the game: a song cut into pieces, played piece by piece ── */
 
-/** How a song of sections is cut for the game to play bar by bar (`stems`). */
+/** How a song of sections is cut for the game to play piece by piece (`stems`). */
 export interface StemsOptions {
   /**
    * Which parts each layer holds, by name — `{ drums: ["kit", "hats"], bass: ["bass"], melody: ["lead", "saw"] }` — a
-   * layer the game can turn on and off at a bar line. A part in no layer is left out.
+   * layer the game can turn on and off where a piece begins. A part in no layer is left out.
    */
   readonly layers: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Beats a piece: where the game can go to another section or turn a layer on or off (a bar's beats when left out).
+   * Two in a bar of four halves the wait for a change, for about half as much map again and more sounds at once.
+   */
+  readonly every?: number;
   /** Samples a second (44 100). */
   readonly rate?: number;
   /** The reverb's room, as `render` takes it. */
   readonly reverb?: ReverbOptions;
-  /** What each bar's clip goes through last — an EQ, not a compressor: each is on its own, the game adds them up. */
+  /** What each piece's clip goes through last — an EQ, not a compressor: each is on its own, the game adds them up. */
   readonly master?: (clip: Clip) => Clip;
-  /** The loudest the bars may add up to as the song plays through, every layer on (0.84, −1.5 dB). */
+  /** The loudest the pieces may add up to as the song plays through, every layer on (0.84, −1.5 dB). */
   readonly peak?: number;
   /**
-   * Seconds a bar's clip rings on after its notes end (2), its echoes and reverb faded out over the last of them: the bars
-   * after it cover the rest, and a shorter clip is a smaller map. A layer's last bar keeps all of its tail.
+   * Seconds a piece's clip rings on after its notes end (2), its echoes and reverb faded out over the last of them: the
+   * pieces after it cover the rest, and a shorter clip is a smaller map. A layer's last piece keeps all of its tail.
    */
   readonly tail?: number;
-  /** The Ogg Vorbis quality of the bars' clips (4: a little smaller than a song's 5, as many play at once). */
+  /** The Ogg Vorbis quality of the pieces' clips (4: a little smaller than a song's 5, as many play at once). */
   readonly quality?: number;
-  /** Sounds to play on a bar line when the game asks (`band.sting`): a crash for a cleared line, a fill. Turned down with the bars, which leave room for one on any bar line. */
+  /**
+   * Sounds to play on the next beat when the game asks (`band.sting`): a crash for a cleared line, a hit for a boss.
+   * Turned down with the pieces, which leave room for one on any beat.
+   */
   readonly stingers?: Readonly<Record<string, Clip>>;
 }
 
-/** A song cut into bars for the game to play bar by bar, with `conduct` and a `Band`: made when the script is built. */
+/** A song cut into pieces for the game to play piece by piece, with `conduct` and a `Band`: made when the script is built. */
 export interface Stems {
   readonly kind: "stems";
   /** Frames a bar lasts. */
   readonly barFrames: number;
   readonly bpm: number;
-  /** Beats a bar. */
+  /** Beats a bar, and beats a piece. */
   readonly beats: number;
+  readonly every: number;
+  /** Frames each beat of a piece lasts, whole frames (beats of a bar not a whole number of frames take turns). */
+  readonly waits: readonly number[];
   /** The layers' names, in the order `band.on` has them. */
   readonly layers: readonly string[];
   /** The sections, in the order the song plays them: their names and how many bars. */
   readonly sections: readonly SongSection[];
-  /** Section `s`'s bar `b` in layer `l`: its notes, their tails and echoes and reverb with them, or null where it plays none. */
-  readonly bars: readonly (readonly (readonly (Clip | null)[])[])[];
+  /**
+   * Section `s`'s piece `p` in layer `l`: its notes, their tails and echoes and reverb with them, or null where it plays
+   * none. A section of `bars` bars has bars × beats / every pieces.
+   */
+  readonly pieces: readonly (readonly (readonly (Clip | null)[])[])[];
   readonly stingers: readonly Clip[];
   /** A section's place in `sections`, by its name: `band.go(stems.section("drop"))`. */
   section(name: string): number;
@@ -896,19 +913,24 @@ export interface Stems {
 }
 
 /**
- * A song of sections (`arrange`) cut into bars, a clip each bar of each layer, for music that follows the game: at
- * each bar line the program says which section plays and which layers (`Band`, `conduct`). A bar's clip holds the
- * notes that start in it, with their tails, echoes and reverb, so a bar overlaps the next and nothing is cut off,
- * whichever comes after it; a bar the same as another is the same clip, one file in the map. Each layer is mixed as
- * `render` mixes the song, but with no master and no limiter between the parts — the game adds the clips up — so
- * all of them are turned down together until the song played through stays under `peak`.
+ * A song of sections (`arrange`) cut into pieces — a bar each, or `every` beats — a clip each piece of each layer, for
+ * music that follows the game: where each piece begins the program says which section plays and which layers (`Band`,
+ * `conduct`), and a stinger plays on the next beat. A piece's clip holds the notes that start in it, with their tails,
+ * echoes and reverb, so it overlaps the next and nothing is cut off, whichever comes after it; a piece the same as
+ * another is the same clip, one file in the map. Each layer is mixed as `render` mixes the song, but with no master
+ * and no limiter between the parts — the game adds the clips up — so all of them are turned down together until the
+ * song played through stays under `peak`.
  */
 export function stems(s: Song, options: StemsOptions): Stems {
   const parts = partsOf.get(s), score = scores.get(s);
   if (!parts || !score) throw new Error("stems() cuts a song made of sections, by music.arrange.");
   const rate = options.rate ?? 44100, layers = Object.keys(options.layers), r = options.reverb ?? {}, tail = options.tail ?? 2;
-  if (!(tail > 0)) throw new Error(`stems()' tail is seconds after a bar, more than 0, not ${tail}.`);
+  if (!(tail > 0)) throw new Error(`stems()' tail is seconds after a piece, more than 0, not ${tail}.`);
   if (layers.length === 0 || layers.length > 8) throw new Error(`stems() takes one to eight layers, not ${layers.length}.`);
+  const beats = s.beats, every = options.every ?? beats, piece = (s.barFrames * every) / beats;
+  if (!Number.isInteger(every) || every < 1 || every > beats || beats % every !== 0) throw new Error(`stems() cuts every few beats of a bar's ${beats}, a number that divides it — not every ${every}.`);
+  if (!Number.isInteger(piece)) throw new Error(`A piece of ${every} beats would be ${piece.toFixed(2)} frames: the game plays a sound on a frame. Make it a bar (every: ${beats}), or a tempo whose bar divides into whole frames.`);
+  const perBar = beats / every;
   const layerOf = new Map<Track, number>();
   layers.forEach((name, l) => {
     for (const p of options.layers[name]) {
@@ -918,31 +940,31 @@ export function stems(s: Song, options: StemsOptions): Stems {
       layerOf.set(found.track, l);
     }
   });
-  const bar = s.barFrames, barSeconds = bar * FRAME, total = s.sections.reduce((n, x) => n + x.bars, 0);
-  // The notes of each bar of each layer, by part.
+  const pieceSeconds = piece * FRAME, total = s.sections.reduce((n, x) => n + x.bars, 0) * perBar;
+  // The notes of each piece of each layer, by part.
   const cells: Map<Track, Score[]>[][] = Array.from({ length: total }, () => layers.map(() => new Map()));
   for (const n of score) {
     const l = layerOf.get(n.track);
     if (l === undefined) continue;
-    const g = Math.min(total - 1, Math.floor((n.at + 1e-6) / bar));
+    const g = Math.min(total - 1, Math.floor((n.at + 1e-6) / piece));
     const m = cells[g][l], list = m.get(n.track);
     if (list) list.push(n); else m.set(n.track, [n]);
   }
   const clipOf = (t: Track, n: Score) => { const c = n.hit ?? (t.instrument as Instrument).note(n.name!, n.seconds!, rate); return n.velocity === 1 ? c : c.gain(n.velocity); };
-  // Each layer's last bar with notes: it rings out whole, as the song ends.
+  // Each layer's last piece with notes: it rings out whole, as the song ends.
   const last = layers.map((_, l) => { let g = total - 1; while (g > 0 && cells[g][l].size === 0) g--; return g; });
-  // A bar of a layer, mixed: each part's notes from the bar line, through what the part goes through, and the reverb.
+  // A piece of a layer, mixed: each part's notes from where it begins, through what the part goes through, and the reverb.
   const raw: (Clip | null)[][] = cells.map((byLayer, g) => byLayer.map((m, l) => {
     const out: { clip: Clip; at: number }[] = [], sends: { clip: Clip; at: number }[] = [];
-    // Where the bar's last note ends, its release and all: a riser four bars long is kept whole.
-    let end = barSeconds;
-    for (const [t, notes] of m) for (const n of notes) end = Math.max(end, (n.at - g * bar) * FRAME + clipOf(t, n).seconds);
+    // Where the piece's last note ends, its release and all: a riser four bars long is kept whole.
+    let end = pieceSeconds;
+    for (const [t, notes] of m) for (const n of notes) end = Math.max(end, (n.at - g * piece) * FRAME + clipOf(t, n).seconds);
     for (const [t, notes] of m) {
       const plain = notes.filter((n) => !n.piece?.fx), apart = notes.filter((n) => n.piece?.fx);
-      const entries: { clip: Clip; at: number }[] = plain.map((n) => ({ clip: clipOf(t, n), at: (n.at - g * bar) * FRAME }));
+      const entries: { clip: Clip; at: number }[] = plain.map((n) => ({ clip: clipOf(t, n), at: (n.at - g * piece) * FRAME }));
       if (apart.length) {
-        // A section's effects take the whole section: this bar's notes where they fall in it, then the bar cut out.
-        const p = apart[0].piece!, from = p.from * s.stepFrames, into = (g * bar - from) * FRAME;
+        // A section's effects take the whole section: this piece's notes where they fall in it, then the piece cut out.
+        const p = apart[0].piece!, from = p.from * s.stepFrames, into = (g * piece - from) * FRAME;
         const whole = p.fx!(mixdown(apart.map((n) => ({ clip: clipOf(t, n), at: (n.at - from) * FRAME })), undefined, rate), p.time);
         entries.push({ clip: whole.trim(into, whole.seconds), at: 0 });
       }
@@ -957,25 +979,27 @@ export function stems(s: Song, options: StemsOptions): Stems {
     if (sends.length) out.push({ clip: mixdown(sends, undefined, rate).reverb({ decay: r.decay ?? 0.7, damping: r.damping ?? 0.45, predelay: r.predelay ?? 0.02, width: r.width ?? 1, mix: 1, dry: 0 }), at: 0 });
     let mixed = mixdown(out, undefined, rate);
     if (options.master) mixed = options.master(mixed);
-    // What rings on after the bar's notes, kept for `tail` seconds and faded over the last of them — the bars after
-    // cover the rest — but all of it after the layer's last bar.
+    // What rings on after the piece's notes, kept for `tail` seconds and faded over the last of them — the pieces
+    // after cover the rest — but all of it after the layer's last piece.
     const keep = end + tail;
     return g < last[l] && mixed.seconds > keep ? mixed.trim(0, keep).fade(0, Math.min(1, tail / 2)) : mixed;
   }));
-  // All of them turned down together, as the song plays through; the stingers on their own.
+  // All of them turned down together, as the song plays through.
   const placed: { clip: Clip; at: number; g: number; l: number }[] = [];
-  raw.forEach((byLayer, g) => byLayer.forEach((c, l) => { if (c) placed.push({ clip: c, at: g * barSeconds, g, l }); }));
+  raw.forEach((byLayer, g) => byLayer.forEach((c, l) => { if (c) placed.push({ clip: c, at: g * pieceSeconds, g, l }); }));
   if (placed.length === 0) throw new Error("stems(): the layers play no notes.");
-  // The stingers may play on any bar line: turned down with the bars, and room left for them over the loudest.
+  // The stingers may play on any beat: turned down with the pieces, and room left for them over the loudest.
+  const waits = Array.from({ length: every }, (_, j) => Math.round(((j + 1) * piece) / every) - Math.round((j * piece) / every));
   const stingerNames = Object.keys(options.stingers ?? {});
-  const lines = Array.from({ length: total }, (_, g) => g * barSeconds);
+  const lines: number[] = [];
+  for (let g = 0; g < total; g++) { let at = g * piece; for (const w of waits) { lines.push(at * FRAME); at += w; } }
   const fitted = together(placed, { peak: options.peak ?? 0.84, over: stingerNames.map((k) => ({ clip: options.stingers![k], at: lines })) });
   const grid: (Clip | null)[][] = raw.map((byLayer) => byLayer.map(() => null));
   const quality = options.quality ?? 4;
   placed.forEach((p, k) => { grid[p.g][p.l] = fitted[k].ogg(quality); });
   const stingers = stingerNames.map((_, k) => fitted[placed.length + k]);
   let start = 0;
-  const bars = s.sections.map((sec) => { const rows = grid.slice(start, start + sec.bars).map((row) => Object.freeze(row)); start += sec.bars; return Object.freeze(rows); });
+  const pieces = s.sections.map((sec) => { const n = sec.bars * perBar, rows = grid.slice(start, start + n).map((row) => Object.freeze(row)); start += n; return Object.freeze(rows); });
   const lookup = (what: string, list: readonly string[], name: string) => {
     const k = list.indexOf(name);
     if (k < 0) throw new Error(`There is no ${what} ${JSON.stringify(name)}: there are ${list.map((x) => JSON.stringify(x)).join(", ") || "none"}.`);
@@ -983,8 +1007,8 @@ export function stems(s: Song, options: StemsOptions): Stems {
   };
   let voices = -1;
   return Object.freeze({
-    kind: "stems" as const, barFrames: bar, bpm: s.bpm, beats: Math.round(((s.bpm * bar * FRAME) / 60) * 1000) / 1000,
-    layers: Object.freeze(layers), sections: s.sections, bars: Object.freeze(bars), stingers: Object.freeze(stingers),
+    kind: "stems" as const, barFrames: s.barFrames, bpm: s.bpm, beats, every, waits: Object.freeze(waits),
+    layers: Object.freeze(layers), sections: s.sections, pieces: Object.freeze(pieces), stingers: Object.freeze(stingers),
     section: (name: string) => lookup("section", s.sections.map((x) => x.name), name),
     layer: (name: string) => lookup("layer", layers, name),
     stinger: (name: string) => lookup("stinger", stingerNames, name),
@@ -999,38 +1023,40 @@ export function stems(s: Song, options: StemsOptions): Stems {
 }
 
 /**
- * The music as the game steers it: which section plays, which bar of it, which layers. Make one inside the program
- * that steers the music and hand it to `conduct`, which plays a bar at each bar line as it says:
+ * The music as the game steers it: which section plays, which piece of it, which layers. Make one inside the program
+ * that steers the music and hand it to `conduct`, which plays a piece where each begins as it says:
  *
  *   import { music, Band } from "trigscript/music";
  *   const band = new Band();
  *   start(music.conduct(stems, band));
- *   band.go(stems.section("drop"));        // at the next bar line
+ *   band.go(stems.section("drop"));        // where the next piece begins
  *   band.mute(stems.layer("drums"));
+ *   band.sting(stems.stinger("crash"));    // on the next beat
  *
  * With nothing said, the song plays through its sections in order and starts again.
  */
 export class Band {
-  /** The section playing, its place in `stems.sections`, and the bar of it, from 0. */
+  /** The section playing, its place in `stems.sections`; the piece of it (a bar, unless `stems.every` says), from 0; the beat of the piece. */
   section = 0;
-  bar = 0;
-  /** Bars played since it started. */
+  piece = 0;
+  beat = 0;
+  /** Pieces played since it started. */
   count = 0;
-  /** The game's frame the bar playing began on: how far into the bar it is, for what moves with the music. */
+  /** The game's frame the beat playing began on: how far into the beat it is, for what moves with the music. */
   at = 0;
-  /** The section to go to, and whether at the next bar line (`go`) or when this one ends (`queue`); −1 for none. */
+  /** The section to go to, and whether where the next piece begins (`go`) or when this section ends (`queue`); −1 for none. */
   next = -1;
   now = false;
   /** Whether a section plays again when it ends, instead of going on to the next. */
   loop = false;
   /** Which layers play, by their place in `stems.layers`. */
   on = [true, true, true, true, true, true, true, true];
-  /** A stinger to play on the next bar line, by its place; −1 for none. */
+  /** A stinger to play on the next beat, by its place; −1 for none. */
   stung = -1;
-  /** Whether it plays: false stops it at the next bar line (what sounds rings out). */
+  /** Whether it plays: false stops it where the next piece would begin (what sounds rings out). */
   playing = true;
 
-  /** Go to a section at the next bar line, from its first bar. */
+  /** Go to a section where the next piece begins, from its first piece. */
   go(section: number) {
     this.next = section;
     this.now = true;
@@ -1040,49 +1066,57 @@ export class Band {
     this.next = section;
     this.now = false;
   }
-  /** Turn a layer off, or on, from the next bar line. */
+  /** Turn a layer off, or on, from where the next piece begins. */
   mute(layer: number) {
     this.on[layer] = false;
   }
   unmute(layer: number) {
     this.on[layer] = true;
   }
-  /** Play a stinger on the next bar line. */
+  /** Play a stinger on the next beat. */
   sting(stinger: number) {
     this.stung = stinger;
   }
-  /** Stop at the next bar line. */
+  /** Stop where the next piece would begin. */
   stop() {
     this.playing = false;
   }
 }
 
-/** Play `stems` as `band` says, bar by bar, until it stops: `start(music.conduct(stems, band))` beside the program. */
+/** Play `stems` as `band` says, beat by beat, until it stops: `start(music.conduct(stems, band))` beside the program. */
 export const conduct = game(async (s: Stems, band: Band) => {
   band.playing = true;
-  while (band.playing) {
-    // On the bar line: where to be.
-    if (band.next >= 0 && (band.now || band.bar === 0)) {
-      band.section = band.next;
-      band.bar = 0;
-      band.next = -1;
-    }
+  band.beat = 0;
+  while (band.playing || band.beat > 0) {
     band.at = memory.game.frame;
-    // The bar's clip of each layer that is on. (Which clip, by test: a clip is no value a program holds.)
-    for (let k = 0; k < s.sections.length; k++) if (band.section === k) {
-      for (let b = 0; b < s.sections[k].bars; b++) if (band.bar === b) {
-        for (let l = 0; l < s.layers.length; l++) if (s.bars[k][b][l]) if (band.on[l]) playWav(s.bars[k][b][l]!, 0);
+    if (band.beat === 0) {
+      // Where a piece begins: where to be, then the piece's clip of each layer that is on. (Which clip, by test: a
+      // clip is no value a program holds.)
+      if (band.next >= 0 && (band.now || band.piece === 0)) {
+        band.section = band.next;
+        band.piece = 0;
+        band.next = -1;
+      }
+      for (let k = 0; k < s.sections.length; k++) if (band.section === k) {
+        for (let p = 0; p < s.pieces[k].length; p++) if (band.piece === p) {
+          for (let l = 0; l < s.layers.length; l++) if (s.pieces[k][p][l]) if (band.on[l]) playWav(s.pieces[k][p][l]!, 0);
+        }
       }
     }
     for (let j = 0; j < s.stingers.length; j++) if (band.stung === j) playWav(s.stingers[j], 0);
     band.stung = -1;
-    await sleep(frames(s.barFrames));
-    band.count++;
-    band.bar++;
-    // A section ended: again, or on to the next (after the last, the first).
-    for (let k = 0; k < s.sections.length; k++) if (band.section === k) if (band.bar >= s.sections[k].bars) {
-      band.bar = 0;
-      if (!band.loop) band.section = k + 1 < s.sections.length ? k + 1 : 0;
+    for (let j = 0; j < s.every; j++) if (band.beat === j) await sleep(frames(s.waits[j]));
+    band.beat++;
+    if (band.beat >= s.every) {
+      band.beat = 0;
+      band.count++;
+      band.piece++;
+      // A section ended: again, or on to the next (after the last, the first).
+      for (let k = 0; k < s.sections.length; k++) if (band.section === k) if (band.piece >= s.pieces[k].length) {
+        band.piece = 0;
+        if (!band.loop) band.section = k + 1 < s.sections.length ? k + 1 : 0;
+      }
+      if (!band.playing) band.beat = 0;
     }
   }
 });
