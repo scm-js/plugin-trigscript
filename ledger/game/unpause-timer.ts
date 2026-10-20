@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Unpause Timer
+// ledger: step 5, takes
 // The action Unpause Timer: the countdown timer runs on.
 program(() => {
   unpauseTimer();

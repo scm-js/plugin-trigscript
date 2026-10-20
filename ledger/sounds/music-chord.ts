@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A chord by its name, its notes sounding together: `music.chord("Am")`.
 import { music } from "trigscript/music";
 const keys = music.synth({ volume: 0.1, release: 0.05 });

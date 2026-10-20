@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Center View
+// ledger: step 5, takes
 // An action by its raw type number and fields, `action(type, …)`: what StarEdit stores, for a type the
 // editor does not know (here 10, Center View).
 program(() => {

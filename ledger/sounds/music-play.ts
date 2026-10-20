@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A song played note by note from the music library: `music.synth`, `music.track`, `music.song`, and
 // `await music.play(song)` in an async program.
 import { music } from "trigscript/music";

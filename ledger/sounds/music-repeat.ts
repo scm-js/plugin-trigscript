@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A pattern played several times over, when the map is built: `music.repeat(pattern, 2)`.
 import { music } from "trigscript/music";
 const lead = music.synth({ release: 0.05 });

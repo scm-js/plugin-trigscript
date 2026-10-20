@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // An instrument to start from: `music.presets.chip()`.
 import { music } from "trigscript/music";
 const chip = music.presets.chip();

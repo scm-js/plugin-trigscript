@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A plucked-string instrument: `music.strings()`.
 import { music } from "trigscript/music";
 const guitar = music.strings({ brightness: 0.5, decay: 0.6 });

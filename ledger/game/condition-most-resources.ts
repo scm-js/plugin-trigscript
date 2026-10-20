@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the condition Most Resources
+// ledger: step 5, takes
 // The condition Most Resources as a test in an `if`.
 program(() => {
   if (mostResources("oreAndGas")) print("yes");

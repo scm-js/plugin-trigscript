@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Play WAV
+// ledger: step 5, takes
 // A song of notes (as a MIDI file imports them), each track played by an instrument: `music.midi(notes, { Piano: keys })`.
 import { music } from "trigscript/music";
 const notes: Notes = {

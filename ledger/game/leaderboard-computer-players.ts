@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Leaderboard Computer Players
+// ledger: step 5, takes
 // The action Leaderboard Computer Players: whether the computers show on the leader board.
 program(() => {
   leaderboardComputerPlayers("disable");

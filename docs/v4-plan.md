@@ -3529,8 +3529,10 @@ found what they left out; where a step moved, its old number is given.
    `bits`). Random numbers: `random()`, `randomInt`, seeded as `f_randomize` seeds them (the Randomize switch), each
    draw a product (`f_dwrand`). A fixed number printed. eudplib's `f_mul`, `f_div`, the bit functions and `f_dwrand`,
    each beaten.
-5. **The game's conditions and actions** (new). A trigger record of any condition and any action in the graph and the
-   layout — they encode three today: the Memory condition, Set Deaths and Display Text. Fields filled from values
+5. **The game's conditions and actions** (new). Part 1 ✓: every condition and action with its fields known when the map
+   is built, laid out as the game's record — "The game's conditions and actions on our own backend"; `memory()` and
+   `setMemory()` at an address known when built came with it (from 6). A trigger record of any condition and any action in the graph and the
+   layout — they encoded three before: the Memory condition, Set Deaths and Display Text. Fields filled from values
    (`action.variables`), action texts (transmissions, objectives, leaderboards). Every condition in a test and as a
    value (ore, deaths, score, kills, Bring, Command, the countdown; the Python side's bit search), the players' facts
    (race, slot, human, left) and supply; `rose` and `once`. A print to a group — each player in turn, as the Python
@@ -3901,13 +3903,13 @@ lists what no script reaches. A step is done when its scripts say so.
 
 | Step | Taken today |
 | --- | ---: |
-| 0 The start | 157 of 158 |
+| 0 The start | 158 of 158 |
 | 1 Calls and recursion | 33 of 33 |
 | 2 Texts with numbers | 6 of 6 |
 | 3 Arrays of a fixed length | 54 of 54 |
 | 4 Numbers | 59 of 59 |
-| 5 The game's conditions and actions | 0 of 193 |
-| 6 The game's memory | 0 of 49 |
+| 5 The game's conditions and actions | 118 of 195 |
+| 6 The game's memory | 0 of 47 |
 | 7 Programs, owners and players | 1 of 22 |
 | 8 Texts as values | 0 of 43 |
 | 9 Arrays that grow, the heap | 0 of 28 |
@@ -3916,8 +3918,10 @@ lists what no script reaches. A step is done when its scripts say so.
 | 12 Input | 0 of 31 |
 | 13 The map's own triggers | 0 of 13 |
 
-One step called done is not quite: a `?:` of two booleans (step 0). (A cell read at a shifted index, `xs[a >> 1]`, the
-other one, is taken since step 4's part 4.) Every script a map of our own takes was also run
+(Step 5 has 195 rows since two of step 6's — `memory()` and `setMemory()` at an address known when built — came with
+its part 1.) Every step called done is: a `?:` of two booleans (step 0), the last, is taken since step 5's part 1 — the
+side its test picks worked out under an `if` (`Rewriter.cond`). (A cell read at a shifted index, `xs[a >> 1]`, the other
+one, is taken since step 4's part 4.) Every script a map of our own takes was also run
 from its laid-out bytes against the simulator — the numbers, arrays, texts and language scripts, and about forty edge
 cases besides (signs of `>>`, `u32` printed and compared, wrap-around, reads past the ends, negative indexes): all
 printed the same. The README's reference to the language predates TrigScript 4 (it says `try` and `async` are missing):
@@ -3968,8 +3972,10 @@ the ledger is the list it can be written again from at 4.0.
 - Not in a program, against JavaScript: `~a`, `**`, `Math.pow`, `Math.sign`, `Math.log2`, `fill(v, start, end)`,
   `reduce` with no first value. A `const HALF = 7 / 2` worked out when built is 3.5, a fixed number; the same `7 / 2` in
   the game is 3.
-- A map of our own: `displayText("known text")` is refused where `print("known text")` is taken (step 5's first);
-  JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
+- A condition kept in a variable: `const both = command(…) && bring(…)` is "Variables hold numbers, booleans, … before
+  is Condition", where `switchIs(…) && !switchIs(…)` is taken as a boolean, and either in an `if` is taken
+  (found writing `probes/own-game.ts`, 2026-10-20).
+- A map of our own: JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
   (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
   `a >> 1` to `a >> 31` were taken, is the number itself since its part 2.)
 
@@ -4181,6 +4187,50 @@ Checked: random programs with square roots (fixed and whole), sines, cosines and
 variables and arrays, as graphs and from the laid-out bytes (3,000 of 3,000 taken); the ledger's scripts against the
 simulator; `probes/own-math.ts` built both ways, every line ok — its edges: roots of 0, below zero, the largest, a
 whole number from 2^30 up; angles on the axes and of (0, 0); sines at a turn.
+
+### The game's conditions and actions on our own backend (2026-10-20)
+
+Step 5, part 1: every condition and every action of the game's whose fields are known when the map is built — Bring,
+Command, Accumulate, Switch, the clocks, Score, Opponents, Always and Never and the rest; Create Unit, Kill and Remove,
+Give, Set Resources, Set Switch, the leaderboards, Transmission, Play WAV, Center View, Victory and the rest — taken by a
+map of our own and laid out as the game's own record (`Cond.game`, `Act.record` in `compiler/backend/graph.ts`; the
+layout writes the record as it is, the action's text and sound file put among the map's strings by `build-own`, and the
+script's clips into the archive). `memory()` and `setMemory()` at an address known when built are a Deaths and a Set
+Deaths whose player is the address's EPD: they came with it, from step 6. Wait is refused (it would hold the owner's
+whole trigger list; `sleep` is the program's wait). Ledger: step 5 118 of 195 taken; the 77 left are fields from values
+(34), the game read as a value (18), `centerLocation` (6), texts made or shown to others (7), the players' facts and
+supply (7), Wait, `rose`, `once`.
+
+- **Turned around in one condition** (`gameConds`): `!` of at least n is at most n − 1 (at least 0: never), at most n
+  is at least n + 1, a switch set is cleared; Always and Never are known. Exactly, the Most and the Least have no
+  opposite in one condition: the trigger that asks them sends the walk past the goto. eudplib's `EUDNot` is a trigger
+  setting a flag and one testing it.
+- **`&&` in one trigger.** A test whose every part fits in one trigger — up to 16 conditions — is one trigger that skips
+  past the goto, where it was a branch a part (`Emitter.jump`); `||` turned around the same. This is general, as is the
+  next: with the two, the numbers probes are 2–8% faster.
+- **An `if` in one trigger** (`Emitter.guards`, `Proto.guarded`): no `else`, a body of actions of the game's and writes
+  that read nothing but their own target (`n++`, `n = 3`), conditions that fit in one trigger — that trigger is the
+  `if`: its conditions, then its actions, run when they hold. No branch and no put-back. The copies of a variable it
+  writes, when the plan copies it, come after it whether the conditions held or not — they write back what the places
+  hold when they did not.
+- **Bring counted again.** Bring keeps the counts it found for a location until a query of another kind is asked:
+  after an action that makes or moves units (Create Unit, with properties, Move Unit, Give Units), a program that asks
+  Bring gets a trigger asking Command, as the Python side's `forget_counts`.
+
+| `probes/own-game.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| The start and every check once (frame 2) | **0.003 ms** | 1.074 ms |
+| 200 turns: Set Resources, `if` of 3 conditions → `n++`, Set Deaths (frame 4) | **0.020 ms** | 0.028 ms |
+| 200 turns: `if (!deaths(…, "==", 5)) n++`, Set Deaths (frame 6) | **0.021 ms** | 0.038 ms |
+| A frame with nothing to do | **0** | 0.004 ms |
+
+Frame 4 was 0.029 ms (a tie) before `&&` in one trigger and the `if` in one trigger; the 200 turns are four triggers
+each now — the loop's test, Set Resources, the guarded `if`, Set Deaths with `j++`. What is left there is the loop's
+own test at its head, which every loop pays: a loop tested at its foot would save a trigger a turn.
+
+Checked: `tests/ownGame.test.ts` (the records byte for byte, the conditions turned around, the `if` in one trigger,
+Bring counted again); the emitter's random programs; every earlier `probes/own-*.ts` built and played again, every
+line ok; `probes/own-game.ts` built both ways, the same lines at the same frames.
 
 ## Part C — the game, pushed
 

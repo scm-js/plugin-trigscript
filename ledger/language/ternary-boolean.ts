@@ -1,4 +1,4 @@
-// ledger: step 0, refused: a ?: of booleans
+// ledger: step 0, takes
 // `?:` choosing between two booleans, its test asked while the game runs.
 program(() => {
   let n = 0;

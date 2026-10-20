@@ -1,4 +1,4 @@
-// ledger: step 5, refused: the action Order
+// ledger: step 5, takes
 // The action Order: units at a location sent to another, to move, patrol or attack — "attack" or orders.AttackMove,
 // one of the three orders the action gives (any other of orders.* is a compile error).
 program(() => {

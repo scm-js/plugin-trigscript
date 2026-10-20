@@ -10,6 +10,8 @@
  * where every value lives by writing such fields, which is the point of having one.
  */
 import type { At, Stmt } from "../ir";
+import type { ScriptString } from "../runtime";
+import type { ActionRecord, ConditionRecord } from "../../vendor/triggers";
 
 /** A dword the graph reads or writes. */
 export type Dword =
@@ -74,8 +76,12 @@ export type Num = number | { epdOf: string; plus: number } | { addrOf: string; p
  */
 export type Value = Num | { label: string } | { epd: Dword };
 
-/** The dword compared with `value` (read from 0 up); with `mask`, the dword's bits of the mask (`value` as it is). */
-export interface Cond { dword: Dword; compare: Compare; value: number; mask?: number }
+/**
+ * The dword compared with `value` (read from 0 up); with `mask`, the dword's bits of the mask (`value` as it is).
+ * `game`: instead, a condition of the game's as the script wrote it (a map of our own: TrigScript 4, step 5 of the way
+ * off eudplib) — its record laid out as it is, the dword not read.
+ */
+export interface Cond { dword: Dword; compare: Compare; value: number; mask?: number; game?: ConditionRecord }
 
 /**
  * `value` written into the dword, added to it or taken from it; with `mask`, only the mask's bits change. An add wraps;
@@ -93,7 +99,12 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * game's own random numbers, the same on every player's machine. A map of our own reads the switch where the game keeps
  * it (`SWITCHES`).
  */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string; randomize?: number }
+/**
+ * `record`: instead of a write, an action of the game's as the script wrote it (a map of our own), laid out as it is but
+ * for its text and its sound file, which are the script's strings (`strings`: a record's `text` / `wav` of `k > 0` is the
+ * script's `k`-th) and are put in the map's strings when the map is made.
+ */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string; randomize?: number; record?: ActionRecord; strings?: { text?: ScriptString; wav?: ScriptString } }
 
 /** Where the game keeps its 256 switches: a bit each, 32 to a dword. */
 export const SWITCHES = 0x58dc40;

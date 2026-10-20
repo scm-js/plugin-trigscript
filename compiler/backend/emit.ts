@@ -21,7 +21,7 @@
 import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type VarDecl, type At } from "../ir";
 import { PACK_FROM } from "../eud";
 import type { Range } from "../ranges";
-import { PlayerGroup } from "../../vendor/triggers";
+import { PlayerGroup, type ConditionRecord } from "../../vendor/triggers";
 import { actionDef, conditionDef } from "../../vendor/triggerDefs";
 import { END, MOST_ACTS, MOST_CONDS, STACK, SWITCHES, TRIGGER_BYTES, checkGraph, nextOf, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
 
@@ -218,11 +218,7 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
         if (r.source === "player") return r.fact === "left" ? "whether a player has left" : `a player's ${r.fact}`;
         return `a player's supply (${r.of})`;
       }
-      case "cond": {
-        const r = o.record as { type: number; player: number };
-        if (r.type === DEATHS_CONDITION && r.player > LAST_GROUP) return "a read of memory (memory())";
-        return `the condition ${conditionDef(r.type)?.name ?? r.type}`;
-      }
+      case "cond": return undefined;
       case "tableRead": return `a read of ${(o.cell as { name: string }).name}`;
       case "input": return `the players' input (${(o.input as { source: string }).source})`;
       case "length": return array(o.array as string) ? "the length of an array that grows" : undefined;
@@ -268,6 +264,7 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
   const statement = (t: Stmt): string | undefined => {
     switch (t.kind) {
       case "action": {
+        if (gameAction(t)) return undefined;
         if (t.record.type === SET_DEATHS_ACTION && t.record.player > LAST_GROUP) return "a write of memory (setMemory())";
         const name = `the action ${actionDef(t.record.type)?.name ?? t.record.type}`;
         return t.variables?.length ? `${name}, its fields from values` : t.text ? `${name}, its text the program's` : name;
@@ -323,8 +320,52 @@ export function unlowered(s: Stmt, decls: Map<string, VarDecl>, arrays: Map<stri
 const UNIT_READS = new Set(["unitField", "unitFlag", "unitAlive", "unitSame", "unitPart", "textLength", "textIndexOf", "textCode", "textCompare", "textTest", "textSlice", "textPad", "textRepeat", "textTernary", "textCall"]);
 /** The methods of a text the front end writes as functions of its own (`textCall`). */
 const TEXT_METHODS = new Set(["toUpperCase", "toLowerCase", "toLocaleUpperCase", "toLocaleLowerCase", "trim", "trimStart", "trimEnd", "replace", "replaceAll", "split", "join", "at", "charAt", "concat", "parseInt", "Number"]);
-/** Deaths and Set Deaths, which `memory()` and `setMemory()` are when their player is past the groups (26). */
-const DEATHS_CONDITION = 15, SET_DEATHS_ACTION = 45, LAST_GROUP = 26;
+/** Set Deaths, which `setMemory()` is when its player is past the groups (26). */
+const SET_DEATHS_ACTION = 45, LAST_GROUP = 26;
+const WAIT_ACTION = 4, COMMAND_CONDITION = 2, BRING_CONDITION = 3, SWITCH_CONDITION = 11, ALWAYS_CONDITION = 22, NEVER_CONDITION = 23;
+/**
+ * A map of our own (TrigScript 4, step 5 of the way off eudplib): the game's conditions and actions it lays out as the
+ * script wrote them — `memory()` and `setMemory()` at an address known when the map is built among them, a Deaths and
+ * a Set Deaths whose player is the address's EPD; no action with a field from a value or a text the program made; not
+ * Wait, which would hold the owner's whole trigger list.
+ */
+const gameAction = (s: Extract<Stmt, { kind: "action" }>): boolean => !s.variables?.length && !s.text && s.record.type !== WAIT_ACTION;
+/**
+ * The actions after which Bring counts a location's units again only once a query of another kind is asked: it keeps
+ * what it found until then (the Python side's `MOVES_UNITS`, `forget_counts`) — Create Unit with Properties, Move Unit,
+ * Create Unit, Give Units.
+ */
+const MOVES_UNITS = new Set([11, 39, 44, 48]);
+/** The condition types whose comparison is a number's at least / at most, which one condition turns around. */
+const COUNTED = new Set([1, 2, 3, 4, 5, 12, 14, 15, 21]);
+
+/** Statements with the blocks around them taken away, and the remarks. */
+function flatten(list: Stmt[]): Stmt[] {
+  return list.flatMap((t) => (t.kind === "block" ? flatten(t.body) : t.kind === "remark" ? [] : [t]));
+}
+
+/** A condition of the game's in a trigger (`Cond.game`). */
+const gameCond = (r: ConditionRecord): Cond => ({ dword: { game: 0 }, compare: "atLeast", value: 0, game: r });
+
+/**
+ * The conditions that hold exactly when a condition of the game's is `when`: itself; turned around, the one condition
+ * that holds when it does not — at least n against at most n − 1, a switch set against cleared — or null when there is
+ * none (exactly n, Command the Most, …). Always and Never are known either way.
+ */
+function gameConds(r: ConditionRecord, when: boolean): Cond[] | "true" | "false" | null {
+  // (A disabled one as it is: the game decides what it makes of it.)
+  if (r.flags & 0x02) return when ? [gameCond(r)] : null;
+  if (r.type === ALWAYS_CONDITION) return when ? "true" : "false";
+  if (r.type === NEVER_CONDITION) return when ? "false" : "true";
+  if (when) return [gameCond(r)];
+  if (r.mask) return null;
+  if (r.type === SWITCH_CONDITION && (r.comparison === 2 || r.comparison === 3)) return [gameCond({ ...r, comparison: 5 - r.comparison })];
+  if (!COUNTED.has(r.type)) return null;
+  const n = r.amount >>> 0;
+  if (r.comparison === 0) return n === 0 ? "false" : [gameCond({ ...r, comparison: 1, amount: n - 1 })];
+  if (r.comparison === 1) return n === U32 - 1 ? "false" : [gameCond({ ...r, comparison: 0, amount: n + 1 })];
+  return null;
+}
 
 /** The kinds of statement, told apart from the expressions of the same name (`pop`, `call`). */
 const STATEMENT_KINDS = new Set(["declare", "assignText", "storeText", "releaseText", "textLoop", "assign", "declareArray", "store", "push", "setLength", "assignBool", "assignUnit", "unitLoop", "unitWrite", "unitDo", "tableWrite", "if", "while", "do", "for", "unrolled", "switch", "break", "continue", "return", "sleep", "parallel", "start", "cancel", "action", "syncSend", "select", "centerLocation", "print", "buildText", "block", "try", "throw", "uncaught", "remark", "graph"]);
@@ -342,6 +383,8 @@ class Scope {
   whyOf = new Map<Stmt, { why: string; never: boolean }>();
   /** A map of our own: the slot of the program's owner, the current player while it runs. */
   owner: number | undefined;
+  /** Whether a condition taken is Bring, whose counts an action that makes or moves units leaves behind (`MOVES_UNITS`). */
+  bring = false;
   readonly decls: Map<string, VarDecl>;
   constructor(decls: Map<string, VarDecl>) {
     this.decls = decls;
@@ -387,6 +430,10 @@ class Scope {
       case "var": return this.bool(notZero({ kind: "var", id: e.id }));
       case "and": case "or": return e.items.every((x) => this.bool(x));
       case "not": return this.bool(e.expr);
+      case "cond":
+        if (!this.native) return this.no(`a ${e.kind}`);
+        if (e.record.type === BRING_CONDITION) this.bring = true;
+        return true;
       default: return this.no(`a ${e.kind}`);
     }
   }
@@ -818,6 +865,7 @@ class Scope {
         if (this.native && s.position === "chat" && s.parts.every((p) => this.printed(p))) return true;
         return this.island(s);
       case "call": return (this.native && this.call(s.call)) || this.island(s);
+      case "action": return (this.native && gameAction(s)) || this.island(s);
       case "declareArray": {
         // A map of our own: the cells set from the list or the one value (`fill`), each a number the emitter lowers.
         const a = this.arrays.get(s.array);
@@ -907,8 +955,12 @@ interface Store { array: ArrayDecl; index: Linear; reads: CellRead[]; value: Lin
 /** (`label`: every place of `target` set to where `to` is — where a function that calls itself goes back to.) */
 /** (`route`: a variable's cell into these dwords, and nothing else of its places.) */
 type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string; apart?: boolean; top?: number } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At } | { label: { target: string; to: string } } | { route: { from: string; into: Dword[] } };
-/** `keep`: an empty trigger that stays (a jump whose next pointer a place sets). */
-interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean }
+/**
+ * `keep`: an empty trigger that stays (a jump whose next pointer a place sets). `guarded`: an `if` in one trigger (its
+ * conditions, its statements' actions), which may be followed by the copies of what it writes — a copy whether or not
+ * the conditions held, which writes back what the places hold when they did not.
+ */
+interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean; guarded?: boolean }
 
 /**
  * A place of a variable: a dword that holds it times `scale` plus `add` (wrapping) — known (its cell, a home, a
@@ -1097,7 +1149,7 @@ class Emitter {
   }
 
   push(p: Omit<Proto, "label"> & { label?: string }): Proto {
-    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}) };
+    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}), ...(p.guarded ? { guarded: true } : {}) };
     this.protos.push(t);
     return t;
   }
@@ -1118,10 +1170,11 @@ class Emitter {
     return this.push({ conds: [], items: [] });
   }
 
-  write(target: string, value: Linear, copy = true): void {
+  write(target: string, value: Linear, copy = true, into: Item[] = this.open().items, copies = into): void {
     const w: Write = { target, value, ...(this.at ? { at: this.at } : {}) };
     // (The copy is there for a variable that turns out to need one: the rest leave it out.)
-    this.open().items.push({ write: w }, ...(copy ? [{ copy: target, ...(this.at ? { at: this.at } : {}) }] : []));
+    into.push({ write: w });
+    if (copy) copies.push({ copy: target, ...(this.at ? { at: this.at } : {}) });
     let list = this.writes.get(target);
     if (!list) this.writes.set(target, (list = []));
     list.push(w);
@@ -1242,6 +1295,7 @@ class Emitter {
     if (e.kind === "not") return this.single(e.expr, !when);
     if (e.kind === "test") return this.single(notZero(e.expr), when);
     if (e.kind === "var") return this.single(notZero({ kind: "var", id: e.id }), when);
+    if (e.kind === "cond") return gameConds(e.record, when);
     if ((e.kind === "and" && when) || (e.kind === "or" && !when)) {
       const parts = e.items.map((x) => this.single(x, when));
       if (parts.some((p) => p === null)) return null;
@@ -1268,6 +1322,21 @@ class Emitter {
       case "var": return this.jump(notZero({ kind: "var", id: e.id }), when, to, at);
       case "and": case "or": {
         if ((e.kind === "and") !== when) {
+          // Any item not so goes to `to`: when every item's conditions for being so fit in one trigger, that trigger
+          // skips past a goto (one trigger where a branch an item would be more); else an item at a time.
+          const parts = e.items.map((x) => this.single(x, !when));
+          if (e.items.length > 1 && parts.every((p) => p !== null)) {
+            if (parts.includes("false")) return this.goto(to);
+            const conds = parts.filter((p): p is Cond[] => Array.isArray(p)).flat();
+            if (conds.length === 0) return;
+            if (conds.length <= MOST_CONDS) {
+              const past = this.label("p");
+              this.branch(conds, past, at);
+              this.goto(to);
+              this.land(past);
+              return;
+            }
+          }
           for (const x of e.items) this.jump(x, when, to, at);
           return;
         }
@@ -1296,6 +1365,18 @@ class Emitter {
         // != when true, == when false: below, or above — of the 32 bits as they are, which is the same.
         this.jump({ ...e, op: "<", unsigned: true }, true, to, at);
         this.jump({ ...e, op: ">", unsigned: true }, true, to, at);
+        return;
+      }
+      case "cond": {
+        const c = gameConds(e.record, when);
+        if (c === "false") return;
+        if (c === "true") return this.goto(to);
+        if (c) return this.branch(c, to, at);
+        // (Not so, of a condition no other one turns around: past `to` when it holds.)
+        const past = this.label("p");
+        this.branch(gameConds(e.record, true) as Cond[], past, at);
+        this.goto(to);
+        this.land(past);
         return;
       }
       default: throw new Error(`emitter: ${e.kind}`);
@@ -1328,6 +1409,7 @@ class Emitter {
     if (s.kind === "declare" && s.decl.kind === "boolean") return this.setBool(s.decl.id, s.init as BoolExpr);
     if (s.kind === "assignBool") return this.setBool(s.target, s.value);
     if (s.kind === "call" && !this.scope.islands.has(s)) return this.call(s.call);
+    if (s.kind === "action" && !this.scope.islands.has(s)) return this.action(s);
     if (s.kind === "declareArray" && this.scope.native && !this.scope.islands.has(s)) return this.declareArray(s);
     if (s.kind === "return") return this.ret(s);
     const call = this.scope.calls.get(s);
@@ -1379,6 +1461,24 @@ class Emitter {
       case "declare": return this.write(s.decl.id, linear(s.init as NumExpr)!);
       case "assign": return this.write(s.target, linear(s.value)!);
       case "if": {
+        // A map of our own: actions of the game's and writes that read nothing but their target, under conditions
+        // that fit in one trigger — that trigger, its actions run when they hold (no branch, no puts-back); the copies
+        // of what it writes after it.
+        const then = flatten(s.then);
+        const guard = this.scope.native && !s.else?.length && then.length && then.length <= MOST_ACTS / 4 && then.every((t) => this.guards(t)) ? this.single(s.cond, true) : null;
+        if (guard === "false") return;
+        if (Array.isArray(guard)) {
+          const items: Item[] = [], copies: Item[] = [];
+          for (const t of then) {
+            const outer = this.at;
+            if (t.at) this.at = t.at;
+            if (t.kind === "action") items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, record: t.record, ...(t.at ? { at: t.at } : {}) } });
+            else if (t.kind === "assign") this.write(t.target, linear(t.value)!, true, items, copies);
+            this.at = outer;
+          }
+          this.push({ conds: guard, items: [...items, ...copies], at: s.at, guarded: true });
+          return;
+        }
         const other = this.label("else"), done = this.label("fi");
         this.jump(s.cond, false, s.else?.length ? other : done, s.at);
         this.stmts(s.then);
@@ -1575,6 +1675,28 @@ class Emitter {
   }
 
   /** A boolean set from a test: 1 when it holds, 0 when not. */
+  /** A statement an `if` may guard in its one trigger: an action of the game's, or a write that reads only its target. */
+  guards(t: Stmt): boolean {
+    if (this.scope.islands.has(t) || this.scope.tables.has(t) || this.scope.calls.has(t)) return false;
+    if (t.kind === "action") return gameAction(t) && !MOVES_UNITS.has(t.record.type);
+    if (t.kind !== "assign" || isTemp(t.target) || this.own.has(t.target) || this.results.has(t.target) || this.params.has(t.target)) return false;
+    const l = linear(t.value);
+    return !!l && l.terms.every((x) => x.id === t.target && x.k === 1);
+  }
+
+  /**
+   * An action of the game's, as the script wrote it, among the trigger's others. After one that makes or moves units,
+   * in a program that asks Bring, a trigger whose one condition is Command: Bring counts again after a query of another
+   * kind (the Python side's `forget_counts`).
+   */
+  action(s: Extract<Stmt, { kind: "action" }>): void {
+    this.open().items.push({ act: { dword: { game: 0 }, modifier: "set", value: 0, record: s.record } });
+    if (MOVES_UNITS.has(s.record.type) && this.scope.bring) {
+      const command: ConditionRecord = { location: 0, player: 0, amount: 0, unitId: 0, comparison: 0, type: COMMAND_CONDITION, resource: 0, flags: 0x10, mask: 0 };
+      this.push({ conds: [gameCond(command)], items: [] });
+    }
+  }
+
   setBool(target: string, cond: BoolExpr): void {
     const no = this.label("bno"), done = this.label("bdone");
     this.jump(cond, false, no, this.at);
@@ -3343,7 +3465,7 @@ class Emitter {
           for (const id of it.writes) if ((this.places.get(id)?.filter((p) => !p.synced).length ?? 0) > 1 && !routed.has(id)) pieces.push({ copy: id, island: true, ...(top !== undefined ? { top } : {}), ...(it.island.at ? { at: it.island.at as At } : {}) });
         }
       }
-      if (p.conds.length && (pieces.length > 1 || (pieces[0] as { acts: unknown[] }).acts.length > MOST_ACTS)) return this.crowded.size ? "crowded" : "a branch with too many actions";
+      if (p.conds.length && (pieces.slice(1).some((x) => !(p.guarded && "copy" in x)) || !("acts" in pieces[0]) || pieces[0].acts.length > MOST_ACTS)) return this.crowded.size ? "crowded" : "a branch with too many actions";
       // Routed variables: an action that reads one has its number refreshed from the cell just before its trigger
       // (again after a write of the variable earlier in the same run of actions); conditions likewise.
       const cut: Piece[] = [];
@@ -4211,6 +4333,20 @@ class Rewriter {
         return so;
       }
       case "not": return { ...c, expr: this.cond(c.expr, pre, where) };
+      // (A ?: of booleans, on a map of our own: the side its test picks worked out under an `if` into a variable of the
+      // emitter's own — the other side is never read, as in the script.)
+      case "ternary": {
+        if (!this.own) return c;
+        const t = this.temp();
+        const test = this.cond(c.cond, pre, where);
+        const side = (x: BoolExpr): Stmt[] => {
+          const inner: Stmt[] = [];
+          const value = this.cond(x, inner, where);
+          return [...inner, { kind: "assignBool", target: t, value, ...where }];
+        };
+        pre.push({ kind: "if", cond: test, then: side(c.whenTrue), else: side(c.whenFalse), ...where });
+        return { kind: "var", id: t };
+      }
       case "call": {
         if (!this.own || !c.call.result) return c;
         this.call(c.call, pre, where);
