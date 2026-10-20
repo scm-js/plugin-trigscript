@@ -1835,6 +1835,47 @@ User after step 3 ("B sounds amazing"): "go for step 4".
   files, 5.5 MB, 13 sounds at once; half bars 190, 7.4 MB, 20 (12 left of 32), build 18 s. The half-bar map is
   Maps/TrigScript/trigscript-korobeiniki-halfbar.scx beside the bar one.
 
+### Sounds: how to make the Korobeiniki work again (2026-10-19)
+
+User after the half-bar map: "half bars is fine … map size isnt a problem. we're going for polish and wow factor.
+make sure we know how to reproduce this track and work". Half bars (`every: 2`) are the choice for the showpiece. The
+showpiece (step 5: the falling-block game restyled, the music following it, the visualizer) waits until the language
+work is done.
+
+**The track.** Korobeiniki is a Russian folk song in the public domain: the melody only is the folk song's; the bass,
+chords, arpeggios, counter-lines, drums and form are ours. Never Hirokazu Tanaka's Game Boy bass or countermelody or
+any official arrangement; no "Tetris" in a map's or video's name (a description may say "the Tetris theme"); no
+official Tetris look (a 10 × 20 well, the official pieces or colours — Tetris Holding v. Xio). The StarCraft race-theme
+remix is only for a video: never committed, never in the registry or on scmjs.dev, no download linked.
+
+| Probe (`probes/`) | What it is | Its sheet (`probes/answers/`) |
+| --- | --- | --- |
+| `korobeiniki-ab.ts` | step 1: the same notes before (22 kHz mono WAV) and after (44.1 kHz stereo, limiter, Ogg) | `korobeiniki-ab.txt` |
+| `korobeiniki.ts` | step 2: A = step 1's mix, B = the first arrangement (presets, drums, effects; 34 bars, 63 s) | `korobeiniki.txt` |
+| `korobeiniki-form.ts` | step 3: A = step 2's B as sections; B = **the track** (40 bars, 73 s: intro, verse, build, drop, break, last verse a tone up, outro) | `korobeiniki-form.txt` |
+| `korobeiniki-band.ts` | step 4: the track cut in half bars, four layers, steered by keys (1–7, D B H M, L, Space) | `korobeiniki-band.txt` (`-bars.txt`: the whole-bar build) |
+
+**Making a map** (a scm-js checkout beside this one with its tileset data, and plugin-eudplib, as for every probe):
+
+    npx tsx probes/lib/raycaster-map.mts fixtures/eud/sound-base.scx            # the base map, once
+    npx tsx scripts/build-fixture.mts probes/korobeiniki-band.ts fixtures/eud/korobeiniki-band.scx fixtures/eud/sound-base.scx
+    SCM_SIM_DIR=../scm-sim-eud npx tsx scripts/game-check.mts probes/korobeiniki-band.ts --frames=3800 fixtures/eud/sound-base.scx
+
+and it goes in Remastered's maps folder, `TrigScript/`, with its sheet. Played as a multiplayer game, alone, the
+game's music off, recorded.
+
+**The sounds as the map gets them**, to listen to or compare: `npx tsx scripts/sound-dump.mts <probe> <folder>` (the
+names alone: `--check`). The song as the game plays it piece by piece, every layer on:
+`--append 'program(async () => { playWav(st.playthrough.ogg(5), 0); });'` on the band probe — the largest file.
+A file's name says how it was made (`ENGINE` in sound.ts); since the true-peak limiter ("sound 3") the names differ
+from the ones the recordings of steps 1–3 heard, and the bytes a little.
+
+**A recording checked:** `npx tsx scripts/recording-check.mts <recording.mp4> <ref.ogg>…` finds each reference after
+the one before and says where it starts, how far after the last (in frames), the level against the file second by
+second, the lag at every 10 s (drift), how close below and above 6 kHz, the worst second, L − R, peaks;
+`--pieces=0.84` (half bars at 143) adds each piece's start against the playthrough. What the recordings gave is under
+each step above; the recorder's AAC is what blurs the top (7–10 dB above 6 kHz), not the game.
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):

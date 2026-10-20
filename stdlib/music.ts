@@ -910,6 +910,8 @@ export interface Stems {
   stinger(name: string): number;
   /** The most clips sounding at once as the song plays through, every layer on: of the game's 32, what is left for the rest. */
   readonly voices: number;
+  /** The pieces added up as the game plays the song through, every layer on, each on its frame: to hear it, or compare. */
+  readonly playthrough: Clip;
 }
 
 /**
@@ -1012,6 +1014,9 @@ export function stems(s: Song, options: StemsOptions): Stems {
     section: (name: string) => lookup("section", s.sections.map((x) => x.name), name),
     layer: (name: string) => lookup("layer", layers, name),
     stinger: (name: string) => lookup("stinger", stingerNames, name),
+    get playthrough() {
+      return mixdown(placed.map((p) => ({ clip: grid[p.g][p.l]!, at: p.at })));
+    },
     get voices() {
       if (voices < 0) {
         voices = 0;
