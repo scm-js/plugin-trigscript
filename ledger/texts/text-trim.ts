@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text's trim()
+// ledger: step 8, takes
 // A text without the spaces at its ends: `trim()`, `trimStart()`, `trimEnd()`.
 program(() => {
   let n = 0;

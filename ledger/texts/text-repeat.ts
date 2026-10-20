@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text repeated
+// ledger: step 8, takes
 // A text over again a number of times that changes while the game runs: `"■".repeat(n)`.
 program(() => {
   let n = 0;

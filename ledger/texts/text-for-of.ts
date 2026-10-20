@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a loop over a text
+// ledger: step 8, takes
 // A loop over the characters of a text: `for (const ch of s)`.
 program(() => {
   let n = 0;

@@ -12,6 +12,8 @@ const outcomes = new Map<Row, Outcome>();
 /** Kinds of the IR no script compiles to, and why that is right. */
 const NOT_FROM_A_SCRIPT: Record<string, string> = {
   graph: "the emitter's own statement, made only when a map is built through eudplib with the emitter on",
+  textBlock: "a map of our own's statement, which compiler/backend/texts.ts makes for a made text's block",
+  showText: "a map of our own's statement, which compiler/backend/texts.ts makes to print a made text's block",
   cast: "`u32()`, `i32()` and `fixed()` settle a value's type; `compiler/numbers.ts` takes every cast out once types are known",
   "intrinsic floor": "`compiler/numbers.ts` makes it the number itself, or a shift of a fixed one",
   "intrinsic ceil": "`compiler/numbers.ts` makes it the number itself, or a shift of a fixed one",

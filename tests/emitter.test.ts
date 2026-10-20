@@ -8,10 +8,16 @@ import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ArrayDecl, BoolExpr, Call, FuncDecl, NumExpr, Stmt, TextPart, VarDecl } from "../compiler/ir";
 import { emitBody, emitLoop, emitterCounts } from "../compiler/backend/emit";
+import type { ConditionRecord } from "../vendor/triggers";
 import { END, SWITCHES, TRIGGER_BYTES, type Dword, type Graph, type Num } from "../compiler/backend/graph";
 import { layout } from "../compiler/backend/layout";
 import { fixedAtan2, fixedDiv, fixedMul, fixedSin, fixedSqrt, fixedText } from "../compiler/fixedMath";
 import { SIN_SCALE, atanTable, sinTable } from "../compiler/numbers";
+import ts from "typescript";
+import { compileScript } from "../compiler/compiler";
+import { defaultScriptNames } from "../compiler/names";
+import { emitOwn } from "../compiler/backend/own";
+import { defaultLib } from "../bundle/lib.mjs";
 
 const U32 = 2 ** 32;
 const u = (n: number) => ((n % U32) + U32) % U32;
@@ -1165,6 +1171,66 @@ describe("a map of our own, its first statement", () => {
     PRINTED.got = [];
     const got = runOwn(g);
     expect([PRINTED.got, got.get("done")]).toEqual([[shown([...new TextEncoder().encode("not done")])], 1]);
+  });
+});
+
+describe("a map of our own, memory at a value's address", () => {
+  it("writes a dword at a value's EPD, reads it back whole and as a byte, and compares it in one condition", () => {
+    const decl = (id: string): VarDecl => ({ id, name: id, kind: "number", shared: false, at });
+    const v = (id: string): NumExpr => ({ kind: "var", id });
+    const c = (value: number): NumExpr => ({ kind: "const", value });
+    const deaths = (mask?: number): ConditionRecord => ({ location: mask ?? 0, player: 0, amount: 0, unitId: 0, comparison: 0, type: 15, resource: 0, flags: 0, mask: mask === undefined ? 0 : 0x4353 });
+    const set = { location: 0, text: 0, wav: 0, time: 0, player: 0, target: 0, unitId: 0, type: 45, modifier: 7, flags: 0, padding: 0, mask: 0 };
+    const read = (mask?: number): NumExpr => ({ kind: "read", read: { source: "condition", record: deaths(mask), epd: v("e") }, at, label: "" } as NumExpr);
+    const body = [
+      { kind: "declare", decl: decl("e"), init: c(1000), at },
+      { kind: "assign", target: "e", value: { kind: "binary", op: "+", left: v("e"), right: c(5), at, label: "" }, at },
+      { kind: "action", record: set, variables: [{ field: "player", bits: 32, name: "at", expr: v("e") }, { field: "target", bits: 32, name: "n", expr: c(0x12345678) }], at, label: "" },
+      { kind: "declare", decl: decl("x"), init: read(), at },
+      { kind: "declare", decl: decl("b"), init: { kind: "binary", op: ">>>", left: read(0xff0000), right: c(16), at, label: "" }, at },
+      { kind: "declare", decl: decl("same"), init: c(0), at },
+      { kind: "if", cond: { kind: "compare", op: "==", left: read(), right: c(0x12345678), at, label: "" }, then: [{ kind: "assign", target: "same", value: c(1), at }], at },
+    ] as Stmt[];
+    const decls = new Map(["e", "x", "b", "same"].map((id) => [id, decl(id)]));
+    const g = emitBody(body, decls, "m", undefined, undefined, undefined, 0);
+    if (typeof g === "string") throw new Error(g);
+    const got = runOwn(g);
+    expect([got.get("x"), got.get("b"), got.get("same")]).toEqual([0x12345678, 0x34, 1]);
+    // (The comparison is one condition: no trigger reads the dword a bit at a time for it.)
+    expect(g.triggers.filter((t) => t.conds.some((k) => k.game?.comparison === 10)).length).toBe(1);
+    // (The byte read moves its bits down as it reads them: no shift after it.)
+    expect(g.triggers.filter((t) => t.conds.some((k) => k.compare === "exactly")).length).toBe(0);
+  });
+});
+
+describe("a map of our own, texts made while the game runs", () => {
+  /** What a one-program script prints, its payload walked from its bytes (one pass: it sleeps nowhere). */
+  const printed = (body: string): string[] => {
+    const r = compileScript(ts, { "main.ts": `program(() => {\n  let n = 0;\n  while (n < 12) n += 5;\n${body}\n});\n` }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r);
+    if (typeof o === "string") throw new Error(o);
+    PRINTED.got = [];
+    runOwn(o.runs[0].graph);
+    return PRINTED.got;
+  };
+  const bytes = (...lines: string[]) => lines.map((l) => shown([...new TextEncoder().encode(l)]));
+
+  it("makes a text of a number, a known text and another made text, and shows a made one as it is", () => {
+    expect(printed(`  const a = String(n);\n  print(a);\n  print(\`[\${a}] \${a.padStart(4, "0")} \${"ab".repeat(n / 5)}\`);`)).toEqual(bytes("15", "[15] 0015 ababab"));
+  });
+
+  it("copies a made text to every byte a cursor can be at, and cuts nothing short", () => {
+    // (Each piece longer than the last and each at another byte of a dword: the copies split across dwords.)
+    let want = "", s = "x";
+    for (let i = 0; i < 7; i++) { want = want + s + String(i); s = s + "yz"; }
+    expect(printed(`  let s = "x";\n  let t = "";\n  let i = 0;\n  while (i < 7) {\n    t = t + s + String(i);\n    s = s + "yz";\n    i += 1;\n  }\n  print(t);`)).toEqual(bytes(want));
+  });
+
+  it("reads a made text's characters, searches it, and orders it against others", () => {
+    const got = printed(`  const t = \`  \${n} ore, \${n * 2} gas  \`.trim();\n  print(\`\${t.length} \${t.charCodeAt(1)} \${t.indexOf("gas")} \${t.includes("ore")} \${t.startsWith("15")} \${t.endsWith("gas")} \${t < "16"} \${t > "15"} \${t.slice(4, 7)}\`);`);
+    const t = "15 ore, 30 gas";
+    expect(got).toEqual(bytes(`${t.length} ${t.charCodeAt(1)} ${t.indexOf("gas")} true true true true true ${t.slice(4, 7)}`));
   });
 });
 

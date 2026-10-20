@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an error thrown or caught (try, throw)
+// ledger: step 11, refused: try
 // A class of error of the script's own, `class Late extends Error`, told apart in a `catch` with `instanceof`.
 class Late extends Error {}
 program(() => {

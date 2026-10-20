@@ -3553,8 +3553,8 @@ found what they left out; where a step moved, its old number is given.
    does not stop the other players' programs (a program whose owner leaves stops, as the Python side's does) — both
    played, the leaver in a game of two.
 8. **Texts as values** (was half of 2). Part 1 ✓: texts known when built, chosen while the game runs — "Texts known
-   when built on our own backend". Part 2: texts made while the game runs, a text in memory (where it is, its length)
-   and the blocks it is kept in. Part 3: what stands on part 2.
+   when built on our own backend". Part 2 ✓: texts made while the game runs — "Texts made while the game runs on our
+   own backend". Part 3: JSX (`buildText`), a player's name and colour in a print, texts in arrays and records.
    Text variables and arrays; compared, searched, measured, repeated, split and
    joined; templates and JSX made while the game runs; `name()` and `color()` in a print; `ui.lines`.
 9. **Arrays that grow, and what stands on the heap** (was half of 3). `push`, `pop`, a length set, `through`, `Map`
@@ -3920,7 +3920,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 5 The game's conditions and actions | 197 of 198 |
 | 6 The game's memory | 50 of 50 |
 | 7 Programs, owners and players | 27 of 28 |
-| 8 Texts as values | 18 of 46 |
+| 8 Texts as values | 33 of 46 |
 | 9 Arrays that grow, the heap | 0 of 26 |
 | 10 Units | 0 of 99 |
 | 11 Tasks, `async` and errors | 0 of 44 |
@@ -4493,6 +4493,58 @@ copied, where eudplib's build copies its bytes into a buffer every time:
 Checked: `probes/own-texts.ts` built both ways, the same lines at the same frames, every line ok; the 18 rows the part
 takes against the simulator, and edge cases besides (order, an index past either end, a negative start, the empty text,
 characters of three bytes, a variable given another's texts): the same; `tests/ownGame.test.ts`.
+
+### Texts made while the game runs on our own backend (2026-10-20)
+
+Step 8, part 2 (`compiler/backend/texts.ts`, the same pass; the emitter's new reads and writes at an address that is a
+value). A made text variable has a block of its own — a string of the map's, 1,280 bytes, so that a text printed alone
+is Display Text of its block as it is, never copied — and its length in bytes and in characters beside it. Every block
+is laid out once, its address set at the program's start.
+
+- **Memory at a value's address** (the emitter, for this): a read of the dword at an EPD that is a value — a trigger a
+  bit, each condition's player field a place of it, its bits moved down or up as they are read (`readAt`); a dword
+  there compared with a constant in one condition (`cond.epd`); a write there is a Set Deaths whose player field is
+  the value (step 5's fields from values). A variable read in many places and written often is kept in one cell and
+  read where it is used (`VarDecl.routed`): a write of the cursor was one action a place, hundreds of them.
+- **Made at one cursor** — a dword, a byte, the bytes and characters written — by the run time's functions, laid out
+  once for the program and called: another text's dwords copied whole (at a dword's start; at any other byte each
+  dword read once as two masked reads that put its bytes where they go in the two dwords it falls in: 32 triggers a
+  dword either way), a number's digits, one byte, the ending 0 (the rest of its dword 0s, so a text compares dword by
+  dword); a known text copied from a block that holds it. What a text needs made first — a call's result, a text read
+  from — is made before it is begun, so one text is made at a time.
+- **Calls**: a made text parameter is made into its block before the call; a `return` of a text makes it into the
+  result's block (a call whose text cannot be made is refused whole — it gave an empty text once: "Time " for the
+  clock). A function that calls itself keeps no made text (refused).
+- **Read**: the length is its variable; a character's number is its byte when it has a byte a character, else a walk;
+  `indexOf`, `includes`, `startsWith`, `endsWith` and the order of two texts by the run time's functions; a made text
+  the same as a known one is a condition a dword. In a `while`'s test, the loop asks it at the top of its body.
+- **Made**: templates, `padStart` / `padEnd`, `repeat`, `slice` (of one byte a character: from the byte; else walked),
+  `for … of` over its characters; the library's `trim`, case, `replace`, `parseInt`, `join`, `clock` and `thousands`,
+  which stand on these.
+
+| `probes/own-made-texts.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| A–B: a number made a text, compared, padded, repeated, a function's, the clock, thousands (frame 2) | **0.275 ms** | 1.391 ms |
+| C: trimmed, in capitals, replaced, read back, searched (frame 3) | **1.291 ms** | 1.694 ms |
+| D: walked, sliced, made a character more each time, joined (frame 4) | **0.540 ms** | 0.840 ms |
+
+Size: 3,364 triggers and a 15 MB payload (390 KB as a file), against eudplib's 1.1 MB map — the library's functions
+are written out at every call by the front end, and every trigger takes its 2,408 bytes. Step 14's payload work
+(eudplib stacks its triggers' unused tails) and sharing a function written out the same way twice are where it goes.
+
+Checked: `probes/own-made-texts.ts` built both ways, the same lines at the same frames, every line ok; the 33 rows the
+step takes against the simulator, and every row of the ledger that takes (422 the same; the others actions the walker
+does not run, prints to a group counted once a player, random draws); `tests/emitter.test.ts` (memory at a value's
+address; texts made, copied at every byte, read and ordered).
+
+Found on the way: part 1's table of a known text at a variable chose its window around 0, so `"ABC…Z".slice(c - 97,
+c - 96)` (the library's `toUpperCase`) read past it for every letter and gave "" — fixed: the window is where each part
+of the numbers that moves as a line of the variable lands inside the text. A list written in a call's arguments
+holding a value of the program, `[n, 2, 8].join(", ")`, is "A call's arguments must be known when the script is built"
+in both builds — a gap of the front end's.
+
+*Open:* a text cut at 1,023 bytes counts its characters as its bytes (the Python side counts them again); the message
+the Python side shows once when a text is cut is not shown.
 
 ## Part C — the game, pushed
 

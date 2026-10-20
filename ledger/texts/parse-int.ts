@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a ?: of texts
+// ledger: step 8, takes
 // The whole number written at the start of a text: `parseInt(s)`, and `isNaN(parseInt(s))` for whether there is one.
 program(() => {
   let n = 0;

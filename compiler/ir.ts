@@ -58,6 +58,11 @@ export interface VarDecl {
    * just made is moved), and assigning or declaring again gives the old block back first.
    */
   text?: "id" | "made";
+  /**
+   * A map of our own only (`compiler/backend/texts.ts`): kept in one cell and read where it is used, as a variable the
+   * emitter copies is — for one read in many places and written often (a write is one action, not one a place).
+   */
+  routed?: boolean;
   /** `shared(…)`: one cell for every player of a per-player program. */
   shared: boolean;
   /** A `u8` / `u16` annotation; unset for the full 32 bits. */
@@ -171,8 +176,12 @@ export type RaceId = 0 | 1 | 2;
  * race or (`race` null) of the race the player is. `player` is a slot, or 13 for the
  * current player.
  */
+/**
+ * `epd` (a map of our own only, `compiler/backend/texts.ts`): the condition's player field is this value — a Deaths of
+ * unit 0 then reads the dword at that EPD, wherever it is.
+ */
 export type ReadSource =
-  | { source: "condition"; record: ConditionRecord }
+  | { source: "condition"; record: ConditionRecord; epd?: NumExpr }
   | { source: "player"; fact: "race" | "slot" | "left"; player: number }
   | { source: "supply"; of: "used" | "max" | "provided"; race: RaceId | null; player: number };
 
@@ -408,7 +417,7 @@ export type BoolExpr =
    * `amount`: a map of our own's backend only (`Rewriter.asked`), a read compared with a value — the condition's
    * amount that value plus `add`, a place of it.
    */
-  | { kind: "cond"; record: ConditionRecord; amount?: { expr: NumExpr; add: number } }
+  | { kind: "cond"; record: ConditionRecord; amount?: { expr: NumExpr; add: number }; epd?: NumExpr }
   /** A boolean variable. */
   | { kind: "var"; id: string }
   /** `alive[i]`: a cell of an array of booleans; false when the index is past either end. */
@@ -656,6 +665,14 @@ export type Stmt =
   | { kind: "uncaught"; at: At; label: string }
   /** A word for the editor about a line: a loop unrolled when the script was built. */
   | { kind: "remark"; text: string; short?: string; at: At }
+  /**
+   * A map of our own only (`compiler/backend/texts.ts`): `decl`, a number, declared as the EPD of block `block` — a
+   * string of the map's `bytes` long, laid out for it (one block for every statement that names it), empty at first or
+   * holding `text`.
+   */
+  | { kind: "textBlock"; decl: VarDecl; block: string; bytes: number; text?: string; at: At }
+  /** A map of our own only: Display Text of block `block` as it is now, to `to` as a print's is. */
+  | { kind: "showText"; block: string; bytes: number; to: number; at: At }
   /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */
   | { kind: "graph"; graph: Graph; original: Stmt[]; at: At; label: string };
 

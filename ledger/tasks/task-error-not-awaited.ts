@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an error thrown or caught (try, throw)
+// ledger: step 11, refused: try
 // An error a task ends on that nothing awaits: the task ends and the game says so, and the program goes on.
 async function worker() {
   await sleep(frames(1));

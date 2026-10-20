@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text kept in a variable
+// ledger: step 8, takes
 // A number of the program made a text: `String(n)` and `n.toString()`, kept as a text.
 program(() => {
   let n = 0;
