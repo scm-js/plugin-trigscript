@@ -903,6 +903,16 @@ describe("the emitter, a loop's test", () => {
   });
 });
 
+describe("the emitter, a map of our own's texts", () => {
+  it("refuses a text for other players than the owner, whom Display Text alone would show it to", () => {
+    // print("hi", { to: AllPlayers })  and  print("hi", { to: P2 }): the Python side shows each to every player of
+    // its group in turn; a map of our own showed both to its owner alone, saying nothing.
+    const said = (to: number) => emitBody([{ kind: "print", to, position: "chat", parts: [{ kind: "text", text: "hi" }], at, label: "" }], new Map(), "p");
+    expect(typeof said(13)).not.toBe("string");
+    for (const to of [17, 1, 18]) expect(said(to)).toMatch(/a text shown to other players than the program's owner/);
+  });
+});
+
 // ── a map of our own, as the game walks its triggers ──
 
 /**

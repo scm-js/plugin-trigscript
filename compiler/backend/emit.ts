@@ -20,6 +20,7 @@
  */
 import { STACK_DEPTH, type ArrayDecl, type BoolExpr, type Call, type FuncDecl, type NumExpr, type Program, type Stmt, type TextPart, type VarDecl, type At } from "../ir";
 import { PACK_FROM } from "../eud";
+import { PlayerGroup } from "../../vendor/triggers";
 import { END, MOST_ACTS, MOST_CONDS, STACK, checkGraph, nextOf, type Act, type Compare, type Cond, type Dword, type FixedFn, type Graph, type Num, type Region, type Trigger } from "./graph";
 
 /** The game's tick (frames since the game started), and the fields of the trigger a map of our own wakes by. */
@@ -523,6 +524,9 @@ class Scope {
       case "unrolled": return s.iterations.every((it) => this.stmts(it, true)) || this.island(s);
       case "sleep": return this.native || this.island(s);
       case "print":
+        // (Display Text shows to the current player, the owner in a map of our own: a text for anyone else is refused
+        // until a print goes to each player of its group in turn, as the Python side's does.)
+        if (this.native && s.to !== PlayerGroup.CurrentPlayer) return this.no("a text shown to other players than the program's owner") || this.island(s);
         if (this.native && s.position === "chat" && s.parts.every((p) => this.printed(p))) return true;
         return this.island(s);
       case "call": return (this.native && this.call(s.call)) || this.island(s);

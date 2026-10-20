@@ -33,6 +33,8 @@ if (r.diagnostics.length) { for (const d of r.diagnostics) console.error(`${d.fi
 if (r.ir.length !== 1) { console.error(`a map of our own has one program; this script has ${r.ir.length}`); process.exit(1); }
 const program = r.ir[0];
 if (program.perPlayer) { console.error("a map of our own has no per-player program yet"); process.exit(1); }
+// (The map's triggers are cleared below, so `trigger()` records would be lost without a word.)
+if (r.triggers.length) { console.error(`a map of our own keeps no trigger() records yet; this script has ${r.triggers.length}`); process.exit(1); }
 const compiled = performance.now();
 
 const decls = new Map<string, VarDecl>();
