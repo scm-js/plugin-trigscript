@@ -1154,7 +1154,7 @@ describe("a map of our own, its first statement", () => {
   it("goes where a program's first statement sends it: a boolean declared false is false", () => {
     // (`let done = false` first: the jump past the true side is the graph's first trigger, empty but for its next
     // pointer, and is kept — dropped, the walk came in at the true side.)
-    const decl: VarDecl = { id: "done", name: "done", kind: "boolean", shared: false };
+    const decl: VarDecl = { id: "done", name: "done", kind: "boolean", shared: false, at };
     const body = [
       { kind: "declare", decl, init: { kind: "const", value: false }, at },
       { kind: "if", cond: { kind: "not", expr: { kind: "var", id: "done" } }, then: [{ kind: "print", to: 13, position: "chat", parts: [{ kind: "text", text: "not done" }], at, label: "" }], at },
