@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient of fixed numbers
+// ledger: step 4, takes
 // A whole number divided by one made fixed, which keeps the fraction: `n / fixed(d)` (3 / fixed(2) is 1.5).
 program(() => {
   let n = 0;

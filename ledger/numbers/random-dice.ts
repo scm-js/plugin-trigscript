@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a random number
+// ledger: step 4, takes
 // The total of dice thrown, from `trigscript/random`: `dice(3, 6)`, from 3 to 18.
 import { dice } from "trigscript/random";
 program(() => {

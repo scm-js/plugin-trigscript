@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a remainder of two values
+// ledger: step 4, takes
 // A remainder of two values that change while the game runs: `a % b`.
 program(() => {
   let a = 0;

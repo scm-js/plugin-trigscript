@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a product of two values
+// ledger: step 4, takes
 // A product of two values that change while the game runs: `a * b`.
 program(() => {
   let a = 1;

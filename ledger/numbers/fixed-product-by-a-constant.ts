@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a product of fixed numbers
+// ledger: step 4, takes
 // A number with a fraction times a fraction written in the script: `x * 1.5`.
 program(() => {
   let x = 0.5;

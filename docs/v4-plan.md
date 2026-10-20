@@ -3518,7 +3518,12 @@ found what they left out; where a step moved, its old number is given.
 1. Calls ✓ (#35), and recursion ✓ (#37).
 2. Texts with numbers in them ✓ (#38). Texts as values moved to 8.
 3. Arrays of a fixed length ✓ (#39). Arrays that grow moved to 9.
-4. **Numbers.** A product, a quotient and a remainder of two values and by a constant, signed and `u32`; `&` `|` `^`
+4. **Numbers** ✓ (all 59 of the ledger's rows). Part 1: products, quotients and remainders — "Products and quotients
+   on our own backend"; part 2: bits and shifts by a value — "Bits and shifts on our own backend"; part 3: fixed
+   products, quotients and printing — "Numbers with a fraction on our own backend"; part 4: random numbers — "Random
+   numbers on our own backend"; part 5: `sqrt`, `sin`, `cos`, `atan2`, `u8` and `u16` — "Square roots, sines and
+   small numbers on our own backend".
+   A product, a quotient and a remainder of two values and by a constant, signed and `u32`; `&` `|` `^`
    as values; a shift by a value; `trunc`. Fixed point: `fmul`, `fdiv`, `c / x` (the emitter's reciprocal exists),
    `sqrt`, `sin`, `cos`, `atan2` (`tan` and `hypot` come down to these). `u8` and `u16` variables (saturating
    `bits`). Random numbers: `random()`, `randomInt`, seeded as `f_randomize` seeds them (the Randomize switch), each
@@ -3899,8 +3904,8 @@ lists what no script reaches. A step is done when its scripts say so.
 | 0 The start | 157 of 158 |
 | 1 Calls and recursion | 33 of 33 |
 | 2 Texts with numbers | 6 of 6 |
-| 3 Arrays of a fixed length | 53 of 54 |
-| 4 Numbers | 0 of 59 |
+| 3 Arrays of a fixed length | 54 of 54 |
+| 4 Numbers | 59 of 59 |
 | 5 The game's conditions and actions | 0 of 193 |
 | 6 The game's memory | 0 of 49 |
 | 7 Programs, owners and players | 1 of 22 |
@@ -3911,8 +3916,8 @@ lists what no script reaches. A step is done when its scripts say so.
 | 12 Input | 0 of 31 |
 | 13 The map's own triggers | 0 of 13 |
 
-Two steps called done are not quite: a `?:` of two booleans (step 0) and a cell read at a shifted index, `xs[a >> 1]`
-(step 3 — the store there and `const i = a >> 1; xs[i]` are taken). Every script a map of our own takes was also run
+One step called done is not quite: a `?:` of two booleans (step 0). (A cell read at a shifted index, `xs[a >> 1]`, the
+other one, is taken since step 4's part 4.) Every script a map of our own takes was also run
 from its laid-out bytes against the simulator — the numbers, arrays, texts and language scripts, and about forty edge
 cases besides (signs of `>>`, `u32` printed and compared, wrap-around, reads past the ends, negative indexes): all
 printed the same. The README's reference to the language predates TrigScript 4 (it says `try` and `async` are missing):
@@ -3965,8 +3970,217 @@ the ledger is the list it can be written again from at 4.0.
   the game is 3.
 - A map of our own: `displayText("known text")` is refused where `print("known text")` is taken (step 5's first);
   JSX inside a program is "made while the game runs" even when it holds nothing of the program's (step 8);
-  `a >> 0` is refused where `a >> 1` to `a >> 31` are taken; `Math.tan` and `Math.hypot` are refused as what they
-  become (`Math.sin`, a product).
+  (`Math.tan` and `Math.hypot`, refused as what they become, are taken since step 4's part 5; `a >> 0`, refused where
+  `a >> 1` to `a >> 31` were taken, is the number itself since its part 2.)
+
+### Products and quotients on our own backend (2026-10-20)
+
+Step 4, part 1: `a * b` of two values, `a / b` and `a % b` of two values and by a constant, signed (towards zero, the
+remainder with the dividend's sign) and `u32`, by 0 giving 0 as the simulator has it (`compiler/backend/emit.ts`,
+`Emitter.product`, `divideByConst`, `divide`). Each is written where it is used, not called; the value ranges decide
+how many bits it goes over.
+
+- **A product** tests the side the ranges leave fewer bits a bit at a time, where it is (a masked condition, free in
+  Remastered), and adds the other side for each bit set. When the tested side has 8 bits or fewer and the other side's
+  multiples can be fields of their own — a variable the plan does not copy, or a scratch value with few bits — each bit
+  is one trigger adding the other side times the bit (13 ns, 23 set). Otherwise Horner's way: the product so far
+  doubles in one action whose number is its own destination, in a trigger that also moves its own next pointer on a
+  trigger each time it runs, so it walks a run of bit triggers laid out one after another with nothing pointing it;
+  the other side is added from one shared trigger (about 70 ns a bit) or a field per bit (46). A side below zero is its
+  magnitude, the product negated as it comes out of the doubling trigger (its action pointed at a scratch cell and made
+  a subtraction from `MAX`). eudplib's product routes its operand through a call twice a bit, about 95 ns.
+- **A quotient or a remainder by a constant** is eudplib's chain by a constant, inlined: a trigger for each bit the
+  quotient can have, as many as the ranges leave the dividend, groups of eight that cannot take anything jumped over;
+  one chain for a dividend below zero and one for the rest, each gathering the answer with its sign in one scratch cell.
+- **A quotient or a remainder of two values** is long division with the remainder (and the quotient) doubling in such a
+  trigger: a step is the dividend's bit added, then one trigger shared by every step that takes the divisor away when it
+  fits — the divisor set into its two fields once, whatever the number of steps. A dividend below zero is read as itself
+  less 1, whose clear bits are its magnitude's set ones (a run of steps of its own). About 80 ns a step, as many as the
+  dividend has bits; eudplib's division routes its divisor into two fields of each of 32 steps first, about 6.5 µs.
+- **What the plan copies is routed, not kept.** A variable the plan copies into its places after each write (one set
+  from itself times something, or from a product, a quotient or a cell jumped into: `Scope.heavy`), or a scratch value
+  such a routine fills, would have every field holding a multiple of it filled a bit at a time at each write. So such
+  an operand is routed into the routine's fields where the routine starts (56 ns a field, `setTo`, `routeFed`), and a
+  multiple of it is never asked for.
+
+Fixed on the way: a fill folded into a target with no other place (`apart` when the target is an operand, its scratch
+cell's conditions and routes rewritten with its actions); a copy into fields holding multiples goes over only the bits
+the value's range allows (`Copy.top`, now in a map of our own's layout too).
+
+| `probes/own-numbers.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 200 products of numbers the ranges cannot bound (frame 4) | **0.677 ms** | 0.943 ms |
+| 200 quotients and remainders by constants (frame 6) | 0.526 ms | 0.730 ms |
+| 200 quotients of two values (frame 8) | 0.825 ms | 1.175 ms |
+| 200 remainders of two values (frame 10) | 0.727 ms | 1.148 ms |
+| 200 products and quotients of small numbers (frame 12) | **0.514 ms** | 0.764 ms |
+
+(After part 2's fill into the one field that reads a value; before it, 0.700, 0.572, 0.848, 0.750 and 0.514.)
+
+The first versions were slower than eudplib's: 2.08 ms for the products, which had every operand's multiples as
+places — a variable set from itself had them filled a bit at a time on every write (6 µs a turn). The table is after
+the routed operands and Horner's way. Each frame also carries the probe's own `x = x * 1103515245 + 12345`, an
+existing path that copies `x` a bit at a time into the multiples its uses keep: most of what is left in frames 4–10.
+
+Checked: random programs with products, quotients and remainders of values and constants, signed and `u32`, with and
+without the ranges a run shows (of the sides and the answers, about 9,600 sides), at every edge (`−2^31 / −1`, by 0,
+divisors past 2^31) — as written, as graphs and from the laid-out bytes; the ledger's step 4 scripts against the
+simulator; `probes/own-numbers.ts` built both ways, its ten lines the same at the same frames, every one ok.
+
+Next for these (before they are as far past eudplib as arrays are): a divisor whose range is small (`b` in 1 … 13) jumps
+into a chain by each constant (about 240 ns where the doubling takes 900, at a chain's size each); a variable set from
+itself times a constant (the LCG above) worked out by a product into a scratch value instead of copied; a shared routine
+when a program has many divisions (each written out is up to 75 triggers, 180 KB of the payload).
+
+### Bits and shifts on our own backend (2026-10-20)
+
+Step 4, part 2: `&` `|` `^` as values, with a constant and of two values, and shifts by a value (`Emitter.bits`,
+`shiftLeft`, `shiftRight`).
+
+- **Bits are masked writes.** The game works a masked Set Deaths on the bits under its mask alone — of the dword and of
+  the number both, so an addition's carry past the mask is lost (scm-sim's `maskedWrite`; the tests' interpreters
+  applied the mask after the addition and now do as the game does). So the left side is copied into a scratch cell
+  and: `& k` sets k's clear bits to 0, `| k` its set bits to 1, `^ k` adds k to the even bits and to the odd bits apart
+  (each sum's bit is the two bits' exclusive or) — two actions. Of two values the same: the right side is the number of
+  `^`'s two additions, or the **mask** of `&`'s and `|`'s one write — an action's mask is a field like any number
+  (`{ act, part: "mask" }`, the record's first dword), set from the right side as the routine starts, and for `&` its
+  bits flipped by two masked additions of all ones. This is eudplib's own way for two variables (its `&` is this write,
+  its `^` these additions), without the calls; a trigger a bit, built first, was 2.6× slower than eudplib.
+- **A shift left by a value** is the number in a doubling trigger walked n times: runs of 16, 8, 4, 2 and 1 empty
+  triggers, one for each bit of n, the doubling trigger going back into its run after each (about 37 ns a doubling).
+  eudplib's is a loop of routed additions of the number to itself.
+- **A shift right by a value** is Horner's way over the bits that stay: the answer doubling in a trigger that also
+  counts, a trigger a bit from the top adding it when set, and one shared test ending the walk when the count reaches
+  31 — 32 − n bits, about 69 ns each. `>>` of a number below zero works on its bits flipped and flips the answer as it
+  comes out. eudplib's right shift by a value is 2^n by 32 comparisons and a whole division.
+- **By 32 or more**, as TrigScript has it (the README's operators row; JavaScript shifts by the remainder): `<<` and
+  `>>>` leave nothing, `>>` the sign — tested unless the ranges know the count below 32. The emitter's existing `x << k`
+  by a constant took the count's remainder, and a count of 0 (`a >> 0`, refused before) is the number itself.
+- **A value filled into the one field that reads it.** A product's, a quotient's or a mask's answer read by one write
+  only (`sum += x & 0xff`) is worked in that write's number where it is, not copied there (56 ns): a variable of the
+  emitter's own nothing reads at its cell has its scratch cell folded into its one other place.
+
+| `probes/own-bits.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 200 each of `& 0xff`, `\| 0x100`, `^ 0x5555` (frame 4) | **0.063 ms** | 0.146 ms |
+| 200 each of `&`, `\|`, `^` of two values (frame 6) | **0.086 ms** | 0.217 ms |
+| 200 each of `1 << n`, `x >> n`, `x >>> n` (frame 8) | **0.834 ms** | 2.399 ms |
+
+Checked: random programs with `&` `|` `^` and shifts by values and constants (counts of 32 and more, below zero), at
+the edges, with and without the ranges a run shows — as written, as graphs and from the laid-out bytes (2,995 of 3,000
+taken: a shift by a constant of what the emitter does not take yet is refused); the ledger's scripts against the
+simulator; `probes/own-bits.ts` built both ways, its lines the same at the same frames, every one ok.
+
+### Numbers with a fraction on our own backend (2026-10-20)
+
+Step 4, part 3: `fixed` (16.16) products and quotients, by a constant and of two values, a constant over a value, and
+a fixed number printed (`Emitter.fixedByConst`, `fixedOverConst`, `fixedProduct`, `divide` with a fixed or constant
+dividend, `fixedParts`). The answers are the simulator's (`compiler/fixedMath.ts`): towards zero, wrapping at 32 bits,
+a quotient by 0 is 0.
+
+- **By a constant** (`x * 1.5`): the magnitude's bits each add their share of the constant, split in two — the part
+  above the point straight into the answer, the part below into a low cell whose bits 16 and up are added after — on
+  two chains, one for each sign. eudplib's is its whole `f_mul` of two values and a shift.
+- **Over a constant** (`x / 1.5`): the Python backend's `make_fdiv_by_const` written as triggers: the whole part a
+  chain of comparisons, then sixteen rounds that shift the remainder in place.
+- **Of two values** (`x * y`): a loop of sixteen steps in a doubling trigger — each step tests the top bit of one side,
+  adds the other side's magnitude into the high part and its shifted half into the low, and the doubling trigger
+  doubles both and counts. 64-bit work in 32-bit cells, the low half's top bits added into the answer at the end.
+- **A quotient of two values** (`x / y`) and **a constant over a value** (`3 / x`) are the division of part 1 with
+  sixteen more steps after the dividend's bits (the point); a constant dividend's bits are known when the map is
+  built, so its steps are entered by the divisor's top bits four at a time, with what the remainder holds there
+  preloaded.
+- **A fixed number printed**: the sign, the whole part by the digits routine of step 2, and the point and four places
+  below it, rounded half up as `fixedText` rounds them (10 000 carried into the whole part), the zeros at the end not
+  shown. A trigger a bit for the places, and a trigger each for 8, 4, 2 and 1 times a place's power of ten. eudplib's
+  build divides by 65 536, by 1 000, by 100 and by 10.
+
+| `probes/own-fixed.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 200 of `x * 1.5` (frame 4) | **0.179 ms** | 0.252 ms |
+| 200 of `x / 1.5` (frame 6) | **0.290 ms** | 0.375 ms |
+| 200 of `3 / x` (frame 8) | **0.348 ms** | 0.428 ms |
+| 200 of `x * y` (frame 10) | **0.524 ms** | 0.677 ms |
+| 200 of `x / y` (frame 12) | **0.693 ms** | 1.093 ms |
+| nine fixed numbers printed (frame 12, past the quotients) | **0.015 ms** | 0.174 ms |
+
+`sqrt`, `sin`, `cos` and `atan2` came in part 5.
+
+### Random numbers on our own backend (2026-10-20)
+
+Step 4, part 4: `random(n)`, `random()` and the `trigscript/random` library over them (`Emitter.randomNumber`).
+
+- **The game's own random bits.** Set Switch to a random state is one draw of the game's generator — bit 7 of its
+  15-bit number, the same on every machine (scm-sim, round seventeen). The routine draws into switch 256 and tests it
+  with a masked condition where the game keeps the switches, a trigger each, and puts the switch back as it was.
+- **Drawn, not divided.** random(n) draws the bits of n − 1 from its top bit down and draws again when they make n or
+  more — fewer than two tries on average, never for a power of two — so every number below n is exactly as likely. A
+  constant n's bits are known when the map is built; a value's top bit is found by a search of comparisons, and the
+  draws entered there. random() is one bit, and a bound of 0 or 1 gives 0.
+- eudplib seeds a generator of its own from a switch once (`f_randomize`) and then works each draw out with two
+  products (`f_dwrand`) and a division by n (`f_div`), whose remainder leans a little towards the small numbers.
+- An index that is more than a sum — a random number, a product, a shift — is now worked out into a variable first, so
+  `pick(list)` and `xs[a >> 1]` (step 3's last refused row) are taken.
+
+| `probes/own-random.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| bounds: 82 draws of `random(n)` (frame 2) | **0.045 ms** | 1.365 ms |
+| 200 of `faces[random(6)] += 1` (frame 4) | **0.423 ms** | 1.226 ms |
+| 200 of `random(j % 10 + 1)` (frame 6) | **0.257 ms** | 1.836 ms |
+| 200 of `random()` (frame 8) | **0.063 ms** | 0.252 ms |
+
+Checked: random programs with fixed products, quotients and fixed numbers printed, as graphs and from the laid-out
+bytes; random numbers below constant and variable bounds drawn 400 times a value, each within a fifth of its share,
+both ways; the ledger's fixed scripts against the simulator line for line, its random ones 200 times each way (the same
+shares, within chance); `probes/own-fixed.ts` and `probes/own-random.ts` built both ways, every line ok.
+
+### Square roots, sines and small numbers on our own backend (2026-10-20)
+
+Step 4, part 5, its last: `Math.sqrt` of a fixed number and of a whole one, `Math.sin`, `Math.cos` and `Math.atan2`
+(and what comes down to them: `tan`, `hypot`, `atan`, `trigscript/math`'s `distance`, `angleTo` and `Vec.length`), and
+`u8` and `u16` variables and arrays. Step 4 is done: the ledger's 59 rows are all taken.
+
+- **A square root without a variable amount** (`Emitter.squareRoot`). The Python side's `root4` compares the remainder
+  with four times the root so far and takes it away — an amount that changes every step, which a trigger can only
+  hold in a field something copies there. Here the root is kept at the place its bits end up (after s of K steps,
+  r × 2^(K − s)), so it only ever gains a constant, and the remainder doubles instead, in a doubling trigger. Each
+  step: the next two bits of the number added to the remainder at half its scale (two triggers testing them where the
+  number is); one trigger shared by every step comparing the remainder with Q = ρ + 2^(K − s − 2) — its condition's
+  number — and taking Q away — its action's; that trigger moves its own next pointer one trigger on when it took Q, into
+  a pair laid out for each step, which adds the step's constants to the two copies of Q (and the bit to the root) and
+  moves it on to the next step's pair. The remainder at half scale stays below 2^32 even for a whole number's root of
+  31 bits. Steps whose bits are all clear are jumped over four at a time. About 120 ns a step while the number's bits
+  come in, 100 after; eudplib's is about 280.
+- **Sines and arc tangents as statements** (`Rewriter.sine`, `arcTangent`, `between`): the product by the scale, the
+  cell's place and the way to the next by masks and a shift, the table's two cells read as any array's cells are, their
+  difference times the fraction — a small product, the ranges say so — shifted down. The arc tangent's quotient of the
+  smaller side over the larger is `divide`'s new `ratio`: 17 steps, not the 47 of a fixed quotient, since it is at most
+  1. Past a table's end a read is 0, which is the arc tangents' rule and the sine table's first cell (sin 0).
+- **`u8` and `u16`** are a cell each, as the Python side's are: every store into one stopped at its top, read from 0 up
+  (`Rewriter.top`) — the front end already stops it at 0 — unless the value ranges keep it below.
+- **Found on the way:** a whole number's square root below zero — read from 0 up, so the largest fixed number — had the
+  value range 0, so `Math.sqrt(w) == …` was worked out the wrong way when the map was built, in both builds
+  (`compiler/ranges.ts`; a test in `tests/fixed.test.ts`); and a shift whose count comes to a constant (`0 >>> (c - c)`)
+  was refused (`linear` folds it now).
+
+| `probes/own-math.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 200 of `Math.sqrt(x)`, x fixed (frame 4) | **0.389 ms** | 1.348 ms |
+| 200 of `Math.sqrt(n)`, n whole (frame 6) | **0.653 ms** | 3.672 ms |
+| 200 of `Math.sin(x)` (frame 8) | **1.085 ms** | 2.261 ms |
+| 200 of `Math.cos(x)` (frame 10) | **1.085 ms** | 2.261 ms |
+| 200 of `Math.atan2(y, x)` (frame 12) | **1.343 ms** | 2.300 ms |
+
+What is left to gain: a sine is still most of its time in copies — the cell's place into the five fields the two reads
+test (0.9 µs), and two copies of 32 bits (0.9 µs each), since a cell read into a variable of the emitter's own cannot
+be read negated — a table of the differences, or a read that gives a cell and the next at once, would take them away.
+And each square root, sine and arc tangent is written where it is used (a square root about a hundred triggers, 240
+KB): `probes/own-math.ts` is 9 MB. A routine shared by every use, as the digits are, is the next thing for code size.
+
+Checked: random programs with square roots (fixed and whole), sines, cosines and arc tangents, `u8` and `u16`
+variables and arrays, as graphs and from the laid-out bytes (3,000 of 3,000 taken); the ledger's scripts against the
+simulator; `probes/own-math.ts` built both ways, every line ok — its edges: roots of 0, below zero, the largest, a
+whole number from 2^30 up; angles on the axes and of (0, 0); sines at a turn.
 
 ## Part C — the game, pushed
 

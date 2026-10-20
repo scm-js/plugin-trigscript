@@ -54,9 +54,10 @@ export interface FixedFn { fn: "fmul_vars" | "fdiv_vars" | "fmul_by" | "fdiv_by"
 
 /**
  * A field of a trigger: a condition's number (or its player, the EPD of the dword it reads), an action's number,
- * destination or modifier, the next pointer.
+ * destination or modifier, the mask of a masked one (a condition's or an action's, which it reads as it runs: what the
+ * mask is can be written like any number), the next pointer.
  */
-export type Field = { cond: number; part?: "value" | "player" } | { act: number; part: "value" | "dest" | "modifier" } | "next";
+export type Field = { cond: number; part?: "value" | "player" | "mask" } | { act: number; part: "value" | "dest" | "modifier" | "mask" } | "next";
 
 export type Compare = "atLeast" | "atMost" | "exactly";
 export type Modifier = "set" | "add" | "subtract";
@@ -87,7 +88,15 @@ export interface Cond { dword: Dword; compare: Compare; value: number; mask?: nu
  * map's strings when the map is made.
  */
 /** `show`: instead of a write, Display Text of a printed text's template (`Graph.templates`), as it is when shown. */
-export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string }
+/**
+ * `randomize`: instead of a write, the game's Set Switch of that switch (0-based) to a random state — one bit of the
+ * game's own random numbers, the same on every player's machine. A map of our own reads the switch where the game keeps
+ * it (`SWITCHES`).
+ */
+export interface Act { dword: Dword; modifier: Modifier; value: Value; mask?: number; at?: At; display?: string; show?: string; randomize?: number }
+
+/** Where the game keeps its 256 switches: a bit each, 32 to a dword. */
+export const SWITCHES = 0x58dc40;
 
 /**
  * A trigger: its conditions all hold, its actions run, in order. Then the walk goes to `next` — a label of the graph's,
@@ -153,6 +162,13 @@ export interface Region { id: string; cells: number; values?: number[] }
  * `{ addrOf }` where the first cell's trigger is; a cell every 72 bytes. A stack's id starts with this.
  */
 export const STACK = "@stack";
+
+/**
+ * A trigger's bytes in memory (layout.ts lays a map of our own's out one after another): a next pointer moved on by
+ * this much goes to the trigger after the one it named — how a trigger walks a run of triggers it is run between
+ * (`Emitter.product`, `Emitter.divide`).
+ */
+export const TRIGGER_BYTES = 2408;
 
 /** The most conditions and actions a trigger of the game holds. */
 export const MOST_CONDS = 16;

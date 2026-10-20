@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a random number
+// ledger: step 4, takes
 // An array of the program put in a random order, in place, from `trigscript/random`: `shuffle(order)`.
 import { shuffle } from "trigscript/random";
 program(() => {

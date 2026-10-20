@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient of two values
+// ledger: step 4, takes
 // Where a number is between two others, as a fraction, from `trigscript/math`: `inverseLerp(a, b, v)`.
 import { inverseLerp } from "trigscript/math";
 program(() => {

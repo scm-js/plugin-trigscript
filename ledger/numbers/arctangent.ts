@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.atan2
+// ledger: step 4, takes
 // The angle whose tangent is a value, in radians: `Math.atan(t)`.
 program(() => {
   let t = 0;

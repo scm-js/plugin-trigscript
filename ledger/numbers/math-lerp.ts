@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a product of two values
+// ledger: step 4, takes
 // From one number to another by a fraction, from `trigscript/math`: `lerp(a, b, t)`.
 import { lerp } from "trigscript/math";
 program(() => {

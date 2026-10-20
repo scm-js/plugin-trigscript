@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.sqrt
+// ledger: step 4, takes
 // The square root of a number with a fraction: `Math.sqrt(x)`.
 program(() => {
   let x = 0.5;

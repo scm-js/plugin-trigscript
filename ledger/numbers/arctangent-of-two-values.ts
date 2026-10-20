@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.atan2
+// ledger: step 4, takes
 // The angle from the x axis to a point, in radians: `Math.atan2(y, x)`.
 program(() => {
   let x = 0;

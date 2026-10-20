@@ -1,4 +1,4 @@
-// ledger: step 4, refused: & with a constant, as a value
+// ledger: step 4, takes
 // A value's low bits kept, as a value: `a & 7`.
 program(() => {
   let a = 0;

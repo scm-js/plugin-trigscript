@@ -1,4 +1,4 @@
-// ledger: step 4, refused: ^ of two values
+// ledger: step 4, takes
 // A random number generator of the script's own, seeded, the same numbers every game, from `trigscript/random`:
 // `new Random(seed)`, then `rng.range(0, 63)`.
 import { Random } from "trigscript/random";

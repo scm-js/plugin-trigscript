@@ -1,4 +1,4 @@
-// ledger: step 4, refused: Math.sin
+// ledger: step 4, takes
 // The sine of an angle in radians: `Math.sin(a)`.
 program(() => {
   let a = 0;

@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient by a constant
+// ledger: step 4, takes
 // A value divided by a whole number written in the script, rounded towards zero: `a / 7`.
 program(() => {
   let a = 0;

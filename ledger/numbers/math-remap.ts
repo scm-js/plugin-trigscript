@@ -1,4 +1,4 @@
-// ledger: step 4, refused: a quotient of two values
+// ledger: step 4, takes
 // A number moved from one range into another, from `trigscript/math`: `remap(v, a1, b1, a2, b2)`.
 import { remap } from "trigscript/math";
 program(() => {
