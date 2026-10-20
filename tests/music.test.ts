@@ -318,6 +318,7 @@ let g = 0;
 for (const sec of st.pieces) for (const row of sec) { for (const c of row) if (c) pieces.push({ clip: c, at: g * 48 * 0.042 }); g++; }
 const sum = mixdown(pieces), loud = music.stems(song, { layers: { drums: ["drums"], tunes: ["lead", "pad"] }, peak: 1 });
 if (!(sum.peak <= 0.8401 && sum.peak > 0.6)) fail(\`\${sum.peak}\`);
+if (Math.abs(st.playthrough.peak - sum.peak) > 1e-6 || Math.abs(st.playthrough.seconds - sum.seconds) > 1e-6) fail(\`playthrough \${st.playthrough.peak} \${sum.peak}\`);
 if (!(loud.pieces[0][0][0]!.peak > st.pieces[0][0][0]!.peak)) fail("peak");`,
     );
     expect(errors(r)).toEqual([]);
