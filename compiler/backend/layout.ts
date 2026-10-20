@@ -5,25 +5,32 @@
  *
  * Remastered keeps a map's string section at 0x191943C8 (eudplib counts on it: `payload_offset` in its
  * `maprw/injector/payload_init.py`), so what is put after the strings is at an address known when the map is built:
- * the payload needs no relocation in the game. The start-up is eudplib's stage 1, as small as it goes: the owner's
- * last trigger node is found by reading the player's trigger list (0x51A284 + 12 × player, the last node) a bit at a
- * time, and that node's next pointer is set to the payload. From then on every trigger pass of that player walks on
- * into the payload, which ends at a next pointer of 0x80000000 (the walk stops at a pointer with its top bit set,
- * as the list's own end is). The start-up's triggers are not preserved: each runs once.
+ * the payload needs no relocation in the game. The start-up is eudplib's stage 1, as small as it goes, in the
+ * triggers of every player the map gives a human or a computer: the player's last trigger node is found by reading
+ * their trigger list (0x51A284 + 12 × player, the last node) a bit at a time, and that node's next pointer is set to
+ * the player's entry in the payload. The start-up's triggers are not preserved: each runs once.
+ *
+ * Every player's list is then their entry alone, and the game walks each list once a frame, P1's first. The entry
+ * sends the walk on through a gate, which lets it into the programs only when no player before this one is in the
+ * game — so they run once a frame, from the list of the first player still there, and go on when a player leaves
+ * (TrigScript 4, step 7). The game empties a leaver's list by following its next pointers, zeroing each node's two
+ * pointers and freeing it (measured in the lifted game): so only the entry is ever reachable from a list, its next
+ * pointer back at the list's end whenever the walk is not in it, as eudplib's runner keeps its own. Each program's
+ * run then wakes or not, and the walk ends at a next pointer of 0x80000000 (it stops at a pointer with its top bit
+ * set, as a list's own end is).
  *
  * In memory a trigger is a node: the previous and the next pointer, 16 conditions of 20 bytes, 64 actions of 32, the
  * flags (4: preserved) and 28 bytes of players. A condition or an action names a dword by its EPD (its distance from
  * the deaths table in dwords) in its player field; a mask goes in its first field, with 'SC' in its last.
  */
 import { END, TRIGGER_BYTES, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
-import { GAME_TICK, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
+import { GAME_TICK, TRIGGER_LISTS, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 import type { ScriptString } from "../runtime";
 
 export const STRINGS = 0x191943c8;
 const DEATHS = 0x58a364;
 const CURRENT_PLAYER = 0x6509b0;
 const TRIGGER_WAIT = 0x6509a0;
-const TRIGGER_LISTS = 0x51a280; // a player's list: 12 bytes, +4 its last node, +8 its first
 const MASKED = 0x4353; // 'SC'
 const NODE = TRIGGER_BYTES;
 const COMPARE = { atLeast: 0, atMost: 1, exactly: 10 } as const;
@@ -49,11 +56,16 @@ export interface OwnMap {
 }
 
 export interface LayoutInput {
-  graph: Graph;
+  /** The one run, when there is one (`runs` unset). */
+  graph?: Graph;
+  /** The programs' runs, in the order they run each frame (`emitOwn`), each with the player it runs as (0-based). */
+  runs?: { graph: Graph; owner: number }[];
   /** The byte length of the string section the payload follows. */
   strings: number;
-  /** The program's player, 0-based. */
-  owner: number;
+  /** The one run's player, 0-based. */
+  owner?: number;
+  /** The players whose lists the payload is linked into: those the map gives a human or a computer (all eight unset). */
+  players?: number[];
   /** A text's index in the map's string table (1-based), for Display Text and an action's text or sound file. */
   text: (t: string) => number;
   /** The cells of the lists the graph reads where they are, by array id. */
@@ -124,27 +136,62 @@ function expandCopies(graph: Graph): { graph: Graph; routed: Set<string> } {
 }
 
 export function layout(input: LayoutInput): OwnMap {
-  const { owner } = input;
-  const { graph, routed } = expandCopies(input.graph);
+  const runs = (input.runs ?? [{ graph: input.graph!, owner: input.owner ?? 0 }]).map((r) => ({ owner: r.owner, ...expandCopies(r.graph) }));
+  const players = input.players ?? [0, 1, 2, 3, 4, 5, 6, 7];
+  const routed = new Set(runs.flatMap((r) => [...r.routed]));
   const pad = -input.strings & 3;
   const base = STRINGS + input.strings + pad;
-  // The payload's triggers. `@wake` heads the owner's trigger list every pass: when the game's tick has reached the
-  // one the program sleeps until, it sends the walk where the program goes on (the start, the first time); otherwise
-  // the pass ends there. `@init`, the first time: the owner's list made the payload alone — its first node `@wake`,
-  // its last `@stop`, which ends at the list's own end (eudplib's runner is linked so) — and the current player the
-  // owner. A sleep writes `@wake`'s tick and where to go on; the program's end, a tick never reached.
-  const wake = "@wake", init = "@init", stop = "@stop";
-  const list = TRIGGER_LISTS + 12 * owner;
+  // The payload's triggers. Each run's `@wake` first: when the game's tick has reached the one the run sleeps until
+  // and its player is in the game (their list not empty), it sends the walk where the run goes on (its `@init`, the
+  // first time) with the current player theirs; otherwise on to the next run. A sleep writes `@wake`'s tick and where
+  // to go on; the run's end, a tick never reached. `@init`: `@wake` back to going on to the next run once woken.
+  const wake = (i: number) => (i ? `@wake#${i}` : "@wake"), init = (i: number) => (i ? `@init#${i}` : "@init");
+  const stop = "@stop", run = "@run", entry = (p: number) => `@entry${p}`, gate = (p: number) => `@gate${p}`;
+  const after = (i: number) => (i + 1 < runs.length ? wake(i + 1) : stop);
+  const list = (p: number) => TRIGGER_LISTS + 12 * p;
+  const listEnd = (p: number) => u(~(list(p) + 4));
+  // (Where each run's graph ends: the next run.)
+  const ends = new Map<string, string>(runs.map((_, i) => [i ? `${END}#${i}` : END, after(i)]));
+  const endOf = (l: string) => ends.get(l) ?? l;
   type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number };
-  const triggers: T[] = [
-    { label: wake, prev: list + 4, conds: [{ dword: { game: GAME_TICK }, compare: "atLeast", value: 0 }], acts: [{ dword: { at: wake, field: "next" }, modifier: "set", value: { label: init } }, { dword: { game: CURRENT_PLAYER }, modifier: "set", value: owner }], next: stop },
-    { label: init, conds: [], acts: [{ dword: { data: WAKE_NEXT }, modifier: "set", value: { label: stop } }, { dword: { game: list + 8 }, modifier: "set", value: { label: wake } }, { dword: { game: list + 4 }, modifier: "set", value: { label: stop } }], next: graph.triggers[0]?.label ?? stop },
-    ...graph.triggers.map((t, i) => ({ label: t.label, conds: t.conds, acts: t.acts, next: t.next === END ? stop : t.next ?? graph.triggers[i + 1]?.label ?? stop })),
+  const triggers: T[] = runs.flatMap(({ graph, owner }, i) => [
+    {
+      label: wake(i),
+      conds: [{ dword: { game: GAME_TICK }, compare: "atLeast", value: 0 }, { dword: { game: list(owner) + 8 }, compare: "atMost", value: 0x7fffffff }],
+      acts: [{ dword: { at: wake(i), field: "next" }, modifier: "set", value: { label: init(i) } }, { dword: { game: CURRENT_PLAYER }, modifier: "set", value: owner }],
+      next: after(i),
+    } satisfies T,
+    { label: init(i), conds: [], acts: [{ dword: { at: wake(i), field: "next" }, modifier: "set", value: { label: after(i) } }], next: graph.triggers[0]?.label ?? after(i) } satisfies T,
+    ...graph.triggers.map((t, k) => ({ label: t.label, conds: t.conds, acts: t.acts, next: t.next !== undefined ? endOf(t.next) : graph.triggers[k + 1]?.label ?? after(i) })),
+  ]);
+  triggers.push(
     // (Every pass ends here: the game's wait before the next pass set to none, as eudplib's eudTurbo does, so the
     // triggers run every frame and not every few seconds.)
-    { label: stop, conds: [], acts: [{ dword: { game: TRIGGER_WAIT }, modifier: "set", value: 0 }], next: u(~(list + 4)) },
-  ];
-  for (const t of graph.triggers) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
+    { label: stop, conds: [], acts: [{ dword: { game: TRIGGER_WAIT }, modifier: "set", value: 0 }], next: 0x80000000 },
+    // Each player's entry, their list's one node: the list made it alone (the start-up's triggers dropped), and the
+    // walk sent on to the gate — the next pointer goes back to the list's end at `@run`, or the next frame's.
+    ...players.map((p): T => ({
+      label: entry(p),
+      prev: list(p) + 4,
+      conds: [],
+      acts: [
+        { dword: { game: list(p) + 8 }, modifier: "set", value: { label: entry(p) } },
+        { dword: { game: list(p) + 4 }, modifier: "set", value: { label: entry(p) } },
+        { dword: { at: entry(p), field: "next" }, modifier: "set", value: { label: gate(p) } },
+      ],
+      next: listEnd(p),
+    })),
+    // The gate: into the programs when each player before this one has an empty list; otherwise the walk ends.
+    ...players.map((p): T => ({
+      label: gate(p),
+      conds: players.filter((q) => q < p).map((q): Cond => ({ dword: { game: list(q) + 8 }, compare: "atLeast", value: 0x80000000 })),
+      acts: [{ dword: { at: gate(p), field: "next" }, modifier: "set", value: { label: run } }],
+      next: listEnd(p),
+    })),
+    // Every entry and gate back to ending at its list's end, then the first run.
+    { label: run, conds: [], acts: players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), next: wake(0) },
+  );
+  for (const t of runs.flatMap((r) => r.graph.triggers)) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
   const at = new Map<string, number>(triggers.map((t, i) => [t.label, base + NODE * i]));
   // The cell triggers of the variables routed, after the triggers, and then the stack's: eudplib's EUDVariable, 72
   // bytes each — a trigger whose conditions end at once, its action at +328 (destination +344, number +348), the next
@@ -156,7 +203,8 @@ export function layout(input: LayoutInput): OwnMap {
   const routeOf = (id: string) => at.get(ROUTE_CELL + id);
   const regions = new Map<string, number>();
   let cellTriggers = routes.length;
-  for (const r of graph.cells ?? []) {
+  const graphs = runs.map((r) => r.graph);
+  for (const r of graphs.flatMap((g) => g.cells ?? [])) {
     regions.set(r.id, cellBase + 72 * cellTriggers);
     cellTriggers += r.cells;
   }
@@ -170,7 +218,7 @@ export function layout(input: LayoutInput): OwnMap {
   };
   const lists = new Map<string, number>();
   const listData: { at: number; values: number[]; stride: number }[] = [];
-  for (const a of graph.arrays ?? []) {
+  for (const a of graphs.flatMap((g) => g.arrays ?? [])) {
     const values = input.arrays.get(a.id);
     if (!values) throw new Error(`the graph reads ${a.id}, a list it was not given`);
     lists.set(a.id, next);
@@ -179,7 +227,7 @@ export function layout(input: LayoutInput): OwnMap {
   }
   // The templates of texts printed with values, each on a dword's start (where the map maker put them, or here).
   const templates = new Map<string, number>(input.templateAt ?? []);
-  for (const t of graph.templates ?? []) {
+  for (const t of graphs.flatMap((g) => g.templates ?? [])) {
     if (t.at !== undefined) templates.set(t.id, t.at);
     if (templates.has(t.id)) continue;
     templates.set(t.id, next);
@@ -199,10 +247,13 @@ export function layout(input: LayoutInput): OwnMap {
     if ("var" in d) return routeOf(d.var) !== undefined ? routeOf(d.var)! + 348 : cell(`var:${d.var}`);
     if ("data" in d && d.data.startsWith(ROUTE_DEST)) return routeOf(d.data.slice(ROUTE_DEST.length))! + 344;
     if ("data" in d && d.data.startsWith(ROUTE_NEXT)) return routeOf(d.data.slice(ROUTE_NEXT.length))! + 4;
-    // (The fields of `@wake` a sleep writes: the tick its condition compares the game's with, where it goes, its next.)
-    if ("data" in d && d.data === WAKE_TICK) return at.get(wake)! + 8 + 8;
-    if ("data" in d && d.data === WAKE_AT) return at.get(wake)! + 328 + 20;
-    if ("data" in d && d.data === WAKE_NEXT) return at.get(wake)! + 4;
+    // (The fields of its run's `@wake` a sleep writes: the tick its condition compares the game's with, where it goes,
+    // its next.)
+    if ("data" in d) {
+      const [name, i] = d.data.split("#");
+      const w = name === WAKE_TICK ? 8 + 8 : name === WAKE_AT ? 328 + 20 : name === WAKE_NEXT ? 4 : undefined;
+      if (w !== undefined) return at.get(wake(Number(i ?? 0)))! + w;
+    }
     if ("data" in d) return cell(`data:${d.data}`);
     // (A scratch cell of the graph's is the cell of a variable named after it, as the copy from it says.)
     if ("temp" in d) return address({ var: `@${d.temp}` });
@@ -229,7 +280,7 @@ export function layout(input: LayoutInput): OwnMap {
     if (typeof v === "number") return u(v);
     if ("epd" in v) return epd(address(v.epd));
     if ("label" in v) {
-      const t = at.get(v.label === END ? stop : v.label);
+      const t = at.get(endOf(v.label));
       if (t === undefined) throw new Error(`no trigger ${v.label}`);
       return t;
     }
@@ -326,9 +377,9 @@ export function layout(input: LayoutInput): OwnMap {
     w32(n + 2376, 4); // preserved
   });
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
-  for (const t of graph.templates ?? []) if (!input.templateAt?.has(t.id) && t.at === undefined) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));
+  for (const t of graphs.flatMap((g) => g.templates ?? [])) if (!input.templateAt?.has(t.id) && t.at === undefined) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));
   // What a region's cells hold when the map starts.
-  for (const r of graph.cells ?? []) r.values?.forEach((v, i) => w32(regions.get(r.id)! + 72 * i + 348, v));
+  for (const r of graphs.flatMap((g) => g.cells ?? [])) r.values?.forEach((v, i) => w32(regions.get(r.id)! + 72 * i + 348, v));
   // Each cell trigger: Set Deaths, add (its destination and next pointer written by every routing), preserved.
   for (let k = 0; k < cellTriggers; k++) {
     const c = cellBase + 72 * k;
@@ -339,18 +390,20 @@ export function layout(input: LayoutInput): OwnMap {
   }
   const vars = new Map<string, number>([...cells].filter(([k]) => k.startsWith("var:")).map(([k, a]) => [k.slice(4), a]));
   routes.forEach((id, k) => vars.set(id, cellBase + 72 * k + 348));
-  return { payload: out, trig: startUp(owner, base), address: base, vars, templates, regions };
+  return { payload: out, trig: startUp(players, (p) => at.get(entry(p))!), address: base, vars, templates, regions };
 }
 
 /**
- * The start-up, in the map's TRIG section (the game's own triggers, for the owner): the owner's last trigger node,
- * read a bit at a time into the deaths of Player 12's unit 0 (a scratch dword), made the current player's EPD less
- * the one of its next pointer; then that next pointer set to the payload. Player 12's deaths go back to 0.
+ * The start-up, in the map's TRIG section (the game's own triggers): in each player's, their list's last node read a
+ * bit at a time into the deaths of Player 12's unit 0 (a scratch dword), made the current player's EPD less the one of
+ * its next pointer; then that next pointer set to the player's entry. Player 12's deaths go back to 0. The first and
+ * the last trigger are each player's own; those between, every player's (the game copies a trigger into the list of
+ * each player it is for, and walks one list after another).
  */
-function startUp(owner: number, payload: number): Uint8Array {
+function startUp(players: number[], entry: (p: number) => number): Uint8Array {
   const records: Uint8Array[] = [];
   const SCRATCH = 11; // Player 12's deaths of unit 0
-  const record = (conds: { player: number; compare: number; value: number; mask?: number }[], acts: { player: number; modifier: number; value: number }[]) => {
+  const record = (owners: number[], conds: { player: number; compare: number; value: number; mask?: number }[], acts: { player: number; modifier: number; value: number }[]) => {
     const r = new Uint8Array(2400);
     const dv = new DataView(r.buffer);
     conds.forEach((c, k) => {
@@ -370,18 +423,18 @@ function startUp(owner: number, payload: number): Uint8Array {
       dv.setUint8(o + 27, a.modifier);
       dv.setUint8(o + 28, 20);
     });
-    r[2372 + owner] = 1; // the owner's
+    for (const p of owners) r[2372 + p] = 1;
     records.push(r);
   };
   const CURRENT = 13; // the player field "current player"
-  // The list's last node, into the scratch dword.
-  record([], [{ player: epd(CURRENT_PLAYER), modifier: 7, value: epd(TRIGGER_LISTS + 4 + 12 * owner) }, { player: SCRATCH, modifier: 7, value: 0 }]);
-  for (let e = 2; e < 32; e++) record([{ player: CURRENT, compare: 0, value: 1, mask: 2 ** e }], [{ player: SCRATCH, modifier: 8, value: 2 ** e }]);
+  // Each player's list's last node, into the scratch dword.
+  for (const p of players) record([p], [], [{ player: epd(CURRENT_PLAYER), modifier: 7, value: epd(TRIGGER_LISTS + 4 + 12 * p) }, { player: SCRATCH, modifier: 7, value: 0 }]);
+  for (let e = 2; e < 32; e++) record(players, [{ player: CURRENT, compare: 0, value: 1, mask: 2 ** e }], [{ player: SCRATCH, modifier: 8, value: 2 ** e }]);
   // The current player: the EPD of that node's next pointer.
-  record([], [{ player: epd(CURRENT_PLAYER), modifier: 7, value: epd(4) }]);
-  for (let e = 2; e < 32; e++) record([{ player: SCRATCH, compare: 0, value: 1, mask: 2 ** e }], [{ player: epd(CURRENT_PLAYER), modifier: 8, value: 2 ** (e - 2) }]);
-  // The payload after it; the scratch dword back to 0.
-  record([], [{ player: CURRENT, modifier: 7, value: payload }, { player: SCRATCH, modifier: 7, value: 0 }]);
+  record(players, [], [{ player: epd(CURRENT_PLAYER), modifier: 7, value: epd(4) }]);
+  for (let e = 2; e < 32; e++) record(players, [{ player: SCRATCH, compare: 0, value: 1, mask: 2 ** e }], [{ player: epd(CURRENT_PLAYER), modifier: 8, value: 2 ** (e - 2) }]);
+  // The player's entry after it; the scratch dword back to 0.
+  for (const p of players) record([p], [], [{ player: CURRENT, modifier: 7, value: entry(p) }, { player: SCRATCH, modifier: 7, value: 0 }]);
   const out = new Uint8Array(2400 * records.length);
   records.forEach((r, i) => out.set(r, 2400 * i));
   return out;

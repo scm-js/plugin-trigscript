@@ -1027,17 +1027,21 @@ describe("the emitter, a loop's test", () => {
 });
 
 describe("the emitter, a map of our own's texts", () => {
-  it("shows a text for other players than the owner to each in turn, and refuses one for a force", () => {
+  it("shows a text for other players than the owner to each in turn: a player, All Players and a force by the map's slots", () => {
     // print("hi", { to: AllPlayers })  and  print("hi", { to: P2 }): Display Text with each player of the group the
-    // current player in turn, then the owner again. A force needs the map's slots.
-    const said = (to: number) => emitBody([{ kind: "print", to, position: "chat", parts: [{ kind: "text", text: "hi" }], at, label: "" }], new Map(), "p", undefined, undefined, undefined, 0);
-    const shown = (to: number) => {
-      const g = said(to);
+    // current player in turn, then the owner again. All Players and a force are the map's human and computer slots.
+    const players = { slots: [0, 1, 2], forces: [0, 1, 0, 0, 0, 0, 0, 0] };
+    const said = (to: number, map?: typeof players) => emitBody([{ kind: "print", to, position: "chat", parts: [{ kind: "text", text: "hi" }], at, label: "" }], new Map(), "p", undefined, undefined, undefined, 0, map);
+    const shown = (to: number, map?: typeof players) => {
+      const g = said(to, map);
       if (typeof g === "string") throw new Error(g);
       return g.triggers.flatMap((t) => t.acts).filter((a) => a.display !== undefined).length;
     };
-    expect([shown(13), shown(1), shown(17)]).toEqual([1, 1, 8]);
-    expect(said(18)).toMatch(/a text shown to a force/);
+    // (With no map: the eight slots, all in the first force.)
+    expect([shown(13), shown(1), shown(17), shown(18), shown(19)]).toEqual([1, 1, 8, 8, 0]);
+    expect([shown(17, players), shown(18, players), shown(19, players), shown(20, players)]).toEqual([3, 2, 1, 0]);
+    // (Allies, foes: not a group a print goes to — the Python side refuses them too.)
+    expect(said(22)).toMatch(/a text shown to a group of players other than P1 to P8, All Players and the forces/);
   });
 });
 
@@ -1144,6 +1148,24 @@ describe("a map of our own, laid out", () => {
     }
     expect(ran).toBeGreaterThan(400);
   }, RANDOM_PROGRAMS);
+});
+
+describe("a map of our own, its first statement", () => {
+  it("goes where a program's first statement sends it: a boolean declared false is false", () => {
+    // (`let done = false` first: the jump past the true side is the graph's first trigger, empty but for its next
+    // pointer, and is kept — dropped, the walk came in at the true side.)
+    const decl: VarDecl = { id: "done", name: "done", kind: "boolean", shared: false };
+    const body = [
+      { kind: "declare", decl, init: { kind: "const", value: false }, at },
+      { kind: "if", cond: { kind: "not", expr: { kind: "var", id: "done" } }, then: [{ kind: "print", to: 13, position: "chat", parts: [{ kind: "text", text: "not done" }], at, label: "" }], at },
+      { kind: "assignBool", target: "done", value: { kind: "const", value: true }, at },
+    ] as Stmt[];
+    const g = emitBody(body, new Map([["done", decl]]), "b", undefined, undefined, undefined, 0);
+    if (typeof g === "string") throw new Error(g);
+    PRINTED.got = [];
+    const got = runOwn(g);
+    expect([PRINTED.got, got.get("done")]).toEqual([[shown([...new TextEncoder().encode("not done")])], 1]);
+  });
 });
 
 describe("a map of our own, random numbers", () => {

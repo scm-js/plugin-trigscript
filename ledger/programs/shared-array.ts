@@ -1,4 +1,4 @@
-// ledger: step 7, refused: a map of our own has no per-player program yet
+// ledger: step 7, takes
 // An array every player of a program for several players shares: `const seen = shared([0, 0, 0, 0])`.
 program(() => {
   const seen = shared([0, 0, 0, 0]);

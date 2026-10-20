@@ -1,4 +1,4 @@
-// ledger: step 7, refused: a map of our own has no per-player program yet
+// ledger: step 7, takes
 // A program run for every player, `{ owner: AllPlayers }`: `CurrentPlayer` is the one it is running for.
 program(
   () => {

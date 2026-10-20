@@ -3545,10 +3545,12 @@ found what they left out; where a step moved, its old number is given.
 6. **The game's memory** ✓ (all 50 of the ledger's rows: "The game's tables on our own backend"). `stats()` tables read and written (the speed, colour and name cells included),
    `memory.vision`, `memory.game`, `memory.map`, `memory()` and `setMemory()`. What the fog library, the raycaster and
    Bad Apple stand on.
-7. **Programs, owners and players** (new; per-player programs were in 6). Several `program()`s in a map — a top-level
-   `on.*` is a program of its own, and `trigscript/fog` adds one. Owners checked against the map's slots and forces, as
-   the Python side's `owner_slots`. Per-player programs. The walk linked into every player's list with a once-a-tick
-   guard, as eudplib's runner is, so an empty owner slot or an owner who leaves does not stop the program — both
+7. **Programs, owners and players** ✓ (the ledger's rows but a program owned by Player 12, refused on purpose:
+   "Programs, owners and players on our own backend").
+   Several `program()`s in a map — a top-level `on.*` is a program of its own, and `trigscript/fog` adds one. Owners
+   checked against the map's slots and forces, as the Python side's `owner_slots`. Per-player programs. The walk linked
+   into every player's list with a once-a-tick guard, as eudplib's runner is, so an empty slot or a player who leaves
+   does not stop the other players' programs (a program whose owner leaves stops, as the Python side's does) — both
    played, the leaver in a game of two.
 8. **Texts as values** (was half of 2). Text variables and arrays; compared, searched, measured, repeated, split and
    joined; templates and JSX made while the game runs; `name()` and `color()` in a print; `ui.lines`.
@@ -3890,7 +3892,7 @@ Bad Apple: 5, 6, 7, as the fog library. The bullets: 5 (a death count read), 9. 
 
 ### The ledger (2026-10-19)
 
-`ledger/` holds a script for each feature of the language and the library — 832 of them, in folders by area — whose
+`ledger/` holds a script for each feature of the language and the library — 837 of them, in folders by area — whose
 first line says which step of the way off eudplib makes it a map of our own's, and whether a map of our own takes it
 today, in the words of its refusal:
 
@@ -3914,12 +3916,12 @@ lists what no script reaches. A step is done when its scripts say so.
 | 4 Numbers | 59 of 59 |
 | 5 The game's conditions and actions | 197 of 198 |
 | 6 The game's memory | 50 of 50 |
-| 7 Programs, owners and players | 1 of 22 |
+| 7 Programs, owners and players | 27 of 28 |
 | 8 Texts as values | 0 of 43 |
-| 9 Arrays that grow, the heap | 0 of 28 |
+| 9 Arrays that grow, the heap | 0 of 26 |
 | 10 Units | 0 of 99 |
 | 11 Tasks, `async` and errors | 0 of 44 |
-| 12 Input | 0 of 31 |
+| 12 Input | 0 of 26 |
 | 13 The map's own triggers | 0 of 13 |
 
 (Step 5 has 195 rows since two of step 6's — `memory()` and `setMemory()` at an address known when built — came with
@@ -4371,7 +4373,8 @@ eudplib's build misses a Command count after a Create Unit there again (part 2).
 
 For Remastered: `probes/own-step5.ts` (with an answer sheet) — the centre print, three Transmissions in a loop, a print
 to every player, counts straight after Create Unit, a location moved and units made in it; all as they should be in the
-lifted game.
+lifted game. Played in Remastered on 2026-10-20 (recording 09.33.15): every line right, the centre print centred with
+no "Cannot create more units" text or sound, three Transmissions of three with the portrait, no EUD error.
 
 Checked: `probes/own-locations.ts` built both ways, every line ok; prints to P1, P2 and All Players in the lifted game
 (P2's not shown on Player 1's screen, as eudplib's); `rose`/`once` rising twice against the simulator.
@@ -4405,6 +4408,58 @@ step 12 among them (the front end keeps a value only one computer knows from the
 Checked: `tests/ownGame.test.ts` (a byte of a player's row masked, a flag's bit, a scaled read); `probes/own-memory.ts`
 built both ways, every line ok — speeds included, the flingy's four fields the same as eudplib's; a unit name's string
 read back from the game ("Space Marine"); `local.*` the same in both builds.
+
+### Programs, owners and players on our own backend (2026-10-20)
+
+Step 7: every program of a script, each as every player it runs for (`compiler/backend/own.ts`, `layout.ts`). Ledger:
+step 7 27 of 28 — the one left, a program owned by Player 12, refused on purpose as the Python side refuses it.
+
+- **A run** is a program as one player runs it: one for a program owned by one player, as the first of its owners;
+  one for each of its owners the map gives a human or a computer for a per-player program (a list of owners, All
+  Players, a force — the Python side's `owner_slots`, `group_slots`). Each run's graph is the program's lowered with
+  that player as the owner (the current player while it runs), its labels, scratch cells and data its own, its
+  variables and arrays its own but for the `shared` ones, which are the program's (`renamed`). No player number is
+  looked up while the game runs: a per-player program is copied for each player, where the Python side keeps a row a
+  player and indexes it. Faster, and larger: the payload holds a copy for each player.
+- **The runs** come one after another every frame, in the order of the programs and then of the slots: each run's
+  `@wake` has, besides the tick it sleeps until, its player's list not empty (the list's first node below 2³¹; a player
+  who has left, or a slot nobody took, has the list's end there) — the Python side's `f_playerexist` before a run.
+  A program whose owner leaves stops, as the Python side's does; one whose owner was never there never starts.
+- **The entry.** The game walks each player's list once a frame, P1's first, and empties a leaver's list by following
+  its next pointers — measured in the lifted game: each node it reaches has its two pointers zeroed and is freed. So the
+  start-up is now in every player's triggers (each player's first and last of them their own, the 61 between
+  everybody's), and links the list's last node to that player's entry; the entry makes the list itself alone and sends
+  the walk to its gate, which lets it into the runs only when every player before this one has an empty list. `@run`
+  puts every entry's and gate's next pointer back at its list's end. The list a leaver's game empties is their entry
+  alone: nothing any other player's walk needs is reachable from it. (eudplib's runner is linked the same way, with a
+  check of the game's tick against a copy as its guard; the empty lists before are a guard that needs no copy.)
+- **A print to a force or All Players** goes to the map's human and computer slots of it, each the current player in
+  turn. **`hasLeft(p)`** is one condition, the list's first node exactly the list's end — 0 for a slot the map gives
+  nobody.
+
+| `probes/own-programs.ts` (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| The start: five runs of four programs (frame 2) | **0.008 ms** | 1.077 ms |
+| A frame where every run sleeps (frames 3–14) | **under 0.001 ms** | 0.007 ms |
+| `probes/fog-lib.ts`: the fog library's program beside the script's, a frame | **0.003 ms** | 0.007 ms |
+
+Played in the lifted game: `probes/own-programs.ts` built both ways, the same lines at the same frames, every line ok
+(Player 2 a computer: computers have a list, and their runs ran); `probes/fog-lib.ts` (`fixtures/eud/fog-base.scx`),
+the map's tile flags the same in both builds every frame; `probes/own-leaver.ts` in a game of two people with either
+leaving at frame 40 — each player's deaths the same in both builds at every frame: the leaver's runs stop, the other's
+go on, `hasLeft(P1)` true from the next frame; at the leave the game touched the leaver's entry alone. The ledger's
+step 7 scripts against the simulator: the same (those of the fog library and `CurrentPlayer`'s minerals stop at
+actions the checker does not model, and were played instead).
+
+Found on the way: a program whose first statement jumps — `let done = false` is a jump past the side that sets it
+true — lost the jump in a map of our own: the graph's first trigger, empty but for its next pointer, was dropped as
+empty triggers are, and the walk came in at the true side (`if (!done)` false at once). Fixed (`Emitter.graph`: the
+first trigger is kept when it goes elsewhere than the one after it; `tests/emitter.test.ts`,
+`ledger/language/boolean-declared-first.ts`); eudplib's build was right.
+
+*Open:* `let total = shared(0)` in a per-player program is set to 0 again by each run's declaration, so a count the
+runs add to in the same frame ends at 1, not the number of runs — in both builds and the simulator alike. Whether a
+`shared` declaration should set its value once, at the first run, is a question of the language.
 
 ## Part C — the game, pushed
 
