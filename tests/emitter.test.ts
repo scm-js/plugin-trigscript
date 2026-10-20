@@ -748,6 +748,10 @@ function programWithCalls(seed: number, recursion = false) {
   const k = (n: number): NumExpr => ({ kind: "const", value: n });
   const bin = (op: "+" | "-" | "*" | "<<", left: NumExpr, right: NumExpr): NumExpr => ({ kind: "binary", op, left, right, at, label: "" });
   const globals = ["a", "b", "c", "d"].map((n) => decl(n));
+  // (Four at most of the operations that are many triggers each — products, quotients, shifts by a value, square
+  // roots, sines — in a program: each kind comes in thousands of programs, and a program of twenty of them takes as
+  // long to lay out as a hundred others.)
+  let heavy = 4;
   // (Now and then a `u8` or a `u16`, whose stores stop at the top.)
   if (r.next() < 0.3) { const g = globals[3]; g.bits = r.pick([8, 16] as const); TOPS.set(g.id, 2 ** g.bits - 1); }
   const flags = ["f", "g"].map((n) => decl(n, "boolean"));
@@ -794,7 +798,7 @@ function programWithCalls(seed: number, recursion = false) {
   function value(sc: Scope, depth: number): NumExpr {
     if (r.next() < 0.08) return { kind: "element", array: nums.id, index: index(sc, nums), at };
     // A product or a quotient of numbers with a fraction (16.16), of values and constants, below zero, past 2^31 when wrapped.
-    if (r.next() < 0.05) {
+    if (r.next() < 0.05 && heavy-- > 0) {
       const side = (): NumExpr => (r.next() < 0.3 ? k(r.pick([65536, 98304, -163840, 1, 0x7fffffff, -2147483648, 3 << 15, 100 << 16, 0])) : depth < 2 && r.next() < 0.2 ? value(sc, depth + 1) : v(r.pick(sc.nums)));
       // (Now and then a square root, of a fixed number or of a whole one read from 0 up; a sine, a cosine or an arc
       // tangent, read from the program's tables.)
@@ -805,7 +809,7 @@ function programWithCalls(seed: number, recursion = false) {
       return { kind: "intrinsic", name: r.pick(["fmul", "fdiv"] as const), args: [side(), side()], at, label: "" };
     }
     // A product of two values, a quotient or a remainder (step 4): signed or read from 0 up, by a value or a constant.
-    if (r.next() < 0.1) {
+    if (r.next() < 0.1 && heavy-- > 0) {
       const op = r.pick(["*", "/", "%", "&", "|", "^", "<<", ">>", ">>>"] as const);
       const side = (): NumExpr => (r.next() < 0.3 ? k(r.pick([...EDGES, 3, 10, 16, -5, 255, 65536, 0xf0f0, -256])) : depth < 2 && r.next() < 0.2 ? value(sc, depth + 1) : v(r.pick(sc.nums)));
       return { kind: "binary", op, left: side(), right: side(), ...((op === "/" || op === "%") && r.next() < 0.35 ? { unsigned: true } : {}), at, label: "" };
@@ -948,10 +952,11 @@ function programWithCalls(seed: number, recursion = false) {
 }
 
 /**
- * How long the random programs of a map of our own may take: 10–35 seconds each alone, longer beside the rest of the
- * suite, which runs its files side by side — more than the suite's 30 seconds.
+ * How long the random programs of a map of our own may take: 5–50 seconds each alone, longer beside the rest of the
+ * suite, which runs its files side by side, and three or four times that on CI's machines — the programs on a stack
+ * took 180 seconds there once step 4's numbers came in.
  */
-const RANDOM_PROGRAMS = 120_000;
+const RANDOM_PROGRAMS = 300_000;
 
 describe("the emitter, calls in a map of our own", () => {
   it("lays out random programs with functions so that they leave every variable as the programs do", () => {
