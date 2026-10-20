@@ -148,7 +148,7 @@ const st = music.stems(step3, {
   layers: { drums: ["kit", "hats", "fx"], bass: ["bass"], harmony: ["pad", "strum", "keys"], melody: ["lead", "saw", "bell", "acid"] },
   reverb: ROOM,
   master: (c) => c.filter("highshelf", 9000, { gain: 1.5 }),
-  stingers: { crash: crash.mix(music.impact({ volume: 0.45 })) },
+  stingers: { crash: crash.gain(0.7) },
 });
 const NAMES = st.sections.map((x) => x.name);
 const KEYS = ["1", "2", "3", "4", "5", "6", "7"] as const;

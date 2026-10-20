@@ -175,6 +175,11 @@ describe("two channels, the limiter and resampling", () => {
     expect(sum.peak).toBeLessThanOrEqual(LIMIT_CEILING + 1e-6);
     expect(sum.peak).toBeGreaterThan(0.8);
     expect(y.peak / b.peak).toBeCloseTo(x.peak / a.peak, 5);
+    // Room left for a clip that may play on top at any of its times: it comes back after the parts, turned down too.
+    const hit = noise(0.3, { volume: 0.5 });
+    const [p, q, h] = together([{ clip: a, at: 0 }, { clip: b, at: 0.5 }], { over: [{ clip: hit, at: [0, 0.5, 1] }] });
+    for (const t of [0, 0.5, 1]) expect(mixdown([{ clip: p, at: 0 }, { clip: q, at: 0.5 }, { clip: h, at: t }]).peak).toBeLessThanOrEqual(LIMIT_CEILING + 1e-6);
+    expect(h.peak / hit.peak).toBeCloseTo(p.peak / a.peak, 5);
     const [quiet] = together([{ clip: tone("A3", 1, { volume: 0.1 }), at: 0 }]);
     expect(quiet.peak).toBeCloseTo(0.1, 3);
   });
@@ -187,6 +192,9 @@ describe("two channels, the limiter and resampling", () => {
     expect(q4.vorbis?.quality).toBe(4);
     expect(q5.vorbis?.quality).toBe(5);
     expect(q4.path).not.toBe(q5.path);
+    // One channel goes in as two: the game plays an Ogg of one 2.4 dB quieter.
+    expect(q4.vorbis?.channels.length).toBe(2);
+    expect(q4.vorbis?.channels[0]).toBe(q4.vorbis?.channels[1]);
     expect(() => short.ogg(11)).toThrow(/−1 to 10/);
     expect(() => short.wav().ogg()).toThrow(/a WAV/);
   });

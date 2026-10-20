@@ -1812,6 +1812,21 @@ User after step 3 ("B sounds amazing"): "go for step 4".
 - **Probe** `probes/korobeiniki-band.ts` (step 3's B as stems, 4 layers; keys 1–7 sections, D B H M layers, L loop,
   Space crash): build 18 s, map 5.6 MB, check 1.1 s, lifted game clean.
 
+- **Played 2026-10-19** (recording 17.53.58.41; the untouched pass from 3.180 s, then keys). Each bar's start
+  against the bars summed at exact times, by correlation of its first 0.35 s (all 40 clear, 0.53–1.00): 0, 5.3, 10.6,
+  16.0 ms and round again — the mixer's 21.3 ms grid (1,024 samples at 48 kHz): a bar is 78.75 of its buffers, so each
+  bar lands a quarter later in one and every fourth wraps; mean 9.1, sd 7.3, never more than one buffer. The frames
+  themselves are steady. A bar of 32 frames (1,344 ms, 63 buffers) would land the same each time, but only at 48 kHz
+  — the grid is the player's device's. The level: 60 s within 0.05 dB of the file, seconds within 0.7 dB; the
+  untouched pass peaked at 0.824 (the file 0.831). **The bass bars — the first short Oggs — start on the grid as the
+  rest do** (lows: lag 5.3 / 10.7 ms, correlation 1.00), but alone in the intro the lows came 2.3–2.4 dB under the
+  file with the same shape: **the game plays an Ogg of one channel 2.4 dB quieter** (step 1's one-channel WAV came at
+  its level). Fixed: an Ogg always goes in with two channels ("stereo" in its name). **Steered, it reached 0.998 once**
+  (144.3 s, a riser then the drop's hit): the stinger, crash + impact, played at its own level over the drop. Fixed:
+  `together(…, { over })` leaves room for a clip that may play on top at any of its times and turns it down with the
+  rest; `stems` passes the stingers at every bar line. With that stinger the song went to −19.0 LUFS; the probe's is
+  now the crash alone at 0.7: −16.6 LUFS, the worst bar line with a crash 0.811. Rebuilt the map (5.6 MB).
+
 ### Closures and the missing methods (built 2026-10-17)
 
 The language gaps a TypeScript programmer meets first, after B3–B5, closed before the libraries (`screen`, `ui`):

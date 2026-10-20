@@ -866,7 +866,7 @@ export interface StemsOptions {
   readonly tail?: number;
   /** The Ogg Vorbis quality of the bars' clips (4: a little smaller than a song's 5, as many play at once). */
   readonly quality?: number;
-  /** Sounds to play on a bar line when the game asks (`band.sting`): a crash for a cleared line, a fill. */
+  /** Sounds to play on a bar line when the game asks (`band.sting`): a crash for a cleared line, a fill. Turned down with the bars, which leave room for one on any bar line. */
   readonly stingers?: Readonly<Record<string, Clip>>;
 }
 
@@ -966,12 +966,14 @@ export function stems(s: Song, options: StemsOptions): Stems {
   const placed: { clip: Clip; at: number; g: number; l: number }[] = [];
   raw.forEach((byLayer, g) => byLayer.forEach((c, l) => { if (c) placed.push({ clip: c, at: g * barSeconds, g, l }); }));
   if (placed.length === 0) throw new Error("stems(): the layers play no notes.");
-  const fitted = together(placed, { peak: options.peak ?? 0.84 });
+  // The stingers may play on any bar line: turned down with the bars, and room left for them over the loudest.
+  const stingerNames = Object.keys(options.stingers ?? {});
+  const lines = Array.from({ length: total }, (_, g) => g * barSeconds);
+  const fitted = together(placed, { peak: options.peak ?? 0.84, over: stingerNames.map((k) => ({ clip: options.stingers![k], at: lines })) });
   const grid: (Clip | null)[][] = raw.map((byLayer) => byLayer.map(() => null));
   const quality = options.quality ?? 4;
   placed.forEach((p, k) => { grid[p.g][p.l] = fitted[k].ogg(quality); });
-  const stingerNames = Object.keys(options.stingers ?? {});
-  const stingers = stingerNames.map((k) => options.stingers![k]);
+  const stingers = stingerNames.map((_, k) => fitted[placed.length + k]);
   let start = 0;
   const bars = s.sections.map((sec) => { const rows = grid.slice(start, start + sec.bars).map((row) => Object.freeze(row)); start += sec.bars; return Object.freeze(rows); });
   const lookup = (what: string, list: readonly string[], name: string) => {

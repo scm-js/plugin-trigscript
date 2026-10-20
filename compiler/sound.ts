@@ -703,10 +703,11 @@ export function mixdown(parts: unknown, seconds?: unknown, rate?: number): Clip 
  * Clips that play together, each from its time — the bars of a song the game plays one after another and the layers
  * over them — each turned down by one gain, so what they add up to never goes over `peak` (0.84, −1.5 dB), between the
  * samples too, however loud each is: what a limiter does for a mix, for sounds the game adds up itself. Never turned
- * up. A clip given several times is one clip back, and one file in the map. The gain is worked out when a build needs
- * the samples, from the whole mix.
+ * up. A clip given several times is one clip back, and one file in the map. `over`: clips that may play on top, each at
+ * any of its times (a stinger on any bar line) — the gain leaves room for them too, and they come back after the parts,
+ * turned down with them. The gain is worked out when a build needs the samples, from the whole mix.
  */
-export function together(parts: unknown, options?: { readonly peak?: number }): Clip[] {
+export function together(parts: unknown, options?: { readonly peak?: number; readonly over?: readonly { readonly clip: Clip; readonly at: readonly number[] }[] }): Clip[] {
   if (!Array.isArray(parts) || parts.length === 0) throw new Error("together() takes { clip, at } parts, one at least.");
   const list = parts.map((p, k) => {
     const c = (p as { clip?: unknown })?.clip, at = (p as { at?: unknown })?.at ?? 0;
@@ -716,7 +717,11 @@ export function together(parts: unknown, options?: { readonly peak?: number }): 
   });
   const peak = options?.peak ?? LIMIT_CEILING;
   if (!(num(peak, "together()'s peak") > 0 && peak <= 1)) throw new RangeError(`together()'s peak is above 0 and 1 at most, not ${peak}.`);
-  const whole = recipe("together", [list.map((p) => [p.clip, p.at]), peak]);
+  const over = (options?.over ?? []).map((o, k) => {
+    if (!isClip(o?.clip) || !Array.isArray(o.at)) throw new Error(`together()'s over ${k + 1} is { clip, at: [seconds, …] }.`);
+    return { clip: o.clip, at: o.at.map((t) => num(t, "an over's time")) };
+  });
+  const whole = recipe("together", [list.map((p) => [p.clip, p.at]), peak, over.map((o) => [o.clip, o.at])]);
   let gain: number | undefined;
   const turn = () => {
     if (gain === undefined) {
@@ -725,12 +730,26 @@ export function together(parts: unknown, options?: { readonly peak?: number }): 
       for (const side of sum) for (let i = 0; i < side.length; i++) { const x = side[i] < 0 ? -side[i] : side[i]; if (x > top) top = x; }
       // The wave between the samples, near the loudest ones.
       for (const side of sum) { const tp = truePeaks(side, top); for (let i = 0; i < tp.length; i++) if (tp[i] > top) top = tp[i]; }
+      // A clip that may play over them, at each time it may: the two together, between the samples too.
+      const rate = list[0].clip.rate;
+      for (const o of over) {
+        const extra = channelsAt(o.clip, rate, sum.length as 1 | 2);
+        for (const t of o.at) {
+          const from = Math.round(t * rate);
+          for (let side = 0; side < sum.length; side++) {
+            const both = new Float32Array(extra[side].length);
+            for (let i = 0; i < both.length; i++) both[i] = extra[side][i] + (sum[side][from + i] ?? 0);
+            const tp = truePeaks(both, top);
+            for (let i = 0; i < tp.length; i++) if (tp[i] > top) top = tp[i];
+          }
+        }
+      }
       gain = top > peak ? peak / top : 1;
     }
     return gain;
   };
   const back = new Map<Clip, Clip>();
-  return list.map(({ clip }) => {
+  return [...list, ...over].map(({ clip }) => {
     let c = back.get(clip);
     if (!c) {
       const own = inside.get(clip)!;
@@ -779,9 +798,12 @@ export interface ClipFile {
 export function clipFile(c: Clip, contents = true): ClipFile {
   const own = inside.get(c)!;
   if (!own.wav && !own.adpcm && (c.seconds >= VORBIS_SECONDS || own.quality !== undefined)) {
+    // Two channels always: the game plays an Ogg of one channel 2.4 dB quieter than it was (a WAV of one at its level).
     const quality = own.quality ?? VORBIS_QUALITY;
-    const path = `staredit\\wav\\trigscript-${hashText(`${ENGINE}|vorbis ${quality}|${keyOf(c)}`)}.ogg`;
-    return contents ? { path, vorbis: { rate: c.rate, channels: samplesOf(c), quality } } : { path };
+    const path = `staredit\\wav\\trigscript-${hashText(`${ENGINE}|vorbis ${quality} stereo|${keyOf(c)}`)}.ogg`;
+    if (!contents) return { path };
+    const chans = samplesOf(c);
+    return { path, vorbis: { rate: c.rate, channels: chans.length === 1 ? [chans[0], chans[0]] : chans, quality } };
   }
   const path = `staredit\\wav\\trigscript-${hashText(`${ENGINE}|wav|${keyOf(c)}`)}.wav`;
   if (!contents) return { path };
