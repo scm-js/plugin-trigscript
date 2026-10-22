@@ -634,6 +634,33 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
   };
   const memo = new Map<TS.Node, boolean>();
   const isGameDecl = (decl: TS.Declaration) => plan.game.has(owningDeclaration(ts, decl));
+  /**
+   * Whether a text carries name() or color() — written in (`${name(P2)}`), or a constant made with one: when the script
+   * is built it holds a mark in their place (`runtime.ts#textMark`), not the name or the colour code the game fills in.
+   */
+  const marks = new Map<TS.Node, boolean>();
+  const carriesMark = (x: TS.Node): boolean => {
+    if (ts.isFunctionLike(x)) return false;
+    const hit = marks.get(x);
+    if (hit !== undefined) return hit;
+    marks.set(x, false);
+    let out = false;
+    if (ts.isCallExpression(x) && (libraryCallName(ts, checker, x) === "name" || libraryCallName(ts, checker, x) === "color")) out = true;
+    else if (ts.isIdentifier(x)) {
+      const decl = declarationOf(ts, checker, x);
+      out = !!decl && ts.isVariableDeclaration(decl) && !!decl.initializer && (checker.getTypeAtLocation(x).flags & ts.TypeFlags.StringLike) !== 0 && carriesMark(decl.initializer);
+    } else out = !!ts.forEachChild(x, (c) => (carriesMark(c) ? true : undefined));
+    marks.set(x, out);
+    return out;
+  };
+  /** Whether an expression looks into a text that carries a mark — its length, a character, a search, a comparison — which only the game can answer. */
+  const COMPARES = new Set([ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken]);
+  const isText = (x: TS.Expression) => (checker.getTypeAtLocation(x).flags & ts.TypeFlags.StringLike) !== 0;
+  const readsMark = (n: TS.Node): boolean => {
+    if ((ts.isPropertyAccessExpression(n) || ts.isElementAccessExpression(n)) && isText(n.expression) && carriesMark(n.expression)) return true;
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && isText(n.expression.expression) && (carriesMark(n.expression.expression) || n.arguments.some((a) => isText(a) && carriesMark(a)))) return true;
+    return ts.isBinaryExpression(n) && COMPARES.has(n.operatorToken.kind) && ((isText(n.left) && carriesMark(n.left)) || (isText(n.right) && carriesMark(n.right)));
+  };
   /** `memory.vision.countdown`, `local.camera.x` — a field of one of GAME_CELL_ROOTS, two names down; or `local.player`, one. */
   const isGameCell = (n: TS.Node): boolean => {
     if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && libraryName(ts, checker, n.expression) === "local") return true;
@@ -697,6 +724,7 @@ function planWithin(ts: typeof TS, checker: TS.TypeChecker, plan: ProgramPlan, a
       }
       if (n.kind === ts.SyntaxKind.ThisKeyword || n.kind === ts.SyntaxKind.SuperKeyword || ts.isAwaitExpression(n) || ts.isYieldExpression(n)) { ok = false; return; }
       if (clockCall(ts, checker, n)) { ok = false; return; }
+      if (readsMark(n)) { ok = false; return; }
       // A call of a game() function runs in the game, whatever its arguments are.
       if (ts.isCallExpression(n) && isGame(n)) { ok = false; return; }
       // So does one of a function that changes what outlives the call, a closure's variable or a field (`keepsState`).

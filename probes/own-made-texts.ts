@@ -40,9 +40,6 @@ program(() => {
     k += 1;
   }
   if (vowels == 4 && typed === words && words.slice(7) === "split" && words.charCodeAt(1) == 97) print("D: walked, sliced, typed ok"); else print("D: walked, sliced, typed WRONG");
-  // (`[n, 2, 8].join(…)` is refused by the front end — an array literal holding a value of the program, as a call's
-  // argument: noted in the plan as a gap; the array is made first here.)
-  const xs = [5, 2, 8];
-  xs[0] = n;
-  print(`D: ${xs.join(", ")} (should say 15, 2, 8)`);
+  // (An array written where it is joined, a value of the program in it: made there.)
+  print(`D: ${[n, 2, 8].join(", ")} (should say 15, 2, 8)`);
 });

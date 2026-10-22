@@ -1261,6 +1261,19 @@ describe("a map of our own, texts made while the game runs", () => {
     expect(printed("  print(`${name(P2)} ${color(P2)}joined, ${name(P2)}${name(P2)}`);", "main.ts", memory)).toEqual(bytes("Raynor \x08joined, RaynorRaynor"));
   });
 
+  it("keeps a player's colour and name in a text and looks into them, as the game filled them in", () => {
+    // (Player 1: "Raynor"; red, the code nearest it 8. The colour one character of the text, the name six.)
+    const memory = new Map<number, number>();
+    const poke = (addr: number, byte: number) => memory.set(addr & ~3, ((memory.get(addr & ~3) ?? 0) + byte * 2 ** (8 * (addr & 3))) >>> 0);
+    [...new TextEncoder().encode("Raynor"), 0].forEach((b, j) => poke(0x57eeeb + j, b));
+    poke(0x581d76, 0x6f);
+    expect(printed("  const c = `${color(P1)}`;\n  const who = `${name(P1)}!`;\n  print(`${c.length} ${c.charCodeAt(0)} ${who.length} ${who === \"Raynor!\"}`);", "main.ts", memory)).toEqual(bytes("1 8 7 true"));
+  });
+
+  it("joins, measures and searches an array written where it is used", () => {
+    expect(printed("  print([n, 2, 8].join(\", \"));\n  print(`${[1, n].length} ${[n, 4].indexOf(4)} ${[n, 4].includes(15)} ${[n, 7].map((x) => x * 2).join(\"+\")} ${Math.max(...[n, 4])}`);")).toEqual(bytes("15, 2, 8", "2 1 true 30+14 15"));
+  });
+
   it("keeps an array of texts and a text in each row of records, written at a place that changes", () => {
     const got = printed([
       `  const names = ["Marine", "Marine", "Marine"];`,

@@ -59,6 +59,9 @@ const U32 = 0x1_0000_0000;
 /** Frames with no message before a held key counts as let go; python/trigscript.py has the same number (Input.HELD_GRACE). */
 const HELD_GRACE = 2;
 
+/** The code of the game's texts nearest each player's colour, by slot, when the map does not change them: red, blue, teal, purple, orange, brown, white, yellow. */
+const SLOT_COLOR_CODES = [8, 14, 15, 16, 17, 21, 22, 23];
+
 export interface ProgramEvent {
   /** 0-based run of the programs. */
   cycle: number;
@@ -90,6 +93,8 @@ export interface ProgramSimulationOptions extends Pick<SimulationOptions, "playe
   unitStats?: SimulationOptions["unitStats"];
   /** A player's name in a printed text; default "Player 1" … */
   playerName?: (player: number) => string;
+  /** The code of the game's texts a player's colour is (8 red, 14 blue, …); default the colour of the player's slot when a map does not change it. */
+  playerColor?: (player: number) => number;
   /** The units on the map, in the order of the game's unit table. With a `world` of the caller's they are added to it. */
   units?: SimUnitInit[];
   /** The map's locations as boxes, by their 1-based number. A location the simulation does not know holds every unit. */
@@ -667,8 +672,8 @@ class ProgramRun {
     let out = "";
     for (const p of parts) {
       if (p.kind === "number") out += p.fixed ? fixedText(yield* this.num(p.expr)) : String(p.unsigned ? yield* this.amount(p.expr) : yield* this.num(p.expr));
-      // A colour code is a control character in the game; the log keeps the words, as it does for a player's colour.
-      else if (p.kind === "char") yield* this.num(p.expr);
+      // A colour code is a character of the text, as in the game: it counts in the length, and the log shows it.
+      else if (p.kind === "char") { const code = (yield* this.num(p.expr)) & 0xff; if (code) out += String.fromCharCode(code); }
       else if (p.kind === "value") { const v = yield* this.text(p.text); used.push(v); out += v.s; }
       else out += this.sim.partText(p);
     }
@@ -1397,6 +1402,7 @@ export class ProgramSimulation {
   private readonly conditionOf?: SimulationOptions["condition"];
   private readonly readOf?: ProgramSimulationOptions["read"];
   private readonly nameOf: (player: number) => string;
+  private readonly colorOf: (player: number) => number;
   /** The units, the locations and who the players are: the trigger interpreter's, so both see one game. */
   readonly game: World;
   /** What the programs wrote into the game's tables, as the cell stores it; a name as its text. */
@@ -1451,6 +1457,7 @@ export class ProgramSimulation {
     this.conditionOf = options.condition;
     this.readOf = options.read;
     this.nameOf = options.playerName ?? ((p) => `Player ${p + 1}`);
+    this.colorOf = options.playerColor ?? ((p) => SLOT_COLOR_CODES[p] ?? SLOT_COLOR_CODES[7]);
     this.tableOf = options.table;
     // A unit is made with what its type has now: what a program wrote into the game's tables, else what the caller says.
     const cellOf = (name: string, type: number): TableCell => { const f = TABLE_FIELDS.unit.find((x) => x.name === name)!; return { name: `unit.${name}`, base: f.base, stride: f.stride, index: type, width: f.width, ...(f.scale ? { scale: f.scale } : {}) }; };
@@ -1727,8 +1734,8 @@ export class ProgramSimulation {
   }
 
   partText(p: Exclude<TextPart, { kind: "number" | "value" | "char" }>): string {
-    // A colour is a control character in the game; the log keeps the words.
-    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : "";
+    // A player's colour is the code of the game's texts nearest it: one character, as the game puts it there.
+    return p.kind === "text" ? p.text : p.kind === "name" ? this.nameOf(this.slotOf(p.player)) : p.kind === "color" ? String.fromCharCode(this.colorOf(this.slotOf(p.player))) : "";
   }
 
   /** A printed text: an event like a Display Text action's, the text already filled in. */
