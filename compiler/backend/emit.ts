@@ -604,6 +604,21 @@ class Scope {
    */
   indexed = new Set<string>();
   functions = new Map<string, FuncDecl>();
+  private named?: Set<string>;
+  /** What the called functions name — their variables, parameters and results — worked out once. */
+  inFunctions(): Set<string> {
+    if (this.named) return this.named;
+    const out = new Set<string>();
+    const named = (x: unknown): void => {
+      if (Array.isArray(x)) { x.forEach(named); return; }
+      if (!x || typeof x !== "object") return;
+      const o = x as { kind?: string; id?: string; target?: string };
+      if ((o.kind === "var" && typeof o.id === "string") || (o.kind === "assign" && typeof o.target === "string")) out.add((o.id ?? o.target)!);
+      for (const v of Object.values(o)) if (v && typeof v === "object") named(v);
+    };
+    for (const f of this.functions.values()) { named(f.body); for (const p of f.params) out.add(p.id); if (f.result) out.add(f.result.decl.id); }
+    return (this.named = out);
+  }
   /** The program's arrays, by id. */
   arrays = new Map<string, ArrayDecl>();
   /**
@@ -3755,15 +3770,7 @@ class Emitter {
       const depth = (label: string) => 4 ** (protoBy.get(label)?.depth ?? 0);
       // (Not what a called function names: its body is laid out outside the loops it is called from, so its reads look
       // fewer than they are — its parameters', its result's, and the program's variables it reads.)
-      const inFunctions = new Set<string>();
-      const named = (x: unknown): void => {
-        if (Array.isArray(x)) { x.forEach(named); return; }
-        if (!x || typeof x !== "object") return;
-        const o = x as { kind?: string; id?: string; target?: string };
-        if ((o.kind === "var" && typeof o.id === "string") || (o.kind === "assign" && typeof o.target === "string")) inFunctions.add((o.id ?? o.target)!);
-        for (const v of Object.values(o)) if (v && typeof v === "object") named(v);
-      };
-      for (const f of this.scope.functions.values()) { named(f.body); for (const p of f.params) inFunctions.add(p.id); if (f.result) inFunctions.add(f.result.decl.id); }
+      const inFunctions = this.scope.inFunctions();
       const writesAt = new Map<Write, number>();
       for (const p of this.protos) for (const it of p.items) if ("write" in it) writesAt.set(it.write, 4 ** (p.depth ?? 0));
       for (const v of out) {
@@ -4259,27 +4266,34 @@ function joinRuns(triggers: Trigger[], keep: Set<string>): void {
   };
   for (const t of triggers) { if (t.next !== undefined) see(t.next); scan([t.conds, t.acts, t.copy?.into]); }
   const plain = (t: Trigger) => !t.conds.length && !t.copy && !t.island && !t.call && !nextWritten.has(t.label);
+  // (Each one taken in noted — the trigger it is now, its first action's place there — and the fields renamed after,
+  // in one walk.)
+  const moved = new Map<string, { into: string; shift: number }>();
   for (let i = 0; i + 1 < triggers.length;) {
     const a = triggers[i], b = triggers[i + 1];
     const falls = a.next === undefined || a.next === b.label;
     if (!falls || !plain(a) || !plain(b) || keep.has(b.label) || (reached.get(b.label) ?? 0) > (a.next === b.label ? 1 : 0) || a.acts.length + b.acts.length > MOST_ACTS) { i++; continue; }
-    const shift = a.acts.length;
-    const move = (x: unknown): void => {
-      if (!x || typeof x !== "object") return;
-      if (Array.isArray(x)) { x.forEach(move); return; }
-      const o = x as Record<string, unknown>;
-      if (o.at === b.label && o.field && typeof o.field === "object" && "act" in (o.field as object)) {
-        o.at = a.label;
-        o.field = { ...(o.field as { act: number; part: ActPart }), act: (o.field as { act: number }).act + shift };
-      }
-      for (const v of Object.values(o)) if (v && typeof v === "object") move(v);
-    };
-    for (const t of triggers) move([t.conds, t.acts, t.copy?.into]);
+    moved.set(b.label, { into: a.label, shift: a.acts.length });
+    // (What was taken into `b` before is `a`'s now, further on.)
+    for (const [l, m] of moved) if (m.into === b.label) moved.set(l, { into: a.label, shift: m.shift + a.acts.length });
     a.acts.push(...b.acts);
     a.next = b.next;
     if (b.next === undefined) delete a.next;
     triggers.splice(i + 1, 1);
   }
+  if (!moved.size) return;
+  const move = (x: unknown): void => {
+    if (!x || typeof x !== "object") return;
+    if (Array.isArray(x)) { x.forEach(move); return; }
+    const o = x as Record<string, unknown>;
+    const m = typeof o.at === "string" ? moved.get(o.at) : undefined;
+    if (m && o.field && typeof o.field === "object" && "act" in (o.field as object)) {
+      o.at = m.into;
+      o.field = { ...(o.field as { act: number; part: ActPart }), act: (o.field as { act: number }).act + m.shift };
+    }
+    for (const v of Object.values(o)) if (v && typeof v === "object") move(v);
+  };
+  for (const t of triggers) move([t.conds, t.acts, t.copy?.into]);
 }
 
 export function liveAfterCalls(body: Stmt[]): Map<Call, Set<string>> {
