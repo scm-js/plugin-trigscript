@@ -35,9 +35,8 @@ describe("a map of our own, the game's conditions and actions", () => {
     const out = layout({ graph, strings: 0, owner: 0, text: (s) => texts.get(s)!, arrays: new Map() });
     const cond: ConditionRecord = c.conds[0].game!, act: ActionRecord = { ...a.acts[0].record!, text: 7, wav: 8 };
     const record = encodeTriggers([{ ...emptyTrigger(), conditions: [cond], actions: [act] }]);
-    // (The payload's triggers in order: `@wake` and `@init` first, then the graph's, a node of 2408 bytes each, its
-    // record 8 bytes in.)
-    const node = (t: typeof c) => 8 + 2408 * (2 + graph.triggers.indexOf(t));
+    // (A trigger's record is 8 bytes into its node.)
+    const node = (t: typeof c) => out.triggers.get(t.label)! - out.address + 8;
     expect([...out.payload.subarray(node(c), node(c) + 20)]).toEqual([...record.subarray(0, 20)]);
     expect([...out.payload.subarray(node(a) + 320, node(a) + 352)]).toEqual([...record.subarray(320, 352)]);
   });

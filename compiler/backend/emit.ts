@@ -1234,6 +1234,8 @@ class Emitter {
   writes = new Map<string, Write[]>();
   /** The branches to put back when the walk reaches a label: the branch, and the label it goes to otherwise. */
   restores = new Map<string, { branch: string; to: string }[]>();
+  /** The runs of triggers a doubling trigger walks, each to be laid out one after another (`Graph.rows`). */
+  rows: string[][] = [];
   homes = new Set<string>();
   /** A comparison's number that reads a variable: a place of it once the condition is in its trigger. */
   condReads = new Map<Cond, Read>();
@@ -2889,6 +2891,7 @@ class Emitter {
       bit(last, w - 1, A);
       this.push({ label: A, conds: [{ dword: { temp: flag }, compare: "exactly", value: 1 }], items: [{ act: this.times(acc, S, 1) }, { act: { dword: { temp: flag }, modifier: "set", value: 0 } }], next: R, at });
     } else bit(B[w - 1], w - 1, done);
+    this.rows.push(B);
     this.doubler(R, [acc], B[0], at);
     this.land(done);
     this.takeOut(R, 1, [{ act: 0, temp }], signed ? [{ dword: { temp: neg }, compare: "exactly", value: 1 }] : null, at);
@@ -2943,6 +2946,7 @@ class Emitter {
       this.branch([{ dword: count, compare: "exactly", value: 0, mask: 2 ** k }], skip, at);
       this.push({ conds: [], items: [{ act: { dword: nextOf(R), modifier: "set", value: { label: run[0] } } }], next: run[0], at });
       run.forEach((label, i) => this.push({ label, conds: [], items: [], next: i < 2 ** k ? R : skip, keep: true, at }));
+      this.rows.push(run);
       this.land(skip);
     }
   }
@@ -2998,6 +3002,7 @@ class Emitter {
     const B = Array.from({ length: 32 }, () => this.label("sb"));
     this.push({ conds: [], items: [{ act: { dword: nextOf(R), modifier: "set", value: { label: B[0] } } }], next: B[0], at });
     B.forEach((label, i) => this.push({ label, conds: [{ dword: { temp: am }, compare: "atLeast", value: 1, mask: u(2 ** (31 - i)) }], items: [{ act: { dword: cell, modifier: "add", value: 1 } }], next: T, at }));
+    this.rows.push(B);
     this.push({ label: T, conds: [{ dword: count, compare: "exactly", value: 31 }], items: [{ act: { dword: nextOf(T), modifier: "set", value: { label: done } } }], next: R, at });
     let r = this.restores.get(done);
     if (!r) this.restores.set(done, (r = []));
@@ -3136,6 +3141,7 @@ class Emitter {
       }
       // ψ doubled, and on to the next step's first trigger.
       this.push({ label: R, conds: [], items: [{ act: { dword: psi, modifier: "add", value: 0 } }, { act: { dword: nextOf(R), modifier: "add", value: TRIGGER_BYTES } }], next: slots[0], keep: true, at });
+      this.rows.push(slots, pairs.flat());
     }
     this.land(done);
     this.routeFed(from);
@@ -3450,6 +3456,7 @@ class Emitter {
       lastBits.push([last, set]);
     });
     for (const [label, set] of lastBits) bit(label, set, N - 1);
+    this.rows.push(...[plus, minus].filter((r) => r.length));
     this.push({ label: T, conds: [{ dword: rem, compare: "atLeast", value: 0 }], items: [{ act: { dword: rem, modifier: "subtract", value: 0 } }, ...(op === "/" ? [{ act: { dword: q, modifier: "add", value: 1 } } as Item] : [])], next: R, at });
     this.doubler(R, cells, plus[0], at);
     this.land(done);
@@ -4108,7 +4115,7 @@ class Emitter {
       }
     }
     // What the graph reads that was written before it, copied into its places on the way in.
-    const graph: Graph = { entries: [], triggers, ...(this.arrays.size ? { arrays: [...this.arrays].map(([id, stride]) => ({ id, stride })) } : {}) };
+    const graph: Graph = { entries: [], triggers, ...(this.arrays.size ? { arrays: [...this.arrays].map(([id, stride]) => ({ id, stride })) } : {}), ...(this.rows.length ? { rows: this.rows } : {}) };
     for (const id of entries) for (const p of this.placesOf(id)) {
       // (A routed variable's places are refreshed where they are read.)
       if (routed.has(id)) continue;

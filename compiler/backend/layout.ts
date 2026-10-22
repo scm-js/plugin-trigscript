@@ -22,6 +22,13 @@
  * In memory a trigger is a node: the previous and the next pointer, 16 conditions of 20 bytes, 64 actions of 32, the
  * flags (4: preserved) and 28 bytes of players. A condition or an action names a dword by its EPD (its distance from
  * the deaths table in dwords) in its player field; a mask goes in its first field, with 'SC' in its last.
+ *
+ * The game reads no more of a node than its pointers, its conditions up to the first of kind 0, its actions up to the
+ * first of kind 0, its flags and its current action (the last byte of the players, which it writes each time the
+ * trigger runs): the rest is another trigger's, or data's (`holds`). So the triggers are stacked as eudplib stacks its own
+ * (`stack_objects` in its allocator): each where none of the dwords it holds is another's, from where the last one
+ * went on — a trigger of a few conditions and actions in a little over 200 bytes, not 2,408. A row a doubling trigger
+ * walks (`Graph.rows`) is stacked as one, its triggers 2,408 bytes apart.
  */
 import { END, TRIGGER_BYTES, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { GAME_TICK, TRIGGER_LISTS, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
@@ -53,6 +60,93 @@ export interface OwnMap {
   templates: Map<string, number>;
   /** Where each region of cell triggers (an array, a stack) starts: its first cell's trigger. */
   regions: Map<string, number>;
+  /** Where each trigger is, by label. */
+  triggers: Map<string, number>;
+}
+
+/**
+ * The dwords of a node a trigger of so many conditions and actions holds, from its start (above): its previous pointer
+ * when it is in a list of the game's, its next; its conditions, and of the one after them the dwords of its kind and its
+ * flags (the game asks whether a condition is switched off, then whether it is the last: measured in the lifted game);
+ * its actions, and the same two of the one after them; its flags and its current action. eudplib holds the whole of the
+ * condition and the action after; a cell trigger here has held only those two dwords of each since arrays were laid
+ * out so, played in Remastered.
+ */
+function holds(conds: number, acts: number, listed: boolean): number[] {
+  const out = listed ? [0, 1] : [1];
+  for (let k = 0; k < 5 * conds; k++) out.push(2 + k);
+  if (conds < 16) out.push(2 + 5 * conds + 3, 2 + 5 * conds + 4);
+  for (let k = 0; k < 8 * acts; k++) out.push(82 + k);
+  if (acts < 64) out.push(82 + 8 * acts + 6, 82 + 8 * acts + 7);
+  out.push(594, 601);
+  return out;
+}
+
+/**
+ * The dwords a cell trigger holds (below): its next pointer, the kind and the flags of its first condition, its action,
+ * the kind and the flags of the next (the game asks whether a condition or an action is switched off before whether it
+ * is the last: measured in the lifted game), its flags and current action. A cell's first condition's flags are the
+ * dword of the next action's kind of the cell five before, and its next action's flags the current action's dword of the
+ * cell 28 before: 0 for both, and the current action's byte one neither reads.
+ */
+const CELL_HOLDS = [1, 5, 6, 82, 83, 84, 85, 86, 87, 88, 89, 96, 97, 594, 601];
+/** A cell trigger every 72 bytes: what one holds the others do not. */
+const CELL_DWORDS = 18;
+
+/** How far back from where the last object went the next is looked for, in dwords. */
+const WINDOW = 4096;
+
+/**
+ * The payload's dwords, and which are taken. An object goes at the first dword from where the last one went on where
+ * none of those it holds is taken; a dword of data, in the first gap; a run of them, at the end.
+ */
+class Space {
+  private used = new Uint8Array(1 << 16);
+  /** One past the last dword taken. */
+  top = 0;
+  /** Where the last object went. */
+  private from = 0;
+  /** No free dword below this. */
+  private gap = 0;
+  taken(i: number): boolean { return i < this.used.length && this.used[i] === 1; }
+  private take(i: number): void {
+    if (i >= this.used.length) {
+      const more = new Uint8Array(Math.max(2 * this.used.length, i + 1));
+      more.set(this.used);
+      this.used = more;
+    }
+    this.used[i] = 1;
+    if (i >= this.top) this.top = i + 1;
+  }
+  /**
+   * An object holding these dwords (from its start; one may name a dword twice), at or past `from`: where it goes. Unset,
+   * from the first free dword a little before where the last one went: eudplib looks from where its last went on, which
+   * left a third of the made-texts probe's payload empty; from the first free dword of all, a tenth less again but four
+   * times as long to lay out.
+   */
+  stack(dwords: number[], from?: number): number {
+    while (this.taken(this.gap)) this.gap++;
+    let at = from ?? Math.max(this.gap, this.from - WINDOW);
+    for (let k = 0; k < dwords.length;) {
+      if (this.taken(at + dwords[k])) { at++; k = 0; } else k++;
+    }
+    for (const d of dwords) this.take(at + d);
+    this.from = at;
+    return at;
+  }
+  /** A dword of data. */
+  dword(): number {
+    while (this.taken(this.gap)) this.gap++;
+    this.take(this.gap);
+    return this.gap;
+  }
+  /** `n` dwords one after another, after everything. */
+  run(n: number): number {
+    const at = this.top;
+    for (let k = 0; k < n; k++) this.take(at + k);
+    this.top = at + n;
+    return at;
+  }
 }
 
 export interface LayoutInput {
@@ -81,6 +175,11 @@ export interface LayoutInput {
    * payload. Unset, the payload holds them.
    */
   templateAt?: Map<string, number>;
+  /**
+   * What each dword no trigger or data holds is, 0 unset: a test fills them so, to show nothing reads them (the
+   * game, among the triggers stacked in each other's room).
+   */
+  free?: number;
 }
 
 /**
@@ -192,28 +291,40 @@ export function layout(input: LayoutInput): OwnMap {
     { label: run, conds: [], acts: players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), next: wake(0) },
   );
   for (const t of runs.flatMap((r) => r.graph.triggers)) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
-  const at = new Map<string, number>(triggers.map((t, i) => [t.label, base + NODE * i]));
+  // The triggers stacked, a row as one.
+  const space = new Space();
+  const at = new Map<string, number>();
+  const rowOf = new Map<string, string[]>();
+  for (const row of runs.flatMap((r) => r.graph.rows ?? [])) for (const l of row) rowOf.set(l, row);
+  const byLabel = new Map(triggers.map((t) => [t.label, t]));
+  for (const t of triggers) {
+    if (at.has(t.label)) continue;
+    const row = rowOf.get(t.label) ?? [t.label];
+    const n = space.stack(row.flatMap((l, i) => holds(byLabel.get(l)!.conds.length, byLabel.get(l)!.acts.length, byLabel.get(l)!.prev !== undefined).map((d) => d + (NODE / 4) * i)));
+    row.forEach((l, i) => at.set(l, base + 4 * n + NODE * i));
+  }
   // The cell triggers of the variables routed, after the triggers, and then the stack's: eudplib's EUDVariable, 72
   // bytes each — a trigger whose conditions end at once, its action at +328 (destination +344, number +348), the next
   // action's kind 0. They overlap: what one trigger reads of its node is bytes the others never read (eudplib lays its
   // variables out so).
-  const cellBase = base + NODE * triggers.length;
   const routes = [...routed];
+  const graphs = runs.map((r) => r.graph);
+  const cellCount = routes.length + graphs.flatMap((g) => g.cells ?? []).reduce((n, r) => n + r.cells, 0);
+  const cellBase = cellCount ? base + 4 * space.stack(Array.from({ length: cellCount }, (_, k) => CELL_HOLDS.map((d) => d + CELL_DWORDS * k)).flat(), space.top) : base;
   routes.forEach((id, k) => at.set(ROUTE_CELL + id, cellBase + 72 * k));
   const routeOf = (id: string) => at.get(ROUTE_CELL + id);
   const regions = new Map<string, number>();
   let cellTriggers = routes.length;
-  const graphs = runs.map((r) => r.graph);
   for (const r of graphs.flatMap((g) => g.cells ?? [])) {
     regions.set(r.id, cellBase + 72 * cellTriggers);
     cellTriggers += r.cells;
   }
   const regionOf = (id: string) => regions.get(id);
-  // The data after them: the variables' cells, the graph's dwords, the lists it reads (each cell `stride` EPD apart).
-  let next = cellTriggers ? cellBase + 72 * cellTriggers + NODE : cellBase;
+  // The data in the gaps: the variables' cells, the graph's dwords; after everything, the lists it reads (each cell
+  // `stride` EPD apart) and the templates.
   const cells = new Map<string, number>();
   const cell = (name: string) => {
-    if (!cells.has(name)) { cells.set(name, next); next += 4; }
+    if (!cells.has(name)) cells.set(name, base + 4 * space.dword());
     return cells.get(name)!;
   };
   const lists = new Map<string, number>();
@@ -221,17 +332,16 @@ export function layout(input: LayoutInput): OwnMap {
   for (const a of graphs.flatMap((g) => g.arrays ?? [])) {
     const values = input.arrays.get(a.id);
     if (!values) throw new Error(`the graph reads ${a.id}, a list it was not given`);
-    lists.set(a.id, next);
-    listData.push({ at: next, values, stride: a.stride });
-    next += 4 * a.stride * Math.max(1, values.length) + 4;
+    const l = base + 4 * space.run(a.stride * Math.max(1, values.length) + 1);
+    lists.set(a.id, l);
+    listData.push({ at: l, values, stride: a.stride });
   }
   // The templates of texts printed with values, each on a dword's start (where the map maker put them, or here).
   const templates = new Map<string, number>(input.templateAt ?? []);
   for (const t of graphs.flatMap((g) => g.templates ?? [])) {
     if (t.at !== undefined) templates.set(t.id, t.at);
     if (templates.has(t.id)) continue;
-    templates.set(t.id, next);
-    next += 4 * Math.ceil(t.bytes.length / 4);
+    templates.set(t.id, base + 4 * space.run(Math.ceil(t.bytes.length / 4)));
   }
   const field = (d: Extract<Dword, { at: string }>): number => {
     const t = at.get(d.at);
@@ -300,10 +410,11 @@ export function layout(input: LayoutInput): OwnMap {
       return { a, player: none ? 0 : epd(address(a.dword)), number: none ? 0 : value(a.value) };
     }),
   }));
-  const size = next - base;
+  const size = 4 * space.top;
   const out = new Uint8Array(pad + size);
   const dv = new DataView(out.buffer);
   const w32 = (addr: number, v: number) => dv.setUint32(pad + addr - base, u(v), true);
+  if (input.free) for (let i = 0; i < space.top; i++) if (!space.taken(i)) w32(base + 4 * i, input.free);
   encoded.forEach(({ t, conds, acts }) => {
     const n = at.get(t.label)!;
     if (t.prev !== undefined) w32(n, t.prev);
@@ -390,7 +501,7 @@ export function layout(input: LayoutInput): OwnMap {
   }
   const vars = new Map<string, number>([...cells].filter(([k]) => k.startsWith("var:")).map(([k, a]) => [k.slice(4), a]));
   routes.forEach((id, k) => vars.set(id, cellBase + 72 * k + 348));
-  return { payload: out, trig: startUp(players, (p) => at.get(entry(p))!), address: base, vars, templates, regions };
+  return { payload: out, trig: startUp(players, (p) => at.get(entry(p))!), address: base, vars, templates, regions, triggers: new Map(triggers.map((t) => [t.label, at.get(t.label)!])) };
 }
 
 /**

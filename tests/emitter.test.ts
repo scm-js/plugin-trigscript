@@ -1060,10 +1060,19 @@ describe("the emitter, a map of our own's texts", () => {
  * subtract stopping at 0; Display Text passed over), then its next pointer — as read after its actions — until one
  * with the top bit set. One pass: the programs sleep nowhere. Returns each variable's cell as the pass left it.
  */
+const laidOut = new WeakMap<Graph, { own: ReturnType<typeof layout>; texts: string[]; templates: string[] }>();
 function runOwn(g: Graph): Env {
-  // (Strings by number: a printed text's template 1000 on, a text known when built 5000 on.)
-  const templates = (g.templates ?? []).map((t) => t.id), texts: string[] = [];
-  const own = layout({ graph: g, strings: 0, owner: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays: new Map(), template: (id) => 1000 + templates.indexOf(id) });
+  // (Laid out once a graph: a test may walk one many times.)
+  let done = laidOut.get(g);
+  if (!done) {
+    // (Strings by number: a printed text's template 1000 on, a text known when built 5000 on.)
+    const templates = (g.templates ?? []).map((t) => t.id), texts: string[] = [];
+    // (Every dword no trigger or data holds all ones: nothing reads them.)
+    const own = layout({ graph: g, strings: 0, owner: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays: new Map(), template: (id) => 1000 + templates.indexOf(id), free: 0xffffffff });
+    done = { own, texts, templates };
+    laidOut.set(g, done);
+  }
+  const { own, texts, templates } = done;
   const DEATHS = 0x58a364;
   const bytes = own.payload.slice();
   const dv = new DataView(bytes.buffer);
@@ -1082,6 +1091,8 @@ function runOwn(g: Graph): Env {
     let holds = (rd(pc + 2376) & 8) === 0;
     for (let k = 0; holds && k < 16; k++) {
       const o = pc + 8 + 20 * k, kind = byte(o + 15);
+      // (As the game: one switched off is passed over before the kind is asked.)
+      if (byte(o + 17) & 2) continue;
       if (kind === 0) break;
       if (kind !== 15) throw new Error(`condition kind ${kind}`);
       const masked = dv.getUint16(o + 18 - base, true) === 0x4353;
@@ -1090,6 +1101,7 @@ function runOwn(g: Graph): Env {
     }
     for (let k = 0; holds && k < 64; k++) {
       const o = pc + 328 + 32 * k, kind = byte(o + 26);
+      if (byte(o + 28) & 2) continue;
       if (kind === 0) break;
       if (kind === 9) {
         // Display Text: the string's bytes as they are now, to the first 0.

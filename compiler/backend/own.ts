@@ -132,5 +132,6 @@ function renamed(g: Graph, suffix: string, name: (id: string) => string): Graph 
     ...(g.arrays ? { arrays: g.arrays.map((a) => ({ ...a, id: name(a.id) })) } : {}),
     ...(g.cells ? { cells: g.cells.map((c) => ({ ...c, id: name(c.id) })) } : {}),
     ...(g.templates ? { templates: g.templates.map((t) => ({ ...t, id: t.id + suffix })) } : {}),
+    ...(g.rows ? { rows: g.rows.map((r) => r.map(label)) } : {}),
   };
 }
