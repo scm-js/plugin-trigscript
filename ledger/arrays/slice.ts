@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // A copy of part of an array: `xs.slice(1, 3)`.
 program(() => {
   const xs = [5, 2, 8, 1];

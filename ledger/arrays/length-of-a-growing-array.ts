@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // How many values an array that grows holds: `xs.length`.
 program(() => {
   const xs: number[] = [];

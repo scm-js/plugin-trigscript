@@ -1,4 +1,4 @@
-// ledger: step 9, refused: the length of an array that grows
+// ledger: step 9, takes
 // A text cut at a separator into an array of texts: `"a,b,c".split(",")`.
 program(() => {
   let n = 0;

@@ -184,7 +184,7 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
  * order, `TRIGGER_BYTES` apart. Every other trigger the layout puts where it fits (`layout.ts`).
  */
 /** (A template with `at` is the game's own memory there — the line a print at the centre of the screen is written into — and its bytes are written by the program, not laid out.) */
-export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number }[]; rows?: string[][] }
+export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number; data?: boolean }[]; rows?: string[][] }
 export interface Region { id: string; cells: number; values?: number[] }
 
 /**

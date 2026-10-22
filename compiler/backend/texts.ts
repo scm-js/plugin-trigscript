@@ -10,7 +10,7 @@
  *
  * `knownTexts` rewrites a program's IR so; what it does not take it leaves as it was, for the emitter to refuse.
  */
-import { isTextExpr, programDeclarations, type ArrayDecl, type Call, type FuncDecl, type At, type BoolExpr, type CompareOp, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type VarDecl } from "../ir";
+import { HEAP_CELLS, isTextExpr, programDeclarations, type ArrayDecl, type Call, type FuncDecl, type At, type BoolExpr, type CompareOp, type NumExpr, type Program, type Stmt, type TextExpr, type TextPart, type VarDecl } from "../ir";
 
 /** The most texts one choice may be: past it, part 2's way. */
 const MOST_CHOICES = 16;
@@ -767,6 +767,17 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
 
   /** What a text needs done before it is begun (`pre`), and what writes it at the cursor (`body`). */
   interface Writing { pre: Stmt[]; body: Stmt[] }
+  /** Whether statements only work out numbers: no call (the run time's functions move the cursor) and no text. */
+  const makesNothing = (list: Stmt[]): boolean => {
+    const no = (x: unknown): boolean => {
+      if (Array.isArray(x)) return x.every(no);
+      if (!x || typeof x !== "object") return true;
+      const o = x as { kind?: string };
+      if (o.kind === "call" || o.kind === "textBlock" || o.kind === "assignText" || o.kind === "print" || isTextExpr(o as TextExpr)) return false;
+      return Object.values(o).every((v) => !v || typeof v !== "object" || no(v));
+    };
+    return no(list);
+  };
   /** A fresh made text with a block of its own, for a text made only to be read. */
   const temp = (): Made => {
     const id = fresh("made");
@@ -801,9 +812,13 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
     }
     switch (t.kind) {
       case "textTernary": {
-        // (Each side's own needs not done before: they would be done whichever side is taken.)
+        // (Each side's own needs not done before: they would be done whichever side is taken. What only reads numbers —
+        // a cell of an array of texts, where it is and its lengths — is done in its side, as the side is written: it
+        // makes no text, so the cursor is left as it is.)
         const a = write(t.whenTrue), b = write(t.whenFalse);
-        return a && b && !a.pre.length && !b.pre.length ? { pre: [], body: [when(bool(t.cond), a.body, b.body)] } : null;
+        if (!a || !b) return null;
+        if (!a.pre.length && !b.pre.length) return { pre: [], body: [when(bool(t.cond), a.body, b.body)] };
+        return makesNothing(a.pre) && makesNothing(b.pre) ? { pre: [], body: [when(bool(t.cond), [...a.pre, ...a.body], [...b.pre, ...b.body])] } : null;
       }
       case "template": return writeParts(t.parts);
       case "textSlice": {
@@ -880,10 +895,12 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   /**
    * An array of texts the program makes is three arrays of numbers (the front end's): where each cell's text is, the
    * block it owns, its length in characters. Here each cell's text has a block of its own, laid out with the made
-   * variables', its EPD in the first array as soon as the array is declared; the second holds its length in bytes. (An
-   * array that grows is step 9's, its cells' blocks the heap's.)
+   * variables', its EPD in the first array as soon as the array is declared; the second holds its length in bytes.
+   * An array that grows (`grows`, step 9: its three arrays the heap's, `heap.ts`) takes a block for a cell from a pool
+   * of them the first time a text is stored there — its EPD then in the first array, 0 before — and gives it back
+   * when the cell's text is let go of (popped, cut off, declared again).
    */
-  interface TextArray { addr: string; block: string; chars: string; cells: Made[] }
+  interface TextArray { addr: string; block: string; chars: string; cells: Made[]; grows?: boolean }
   const textArrays = new Map<string, TextArray>();
   const findTextArrays = (x: unknown): void => {
     if (Array.isArray(x)) { x.forEach(findTextArrays); return; }
@@ -894,19 +911,45 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       if (a && !a.dynamic && !a.slice && !a.through && a.length <= MOST_TEXT_CELLS) {
         textArrays.set(o.addr!, { addr: o.addr!, block: o.block!, chars: o.chars!, cells: Array.from({ length: a.length }, (_, i) => ({ e: `${o.addr}.${i}@e`, n: `${o.addr}.${i}@n`, c: `${o.addr}.${i}@c`, block: `${o.addr}.${i}@block` })) });
       }
+      else if (a && a.dynamic && !a.slice && !a.through && a.task === undefined) textArrays.set(o.addr!, { addr: o.addr!, block: o.block!, chars: o.chars!, cells: [], grows: true });
     }
     for (const v of Object.values(o)) if (v && typeof v === "object") findTextArrays(v);
   };
   findTextArrays([program.body, program.functions ?? []]);
   const element = (array: string, index: NumExpr): NumExpr => ({ kind: "element", array, index, at: here });
   const store = (array: string, index: NumExpr, value: NumExpr): Stmt => ({ kind: "store", array, index, value, at: here, label: "" });
-  /** A cell of an array of texts as a made text to read: where it is and its lengths, read from the arrays. */
+  /**
+   * A cell of an array of texts as a made text to read: where it is and its lengths, read from the arrays. (A cell of
+   * one that grows with no block yet, or past its end, is the pool's empty block.)
+   */
   const cellOf = (t: Extract<TextExpr, { kind: "textAt" }>): { pre: Stmt[]; m: Made } | null => {
     const a = textArrays.get(t.addr);
     if (!a) return null;
     const at = fresh("at"), m: Made = { e: fresh("e"), n: fresh("n"), c: fresh("c"), block: "" };
-    return { pre: [dec(at, num(t.index)), dec(m.e, element(a.addr, V(at))), dec(m.n, element(a.block, V(at))), dec(m.c, element(a.chars, V(at)))], m };
+    const where: Stmt[] = a.grows
+      ? [dec(m.e, element(a.addr, V(at))), when(cmp("==", V(m.e), k(0)), [set(m.e, V(cellPool().empty))])]
+      : [dec(m.e, element(a.addr, V(at)))];
+    return { pre: [dec(at, num(t.index)), ...where, dec(m.n, element(a.block, V(at))), dec(m.c, element(a.chars, V(at)))], m };
   };
+  /**
+   * The pool the cells of arrays of texts that grow take their blocks from: `POOL_BLOCKS` blocks laid out once, one
+   * after another, handed out from the bottom up and, given back, from a list of them; and a block of nothing for a cell
+   * with no text. When none is left, the text stored is empty, and the game says so once (as the Python side does).
+   */
+  let pooled: { e: string; empty: string; count: string; next: string; said: string; free: string } | null = null;
+  const cellPool = () => (pooled ??= { e: "@text.pool@e", empty: "@text.empty@e", count: G("pooln"), next: G("poolnext"), said: G("poolsaid"), free: "@text.free" });
+  /** A block from the pool into `e` (0 when there is none, said once). */
+  const takeBlock = (e: string): Stmt[] => {
+    const P = cellPool();
+    return [when(cmp("!=", V(P.count), k(0)), [add(P.count, -1), set(e, element(P.free, V(P.count)))], [
+      when(cmp("<", V(P.next), k(POOL_BLOCKS), true), [set(e, bin("+", V(P.e), bin("*", V(P.next), k(BLOCK / 4)))), add(P.next, 1)], [
+        set(e, k(0)),
+        when(cmp("==", V(P.said), k(0)), [set(P.said, k(1)), { kind: "print", parts: [{ kind: "text", text: `\x06TrigScript: out of memory - a text could not be made (the programs' arrays and texts share ${HEAP_CELLS} cells).` }], to: CURRENT_PLAYER, position: "chat", at: here, label: "" } as Stmt]),
+      ]),
+    ])];
+  };
+  /** A block back to the pool's list. */
+  const giveBack = (e: string): Stmt[] => { const P = cellPool(); return [store(P.free, V(P.count), V(e)), add(P.count, 1)]; };
   /** Whether a text reads a cell of an array of texts. */
   const readsArray = (x: unknown, addr: string): boolean => {
     if (Array.isArray(x)) return x.some((y) => readsArray(y, addr));
@@ -1190,6 +1233,19 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
         const a = textArrays.get(s.addr);
         const w = a ? write(s.value) : null;
         if (!a || !w) break;
+        if (a.grows) {
+          // (A cell of an array that grows: its block taken from the pool the first time; none left, an empty text.)
+          const at = fresh("at"), into: Made = { e: fresh("e"), n: fresh("n"), c: fresh("c"), block: "" };
+          const reads = readsArray(s.value, a.addr);
+          const made = reads ? [...blockOf(SCRATCH), ...w.pre, ...begin(V(SCRATCH.e)), ...w.body, ...finish(SCRATCH)] : w.pre;
+          const fill = reads ? copyBlock(SCRATCH, into) : [...begin(V(into.e)), ...w.body, ...finish(into)];
+          return [dec(at, num(s.index)), ...made, when(cmp("<", V(at), { kind: "length", array: a.addr, at: here } as NumExpr, true), [
+            dec(into.e, element(a.addr, V(at))), dec(into.n, k(0)), dec(into.c, k(0)),
+            when(cmp("==", V(into.e), k(0)), [...takeBlock(into.e), store(a.addr, V(at), V(into.e))]),
+            when(cmp("!=", V(into.e), k(0)), fill),
+            store(a.block, V(at), V(into.n)), store(a.chars, V(at), V(into.c)),
+          ])];
+        }
         const at = fresh("at"), into: Made = { e: fresh("e"), n: fresh("n"), c: fresh("c"), block: "" };
         const cell = [dec(into.e, element(a.addr, V(at))), dec(into.n, k(0)), dec(into.c, k(0))];
         const lengths = [store(a.block, V(at), V(into.n)), store(a.chars, V(at), V(into.c))];
@@ -1199,8 +1255,17 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
         return [dec(at, num(s.index)), ...w.pre, when(cmp("<", V(at), k(a.cells.length), true), [...cell, ...begin(V(into.e)), ...w.body, ...finish(into), ...lengths])];
       }
       case "releaseText": {
-        // (A cell's block is its own for good: nothing to give back.)
-        if ([...textArrays.values()].some((a) => a.block === s.block)) return [];
+        // (A cell's block is its own for good: nothing to give back. A cell of an array that grows gives its pool's back.)
+        const a = [...textArrays.values()].find((x) => x.block === s.block);
+        if (a?.grows) {
+          const at = fresh("at"), e = fresh("e");
+          return [dec(at, num(s.index)), when(cmp("<", V(at), { kind: "length", array: a.addr, at: here } as NumExpr, true), [
+            dec(e, element(a.addr, V(at))),
+            when(cmp("!=", V(e), k(0)), [...giveBack(e), store(a.addr, V(at), k(0))]),
+            store(a.block, V(at), k(0)), store(a.chars, V(at), k(0)),
+          ])];
+        }
+        if (a) return [];
         break;
       }
       case "buildText": {
@@ -1359,9 +1424,16 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
     for (const v of Object.values(o)) if (v && typeof v === "object") reads(v);
   };
   reads([body, fns, functions ?? []]);
+  // (The pool of blocks the cells of arrays of texts that grow take, when there are any: laid out once, and its list.)
+  const P = pooled as { e: string; empty: string; free: string } | null;
+  if (P) arrays.push({ id: P.free, name: "(text blocks given back)", kind: "number", length: POOL_BLOCKS, shared: true, at: here });
   const start: Stmt[] = [
     // (The program's own player, as the game has it now: the one a known text's writing gives it back to.)
     ...[...globals].filter((id) => read.has(id)).map((id) => dec(id, id === ME ? peek(k(CURRENT)) : k(0), ROUTED.has(id))),
+    ...(P ? [
+      { kind: "textBlock", decl: { id: P.e, name: "(text)", kind: "number", shared: false, at: here, routed: true }, block: "@text.pool", bytes: POOL_BLOCKS * BLOCK, data: true, at: here } as Stmt,
+      { kind: "textBlock", decl: { id: P.empty, name: "(text)", kind: "number", shared: false, at: here, routed: true }, block: "@text.empty", bytes: 4, at: here } as Stmt,
+    ] : []),
     ...[...known].map(([text, id]) => ({ kind: "textBlock", decl: { id: `${id}@e`, name: "(text)", kind: "number", shared: false, at: here, routed: true }, block: id, bytes: enc.encode(text).length + 1, text, at: here }) as Stmt),
     ...[...blocks.values()].flatMap((m) => [
       { kind: "textBlock", decl: { id: m.e, name: "(text)", kind: "number", shared: false, at: here, routed: true }, block: m.block, bytes: BLOCK, at: here } as Stmt,
@@ -1375,6 +1447,8 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
 const CURRENT_PLAYER = 13;
 /** The most cells an array of texts may have here: each a block of its own. */
 const MOST_TEXT_CELLS = 64;
+/** The blocks the cells of arrays of texts that grow share (`pool`): as many texts at once, a made text's room each. */
+const POOL_BLOCKS = 64;
 const DEATHS = 0x58a364;
 /** The code of the game's texts nearest each colour of the palette (eudplib's `_pcolor`). */
 const COLOUR_CODES = [

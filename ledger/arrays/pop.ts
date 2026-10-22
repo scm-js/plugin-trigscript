@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // The last value of an array taken off it: `xs.pop()`.
 program(() => {
   const xs = [1, 2, 3];

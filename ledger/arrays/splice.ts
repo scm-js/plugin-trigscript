@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // Values taken out of an array and others put in their place: `xs.splice(i, 1, v)`.
 program(() => {
   const xs = [1, 2, 3, 4];

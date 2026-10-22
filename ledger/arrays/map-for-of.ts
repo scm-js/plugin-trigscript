@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // A loop over a `Map`'s keys and values, in the order the keys went in: `for (const [key, value] of map)`.
 program(() => {
   const scores = new Map<number, number>();

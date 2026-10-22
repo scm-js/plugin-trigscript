@@ -1,4 +1,4 @@
-// ledger: step 9, refused: a variable a closure keeps
+// ledger: step 9, takes
 // A closure made at each turn of a loop over that turn's `const`, as JavaScript has it.
 program(() => {
   let total = 0;

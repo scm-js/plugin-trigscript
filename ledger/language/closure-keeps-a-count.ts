@@ -1,4 +1,4 @@
-// ledger: step 9, refused: a variable a closure keeps
+// ledger: step 9, takes
 // A closure that keeps a count, made in the program by a function of the script's (`const next = counter()`) and
 // called at each turn of a loop: 1, 2, 3.
 function counter() {

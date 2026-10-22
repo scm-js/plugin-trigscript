@@ -14,6 +14,7 @@ import type { ArrayDecl, FuncDecl, Program, VarDecl } from "../ir";
 import { ANY_PLAYERS, emitBody, groupSlots, type MapPlayers } from "./emit";
 import type { Act, Cond, Dword, Graph, Num, Trigger, Value } from "./graph";
 import { TextPool, knownTexts } from "./texts";
+import { HEAP_GLOBALS, growingArrays, heldVariables, isHeapGlobal, loopScoped } from "./heap";
 
 export interface OwnRun {
   /** The program's index among the script's. */
@@ -58,8 +59,10 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
   const values = new Map<string, number[]>();
   // Every program's texts known when built first: the pool is numbered once they are all in, before any is lowered.
   const pool = new TextPool();
-  const programs = r.ir.map((p) => knownTexts(p, pool, textBase));
+  const known = r.ir.map((p) => knownTexts(p, pool, textBase));
   const texts = pool.finish();
+  // Arrays that grow on the heap (`heap.ts`), once the texts' numbers are in: that pass copies what it rewrites.
+  const programs = known.map((p) => loopScoped(growingArrays(heldVariables(p))));
   for (const [k, program] of programs.entries()) {
     const slots = ownerSlots(program, players);
     if (typeof slots === "string") return slots;
@@ -73,6 +76,8 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
       }
     };
     collect(program);
+    // (The heap's own variables, which no program declares: one cell each for the map.)
+    for (const d of HEAP_GLOBALS) decls.set(d.id, d);
     const functions = new Map<string, FuncDecl>((program.functions ?? []).map((f) => [f.id, f]));
     const arrays = new Map<string, ArrayDecl>((program.arrays ?? []).map((a) => [a.id, a]));
     // The variables and arrays every run of the program has in common: one for every player of a per-player program.
@@ -84,7 +89,7 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
       // (The first run keeps the emitter's names; each other one's are its own, but for what its program shares.)
       const graph = emitBody(program.body, decls, n ? `own${n}` : "own", functions, arrays, undefined, player, players);
       if (typeof graph === "string") return graph;
-      const name = (id: string) => (!n ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
+      const name = (id: string) => (!n || isHeapGlobal(id) ? id : shared.has(id) ? (k ? `${id}#p${k}` : id) : `${id}#${n}`);
       const g = n ? renamed(graph, `#${n}`, name) : graph;
       // An action of the game's names its text and its sound file by the script's strings: given here, for the layout.
       const of = (i: number) => (i ? r.strings[i - 1] : undefined);

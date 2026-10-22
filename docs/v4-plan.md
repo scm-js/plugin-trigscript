@@ -3558,10 +3558,11 @@ found what they left out; where a step moved, its old number is given.
    "JSX, names and arrays of texts on our own backend".
    Text variables and arrays; compared, searched, measured, repeated, split and
    joined; templates and JSX made while the game runs; `name()` and `color()` in a print; `ui.lines`.
-9. **Arrays that grow, and what stands on the heap** (was half of 3). `push`, `pop`, a length set, `through`, `Map`
+9. **Arrays that grow, and what stands on the heap** (was half of 3) ✓ — "Arrays that grow, and what stands on the
+   heap, on our own backend". `push`, `pop`, a length set, `through`, `Map`
    and `Set`, a task's arrays, an array in a function that calls itself (the front end makes every one of those
    growing today, a fixed length too); closures over locals and reference classes (`held`, the pool of 1,024 cells);
-   signals, which stand on both.
+   signals, which stand on both. (A task's arrays are step 11's, with the tasks.)
 10. **Units** (was 5). Every unit value, unit loops and events, fields, flags, writes and verbs, picks, `select()` and
     the game command it sends, `underMouse`; the queries scheduled (ideas 6, 7).
 11. **Tasks, `async` and errors** (was 6; errors new). `start`, `cancel`, `running`, `Promise.all`/`race`/`any`,
@@ -3896,7 +3897,7 @@ Bad Apple: 5, 6, 7, as the fog library. The bullets: 5 (a death count read), 9. 
 
 ### The ledger (2026-10-19)
 
-`ledger/` holds a script for each feature of the language and the library — 840 of them, in folders by area — whose
+`ledger/` holds a script for each feature of the language and the library — 843 of them, in folders by area — whose
 first line says which step of the way off eudplib makes it a map of our own's, and whether a map of our own takes it
 today, in the words of its refusal:
 
@@ -3922,7 +3923,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 6 The game's memory | 50 of 50 |
 | 7 Programs, owners and players | 27 of 28 |
 | 8 Texts as values | 48 of 48 |
-| 9 Arrays that grow, the heap | 0 of 26 |
+| 9 Arrays that grow, the heap | 27 of 27 |
 | 10 Units | 0 of 99 |
 | 11 Tasks, `async` and errors | 0 of 44 |
 | 12 Input | 0 of 26 |
@@ -4633,6 +4634,135 @@ Checked: `tests/text-array-methods.test.ts` (each against JavaScript, the colour
 `tests/emitter.test.ts` (both from our own map's bytes, a name and a colour from the game's memory), two rows of the
 ledger (`arrays/written-where-used`, `texts/player-colour-as-a-value`); `probes/own-made-texts.ts` line D joins
 `[n, 2, 8]` itself again.
+
+### Arrays that grow, and what stands on the heap, on our own backend (2026-10-22)
+
+Step 9 (`compiler/backend/heap.ts`, a pass of its own before the emitter; the emitter's reads, stores and places made
+cheaper on the way). Step 9 is done: 27 of 27, with a row added for an array in a function that calls itself.
+
+- **One heap for the map.** Every growing array's cells are a block of `@heap`, an array of a fixed length the emitter
+  already lays out — a region of cell triggers as long as the script's heap setting (16,384 cells, 1.2 MB) — and its
+  list of blocks given back, `@heap.free`, a head a size class. Blocks are handed out as the simulator counts them: a
+  power of two of cells, four at the least, from the class's list (threaded through each block's first cell) or new
+  ground from cell 1 up; so an array runs out at the same push in both, and the game says so once, as the Python side
+  does. The heap is one for every program and every player's run of one: where new ground starts and whether running
+  out was said are cells no program declares (`VarDecl.global`), read where they are used; the layout lays a region
+  every run names out once.
+- **An array is five numbers** of the program's: where its block starts, its length, its room, its block's class, and
+  where its next cell goes (the block's start plus the length), which a push stores at and a pop reads at. A read is
+  the heap's cell at the block's start plus the index, or its first cell — which nothing writes — past the length, so
+  the test chooses where the read goes and the value goes straight to where it is used. A push with room is two
+  triggers: the test, and the store with the length and the end moved on; one with none calls the array's own `more`,
+  which calls its `grow`, which calls the run time's. A store inside the length is the cell; at it, a push. Declared
+  again, an array gives its block back. A `u8[]` stops at its ends as a cell of the simulator's does.
+- **Where its block starts is written in one place** (the array's `grow`) and read wherever a cell is, so it keeps a
+  place in every field that reads it however many (`VarDecl.everywhere`); what `grow` gives back is kept in one cell
+  each (`routed`), so that one write of it is one action, not one for every place every array keeps. Outside every
+  loop, a read, a store and a push are calls of the array's own functions, so that the block's start has places only
+  where it is hot.
+- **Loops over an array.** `for (…; i < xs.length; …)` — `for…of` is that — whose body neither changes the length nor
+  writes `i`, calls nothing and sleeps nowhere tests nothing at `xs[i]`; and when the step adds a constant, each cell
+  at `i` is kept beside the counter (the block's start plus `i`, moved by the same additions), as eudplib keeps an
+  offset beside a counter. Other arrays read at `i` — a record's fields — are weighed against `xs`'s length once on
+  the way in: none shorter, the loop where they are as sure as `xs`; one shorter, the loop with theirs tested. Each
+  version has a counter of its own, given back after, so that its steps write only its own places; a body that reads
+  its counter only to index is a loop of the cell's place against where the array ends, with no counter at all. (So
+  where the next cell goes is 0 for an array with no block: never above where its first cell is.)
+- **Rows that grow** (`through`): the row's numbers taken from the outer arrays' cells at its index before what is done
+  to it and put back after, the outer arrays themselves growing or not. **An array in a function that calls itself**:
+  its numbers kept on the stack with the function's other variables around a call that may come back in, the array
+  empty for the call, the block the inner call left given back after it.
+- **Arrays of texts that grow** (`texts.ts`): each cell's text a block of a pool of 64 the size of a made text's, taken
+  the first time a text is stored there and given back when the cell's text is let go of — popped, cut off, declared
+  again; the pool is the payload's bytes, not a string of the map's (`data` on a template: the game's own table of
+  strings names only its first 64 KB in 1.16.1). A cell's text in one side of a `?:` is read in that side.
+- **Closures** (`held`): a variable a closure keeps is declared once, 0, as the program starts, and its declares are
+  assignments — what a backend needs of it; the rest of closures is the front end's arrays and statements. Signals
+  stand on both and are taken with them.
+
+**The emitter, on the way** (every program, not only those with arrays that grow; the eudplib build's IR the same,
+byte for byte, for all 112 probes):
+
+- A variable written in a loop and read only outside it — a sum a print reads after the loop — is kept in its cell
+  alone (routed), when its writes cost more across its places than refreshing them where they are read: not the
+  program's emitter-made cells, nor what a called function names (its body is laid out outside the loops it is called
+  from). `total += xs[i]` in a loop then reads the cell straight into the addition.
+- A store's number holds a variable plus a constant itself (`xs[i] = xs[i] + 1` is no variable of its own for the
+  sum), and a cell read goes straight into a field that adds a constant (its scratch cell starts at the constant). A
+  store's value that is a sum of cells is stored as it is, and a cell at an index that is more than a sum read where it
+  is. A variable of the emitter's own whose cell nothing reads is no place to fill: a read of a cell into a sum goes
+  straight into the store's number.
+- A copy of a variable that is never below zero and has a top (`VarDecl.top`) works out only the bits it can have.
+- A trigger with no conditions that the walk only reaches by falling from one before it, with none either, is that
+  one's actions after its own.
+- A store of the cell itself plus a constant or a variable — `xs[i] += 1`, `hp[i] -= damage` — is that added to the
+  cell where it is: one action, the cell not read.
+- A variable a loop's body declares that nothing outside the loop reads — `for (const v of xs)`'s `v` — is folded as
+  one of the emitter's own is (`VarDecl.scoped`): what is read into it goes straight to the one field that reads it, and
+  its cell is left stale (step 15's map of variables is to say so).
+- `emitBody` builds again when it is crowded: a write with more places than a trigger holds is copied after its reads,
+  and an `if` in one trigger whose writes turned out not to fit is laid out as a branch (it was refused).
+
+| `probes/own-growing-loops.ts`, 500 cells (lifted game, Remastered's weights) | Own | eudplib |
+| --- | ---: | ---: |
+| 500 pushes (frame 2) | **0.287 ms** | 1.504 ms |
+| A: `for (i < xs.length) total += xs[i]` (frame 6) | **0.070 ms** | 0.115 ms |
+| B: `for (const v of xs) total += v` (frame 10) | **0.079 ms** | 0.125 ms |
+| C: `xs[i] = xs[i] + 1` at the loop's index (frame 14) | **0.033 ms** | 0.081 ms |
+| 200 records pushed (frame 18) | **0.425 ms** | 0.789 ms |
+| D: 200 records moved and aged, `for (const q of bs)` (frame 22) | **0.089 ms** | 0.126 ms |
+| E: filtered in place, cut to its length (frame 26) | **0.618 ms** | 1.040 ms |
+
+| `probes/own-growing.ts` | Own | eudplib |
+| --- | ---: | ---: |
+| A–B: pushes past several blocks, pops (frame 2) | **0.072 ms** | 1.189 ms |
+| E–F: 500 arrays declared again, booleans, `u8` (frame 10) | **15.3 ms** | 30.2 ms |
+| G–H: a `Map`, a `Set`, `filter`, `splice`, sorted (frame 14) | **0.532 ms** | 0.749 ms |
+| I: a thousand pushes (frame 18) | **0.417 ms** | 0.795 ms |
+| J: a thousand reads at an index that jumps about (frame 22) | **0.822 ms** | 0.969 ms |
+| K: a thousand stores there (frame 26) | **0.719 ms** | 0.861 ms |
+| L: a loop over a thousand, and pops to empty (frame 30) | **0.299 ms** | 1.010 ms |
+| M: out of memory (frame 34) | **10.85 ms** | 30.85 ms |
+
+| `probes/own-heap-values.ts` | Own | eudplib |
+| --- | ---: | ---: |
+| A: rows that grow (frame 2) | **0.469 ms** | 1.653 ms |
+| B–C: arrays of texts that grow, given back, `split` (frame 6) | **10.0 ms** | 14.9 ms |
+| D–E: closures; an array in a function that calls itself (frame 10) | **12.7 ms** | 14.9 ms |
+| F: a signal (frame 14) | **0.021 ms** | 0.030 ms |
+| G: a second program's array on the same heap (frame 22) | **0.219 ms** | 0.473 ms |
+
+J and K are mostly `k = (k + 373) % 1000`: the index written from a remainder into the fields that hold multiples of
+it, a bit at a time — the emitter's, not the array's (next: a remainder by a constant worked straight into its
+target's places).
+
+Arrays of a fixed length gained as much from the emitter's changes: `xs[i] = xs[i] + 1` over 500 cells 0.169 → 0.028 ms
+(eudplib 0.213), a loop over three arrays of 200 as records 0.221 → 0.083 ms (eudplib 0.353). The other 22 own probes
+print the same lines at the same frames, as fast or faster than before (`own-recursion`'s costliest frame 11.53 →
+11.36 ms, `own-math`'s 1.343 → 1.329; `own-random` 124 → 67 KB).
+
+Size: the heap is 1.2 MB of the payload wherever an array grows (eudplib's is the same). Beyond it, what the library
+writes out where it is used — a `Map`'s, a `Set`'s, `splice`'s and `join`'s loops — copies variables bit by bit into
+the fields that hold multiples of them: `own-growing` 3.41 MB against eudplib's 2.67, `own-heap-values` 7.5 against 3.8
+(`own-growing-loops` 1.77 against 1.82).
+
+Checked: the 27 rows against the simulator from their laid-out bytes, and every other row a map of our own takes (475
+the same; the rest the game's own conditions and actions, which the walker does not run, and random draws);
+`tests/emitter.test.ts` (pushes, pops, a length set, stores past the end, blocks given back, booleans and `u8`, a `Map`
+and a `Set`, rows that grow, arrays of texts, closures, recursion, loops at a counter over arrays and records and a
+shorter array, three programs running the one heap out where the simulator does); the three probes built both ways in
+the lifted game, the same lines at the same frames; the 22 other own probes before and after; the IR the eudplib build
+is made from, the same for all 112 probes as before.
+
+Found on the way, in both builds: a constant out of a `u8` / `u16` array's range — `bytes.push(300)`, `xs[i] = -9`,
+`[300]` — was stored as its top (255 for −4, the simulator's `kept`), where the guide says below zero is 0 and a
+variable's was already an error: now an error, "bytes is an array of u8 and each cell holds 0 … 255, not 300"
+(`checkWidths` in `eud.ts`). And a `?:` with a cell of an array of texts in a side was refused in a map of our own.
+
+*Open:* `rows[i].pop() ?? -1` is "Expected a number" in both builds (`ys.pop() ?? 0` of an array alone is taken); the
+pool of blocks a run's arrays of texts take is 64 for each run, and runs out where the simulator, which counts texts
+on the heap, does not; the size above; `q.x += q.dx` — two cells summed into a store — still reads each through a
+cell of its own.
 
 ### Triggers stacked (2026-10-20)
 

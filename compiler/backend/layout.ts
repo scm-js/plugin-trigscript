@@ -309,13 +309,15 @@ export function layout(input: LayoutInput): OwnMap {
   // variables out so).
   const routes = [...routed];
   const graphs = runs.map((r) => r.graph);
-  const cellCount = routes.length + graphs.flatMap((g) => g.cells ?? []).reduce((n, r) => n + r.cells, 0);
+  // (A region every run names — the heap's — is laid out once.)
+  const regionList = [...new Map(graphs.flatMap((g) => g.cells ?? []).map((r) => [r.id, r])).values()];
+  const cellCount = routes.length + regionList.reduce((n, r) => n + r.cells, 0);
   const cellBase = cellCount ? base + 4 * space.stack(Array.from({ length: cellCount }, (_, k) => CELL_HOLDS.map((d) => d + CELL_DWORDS * k)).flat(), space.top) : base;
   routes.forEach((id, k) => at.set(ROUTE_CELL + id, cellBase + 72 * k));
   const routeOf = (id: string) => at.get(ROUTE_CELL + id);
   const regions = new Map<string, number>();
   let cellTriggers = routes.length;
-  for (const r of graphs.flatMap((g) => g.cells ?? [])) {
+  for (const r of regionList) {
     regions.set(r.id, cellBase + 72 * cellTriggers);
     cellTriggers += r.cells;
   }
@@ -490,7 +492,7 @@ export function layout(input: LayoutInput): OwnMap {
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
   for (const t of graphs.flatMap((g) => g.templates ?? [])) if (!input.templateAt?.has(t.id) && t.at === undefined) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));
   // What a region's cells hold when the map starts.
-  for (const r of graphs.flatMap((g) => g.cells ?? [])) r.values?.forEach((v, i) => w32(regions.get(r.id)! + 72 * i + 348, v));
+  for (const r of regionList) r.values?.forEach((v, i) => w32(regions.get(r.id)! + 72 * i + 348, v));
   // Each cell trigger: Set Deaths, add (its destination and next pointer written by every routing), preserved.
   for (let k = 0; k < cellTriggers; k++) {
     const c = cellBase + 72 * k;

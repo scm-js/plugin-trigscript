@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // A `Map` keyed by any number, below zero and large too: `scores.set(key, v)`, `scores.get(key) ?? 0`.
 program(() => {
   const scores = new Map<number, number>();

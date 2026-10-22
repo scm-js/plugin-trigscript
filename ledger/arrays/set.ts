@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // A `Set` of numbers: `add`, `has`, `delete` and `size`.
 program(() => {
   const seen = new Set<number>();

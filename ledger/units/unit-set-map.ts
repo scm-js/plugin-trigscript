@@ -1,4 +1,4 @@
-// ledger: step 10, refused: an array that grows
+// ledger: step 10, refused: a loop over units
 // A number from each unit of a set, in an array: `unitsOf(P1).map((u) => u.hp)`.
 program(() => {
   const hps = unitsOf(P1).map((u) => u.hp);

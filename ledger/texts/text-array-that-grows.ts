@@ -1,4 +1,4 @@
-// ledger: step 9, refused: the length of an array that grows
+// ledger: step 9, takes
 // An array of texts that grows: `log.push("wave")`.
 program(() => {
   const log: string[] = [];
