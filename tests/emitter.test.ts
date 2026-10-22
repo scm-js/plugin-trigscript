@@ -1480,6 +1480,38 @@ program(() => {
 });`);
   });
 
+  it("works a remainder by a constant into the counter it keeps, read and stored at", () => {
+    same(`program(() => {
+  const xs: number[] = [];
+  let m = 0;
+  while (m < 50) { xs.push(m * 3); m++; }
+  let k = 0, total = 0, n = 0, j = 7, odd = 0;
+  while (n < 200) { total += xs[k]; xs[k] = xs[k] + 1; k = (k + 13) % 50; j = (j + 3) % 4; odd += j; n++; }
+  print(\`\${total} \${k} \${xs[13]} \${j} \${odd}\`);
+});`);
+  });
+
+  it("moves cells along arrays of numbers and of texts for shift, unshift and splice, both ways", () => {
+    same(`program(() => {
+  const xs: number[] = [];
+  let m = 0;
+  while (m < 12) { xs.push(m); m++; }
+  xs.shift();
+  xs.unshift(-1, -2);
+  xs.splice(3, 2);
+  xs.splice(1, 0, 70, 71, 72);
+  const flags: boolean[] = [true, false, true];
+  flags.splice(1, 1);
+  flags.unshift(false);
+  const log: string[] = [];
+  while (m < 18) { log.push(\`l\${m}\`); m++; }
+  log.shift();
+  log.splice(1, 1, "a", "b", "c");
+  log.unshift("first");
+  print(\`\${xs.join(",")} \${xs.length} \${flags.join(",")} \${log.join(",")}\`);
+});`);
+  });
+
   it("runs out where the simulator does, the heap one for every program, and says so once", () => {
     const r = both(["A", "B", "C"].map((name, k) => `program(() => {
   const a: number[] = [];
