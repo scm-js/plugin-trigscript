@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a function that gives back a text (label)
+// ledger: step 8, takes
 // A function of the script that takes a text and gives one back: `label(name, n)`.
 function label(name: string, n: number): string {
   return `${name} x${n}`;

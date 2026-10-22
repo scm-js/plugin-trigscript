@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text's replace()
+// ledger: step 8, takes
 // A text with the first of another in it replaced, or every one: `replace("a", "o")`, `replaceAll("a", "o")`.
 program(() => {
   let n = 0;

@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text made while the game runs
+// ledger: step 8, takes
 // A `switch` over a text, its cases texts: `switch (unit) { case "Marine": … }`.
 program(() => {
   let n = 0;

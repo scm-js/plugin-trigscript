@@ -1302,6 +1302,8 @@ class ProgramRun {
         return "next";
       }
       case "remark": return "next";
+      // (A map of our own's own statements, which only its backend makes and never hands the simulator.)
+      case "textBlock": case "showText": throw new Error(`the simulator does not run a ${s.kind}`);
     }
   }
 

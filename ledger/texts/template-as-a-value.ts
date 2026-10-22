@@ -1,4 +1,4 @@
-// ledger: step 8, refused: two texts compared
+// ledger: step 8, takes
 // A template put together while the game runs and used as a text, not printed at once: `` `${n}` === "15" ``.
 program(() => {
   let n = 0;

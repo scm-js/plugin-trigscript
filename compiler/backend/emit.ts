@@ -556,6 +556,11 @@ class Scope {
       case "not": return this.bool(e.expr);
       case "cond":
         if (!this.native) return this.no(`a ${e.kind}`);
+        if (e.epd) {
+          const l = linear(e.epd);
+          if (!l || l.terms.length > 1 || !l.terms.every((t) => this.ok(t.id))) return this.no("a condition's player it does not lower");
+          for (const t of l.terms) this.read.add(t.id);
+        }
         if (e.amount) {
           const l = linear(e.amount.expr);
           if (!l || l.terms.length > 1 || !l.terms.every((t) => this.ok(t.id))) return this.no("a condition's amount it does not lower");
@@ -607,13 +612,25 @@ class Scope {
    */
   tables = new Map<Stmt, { reads: CellRead[]; value: Linear }>();
   /** A map of our own: the statements that set a variable to a number of the game's (`Emitter.readGame`). */
-  gameReads = new Map<Stmt, { rec: ConditionRecord; shift: number }>();
-  /** A number of the game's as a statement's value: a read, or (a byte of memory) its bits shifted down. */
-  readOf(e: NumExpr): { rec: ConditionRecord; shift: number } | undefined {
+  gameReads = new Map<Stmt, { rec: ConditionRecord; shift: number; epd?: Linear }>();
+  /**
+   * A number of the game's as a statement's value: a read, or (a byte of memory) its bits shifted down. `epd`: of the
+   * dword at a value's EPD (one variable plus a constant).
+   */
+  readOf(e: NumExpr): { rec: ConditionRecord; shift: number; epd?: Linear } | undefined {
     if (!this.native) return undefined;
-    if (e.kind === "read" && gameRead(e.read)) return { rec: e.read.record, shift: 0 };
-    if (e.kind === "binary" && e.op === ">>>" && e.left.kind === "read" && gameRead(e.left.read) && e.right.kind === "const") return { rec: e.left.read.record, shift: e.right.value };
-    return undefined;
+    // (Or its bits moved up: times a power of two, a shift below 0 — a dword's bytes put where they go in another.)
+    const up = e.kind === "binary" && e.op === "*" && e.left.kind === "read" && e.right.kind === "const" && e.right.value > 1 && 2 ** Math.round(Math.log2(e.right.value)) === e.right.value;
+    const read = e.kind === "read" ? e : e.kind === "binary" && (e.op === ">>>" || up) && e.left.kind === "read" && e.right.kind === "const" ? e.left : undefined;
+    if (!read || read.kind !== "read" || !gameRead(read.read)) return undefined;
+    const by = read === e ? 0 : ((e as Extract<NumExpr, { kind: "binary" }>).right as { value: number }).value;
+    const shift = read === e ? 0 : up ? -Math.round(Math.log2(by)) : by;
+    if (up && !read.read.epd) return undefined;
+    if (!read.read.epd) return { rec: read.read.record, shift };
+    const epd = linear(read.read.epd);
+    if (!epd || epd.terms.length > 1 || !epd.terms.every((t) => this.ok(t.id))) return undefined;
+    for (const t of epd.terms) this.read.add(t.id);
+    return { rec: read.read.record, shift, epd };
   }
   cells = 0;
   /** The statements whose value is a fixed-point product or quotient the graph calls the Python side's function for. */
@@ -912,6 +929,14 @@ class Scope {
   stmt(s: Stmt, inLoop: boolean): boolean {
     switch (s.kind) {
       case "remark": return true;
+      case "textBlock":
+        if (!this.native || !this.ok(s.decl.id)) return this.island(s);
+        this.declared.add(s.decl.id);
+        this.written.add(s.decl.id);
+        return true;
+      case "showText":
+        if (!this.native || playersOf(s.to, this.owner, this.players) === null) return this.island(s);
+        return true;
       case "block": return this.stmts(s.body, inLoop);
       case "declare": {
         if (!this.ok(s.decl.id)) return this.island(s);
@@ -1564,6 +1589,21 @@ class Emitter {
   statement(s: Stmt): void {
     switch (s.kind) {
       case "remark": return;
+      case "textBlock": {
+        // The block a string of zeros among the templates; the variable its EPD, as an action writes a label's.
+        this.block(s.block, s.bytes, s.text);
+        const t = `${this.key}.tb${this.n++}`;
+        this.open().items.push({ act: { dword: { temp: t }, modifier: "set", value: { epd: { template: s.block, word: 0 } } } }, { fill: { temp: t, target: s.decl.id } });
+        return;
+      }
+      case "showText": {
+        this.block(s.block, s.bytes);
+        const show: Act = { dword: { game: 0 }, modifier: "set", value: 0, show: s.block };
+        const players = playersOf(s.to, this.scope.owner, this.scope.players)!, owner = this.scope.owner ?? 0;
+        const current = (p: number): Item => ({ act: { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "set", value: p } });
+        this.open().items.push(...(players.length === 1 && players[0] === owner ? [{ act: show }] : [...players.flatMap((p) => [current(p), { act: { ...show } }]), current(owner)]));
+        return;
+      }
       case "block": return this.stmts(s.body);
       case "declare": case "assign": case "if": case "while": case "for": case "do": case "assignBool": case "switch": case "store":
         if (this.scope.islands.has(s)) return this.left(s);
@@ -1573,7 +1613,7 @@ class Emitter {
     if (s.kind === "call" && !this.scope.islands.has(s)) return this.call(s.call);
     if (s.kind === "action" && !this.scope.islands.has(s)) return this.action(s);
     const read = this.scope.gameReads.get(s);
-    if (read && (s.kind === "declare" || s.kind === "assign")) return this.readGame(s.kind === "declare" ? s.decl.id : s.target, read.rec, s.at, read.shift);
+    if (read && (s.kind === "declare" || s.kind === "assign")) return read.epd ? this.readAt(s.kind === "declare" ? s.decl.id : s.target, read.rec, read.epd, s.at, read.shift) : this.readGame(s.kind === "declare" ? s.decl.id : s.target, read.rec, s.at, read.shift);
     if (s.kind === "declareArray" && this.scope.native && !this.scope.islands.has(s)) return this.declareArray(s);
     if (s.kind === "return") return this.ret(s);
     const call = this.scope.calls.get(s);
@@ -1841,6 +1881,15 @@ class Emitter {
    * keeps the amount inside 0 to 2^32 − 1.
    */
   condsOf(e: Extract<BoolExpr, { kind: "cond" }>, when: boolean): Cond[] | "true" | "false" | null {
+    if (e.epd) {
+      // (The player field a place of the value: the dword at its EPD. A condition turned around is not one.)
+      const p = linear(e.epd)!;
+      const c = e.amount ? this.condsOf({ ...e, epd: undefined }, when) : gameConds(e.record, when);
+      if (!Array.isArray(c) || c.length !== 1) return null;
+      if (p.terms.length) this.condPlayers.set(c[0], { id: p.terms[0].id, scale: p.terms[0].k, add: u(p.c) });
+      else c[0].game = { ...c[0].game!, player: u(p.c) };
+      return c;
+    }
     if (!e.amount) return gameConds(e.record, when);
     const l = linear(e.amount.expr)!, [t] = l.terms, add = e.amount.add;
     const r = (e.amount.expr as NumExpr & { range?: readonly [number, number] }).range;
@@ -1969,6 +2018,35 @@ class Emitter {
       this.push({ conds: [c], items: [{ bump: { target: found, add: u(2 ** b) } }], at });
     }
     this.write(target, { c: 0, terms: [{ id: found, k: 1 }] });
+  }
+
+  /**
+   * The dword at a value's EPD (a map of our own, `compiler/backend/texts.ts`), or its bits of the record's mask, into
+   * `target`, each moved down `shift`: a trigger a bit, from the top, each condition's player field a place of the
+   * value; entered, as `readGame` enters a table's, at the highest group of eight the masked dword reaches.
+   */
+  readAt(target: string, rec: ConditionRecord, epd: Linear, at?: At, shift = 0): void {
+    emitterCounts.reads++;
+    const key = `${this.key}.ra${this.n++}`;
+    const mask = rec.mask ? rec.location >>> 0 : U32 - 1, whole = mask === U32 - 1;
+    const out = `${key}.o`, d: Dword = { game: 0 };
+    const placed = (c: Cond): Cond => {
+      if (epd.terms.length) this.condPlayers.set(c, { id: epd.terms[0].id, scale: epd.terms[0].k, add: u(epd.c) });
+      else c.dword = { game: u(DEATHS_TABLE + 4 * epd.c) };
+      return c;
+    };
+    this.push({ conds: [], items: [{ act: { dword: { temp: out }, modifier: "set", value: 0 } }], at });
+    const bits = Array.from({ length: 32 }, (_, b) => 31 - b).filter((b) => mask & 2 ** b);
+    const lo = bits[bits.length - 1], cuts = [8, 16, 24].map((g) => lo + g).filter((c) => c <= bits[0]);
+    const starts = new Map(cuts.map((c) => [c - 1, this.label("rafrom")]));
+    for (const c of cuts) this.branch([placed({ dword: d, compare: "atMost", value: u(2 ** c - 2 ** lo), ...(whole ? {} : { mask }) })], starts.get(c - 1)!, at);
+    for (const b of bits) {
+      if (starts.has(b)) this.land(starts.get(b)!);
+      // (A bit moved past the top is lost, as a product's is.)
+      if (b - shift > 31) continue;
+      this.push({ conds: [placed({ dword: d, compare: "atLeast", value: 1, mask: u(2 ** b) })], items: [{ act: { dword: { temp: out }, modifier: "add", value: u(2 ** (b - shift)) } }], at });
+    }
+    this.open().items.push({ fill: { temp: out, target } });
   }
 
   /** After an action that makes or moves units, in a program that asks Bring or Command: the counts thrown away. */
@@ -2195,6 +2273,13 @@ class Emitter {
    * A text with values in it written into a template of its own (`Graph.templates`), each value as it is now: its id.
    * `at`: the template is the game's memory there (the line of a print at the centre), its bytes written first.
    */
+  /** A block of `bytes` zeros — or holding `text`, then zeros — among the templates, once (`textBlock`, `showText`). */
+  block(id: string, bytes: number, text?: string): void {
+    if (this.templates.some((t) => t.id === id)) return;
+    const content = text ? [...new TextEncoder().encode(text)] : [];
+    this.templates.push({ id, bytes: [...content, ...Array(Math.max(1, 4 * Math.ceil(bytes / 4) - content.length)).fill(0)] });
+  }
+
   template(parts: TextPart[], at?: number): string {
     const id = `${this.key}.text${this.n++}`;
     const bytes: number[] = [];
@@ -3555,7 +3640,7 @@ class Emitter {
    */
   plan(pinned = new Set<string>()): { copied: Set<string>; order: string[] } {
     const readers = new Map<string, Set<string>>(); // v → the targets whose writes read v
-    const copied = new Set<string>([...this.forced, ...this.results]);
+    const copied = new Set<string>([...this.forced, ...this.results, ...[...this.scope.decls.values()].filter((d) => d.routed).map((d) => d.id)]);
     for (const [target, ws] of this.writes) for (const w of ws) {
       const self = w.value.terms.filter((t) => t.id === target);
       if (self.length && self[0].k !== 1) copied.add(target);
@@ -3749,7 +3834,7 @@ class Emitter {
         else if (p.dword && "at" in p.dword) read += weight(protoBy.get(p.dword.at));
         else if (p.dword && "data" in p.dword) for (const q of this.protos) if (q.conds.some((c) => "data" in c.dword && c.dword.data === (p.dword as { data: string }).data)) read += weight(q);
       }
-      if (read < w * (ps.length - 1)) routed.add(id);
+      if (read < w * (ps.length - 1) || this.scope.decls.get(id)?.routed) routed.add(id);
     }
     // What a trigger's conditions read of routed variables: the places refreshed before it.
     const condReads = (p: Proto): Map<string, Place[]> => {
@@ -4552,7 +4637,8 @@ class Rewriter {
     if (range[0] + add < 0) return op === "<" && range[1] < 1 ? { kind: "const", value: false } : null;
     if (range[1] + add > U32 - 1) return null;
     const record = { ...read.read.record, comparison, amount: l.terms.length ? 0 : u(l.c + add) };
-    const cond: BoolExpr = l.terms.length ? { kind: "cond", record, amount: { expr: other, add } } : { kind: "cond", record };
+    const epd = read.read.epd ? { epd: read.read.epd } : {};
+    const cond: BoolExpr = l.terms.length ? { kind: "cond", record, amount: { expr: other, add }, ...epd } : { kind: "cond", record, ...epd };
     return op === "!=" ? { kind: "not", expr: cond } : cond;
   }
 
@@ -4790,6 +4876,9 @@ class Rewriter {
     const zero: NumExpr = { kind: "const", value: 0 };
     const pre: Stmt[] = [];
     if (this.own && e.kind === "read" && gameRead(e.read)) return [assign(e)];
+    // (A byte of memory: the read moves its bits down itself, `Emitter.readGame`; or up, at a value's address.)
+    if (this.own && e.kind === "binary" && e.op === ">>>" && e.left.kind === "read" && gameRead(e.left.read) && e.right.kind === "const") return [assign(e)];
+    if (this.own && e.kind === "binary" && e.op === "*" && e.left.kind === "read" && gameRead(e.left.read) && e.left.read.epd && e.right.kind === "const") return [assign(e)];
     if (this.own && e.kind === "read" && this.facts(e.read)) return this.fact(target, e.read, where);
     if (this.own && e.kind === "tableRead" && !e.cell.special) return this.tableRead(target, e.cell, where);
     if (e.kind === "ternary") {

@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an error thrown or caught (try, throw)
+// ledger: step 11, refused: try
 // An error a task ends on, thrown again where the task is awaited and caught there: `try { await t; } catch (e) { … }`.
 async function wave(n: number) {
   await sleep(frames(2));

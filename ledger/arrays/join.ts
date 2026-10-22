@@ -1,4 +1,4 @@
-// ledger: step 8, refused: xs.join()
+// ledger: step 8, takes
 // The values of an array of numbers as one text, with a separator between them: `xs.join(", ")`.
 program(() => {
   const xs = [5, 2, 8];

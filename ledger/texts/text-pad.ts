@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text padded (padStart, padEnd)
+// ledger: step 8, takes
 // A text made as wide as a number of characters, filled at the start or the end: `String(n).padStart(4, "0")`,
 // `padEnd`.
 program(() => {

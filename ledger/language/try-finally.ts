@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an error thrown or caught (try, throw)
+// ledger: step 11, refused: try
 // `finally`: what runs however the `try` is left.
 program(() => {
   let k = 0;

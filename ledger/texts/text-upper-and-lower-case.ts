@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text's toUpperCase()
+// ledger: step 8, takes
 // A text in capitals or in small letters, A to Z only: `toUpperCase()`, `toLowerCase()`.
 program(() => {
   let n = 0;

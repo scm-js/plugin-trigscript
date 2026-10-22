@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a function that gives back a text (thousands)
+// ledger: step 8, takes
 // A whole number with its thousands marked, from `trigscript/ui`: `thousands(n)` ("12,345").
 import { thousands } from "trigscript/ui";
 program(() => {

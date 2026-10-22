@@ -1,4 +1,4 @@
-// ledger: step 11, refused: an error thrown or caught (try, throw)
+// ledger: step 11, refused: try
 // A `throw` nothing catches: the game says the error, and the program stops there.
 program(() => {
   let k = 0;

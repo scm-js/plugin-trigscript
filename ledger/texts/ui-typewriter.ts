@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text kept in a variable
+// ledger: step 8, takes
 // A text put into a record a character at a time, from `trigscript/ui`: `await typewriter(box, "…")`.
 import { typewriter } from "trigscript/ui";
 program(async () => {

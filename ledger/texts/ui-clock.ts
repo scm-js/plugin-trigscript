@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a function that gives back a text (clock)
+// ledger: step 8, takes
 // Frames of game time as minutes and seconds, from `trigscript/ui`: `clock(frames)` ("1:05").
 import { clock } from "trigscript/ui";
 program(() => {
