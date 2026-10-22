@@ -26,7 +26,7 @@ export function checkProgram(program: Program): { errors: ProgramDiagnostic[]; h
     WINDOWS = new Map((program.arrays ?? []).flatMap((a) => (a.slice ? [[a.id, a.slice.of] as const] : [])));
     checkSleeps(body, errors, functions);
     checkDivisions(body, errors);
-    checkWidths(body, errors, decls);
+    checkWidths(body, errors, decls, new Map((program.arrays ?? []).map((a) => [a.id, a])));
     checkUnitLoops(body, errors);
     checkTextLoops(body, errors);
     remarks(body, hints);
@@ -178,18 +178,29 @@ function checkDivisions(body: Stmt[], out: ProgramDiagnostic[]) {
   });
 }
 
-/** A constant put into a `u8` / `u16` has to fit: the game would stop it at the top without a word. */
-function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, VarDecl>) {
+/**
+ * A constant put into a `u8` / `u16` has to fit: the game would stop it at the top without a word. A cell of a `u8[]` /
+ * `u16[]` as much as a variable — stored, pushed or declared with.
+ */
+function checkWidths(body: Stmt[], out: ProgramDiagnostic[], decls: Map<string, VarDecl>, arrays: Map<string, ArrayDecl>) {
   const fits = (id: string, value: NumExpr | BoolExpr | UnitExpr | TextExpr, at: At) => {
     const d = decls.get(id);
     if (!d?.bits || value.kind !== "const" || typeof value.value !== "number") return;
     const max = 2 ** d.bits - 1;
     if (value.value > max || value.value < 0) out.push({ at, message: `${d.name} is a u${d.bits} and holds 0 … ${max}, not ${value.value}.` });
   };
+  const cell = (id: string, value: NumExpr | BoolExpr | undefined, at: At) => {
+    const a = arrays.get(id);
+    if (!a?.bits || !value || value.kind !== "const" || typeof value.value !== "number") return;
+    const max = 2 ** a.bits - 1;
+    if (value.value > max || value.value < 0) out.push({ at, message: `${a.name} is an array of u${a.bits} and each cell holds 0 … ${max}, not ${value.value}.` });
+  };
   const stmt = (s: Stmt) => {
     switch (s.kind) {
       case "declare": if (!s.failed) fits(s.decl.id, s.init, s.at); break;
       case "assign": fits(s.target, s.value, s.at); break;
+      case "store": case "push": cell(s.array, s.value, s.at); break;
+      case "declareArray": for (const v of s.init ?? []) cell(s.array, v, s.at); cell(s.array, s.fill, s.at); break;
       case "if": s.then.forEach(stmt); s.else?.forEach(stmt); break;
       case "while": case "do": case "unitLoop": case "textLoop": s.body.forEach(stmt); break;
       case "for": s.body.forEach(stmt); s.update.forEach(stmt); break;
