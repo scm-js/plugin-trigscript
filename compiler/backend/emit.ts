@@ -1671,6 +1671,9 @@ class Emitter {
       case "declare": return this.write(s.decl.id, linear(s.init as NumExpr)!);
       case "assign": return this.write(s.target, linear(s.value)!);
       case "if": {
+        // (A test that is a constant — the library's `if (false)` around a branch a call never takes — lays out the side
+        // it takes, alone.)
+        if (s.cond.kind === "const" && this.scope.native) return this.stmts(s.cond.value ? s.then : s.else ?? []);
         // A map of our own: actions of the game's and writes that read nothing but their target, under conditions
         // that fit in one trigger — that trigger, its actions run when they hold (no branch, no puts-back); the copies
         // of what it writes after it.
@@ -3043,6 +3046,18 @@ class Emitter {
     const key = `${this.key}.d${this.n++}`, out = `${key}.o`, rem = `${key}.r`;
     let top = -1;
     while (top < 31 && d * 2 ** (top + 1) <= most) top++;
+    // A map of our own: a remainder of a dividend never below zero and less than four times the divisor — a counter
+    // kept inside a ring, `k = (k + 373) % 1000` — worked out in the target itself: the dividend written into every
+    // place of it, then each step taken from every place where the target's cell holds that much. No scratch cell, and
+    // no copy of one into the target's places after (a trigger a bit, for a place that holds a multiple of it).
+    if (op === "%" && !negA && top <= 1 && this.scope.native && !this.results.has(target)) {
+      this.write(target, a);
+      for (let i = top; i >= 0; i--) {
+        const p = this.push({ conds: [{ dword: this.home(target, 0), compare: "atLeast", value: d * 2 ** i }], items: [], at, guarded: true });
+        this.write(target, { c: u(-d * 2 ** i), terms: [{ id: target, k: 1 }] }, true, p.items);
+      }
+      return;
+    }
     /** The chain; `minus`: the dividend below zero (its magnitude in `rem`). */
     const chain = (minus: boolean) => {
       // (The remainder of a dividend not below zero is worked in the answer's own cell.)
@@ -3609,10 +3624,19 @@ class Emitter {
     // A map of our own: the cell itself plus a constant or a variable — `xs[i] += 1`, `hp[i] -= damage` — is that added
     // to the cell where it is: one action, the cell not read.
     const same = (a: Linear, b: Linear) => u(a.c) === u(b.c) && a.terms.length === b.terms.length && a.terms.every((t) => b.terms.some((x) => x.id === t.id && u(x.k) === u(t.k)));
-    const self = this.scope.native && st.reads.length === 1 && st.reads[0].table?.jump && !st.reads[0].table.guard && st.reads[0].table.array.id === st.array.id && same(st.reads[0].table.index, st.index) ? st.reads[0] : undefined;
-    const rest = self && st.value.terms.filter((t) => t.id === self.id).length === 1 && st.value.terms.find((t) => t.id === self.id)!.k === 1 ? { c: st.value.c, terms: st.value.terms.filter((t) => t.id !== self.id) } : undefined;
-    if (self && rest && rest.terms.length <= 1) {
-      const by = rest.terms[0];
+    // (And another cell — `q.x += q.dx`, a field of a record and another's — read first, straight into the addition.)
+    const self = this.scope.native ? st.reads.find((r) => r.table?.jump && !r.table.guard && r.table.array.id === st.array.id && same(r.table.index, st.index)) : undefined;
+    const rest = self && st.reads.length <= 2 && st.value.terms.filter((t) => t.id === self.id).length === 1 && st.value.terms.find((t) => t.id === self.id)!.k === 1 ? { c: st.value.c, terms: st.value.terms.filter((t) => t.id !== self.id) } : undefined;
+    const other = st.reads.find((r) => r !== self);
+    if (self && rest && rest.terms.length <= 1 && (!other || (rest.terms.length === 1 && rest.terms[0].id === other.id && !!other.table))) {
+      let by = rest.terms[0];
+      if (other) {
+        const id = `${this.key}.${other.id.slice(1)}`;
+        this.own.add(id);
+        if (other.table!.jump) this.scope.heavy.add(id);
+        this.readTable(id, other.table!, this.at);
+        by = { id, k: by.k };
+      }
       const from = by ? this.pin({ c: 0, terms: [{ id: by.id, k: 1 }] }, "sv") : null;
       const act: Act = { dword: { element: st.array.id }, modifier: "add", value: from ? 0 : rest.c };
       this.actPlaces.set(act, { dest: { id: index, scale: stride, add: 0, base: st.array.id }, ...(from ? { value: { id: from, scale: by.k, add: rest.c } } : {}) });

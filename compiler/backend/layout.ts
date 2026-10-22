@@ -199,17 +199,19 @@ const ROUTE_DEST = "@route.dest:", ROUTE_NEXT = "@route.next:", ROUTE_CELL = "@r
 function expandCopies(graph: Graph): { graph: Graph; routed: Set<string> } {
   const out: Graph["triggers"] = [];
   const routed = new Set<string>();
-  graph.triggers.forEach((t, i) => {
-    if (!t.copy) { out.push(t); return; }
-    const id = t.copy.from;
+  type T = Graph["triggers"][number];
+  const chunks = <X,>(xs: X[]) => Array.from({ length: Math.ceil(xs.length / 64) || 1 }, (_, k) => xs.slice(64 * k, 64 * k + 64));
+  /** A copy as triggers from `label` on, the last going on to `after` (`falls`: by falling through to what follows). */
+  const expand = (copy: NonNullable<T["copy"]>, label: string, after: string): T[] => {
+    const made: T[] = [];
+    const id = copy.from;
     const from: Dword = { var: id };
-    const plain = t.copy.into.filter((p) => (p.scale ?? 1) === 1), scaled = t.copy.into.filter((p) => (p.scale ?? 1) !== 1);
-    const after = graph.triggers[i + 1]?.label ?? END;
-    const route = (j: number) => (j === 0 ? t.label : `${t.label}.route${j}`);
-    const bits = (k: number) => (k === 0 && !plain.length ? t.label : `${t.label}.clear${k}`);
-    if (!plain.length && !scaled.length) out.push({ label: t.label, conds: [], acts: [] });
+    const plain = copy.into.filter((p) => (p.scale ?? 1) === 1), scaled = copy.into.filter((p) => (p.scale ?? 1) !== 1);
+    const route = (j: number) => (j === 0 ? label : `${label}.route${j}`);
+    const bits = (k: number) => (k === 0 && !plain.length ? label : `${label}.clear${k}`);
+    if (!plain.length && !scaled.length) made.push({ label, conds: [], acts: [] });
     if (plain.length) routed.add(id);
-    plain.forEach((p, j) => out.push({
+    plain.forEach((p, j) => made.push({
       label: route(j),
       conds: [],
       acts: [
@@ -219,18 +221,50 @@ function expandCopies(graph: Graph): { graph: Graph; routed: Set<string> } {
       ],
       next: ROUTE_CELL + id,
     }));
-    if (!scaled.length) return;
-    const chunks = <X,>(xs: X[]) => Array.from({ length: Math.ceil(xs.length / 64) || 1 }, (_, k) => xs.slice(64 * k, 64 * k + 64));
-    chunks(scaled).forEach((part, k) => out.push({ label: bits(k), conds: [], acts: part.map((p) => ({ dword: p.dword, modifier: "set", value: p.add })) }));
+    if (!scaled.length) return made;
+    chunks(scaled).forEach((part, k) => made.push({ label: bits(k), conds: [], acts: part.map((p) => ({ dword: p.dword, modifier: "set", value: p.add })) }));
     // (Only the bits the value can have, when its range is known never below zero.)
-    const bits32 = t.copy.top === undefined ? 32 : Math.max(1, 32 - Math.clz32(t.copy.top));
-    for (let bit = 0; bit < bits32; bit++) chunks(scaled).forEach((part, k) => out.push({
-      label: `${t.label}.bit${bit}.${k}`,
+    const bits32 = copy.top === undefined ? 32 : Math.max(1, 32 - Math.clz32(copy.top));
+    for (let bit = 0; bit < bits32; bit++) chunks(scaled).forEach((part, k) => made.push({
+      label: `${label}.bit${bit}.${k}`,
       conds: [{ dword: from, compare: "atLeast", value: 1, mask: 2 ** bit }],
       acts: part.map((p) => ({ dword: p.dword, modifier: "add", value: u((p.scale ?? 1) * 2 ** bit) })),
     }));
     // (The last bit's trigger falls through to what follows the copy.)
+    return made;
+  };
+  /** How many triggers a copy is. */
+  const size = (copy: NonNullable<T["copy"]>) => {
+    const plain = copy.into.filter((p) => (p.scale ?? 1) === 1).length, scaled = copy.into.filter((p) => (p.scale ?? 1) !== 1);
+    const bits32 = copy.top === undefined ? 32 : Math.max(1, 32 - Math.clz32(copy.top));
+    return plain + (scaled.length ? Math.ceil(scaled.length / 64) * (1 + bits32) : 0);
+  };
+  // The same copy written after several writes of its variable — the same places, from the same cell — is laid out
+  // once, after the graph, and entered from each: the place it goes back to set first, as a function's return. Each
+  // copy two triggers more, every copy past the first a trigger instead of its routings and bits.
+  const keyOf = (copy: NonNullable<T["copy"]>) => JSON.stringify(copy);
+  const sites = new Map<string, number>();
+  for (const t of graph.triggers) if (t.copy && size(t.copy) > 4) sites.set(keyOf(t.copy), (sites.get(keyOf(t.copy)) ?? 0) + 1);
+  const shared = new Map<string, { start: string; back: string; copy: NonNullable<T["copy"]> }>();
+  graph.triggers.forEach((t, i) => {
+    if (!t.copy) { out.push(t); return; }
+    const after = graph.triggers[i + 1]?.label ?? END;
+    const key = keyOf(t.copy);
+    if ((sites.get(key) ?? 0) < 2) { out.push(...expand(t.copy, t.label, after)); return; }
+    let s = shared.get(key);
+    if (!s) {
+      const start = `${t.label}.shared`;
+      s = { start, back: `${start}.back`, copy: t.copy };
+      shared.set(key, s);
+    }
+    out.push({ label: t.label, conds: [], acts: [{ dword: { at: s.back, field: "next" }, modifier: "set", value: { label: after } }], next: s.start });
   });
+  if (shared.size) {
+    // (After the graph, which goes nowhere by falling: its last trigger ends it.)
+    const last = out[out.length - 1];
+    if (last && last.next === undefined && !last.copy && !last.island && !last.call) last.next = END;
+    for (const s of shared.values()) out.push(...expand(s.copy, s.start, s.back), { label: s.back, conds: [], acts: [], next: END });
+  }
   return { graph: { ...graph, triggers: out }, routed };
 }
 

@@ -4765,8 +4765,51 @@ variable's was already an error: now an error, "bytes is an array of u8 and each
 
 *Open:* `rows[i].pop() ?? -1` is "Expected a number" in both builds (`ys.pop() ?? 0` of an array alone is taken); the
 pool of blocks a run's arrays of texts take is 64 for each run, and runs out where the simulator, which counts texts
-on the heap, does not; the size above; `q.x += q.dx` — two cells summed into a store — still reads each through a
-cell of its own.
+on the heap, does not. (The size, the remainders at J and K, and `q.x += q.dx`: the next section.)
+
+### The emitter after step 9 (2026-10-22)
+
+What step 9 left the emitter's, all for maps of our own only (the eudplib build's IR the same for every probe):
+
+- **A remainder by a constant worked in the target itself** (`divideByConst`): a dividend never below zero and less
+  than four times the divisor — a counter kept inside a ring, `k = (k + 13) % 50` — is written into every place of the
+  target, then each step taken from every place where the target's cell holds that much: no scratch cell, and no copy
+  of one into the fields that hold multiples of it, a bit at a time. `k = (k + 373) % 1000` is two triggers.
+- **Two cells summed into a store:** `q.x += q.dx` — the cell plus another — is the other cell read straight into an
+  addition to the cell.
+- **A copy laid out once** (`expandCopies`, `layout.ts`): the same copy after several writes of a variable — the same
+  places from the same cell — is one run of routings and bits after the graph, entered from each write with the place
+  it goes back to set first: two triggers more a copy, every copy past the first a trigger instead of its expansion.
+  (A refresh before a read is a copy of the places that read alone: one at each read, as before.)
+- **An `if` whose test is a constant** — the library's `if (false)` around the branch of `splice` a call never takes —
+  lays out the side it takes, alone.
+- **Cells moved along an array** (`heap.ts`, `moved`): the library's loops that move cells by a gap — `splice`,
+  `shift`, `unshift`, the three arrays of an array of texts at once — are the run time's `move`, walking the heap by
+  where the cells are, one function for the map, when every cell they touch is inside each array (asked once on the
+  way in); otherwise the loop as written, its reads and stores the arrays' own functions (a read past an end 0, a store
+  at the length a push).
+
+| Lifted game, Remastered's weights | Step 9 | Now | eudplib |
+| --- | ---: | ---: | ---: |
+| `own-growing` J: a thousand reads at `(k + 373) % 1000` | 0.822 ms | **0.352 ms** | 0.969 ms |
+| `own-growing` K: a thousand stores there | 0.719 ms | **0.258 ms** | 0.861 ms |
+| `own-growing-loops` D: 200 records moved and aged | 0.089 ms | **0.064 ms** | 0.126 ms |
+| `own-heap-values`, the map | 7.47 MB | **5.91 MB** | 3.81 MB |
+| `own-growing`, the map | 3.41 MB | **3.32 MB** | 2.67 MB |
+| `own-made-texts`, the payload | 1.41 MB | **1.02 MB** | (the map 1.1 MB) |
+| `own-jsx-texts`, the payload | 795 KB | **564 KB** | |
+
+Every other frame of the three step 9 probes as before or faster; the 22 earlier own probes the same lines, as fast or
+faster. Checked: `tests/emitter.test.ts` (a counter kept by a remainder, read and stored at; moves along arrays of
+numbers, booleans and texts for `shift`, `unshift` and `splice`, both ways); every ledger script a map of our own takes,
+against the simulator; the probes in the lifted game.
+
+What is left of the size: the regions are cell triggers, 72 bytes a cell — the heap's 1.2 MB as eudplib's, the
+closures' seven arrays of 1,024 cells (0.5 MB), and a function that calls itself's stack, as deep as the setting
+(1,024 calls of `build`'s seven cells: 0.5 MB, where eudplib's stack is four bytes a cell, read a bit at a time). Of
+the triggers, the copies a routed variable's reads refresh are a bit at a time into every field that holds a multiple
+of it, one at each read: a cell for each multiple kept beside the variable would make them routings (to weigh: each
+write a few actions more).
 
 ### Triggers stacked (2026-10-20)
 

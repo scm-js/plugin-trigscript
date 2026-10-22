@@ -470,7 +470,7 @@ export function growingArrays(program: Program, cells = HEAP_CELLS): Program {
           const at = sure ? cellAt(h, (index as { id: string }).id) : undefined;
           const got = sure === "inside" ? cell(at!)
             : sure ? cell({ kind: "ternary", cond: { kind: "var", id: sure } as BoolExpr, whenTrue: at!, whenFalse: { kind: "ternary", cond: cmp("<", index, V(h.n)), whenTrue: at!, whenFalse: k(0), at: here, label: "" } as NumExpr, at: here, label: "" } as NumExpr)
-            : callExpr(hot ? getter(h) : reader(h), [rewriteNum(index)]);
+            : callExpr(hot && !cold ? getter(h) : reader(h), [rewriteNum(index)]);
           return h.decl.kind === "boolean" ? asBool(got) : got;
         }
         case "pop": {
@@ -487,6 +487,7 @@ export function growingArrays(program: Program, cells = HEAP_CELLS): Program {
   const statement = (s: Stmt): Stmt[] | undefined => {
     if (s.kind === "call" && s.call.saves?.arrays.some((id) => handles.has(id))) return aroundCall(s);
     if (s.kind === "for") return overArray(s);
+    if (s.kind === "while") return moved(s);
     const h = "array" in s && typeof s.array === "string" ? handles.get(s.array) : undefined;
     if (!h) return undefined;
     if (h.through) return row(h, s);
@@ -515,7 +516,7 @@ export function growingArrays(program: Program, cells = HEAP_CELLS): Program {
             const v = once(kept(h, s.value), pre);
             return [...pre, when({ kind: "var", id: sure } as BoolExpr, [store(cellAt(h, (s.index as { id: string }).id), again(v))], stored(h, s.index, v))];
           }
-          if (!hot) return [callStmt(setter(h), [kept(h, s.value), rewriteNum(s.index)])];
+          if (!hot || cold) return [callStmt(setter(h), [kept(h, s.value), rewriteNum(s.index)])];
           const v = once(kept(h, s.value), pre);
           const i = rewriteNum(s.index);
           const j = i.kind === "const" || i.kind === "var" ? i : V(fresh("i"));
@@ -706,9 +707,95 @@ export function growingArrays(program: Program, cells = HEAP_CELLS): Program {
     }
   };
 
+  // ── cells moved along an array ──
+  /**
+   * The library's loops that move cells along arrays that grow by a gap — `splice`, `shift`, `unshift`, a row of an
+   * array of texts' three arrays at once: `while (row + gap < n) { X[row] = X[row + gap]; …; row++ }` forward, `while
+   * (row >= b) { X[row] = X[row - gap]; …; row-- }` back. When every cell they touch is inside each array (asked once,
+   * on the way in) they are the run time's `move`, which walks the heap's cells by where they are — three triggers a
+   * cell, one function for the whole map — and the counter is left where the loop leaves it; when not, the loop as it is.
+   */
+  const mover = (back: boolean): FuncDecl => {
+    const id = back ? "@heap.moveBack" : "@heap.move";
+    let f = own.get(id);
+    if (!f) {
+      const from = num(`${id}@from`, H), to = num(`${id}@to`, H), count = num(`${id}@count`, H);
+      const step = back ? -1 : 1;
+      f = { id, name: id, at: here, params: [from, to, count], body: [
+        loop(cmp("!=", V(count.id), k(0)), [store(V(to.id), cell(V(from.id))), add(from.id, step), add(to.id, step), add(count.id, -1)]),
+      ] };
+      own.set(id, f);
+      functions.push(f);
+    }
+    return f;
+  };
+  const sameExpr = (a: unknown, b: unknown) => JSON.stringify(a, (key, v) => (key === "at" || key === "label" || key === "range" ? undefined : v)) === JSON.stringify(b, (key, v) => (key === "at" || key === "label" || key === "range" ? undefined : v));
+  const moved = (s: Extract<Stmt, { kind: "while" }>): Stmt[] | undefined => {
+    const body = s.body, last = body[body.length - 1];
+    if (body.length < 2 || last.kind !== "assign" || last.value.kind !== "binary" || last.value.left.kind !== "var" || last.value.left.id !== last.target || last.value.right.kind !== "const" || last.value.right.value !== 1) return undefined;
+    const row = last.target, back = last.value.op === "-";
+    if (!back && last.value.op !== "+") return undefined;
+    const stores = body.slice(0, -1);
+    let gap: NumExpr | undefined;
+    const arrays: Handle[] = [];
+    for (const st of stores) {
+      if (st.kind !== "store" || st.index.kind !== "var" || st.index.id !== row) return undefined;
+      const h = handles.get(st.array);
+      const v = st.value as NumExpr;
+      if (!h || h.through || v.kind !== "element" || v.array !== st.array || v.index.kind !== "binary" || v.index.op !== (back ? "-" : "+") || v.index.left.kind !== "var" || v.index.left.id !== row) return undefined;
+      const g = v.index.right;
+      if (g.kind !== "var" && g.kind !== "const") return undefined;
+      if (gap && !sameExpr(gap, g)) return undefined;
+      gap = g;
+      arrays.push(h);
+    }
+    if (!gap || (gap.kind === "var" && gap.id === row)) return undefined;
+    const c = s.cond;
+    if (!c || c.kind !== "compare" || impure(c)) return undefined;
+    if (!back && !(c.op === "<" && c.left.kind === "binary" && c.left.op === "+" && c.left.left.kind === "var" && c.left.left.id === row && sameExpr(c.left.right, gap))) return undefined;
+    if (back && !(c.op === ">=" && c.left.kind === "var" && c.left.id === row)) return undefined;
+    const was = here;
+    here = s.at ?? here;
+    try {
+      const cnt = fresh("count");
+      // How many turns the loop makes: forward, the length less where it stops; back, down to its bottom.
+      const count = back ? bin("+", bin("-", V(row), c.right as NumExpr), k(1)) : bin("-", c.right as NumExpr, bin("+", V(row), gap));
+      // Inside each array: the cells written and read, the first and the last of each.
+      const lo = back ? bin("-", bin("+", bin("-", V(row), V(cnt)), k(1)), gap) : V(row);
+      const hi = back ? V(row) : bin("+", bin("+", V(row), V(cnt)), gap);
+      const inside: BoolExpr = { kind: "and", items: arrays.flatMap((h) => [{ kind: "compare", op: ">=", left: lo, right: k(0), at: here, label: "" } as BoolExpr, back ? cmp("<", hi, V(h.n)) : cmp("<=", hi, V(h.n))]) };
+      const fast: Stmt[] = [
+        // (From where each cell is read, to where it is written: back, from the last cells down.)
+        ...arrays.map((h) => callStmt(mover(back), back ? [bin("+", V(h.p), bin("-", V(row), gap)), bin("+", V(h.p), V(row)), V(cnt)] : [bin("+", V(h.p), bin("+", V(row), gap)), bin("+", V(h.p), V(row)), V(cnt)])),
+        set(row, back ? bin("-", V(row), V(cnt)) : bin("+", V(row), V(cnt))),
+      ];
+      // (Otherwise the loop as written, its reads and stores the arrays' own functions: past an end a read is 0 and a
+      // store at the length a push, as anywhere — and the loop a few triggers, where it is never expected to run.)
+      const wasCold = cold;
+      cold = true;
+      let slow: Stmt;
+      try { slow = plainWalk(s as unknown as Record<string, unknown>) as Stmt; } finally { cold = wasCold; }
+      return [when(c, [dec(cnt, count), when(inside, fast, [slow])])];
+    } finally {
+      here = was;
+    }
+  };
+
   /** Inside a loop, or a function of the script's: what is done to an array is written where it is done. */
   let hot = false;
+  /** Where nothing is expected to run (`moved`'s other way): reads and stores the arrays' own functions, all the same. */
+  let cold = false;
   const isStmt = (o: unknown): o is Stmt => !!o && typeof o === "object" && "label" in o && STMT_KINDS.has((o as { kind?: string }).kind ?? "");
+  /** A statement's insides rewritten, the statement itself as it is (a loop's body hot). */
+  const plainWalk = (o: Record<string, unknown>): unknown => {
+    const was = hot;
+    if (LOOPS.has(o.kind as string)) hot = true;
+    try {
+      return Object.fromEntries(Object.entries(o).map(([key, v]) => [key, v && typeof v === "object" ? walk(v) : v]));
+    } finally {
+      hot = was;
+    }
+  };
   const walk = (x: unknown): unknown => {
     if (Array.isArray(x)) {
       if (x.length && isStmt(x[0])) return x.flatMap((s) => (isStmt(s) ? (statement(s) ?? [walk(s)]) : [walk(s)]));
