@@ -370,7 +370,7 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   const num = (e: NumExpr): NumExpr => {
     switch (e.kind) {
       case "textLength": {
-        if (e.of.kind === "textVar" && madeVars.has(e.of.id)) return V(madeVars.get(e.of.id)!.c);
+        if (madeOf(e.of)) return V(madeOf(e.of)!.c);
         const of = choice(e.of);
         const t = of && table([of], [], ([s]) => chars(s).length, e.at);
         return t ? t.expr : e;
@@ -398,7 +398,7 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       case "textCompare": {
         const a = choice(e.left), b = choice(e.right);
         // A made text and a known one, the same or not.
-        const mv = (t: TextExpr) => (t.kind === "textVar" ? madeVars.get(t.id) : undefined);
+        const mv = madeOf;
         const [m, known] = mv(e.left) && b?.texts.length === 1 ? [mv(e.left), b.texts[0]] : mv(e.right) && a?.texts.length === 1 ? [mv(e.right), a.texts[0]] : [undefined, undefined];
         if (m && known !== undefined && (e.op === "==" || e.op === "!=")) return equalsKnown(m, known, e.op);
         if (!a || !b) return e;
@@ -447,6 +447,14 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   const madeVars = new Map<string, Made>();
   for (const d of decls.values()) if (d.kind === "text" && d.text === "made") madeVars.set(d.id, { e: `${d.id}@e`, n: `${d.id}@n`, c: `${d.id}@c`, block: `${d.id}@block` });
   const SCRATCH: Made = { e: "@text.scratch@e", n: "@text.scratch@n", c: "@text.scratch@c", block: "@text.scratch" };
+  // (A buffer JSX is put together in — `buildText`, read as `built` — is a made text of its own.)
+  const buffers = new Map<string, Made>();
+  const bufferOf = (id: string): Made => {
+    if (!buffers.has(id)) buffers.set(id, { e: `${id}@e`, n: `${id}@n`, c: `${id}@c`, block: `${id}@block` });
+    return buffers.get(id)!;
+  };
+  /** The made text a text is as it stands — a made variable, or a buffer as built — if it is one. */
+  const madeOf = (t: TextExpr): Made | undefined => (t.kind === "textVar" ? madeVars.get(t.id) : t.kind === "built" ? bufferOf(t.buffer) : undefined);
   let here: At = { file: "", line: 0, column: 0 };
   const V = (id: string): NumExpr => ({ kind: "var", id });
   const bin = (op: "+" | "-" | "*" | "&" | ">>>", a: NumExpr, b: NumExpr): NumExpr => ({ kind: "binary", op, left: a, right: b, at: here, label: "" });
@@ -477,10 +485,19 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
     if (shift < 0) return { kind: "binary", op: "*", left: r, right: k(2 ** -shift), at: here, label: "" };
     return r;
   };
+  /**
+   * Through the current player, as eudplib reads and writes: a condition's or an action's player field 13 is the dword
+   * the current player is the EPD of, so one write of the current player points every read and write after it there
+   * (no place of the address in each), and moving it on is an addition. Every function that moves it gives it back to
+   * the program's own player (`ME`) before it ends.
+   */
+  const AT_CURRENT = k(CURRENT_PLAYER);
+  const pointAt = (epd: NumExpr): Stmt => poke(k(CURRENT), epd);
+  const moveBy = (by: NumExpr): Stmt => ({ kind: "action", record: { location: 0, text: 0, wav: 0, time: 0, player: 0, target: by.kind === "const" ? u32(by.value) : 0, unitId: 0, type: 45, modifier: 8, flags: 0, padding: 0, mask: 0 }, variables: [{ field: "player", bits: 32, name: "at", expr: k(CURRENT) }, ...(by.kind === "const" ? [] : [{ field: "target" as const, bits: 32 as const, name: "n", expr: by }])], at: here, label: "" } as Stmt);
   /** One of four statement lists by the byte a cursor is at (0 to 3). */
   const byByte = (at: string, each: (o: number) => Stmt[]): Stmt => when(cmp("==", V(at), k(0)), each(0), [when(cmp("==", V(at), k(1)), each(1), [when(cmp("==", V(at), k(2)), each(2), each(3))])]);
   /** The byte at a dword and a byte of it, into a variable. */
-  const readByte = (target: string, e: string, o: string): Stmt => byByte(o, (b) => [set(target, peek(V(e), 0xff * 2 ** (8 * b), 8 * b))]);
+  const readByte = (target: string, e: string, o: string): Stmt[] => [pointAt(V(e)), byByte(o, (b) => [set(target, peek(AT_CURRENT, 0xff * 2 ** (8 * b), 8 * b))]), pointAt(V(ME))];
   /** Whether a byte starts a character (UTF-8: not 10xxxxxx). */
   const starts = (b: string): BoolExpr => any(cmp("<", V(b), k(0x80), true), cmp(">=", V(b), k(0xc0), true));
   const enc = new TextEncoder();
@@ -506,24 +523,73 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   /** The cursor at a block's start. */
   const begin = (e: NumExpr): Stmt[] => [set(CE, e), set(CO, k(0)), set(CN, k(0)), set(CC, k(0))];
   /**
-   * A known text's bytes at the cursor: copied from a block of the program's that holds it (one a text), as a made
-   * text's are — the cursor read in the run time's functions alone, not wherever a text is written.
+   * A known text's bytes at the cursor. Up to a block's room past its most: written by a function of the run time's of
+   * its own (one a text, called wherever it is written), in one trigger for each byte of a dword the cursor may be at —
+   * the current player pointed at the cursor and moved on a dword at each write, as eudplib writes a known text, then
+   * back to the program's own player (`ME`, read at the program's start). Nothing written once the text is at its most.
+   * A longer one: copied from a block of the program's that holds it, as a made text's are.
    */
   const known = new Map<string, string>();
+  const ME = G("me");
+  const CURRENT = (0x6509b0 - DEATHS) / 4;
+  const written = new Map<string, number>();
+  /**
+   * The current player pointed at the cursor: one function for every known text, so that the cursor is read in one
+   * action (an action's field from a value is a place its variable is copied into at every write).
+   */
+  const point = (): Stmt => fn("point", () => [poke(k(CURRENT), V(CE))]);
+  const writeKnown = (text: string): Stmt => {
+    if (!written.has(text)) written.set(text, written.size);
+    return fn(`known${written.get(text)}`, () => {
+      const bytes = [...enc.encode(text)];
+      const ADV = G(`adv${written.get(text)}`);
+      const variant = (o: number): Stmt[] => {
+        const out: Stmt[] = [];
+        for (let d = 0; 4 * d < o + bytes.length; d++) {
+          let value = 0, mask = 0;
+          for (let j = 0; j < 4; j++) {
+            const b = 4 * d + j - o;
+            if (b < 0 || b >= bytes.length) continue;
+            value += bytes[b] * 2 ** (8 * j);
+            mask += 0xff * 2 ** (8 * j);
+          }
+          if (d) out.push(moveBy(k(1)));
+          out.push(toCurrent(k(value), mask));
+        }
+        // (How many dwords the cursor goes on, set here and added once after, with the current player given back: the
+        // cursor written, and the program's player read, in one place.)
+        const to = o + bytes.length;
+        return [...out, set(ADV, k(to >> 2)), set(CO, k(to & 3))];
+      };
+      return [when(cmp("<", V(CN), k(TEXT_BYTES), true), [point(), byByte(CO, variant), pointAt(V(ME)), add(CE, V(ADV))]), add(CN, bytes.length), add(CC, chars(text).length)];
+    });
+  };
   const writeConst = (text: string): Stmt[] | null => {
     const b = enc.encode(text).length;
     if (!b) return [];
+    if (b <= SLACK) return [writeKnown(text)];
     if (!known.has(text)) known.set(text, `@text.known${known.size}`);
     const id = known.get(text)!;
     return [set(SE, V(`${id}@e`)), set(SN, k(b)), set(SC, k(chars(text).length)), copyText()];
   };
+  /**
+   * A dword where the current player points: a value, or its bytes of the mask. (The cursor is read through the
+   * current player, in one place a function: a variable read in an action's field is copied into each such place at
+   * every write, and the cursor is written at every text.)
+   */
+  const toCurrent = (value: NumExpr, mask = 0xffffffff): Stmt => {
+    const whole = u32(mask) === 0xffffffff;
+    return { kind: "action", record: { location: whole ? 0 : u32(mask), text: 0, wav: 0, time: 0, player: CURRENT_PLAYER, target: value.kind === "const" ? u32(value.value) : 0, unitId: 0, type: 45, modifier: 7, flags: 0, padding: 0, mask: whole ? 0 : 0x4353 }, ...(value.kind === "const" ? {} : { variables: [{ field: "target", bits: 32, name: "n", expr: value }] }), at: here, label: "" } as Stmt;
+  };
   /** The byte in `B` at the cursor, the cursor on past it (a variable for each byte of a dword it may go in). */
   const put = (): Stmt => fn("put", () => [
+    pointAt(V(CE)),
     byByte(CO, (o) => {
-      if (!o) return [poke(V(CE), V(B), 0xff)];
+      if (!o) return [toCurrent(V(B), 0xff)];
       const b = G(`b${o}`);
-      return [set(b, ranged(V(B), 0, 255)), poke(V(CE), bin("*", V(b), k(2 ** (8 * o))), 0xff * 2 ** (8 * o))];
+      return [set(b, ranged(V(B), 0, 255)), toCurrent(bin("*", V(b), k(2 ** (8 * o))), 0xff * 2 ** (8 * o))];
     }),
+    pointAt(V(ME)),
     add(CO, 1),
     when(cmp("==", V(CO), k(4)), [set(CO, k(0)), add(CE, 1)]),
     add(CN, 1),
@@ -533,25 +599,36 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   /**
    * The made text at `SE` (`SN` bytes, `SC` characters) at the cursor, no more than a made text holds: its dwords whole
    * when the cursor is at a dword's start; else each dword read once, as two masked reads that put its bytes where they
-   * go in the two dwords it falls in. What runs past its end is written over, or is past the 0 the text ends with.
+   * go in the two dwords it falls in. What runs past its end is written over, or is past the 0 the text ends with. Read
+   * and written through the current player (`pointAt`), pointed at the one and then the other a dword at a time.
    */
   const copyText = (): Stmt => fn("copy", () => {
-    const n = G("n"), w = G("w"), p = G("p"), q = G("q"), i = G("i"), lo = G("lo"), hi = G("hi"), d = G("d"), pos = G("pos");
-    const step = [add(p, 1), add(q, 1), add(i, 1)];
+    const n = G("n"), w = G("w"), i = G("i"), pos = G("pos");
+    const write = toCurrent;
     return [
       set(n, V(SN)),
       when(cmp(">=", V(CN), k(TEXT_BYTES)), [set(n, k(0))], [when(cmp(">", V(n), bin("-", k(TEXT_BYTES), V(CN)), true), [set(n, bin("-", k(TEXT_BYTES), V(CN)))])]),
       set(w, bin(">>>", bin("+", V(n), k(3)), k(2))),
-      set(p, V(SE)), set(q, V(CE)), set(i, k(0)),
-      byByte(CO, (o) => o === 0
-        ? [loop(cmp("<", V(i), V(w)), [set(d, peek(V(p))), poke(V(q), V(d)), ...step])]
-        : [loop(cmp("<", V(i), V(w)), [
-          set(lo, peek(V(p), 2 ** (32 - 8 * o) - 1, -8 * o)),
-          set(hi, peek(V(p), u32(-(2 ** (32 - 8 * o))), 32 - 8 * o)),
-          poke(V(q), V(lo), bytesMask(o, 3)),
-          poke(bin("+", V(q), k(1)), V(hi), bytesMask(0, o - 1)),
+      set(i, k(0)),
+      // (Each byte of a dword the cursor may be at has the text's and the cursor's dwords of its own, each read in one
+      // place: the current player pointed at the one, then the other.)
+      byByte(CO, (o) => {
+        const p = G(`p${o}`), q = G(`q${o}`), step = [add(p, 1), add(q, 1), add(i, 1)];
+        const from = [set(p, V(SE)), set(q, V(CE))];
+        if (o === 0) {
+          const d = G("d0");
+          return [...from, loop(cmp("<", V(i), V(w)), [pointAt(V(p)), set(d, peek(AT_CURRENT)), pointAt(V(q)), write(V(d)), ...step])];
+        }
+        const lo = G(`lo${o}`), hi = G(`hi${o}`);
+        return [...from, loop(cmp("<", V(i), V(w)), [
+          pointAt(V(p)),
+          set(lo, peek(AT_CURRENT, 2 ** (32 - 8 * o) - 1, -8 * o)),
+          set(hi, peek(AT_CURRENT, u32(-(2 ** (32 - 8 * o))), 32 - 8 * o)),
+          pointAt(V(q)), write(V(lo), bytesMask(o, 3)), moveBy(k(1)), write(V(hi), bytesMask(0, o - 1)),
           ...step,
-        ])]),
+        ])];
+      }),
+      pointAt(V(ME)),
       set(pos, bin("+", V(CO), V(n))),
       add(CE, bin(">>>", V(pos), k(2))),
       set(CO, bin("&", V(pos), k(3))),
@@ -579,11 +656,61 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
     }
     return out;
   });
+  /** The player whose name or colour is put at the cursor (0 to 7). */
+  const PL = G("pl");
+  const N: Reader = { se: G("ne"), so: G("no"), i: G("ni"), b: G("nb") };
+  /**
+   * A player's name at the cursor (`PL`): its bytes from the game's table of players — 36 bytes a player at 0x57EEE0,
+   * the name 11 in — to its 0, 24 at the most (eudplib's `PName` prints from there).
+   */
+  const name = (): Stmt => fn("name", () => [
+    set(N.se, bin("+", k((0x57eee8 - DEATHS) / 4), bin("*", V(PL), k(9)))), set(N.so, k(3)), set(N.i, k(0)), set(N.b, k(1)),
+    loop(all(cmp("<", V(N.i), k(24)), cmp("!=", V(N.b), k(0))), [...next(N), when(cmp("!=", V(N.b), k(0)), [set(B, V(N.b)), put(), when(starts(N.b), [add(CC, 1)])])]),
+  ]);
+  /**
+   * The name of a player known when the map is built, at the cursor: where it is, so its length is a condition a byte
+   * (the first 0, no byte read) and whether a byte starts a character one more; its first byte put alone, the rest
+   * copied a dword at a time from the dword after.
+   */
+  const nameOf = (player: number): Stmt => fn(`name${player}`, () => {
+    const L = G(`nl${player}`), C = G(`nc${player}`);
+    const at = (0x57eee8 + 36 * player - DEATHS) / 4;
+    const byteIs = (j: number, value: number, mask = 0xff): BoolExpr => {
+      const o = (j + 3) & 3;
+      const record = { location: u32(mask * 2 ** (8 * o)), player: 0, amount: u32(value * 2 ** (8 * o)), unitId: 0, comparison: 10, type: 15, resource: 0, flags: 0, mask: 0x4353 };
+      return { kind: "cond", record, epd: k(at + ((j + 3) >> 2)) } as BoolExpr;
+    };
+    let length: Stmt[] = [set(L, k(24))];
+    for (let j = 23; j >= 0; j--) length = [when(byteIs(j, 0), [set(L, k(j))], length)];
+    const high = any(...Array.from({ length: 7 }, (_, d) => cmp(">=", peek(k(at + d), d === 0 ? 0x80000000 : 0x80808080), k(1), true)));
+    return [
+      ...length,
+      set(C, V(L)),
+      // (A byte that goes on a character, 10xxxxxx, is no character of its own.)
+      when(high, Array.from({ length: 24 }, (_, j) => when(all(cmp(">", V(L), k(j)), byteIs(j, 0x80, 0xc0)), [add(C, -1)]))),
+      when(cmp(">=", V(L), k(1)), [set(B, peek(k(at), 0xff000000, 24)), put()]),
+      when(cmp(">=", V(L), k(2)), [set(SE, k(at + 1)), set(SN, bin("-", V(L), k(1))), set(SC, k(0)), copyText()]),
+      add(CC, V(C)),
+    ];
+  });
+  /**
+   * A player's colour at the cursor (`PL`), as a code of the game's texts: the first shade of the player's colour (8
+   * bytes a player at 0x581D76) and the code nearest it, eudplib's table of them (its `PColor`).
+   */
+  const colourTable = (): string => {
+    const id = "@text.colours";
+    if (!arrays.some((a) => a.id === id)) arrays.push({ id, name: id, kind: "number", length: 256, shared: true, values: COLOUR_CODES, at: here });
+    return id;
+  };
+  const colour = (): Stmt => fn("colour", () => [
+    set(B, { kind: "element", array: colourTable(), index: ranged(peek(bin("+", k((0x581d74 - DEATHS) / 4), bin("*", V(PL), k(2))), 0xff0000, 16), 0, 255), at: here } as NumExpr),
+    when(cmp("!=", V(B), k(0)), [put(), add(CC, 1)]),
+  ]);
   /** The 0 after a made text — at its most, which cuts it there, when it ran past — the rest of its dword 0s too. */
   const BLK = G("blk");
   const end = (): Stmt => fn("end", () => [
     when(cmp(">", V(CN), k(TEXT_BYTES), true), [set(CN, k(TEXT_BYTES)), set(CC, k(TEXT_BYTES)), poke(bin("+", V(BLK), k(TEXT_BYTES >> 2)), k(0), u32(-(2 ** (8 * (TEXT_BYTES & 3)))))], [
-      byByte(CO, (o) => [poke(V(CE), k(0), u32(-(2 ** (8 * o))))]),
+      pointAt(V(CE)), byByte(CO, (o) => [toCurrent(k(0), u32(-(2 ** (8 * o))))]), pointAt(V(ME)),
     ]),
   ]);
   /** The text being made ended, its lengths into `into`. */
@@ -592,7 +719,7 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   interface Reader { se: string; so: string; i: string; b: string }
   const reader = (names: Reader, m: { e: NumExpr }): Stmt[] => [set(names.se, m.e), set(names.so, k(0)), set(names.i, k(0)), set(names.b, k(0))];
   /** The reader's byte into its `b`, and the reader on past it. */
-  const next = (r: Reader): Stmt[] => [readByte(r.b, r.se, r.so), add(r.so, 1), when(cmp("==", V(r.so), k(4)), [set(r.so, k(0)), add(r.se, 1)]), add(r.i, 1)];
+  const next = (r: Reader): Stmt[] => [...readByte(r.b, r.se, r.so), add(r.so, 1), when(cmp("==", V(r.so), k(4)), [set(r.so, k(0)), add(r.se, 1)]), add(r.i, 1)];
   const R: Reader = { se: G("re"), so: G("ro"), i: G("ri"), b: G("rb") };
   const LO = G("slo"), HI = G("shi");
   /**
@@ -647,14 +774,16 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   };
   /** A text as a made one to read from: a made variable as it is, anything else made into a block of its own first. */
   const source = (t: TextExpr): { pre: Stmt[]; m: Made } | null => {
-    if (t.kind === "textVar" && madeVars.has(t.id)) return { pre: [], m: madeVars.get(t.id)! };
+    if (madeOf(t)) return { pre: [], m: madeOf(t)! };
+    if (t.kind === "textAt") return cellOf(t);
     const m = temp();
     const body = make(t, m);
     return body ? { pre: [...blockOf(m), ...body], m } : null;
   };
   /** A text written at the cursor; null when it is of a kind this does not make yet. */
   const write = (t: TextExpr): Writing | null => {
-    if (t.kind === "textVar" && madeVars.has(t.id)) return { pre: [], body: writeMade(madeVars.get(t.id)!) };
+    if (madeOf(t)) return { pre: [], body: writeMade(madeOf(t)!) };
+    if (t.kind === "textAt") { const c = cellOf(t); return c ? { pre: c.pre, body: writeMade(c.m) } : null; }
     if (t.kind === "textCall") {
       const r = call(t.call);
       return r?.result ? { pre: r.pre, body: writeMade(r.result) } : null;
@@ -714,6 +843,11 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       else if (p.kind === "number") part = p.fixed ? null : { pre: [], body: [set(X, num(p.expr)), number(!!p.unsigned)] };
       else if (p.kind === "value") part = write(p.text);
       else if (p.kind === "char") part = { pre: [], body: [set(B, bin("+", num(p.expr), k(0))), when(cmp("!=", V(B), k(0)), [put(), add(CC, 1)])] };
+      else if (p.kind === "name" || p.kind === "color") {
+        // (The current player: the one the game says it is when the text is made, the program's own.)
+        const who = p.player < 8 ? k(p.player) : p.player === CURRENT_PLAYER ? peek(k((0x6509b0 - DEATHS) / 4)) : null;
+        part = !who ? null : p.kind === "name" && p.player < 8 ? { pre: [], body: [nameOf(p.player)] } : { pre: [], body: [set(PL, who), p.kind === "name" ? name() : colour()] };
+      }
       else part = null;
       if (!part) return null;
       out.pre.push(...part.pre);
@@ -739,9 +873,47 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   const mentions = (x: unknown, id: string): boolean => {
     if (Array.isArray(x)) return x.some((y) => mentions(y, id));
     if (!x || typeof x !== "object") return false;
-    const o = x as { kind?: string; id?: string };
-    if (o.kind === "textVar" && o.id === id) return true;
+    const o = x as { kind?: string; id?: string; buffer?: string };
+    if ((o.kind === "textVar" && o.id === id) || (o.kind === "built" && o.buffer === id)) return true;
     return Object.values(o).some((v) => v && typeof v === "object" && mentions(v, id));
+  };
+  /**
+   * An array of texts the program makes is three arrays of numbers (the front end's): where each cell's text is, the
+   * block it owns, its length in characters. Here each cell's text has a block of its own, laid out with the made
+   * variables', its EPD in the first array as soon as the array is declared; the second holds its length in bytes. (An
+   * array that grows is step 9's, its cells' blocks the heap's.)
+   */
+  interface TextArray { addr: string; block: string; chars: string; cells: Made[] }
+  const textArrays = new Map<string, TextArray>();
+  const findTextArrays = (x: unknown): void => {
+    if (Array.isArray(x)) { x.forEach(findTextArrays); return; }
+    if (!x || typeof x !== "object") return;
+    const o = x as { kind?: string; addr?: string; block?: string; chars?: string };
+    if ((o.kind === "storeText" || o.kind === "textAt") && !textArrays.has(o.addr!)) {
+      const a = arrayById.get(o.addr!);
+      if (a && !a.dynamic && !a.slice && !a.through && a.length <= MOST_TEXT_CELLS) {
+        textArrays.set(o.addr!, { addr: o.addr!, block: o.block!, chars: o.chars!, cells: Array.from({ length: a.length }, (_, i) => ({ e: `${o.addr}.${i}@e`, n: `${o.addr}.${i}@n`, c: `${o.addr}.${i}@c`, block: `${o.addr}.${i}@block` })) });
+      }
+    }
+    for (const v of Object.values(o)) if (v && typeof v === "object") findTextArrays(v);
+  };
+  findTextArrays([program.body, program.functions ?? []]);
+  const element = (array: string, index: NumExpr): NumExpr => ({ kind: "element", array, index, at: here });
+  const store = (array: string, index: NumExpr, value: NumExpr): Stmt => ({ kind: "store", array, index, value, at: here, label: "" });
+  /** A cell of an array of texts as a made text to read: where it is and its lengths, read from the arrays. */
+  const cellOf = (t: Extract<TextExpr, { kind: "textAt" }>): { pre: Stmt[]; m: Made } | null => {
+    const a = textArrays.get(t.addr);
+    if (!a) return null;
+    const at = fresh("at"), m: Made = { e: fresh("e"), n: fresh("n"), c: fresh("c"), block: "" };
+    return { pre: [dec(at, num(t.index)), dec(m.e, element(a.addr, V(at))), dec(m.n, element(a.block, V(at))), dec(m.c, element(a.chars, V(at)))], m };
+  };
+  /** Whether a text reads a cell of an array of texts. */
+  const readsArray = (x: unknown, addr: string): boolean => {
+    if (Array.isArray(x)) return x.some((y) => readsArray(y, addr));
+    if (!x || typeof x !== "object") return false;
+    const o = x as { kind?: string; addr?: string };
+    if (o.kind === "textAt" && o.addr === addr) return true;
+    return Object.values(o).some((v) => v && typeof v === "object" && readsArray(v, addr));
   };
   /** One made text copied into another's block. */
   const copyBlock = (from: Made, into: Made): Stmt[] => [...begin(V(into.e)), ...writeMade(from), ...finish(into)];
@@ -812,7 +984,7 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
     return [
       set(RV, k(-1)),
       when(cmp("==", V(SC), V(SN)), [
-        when(all(cmp(">=", V(IDX), k(0)), cmp("<", V(IDX), V(SN))), [set(we, bin("+", V(SE), bin(">>>", V(IDX), k(2)))), set(wo, bin("&", V(IDX), k(3))), readByte(RV, we, wo)]),
+        when(all(cmp(">=", V(IDX), k(0)), cmp("<", V(IDX), V(SN))), [set(we, bin("+", V(SE), bin(">>>", V(IDX), k(2)))), set(wo, bin("&", V(IDX), k(3))), ...readByte(RV, we, wo)]),
       ], [
         ...reader(R, { e: V(SE) }), set(ci, k(-1)), set(more, k(-1)),
         loop(all(cmp("<", V(R.i), V(SN), true), cmp("!=", V(more), k(0))), [
@@ -853,7 +1025,7 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
         ...reader(R, { e: V(SE) }), set(ci, k(0)),
         loop(all(cmp("<", V(R.i), V(SN), true), cmp("<", V(found), k(0))), [
           set(at, V(R.i)),
-          readByte(R.b, R.se, R.so),
+          ...readByte(R.b, R.se, R.so),
           when(all(cmp(">=", V(ci), V(FROM)), starts(R.b)), [set(OFF, V(at)), prefix(), when(cmp("==", V(RV), k(1)), [set(found, V(ci))])]),
           ...next(R),
           when(starts(R.b), [add(ci, 1)]),
@@ -911,7 +1083,7 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
         if (choice(e.left) && choice(e.right)) return null;
         // (A made variable the same as a known text, or not: one condition a dword, `equalsKnown`.)
         const known = (t: TextExpr) => { const c = choice(t); return c?.texts.length === 1 ? c.texts[0] : undefined; };
-        const mv = (t: TextExpr) => t.kind === "textVar" && madeVars.has(t.id);
+        const mv = (t: TextExpr) => !!madeOf(t);
         if ((e.op === "==" || e.op === "!=") && ((mv(e.left) && known(e.right) !== undefined) || (mv(e.right) && known(e.left) !== undefined))) return null;
         const a = any(e.left), b = a ? any(e.right) : null;
         if (!a || !b) return null;
@@ -931,7 +1103,7 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
     const o = x as { kind?: string };
     if (o.kind === "textLength" || o.kind === "textCode" || o.kind === "textIndexOf" || o.kind === "textTest" || o.kind === "textCompare") {
       // (A made variable's length, and a made text against a known one, need no statements: `num`, `bool`.)
-      const easy = o.kind === "textLength" ? (o as { of: TextExpr }).of.kind === "textVar" && madeVars.has(((o as { of: TextExpr }).of as { id: string }).id) : false;
+      const easy = o.kind === "textLength" ? !!madeOf((o as { of: TextExpr }).of) : false;
       const v = easy ? null : measured(o, pre);
       if (v) return v;
     }
@@ -1006,6 +1178,40 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
         return [{ kind: "assign", target: s.target, value: c.expr, at: s.at, label: s.label }];
       }
       case "print": return print(s);
+      case "declareArray": {
+        // An array of texts' first array: each cell where its text's block is.
+        const a = textArrays.get(s.array);
+        if (!a) break;
+        return [walk(s) as Stmt, ...a.cells.flatMap((m, i) => [...blockOf(m), store(a.addr, k(i), V(m.e))])];
+      }
+      case "storeText": {
+        // Made into the cell's block (through the scratch block when it reads the array), its lengths into the arrays;
+        // past the array's end, nothing, as a store of a number.
+        const a = textArrays.get(s.addr);
+        const w = a ? write(s.value) : null;
+        if (!a || !w) break;
+        const at = fresh("at"), into: Made = { e: fresh("e"), n: fresh("n"), c: fresh("c"), block: "" };
+        const cell = [dec(into.e, element(a.addr, V(at))), dec(into.n, k(0)), dec(into.c, k(0))];
+        const lengths = [store(a.block, V(at), V(into.n)), store(a.chars, V(at), V(into.c))];
+        if (readsArray(s.value, a.addr)) {
+          return [dec(at, num(s.index)), ...blockOf(SCRATCH), ...w.pre, ...begin(V(SCRATCH.e)), ...w.body, ...finish(SCRATCH), when(cmp("<", V(at), k(a.cells.length), true), [...cell, ...copyBlock(SCRATCH, into), ...lengths])];
+        }
+        return [dec(at, num(s.index)), ...w.pre, when(cmp("<", V(at), k(a.cells.length), true), [...cell, ...begin(V(into.e)), ...w.body, ...finish(into), ...lengths])];
+      }
+      case "releaseText": {
+        // (A cell's block is its own for good: nothing to give back.)
+        if ([...textArrays.values()].some((a) => a.block === s.block)) return [];
+        break;
+      }
+      case "buildText": {
+        // Into its buffer from its start, or on from its end: the cursor where its bytes and characters end.
+        const m = bufferOf(s.buffer);
+        if (mentions(s.parts, s.buffer)) break;
+        const w = writeParts(s.parts);
+        if (!w) break;
+        const resume = [set(CE, bin("+", V(m.e), bin(">>>", V(m.n), k(2)))), set(CO, bin("&", V(m.n), k(3))), set(CN, V(m.n)), set(CC, V(m.c))];
+        return [...blockOf(m), ...w.pre, ...(s.reset ? begin(V(m.e)) : resume), ...w.body, ...finish(m)];
+      }
       case "call": {
         if (!s.call.params.some((p) => p.decl.kind === "text") && s.call.result?.kind !== "text") break;
         const r = call(s.call);
@@ -1022,8 +1228,8 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
           loop(cmp("<", V(r.i), V(src.m.n), true), [
             ...begin(V(m.e)),
             ...next(r), set(B, V(r.b)), put(), add(CC, 1),
-            readByte(look, r.se, r.so),
-            loop(all(cmp("<", V(r.i), V(src.m.n), true), { kind: "not", expr: starts(look) }), [...next(r), set(B, V(r.b)), put(), readByte(look, r.se, r.so)]),
+            ...readByte(look, r.se, r.so),
+            loop(all(cmp("<", V(r.i), V(src.m.n), true), { kind: "not", expr: starts(look) }), [...next(r), set(B, V(r.b)), put(), ...readByte(look, r.se, r.so)]),
             ...finish(m),
             ...stmts(s.body),
           ]),
@@ -1051,10 +1257,11 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
    */
   const print = (s: Extract<Stmt, { kind: "print" }>): Stmt[] => {
     const parts = s.parts.map((p) => (p.kind === "value" ? choice(p.text) : null));
-    if (s.parts.some((p, i) => p.kind === "value" && !parts[i]) && s.position === "chat") {
-      // A made text in it. Alone: its block shown as it is. Else the printed text made in the scratch block, shown.
+    if (s.parts.some((p, i) => (p.kind === "value" && !parts[i]) || p.kind === "name" || p.kind === "color") && s.position === "chat") {
+      // A made text in it, or a player's name or colour. Alone: its block shown as it is. Else the printed text made
+      // in the scratch block, shown.
       const [first] = s.parts;
-      if (s.parts.length === 1 && first.kind === "value" && first.text.kind === "textVar" && madeVars.has(first.text.id)) return [{ kind: "showText", block: madeVars.get(first.text.id)!.block, bytes: BLOCK, to: s.to, at: s.at }];
+      if (s.parts.length === 1 && first.kind === "value" && madeOf(first.text)) return [...blockOf(madeOf(first.text)!), { kind: "showText", block: madeOf(first.text)!.block, bytes: BLOCK, to: s.to, at: s.at }];
       const body = make({ kind: "template", parts: s.parts, at: s.at, label: s.label }, SCRATCH);
       if (!body) return [walk(s) as Stmt];
       return [...blockOf(SCRATCH), ...body, { kind: "showText", block: SCRATCH.block, bytes: BLOCK, to: s.to, at: s.at }];
@@ -1141,8 +1348,20 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
   here = program.at;
   // (The shared ones kept in one cell each — the cursor, the reader, the operands — and so each block's address.)
   const ROUTED = new Set([CE, CO, CN, CC, B, SE, SN, SC, RV, X, BLK, IDX, FE, FN, FROM, OFF, LO, HI, R.se, R.so, R.i, R.b, T.se, T.so, T.i, T.b, F.se, F.so, F.i, F.b]);
+  // (Only those the program reads: a program with no made text pays nothing at its start.)
+  const fns = [...runtime.values()].filter((f): f is FuncDecl => !!f);
+  const read = new Set<string>();
+  const reads = (x: unknown): void => {
+    if (Array.isArray(x)) { x.forEach(reads); return; }
+    if (!x || typeof x !== "object") return;
+    const o = x as { kind?: string; id?: string };
+    if (o.kind === "var" && typeof o.id === "string") read.add(o.id);
+    for (const v of Object.values(o)) if (v && typeof v === "object") reads(v);
+  };
+  reads([body, fns, functions ?? []]);
   const start: Stmt[] = [
-    ...[...globals].map((id) => dec(id, k(0), ROUTED.has(id))),
+    // (The program's own player, as the game has it now: the one a known text's writing gives it back to.)
+    ...[...globals].filter((id) => read.has(id)).map((id) => dec(id, id === ME ? peek(k(CURRENT)) : k(0), ROUTED.has(id))),
     ...[...known].map(([text, id]) => ({ kind: "textBlock", decl: { id: `${id}@e`, name: "(text)", kind: "number", shared: false, at: here, routed: true }, block: id, bytes: enc.encode(text).length + 1, text, at: here }) as Stmt),
     ...[...blocks.values()].flatMap((m) => [
       { kind: "textBlock", decl: { id: m.e, name: "(text)", kind: "number", shared: false, at: here, routed: true }, block: m.block, bytes: BLOCK, at: here } as Stmt,
@@ -1150,11 +1369,24 @@ export function knownTexts(program: Program, pool: TextPool, base: number): Prog
       dec(m.c, k(0)),
     ]),
   ];
-  const fns = [...runtime.values()].filter((f): f is FuncDecl => !!f);
   return { ...program, body: [...start, ...body], ...(functions || fns.length ? { functions: [...(functions ?? []), ...fns] } : {}), arrays };
 }
 
 const CURRENT_PLAYER = 13;
+/** The most cells an array of texts may have here: each a block of its own. */
+const MOST_TEXT_CELLS = 64;
+const DEATHS = 0x58a364;
+/** The code of the game's texts nearest each colour of the palette (eudplib's `_pcolor`). */
+const COLOUR_CODES = [
+  21, 14, 16, 14, 14, 14, 14, 28, 16, 14, 28, 28, 28, 28, 16, 16, 21, 21, 21, 21, 21, 21, 21, 6, 21, 21, 21, 8, 17, 17, 8, 17,
+  17, 3, 24, 24, 24, 24, 29, 29, 14, 14, 14, 14, 14, 14, 14, 14, 28, 28, 28, 28, 31, 14, 28, 31, 31, 31, 31, 31, 22, 23, 25, 25,
+  21, 21, 21, 21, 21, 14, 21, 21, 21, 16, 30, 29, 29, 29, 30, 29, 29, 22, 22, 22, 22, 4, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21,
+  21, 24, 21, 21, 21, 24, 21, 6, 17, 21, 29, 17, 6, 17, 8, 8, 8, 8, 27, 17, 3, 7, 14, 16, 14, 14, 14, 14, 14, 28, 28, 2,
+  31, 29, 29, 3, 3, 3, 27, 23, 25, 25, 21, 21, 21, 21, 21, 21, 21, 16, 16, 24, 21, 28, 30, 30, 27, 27, 30, 2, 17, 24, 15, 15,
+  14, 16, 14, 16, 16, 14, 3, 3, 21, 21, 21, 21, 21, 21, 6, 8, 6, 8, 8, 17, 17, 21, 24, 24, 24, 24, 24, 24, 29, 29, 29, 29,
+  14, 14, 14, 28, 28, 28, 30, 2, 21, 21, 21, 21, 21, 14, 14, 21, 21, 21, 21, 21, 21, 21, 21, 29, 21, 21, 21, 21, 21, 21, 21, 21,
+  21, 21, 21, 21, 24, 24, 24, 16, 14, 14, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 14, 21, 21, 21, 14, 28, 28, 28, 4, 4,
+];
 /** The most a made text holds, in bytes (`compiler/ir.ts` has the same). */
 const TEXT_BYTES = 1023;
 const DISPLAY_TEXT = 9;

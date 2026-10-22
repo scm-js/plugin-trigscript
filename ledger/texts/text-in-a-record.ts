@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text of the program's
+// ledger: step 8, takes
 // A text that is a field of each row of an array of records, written while the game runs: `heroes[i].name = "…"`.
 program(() => {
   const heroes = [

@@ -1,4 +1,4 @@
-// ledger: step 8, refused: JSX made while the game runs
+// ledger: step 8, takes
 // A line of JSX with a number of the program in it, put together while the game runs: `<line>Wave {n}</line>`.
 program(() => {
   let n = 0;

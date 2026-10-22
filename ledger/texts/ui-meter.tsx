@@ -1,4 +1,4 @@
-// ledger: step 8, refused: JSX made while the game runs
+// ledger: step 8, takes
 // A labelled bar, green, yellow or red by how full it is, from `trigscript/ui`:
 // `<Meter label="Base" value={hp} max={1500} />`.
 import { Meter } from "trigscript/ui";

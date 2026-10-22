@@ -1,4 +1,4 @@
-// ledger: step 8, refused: JSX made while the game runs
+// ledger: step 8, takes
 // A colour of the game's texts chosen while the game runs, in a printed line: `<cell color={c} />`, `c` one of
 // `textColors`.
 program(() => {

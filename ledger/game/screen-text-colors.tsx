@@ -1,4 +1,4 @@
-// ledger: step 8, refused: JSX made while the game runs
+// ledger: step 8, takes
 // The screen library's colours in the text lines, `TEXT_COLORS`: a pixel's colour, 1 to 7, as a square of text.
 import { TEXT_COLORS } from "trigscript/screen";
 program(async () => {

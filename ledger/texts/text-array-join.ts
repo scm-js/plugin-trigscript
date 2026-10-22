@@ -1,4 +1,4 @@
-// ledger: step 8, refused: a text of the program's
+// ledger: step 8, takes
 // The texts of an array of texts as one, with a separator between them: `names.join(", ")`.
 program(() => {
   const names = ["Raynor", "Kerrigan"];

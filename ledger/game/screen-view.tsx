@@ -1,4 +1,4 @@
-// ledger: step 8, refused: JSX made while the game runs
+// ledger: step 8, takes
 // The screen library: a screen's pixels shown in the text lines, a coloured square each:
 // `<ScreenView screen={s} width={…} height={…} />`.
 import { Screen, ScreenView } from "trigscript/screen";
