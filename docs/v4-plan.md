@@ -4754,6 +4754,10 @@ shorter array, three programs running the one heap out where the simulator does)
 the lifted game, the same lines at the same frames; the 22 other own probes before and after; the IR the eudplib build
 is made from, the same for all 112 probes as before.
 
+- **Played in Remastered (2026-10-22):** `own-step9-growing`, `-loops` and `-heap` (built with `MAP_NAME`, so the lobby
+  names each) printed every line word for word as the lifted game, in their groups four game frames apart; the
+  out-of-memory line once, before M; the second program's line at game frame 22; no hitch seen on the 15 ms frames.
+
 Found on the way, in both builds: a constant out of a `u8` / `u16` array's range — `bytes.push(300)`, `xs[i] = -9`,
 `[300]` — was stored as its top (255 for −4, the simulator's `kept`), where the guide says below zero is 0 and a
 variable's was already an error: now an error, "bytes is an array of u8 and each cell holds 0 … 255, not 300"
