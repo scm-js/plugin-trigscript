@@ -96,3 +96,28 @@ describe("closures in arrays that shift and splice", () => {
     same("function tag(n: number) { return () => n; } const hs: (() => number)[] = []; let k = 0; while (k < 5) { hs.push(tag(k * 10)); k++; } hs.shift(); hs.splice(1, 2, tag(99)); hs.unshift(tag(7)); let out = ''; for (const h of hs) out += `${h()} `; print(out);");
   });
 });
+
+describe("arrays written where they are used", () => {
+  it("joined, measured, searched, indexed, walked, mapped and spread, a value of the program among them", () => {
+    same("let n = 0; while (n < 12) n += 5; let i = 1; print([n, 2, 8].join(', ')); print(`${[1, n].length} ${[1, n][i]} ${[n, 4].indexOf(4)} ${[n, 4].includes(15)} ${[n, 4].at(-1)}`); for (const x of [n, 1]) print(`${x}`);");
+    same("let n = 0; while (n < 12) n += 5; print(`${[n, 7].map((x) => x * 2).join('+')} ${[n, 7].filter((x) => x > 9).length} ${[n, 7].reduce((a, b) => a + b, 0)} ${[n > 3, false].some((x) => x)} ${[n, 7].toReversed()[0]}`);");
+  });
+  it("a list a call makes, looked into where it is made", () => {
+    same("let n = 0; while (n < 12) n += 5; const xs = [n, 7]; print(`${xs.map((x) => x * 2).join()} ${xs.slice(1).join()} ${xs.map((x) => x * 2).indexOf(30)} ${xs.slice(1).includes(7)}`);");
+  });
+  it("spread into Math.max and Math.min, among other numbers; one that grows is refused, said why", () => {
+    same("let n = 0; while (n < 12) n += 5; const xs = [n, 40]; print(`${Math.max(...[n, 4])} ${Math.min(3, ...[n, 4], 9)} ${Math.max(...xs)} ${Math.min(...xs.map((x) => x - 1))}`);");
+    expect(messages("let n = 0; let ys: number[] = []; ys.push(n); print(`${Math.max(...ys)}`);")).toEqual(["ys grows, so it may be empty, where Math.max(...) is -Infinity, which no number of the game is: ys.reduce((m, x) => Math.max(m, x), 0) says what an empty one gives."]);
+  });
+});
+
+describe("a player's name and colour kept in a text", () => {
+  it("are looked into as the game fills them in: a colour one character, its code; a name as long as the player's", () => {
+    const sim = run("const c = `${color(P2)}`; const who = `${name(P1)}!`; print(`${c.length} ${c.charCodeAt(0)} ${who.length} ${who === 'Player 1!'} ${`x${color(P1)}y`.indexOf('y')} ${`${name(P2)}`.length}`);");
+    expect(sim.faults).toEqual([]);
+    expect(shown(sim)).toEqual(["1 14 9 true 2 8"]);
+  });
+  it("a printed one keeps the colour code, as the game shows it", () => {
+    expect(shown(run("print(`${name(P1)} and ${color(P2)}${name(P2)}`);"))).toEqual(["Player 1 and \x0ePlayer 2"]);
+  });
+});

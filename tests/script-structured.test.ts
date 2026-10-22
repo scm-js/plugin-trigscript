@@ -794,7 +794,8 @@ describe("structured: time, edges, lists and players", () => {
     const sim = run(r, 1);
     expect(value(sim, "total")).toBe(16);
     expect(texts(sim)).toEqual(["0:wave 2", "0:wave 5", "0:wave 9", "0:again 2", "0:a", "0:b"]);
-    expect(compile(program("let n = 0; for (const x of [n]) displayText(\"x\");")).diagnostics[0].message).toMatch(/^What a for…of loop runs over must be known when the script is built, but n is a variable/);
+    // (A list with a value of the program in it is an array of the program, made where it is written, and walked.)
+    expect(compile(program("let n = 0; for (const x of [n]) displayText(\"x\");")).diagnostics).toEqual([]);
   });
 
   it("a program owned by All Players runs once per player, each with their own variables", () => {

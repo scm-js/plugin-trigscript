@@ -3921,7 +3921,7 @@ lists what no script reaches. A step is done when its scripts say so.
 | 5 The game's conditions and actions | 197 of 198 |
 | 6 The game's memory | 50 of 50 |
 | 7 Programs, owners and players | 27 of 28 |
-| 8 Texts as values | 46 of 46 |
+| 8 Texts as values | 48 of 48 |
 | 9 Arrays that grow, the heap | 0 of 26 |
 | 10 Units | 0 of 99 |
 | 11 Tasks, `async` and errors | 0 of 44 |
@@ -4542,7 +4542,7 @@ Found on the way: part 1's table of a known text at a variable chose its window 
 c - 96)` (the library's `toUpperCase`) read past it for every letter and gave "" — fixed: the window is where each part
 of the numbers that moves as a line of the variable lands inside the text. A list written in a call's arguments
 holding a value of the program, `[n, 2, 8].join(", ")`, is "A call's arguments must be known when the script is built"
-in both builds — a gap of the front end's.
+in both builds — a gap of the front end's (closed 2026-10-22: *Arrays written where they are used*, below).
 
 *Open:* a text cut at 1,023 bytes counts its characters as its bytes (the Python side counts them again); the message
 the Python side shows once when a text is cut is not shown.
@@ -4604,6 +4604,35 @@ draws nothing); the 13 rows against the simulator (8 the same, 5 the same but th
 leaves out), every other row that takes as before (430 the same); the 20 `probes/own-*.ts` in the lifted game with the
 free dwords filled with ones, the same lines; `tests/emitter.test.ts` (JSX, a name and a colour from the game's memory,
 arrays of texts and records), its walker taking a player field of 13 as the current player.
+
+*Played (2026-10-22):* `own-step8-known`, `-made`, `-made-filled` (the free dwords filled with ones) and `-jsx` in
+Remastered, every line as written. A computer's name came out grey in one game: `probes/own-colours-check.ts`, built
+both ways and played, showed Remastered dealing the players' colours afresh each game on the probe map (VER 206, COLR
+0 1 2 3 4 8 6 7, no CRGB) — that game the computer was white, whose code draws almost as plain text — and both builds
+printing every name in the colour dealt.
+
+### Arrays written where they are used, and names and colours looked into (2026-10-22)
+
+Two gaps of the front end, the same in both builds, closed:
+
+- **An array written out where it is used** with a value of the program in it — `[n, 2, 8].join(", ")`,
+  `[1, n].length`, `[n, 4].includes(15)`, `for (const x of [n, 1])` — was "must be known when the script is built". It
+  is now an array of the program made where it is written, as `const xs = [n, 2, 8]` makes one (`isProgramLiteral`,
+  `listHere` in `structured.ts`); so is a list a call makes looked into where it is made (`xs.map(f).join()`,
+  `xs.slice(1).includes(7)`). `Math.min` / `Math.max` spread an array of fixed length (`Math.max(...xs)`); one that
+  grows is refused, since an empty one is -Infinity, with the `reduce` that says what an empty one gives.
+- **A text holding `name()` or `color()`, looked into** — `` `${color(P1)}`.length ``, `.charCodeAt(0)`, `=== "…"` — was
+  worked out when the script was built, on the mark that stands for them there (U+E000, a letter, the player, U+E001):
+  length 4, character 57344. The hoister now leaves anything that reads into such a text to the game (`readsMark` in
+  `hoist.ts`), and the build-time evaluation does not look into one either; a text only carrying the mark along (a
+  template, a `+`) is still put together where it is used. The simulator keeps a colour code as the character the game
+  has (the slot's colour when nothing changes it: 8 red, 14 blue, …; `playerColor` to say otherwise), and a JSX
+  colour likewise, so its lengths and its log agree with the game's.
+
+Checked: `tests/text-array-methods.test.ts` (each against JavaScript, the colours against the game's codes),
+`tests/emitter.test.ts` (both from our own map's bytes, a name and a colour from the game's memory), two rows of the
+ledger (`arrays/written-where-used`, `texts/player-colour-as-a-value`); `probes/own-made-texts.ts` line D joins
+`[n, 2, 8]` itself again.
 
 ### Triggers stacked (2026-10-20)
 

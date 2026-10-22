@@ -183,7 +183,8 @@ describe("text with the program's values in it", () => {
     expect(prints[0]).toMatchObject({ to: 13, position: "chat", parts: [{ kind: "color", player: 1 }, { kind: "name", player: 1 }, { kind: "text", text: " wins" }] });
     expect(prints[1]).toMatchObject({ parts: [{ kind: "name", player: 13 }, { kind: "text", text: " has " }, { kind: "number" }] });
     const sim = simulatePrograms(r.ir, 1, { strings: r.strings, playerName: (p) => ["Ann", "Bob"][p] ?? "?" });
-    expect(sim.events.map((e) => e.text)).toEqual(["Bob wins", "Ann has 1"]);
+    // (Bob's colour, P2's blue when nothing changes it: its code, 14, is a character of the text, as in the game.)
+    expect(sim.events.map((e) => e.text)).toEqual(["\x0eBob wins", "Ann has 1"]);
     // Nothing of a program's text is left for the map's string table to take.
     expect(r.triggers).toEqual([]);
   });

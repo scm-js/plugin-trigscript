@@ -797,6 +797,11 @@ export class Structured {
     if (ts.isIdentifier(e)) {
       const b = this.bindingOf(e);
       if (!b && e.text === "undefined") return { value: undefined };
+      // A constant of the body is no binding: its value — what a text read in the game (`readsMark` in hoist.ts) starts from.
+      if (!b) {
+        const decl = this.c.checker.getSymbolAtLocation(e)?.valueDeclaration;
+        if (decl && ts.isVariableDeclaration(decl) && this.body.plan.consts.has(decl)) return { value: this.constValue(decl) };
+      }
       return b?.kind === "value" ? { value: b.value } : undefined;
     }
     if (e.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
@@ -815,12 +820,15 @@ export class Structured {
       // A field of the unit selected (\`local.selected.hp\`) is read when the map is played, as any unit's is — and so is
       // one of a unit picked (`first(…)?.hp`), which, worked out here, was the pick's own field: undefined.
       if (isSelected(obj.value) || isSelectionCount(obj.value) || isUnitPick(obj.value)) return undefined;
+      // The length of a text with name() or color() in it is the game's (`readsMark` in hoist.ts).
+      if (typeof obj.value === "string" && hasTextMark(obj.value)) return undefined;
       return { value: readField(obj.value, e.name.text) };
     }
     if (ts.isElementAccessExpression(e)) {
       const obj = sub(e.expression);
       const key = sub(e.argumentExpression);
       if (!obj || !key || obj.value === null || obj.value === undefined) return undefined;
+      if (typeof obj.value === "string" && hasTextMark(obj.value)) return undefined;
       return { value: readField(obj.value, String(key.value)) };
     }
     if (ts.isCallExpression(e)) {
@@ -838,6 +846,8 @@ export class Structured {
         if (!v || isGameValue(v.value)) return undefined;
         args.push(v.value);
       }
+      // A text's method over name() or color() — on one, or given one — is the game's too.
+      if (typeof self === "string" && [self, ...args].some((a) => typeof a === "string" && hasTextMark(a))) return undefined;
       // stats(x): a table's index is a plain number when the script runs; its type says which table.
       if (this.isLibraryCall(e, "stats") && e.arguments.length === 1) args.push(this.brandOf(e.arguments[0]));
       try {
@@ -926,6 +936,9 @@ export class Structured {
       const l = sub(e.left);
       const r = sub(e.right);
       if (!l || !r || isGameValue(l.value) || isGameValue(r.value)) return undefined;
+      // A text with name() or color() in it is put together with `+` here, and compared in the game (`readsMark` in hoist.ts).
+      const markIn = (v: unknown) => typeof v === "string" && hasTextMark(v);
+      if ((markIn(l.value) || markIn(r.value)) && e.operatorToken.kind !== ts.SyntaxKind.PlusToken) return undefined;
       switch (e.operatorToken.kind) {
         case ts.SyntaxKind.EqualsEqualsEqualsToken: return { value: l.value === r.value };
         case ts.SyntaxKind.ExclamationEqualsEqualsToken: return { value: l.value !== r.value };
@@ -3896,6 +3909,7 @@ export class Structured {
     const b = this.arrayOf(expr);
     if (b) return b;
     const e = this.unwrap(expr);
+    if (this.isProgramLiteral(e)) { const a = this.declareArray(`(${e.getText(this.body.sf).replace(/\s+/g, " ")})`, e, this.c.checker.getTypeAtLocation(e), e); return a ? { kind: "array", a } : { kind: "array", a: this.newArray("(not made)", "number", 1, this.sourceOf(e)) }; }
     if (ts.isCallExpression(e) && this.isSplit(e)) return this.splitTexts(e, "(split)", e) ?? undefined;
     if (ts.isCallExpression(e) && this.makesList(e)) {
       // Refused, and said so: an array of nothing stands in, so the one mistake is the one message.
@@ -3907,6 +3921,31 @@ export class Structured {
       if (made && Structured.LIST_KINDS.has(made.kind)) return made;
     }
     return undefined;
+  }
+
+  /**
+   * `[n, 2, 8]` written where a list is used, a value of the program among it, numbers or booleans: an array of the
+   * program made there, as `const xs = [n, 2, 8]` would make one. (One known when the script is built is the script's.)
+   */
+  private isProgramLiteral(e: TS.Expression): e is TS.ArrayLiteralExpression {
+    const { ts } = this;
+    if (!ts.isArrayLiteralExpression(e) || e.elements.length === 0) return false;
+    try { if (this.evaluate(e)) return false; } catch { return false; }
+    const element = this.c.checker.getIndexTypeOfType(this.c.checker.getTypeAtLocation(e), ts.IndexKind.Number);
+    const kind = element ? this.kindOf(element) : null;
+    return kind === "number" || kind === "boolean";
+  }
+
+  /** Whether a list is made where it is used: written out (`isProgramLiteral`), or given by `map`, `filter`, `slice`, …. */
+  private listMadeHere(expr: TS.Expression): boolean {
+    const { ts } = this;
+    const e = this.unwrap(expr);
+    return this.isProgramLiteral(e) || (ts.isCallExpression(e) && (this.makesList(e) || this.copiesList(e)));
+  }
+
+  /** A list made where it is used (`listMadeHere`), made: what `arrayOf` is for a variable. */
+  private listHere(expr: TS.Expression): Binding | undefined {
+    return this.listMadeHere(expr) ? this.listOf(expr) : undefined;
   }
 
   /** The methods that give a copy: a new array with what another holds, or a Map's keys or values as one. */
@@ -3935,6 +3974,7 @@ export class Structured {
     let h: Hoisted | undefined;
     try { h = this.evaluate(e); } catch { return undefined; }
     if (h) return this.isPlainList(h.value) ? "array" : undefined;
+    if (this.isProgramLiteral(e)) return "array";
     if (!ts.isCallExpression(e)) return undefined;
     if (this.copiesList(e)) {
       if (!ts.isPropertyAccessExpression(e.expression)) return "array";
@@ -4093,6 +4133,7 @@ export class Structured {
     const receiver = this.unwrap(e.expression.expression);
     if (this.bindingOf(receiver)) { const b = this.bindingOf(receiver)!; return b.kind === "array" || b.kind === "records" || b.kind === "units" || b.kind === "grid" || b.kind === "row" || b.kind === "lists" || b.kind === "inner"; }
     if (ts.isCallExpression(receiver) && (this.makesList(receiver) || this.copiesList(receiver))) return true;
+    if (this.isProgramLiteral(receiver)) return true;
     const h = this.evaluate(receiver);
     return !!h && (isUnitQuery(h.value) || Array.isArray(h.value));
   }
@@ -5659,7 +5700,10 @@ export class Structured {
         this.textsCall(e, of, "shift");
         return { kind: "textVar", id: first.id };
       }
-      if (of?.kind === "array" && e.expression.name.text === "join") return this.arrayJoin(e, of.a);
+      if (e.expression.name.text === "join" && (of?.kind === "array" || (!of && this.listMadeHere(e.expression.expression)))) {
+        const list = of ?? this.listOf(e.expression.expression);
+        return list?.kind === "array" ? this.arrayJoin(e, list.a) : null;
+      }
       if (of?.kind === "texts" && e.expression.name.text === "pop" && e.arguments.length === 0) {
         // What it takes off, kept — a copy, since the row's own goes back with the row.
         const at = this.at(e);
@@ -6769,7 +6813,7 @@ export class Structured {
         if (over) { this.c.error(e, `${this.overName(over)}.${method}(…) is a value: use it in an if or store it.`); return; }
       }
       if (LIST_MAKERS.has(method) && this.makesList(e)) { this.madeList(e, undefined, e); return; }
-      const list = this.arrayOf(e.expression.expression);
+      const list = this.arrayOf(e.expression.expression) ?? this.listHere(e.expression.expression);
       if (list?.kind === "grid") { this.gridCall(e, list, method); return; }
       if (list?.kind === "lists") { this.listsCall(e, list, method); return; }
       if (list?.kind === "array") { this.arrayCall(e, list.a, e.expression.name.text, "statement"); return; }
@@ -11202,7 +11246,7 @@ export class Structured {
       if (over) return this.searchCall(e, over, e.expression.name.text, "number") as NumExpr | null;
     }
     if (ts.isPropertyAccessExpression(e.expression)) {
-      const list = this.arrayOf(e.expression.expression);
+      const list = this.arrayOf(e.expression.expression) ?? this.listHere(e.expression.expression);
       if (list?.kind === "array") {
         const out = this.arrayCall(e, list.a, e.expression.name.text, "number");
         return out && out !== true ? (out as NumExpr) : null;
@@ -11315,10 +11359,19 @@ export class Structured {
     if (callee === Math.min || callee === Math.max) {
       if (e.arguments.length === 0) { this.c.error(e, "Math.min / Math.max take at least one argument."); return null; }
       let acc: NumExpr | null = null;
+      const take = (l: NumExpr) => { acc = acc ? intrinsic(callee === Math.min ? "min" : "max", [acc, l]) : l; };
       for (const a of e.arguments) {
+        // `Math.max(...xs)`: each cell of an array of the program, its length known when the script is built.
+        if (ts.isSpreadElement(a)) {
+          const list = this.listOf(a.expression);
+          if (list?.kind !== "array" || list.a.kind !== "number") { this.c.error(a, "Math.min / Math.max spread an array of numbers of the program: Math.max(...xs)."); return null; }
+          if (list.a.dynamic) { this.c.error(a, `${list.a.name} grows, so it may be empty, where Math.max(...) is -Infinity, which no number of the game is: xs.reduce((m, x) => Math.max(m, x), 0) says what an empty one gives.`.replace("xs.", `${list.a.name}.`)); return null; }
+          for (let i = 0; i < list.a.length; i++) take({ kind: "element", array: list.a.id, index: num(i), at: this.at(a) });
+          continue;
+        }
         const l = this.num(a);
         if (!l) return null;
-        acc = acc ? intrinsic(callee === Math.min ? "min" : "max", [acc, l]) : l;
+        take(l);
       }
       return acc;
     }
@@ -11800,7 +11853,7 @@ export class Structured {
       }
     }
     if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
-      const list = this.arrayOf(e.expression.expression);
+      const list = this.arrayOf(e.expression.expression) ?? this.listHere(e.expression.expression);
       if (list?.kind === "array") {
         // A number of the array (indexOf, a pop of numbers) tested as one is `!= 0`, as any number is.
         const numeric = e.expression.name.text === "indexOf" || (e.expression.name.text === "pop" && list.a.kind === "number");
