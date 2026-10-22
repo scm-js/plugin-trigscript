@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // An event of the script's own from `trigscript/signals`: handlers added with `on` and run with `emit`.
 import { Signal } from "trigscript/signals";
 program(() => {

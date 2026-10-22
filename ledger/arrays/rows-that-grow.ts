@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // An array of arrays each of its own length, a row pushed to: `rows[i].push(v)`.
 program(() => {
   const rows: number[][] = [[], [], []];

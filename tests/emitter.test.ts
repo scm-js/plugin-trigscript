@@ -17,6 +17,7 @@ import ts from "typescript";
 import { compileScript } from "../compiler/compiler";
 import { defaultScriptNames } from "../compiler/names";
 import { emitOwn } from "../compiler/backend/own";
+import { simulatePrograms } from "../compiler/simulateIr";
 import { defaultLib } from "../bundle/lib.mjs";
 
 const U32 = 2 ** 32;
@@ -1062,14 +1063,15 @@ describe("the emitter, a map of our own's texts", () => {
  */
 const laidOut = new WeakMap<Graph, { arrays: Map<string, number[]>; own: ReturnType<typeof layout>; texts: string[]; templates: string[] }>();
 /** `memory`: dwords of the game's as the map starts, by address (a player's name, their colour); `arrays`: the lists the graph reads. */
-function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>()): Env {
+/** `runs`: instead of `g` alone, several runs laid out one after another, as a map of our own runs them each frame. */
+function runOwn(g: Graph, memory?: Map<number, number>, arrays = new Map<string, number[]>(), runs?: { graph: Graph; owner: number }[]): Env {
   // (Laid out once a graph: a test may walk one many times.)
   let done = laidOut.get(g);
   if (!done || (done.arrays !== arrays && (done.arrays.size || arrays.size))) {
     // (Strings by number: a printed text's template 1000 on, a text known when built 5000 on.)
-    const templates = (g.templates ?? []).map((t) => t.id), texts: string[] = [];
+    const templates = (runs ? runs.flatMap((r) => r.graph.templates ?? []) : g.templates ?? []).map((t) => t.id), texts: string[] = [];
     // (Every dword no trigger or data holds all ones: nothing reads them.)
-    const own = layout({ graph: g, strings: 0, owner: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays, template: (id) => 1000 + templates.indexOf(id), free: 0xffffffff });
+    const own = layout({ ...(runs ? { runs } : { graph: g, owner: 0 }), strings: 0, text: (t) => 5000 + (texts.includes(t) ? texts.indexOf(t) : texts.push(t) - 1), arrays, template: (id) => 1000 + templates.indexOf(id), free: 0xffffffff });
     done = { arrays, own, texts, templates };
     laidOut.set(g, done);
   }
@@ -1289,6 +1291,207 @@ describe("a map of our own, texts made while the game runs", () => {
       `  print(\`\${heroes[1].name} \${heroes[0].name.length} \${names[1] === "Marine"}\`);`,
     ].join("\n"));
     expect(got).toEqual(bytes("Medic x15, Marine, Medic", "Raynor! 6 true"));
+  });
+});
+
+describe("a map of our own, arrays that grow", () => {
+  /**
+   * What a script prints as the simulator runs it and as its payload does, walked from its bytes (one pass: it sleeps
+   * nowhere), every program's run laid out — and what the payload said that the simulator keeps as a fault, apart.
+   */
+  const both = (source: string, file = "main.ts"): { want: string[]; got: string[]; said: string[]; bytes: number } => {
+    const r = compileScript(ts, { [file]: source }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const hex = (text: string) => shown([...new TextEncoder().encode(text)]);
+    const want = simulatePrograms(r.ir, 1, { strings: r.strings }).events.filter((e) => e.text !== undefined).map((e) => hex(e.text!));
+    const o = emitOwn(r);
+    if (typeof o === "string") throw new Error(o);
+    PRINTED.got = [];
+    const runs = o.runs.map((run) => ({ graph: run.graph, owner: run.player }));
+    runOwn(runs[0].graph, undefined, o.values, runs.length > 1 ? runs : undefined);
+    const oom = hex("\x06TrigScript: out of memory");
+    const said = PRINTED.got.filter((l) => l.startsWith(oom));
+    const bytes = layout({ runs, strings: 0, text: () => 1, arrays: o.values, template: () => 1 }).payload.length;
+    return { want, got: PRINTED.got.filter((l) => !l.startsWith(oom)), said, bytes };
+  };
+  const same = (body: string, file = "main.ts") => {
+    const r = both(body, file);
+    expect(r.want.length).toBeGreaterThan(0);
+    expect(r.got).toEqual(r.want);
+    expect(r.said).toEqual([]);
+  };
+
+  it("pushes past several blocks, pops, cuts short, stores at the end and past it", () => {
+    same(`program(() => {
+  const xs: number[] = [];
+  let i = 0;
+  while (i < 40) { xs.push(i * 3); i++; }
+  let sum = 0;
+  for (const x of xs) sum += x;
+  const last = xs.pop()!;
+  xs.pop();
+  xs.length = 30;
+  let at = 30;
+  xs[at] = 7;
+  at = 40;
+  xs[at] = 9;
+  let below = -1;
+  xs[below] = 9;
+  const ys = [5, 6];
+  const a = ys.pop() ?? 0, b = ys.pop() ?? 0, c = ys.pop() ?? -1;
+  print(\`\${xs.length} \${sum} \${last} \${xs[30]} \${xs[at]} \${xs[below]} \${xs[29]} \${a} \${b} \${c} \${ys.length}\`);
+});`);
+  });
+
+  it("gives a block back when an array is declared again, so a loop of them never runs the heap out", () => {
+    // (500 arrays of 32 cells would be 16 000 cells, near the heap's whole 16 384, were none given back.)
+    same(`program(() => {
+  let turns = 0, seen = 0;
+  while (turns < 500) {
+    const fresh: number[] = [];
+    let j = 0;
+    while (j < 20) { fresh.push(turns + j); j++; }
+    seen += fresh[19];
+    turns++;
+  }
+  print(\`\${seen}\`);
+});`);
+  });
+
+  it("keeps booleans and u8 cells as the simulator does, and a Map, a Set and the copies the library makes", () => {
+    same(`program(() => {
+  const flags: boolean[] = [];
+  let f = 0;
+  while (f < 10) { flags.push(f % 3 == 0); f++; }
+  let set = 0;
+  for (const b of flags) if (b) set++;
+  const bytes: u8[] = [];
+  let over = 300, under = -4;
+  bytes.push(over);
+  bytes.push(under);
+  let k = 1;
+  const scores = new Map<number, number>();
+  let key = 3;
+  while (key < 3000) { scores.set(key, key * 2); key = key * 3; }
+  scores.delete(27);
+  const seenSet = new Set<number>();
+  let s = 0;
+  while (s < 30) { seenSet.add(s % 7); s++; }
+  const hs = [5, 1, 4, 2, 3];
+  const big = hs.filter((x) => x > 2).concat(hs.map((x) => x * 2)).slice(1, 4);
+  const sorted = hs.toSorted((a, b) => a - b).toReversed();
+  hs.splice(1, 2, 9);
+  print(\`\${set} \${flags[k + 2]} \${flags[k]} \${bytes[0]} \${bytes[1]} \${scores.size} \${scores.get(81) ?? 0} \${seenSet.size} \${big[2]} \${sorted[0]} \${hs[1]} \${hs.length}\`);
+});`);
+  });
+
+  it("keeps rows that grow inside an array that grows, numbers and booleans", () => {
+    same(`program(() => {
+  const rows: number[][] = [];
+  let i = 0;
+  while (i < 5) { rows.push([]); i++; }
+  i = 0;
+  while (i < 40) { rows[i % 5].push(i); i++; }
+  rows[2][3] = 99;
+  rows[4].length = 2;
+  const last = rows[3].pop()!;
+  rows.push([7, 8, 9]);
+  let sum = 0;
+  for (const r of rows) for (const v of r) sum += v;
+  const flags: boolean[][] = [[true], [false, true]];
+  flags[0].push(false);
+  print(\`\${rows.length} \${rows[0].length} \${rows[2][3]} \${rows[4].length} \${last} \${rows[5][1]} \${sum} \${flags[0].length} \${flags[1][1]} \${flags[0][1]}\`);
+});`);
+  });
+
+  it("keeps arrays of texts that grow, each cell's text a block of the pool's, given back when it goes", () => {
+    same(`program(() => {
+  const log: string[] = [];
+  let n = 0;
+  while (n < 6) { log.push(\`line \${n}\`); n++; }
+  log[2] = log[2] + "!";
+  log[0] = "first";
+  const gone = log.pop()!;
+  log.shift();
+  log.splice(1, 1, "mid", \`n=\${n}\`);
+  print(log.join(", "));
+  print(log[1]);
+  print(\`\${log.length} \${gone} \${log.includes("mid")} \${log.indexOf("line 4")}\`);
+  let turns = 0, total = 0;
+  while (turns < 100) {
+    const words: string[] = [];
+    let w = 0;
+    while (w < 3) { words.push(\`w\${turns}.\${w}\`); w++; }
+    total += words[2].length;
+    turns++;
+  }
+  const parts = "a,bb,ccc".split(",");
+  print(\`\${total} \${parts.length} \${parts[2]} \${parts.join("+")}\`);
+});`);
+  });
+
+  it("keeps a closure's variables, and an array in a function that calls itself on its stack", () => {
+    same(`function counter() { let n = 0; return () => { n += 1; return n; }; }
+function build(n: number): number {
+  const xs: number[] = [];
+  let i = 0;
+  while (i < n) { xs.push(i * n); i++; }
+  let s = 0;
+  if (n > 1) s = build(n - 1) + build(n - 2);
+  for (const v of xs) s += v;
+  return s + xs.length;
+}
+program(() => {
+  const next = counter();
+  let t = 0, c = 0;
+  while (t < 3) { c += next(); t++; }
+  let n = 0;
+  while (n < 6) n += 1;
+  let total = 0, turns = 0;
+  while (turns < 30) { total += build(n); turns++; }
+  print(\`\${c} \${build(n)} \${total}\`);
+});`);
+  });
+
+  it("reads and stores at a loop's counter untested: over an array, over records, and another array shorter than it", () => {
+    same(`program(() => {
+  const xs: number[] = [];
+  let m = 0;
+  while (m < 30) { xs.push(m); m++; }
+  let total = 0;
+  for (let i = 0; i < xs.length; i++) total += xs[i];
+  for (const v of xs) total += v * 2;
+  for (let i = 0; i < xs.length; i++) xs[i] = xs[i] + 1;
+  // (Records: each field an array of its own, as long as the first.)
+  const bs: { x: number; dx: number; life: number }[] = [];
+  let b = 0;
+  while (b < 12) { bs.push({ x: b * 13, dx: 3 + b % 5, life: b % 4 }); b++; }
+  let alive = 0;
+  for (const q of bs) { q.x += q.dx; if (q.x >= 100) q.dx = -3; if (q.life > 0) { q.life--; alive++; } }
+  // (Another array at the counter, shorter: read past its end 0, a store at its length a push, past it nothing.)
+  const short = [7];
+  short.push(8);
+  let seen = 0, two = 2;
+  for (let i = 0; i < xs.length; i++) { seen += short[i]; if (i < 4) short[i] = i * 10; if (i > 6) break; }
+  // (A counter read after the loop, a step of two, a continue.)
+  let j = 0, odd = 0;
+  for (j = 1; j < xs.length; j += 2) { if (xs[j] % 3 == 0) continue; odd += xs[j]; }
+  print(\`\${total} \${xs[29]} \${alive} \${bs[11].x} \${bs[11].dx} \${bs[3].life} \${seen} \${short.length} \${short[two]} \${j} \${odd}\`);
+});`);
+  });
+
+  it("runs out where the simulator does, the heap one for every program, and says so once", () => {
+    const r = both(["A", "B", "C"].map((name, k) => `program(() => {
+  const a: number[] = [];
+  let i = 0;
+  while (i < ${[5000, 5000, 3000][k]}) { a.push(i * ${k + 1}); i++; }
+  print(\`${name} \${a.length} \${a[a.length - 1]}\`);
+});`).join("\n"));
+    expect(r.want).toHaveLength(3);
+    expect(r.got).toEqual(r.want);
+    expect(r.said.length).toBe(1);
+    // (One heap for the three runs: its 16 384 cells, 72 bytes each, laid out once.)
+    expect(r.bytes).toBeLessThan(2 * 16384 * 72);
   });
 });
 

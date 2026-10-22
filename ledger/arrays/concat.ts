@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // A new array of two arrays one after the other: `xs.concat(ys)`.
 program(() => {
   const xs = [5, 2];

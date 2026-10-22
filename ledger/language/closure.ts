@@ -1,4 +1,4 @@
-// ledger: step 9, refused: a variable a closure keeps
+// ledger: step 9, takes
 // A closure over a value worked out while the game runs: `adder(k)` gives a function that keeps its `k`.
 function adder(k: number) {
   return (x: number) => x + k;

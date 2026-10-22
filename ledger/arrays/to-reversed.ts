@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // A copy of an array turned round, the array left as it was: `xs.toReversed()`.
 program(() => {
   const xs = [5, 2, 8, 1];

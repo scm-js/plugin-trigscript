@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // A value stored one past the end of an array, which grows it as `push` does: `xs[xs.length] = v`.
 program(() => {
   const xs = [1, 2];

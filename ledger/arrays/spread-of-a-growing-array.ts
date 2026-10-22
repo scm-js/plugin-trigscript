@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // An array that grows made from another that grows and more: `[...xs, 9]`.
 program(() => {
   const xs: number[] = [];

@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // An array that grows cut short, or emptied, by setting its length: `xs.length = 1`.
 program(() => {
   const xs = [1, 2, 3];

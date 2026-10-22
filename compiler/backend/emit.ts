@@ -604,6 +604,21 @@ class Scope {
    */
   indexed = new Set<string>();
   functions = new Map<string, FuncDecl>();
+  private named?: Set<string>;
+  /** What the called functions name — their variables, parameters and results — worked out once. */
+  inFunctions(): Set<string> {
+    if (this.named) return this.named;
+    const out = new Set<string>();
+    const named = (x: unknown): void => {
+      if (Array.isArray(x)) { x.forEach(named); return; }
+      if (!x || typeof x !== "object") return;
+      const o = x as { kind?: string; id?: string; target?: string };
+      if ((o.kind === "var" && typeof o.id === "string") || (o.kind === "assign" && typeof o.target === "string")) out.add((o.id ?? o.target)!);
+      for (const v of Object.values(o)) if (v && typeof v === "object") named(v);
+    };
+    for (const f of this.functions.values()) { named(f.body); for (const p of f.params) out.add(p.id); if (f.result) out.add(f.result.decl.id); }
+    return (this.named = out);
+  }
   /** The program's arrays, by id. */
   arrays = new Map<string, ArrayDecl>();
   /**
@@ -1147,7 +1162,7 @@ type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: st
  * conditions, its statements' actions), which may be followed by the copies of what it writes — a copy whether or not
  * the conditions held, which writes back what the places hold when they did not.
  */
-interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean; guarded?: boolean }
+interface Proto { label: string; conds: Cond[]; items: Item[]; next?: string; at?: At; depth?: number; keep?: boolean; guarded?: boolean; guardOf?: Stmt }
 
 /**
  * A place of a variable: a dword that holds it times `scale` plus `add` (wrapping) — known (its cell, a home, a
@@ -1262,6 +1277,10 @@ class Emitter {
   params = new Map<string, Dword>();
   /** The table targets whose places outgrew a trigger, for the emitter to try again with them copied. */
   crowded = new Set<string>();
+  /** The `if`s laid out as a branch, not in one trigger (`guarded`): those that did not fit in one, found by a build before. */
+  unguarded = new Set<Stmt>();
+  /** The `if`s in one trigger whose actions did not fit in it. */
+  misfits = new Set<Stmt>();
   /**
    * A map of our own: the functions a call has reached, each laid out once after the program (`functions()`) — where
    * it starts, and the trigger it ends at, whose next pointer every call sets to where it goes on — and those still
@@ -1338,7 +1357,7 @@ class Emitter {
   }
 
   push(p: Omit<Proto, "label"> & { label?: string }): Proto {
-    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}), ...(p.guarded ? { guarded: true } : {}) };
+    const t: Proto = { label: p.label ?? this.label("t"), conds: p.conds, items: p.items, next: p.next, at: p.at ?? this.at, depth: this.depthBase + this.loops.length, ...(p.keep ? { keep: true } : {}), ...(p.guarded ? { guarded: true } : {}), ...(p.guardOf ? { guardOf: p.guardOf } : {}) };
     this.protos.push(t);
     return t;
   }
@@ -1593,7 +1612,7 @@ class Emitter {
       case "remark": return;
       case "textBlock": {
         // The block a string of zeros among the templates; the variable its EPD, as an action writes a label's.
-        this.block(s.block, s.bytes, s.text);
+        this.block(s.block, s.bytes, s.text, s.data);
         const t = `${this.key}.tb${this.n++}`;
         this.open().items.push({ act: { dword: { temp: t }, modifier: "set", value: { epd: { template: s.block, word: 0 } } } }, { fill: { temp: t, target: s.decl.id } });
         return;
@@ -1671,7 +1690,7 @@ class Emitter {
         // that fit in one trigger — that trigger, its actions run when they hold (no branch, no puts-back); the copies
         // of what it writes after it.
         const then = flatten(s.then);
-        const guard = this.scope.native && !s.else?.length && then.length && then.length <= MOST_ACTS / 4 && then.every((t) => this.guards(t)) ? this.single(s.cond, true) : null;
+        const guard = this.scope.native && !this.unguarded.has(s) && !s.else?.length && then.length && then.length <= MOST_ACTS / 4 && then.every((t) => this.guards(t)) ? this.single(s.cond, true) : null;
         if (guard === "false") return;
         if (Array.isArray(guard)) {
           const items: Item[] = [], copies: Item[] = [];
@@ -1682,7 +1701,7 @@ class Emitter {
             else if (t.kind === "assign") this.write(t.target, linear(t.value)!, true, items, copies);
             this.at = outer;
           }
-          this.push({ conds: guard, items: [...items, ...copies], at: s.at, guarded: true });
+          this.push({ conds: guard, items: [...items, ...copies], at: s.at, guarded: true, guardOf: s });
           return;
         }
         const other = this.label("else"), done = this.label("fi");
@@ -2216,7 +2235,7 @@ class Emitter {
    */
   itoa?: { signed: string; unsigned: string; exit: string; v: string; r: string; neg: string; out: string[] };
   /** The printed texts' templates (`Graph.templates`). */
-  templates: { id: string; bytes: number[]; at?: number }[] = [];
+  templates: { id: string; bytes: number[]; at?: number; data?: boolean }[] = [];
 
   /**
    * A text printed with values in it (a map of our own). Its template is laid out when the map is built: the text,
@@ -2276,10 +2295,10 @@ class Emitter {
    * `at`: the template is the game's memory there (the line of a print at the centre), its bytes written first.
    */
   /** A block of `bytes` zeros — or holding `text`, then zeros — among the templates, once (`textBlock`, `showText`). */
-  block(id: string, bytes: number, text?: string): void {
+  block(id: string, bytes: number, text?: string, data?: boolean): void {
     if (this.templates.some((t) => t.id === id)) return;
     const content = text ? [...new TextEncoder().encode(text)] : [];
-    this.templates.push({ id, bytes: [...content, ...Array(Math.max(1, 4 * Math.ceil(bytes / 4) - content.length)).fill(0)] });
+    this.templates.push({ id, bytes: [...content, ...Array(Math.max(1, 4 * Math.ceil(bytes / 4) - content.length)).fill(0)], ...(data ? { data: true } : {}) });
   }
 
   template(parts: TextPart[], at?: number): string {
@@ -3602,6 +3621,21 @@ class Emitter {
       this.own.add(index);
       this.write(index, st.index, false);
     }
+    // A map of our own: the cell itself plus a constant or a variable — `xs[i] += 1`, `hp[i] -= damage` — is that added
+    // to the cell where it is: one action, the cell not read.
+    const same = (a: Linear, b: Linear) => u(a.c) === u(b.c) && a.terms.length === b.terms.length && a.terms.every((t) => b.terms.some((x) => x.id === t.id && u(x.k) === u(t.k)));
+    const self = this.scope.native && st.reads.length === 1 && st.reads[0].table?.jump && !st.reads[0].table.guard && st.reads[0].table.array.id === st.array.id && same(st.reads[0].table.index, st.index) ? st.reads[0] : undefined;
+    const rest = self && st.value.terms.filter((t) => t.id === self.id).length === 1 && st.value.terms.find((t) => t.id === self.id)!.k === 1 ? { c: st.value.c, terms: st.value.terms.filter((t) => t.id !== self.id) } : undefined;
+    if (self && rest && rest.terms.length <= 1) {
+      const by = rest.terms[0];
+      const from = by ? this.pin({ c: 0, terms: [{ id: by.id, k: 1 }] }, "sv") : null;
+      const act: Act = { dword: { element: st.array.id }, modifier: "add", value: from ? 0 : rest.c };
+      this.actPlaces.set(act, { dest: { id: index, scale: stride, add: 0, base: st.array.id }, ...(from ? { value: { id: from, scale: by.k, add: rest.c } } : {}) });
+      if (st.safe) { this.push({ conds: [], items: [{ act }] }); return; }
+      const g = st.guard ? this.alone(st.guard, "sg") : index;
+      this.push({ conds: [{ dword: this.home(g, 0), compare: "atMost", value: (st.limit ?? st.array.length) - 1 }], items: [{ act }] });
+      return;
+    }
     const own = new Map(st.reads.map((r) => [r.id, `${this.key}.${r.id.slice(1)}`]));
     for (const r of st.reads) {
       this.own.add(own.get(r.id)!);
@@ -3611,8 +3645,11 @@ class Emitter {
       else this.arith(own.get(r.id)!, r.arith!, own, this.at);
     }
     const value: Linear = { c: st.value.c, terms: st.value.terms.map((t) => ({ id: own.get(t.id) ?? t.id, k: t.k })) };
-    let from: string | null = null;
-    if (value.terms.length && this.scope.native) from = this.pin(value, "sv");
+    let from: string | null = null, plus = 0;
+    // (One variable once and a constant, in a map of our own: the store's number a place of the variable, plus the
+    // constant — no variable of its own for the sum.)
+    if (value.terms.length === 1 && value.terms[0].k === 1 && this.scope.native) { from = this.pin({ c: 0, terms: value.terms }, "sv"); plus = value.c; }
+    else if (value.terms.length && this.scope.native) from = this.pin(value, "sv");
     else if (value.terms.length && alone(value)) from = value.terms[0].id;
     else if (value.terms.length) {
       from = `${this.key}.sv${this.n++}`;
@@ -3620,7 +3657,7 @@ class Emitter {
       this.write(from, value, false);
     }
     const act: Act = { dword: { element: st.array.id }, modifier: "set", value: from ? 0 : value.c };
-    this.actPlaces.set(act, { dest: { id: index, scale: stride, add: 0, base: st.array.id }, ...(from ? { value: { id: from, scale: 1, add: 0 } } : {}) });
+    this.actPlaces.set(act, { dest: { id: index, scale: stride, add: 0, base: st.array.id }, ...(from ? { value: { id: from, scale: 1, add: plus } } : {}) });
     // (A window's guard is its own index against its own length. One the value ranges know is inside tests nothing,
     // and the writes after it go in its trigger.)
     if (st.safe) { this.push({ conds: [], items: [{ act }] }); return; }
@@ -3721,7 +3758,47 @@ class Emitter {
           n += copied.has(t) ? k : k * (count.get(t) ?? 1);
         }
         count.set(v, n);
-        if (n > MOST_ACTS && !pinned.has(v)) copied.add(v);
+        if (n > MOST_ACTS && !pinned.has(v) && !this.scope.decls.get(v)?.everywhere) copied.add(v);
+      }
+      // A variable written in a loop and read only outside it — a sum a loop adds to and a print reads once after it — is
+      // kept in its cell alone and read where it is used (graph(): routed): each write one action, not one for each
+      // place, and a value read from a cell into it no copy into each. Its writes against what refreshing its places
+      // where they are read would cost, each weighed by how deep in the loops it is (four turns of the loop outside
+      // for one inside), in actions: a write is one a place; a refresh of a place about five (a trigger pointing the cell,
+      // the cell's own, one back), of a place that holds a multiple of it about forty (a trigger a bit it can have).
+      const protoBy = new Map(this.protos.map((p) => [p.label, p]));
+      const depth = (label: string) => 4 ** (protoBy.get(label)?.depth ?? 0);
+      // (Not what a called function names: its body is laid out outside the loops it is called from, so its reads look
+      // fewer than they are — its parameters', its result's, and the program's variables it reads.)
+      const inFunctions = this.scope.inFunctions();
+      const writesAt = new Map<Write, number>();
+      for (const p of this.protos) for (const it of p.items) if ("write" in it) writesAt.set(it.write, 4 ** (p.depth ?? 0));
+      for (const v of out) {
+        // (Only the program's own variables: what the emitter makes for itself — a routine's working cells — it lays out
+        // as it needs them.)
+        if (copied.has(v) || pinned.has(v) || this.own.has(v) || isTemp(v) || !this.scope.decls.has(v) || inFunctions.has(v) || this.scope.decls.get(v)?.everywhere) continue;
+        const ps = this.places.get(v) ?? [];
+        const n = count.get(v) ?? 1;
+        if (n <= 2) continue;
+        let read = 0, deepestRead = 0;
+        for (const pl of ps.slice(1)) {
+          const d = pl.dword && "at" in pl.dword ? depth(pl.dword.at) : 1;
+          deepestRead = Math.max(deepestRead, d);
+          read += d * (pl.scale === 1 ? 5 : 40);
+        }
+        // (Read in another's write, it is refreshed into each place of that one — its cell alone, when that one is copied
+        // — at that one's multiple of it.)
+        for (const t of readers.get(v) ?? []) for (const w of this.writes.get(t) ?? []) {
+          const k = w.value.terms.filter((x) => x.id === v);
+          if (!k.length) continue;
+          deepestRead = Math.max(deepestRead, writesAt.get(w) ?? 1);
+          const into = copied.has(t) ? [{ scale: 1 }] : this.places.get(t) ?? [{ scale: 1 }];
+          for (const pl of into) for (const x of k) read += (writesAt.get(w) ?? 1) * (u(pl.scale * x.k) === 1 ? 5 : 40);
+        }
+        // (Only when every read is outside the deepest loop it is written in, as a sum's is: one written and read in the
+        // same loop pays a refresh at each turn for each write it saves.)
+        const deepestWrite = Math.max(0, ...(this.writes.get(v) ?? []).map((w) => writesAt.get(w) ?? 1));
+        if (deepestRead < deepestWrite && read < (weight.get(v) ?? 0) * (n - 1)) copied.add(v);
       }
     }
     return { copied, order: out };
@@ -3906,7 +3983,11 @@ class Emitter {
             acts().push({ dword: pl.dword, modifier: "set", value: { label: to(it.label.to) } });
           }
         }
-        else if ("copy" in it) { if (copied.has(it.copy) && !routed.has(it.copy)) pieces.push({ copy: it.copy, ...(it.at ? { at: it.at } : {}) }); }
+        else if ("copy" in it) {
+          // (A variable never below zero and at most its `top`: only the bits it can have.)
+          const top = this.scope.decls.get(it.copy)?.top;
+          if (copied.has(it.copy) && !routed.has(it.copy)) pieces.push({ copy: it.copy, ...(top !== undefined ? { top } : {}), ...(it.at ? { at: it.at } : {}) });
+        }
         else if ("call" in it) pieces.push({ call: it.call, ...(it.at ? { at: it.at } : {}) });
         else {
           pieces.push({ island: it.island });
@@ -3916,7 +3997,11 @@ class Emitter {
           for (const id of it.writes) if ((this.places.get(id)?.filter((p) => !p.synced).length ?? 0) > 1 && !routed.has(id)) pieces.push({ copy: id, island: true, ...(top !== undefined ? { top } : {}), ...(it.island.at ? { at: it.island.at as At } : {}) });
         }
       }
-      if (p.conds.length && (pieces.slice(1).some((x) => !(p.guarded && "copy" in x)) || !("acts" in pieces[0]) || pieces[0].acts.length > MOST_ACTS)) return this.crowded.size ? "crowded" : "a branch with too many actions";
+      if (p.conds.length && (pieces.slice(1).some((x) => !(p.guarded && "copy" in x)) || !("acts" in pieces[0]) || pieces[0].acts.length > MOST_ACTS)) {
+        // (An `if` in one trigger whose writes turned out to have more places than a trigger holds: once more, as a branch.)
+        if (p.guardOf) this.misfits.add(p.guardOf);
+        return this.crowded.size || this.misfits.size ? "crowded" : "a branch with too many actions";
+      }
       // Routed variables: an action that reads one has its number refreshed from the cell just before its trigger
       // (again after a write of the variable earlier in the same run of actions); conditions likewise.
       const cut: Piece[] = [];
@@ -3961,7 +4046,8 @@ class Emitter {
       const label = () => (made.length ? `${this.key}.cut${n++}` : entry.get(p.label) ?? p.label);
       for (const piece of pieces) {
         if ("refresh" in piece) {
-          const t: Trigger = { label: label(), conds: [], acts: [], copy: { from: piece.refresh, into: [] }, ...(p.at ? { at: p.at } : {}) };
+          const top = this.scope.decls.get(piece.refresh)?.top;
+          const t: Trigger = { label: label(), conds: [], acts: [], copy: { from: piece.refresh, into: [], ...(top !== undefined ? { top } : {}) }, ...(p.at ? { at: p.at } : {}) };
           refreshes.push({ t, places: piece.places });
           made.push(t);
           continue;
@@ -4047,19 +4133,30 @@ class Emitter {
       if (x.copy) cellsRead.add(JSON.stringify({ var: x.copy.from }));
     }
     const plainPlace = (p: Place) => p.scale === 1 && p.add === 0 && !p.base;
+    // (A map of our own: a variable of the emitter's own whose cell nothing reads — a sum a store's number is worked out
+    // in — is written there for nothing: what its writes read into that cell is no place to fill. The write stays, and
+    // writes what it will.)
+    const homeOf = new Map<Place, string>();
+    if (this.scope.native) for (const [id, ps] of this.places) if (this.own.has(id) && ps[0]?.dword && !cellsRead.has(JSON.stringify(ps[0].dword))) homeOf.set(ps[0], id);
+    const dead = (pl: Place) => !!pl.act && homeOf.has(pl.act.into);
     for (const { t, target, apart } of fills) {
-      const ps = this.placesOf(target);
+      const ps = this.placesOf(target).filter((pl, i) => i === 0 || !dead(pl));
       // The scratch cell folded into the one dword that takes its value: the target's cell when that is its only place,
       // or — a variable of the emitter's own nothing reads at its cell — the one field that reads it (a write's number):
       // worked in where it is read, no copy. (`apart`: the scratch cell is worked in while the target is still read — a
       // product of the target — and stays one of its own.)
-      const lone = !apart && ps.length === 1 && ps[0].dword && plainPlace(ps[0]) ? ps[0].dword
-        : !apart && ps.length === 2 && this.own.has(target) && plainPlace(ps[1]) && ps[0].dword && !cellsRead.has(JSON.stringify(ps[0].dword)) ? dwordOf(ps[1])
+      // (Or a field that holds it plus a constant — a store of `xs[i] + 1` — when nothing tests the scratch cell or
+      // routes into it: the scratch's 0 to start from is that constant.)
+      // (A map of our own only: a cell trigger of its own adds its number in, where the Python side's reads may set it.)
+      const fromConst = (p: Place) => this.scope.native && p.scale === 1 && !p.base && !tested.get(t.copy!.from.slice(1))?.length && !routedInto.get(t.copy!.from.slice(1))?.length;
+      const lonePlace = !apart && ps.length === 1 && ps[0].dword && plainPlace(ps[0]) ? ps[0]
+        : !apart && ps.length === 2 && (this.own.has(target) || !!this.scope.decls.get(target)?.scoped) && (plainPlace(ps[1]) || fromConst(ps[1])) && ps[0].dword && !cellsRead.has(JSON.stringify(ps[0].dword)) ? ps[1]
         : undefined;
+      const lone = lonePlace ? dwordOf(lonePlace) : undefined;
       if (lone) {
         const home = lone;
         for (const a of scratch.get(t.copy!.from.slice(1)) ?? []) {
-          if ("temp" in a.dword) a.dword = home;
+          if ("temp" in a.dword) { a.dword = home; if (lonePlace!.add && a.modifier === "set" && a.value === 0) a.value = u(lonePlace!.add); }
           else a.value = { epd: home };
         }
         for (const c of tested.get(t.copy!.from.slice(1)) ?? []) c.dword = home;
@@ -4114,6 +4211,7 @@ class Emitter {
         for (const a of t.acts) if (typeof a.value === "object" && "label" in a.value) a.value = { label: past(a.value.label) };
       }
     }
+    if (this.scope.native) joinRuns(triggers, new Set([exit, triggers[0]?.label, ...stays, ...this.rows.flat()].filter((l): l is string => !!l)));
     // What the graph reads that was written before it, copied into its places on the way in.
     const graph: Graph = { entries: [], triggers, ...(this.arrays.size ? { arrays: [...this.arrays].map(([id, stride]) => ({ id, stride })) } : {}), ...(this.rows.length ? { rows: this.rows } : {}) };
     for (const id of entries) for (const p of this.placesOf(id)) {
@@ -4147,6 +4245,57 @@ const notZero = (e: NumExpr): BoolExpr => ({ kind: "compare", op: "!=", left: e,
  * that one takes back after it what it keeps, the parameters it sets among them. What the function it calls does to
  * this one's variables does not count otherwise: a function's variables are its own.
  */
+/**
+ * A map of our own: a trigger with no conditions that the walk only ever reaches by falling from the one before it —
+ * which has no conditions either, and goes on to it — is that one's actions after its own, in one trigger: the walk
+ * passes one where it passed two. Not when either's next pointer is written by anything (a branch, a jump into a cell,
+ * where a function goes back to), nor a copy, an island or a call, nor `keep` (the entry, the end, a kept one, a row's);
+ * a field of the one taken in is the same field of the one that takes it, its action moved on by that one's actions.
+ */
+function joinRuns(triggers: Trigger[], keep: Set<string>): void {
+  const reached = new Map<string, number>();
+  const see = (l: string) => reached.set(l, (reached.get(l) ?? 0) + 1);
+  const nextWritten = new Set<string>();
+  const scan = (x: unknown): void => {
+    if (!x || typeof x !== "object") return;
+    if (Array.isArray(x)) { x.forEach(scan); return; }
+    const o = x as Record<string, unknown>;
+    if (typeof o.at === "string" && (o.field === "next" || o.field === "current")) nextWritten.add(o.at);
+    if (typeof o.label === "string" && Object.keys(o).length === 1) see(o.label);
+    for (const v of Object.values(o)) if (v && typeof v === "object") scan(v);
+  };
+  for (const t of triggers) { if (t.next !== undefined) see(t.next); scan([t.conds, t.acts, t.copy?.into]); }
+  const plain = (t: Trigger) => !t.conds.length && !t.copy && !t.island && !t.call && !nextWritten.has(t.label);
+  // (Each one taken in noted — the trigger it is now, its first action's place there — and the fields renamed after,
+  // in one walk.)
+  const moved = new Map<string, { into: string; shift: number }>();
+  for (let i = 0; i + 1 < triggers.length;) {
+    const a = triggers[i], b = triggers[i + 1];
+    const falls = a.next === undefined || a.next === b.label;
+    if (!falls || !plain(a) || !plain(b) || keep.has(b.label) || (reached.get(b.label) ?? 0) > (a.next === b.label ? 1 : 0) || a.acts.length + b.acts.length > MOST_ACTS) { i++; continue; }
+    moved.set(b.label, { into: a.label, shift: a.acts.length });
+    // (What was taken into `b` before is `a`'s now, further on.)
+    for (const [l, m] of moved) if (m.into === b.label) moved.set(l, { into: a.label, shift: m.shift + a.acts.length });
+    a.acts.push(...b.acts);
+    a.next = b.next;
+    if (b.next === undefined) delete a.next;
+    triggers.splice(i + 1, 1);
+  }
+  if (!moved.size) return;
+  const move = (x: unknown): void => {
+    if (!x || typeof x !== "object") return;
+    if (Array.isArray(x)) { x.forEach(move); return; }
+    const o = x as Record<string, unknown>;
+    const m = typeof o.at === "string" ? moved.get(o.at) : undefined;
+    if (m && o.field && typeof o.field === "object" && "act" in (o.field as object)) {
+      o.at = m.into;
+      o.field = { ...(o.field as { act: number; part: ActPart }), act: (o.field as { act: number }).act + m.shift };
+    }
+    for (const v of Object.values(o)) if (v && typeof v === "object") move(v);
+  };
+  for (const t of triggers) move([t.conds, t.acts, t.copy?.into]);
+}
+
 export function liveAfterCalls(body: Stmt[]): Map<Call, Set<string>> {
   const out = new Map<Call, Set<string>>();
   /** What is live where a `break`, a `continue` and a `return` go. */
@@ -4553,7 +4702,9 @@ class Rewriter {
         if (e.kind === "intrinsic" && e.name !== "abs" && e.name !== "min" && e.name !== "max" && !(this.own && this.tabled(e))) return { ...e, args: this.each(e.args, pre, where) };
         const t = this.temp();
         pre.push(...this.set(t, e, where));
-        return { kind: "var", id: t };
+        // (What the value ranges know of it, known of the variable it is read from.)
+        const range = (e as NumExpr & { range?: readonly [number, number] }).range;
+        return { kind: "var", id: t, ...(range ? { range } : {}) } as NumExpr;
       }
       default: return e;
     }
@@ -5207,11 +5358,16 @@ class Rewriter {
         let index = plain(s.index) ? s.index : this.sum(this.flat(s.index, pre, where), pre, where);
         const mark = pre.length;
         let stored: NumExpr = value;
-        if (!plain(value) && !this.table(value)) {
+        // (A map of our own: a sum of cells, each at an index that is a sum, stored as it is — the store reads its cells
+        // first — so that a cell read goes straight into the store's number, not into a variable of its own copied there.)
+        const ofCells = this.own && !!linear(value, (x) => (x.kind === "element" && !!linear(x.index) ? "@cell" : null));
+        if (!plain(value) && !this.table(value) && !ofCells) {
           const t = this.temp();
           pre.push(...this.set(t, value, where));
           stored = { kind: "var", id: t };
         }
+        // (A cell at an index that is more than a sum — a `?:`, a product — read where it is, its index worked out first.)
+        else if (this.own && value.kind === "element" && !linear(value.index)) stored = this.flat(value, pre, where);
         index = this.before(index, pre, mark, where);
         return pre.length ? keep([...pre, { ...s, index, value: stored }]) : [s];
       }
@@ -5420,6 +5576,8 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
   const s: Stmt = block.length === 1 ? block[0] : ({ kind: "block", body: block, at: body[0]?.at } as Stmt);
   const scope = new Scope(known);
   rules(scope);
+  // (The map's own variables, which no program declares and no run's start sets: 0 as the map starts, one cell each.)
+  for (const d of known.values()) if (d.global) scope.declared.add(d.id);
   if (!scope.stmt(s, false)) return scope.why || "?";
   if (scope.islands.size) {
     // (The first that holds a part the emitter never takes, before one refused for how it is put together — a print to
@@ -5432,9 +5590,10 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     const [s, call] = [...scope.calls][0];
     return `a ${call.fn.fn.startsWith("fdiv") ? "quotient" : "product"} of fixed numbers${s.at ? `, line ${s.at.line}` : ""}`;
   }
-  const make = (forced: Set<string>): { e: Emitter; g: Graph | string } => {
+  const make = (forced: Set<string>, unguarded = new Set<Stmt>()): { e: Emitter; g: Graph | string } => {
     const e = new Emitter(key, scope);
     e.forced = forced;
+    e.unguarded = unguarded;
     e.stackDepth = stackDepth;
     // Stacks: each `sp` and `depth` set at the start, which sets every place of each `sp` — the fields of its stack it
     // addresses. (Which stacks there are is known once the functions are laid out: the writes go into this trigger then.)
@@ -5463,7 +5622,22 @@ export function emitBody(body: Stmt[], decls: Map<string, VarDecl>, key: string,
     if (cells > STACK_CELLS_MOST) return { e, g: `arrays and stacks of ${cells} cells, past the ${STACK_CELLS_MOST} a map of our own lays out (72 bytes a cell)` };
     return { e, g };
   };
-  const g = make(new Set()).g;
+  // Built again while it is crowded — a write with more places than a trigger's actions, which the next build copies
+  // after its reads instead (as `emitLoop` does), or an `if` in one trigger that did not fit, laid out as a branch —
+  // until a build finds nothing more to change.
+  const forced = new Set<string>(), unguarded = new Set<Stmt>();
+  let built = make(forced, unguarded);
+  for (let tries = 0; built.g === "crowded" && tries < 16; tries++) {
+    const before = forced.size + unguarded.size;
+    for (const id of built.e.crowded) {
+      if (!built.e.own.has(id) && !isTemp(id)) forced.add(id);
+      else for (const [target, ws] of built.e.writes) if (ws.some((w) => w.value.terms.some((t) => t.id === id))) forced.add(target);
+    }
+    for (const s of built.e.misfits) unguarded.add(s);
+    if (forced.size + unguarded.size === before) break;
+    built = make(forced, unguarded);
+  }
+  const g = built.g === "crowded" ? "a branch with too many actions" : built.g;
   if (typeof g === "string") return g;
   if (g.entries.length) return `${g.entries[0].from} is read before the body writes it`;
   if (g.triggers.some((t) => t.island || t.call)) return "an island or a call";

@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // An array of records that grows a record at a time: `enemies.push({ hp, x })`.
 program(() => {
   const enemies: { hp: number; x: number }[] = [];

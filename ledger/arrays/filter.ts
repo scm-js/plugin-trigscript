@@ -1,4 +1,4 @@
-// ledger: step 9, refused: an array that grows
+// ledger: step 9, takes
 // A new array of the values of another a function says yes to: `xs.filter((x) => x > 2)`.
 program(() => {
   const xs = [1, 2, 3, 4];

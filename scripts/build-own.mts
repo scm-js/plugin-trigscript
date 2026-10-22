@@ -8,8 +8,8 @@
  *   npx tsx scripts/build-own.mts probes/own-loader.ts out.scx [map.scx]
  *
  * The map is prepared as build-fixture prepares it (a base each, Player 1 the person; PEOPLE and a `// probe-players:`
- * line as there), made a Remastered map (VER 206, STRx), and written through the editor's own code (a scm-js checkout
- * beside this repository, or SCMJS_DIR).
+ * line as there; MAP_NAME the name the lobby shows), made a Remastered map (VER 206, STRx), and written through the
+ * editor's own code (a scm-js checkout beside this repository, or SCMJS_DIR).
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -37,13 +37,15 @@ const compiled = performance.now();
 
 const EDITOR = resolve(process.env.SCMJS_DIR ?? join(root, "..", "scm-js"));
 const { loadMap, saveMap, readExtras } = await import(join(EDITOR, "src", "formats", "mpq", "scm.ts"));
-const { parseScenario, serializeScenario, markDirty, setMapVersion } = await import(join(EDITOR, "src", "formats", "chk", "scenario.ts"));
+const { parseScenario, serializeScenario, markDirty, setMapVersion, setScenarioName } = await import(join(EDITOR, "src", "formats", "chk", "scenario.ts"));
 const { internString, patchPlayer, readPlayerSettings } = await import(join(EDITOR, "src", "editor", "settings.ts"));
 const { setString } = await import(join(EDITOR, "src", "formats", "chk", "sections", "strings.ts"));
 const { addUnits, applyUnitChanges, makeUnit, nextSerial } = await import(join(EDITOR, "src", "editor", "units.ts"));
 const loaded = await loadMap(new Uint8Array(readFileSync(map)));
 const scn = parseScenario(loaded.chk);
 setMapVersion(scn, "remastered");
+// (MAP_NAME: the name the lobby shows, so that maps built on the same base can be told apart in a recording.)
+if (process.env.MAP_NAME) setScenarioName(scn, process.env.MAP_NAME);
 patchPlayer(scn, 0, { type: 6, race: 1, force: 0 });
 patchPlayer(scn, 1, { type: 5, race: 0, force: 1 });
 for (const slot of (process.env.PEOPLE ?? "").split(",").filter(Boolean).map(Number)) patchPlayer(scn, slot, { type: 6, race: 1, force: slot === 0 ? 0 : 1 });
@@ -90,8 +92,8 @@ for (const t of graphs.flatMap((g) => g.triggers)) for (const a of t.acts) {
 // buffer does).
 const templates = new Map<string, number>();
 for (const t of graphs.flatMap((g) => g.templates ?? [])) {
-  // (A print at the centre of the screen is written into the game's own line: no string.)
-  if (t.at !== undefined) continue;
+  // (A print at the centre of the screen is written into the game's own line, and data is never shown: no string.)
+  if (t.at !== undefined || t.data) continue;
   const name = `(TrigScript text ${t.id})`;
   templates.set(t.id, internString(scn, name + "\r".repeat(Math.max(0, t.bytes.length + 3 - name.length))));
 }
@@ -116,7 +118,7 @@ const strings = new Uint8Array(strx.body);
 const offsets = new DataView(strings.buffer);
 const templateAt = new Map<string, number>();
 for (const t of graphs.flatMap((g) => g.templates ?? [])) {
-  if (t.at !== undefined) continue;
+  if (t.at !== undefined || t.data) continue;
   const index = templates.get(t.id)!;
   const at = (STRINGS + offsets.getUint32(4 * index, true) + 3) & ~3;
   strings.set(t.bytes, at - STRINGS);

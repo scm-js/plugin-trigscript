@@ -63,6 +63,27 @@ export interface VarDecl {
    * emitter copies is — for one read in many places and written often (a write is one action, not one a place).
    */
   routed?: boolean;
+  /**
+   * A map of our own only (`compiler/backend/heap.ts`): never below zero and at most this, whatever is written — a copy
+   * of it into a place that holds a multiple of it is then worked out over only the bits it can have.
+   */
+  top?: number;
+  /**
+   * A map of our own only (`compiler/backend/heap.ts`): one cell for the whole map — every program and every run of one
+   * — that no program declares, 0 as the map starts, and read where it is used (`routed` too).
+   */
+  global?: boolean;
+  /**
+   * A map of our own only (`compiler/backend/heap.ts`): kept in every place it is read, however many — written seldom and
+   * read often (where an array's block starts), so that a read never copies it in, as a variable past a trigger's worth
+   * of places otherwise is.
+   */
+  everywhere?: boolean;
+  /**
+   * A map of our own only (`compiler/backend/heap.ts`): declared in a loop's body and read nowhere outside the loop — a
+   * `for…of`'s variable — so its cell need not hold what is read into it.
+   */
+  scoped?: boolean;
   /** `shared(…)`: one cell for every player of a per-player program. */
   shared: boolean;
   /** A `u8` / `u16` annotation; unset for the full 32 bits. */
@@ -668,9 +689,10 @@ export type Stmt =
   /**
    * A map of our own only (`compiler/backend/texts.ts`): `decl`, a number, declared as the EPD of block `block` — a
    * string of the map's `bytes` long, laid out for it (one block for every statement that names it), empty at first or
-   * holding `text`.
+   * holding `text`. `data`: bytes of the payload's instead, never shown as a string (the pool of blocks the cells of
+   * arrays of texts that grow take: the game's own table of strings names only its first 64 KB in 1.16.1).
    */
-  | { kind: "textBlock"; decl: VarDecl; block: string; bytes: number; text?: string; at: At }
+  | { kind: "textBlock"; decl: VarDecl; block: string; bytes: number; text?: string; data?: boolean; at: At }
   /** A map of our own only: Display Text of block `block` as it is now, to `to` as a print's is. */
   | { kind: "showText"; block: string; bytes: number; to: number; at: At }
   /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */

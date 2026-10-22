@@ -1,4 +1,4 @@
-// ledger: step 9, refused: the length of an array that grows
+// ledger: step 9, takes
 // A log that keeps its last lines, shown a line each, from `trigscript/ui`: `log(lines, text)` and
 // `<LogLines lines={lines} />`.
 import { LogLines, log } from "trigscript/ui";
