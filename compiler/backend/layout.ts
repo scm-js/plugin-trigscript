@@ -328,11 +328,8 @@ export function layout(input: LayoutInput): OwnMap {
     { label: run, conds: [], acts: [...players.flatMap((p): Act[] => [{ dword: { at: entry(p), field: "next" }, modifier: "set", value: listEnd(p) }, { dword: { at: gate(p), field: "next" }, modifier: "set", value: listEnd(p) }]), { dword: { var: NOW }, modifier: "add", value: 1 }], next: first(0) },
   );
   for (const t of runs.flatMap((r) => r.graph.triggers)) if (t.copy || t.island || t.call) throw new Error(`${t.label}: a copy, an island or a call has no place in a map of our own`);
-  // The triggers stacked, a row as one — after the tables of plain dwords `stride` bytes apart, which they fill in
-  // between.
+  // The triggers stacked, a row as one.
   const space = new Space();
-  const strided = new Map<string, number>();
-  for (const r of new Map(runs.flatMap((x) => x.graph.cells ?? []).filter((x) => x.stride).map((x) => [x.id, x])).values()) strided.set(r.id, base + 4 * space.stack(Array.from({ length: r.cells }, (_, k) => (k * r.stride!) / 4)));
   const at = new Map<string, number>();
   const rowOf = new Map<string, string[]>();
   for (const row of runs.flatMap((r) => r.graph.rows ?? [])) for (const l of row) rowOf.set(l, row);
@@ -350,8 +347,7 @@ export function layout(input: LayoutInput): OwnMap {
   const routes = [...routed];
   const graphs = runs.map((r) => r.graph);
   // (A region every run names — the heap's — is laid out once.)
-  const allRegions = [...new Map(graphs.flatMap((g) => g.cells ?? []).map((r) => [r.id, r])).values()];
-  const regionList = allRegions.filter((r) => !r.stride);
+  const regionList = [...new Map(graphs.flatMap((g) => g.cells ?? []).map((r) => [r.id, r])).values()];
   const cellCount = routes.length + regionList.reduce((n, r) => n + r.cells, 0);
   const cellBase = cellCount ? base + 4 * space.stack(Array.from({ length: cellCount }, (_, k) => CELL_HOLDS.map((d) => d + CELL_DWORDS * k)).flat(), space.top) : base;
   routes.forEach((id, k) => at.set(ROUTE_CELL + id, cellBase + 72 * k));
@@ -441,7 +437,6 @@ export function layout(input: LayoutInput): OwnMap {
     if ("addrOf" in v && regionOf(v.addrOf) !== undefined) return u(regionOf(v.addrOf)! + v.plus);
     if ("addrOf" in v) throw new Error(`a jump into ${v.addrOf}'s cells, which a map of our own does not lay out`);
     if (regionOf(v.epdOf) !== undefined) return u(epd(regionOf(v.epdOf)! + 348) + v.plus);
-    if (strided.has(v.epdOf)) return u(epd(strided.get(v.epdOf)!) + v.plus);
     const l = lists.get(v.epdOf);
     if (l === undefined) throw new Error(`no list ${v.epdOf}`);
     return u(epd(l) + v.plus);

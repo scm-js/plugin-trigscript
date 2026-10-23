@@ -2121,8 +2121,8 @@ describe("a map of our own, tasks", () => {
 
 describe("a map of our own, unit events", () => {
   /**
-   * The game's unit table, its list of the units on the map and its dying list laid out as the game keeps them, two
-   * units to start with; each frame the world may change (`then`), and the payload is walked from its bytes.
+   * The game's unit table as the game keeps it, two units to start with in the places it hands out first (0, then
+   * 1 699); each frame the world may change (`then`), and the payload is walked from its bytes.
    */
   const TABLE = 0x59cca8, place = (k: number) => TABLE + 336 * k;
   const run = (script: string, frames: number, then: (frame: number, w: (addr: number, value: number) => void) => void): string[] => {
@@ -2138,10 +2138,8 @@ describe("a map of our own, unit events", () => {
       memory.set(place(k) + 0x64, type);
       memory.set(place(k) + 0xa4, uid * 256);
     };
-    unit(1699, 0, 9);
-    unit(1698, 37, 8);
-    memory.set(0x628430, place(1698));
-    memory.set(place(1698) + 4, place(1699));
+    unit(0, 0, 9);
+    unit(1699, 37, 8);
     PRINTED.got = [];
     runOwn(o.runs[0].graph, memory, o.values, undefined, frames, then);
     return PRINTED.got.map((t, i) => `${PRINTED.frames[i]} ${Buffer.from(t, "hex").toString()}`);
@@ -2156,16 +2154,19 @@ describe("a map of our own, unit events", () => {
       "  on.order((u, order, was) => { print(`order ${u.type} ${order} ${was}`); });",
       "  on.morphed((u, was) => { print(`morphed ${u.type} from ${was}`); });",
       "});",
-    ].join("\n"), 12, (f, w) => {
-      // Frame 3: a Marine at place 1697, linked in behind the head. Frame 5: the Marine at 1699 takes up order 6.
-      // Frame 7: the Zergling turns into type 38. Frame 9: the new Marine dies in a fight with Player 1's: no hit points,
-      // the order Die, out of the list and onto the dying one.
-      if (f === 3) { w(place(1697) + 0x08, 40 * 256); w(place(1697) + 0x0c, 0x700001); w(place(1697) + 0x4c, 0x0300); w(place(1697) + 0xa4, 7 * 256); w(place(1697) + 4, place(1699)); w(place(1698) + 4, place(1697)); }
-      if (f === 5) w(place(1699) + 0x4c, 0x0600);
-      if (f === 7) w(place(1698) + 0x64, 38);
-      if (f === 9) { w(place(1697) + 0x08, 0); w(place(1697) + 0x4c, 0x0000); w(place(1697) + 0x90, 0); w(place(1698) + 4, place(1699)); w(place(1697) + 4, 0); w(0x62842c, place(1697)); }
+    ].join("\n"), 14, (f, w) => {
+      // Frame 3: a Marine at place 1698, the next the game hands out. Frame 5: the Marine at place 0 takes up order 6.
+      // Frame 7: the Zergling turns into type 38. Frame 9: the new Marine dies in a fight with Player 1's: no hit
+      // points, the order Die. Frame 11: it is gone, and a Firebat (type 32) is handed its place, the uniqueness byte
+      // one on.
+      if (f === 3) { w(place(1698) + 0x08, 40 * 256); w(place(1698) + 0x0c, 0x700001); w(place(1698) + 0x4c, 0x0300); w(place(1698) + 0xa4, 7 * 256); }
+      if (f === 5) w(place(0) + 0x4c, 0x0600);
+      if (f === 7) w(place(1699) + 0x64, 38);
+      if (f === 9) { w(place(1698) + 0x08, 0); w(place(1698) + 0x4c, 0x0000); w(place(1698) + 0x90, 0); }
+      if (f === 10) w(place(1698) + 0x0c, 0);
+      if (f === 11) { w(place(1698) + 0x08, 50 * 256); w(place(1698) + 0x0c, 0x700002); w(place(1698) + 0x4c, 0x0300); w(place(1698) + 0x64, 32); w(place(1698) + 0xa4, 8 * 256); }
     });
-    expect(got).toEqual(["3 made 0", "5 order 0 6 3", "7 morphed 38 from 37", "9 died 0", "9 killed 0 by 0"]);
+    expect(got).toEqual(["3 made 0", "5 order 0 6 3", "7 morphed 38 from 37", "9 died 0", "9 killed 0 by 0", "11 made 32"]);
   });
 
   it("starts a task for each unit a handler that waits is handed", () => {
@@ -2174,8 +2175,7 @@ describe("a map of our own, unit events", () => {
       "  on.created(async (u) => { await sleep(frames(2)); print(`late ${u.type}`); });",
       "});",
     ].join("\n"), 8, (f, w) => {
-      if (f === 3) for (const [kk, uid] of [[1697, 7], [1696, 6]]) { w(place(kk) + 0x0c, 0x700001); w(place(kk) + 0x4c, 0x0300); w(place(kk) + 0x64, 5); w(place(kk) + 0xa4, uid * 256); }
-      if (f === 3) { w(place(1696) + 4, place(1697)); w(place(1697) + 4, place(1699)); w(place(1698) + 4, place(1696)); }
+      if (f === 3) for (const [kk, uid] of [[1698, 7], [1697, 6]]) { w(place(kk) + 0x0c, 0x700001); w(place(kk) + 0x4c, 0x0300); w(place(kk) + 0x64, 5); w(place(kk) + 0xa4, uid * 256); }
     });
     expect(got).toEqual(["5 late 5", "5 late 5"]);
   });

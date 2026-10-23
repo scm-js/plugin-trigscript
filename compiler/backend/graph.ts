@@ -206,12 +206,7 @@ export interface Entry { from: string; into: Dword; add: Num; scale?: number }
 export interface Graph { entries: Entry[]; triggers: Trigger[]; arrays?: { id: string; stride: number }[]; cells?: Region[]; templates?: { id: string; bytes: number[]; at?: number; data?: boolean }[]; rows?: string[][]; tasks?: string; pass?: string }
 /** Where the events pass goes when it is done: its run's `@wake`. */
 export const PASS_END = "@passed";
-/**
- * `stride`: a table of plain dwords this many bytes apart instead of cell triggers — a table of the events pass's, a
- * dword for each of the game's unit places, 336 bytes apart as the places are (`epdOf` its first dword's EPD); the
- * layout puts other things in between.
- */
-export interface Region { id: string; cells: number; values?: number[]; stride?: number }
+export interface Region { id: string; cells: number; values?: number[] }
 
 /**
  * A region of cell triggers, as an array's id: `{ element }` is its first cell's number, `{ epdOf }` that number's EPD

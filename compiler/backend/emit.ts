@@ -409,8 +409,10 @@ const CENTRE_LINE = 0x640b60 + 218 * 12, CENTRE_BYTES = 218, FIRST_FREE_UNIT = 0
 export const TRIGGER_LISTS = 0x51a280;
 /** Where the game keeps the current player: whom Display Text shows to, and what "the current player" names. */
 const CURRENT_PLAYER_ADDRESS = 0x6509b0;
-/** The game's unit table: its places, how far apart, the first one's EPD (a table of the events pass's is laid out as it). */
-const UNIT_PLACES = 1700, UNIT_STRIDE = 336, UNIT_TABLE_EPD = (0x59cca8 - 0x58a364) / 4;
+/** The game's unit table: its places, how far apart, where the first one is (`watch`). */
+const UNIT_PLACES = 1700, UNIT_STRIDE = 336, UNIT_TABLE_ADDRESS = 0x59cca8, UNIT_TABLE_EPD = (UNIT_TABLE_ADDRESS - 0x58a364) / 4;
+/** The events pass's variables the watch writes (`units.ts`'s): the record's EPD, the trigger's first condition's number, the boundary. */
+const EVENT_RECORD = "@ev.e", EVENT_FIELDS = "@ev.wf", EVENT_BOUNDARY = "@ev.be";
 /**
  * The map's player settings, as a map of our own needs them (TrigScript 4, step 7): the slots a human or a computer
  * plays (0-based, P1 to P8), and each slot's force (0 to 3). Who a program runs for, who All Players and a force are,
@@ -492,7 +494,7 @@ function gameConds(r: ConditionRecord, when: boolean): Cond[] | "true" | "false"
 }
 
 /** The kinds of statement, told apart from the expressions of the same name (`pop`, `call`). */
-export const STATEMENT_KINDS = new Set(["declare", "assignText", "storeText", "releaseText", "textLoop", "assign", "declareArray", "store", "push", "setLength", "assignBool", "assignUnit", "unitLoop", "unitWrite", "unitDo", "tableWrite", "if", "while", "do", "for", "unrolled", "switch", "break", "continue", "return", "sleep", "parallel", "pointAt", "start", "cancel", "action", "syncSend", "select", "centerLocation", "print", "buildText", "block", "try", "throw", "uncaught", "remark", "graph"]);
+export const STATEMENT_KINDS = new Set(["declare", "assignText", "storeText", "releaseText", "textLoop", "assign", "declareArray", "store", "push", "setLength", "assignBool", "assignUnit", "unitLoop", "unitWrite", "unitDo", "tableWrite", "if", "while", "do", "for", "unrolled", "switch", "break", "continue", "return", "sleep", "parallel", "start", "cancel", "action", "syncSend", "select", "centerLocation", "print", "buildText", "block", "try", "throw", "uncaught", "remark", "graph", "watch"]);
 
 // ── what the emitter takes ──
 
@@ -1119,7 +1121,7 @@ class Scope {
         return (!!slots && slots.every((slot) => this.taskCall(slot.call))) || this.island(s);
       }
       case "cancel": return (this.native && this.lowers(s.task) && (this.num(s.task), true)) || this.island(s);
-      case "pointAt": return (this.native && this.lowers(s.of) && (this.num(s.of), true)) || this.island(s);
+      case "watch": return (this.native && this.stmts(s.handler, false)) || this.island(s);
       case "parallel": return (this.native && s.branches.every((b) => this.stmts(b, false))) || this.island(s);
       // (Where a `throw` goes is the emitter's, `Emitter.handler`: the program keeps the error in flight.)
       case "try": return (this.native && !!this.errors && this.stmts(s.body, inLoop) && this.stmts(s.catch, inLoop)) || this.island(s);
@@ -1202,7 +1204,7 @@ interface Store { array: ArrayDecl; index: Linear; reads: CellRead[]; value: Lin
 /** (`at` on a copy or a call: the statement it is for, when its trigger is another's.) */
 /** (`label`: every place of `target` set to where `to` is — where a function that calls itself goes back to.) */
 /** (`route`: a variable's cell into these dwords, and nothing else of its places.) */
-type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string; apart?: boolean; top?: number } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At } | { label: { target: string; to: string } } | { route: { from: string; into: Dword[]; add?: number } };
+type Item = { act: Act } | { write: Write } | { fill: { temp: string; target: string; apart?: boolean; top?: number } } | { copy: string; at?: At } | { island: Stmt; writes: Set<string> } | { bump: { target: string; add: number } } | { call: { fn: FixedFn; target: string }; at?: At } | { label: { target: string; to: string } } | { pointer: { target: string; to: Dword } } | { route: { from: string; into: Dword[]; add?: number } };
 /**
  * `keep`: an empty trigger that stays (a jump whose next pointer a place sets). `guarded`: an `if` in one trigger (its
  * conditions, its statements' actions), which may be followed by the copies of what it writes — a copy whether or not
@@ -1358,6 +1360,8 @@ class Emitter {
   frames: { result?: { id: string; kind: string }; end: string }[] = [];
   /** Where an error thrown here goes: the `catch` of each `try` around, in the function being laid out, innermost last. */
   handlers: string[] = [];
+  /** The variables whose cells nothing reads: a label or a pointer set for them is set at their other places only. */
+  cellless = new Set<string>();
   /**
    * Inside statements only an error goes through — those that end in a `throw`, and a `catch` (a map of our own): what
    * they read of a variable is refreshed from its cell where it is read, as a routed variable's is, never a place that
@@ -1895,7 +1899,7 @@ class Emitter {
       case "break": return this.goto(this.loops[this.loops.length - 1].exit);
       case "continue": return this.goto(this.loops[this.loops.length - 1].cont);
       case "start": return this.scope.islands.has(s) ? this.left(s) : this.start(s);
-      case "pointAt": return this.pointAt(s);
+      case "watch": return this.watch(s);
       case "cancel": return this.scope.islands.has(s) ? this.left(s) : this.cancel(s);
       case "parallel": return this.scope.islands.has(s) ? this.left(s) : this.parallel(s);
       case "try": {
@@ -2678,17 +2682,60 @@ class Emitter {
   }
 
   /**
-   * The current player at a unit's dword of a table of the events pass's (`units.ts`): set to the unit's EPD (a place
-   * of it), then the distance from the unit table to the table added, as the layout has it. The table a region of
-   * plain dwords, one a unit place, 336 bytes apart.
+   * The events pass's watch (`units.ts`): a trigger for each of the game's unit places, whose conditions read the
+   * place's record where it is against what the trigger saw there last — its own conditions' numbers, 0 for a place
+   * never handed out. They are walked from the place the game will hand out next (the entry's next pointer, moved down
+   * as places are first handed out) up to place 1 699 and then to place 0: the places the game has handed out, newest
+   * first. A place as it was is the one trigger: its conditions hold, and it puts the trigger before it back and goes
+   * on to the next. One that changed goes to its stub — the record's EPD into `@ev.e`, the trigger's first condition's
+   * number into `@ev.wf`, where to go on into `RET`, the place handed out after it into `NEXT` — and to the handler,
+   * laid out once, after which the boundary's check moves the entry down when the place was the one handed out next.
    */
-  pointAt(s: Extract<Stmt, { kind: "pointAt" }>): void {
-    if (!this.regions.has(s.table)) this.regions.set(s.table, { id: s.table, cells: UNIT_PLACES, stride: UNIT_STRIDE });
-    const l = linear(s.of)!;
-    const set: Act = { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "set", value: u(l.c) };
-    if (l.terms.length) this.actPlaces.set(set, { value: { id: l.terms[0].id, scale: l.terms[0].k, add: l.c } });
-    // (A trigger of its own, its actions first: an action whose number is a place is found by its index there.)
-    this.push({ conds: [], items: [{ act: set }, { act: { dword: { game: CURRENT_PLAYER_ADDRESS }, modifier: "add", value: { epdOf: s.table, plus: u(-UNIT_TABLE_EPD) } } }] });
+  watch(s: Extract<Stmt, { kind: "watch" }>): void {
+    const W = (k: number) => `${this.key}:w${k}`, S = (k: number) => `${this.key}:s${k}`;
+    const entry = this.label("ev"), handler = this.label("eh"), back = this.label("er"), exit = this.label("ex"), stays = this.label("eb"), move = this.label("emv");
+    // (Variables whose places are next pointers and numbers, their cells read by nothing: what a stub sets is the
+    // places. Where the handler goes on to, and the place handed out after this one: the numbers of the two actions of
+    // `move` that point the walk's start and the handler's way on at it.)
+    const RET = `${this.key}.evRet`, NEXT = `${this.key}.evNext`;
+    for (const v of [RET, NEXT]) this.own.add(v);
+    for (const v of [RET, NEXT, EVENT_FIELDS]) this.cellless.add(v);
+    this.placesOf(RET).push({ dword: nextOf(back), scale: 1, add: 0 });
+    this.placesOf(NEXT).push({ dword: { at: move, field: { act: 0, part: "value" } }, scale: 1, add: 0 }, { dword: { at: move, field: { act: 1, part: "value" } }, scale: 1, add: 0 });
+    // (After place k in the walk: k + 1, then 0 after 1 699, the end after 0; before it, k − 1, and 1 699 before 0.)
+    const after = (k: number) => (k === 0 ? exit : k === UNIT_PLACES - 1 ? W(0) : W(k + 1));
+    const before = (k: number) => (k === 0 ? UNIT_PLACES - 1 : k - 1);
+    // (The place handed out after it: 1 699 after 0, then down; none after 1.)
+    const handedNext = (k: number) => (k === 0 ? UNIT_PLACES - 1 : Math.max(1, k - 1));
+    const putBack = (k: number): Item => ({ act: { dword: nextOf(W(k)), modifier: "set", value: { label: S(k) } } });
+    // (Kept, though empty: their next pointers are written.)
+    this.push({ label: entry, conds: [], items: [], next: W(0), keep: true });
+    for (let k = 0; k < UNIT_PLACES; k++) {
+      const record = UNIT_TABLE_ADDRESS + UNIT_STRIDE * k;
+      this.push({ label: W(k), conds: s.fields.map((f): Cond => ({ dword: { game: record + 4 * f.dword }, compare: f.compare, value: 0, ...(f.mask !== undefined ? { mask: f.mask } : {}) })), items: [putBack(before(k)), { act: { dword: nextOf(W(k)), modifier: "set", value: { label: after(k) } } }], next: S(k) });
+      const items: Item[] = [putBack(before(k))];
+      this.write(EVENT_RECORD, { c: UNIT_TABLE_EPD + (UNIT_STRIDE / 4) * k, terms: [] }, true, items);
+      items.push({ pointer: { target: EVENT_FIELDS, to: { at: W(k), field: { cond: 0 } } } }, { label: { target: RET, to: after(k) } }, { label: { target: NEXT, to: W(handedNext(k)) } });
+      this.push({ label: S(k), conds: [], items, next: handler });
+    }
+    this.land(handler);
+    this.stmts(s.handler);
+    // The place the game hands out next is the boundary (`EVENT_BOUNDARY` its distance from place 0, 0 to begin with):
+    // when it is handed out, the walk starts at the next one from now on, and goes on from there now — it was not
+    // walked in this frame.
+    const record: BoolExpr = { kind: "compare", op: "==", left: { kind: "var", id: EVENT_RECORD }, right: { kind: "binary", op: "+", left: { kind: "var", id: EVENT_BOUNDARY }, right: { kind: "const", value: UNIT_TABLE_EPD }, at: this.at!, label: "" }, at: this.at!, label: "" };
+    this.jump(record, false, stays, this.at);
+    this.push({ label: move, conds: [], items: [{ act: { dword: nextOf(entry), modifier: "set", value: 0 } }, { act: { dword: nextOf(back), modifier: "set", value: 0 } }] });
+    const first = this.label("e0"), moved = this.label("em");
+    this.jump({ kind: "compare", op: "==", left: { kind: "var", id: EVENT_RECORD }, right: { kind: "const", value: UNIT_TABLE_EPD }, at: this.at!, label: "" }, true, first, this.at);
+    this.write(EVENT_BOUNDARY, { c: u(-UNIT_TABLE_EPD - UNIT_STRIDE / 4), terms: [{ id: EVENT_RECORD, k: 1 }] });
+    this.goto(moved);
+    this.land(first);
+    this.write(EVENT_BOUNDARY, { c: (UNIT_STRIDE / 4) * (UNIT_PLACES - 1), terms: [] });
+    this.land(moved);
+    this.land(stays);
+    this.push({ label: back, conds: [], items: [], next: W(0), keep: true });
+    this.push({ label: exit, conds: [], items: [putBack(0)] });
   }
 
   /** A trigger of a slot's or a branch's that says whether nothing runs in it (done) or something does. */
@@ -4436,9 +4483,16 @@ class Emitter {
         else if ("fill" in it) pieces.push({ fill: it.fill });
         else if ("route" in it) pieces.push({ route: it.route });
         else if ("label" in it) {
-          for (const pl of this.placesOf(it.label.target)) {
+          for (const pl of this.placesOf(it.label.target).slice(this.cellless.has(it.label.target) ? 1 : 0)) {
             if (!pl.dword || pl.scale !== 1 || pl.add !== 0) throw new Error(`emitter: a place of ${it.label.target} that is no dword of its own`);
             acts().push({ dword: pl.dword, modifier: "set", value: { label: to(it.label.to) } });
+          }
+        }
+        else if ("pointer" in it) {
+          // (Every place of a variable set to a dword's EPD: the events pass's, `watch`.)
+          for (const pl of this.placesOf(it.pointer.target).slice(this.cellless.has(it.pointer.target) ? 1 : 0)) {
+            if (!pl.dword || pl.scale !== 1 || pl.add !== 0) throw new Error(`emitter: a place of ${it.pointer.target} that is no dword of its own`);
+            acts().push({ dword: pl.dword, modifier: "set", value: { epd: it.pointer.to } });
           }
         }
         else if ("copy" in it) {
@@ -6027,6 +6081,7 @@ class Rewriter {
         return [...pre, { ...s, call: made.call }];
       }
       case "parallel": return [{ ...s, branches: s.branches.map((b) => this.stmts(b)) }];
+      case "watch": return [{ ...s, handler: this.stmts(s.handler) }];
       case "switch": {
         const pre: Stmt[] = [];
         // (Tested against each case: one variable plus a constant — bits under a mask computed first.)

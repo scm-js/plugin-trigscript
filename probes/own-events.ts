@@ -1,8 +1,8 @@
 // TrigScript 4, the backend: unit events in a map of our own (scripts/build-own.mts) — step 11 of the way off eudplib,
-// part 3. The map's events pass, before the programs' turns each frame: the list of the units on the map from its head
-// to where the pass before stopped (the units linked in since), each not seen before marked seen and listed; the dying
-// list both ways from its head; with on.order, every unit's order against what the pass before found. A listener is a
-// task that loops over what the pass found.
+// part 3. The map's events pass, before the programs' turns each frame: a trigger for each unit place the game has
+// handed out, whose conditions hold what it saw there last (the uniqueness byte, whether the unit is alive or its
+// order); a place that changed goes to the handler, which lists what came on, died or took up an order. A listener is
+// a task that loops over what the pass found.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines at the same
 // frames; every line should end "ok", and a line ending "WRONG" names the check that failed. The frames after "Weighed"
 // are to weigh.

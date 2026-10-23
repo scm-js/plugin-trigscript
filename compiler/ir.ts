@@ -696,11 +696,12 @@ export type Stmt =
   /** A map of our own only: Display Text of block `block` as it is now, to `to` as a print's is. */
   | { kind: "showText"; block: string; bytes: number; to: number; at: At }
   /**
-   * A map of our own only (`compiler/backend/units.ts`): the current player pointed at the dword of `table` — a table of
-   * the events pass's, a dword for each of the game's unit places, 336 bytes apart as they are — that is the unit's whose
-   * record's EPD `of` is: `of` plus the distance from the unit table to the table, which the layout knows.
+   * A map of our own only (`compiler/backend/units.ts`): the events pass's watch of the game's unit places — a trigger
+   * for each, whose conditions read `fields` of the unit record where it is (`dword` into it, `mask`) against what the
+   * trigger saw there last, its own numbers. A place as it was goes on to the next; one that changed runs `handler`,
+   * with `@ev.e` the record's EPD and the current player at the trigger's first condition's number (`emit.ts`).
    */
-  | { kind: "pointAt"; of: NumExpr; table: string; at: At; label: string }
+  | { kind: "watch"; fields: { dword: number; mask?: number; compare: "atLeast" | "exactly" }[]; handler: Stmt[]; at: At; label: string }
   /** A loop the emitter took (version 26): `graph` is made as it is; `original` is the loop, run where nothing is made (the simulator). */
   | { kind: "graph"; graph: Graph; original: Stmt[]; at: At; label: string };
 
