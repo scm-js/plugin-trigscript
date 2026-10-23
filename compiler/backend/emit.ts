@@ -363,6 +363,8 @@ const MOVES_UNITS = new Set([11, 39, 44, 48]);
  * is asked a bit at a time from the top (`Emitter.readGame`). The Python side's `read_condition`.
  */
 const DEATHS_TABLE = 0x58a364, KILLS_TABLE = 0x5878a4, ORE_TABLE = 0x57f0f0, GAS_TABLE = 0x57f120;
+/** An address as the player field of a Deaths names it. */
+const epdOf = (addr: number) => u((addr - DEATHS_TABLE) / 4);
 const CURRENT_PLAYER = 13, DEATHS_TYPE = 15, KILL_TYPE = 5, ACCUMULATE_TYPE = 4, OPPONENTS_TYPE = 14;
 const gameRead = (r: ReadSource): r is Extract<ReadSource, { source: "condition" }> => r.source === "condition";
 /**
@@ -413,6 +415,15 @@ const CURRENT_PLAYER_ADDRESS = 0x6509b0;
 const UNIT_PLACES = 1700, UNIT_STRIDE = 336, UNIT_TABLE_ADDRESS = 0x59cca8, UNIT_TABLE_EPD = (UNIT_TABLE_ADDRESS - 0x58a364) / 4;
 /** The events pass's variables the watch writes (`units.ts`'s): the record's EPD, the trigger's first condition's number, the boundary. */
 const EVENT_RECORD = "@ev.e", EVENT_FIELDS = "@ev.wf", EVENT_BOUNDARY = "@ev.be";
+/** The handler's word to the watch's gate (`units.ts`'s): how many units came on, whether any came on or went, and a bit for each player that had one. */
+const EVENT_MADE_N = "@ev.madeN", EVENT_TOUCHED = "@ev.touch", EVENT_OWNERS = "@ev.own";
+/**
+ * The game's counts the gate watches (TrigScript 4, step 11's quiet frames): a dword a player (0 to 11) of units and of
+ * buildings, counted as the unit is made and taken off as it starts to die or is removed — the "Units" and "Buildings"
+ * of the score screen (0x488CF6 in 1.16.1: men and every other unit but an egg, a cocoon and a lurker egg in the one,
+ * buildings in the other; incomplete ones counted).
+ */
+const UNIT_COUNTS = 0x581de4, BUILDING_COUNTS = 0x581f34, GATE_PLAYERS = 12;
 /**
  * The map's player settings, as a map of our own needs them (TrigScript 4, step 7): the slots a human or a computer
  * plays (0-based, P1 to P8), and each slot's force (0 to 3). Who a program runs for, who All Players and a force are,
@@ -1491,9 +1502,9 @@ class Emitter {
     else this.push({ conds: [], items: [], next: to });
   }
 
-  /** A trigger whose conditions all holding send the walk to `to`; otherwise it goes on. */
-  branch(conds: Cond[], to: string, at?: At): void {
-    const label = this.label("b"), after = this.label("a");
+  /** A trigger whose conditions all holding send the walk to `to`; otherwise it goes on. (`named`: its label, when its fields are places.) */
+  branch(conds: Cond[], to: string, at?: At, named?: string): void {
+    const label = named ?? this.label("b"), after = this.label("a");
     this.push({ label, conds, items: [{ act: { dword: { at: label, field: "next" }, modifier: "set", value: { label: to } } }], next: after, at });
     let r = this.restores.get(to);
     if (!r) this.restores.set(to, (r = []));
@@ -2702,6 +2713,43 @@ class Emitter {
   watch(s: Extract<Stmt, { kind: "watch" }>): void {
     const W = (k: number) => `${this.key}:w${k}`, S = (k: number) => `${this.key}:s${k}`;
     const entry = this.label("ev"), handler = this.label("eh"), back = this.label("er"), exit = this.label("ex"), stays = this.label("eb"), move = this.label("emv");
+    // The gate (`s.gate`: no orders or types watched): one trigger before the walk whose conditions hold when nothing
+    // can have changed since the watch last ran — the head of the game's list of free places and the place behind it
+    // (a place handed out moves one or the other: every unit made pops the head, a place freed goes in behind it), and
+    // each player's counts of units and of buildings (taken off as a unit starts to die or is removed). All holding,
+    // the walk passes the watch by; otherwise it goes through it, and afterwards the gate's numbers are read again
+    // from the game — the head and the place behind it when a unit came on, the counts of each player the handler
+    // marked, or every one of them when the gate opened and the handler found nothing (a unit given away, a morph).
+    // A number wrong only costs the next frames the watch: the gate holds only when all of them are right.
+    const gated = !!s.gate, skip = this.label("egs");
+    const G = { head: `${this.key}.egH`, behind: `${this.key}.egQ`, next: `${this.key}.egN`, units: (p: number) => `${this.key}.egU${p}`, buildings: (p: number) => `${this.key}.egB${p}`, failed: `${this.key}.egw` };
+    const players = Array.from({ length: GATE_PLAYERS }, (_, p) => p);
+    // (The gate in four triggers, each a group of its numbers — the head and the place behind it; the units of players
+    // 1 to 6; of 7 to 12; the buildings — so that when the handler finds nothing, the group that failed is read again
+    // and no other: a place freed moves the one behind the head, three reads, where every number would be twenty-seven.)
+    const groups: { label: string; conds: Cond[]; fields: [string, number, "value" | "player", number][] }[] = gated ? [
+      { label: this.label("eg"), conds: [{ dword: { game: FIRST_FREE_UNIT }, compare: "exactly", value: 0 }, { dword: { game: DEATHS_TABLE }, compare: "exactly", value: 0 }], fields: [[G.head, 0, "value", 0], [G.behind, 1, "player", epdOf(4)], [G.next, 1, "value", 0]] },
+      ...[players.slice(0, 6), players.slice(6)].map((ps) => ({ label: this.label("eg"), conds: ps.map((p): Cond => ({ dword: { game: UNIT_COUNTS + 4 * p }, compare: "exactly", value: 0 })), fields: ps.map((p, i): [string, number, "value" | "player", number] => [G.units(p), i, "value", 0]) })),
+      { label: this.label("eg"), conds: players.map((p): Cond => ({ dword: { game: BUILDING_COUNTS + 4 * p }, compare: "exactly", value: 0 })), fields: players.map((p): [string, number, "value" | "player", number] => [G.buildings(p), p, "value", 0]) },
+    ] : [];
+    if (gated) {
+      this.own.add(G.failed);
+      groups.forEach((g, i) => {
+        // Its conditions all holding go on to the next group, or past the watch; one failing says which group and goes
+        // into the watch.
+        const on = i + 1 < groups.length ? groups[i + 1].label : skip;
+        if (i) this.land(g.label);
+        this.branch(g.conds, on, this.at, i ? g.label + "t" : g.label);
+        this.write(G.failed, { c: i + 1, terms: [] });
+        this.goto(entry);
+        // (The group's numbers as variables of the watch's own, each a place of a condition's field and nothing else.)
+        for (const [id, cond, part, add] of g.fields) {
+          this.own.add(id);
+          this.cellless.add(id);
+          this.placesOf(id).push({ dword: { at: i ? g.label + "t" : g.label, field: { cond, part } }, scale: 1, add });
+        }
+      });
+    }
     // (Variables whose places are next pointers and numbers, their cells read by nothing: what a stub sets is the
     // places. Where the handler goes on to, and the place handed out after this one: the numbers of the two actions of
     // `move` that point the walk's start and the handler's way on at it.)
@@ -2744,6 +2792,47 @@ class Emitter {
     this.land(stays);
     this.push({ label: back, conds: [], items: [], next: W(0), keep: true });
     this.push({ label: exit, conds: [], items: [putBack(0)] });
+    if (gated) {
+      // The gate's numbers read again from the game, as far as this frame's changes reach.
+      const WHOLE: ConditionRecord = { location: 0, player: 0, amount: 0, unitId: 0, comparison: 0, type: DEATHS_TYPE, resource: 0, flags: 0, mask: 0 };
+      const COUNT: ConditionRecord = { ...WHOLE, location: 0xffff, mask: MASKED_MARK };
+      const headAgain = () => {
+        this.readAt(G.head, WHOLE, { c: epdOf(FIRST_FREE_UNIT), terms: [] }, this.at);
+        // (The head's address over 4, into the player field with the EPD of 4 added: the EPD of its next pointer.)
+        this.readAt(G.behind, WHOLE, { c: epdOf(FIRST_FREE_UNIT), terms: [] }, this.at, 2);
+        this.readAt(G.next, WHOLE, { c: epdOf(4), terms: [{ id: G.behind, k: 1 }] }, this.at);
+      };
+      const countsAgain = (p: number) => {
+        this.readAt(G.units(p), COUNT, { c: epdOf(UNIT_COUNTS + 4 * p), terms: [] }, this.at);
+        this.readAt(G.buildings(p), COUNT, { c: epdOf(BUILDING_COUNTS + 4 * p), terms: [] }, this.at);
+      };
+      const found = this.label("egf"), rearmed = this.label("egr");
+      this.branch([{ dword: { var: EVENT_TOUCHED }, compare: "atLeast", value: 1 }], found, this.at);
+      // Nothing found: the group that failed, read again.
+      const groupRead: (() => void)[] = [headAgain, () => players.slice(0, 6).forEach((p) => this.readAt(G.units(p), COUNT, { c: epdOf(UNIT_COUNTS + 4 * p), terms: [] }, this.at)), () => players.slice(6).forEach((p) => this.readAt(G.units(p), COUNT, { c: epdOf(UNIT_COUNTS + 4 * p), terms: [] }, this.at)), () => players.forEach((p) => this.readAt(G.buildings(p), COUNT, { c: epdOf(BUILDING_COUNTS + 4 * p), terms: [] }, this.at))];
+      groupRead.forEach((read, i) => {
+        const yes = this.label("egg"), no = this.label("egn");
+        this.branch([{ dword: { var: G.failed }, compare: "exactly", value: i + 1 }], yes, this.at);
+        this.goto(no);
+        this.land(yes);
+        read();
+        this.land(no);
+      });
+      this.goto(rearmed);
+      this.land(found);
+      const noneMade = this.label("egm");
+      this.branch([{ dword: { var: EVENT_MADE_N }, compare: "atMost", value: 0 }], noneMade, this.at);
+      headAgain();
+      this.land(noneMade);
+      for (const p of players) {
+        const other = this.label("ego");
+        this.branch([{ dword: { var: EVENT_OWNERS }, compare: "atMost", value: 0, mask: 2 ** p }], other, this.at);
+        countsAgain(p);
+        this.land(other);
+      }
+      this.land(rearmed);
+    }
+    this.land(skip);
   }
 
   /** A trigger of a slot's or a branch's that says whether nothing runs in it (done) or something does. */

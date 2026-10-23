@@ -2175,6 +2175,10 @@ describe("a map of our own, unit events", () => {
     };
     unit(0, 0, 9);
     unit(1699, 37, 8);
+    // (The game's head of free places — the place it hands out next — and Player 1's count of units, which the watch's
+    // gate reads: both units are Player 1's.)
+    memory.set(0x628438, place(1698));
+    memory.set(0x581de4, 2);
     PRINTED.got = [];
     runOwn(o.runs[0].graph, memory, o.values, undefined, frames, then);
     return PRINTED.got.map((t, i) => `${PRINTED.frames[i]} ${Buffer.from(t, "hex").toString()}`);
@@ -2204,15 +2208,22 @@ describe("a map of our own, unit events", () => {
     expect(got).toEqual(["3 made 0", "5 order 0 6 3", "7 morphed 38 from 37", "9 died 0", "9 killed 0 by 0", "11 made 32"]);
   });
 
-  it("starts a task for each unit a handler that waits is handed", () => {
+  it("starts a task for each unit a handler that waits is handed, and passes the watch by while the game's free list and counts stand still", () => {
+    // (No orders or types watched: the watch is gated. The game's head of free places (0x628438) and Player 1's count
+    // of units (0x581DE4) move as the game moves them when a unit is made; a unit put in a place with neither moved is
+    // not seen until one does.)
+    const FREE_HEAD = 0x628438, UNITS_P1 = 0x581de4;
     const got = run([
       "program(async () => {",
       "  on.created(async (u) => { await sleep(frames(2)); print(`late ${u.type}`); });",
       "});",
-    ].join("\n"), 8, (f, w) => {
-      if (f === 3) for (const [kk, uid] of [[1698, 7], [1697, 6]]) { w(place(kk) + 0x0c, 0x700001); w(place(kk) + 0x4c, 0x0300); w(place(kk) + 0x64, 5); w(place(kk) + 0xa4, uid * 256); }
+    ].join("\n"), 12, (f, w) => {
+      const unit = (kk: number, uid: number) => { w(place(kk) + 0x0c, 0x700001); w(place(kk) + 0x4c, 0x0300); w(place(kk) + 0x64, 5); w(place(kk) + 0xa4, uid * 256); };
+      if (f === 3) { for (const [kk, uid] of [[1698, 7], [1697, 6]]) unit(kk, uid); w(FREE_HEAD, place(1696)); w(UNITS_P1, 4); }
+      if (f === 6) unit(1696, 5);
+      if (f === 8) w(UNITS_P1, 5);
     });
-    expect(got).toEqual(["5 late 5", "5 late 5"]);
+    expect(got).toEqual(["5 late 5", "5 late 5", "10 late 5"]);
   });
 });
 

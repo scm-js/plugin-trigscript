@@ -4026,13 +4026,16 @@ the ledger is the list it can be written again from at 4.0.
   is a condition that fails each frame (13 ns), one with nothing in it a trigger passed by as done: a timer wheel
   (idea 2) would make a sleeper cost nothing until its frame. "did not start" is said in red by the game, as the Python
   side's build says it, where the simulator notes a fault (both builds).
-- **Unit events on a map of our own (step 11, part 3), what is left:** the watch costs every place the game has handed
-  out 48–60 ns a frame, so a frame where nothing comes on and nothing is dying grows with the map's units, where
-  eudplib's build without `on.order` looks at its lists' heads alone: 9.3 µs against 5.2 with 128 places, and at the
-  full table about 90 against 5. The way out is a gate that passes the watch by when nothing can have changed: the head
-  of the game's list of free places (it moves when a unit is handed a place or one is freed) and a count that moves
-  when a unit starts to die (a player's losses), a dozen conditions — to be read in both games first, since Remastered
-  links its lists otherwise. Without `on.order` or `on.morphed` only.
+- **Unit events on a map of our own (step 11, part 3), what is left:** the watch is gated since 2026-10-23 ("The
+  watch's gate", below) when neither orders nor types are watched; with `on.order` or `on.morphed` every place is still
+  walked every frame (48–60 ns a place: 9.3 µs at 128 places, about 90 at the full table), and no cheap sign of an
+  order or a type changed is known. The gate's holes, each a unit whose change the game's counts do not show (reported
+  at the next frame the gate opens, or lost if its place is handed out again before that): a Zerg Egg, Cocoon or Lurker
+  Egg dying while another unit's death is in progress (the counts leave the three out, and the dying list's head moves
+  only when it was empty); a unit removed while hidden in a transport or a bunker (not counted). A frame on which a
+  place is freed costs the watch and three reads (about 15 µs at 80 places): the place behind the head moves, and
+  nothing else says so. The gate's numbers are not checked in Remastered yet (0x628438, 0x581DE4, 0x581F34 are among
+  what it lets a map read; whether its emulation moves them as 1.16.1 does, the probe will say).
   The handler reads a changed place's values a bit at a time, about 4 µs for a unit made: through the current player,
   pointed at the record once, instead of a copy of the record's EPD for every read. The 1,700 places are two triggers
   each (1.84 MB against eudplib's 1.27 for the probe without `on.order`): a stub of fewer actions packs tighter.
@@ -5323,6 +5326,45 @@ trigger not preserved switched off after its run, Player 2's copy of an All Play
 `hyperTriggers()` — but E, where eudplib runs the disabled trigger — and as the same triggers in a plain classic map.
 Not played in Remastered yet: `Maps/TrigScript/own-step13-triggers.scx` is to settle whether Remastered runs the
 payload's nodes as its TRIG section's (a Wait, a trigger switched off, a disabled condition).
+
+### The watch's gate (2026-10-23)
+
+Step 11's one loss to eudplib closed (`compiler/backend/units.ts`: the handler marks what it found; `compiler/backend/emit.ts`,
+`watch`: the gate and its numbers read again). When a program's events are `created`, `died` and `killed` alone — no
+orders, no types, which change with nothing else of the game's to show for it — the watch of the unit places is passed
+by on a frame when nothing can have come on or gone.
+
+- **What the game shows, read first** (`~/trigscript-audit-2026-10-19/tools/step13/gate-research.mts`: a quiet map
+  in the lifted game, units made, killed and removed through the engine's own actions, the game's data diffed frame by
+  frame). A unit handed a place pops the head of the free list (0x628438); a place freed goes in *behind* the head, so
+  the head does not move for it, and a pop after it can bring the head back — but not the place behind the head as
+  well. A unit that starts to die or is removed is taken off its owner's count at once — 0x581DE4 + 4p units (men and
+  every other unit but an Egg, a Cocoon and a Lurker Egg; incomplete ones too), 0x581F34 + 4p buildings (0x488CF6 in
+  1.16.1, the score screen's "Units" and "Buildings"), 12 players each, Player 12's included — where the deaths table
+  moves only for a death in a fight (not Kill Unit), the dying list's head (0x62842C) only from empty, the unit
+  finder's count (0x66FF74) is not Remastered's to read, and the free count (0x6283F0) moves a frame late.
+- **The gate**: four triggers before the walk, each a group of the numbers compared with what the watch last read —
+  the head and the place behind it (two conditions, the second's player field the EPD of the head's next pointer); the
+  units of players 1 to 6; of 7 to 12; the buildings — each holding going on to the next, the last to past the watch;
+  one failing says which group and goes into the watch. About 0.25 µs when quiet.
+- **Read again** after the walk, as far as the frame's changes reach: the head and the place behind it when a unit came
+  on (`@ev.madeN`); the counts of each player the handler marked as having a unit come on or gone (`@ev.own`, a bit
+  a player); when the gate opened and the handler found nothing (a place freed, a unit given to another player, a
+  morph: `@ev.touch` 0), the group that failed alone. A number wrong only costs the next frames the watch — the gate
+  holds only when every number is right — so the handler need not mirror the game's books; it marks owners and the
+  reads do the rest. The handler watches whether a unit is alive whenever gated, listed or not.
+
+| Lifted game, Remastered's weights, µs a frame (`probes/own-events.ts` without `on.order`, 80 places handed out) | Ours | eudplib | Ours before |
+| --- | ---: | ---: | ---: |
+| nothing coming or going (the whole frame, the listeners' tasks included) | **1.9** | 5.1 | 6.7 |
+| of it the gate | **0.25** | | |
+| a dead unit's place freed (the place behind the head moved: the watch and three reads) | 15 | 5.1 | 6.7 |
+| the first frame (the listeners started, the gate's 27 numbers read) | 389 | 1,272 | 331 |
+
+Every line of the probe at the same frame as before, both ways. Checked: `tests/emitter.test.ts` ("a map of our
+own, unit events": a unit put in a place with neither the head nor a count moved is not seen until one moves; the head
+and Player 1's count move as the game moves them and the unit is handed on). Not played in Remastered yet
+(`Maps/TrigScript/own-step11-events-gated.scx`).
 
 ### Triggers stacked (2026-10-20)
 
