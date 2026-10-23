@@ -66,7 +66,11 @@ const cuwpFree = cuwpUsage(scn) as number[];
 const cuwp = 1 + Math.max(0, ...[...Array(64).keys()].filter((i) => !cuwpFree[i]));
 const used = new Set<number>([...scn.units.map((u: { unitId: number }) => u.unitId), ...scn.triggers.flatMap((t: { conditions: { unitId: number }[]; actions: { unitId: number }[] }) => [...t.conditions.map((c) => c.unitId), ...t.actions.map((a) => a.unitId)])]);
 const carrier = used.has(58) ? [...Array(228).keys()].find((t) => !used.has(t))! : 58;
-const lowered = emitOwn(r, players, textBase, { humans, width: scn.width * 32, height: scn.height * 32, cuwp, carrier });
+// The map's own triggers go into the payload with the script's records (step 13), and the TRIG section holds the
+// start-up alone. The base is a melee map, whose stock triggers would end a Use Map Settings game at once: they are
+// left out unless OWN_KEEP_TRIGGERS says otherwise.
+const mapTriggers = process.env.OWN_KEEP_TRIGGERS ? scn.triggers.slice() : [];
+const lowered = emitOwn(r, players, textBase, { humans, width: scn.width * 32, height: scn.height * 32, cuwp, carrier, triggers: mapTriggers });
 if (typeof lowered === "string") { console.error(`the emitter cannot lower this program: ${lowered}`); process.exit(1); }
 lowered.texts.forEach((text, i) => {
   if (setString(scn.strings, 0, text) !== textBase + i) throw new Error("the pool of texts did not go into the map's strings one after another");
@@ -74,7 +78,6 @@ lowered.texts.forEach((text, i) => {
 const { runs } = lowered;
 const graphs: Graph[] = runs.map((run) => run.graph);
 const emitted = performance.now();
-// No trigger of the melee map's (they would end the game at once): the start-up is the only one.
 scn.triggers = [];
 const START_LOCATION = 214, COMMAND_CENTER = 106, HATCHERY = 131, MARINE = 0, ZERGLING = 37;
 const placed = [];
@@ -89,7 +92,7 @@ applyUnitChanges(scn, addUnits(scn, placed));
 // The texts the graph shows, in the strings first: the payload goes after them.
 const texts = new Map<string, number>();
 const intern = (text: string) => { if (!texts.has(text)) texts.set(text, internString(scn, text)); };
-for (const t of graphs.flatMap((g) => g.triggers)) for (const a of t.acts) {
+for (const t of [...graphs.flatMap((g) => g.triggers), ...lowered.triggers]) for (const a of t.acts) {
   if (a.display !== undefined) intern(a.display);
   // (An action of the game's: its text and its sound file's name.)
   for (const s of [a.strings?.text, a.strings?.wav]) if (s && "text" in s) intern(s.text);
@@ -139,7 +142,7 @@ for (const t of graphs.flatMap((g) => g.templates ?? [])) {
   offsets.setUint32(4 * index, at - STRINGS, true);
   templateAt.set(t.id, at);
 }
-const own = layout({ runs: runs.map((run) => ({ graph: run.graph, owner: run.player })), players: players.slots, strings: strings.length, text: (t) => texts.get(t)!, arrays: values, template: (id) => templates.get(id)!, templateAt, ...(process.env.OWN_FREE ? { free: Number(process.env.OWN_FREE) } : {}) });
+const own = layout({ runs: runs.map((run) => ({ graph: run.graph, owner: run.player })), players: players.slots, triggers: lowered.triggers, strings: strings.length, text: (t) => texts.get(t)!, arrays: values, template: (id) => templates.get(id)!, templateAt, ...(process.env.OWN_FREE ? { free: Number(process.env.OWN_FREE) } : {}) });
 const withPayload = new Uint8Array(strings.length + own.payload.length);
 withPayload.set(strings);
 withPayload.set(own.payload, strings.length);
@@ -163,5 +166,5 @@ if (r.sounds.some((s) => s.vorbis)) finishSounds(r.sounds, vorbisEncoder(readFil
 for (const s of r.sounds) extras.set(s.path, s.bytes!);
 writeFileSync(resolve(outPath), await saveMap(out, { extras, compress: "pkware", listfile: true }));
 const done = performance.now();
-console.log(`${resolve(outPath)}: ${runs.length} run${runs.length === 1 ? "" : "s"} (${runs.map((run) => `program ${run.program + 1} as P${run.player + 1}`).join(", ")}), ${graphs.reduce((n, g) => n + g.triggers.length, 0)} triggers of the graphs, payload ${own.payload.length} bytes at 0x${own.address.toString(16)}, start-up ${own.trig.length / 2400} triggers`);
+console.log(`${resolve(outPath)}: ${runs.length} run${runs.length === 1 ? "" : "s"} (${runs.map((run) => `program ${run.program + 1} as P${run.player + 1}`).join(", ")}), ${graphs.reduce((n, g) => n + g.triggers.length, 0)} triggers of the graphs, payload ${own.payload.length} bytes at 0x${own.address.toString(16)}, ${lowered.triggers.length} trigger${lowered.triggers.length === 1 ? "" : "s"} of the map's own (${lowered.triggers.reduce((n, t) => n + t.slots.length, 0)} copies${lowered.hyperTriggersLeftOut ? `, ${lowered.hyperTriggersLeftOut} hyper triggers left out` : ""}), start-up ${own.trig.length / 2400} triggers`);
 console.log(`built in ${(done - started).toFixed(0)} ms (compile ${(compiled - started).toFixed(0)}, emit ${(emitted - compiled).toFixed(0)}, map ${(done - emitted).toFixed(0)})`);

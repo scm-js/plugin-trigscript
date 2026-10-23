@@ -254,10 +254,11 @@ describe("a map of our own, programs, owners and players", () => {
       // Its actions: the list made the entry alone, the entry's next pointer the gate's.
       expect([0, 1].map((a) => (node(entry, 328 + 32 * a + 16) * 4 + 0x58a364) >>> 0)).toEqual([list + 8, list + 4]);
       expect([node(entry, 328 + 20), node(entry, 328 + 32 + 20)]).toEqual([entry, entry]);
-      // The gate: one condition for each player before this one, their list empty.
+      // The gate: one condition for each player after this one, their list empty — the programs run from the last
+      // player's list that is there, after every player's own triggers (step 13).
       const gate = node(entry, 328 + 64 + 20);
       const conds = [0, 1, 2, 3].filter((c) => pv.getUint8(gate - out.address + 8 + 20 * c + 15) === 15);
-      expect(conds.length).toBe(players.filter((q) => q < p).length);
+      expect(conds.length).toBe(players.filter((q) => q > p).length);
     }
   });
 });
@@ -304,5 +305,75 @@ describe("a map of our own, texts known when built chosen while the game runs", 
     const cases = (picks[0] as Extract<TextPart, { kind: "pick" }>).cases;
     // (i is 0 to 3: the characters 3 to 6.)
     expect(cases.map((c) => c.text).join("")).toBe("ran ");
+  });
+});
+
+describe("a map of our own, the map's own triggers", () => {
+  /** A script of `trigger()` records beside a program, for a map whose humans and computers are `slots`. */
+  const script = (source: string, slots: number[], forces = [0, 1, 1, 0, 0, 0, 0, 0]) => {
+    lib ??= defaultLib();
+    const r = compileScript(ts, { "main.ts": source }, defaultScriptNames(), { lib, emitter: false });
+    expect(r.diagnostics).toEqual([]);
+    const o = emitOwn(r, { slots, forces });
+    if (typeof o === "string") throw new Error(o);
+    return { ...o, strings: r.strings };
+  };
+  const PROGRAM = `program(() => { print("started"); });`;
+
+  it("keeps each record, and gives it the players whose lists the game would copy it into: the slots named, All Players, a force", () => {
+    const o = script([
+      `trigger([P1, P2], [always()], [displayText("both")]);`,
+      `trigger(AllPlayers, [always()], [displayText("all")]);`,
+      `trigger(players.Force2, [always()], [displayText("force")]);`,
+      `trigger(P8, [always()], [displayText("nobody")]);`,
+      `hyperTriggers(P3);`,
+      PROGRAM,
+    ].join("\n"), [0, 1, 2]);
+    // (hyperTriggers: three preserved triggers of Player 3's, 63 Wait(0)s and Preserve Trigger each — left out of a
+    // map of our own, which goes through its triggers every frame as it is.)
+    expect(o.triggers.length).toBe(4);
+    expect(o.hyperTriggersLeftOut).toBe(3);
+    expect(o.triggers.map((t) => t.slots)).toEqual([[0, 1], [0, 1, 2], [1, 2], []]);
+    // (The records as the script wrote them.)
+    expect(o.triggers[0].record.actions[0]).toMatchObject({ type: 9 });
+    expect(o.triggers[0].acts[0].strings?.text).toEqual({ text: "both" });
+  });
+
+  it("lays a player's copies out as the game's nodes, chained from their entry to their gate, the record's bytes and flags as written", () => {
+    const o = script([
+      `trigger([P1, P2], [bring(P1, units.TerranMarine, locations.Anywhere, ">=", 1), disabled(never())], [comment("a name"), displayText("A Marine."), disabled(victory())], { ignoreGameEnd: true });`,
+      `trigger(P1, [always()], [setResources(P1, "add", 1, "ore")], { preserve: true });`,
+      PROGRAM,
+    ].join("\n"), [0, 1]);
+    const texts = new Map<string, number>([["a name", 7], ["A Marine.", 8], ["started", 9]]);
+    const out = layout({ runs: o.runs.map((r) => ({ graph: r.graph, owner: r.player })), players: [0, 1], triggers: o.triggers, strings: 0, text: (s) => texts.get(s)!, arrays: new Map() });
+    const node = (label: string) => out.triggers.get(label)! - out.address;
+    const dword = (at: number) => new DataView(out.payload.buffer, out.payload.byteOffset).getUint32(at, true);
+    // Player 1's chain: both records; Player 2's: the first alone. The entry's third action sends the walk to the chain's
+    // head; the last node goes on to the gate.
+    for (const [p, chain] of [[0, ["@trig0.p0", "@trig1.p0"]], [1, ["@trig0.p1"]]] as const) {
+      const entry = node(`@entry${p}`);
+      expect(dword(entry + 328 + 32 * 2 + 20)).toBe(out.triggers.get(chain[0])!);
+      chain.forEach((label, i) => expect(dword(node(label) + 4)).toBe(out.triggers.get(chain[i + 1] ?? `@gate${p}`)!));
+    }
+    // The bytes: the record as the map's TRIG section would hold it, its texts the map's strings.
+    const [first, second] = o.triggers;
+    const resolved = (t: typeof first) => ({ ...t.record, actions: t.record.actions.map((a) => ({ ...a, text: a.text ? texts.get((o.strings[a.text - 1] as { text: string }).text)! : 0 })) });
+    for (const [label, t] of [["@trig0.p0", first], ["@trig0.p1", first], ["@trig1.p0", second]] as const) {
+      const record = encodeTriggers([resolved(t)]);
+      const n = node(label);
+      expect([...out.payload.subarray(n + 8, n + 8 + 20 * t.record.conditions.length)]).toEqual([...record.subarray(0, 20 * t.record.conditions.length)]);
+      expect([...out.payload.subarray(n + 328, n + 328 + 32 * t.record.actions.length)]).toEqual([...record.subarray(320, 320 + 32 * t.record.actions.length)]);
+      expect(dword(n + 2376)).toBe(t.record.flags);
+    }
+    expect(first.record.flags).toBe(2);
+    expect(second.record.flags).toBe(4);
+    // (A condition or an action switched off keeps its flag; a Comment is kept as the game keeps it, doing nothing.)
+    expect(first.record.conditions[1].flags & 2).toBe(2);
+    expect(first.record.actions.map((a) => [a.type, a.flags & 2])).toEqual([[47, 0], [9, 0], [1, 2]]);
+    // The gate: into the programs when every player after this one has an empty list.
+    const gate0 = node("@gate0"), gate1 = node("@gate1");
+    expect(dword(gate0 + 8 + 4)).toBe((0x51a280 + 12 + 8 - 0x58a364) / 4 >>> 0);
+    expect(dword(gate1 + 8 + 15) & 0xff).toBe(0);
   });
 });

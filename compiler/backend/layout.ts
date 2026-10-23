@@ -33,6 +33,7 @@
 import { AFTER_END, END, NOW, PASS_END, TRIGGER_BYTES, TRIGGER_OFF, TRIGGER_ON, type Act, type Cond, type Dword, type Graph, type Value } from "./graph";
 import { TRIGGER_LISTS, WAKE_AT, WAKE_NEXT, WAKE_TICK } from "./emit";
 import type { ScriptString } from "../runtime";
+import type { TriggerRecord } from "../../vendor/triggers";
 
 export const STRINGS = 0x191943c8;
 const DEATHS = 0x58a364;
@@ -180,7 +181,17 @@ export interface LayoutInput {
    * game, among the triggers stacked in each other's room).
    */
   free?: number;
+  /**
+   * The map's own triggers (TrigScript 4, step 13), in the order the map's TRIG section would hold them, each with the
+   * players (0-based slots among `players`) whose lists the game would copy it into. Laid out as the game's nodes in
+   * the payload — a copy a player, chained after the player's entry and before their gate — in place of the TRIG
+   * section, which holds the start-up alone.
+   */
+  triggers?: OwnTriggerInput[];
 }
+
+/** A trigger of the map's own for the layout: its record, with each condition and action as the graph has them (`game`, `record`). */
+export interface OwnTriggerInput { record: TriggerRecord; conds: Cond[]; acts: Act[]; slots: number[] }
 
 /**
  * The dwords of a variable's cell trigger (below) a routing writes — its action's destination, where it goes after —
@@ -291,7 +302,18 @@ export function layout(input: LayoutInput): OwnMap {
   // (Where each run's graph ends: the next run.)
   const ends = new Map<string, string>(runs.flatMap((_, i): [string, string][] => [[i ? `${END}#${i}` : END, after(i)], [i ? `${PASS_END}#${i}` : PASS_END, wake(i)], [i ? `${AFTER_END}#${i}` : AFTER_END, stop]]));
   const endOf = (l: string) => ends.get(l) ?? l;
-  type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number; off?: boolean };
+  // (`flags`: a node's execution flags as written, a trigger of the map's own; else preserved, or `off`.)
+  type T = { label: string; conds: Cond[]; acts: Act[]; next?: string | number; prev?: number; off?: boolean; flags?: number };
+  // The map's own triggers (step 13): a player's copies chained in order after their entry, the last going on to their
+  // gate. They are the game's nodes, so the game runs them as it runs a TRIG section's — a trigger that is not
+  // preserved is switched off once it has run, a Wait holds it in the player's wait slot — and they are reachable only
+  // from the entry while the walk is in the list, so a leaver's list empties as before.
+  const own = (p: number, k: number) => `@trig${k}.p${p}`;
+  const chains = new Map<number, string[]>(players.map((p) => [p, (input.triggers ?? []).flatMap((t, k) => (t.slots.includes(p) ? [own(p, k)] : []))]));
+  const chainTriggers: T[] = (input.triggers ?? []).flatMap((t, k) => t.slots.filter((p) => players.includes(p)).map((p): T => {
+    const chain = chains.get(p)!, i = chain.indexOf(own(p, k));
+    return { label: own(p, k), prev: 0, conds: t.conds, acts: t.acts, next: chain[i + 1] ?? gate(p), flags: t.record.flags };
+  }));
   const triggers: T[] = runs.flatMap(({ graph, owner }, i) => [
     {
       label: wake(i),
@@ -307,7 +329,8 @@ export function layout(input: LayoutInput): OwnMap {
     // triggers run every frame and not every few seconds.)
     { label: stop, conds: [], acts: [{ dword: { game: TRIGGER_WAIT }, modifier: "set", value: 0 }], next: 0x80000000 },
     // Each player's entry, their list's one node: the list made it alone (the start-up's triggers dropped), and the
-    // walk sent on to the gate — the next pointer goes back to the list's end at `@run`, or the next frame's.
+    // walk sent on to the player's own triggers and then the gate — the next pointer goes back to the list's end at
+    // `@run`, or the next frame's.
     ...players.map((p): T => ({
       label: entry(p),
       prev: list(p) + 4,
@@ -315,14 +338,17 @@ export function layout(input: LayoutInput): OwnMap {
       acts: [
         { dword: { game: list(p) + 8 }, modifier: "set", value: { label: entry(p) } },
         { dword: { game: list(p) + 4 }, modifier: "set", value: { label: entry(p) } },
-        { dword: { at: entry(p), field: "next" }, modifier: "set", value: { label: gate(p) } },
+        { dword: { at: entry(p), field: "next" }, modifier: "set", value: { label: chains.get(p)![0] ?? gate(p) } },
       ],
       next: listEnd(p),
     })),
-    // The gate: into the programs when each player before this one has an empty list; otherwise the walk ends.
+    ...chainTriggers,
+    // The gate: into the programs when each player after this one has an empty list — so the programs run from the
+    // last player's list still there, after every player's own triggers, as eudplib's build runs them (its
+    // RunTrigTrigger before the programs); otherwise the walk ends.
     ...players.map((p): T => ({
       label: gate(p),
-      conds: players.filter((q) => q < p).map((q): Cond => ({ dword: { game: list(q) + 8 }, compare: "atLeast", value: 0x80000000 })),
+      conds: players.filter((q) => q > p).map((q): Cond => ({ dword: { game: list(q) + 8 }, compare: "atLeast", value: 0x80000000 })),
       acts: [{ dword: { at: gate(p), field: "next" }, modifier: "set", value: { label: run } }],
       next: listEnd(p),
     })),
@@ -527,7 +553,8 @@ export function layout(input: LayoutInput): OwnMap {
       dv.setUint8(pad + o + 28 - base, 20);
       if (a.mask !== undefined) dv.setUint16(pad + o + 30 - base, MASKED, true);
     });
-    w32(n + 2376, t.off ? TRIGGER_OFF : TRIGGER_ON); // preserved (and done, one passed by)
+    // (Preserved — and done, one passed by; a trigger of the map's own with its flags as written.)
+    w32(n + 2376, t.flags ?? (t.off ? TRIGGER_OFF : TRIGGER_ON));
   });
   for (const l of listData) l.values.forEach((v, i) => w32(l.at + 4 * l.stride * i, v));
   for (const t of graphs.flatMap((g) => g.templates ?? [])) if (!input.templateAt?.has(t.id) && t.at === undefined) t.bytes.forEach((b, i) => dv.setUint8(pad + templates.get(t.id)! + i - base, b));
@@ -586,8 +613,10 @@ function startUp(players: number[], entry: (p: number) => number): Uint8Array {
   // The current player: the EPD of that node's next pointer.
   record(players, [], [{ player: epd(CURRENT_PLAYER), modifier: 7, value: epd(4) }]);
   for (let e = 2; e < 32; e++) record(players, [{ player: SCRATCH, compare: 0, value: 1, mask: 2 ** e }], [{ player: epd(CURRENT_PLAYER), modifier: 8, value: 2 ** (e - 2) }]);
-  // The player's entry after it; the scratch dword back to 0.
-  for (const p of players) record([p], [], [{ player: CURRENT, modifier: 7, value: entry(p) }, { player: SCRATCH, modifier: 7, value: 0 }]);
+  // The player's entry after it; the scratch dword back to 0; the current player the player again — the game set it
+  // when it started on the list, and the map's own triggers after the start-up (step 13) read it (a Wait takes the
+  // current player's wait slot; Display Text shows to them).
+  for (const p of players) record([p], [], [{ player: CURRENT, modifier: 7, value: entry(p) }, { player: SCRATCH, modifier: 7, value: 0 }, { player: epd(CURRENT_PLAYER), modifier: 7, value: p }]);
   const out = new Uint8Array(2400 * records.length);
   records.forEach((r, i) => out.set(r, 2400 * i));
   return out;

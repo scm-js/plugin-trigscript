@@ -2136,6 +2136,14 @@ class Emitter {
     const table = tableOf(rec, this.scope.owner);
     if (table !== undefined) {
       const out = `${key}.o`, d: Dword = { game: table.at }, whole = table.mask === U32 - 1;
+      // A cell of the deaths table whose number is a player group's (12 to 26: Player 2's Ghosts, Player 1's Vultures)
+      // cannot be named by its EPD — the game reads the group's cell for that player field — so it is asked as the
+      // game's own Deaths condition of that player and unit, the mask in its record (step 13; found by its probe).
+      const index = rec.type === DEATHS_TYPE && table.at >= DEATHS_TABLE && table.at < DEATHS_TABLE + 4 * 12 * 228 ? (table.at - DEATHS_TABLE) / 4 : -1;
+      const byRecord = index >= 12 && index <= LAST_GROUP;
+      const cond = (compare: Compare, value: number, mask?: number): Cond => (byRecord
+        ? { dword: { game: 0 }, compare, value, game: { ...rec, player: index % 12, unitId: Math.floor(index / 12), comparison: compare === "atLeast" ? 0 : 1, amount: value, location: mask ?? 0, mask: mask === undefined ? 0 : MASKED_MARK } }
+        : { dword: d, compare, value, ...(mask === undefined ? {} : { mask }) });
       this.push({ conds: [], items: [{ act: { dword: { temp: out }, modifier: "set", value: 0 } }], at });
       // (The bits of the mask from the top, each moved down `shift`; entered at the highest group of eight from the
       // lowest that has a bit set: below 2^8, 2^16, 2^24 of the field — the masked dword at most that — from its bit 7,
@@ -2143,10 +2151,10 @@ class Emitter {
       const bits = Array.from({ length: 32 }, (_, b) => 31 - b).filter((b) => table.mask & 2 ** b);
       const lo = bits[bits.length - 1], cuts = [8, 16, 24].map((g) => lo + g).filter((c) => c <= bits[0]);
       const starts = new Map(cuts.map((c) => [c - 1, this.label("rgfrom")]));
-      for (const c of cuts) this.branch([{ dword: d, compare: "atMost", value: u(2 ** c - 2 ** lo), ...(whole ? {} : { mask: table.mask }) }], starts.get(c - 1)!, at);
+      for (const c of cuts) this.branch([cond("atMost", u(2 ** c - 2 ** lo), whole ? undefined : table.mask)], starts.get(c - 1)!, at);
       for (const b of bits) {
         if (starts.has(b)) this.land(starts.get(b)!);
-        this.push({ conds: [{ dword: d, compare: "atLeast", value: 1, mask: u(2 ** b) }], items: [{ act: { dword: { temp: out }, modifier: "add", value: u(2 ** (b - shift)) } }], at });
+        this.push({ conds: [cond("atLeast", 1, u(2 ** b))], items: [{ act: { dword: { temp: out }, modifier: "add", value: u(2 ** (b - shift)) } }], at });
       }
       this.open().items.push({ fill: { temp: out, target } });
       return;

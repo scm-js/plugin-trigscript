@@ -3415,9 +3415,10 @@ No relocation, no scrambling, no flags to flip (the map has no triggers of its o
 - **Played in Remastered (2026-10-19):** `trigscript-own-loader.scx` printed all eight lines, every one "ok" — the
   first TrigScript map Remastered has run with no eudplib in it. Quitting was clean: the recording ends on the Single
   Player menu, no error — the end of a game, when the owner's list still holds nodes outside the game's heap, is fine.
-- Not yet: anything the emitter leaves to the Python side (texts with values, units, arrays it does not read, calls,
-  tasks, per-player programs, `trigger()` records of the map's own), and the map's own triggers alongside (eudplib's
-  stage 3 keeps them; ours drops them). The probe map is `trigscript-own-loader.scx` in the Maps folder: played in
+- Not yet (as of 2026-10-19; every one of these has since landed, the map's own triggers as step 13): anything the
+  emitter leaves to the Python side (texts with values, units, arrays it does not read, calls, tasks, per-player
+  programs, `trigger()` records of the map's own), and the map's own triggers alongside (eudplib's stage 3 keeps them;
+  ours drops them). The probe map is `trigscript-own-loader.scx` in the Maps folder: played in
   Remastered, it says whether the start-up holds there — and whether the end of a game does, the one moment where a
   list holding nodes outside the game's heap could matter (eudplib's lists hold them too).
 
@@ -3573,8 +3574,10 @@ found what they left out; where a step moved, its old number is given.
 12. **Input** (was 7; idea 13). Keys, clicks, the mouse, typed lines, sync channels, the `local.*` reads and the user's
     player id. The test harness types and presses through chatEvent's and MSQC's addresses (`GameSim`): it moves with
     them, and the map stops needing what MSQC takes (a location, the Valkyrie's entry, Player 12's units).
-13. **The map's own triggers** (was 8). Kept beside the program, in eudplib's order (programs after every player's
-    triggers) or another one said; `trigger()` and `hyperTriggers()` records.
+13. **The map's own triggers** (was 8) ✓ — "The map's own triggers on our own backend" (all 13 of the ledger's rows).
+    The map's TRIG section and the script's `trigger()` records laid out as the game's own nodes in the payload, a copy
+    a player, each player's run in turn before the programs, as eudplib's build runs them; `hyperTriggers()` records
+    left out, the map's triggers running every frame as it is.
 14. **The build in the editor** (new). A build step of the plugin's own for Save, Test Map and export; the CHK and the
     archive written in the plugin (mopaq bundled, or an addition to the plugin API); eudplib's fixes to the map
     (MTXM's null tiles, a desync by its source's account; UNIT flags; UNIx/UPGx/TECx defaults); the script's settings
@@ -4043,6 +4046,22 @@ the ledger is the list it can be written again from at 4.0.
   value is cut to that. The emitter folds a sum of bit-slices of one read with a negative constant wrongly (above,
   "Found on the way"): to find in the emitter's sliced copies and fix, with a random-program test that mixes `&`,
   `>>>` and a subtraction.
+- **The map's own triggers on a map of our own (step 13), what is left:** the order is eudplib's — every player's
+  triggers, then the programs — and no other can be said yet (a program before the triggers would run from the first
+  player's list, before their entry's chain: a word in `program()`'s options). A trigger for a player group the game
+  gives no list (Players 9 to 12, Foes, Allies, Neutral, Non-Allied Victory Players) is in no list, as in the game,
+  without a word. The map's own triggers' Comments are kept as the game keeps them (a Comment action in the payload: 32
+  bytes each). A map maker's own hyper triggers in the map's TRIG section are left out as the script's are, found by
+  their shape (preserved, 32 or more `Wait(0)`s) — said in the build's line, nowhere else yet. The chain's nodes are
+  stacked as the graph's triggers are, 2,408 bytes a node only when full. Open in eudplib's build, found by the probe:
+  it runs a trigger whose Disabled flag is set (the game does not), and with `hyperTriggers()` in the map it goes
+  through the triggers every second frame (the game's own doing under eudTurbo, measured: a list with hyper triggers in
+  it is held to every second frame).
+- A `deaths(p, u)` read whose cell is 12 to 26 dwords into the deaths table (Player 2's Ghosts, Player 1's Vultures)
+  cannot be asked by its EPD — the game reads the player group of that number instead (13 the current player, 17 all
+  players, 18 to 21 the forces) — so a map of our own asks the game's own Deaths condition of that player and unit, the
+  mask in its record (fixed in step 13, found by its probe: the read gave the current player's Marines). The same holds
+  for `memory(0x58A394 … 0x58A3CC)` in both builds, which still read the group: in the Open list for the Python side.
 - A variable set from a constant less itself (`j = 1 - j`) is copied a bit at a time — 32 triggers, about 0.5 µs, where
   eudplib's is two actions: the game's subtract stops at 0, so the emitter copies a variable read times −1 (found
   weighing the errors probe, 2026-10-22).
@@ -5253,6 +5272,57 @@ seconds is the re-test. A chat line stays on screen longer than a printed line i
 stood alone while their answers had faded). **Re-test played (recording 10.44.13):** a hold of F7 one press and
 "held 56 frames", two quick taps two presses, `-help` answered. Step 12 played out.
 
+
+### The map's own triggers on our own backend (2026-10-23)
+
+Step 13 (`compiler/backend/own.ts`: `OwnTrigger`, the records with the players whose lists hold a copy;
+`compiler/backend/layout.ts`: the chains after each player's entry, the gate turned around; `scripts/build-own.mts`;
+the start-up's current player). The ledger's 13 rows of `trigger()`, its options and `hyperTriggers()` are taken: step
+13 is done, 13 of 13.
+
+- **The map's own triggers are the game's own nodes in the payload.** The map's TRIG section (as the editor holds it
+  before the script's records go in) and then the script's `trigger()` records, in order, each copied once for every
+  player whose list the game would copy it into — the slots named, All Players, a force, among the players the map
+  gives a human or a computer (a trigger for a player not in the game runs for nobody, as in the game). A copy is laid
+  out as a node of the game's — its conditions and actions byte for byte as the TRIG section would hold them, its
+  texts and sound files put among the map's strings, its execution flags as written — stacked as the graph's triggers
+  are, and chained: the player's entry sends the walk to the first copy, each goes on to the next, the last to the
+  player's gate. The game runs them as it runs a TRIG section's: a trigger that is not preserved is switched off once it
+  has run, a Wait holds it in the player's wait slot and the walk goes on, a disabled trigger, condition or action is
+  passed over. The TRIG section holds the start-up alone, as before.
+- **In eudplib's order.** The gate is turned around: it lets the walk into the programs when every player *after* this
+  one has an empty list, so the programs run from the last player's list still there — after every player's own
+  triggers, as eudplib's build runs them (its RunTrigTrigger at the top of each frame, the programs after). Each
+  player's copies run in their list's walk, so the current player is theirs; a copy of Player 2's that reads what
+  Player 1's set in the same frame sees it.
+- **Hyper triggers are left out.** A map of our own goes through its triggers every frame as it is (`@stop` sets the
+  game's wait between passes to 0), and under that pass the game holds a list with hyper triggers in it to every second
+  frame (measured in the lifted game with the probe's triggers as a plain classic map: passes on the odd frames, `Wait`
+  counting 84 ms a pass; eudplib's build with `hyperTriggers()` in the map is held so too). The build's line says how
+  many it left out.
+- **Found on the way.** (1) The start-up left the current player at the EPD it wrote through, and the first frame's
+  chain ran with it: the `Wait` took a wait slot that was nobody's and ended at the next pass. The start-up's last
+  trigger now puts the current player back to the player whose list it is. (2) A `deaths(P2, units.TerranGhost)`
+  read gave the current player's Marines: a deaths cell 12 to 26 dwords in is a player group's number as a player
+  field (Open, above); such a cell is now asked as the game's own Deaths condition of that player and unit. (3)
+  eudplib's build runs a trigger whose Disabled flag is set; the game does not (the classic map, the lifted game):
+  ours follows the game.
+
+| Lifted game, Remastered's weights (`probes/own-triggers.ts`: eight triggers of the map's own beside a program) | Ours | eudplib |
+| --- | ---: | ---: |
+| a quiet frame (the triggers walked, the program asleep) | **0.4 µs, 10 triggers** | 3.3 µs, 111 triggers |
+| the first frame | **6 µs** | 1,082 µs |
+| the map | 60 KB | **54 KB** |
+
+Checked: `tests/ownGame.test.ts` ("a map of our own, the map's own triggers": the players a record is copied for;
+each copy's bytes against `encodeTriggers` of the record, its flags, the chain's next pointers, the gate's conditions);
+`tests/emitter.test.ts` (the same, walked from each player's entry frame after frame as the game walks the lists — a
+trigger not preserved switched off after its run, Player 2's copy of an All Players trigger seeing the switch Player
+1's set the same frame, the program after every player's triggers; a player not in the game left out); the ledger;
+`probes/own-triggers.ts` both ways in the lifted game: every line "ok" and at the same frame as eudplib's build without
+`hyperTriggers()` — but E, where eudplib runs the disabled trigger — and as the same triggers in a plain classic map.
+Not played in Remastered yet: `Maps/TrigScript/own-step13-triggers.scx` is to settle whether Remastered runs the
+payload's nodes as its TRIG section's (a Wait, a trigger switched off, a disabled condition).
 
 ### Triggers stacked (2026-10-20)
 
