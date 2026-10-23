@@ -4885,6 +4885,11 @@ and flags, `first`, `nearest` and none, writes, damage and heal by points and by
 the payload walked from its bytes over a unit table laid out as the game's, against the simulator); the probe both
 ways in the lifted game, every line the same and "ok".
 
+Played in Remastered (2026-10-22, recording 18.56.36): all 19 lines word for word and in order, W's counts the lifted
+game's (193 units, 3 Marines, 115 Zerglings), T about 4.2 s after the first group; the Marine ordered away walks off, the
+one given to Player 2 is shot by Player 1's own, two Marines are in the panel after `select()`, the walked Marine ends
+at the right of the row; no hitch.
+
 ### Triggers stacked (2026-10-20)
 
 Brought forward from step 14 (`compiler/backend/layout.ts`). The game reads no more of a trigger's 2,408 bytes than
