@@ -760,8 +760,10 @@ pass fills before the programs' turns, from a ring of hidden carrier units a hum
 (a Select and a Move to a point each send, the point the value), and a send pass after the
 programs' turns (`Program.after`) queues what this computer's player did. Keys and clicks
 travel as a state that is sent when it changes and paid out a frame at a time; the mouse
-as a point of its own; `syncSend` leaves its value for the send pass. Typed lines are not
-carried yet. The trip is two frames in the lifted game.
+as a point of its own; `syncSend` leaves its value for the send pass. A typed line is read
+from the game's text lines on the computer it was typed on, matched there against the
+patterns, and sent as the pattern's number and its values. The trip is two frames in the
+lifted game.
 
 ## Numbers
 

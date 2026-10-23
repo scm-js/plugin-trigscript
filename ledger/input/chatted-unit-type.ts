@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (chat)
+// ledger: step 12, takes
 // A unit type read out of a typed line by its name: `chatted(P1, "-spawn {what:unit}")`.
 program(async () => {
   while (true) {

@@ -1,4 +1,4 @@
-// ledger: step 12, refused: the players' input (chat)
+// ledger: step 12, takes
 // A line a player typed, matched whole: `if (chatted(P1, "-help"))`.
 program(async () => {
   while (true) {

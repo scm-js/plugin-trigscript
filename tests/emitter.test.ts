@@ -2300,7 +2300,7 @@ describe("a map of our own, input: the mouse, clicks, sync() and a program for e
   // (The world and the game's side as in the describe above.)
   const TABLE = 0x59cca8, place = (k: number) => TABLE + 336 * k;
   const LOCAL = 0x512684, QUEUE = 0x654880, QUEUED = 0x654aa0, QUEUE_MOST = 0x57f0d8, FIRST_UNIT = 0x6283f8, KEYS = 0x596a18, BUTTONS = 0x6cddc0, MOUSE = 0x6cddc4, SCREEN_X = 0x62848c, SCREEN_Y = 0x6284a8, SELECTION = 0x6284b8;
-  type World = { keys: Map<number, number>; buttons: number; mouse: [number, number]; screen: [number, number]; selection: number[]; camera: [number, number] };
+  type World = { keys: Map<number, number>; buttons: number; mouse: [number, number]; screen: [number, number]; selection: number[]; camera: [number, number]; typed: string[] };
   const run = (script: string, frames: number, then: (frame: number, world: World) => void, mouse = false, runIndex = 0): { lines: string[]; sent: string[] } => {
     const r = compileScript(ts, { "main.ts": script }, defaultScriptNames(), { lib: defaultLib(), emitter: false });
     expect(r.diagnostics).toEqual([]);
@@ -2312,6 +2312,19 @@ describe("a map of our own, input: the mouse, clicks, sync() and a program for e
     // (Players 1 and 2 people in the game: the game's player type 2, a trigger list that is not empty.)
     memory.set(0x57f1b4, 2 | (2 << 8));
     for (const p of [0, 1]) memory.set(0x51a280 + 12 * p + 8, 1);
+    // (The local player's name, "oracle" as the lifted game's; the text lines' ring, as 1.16.1 keeps it: the next slot's byte at
+    // 0x640B58, 10 to begin with and wrapping at 11, a line shown as "name:\x07 text".)
+    const NAME_AT = 0x57eeeb, TEXT_RING = 0x640b58, TEXT_LINES = 0x640b60;
+    const text = new Uint8Array(13 * 218 + 4);
+    const dwords = (base: number, bytes: Uint8Array, from: number, to: number, w: (a: number, v: number) => void) => {
+      for (let a = from & ~3; a < to; a += 4) w(base + a, (bytes[a] | (bytes[a + 1] << 8) | (bytes[a + 2] << 16) | (bytes[a + 3] << 24)) >>> 0);
+    };
+    const name = Buffer.from("oracle\0", "latin1");
+    const table = new Uint8Array(8 + name.length + 4);
+    table.set(name, NAME_AT - (NAME_AT & ~3));
+    dwords(NAME_AT & ~3, table, 0, table.length, (a, v) => memory.set(a, v));
+    let ring = 10;
+    memory.set(TEXT_RING, ring);
     const perHuman = (mouse ? 12 : 6);
     const pools = new Map<number, number[]>([[0, []], [1, []]]);
     let next = 1600;
@@ -2325,7 +2338,7 @@ describe("a map of our own, input: the mouse, clicks, sync() and a program for e
       const h = field(16), count = field(27);
       for (let i = 0; i < count; i++) { const k = pools.get(h)!.shift()!; w(place(k) + 0x6c, rd(FIRST_UNIT + 11 * 4)); w(place(k) + 0x4c, 3 * 256 + 11); w(FIRST_UNIT + 11 * 4, place(k)); }
     };
-    const world: World = { keys: new Map(), buttons: 0, mouse: [0, 0], screen: [0, 0], selection: [], camera: [0, 0] };
+    const world: World = { keys: new Map(), buttons: 0, mouse: [0, 0], screen: [0, 0], selection: [], camera: [0, 0], typed: [] };
     const sent: string[] = [];
     const due = new Map<number, { slot: number; x: number; y: number }[]>();
     PRINTED.got = [];
@@ -2347,6 +2360,14 @@ describe("a map of our own, input: the mouse, clicks, sync() and a program for e
       w(0x57f23c, f);
       for (const d of due.get(f) ?? []) w(place(d.slot) + 0x58, (d.x | (d.y << 16)) >>> 0);
       then(f, world);
+      for (const line of world.typed.splice(0)) {
+        const at = ring * 218, bytes = Buffer.from(`oracle:\x07 ${line}\0`, "latin1");
+        text.fill(0, at, at + 218);
+        text.set(bytes.subarray(0, 218), at);
+        dwords(TEXT_LINES, text, at, at + 218, w);
+        ring = (ring + 1) % 11;
+        w(TEXT_RING, ring);
+      }
       const keyWords = new Map<number, number>();
       for (const [vk, down] of world.keys) if (down) keyWords.set((KEYS + vk) & ~3, (keyWords.get((KEYS + vk) & ~3) ?? 0) | (1 << (8 * ((KEYS + vk) & 3))));
       for (let a = KEYS; a < KEYS + 256; a += 4) w(a, keyWords.get(a) ?? 0);
@@ -2419,5 +2440,40 @@ describe("a map of our own, input: the mouse, clicks, sync() and a program for e
       if (f === 3) world.keys.set(virtualKey("Space")!, 0);
     });
     expect(got.lines).toEqual(["4 jump"]);
+  });
+
+  it("a typed line is matched where it was typed and arrives as its pattern and values, two frames on", () => {
+    const got = run([
+      "program(async () => {",
+      "  on.chat(\"-ping {n}\", (p, { n }) => { print(`ping ${n}`); });",
+      "  while (true) {",
+      "    if (chatted(P1, \"-help\")) print(\"help\");",
+      "    const g = chatted(P1, \"-give {n} {what:ore|gas}\");",
+      "    if (g) print(`give ${g.n} ${g.what}`);",
+      "    const s = chatted(P1, \"-spawn {what:unit}\");",
+      "    if (s) print(`spawn ${s.what}` + (s.what == units.TerranMarine ? \" (a marine)\" : \"\"));",
+      "    await nextFrame();",
+      "  }",
+      "});",
+    ].join("\n"), 32, (f, world) => {
+      // (A line a frame at the most: a person types one at a time, and the map keeps one matched line until it has gone.)
+      if (f === 2) world.typed.push("-help");
+      if (f === 4) world.typed.push("-give 5000 gas");
+      if (f === 6) world.typed.push("hello there", "-spawn Terran Marine");
+      if (f === 8) world.typed.push("-give x ore", "-give 99999999 ORE");
+      if (f === 10) world.typed.push("-spawn nothing of the kind");
+      if (f === 12) world.typed.push("-spawn zerg zergling");
+      if (f === 13) world.typed.push("-ping 7");
+      // (Thirteen more lines: the ring goes round, and a line dealt with is not dealt with again.)
+      if (f >= 14 && f <= 26) world.typed.push("-help");
+      if (f === 28) world.typed.push("-help");
+    });
+    // (A header is the pattern's number, in the order the programs are read: on.chat's first. A point is the value plus
+    // one in each of x and y: "-give 5000 gas" is 2 + 4 × 3, then 5000 — x 905, y 5 on a map 64 tiles wide — then gas, 1.)
+    expect(got.sent.filter((s) => s.includes("move")).slice(0, 6)).toEqual(["2 move 11,1", "4 move 15,1", "4 move 905,5", "4 move 2,1", "6 move 19,1", "6 move 1,1"]);
+    expect(got.lines).toEqual([
+      "4 help", "6 give 5000 1", "8 spawn 0 (a marine)", "10 give 1048575 0", "14 spawn 37", "15 ping 7",
+      ...Array.from({ length: 13 }, (_, i) => `${16 + i} help`), "30 help",
+    ]);
   });
 });

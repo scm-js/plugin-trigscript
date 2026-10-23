@@ -4033,10 +4033,11 @@ the ledger is the list it can be written again from at 4.0.
   The handler reads a changed place's values a bit at a time, about 4 µs for a unit made: through the current player,
   pointed at the record once, instead of a copy of the record's EPD for every read. The 1,700 places are two triggers
   each (1.84 MB against eudplib's 1.27 for the probe without `on.order`): a stub of fewer actions packs tighter.
-- **Input on a map of our own (step 12), what is left:** typed lines (part 2: the line read from the text lines on the
-  typer's computer, matched there, sent as its number and captures). A carrier the map kills — a "Kill Unit for
+- **Input on a map of our own (step 12), what is left:** a carrier the map kills — a "Kill Unit for
   Player 12" of a map's own triggers would — is not made again (MSQC's QCDebug respawns; ours should watch one
-  carrier a human a frame). The carriers stand at (64, 64): a `Bring` of the map's own triggers over a location at the
+  carrier a human a frame). Typed lines lean on the text ring's byte (0x640B58) moving with every line shown; if
+  Remastered's emulator holds it still, the scan of the thirteen lines must run every frame instead (the mark after the
+  colon keeps it right either way) — the probe settles it. Two lines typed in one frame keep the later one. The carriers stand at (64, 64): a `Bring` of the map's own triggers over a location at the
   corner counts them for the human. The passes' cost a frame is not weighed. A sync() value is at most 2^20 − 2 on
   any map of 64 by 64 or more, as before; on a smaller map the point carries fewer bits (18 on 32 by 32), and the
   value is cut to that. The emitter folds a sum of bit-slices of one read with a negative constant wrongly (above,
@@ -5189,8 +5190,7 @@ receive and send passes, the carriers' first frame), the emitter's and the layou
 `AFTER_END`), `units.ts` (`local.selected`; `underMouse()` as the pick nearest the kept mouse; every walk of the
 table passing the carrier type over), `own.ts` (`OwnMap` from the build: the humans, the map in pixels, the slot, the
 type), `scripts/build-own.mts` (the slot written in transit through the editor's own code; the type the Valkyrie
-unless the map's units or triggers name it). Not yet: typed lines (part 2), so the 5 chat rows and `on.chat` stay
-refused by name; a carrier the map kills is not made again.
+unless the map's units or triggers name it). Not yet in part 1: typed lines; a carrier the map kills is not made again.
 
 - **Tests** (`tests/emitter.test.ts`, "a map of our own, input"): the harness plays the game's side — Give Units puts
   a human's carriers at the head of Player 12's list, the key bytes and the mouse are written where the map reads them,
@@ -5209,6 +5209,34 @@ refused by name; a carrier the map kills is not made again.
 - **Found on the way:** the emitter folds a sum whose terms are bit-slices of one read and a negative constant wrongly
   (`(v & 0xffff) − 1 + ((v >>> 16) − 1) × 1024` came out as `v_low − 65536 + …`: the constant's high half went into
   the sliced copy); the decode is written as separate steps, and the fault is in the Open list below.
+
+**As built, part 2 — typed lines (2026-10-23, branch `input`).** A line is read where it was typed. The game shows every
+line in its thirteen text lines (0x640B60, 218 bytes each) as `name:\x07 text`, and moves the byte at 0x640B58 on
+with each (the next slot: 10 at the start of a game and wrapping at 11 in the lifted game — the modulus is not leaned
+on, only the change). The send pass, on this computer's player's turn, reads that byte; when it has moved, it looks
+through the thirteen lines for one beginning with the player's name and `:\x07 ` (the prefix read once at the first
+frame from the player table, 0x57EEEB + 36p, into cells), copies the text after it into cells, swaps the two bytes
+after the colon (chatEvent's mark: `name: \x07text` shows the same and is not found again), and matches the text
+against the patterns in the order the programs read them: written text byte for byte, `{n}` as digits kept to what a
+point carries, `{k:ore|gas}` by a hash of the word to the next space and `{u:unit}` by a hash of the rest of the line
+(`h = h × 31 + byte`, capitals as small letters, as the Python side's) found among the unit names' hashes in rising
+order by halves (a table of 455 names in cells with values, from the compile's `unitNames`). The first pattern that
+fits the whole line is kept as a pending line, and goes as a *chat* message of the ring: a header (kind 2, the
+pattern's number) and then its values, all or none (the ring needs room for every packet, and the queue too — the
+packet's room check now covers the whole message, which the sync's needed as well). On arrival a pattern's flag is up
+for a frame, and its values are in cells of its own, so `chatted()` is a cell read and `on.chat` the same test in a
+loop. One matched line a frame is sent (a person types one at a time); the three addresses are read-allowed in
+Remastered's emulator (0x640B58 "read back"), and the line's bytes write-allowed, so the mark is kept there too.
+
+- **Tests:** "a typed line is matched where it was typed and arrives as its pattern and values, two frames on": the
+  harness shows lines as the game does (the name "oracle", the ring's byte 10 wrapping at 11) — `-help`, `-give 5000
+  gas`, `-spawn Terran Marine`, `-give 99999999 ORE` (1,048,575), `-spawn zerg zergling` (37), `-ping 7` through
+  `on.chat`; `hello there`, `-give x ore` and `-spawn nothing of the kind` match nothing; fourteen more lines after the
+  ring went round each arrive once.
+- **The lifted game** (the probe's runner typing lines through the game's own chat command): both builds print the
+  same eight lines on the same frames — ours and eudplib's chatEvent+MSQC alike, two frames after the line shows.
+  The probe's payload 3.08 MB with the four patterns and the name table (2.14 without).
+- The ledger: step 12's 5 chat rows and `on.chat` taken; **26 of 26**.
 
 
 ### Triggers stacked (2026-10-20)

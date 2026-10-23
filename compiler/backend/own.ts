@@ -60,7 +60,7 @@ function ownerSlots(program: Program, players: MapPlayers): number[] | string {
  * `textBase`: the string the first of `Own.texts` is to be among the map's (the next one the map adds; 1 when there is
  * no map).
  */
-export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, players: MapPlayers = ANY_PLAYERS, textBase = 1, map: OwnMap = { ...ANY_MAP, humans: players === ANY_PLAYERS ? ANY_MAP.humans : players.slots }): Own | string {
+export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings"> & Partial<Pick<CompileResult, "input">>, players: MapPlayers = ANY_PLAYERS, textBase = 1, map: OwnMap = { ...ANY_MAP, humans: players === ANY_PLAYERS ? ANY_MAP.humans : players.slots }): Own | string {
   // (A map of our own is built without the map's triggers, so `trigger()` records would be lost without a word.)
   if (r.triggers.length) return `a map of our own keeps no trigger() or hyperTriggers() records yet; this script has ${r.triggers.length}`;
   const runs: OwnRun[] = [];
@@ -76,7 +76,8 @@ export function emitOwn(r: Pick<CompileResult, "ir" | "triggers" | "strings">, p
   const sources = eventSources(known);
   const passer = known.findIndex((p) => eventSources(p).size);
   // (The players' input likewise: its passes laid out by the first program that reads them.)
-  const planned = ownInputPlan(known, map);
+  // (The names a `{…:unit}` capture of a typed line knows: the ones the compile listed for eudplib's build.)
+  const planned = ownInputPlan(known, map, r.input?.unitNames);
   if (typeof planned === "string") return planned;
   const input = planned;
   const reader = known.findIndex(hasInput);

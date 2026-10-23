@@ -4,13 +4,15 @@
 // target on every computer. Nothing of chatEvent's or MSQC's.
 // Built both ways (through eudplib, and as a map of our own), the lifted game should print the same lines for the same
 // keys, clicks and mouse; a line ending "WRONG" names the check that failed. The trip takes two frames in a map of our
-// own and about five through MSQC, so the frames differ.
+// own and about five through MSQC, so the frames differ. Typed lines (part 2) are read from the text lines on the
+// computer they were typed on and matched there; a pattern's number and its values make the trip.
 //   npx tsx scripts/build-own.mts probes/own-input.ts /tmp/own-input.scx
 //   npx tsx scripts/build-fixture.mts probes/own-input.ts /tmp/own-input-eud.scx
-import { program, print, keyPressed, keyHeld, clicked, mouse, sync, local, underMouse, nextFrame } from "trigscript";
+import { program, print, keyPressed, keyHeld, clicked, mouse, sync, local, underMouse, chatted, nextFrame } from "trigscript";
 
 program(async () => {
   print("Own input: the payload runs.");
+  on.chat("-ping {n}", (p, { n }) => { print(`on.chat: ping ${n}`); });
   // The smallest and the largest value a point carries, one in the middle, and two sent on the same frame.
   const a = await sync(P1, 0);
   const b = await sync(P1, 1048574);
@@ -35,6 +37,12 @@ program(async () => {
       if (s) print(`selected: a unit of type ${s.type}`);
       else print("nothing selected");
     }
+    // Typed lines: whole, a number (kept to 1048575), a word of a list, a unit by its name.
+    if (chatted(P1, "-help")) print("typed: help");
+    const g = chatted(P1, "-give {n} {what:ore|gas}");
+    if (g) print(`typed: give ${g.n} of ${g.what}` + (g.what == 1 ? " (gas)" : " (ore)"));
+    const sp = chatted(P1, "-spawn {what:unit}");
+    if (sp) print(`typed: spawn type ${sp.what}` + (sp.what == units.TerranMarine ? " (a marine)" : ""));
     await nextFrame();
   }
 });
